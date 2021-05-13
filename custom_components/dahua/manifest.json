@@ -1,0 +1,13 @@
+{
+  "domain": "dahua",
+  "name": "Dahua",
+  "documentation": "https://github.com/custom-components/dahua",
+  "issue_tracker": "https://github.com/custom-components/dahua/issues",
+  "dependencies": [],
+  "version": "0.0.0",
+  "config_flow": true,
+  "codeowners": [
+    "@rroller"
+  ],
+  "requirements": []
+}

@@ -1,0 +1,29 @@
+# Describes the format for available Dahua services
+
+set_infrared_mode:
+  name: Set Infrared Mode on Dahua Camera
+  description: Set the infrared light settings on a Dahua camera
+  fields:
+    entity_id:
+      description: Entity ID of the camera to update
+      example: "light.cam_14"
+    mode:
+      description: "The infrared mode: Auto, On, Off"
+      example: "Auto"
+      default: "Auto"
+      selector:
+        select:
+          options:
+            - "Auto"
+            - "On"
+            - "Auto"
+    brightness:
+      description: The infrared brightness, from 0 to 100 inclusive. 100 is the brightest
+      example: 100
+      default: 100
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          mode: slider

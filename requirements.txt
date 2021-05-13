@@ -1,0 +1,2 @@
+homeassistant
+ha-ffmpeg==3.0.2
