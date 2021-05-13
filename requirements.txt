@@ -1,0 +1,5 @@
+homeassistant~=2021.5.3
+ha-ffmpeg==3.0.2
+voluptuous~=0.12.1
+aiohttp~=3.7.4.post0
+yarl~=1.6.3

@@ -1,0 +1,16 @@
+{
+    "editor.wordWrap": "wordWrapColumn",
+    "editor.wordWrapColumn": 180,
+    "python.linting.pylintEnabled": true,
+    "python.linting.enabled": true,
+    "python.formatting.provider": "autopep8",
+    "files.associations": {
+        "*.yaml": "home-assistant"
+    },
+    "python.linting.pylintArgs": [
+        "--max-line-length=180"
+    ],
+    "python.formatting.autopep8Args": [
+        "--max-line-length=180"
+    ]
+}

@@ -1,0 +1,38 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Add Dahua Camera",
+                "description": "Example address: 192.168.1.201",
+                "data": {
+                    "username": "Username",
+                    "password": "Password",
+                    "address": "Address",
+                    "port": "Port",
+                    "rtsp_port": "RTSP Port",
+                    "streams": "RTSP Streams",
+                    "events": "Events"
+                }
+            }
+        },
+        "error": {
+            "auth": "Username, Password, or Address is wrong."
+        },
+        "abort": {
+            "single_instance_allowed": "Only a single instance is allowed."
+        }
+    },
+    "options": {
+        "step": {
+            "user": {
+                "data": {
+                    "binary_sensor": "Binary sensor enabled",
+                    "sensor": "Sensor enabled",
+                    "switch": "Switch enabled",
+                    "light": "Light enabled",
+                    "camera": "Camera enabled"
+                }
+            }
+        }
+    }
+}
