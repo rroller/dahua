@@ -90,6 +90,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         Camera.__init__(self)
 
         name = coordinator.client.to_stream_name(stream_index)
+        self.coordinator = coordinator
         self._name = "{0} {1}".format(config_entry.title, name)
         self._unique_id = coordinator.get_serial_number() + "_" + name
         self._stream_index = stream_index

@@ -31,7 +31,7 @@ from .const import (
     STARTUP_MESSAGE,
 )
 
-SCAN_INTERVAL = timedelta(seconds=30)
+SCAN_INTERVAL_SECONDS = timedelta(seconds=30)
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -59,11 +59,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     events = entry.data.get(CONF_EVENTS)
 
     session = async_get_clientsession(hass)
-    client = DahuaClient(
+    dahua_client = DahuaClient(
         username, password, address, port, rtsp_port, session
     )
 
-    coordinator = DahuaDataUpdateCoordinator(hass, client=client, events=events)
+    coordinator = DahuaDataUpdateCoordinator(hass, dahua_client, events=events)
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.last_update_success:
@@ -93,9 +93,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
-    def __init__(self, hass: HomeAssistant, client: DahuaClient, events: list) -> None:
+    def __init__(self, hass: HomeAssistant, dahua_client: DahuaClient, events: list) -> None:
         """Initialize."""
-        self.client: DahuaClient = client
+        self.client: DahuaClient = dahua_client
         self.dahua_event: DahuaEventThread = None
         self.platforms = []
         self.initialized = False
@@ -107,7 +107,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.motion_timestamp_seconds = 0
         self.motion_listener: CALLBACK_TYPE
 
-        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL)
+        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
     async def async_start_event_listener(self):
         """ setup """

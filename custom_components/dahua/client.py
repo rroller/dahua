@@ -68,7 +68,7 @@ class DahuaClient:
         # Just default to the main stream
         return STREAM_MAIN
 
-    def get_rtsp_stream_url(self, channel: str, subtype: int) -> str:
+    def get_rtsp_stream_url(self, channel: int, subtype: int) -> str:
         """
         Returns the RTSP url for the supplied subtype (subtype is 0=Main stream, 1=Sub stream)
         """
@@ -82,7 +82,7 @@ class DahuaClient:
         )
         return url
 
-    async def async_get_snapshot(self, channel: str) -> bytes:
+    async def async_get_snapshot(self, channel: int) -> bytes:
         """
         Takes a snapshot of the camera and returns the binary jpeg data
         """
@@ -217,7 +217,7 @@ class DahuaClient:
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        self.async_set_lighting_v1_mode(mode, brightness)
+        return await self.async_set_lighting_v1_mode(mode, brightness)
 
     async def async_set_lighting_v1_mode(self, mode: str, brightness: int) -> dict:
         """
@@ -293,7 +293,7 @@ class DahuaClient:
 
         return response
 
-    async def stream_events(self, on_receive, events: list) -> str:
+    async def stream_events(self, on_receive, events: list):
         """
         enable_motion_detection will either enable or disable motion detection on the camera depending on the supplied value
 
@@ -358,7 +358,8 @@ class DahuaClient:
             except Exception as exception:
                 raise ConnectionError() from exception
 
-    async def parse_dahua_api_response(self, data: str) -> dict:
+    @staticmethod
+    async def parse_dahua_api_response(data: str) -> dict:
         """
         Dahua APIs return back text that looks like this:
 
@@ -397,7 +398,7 @@ class DahuaClient:
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.error("Something really wrong happened! - %s", exception)
 
-    async def api_wrapper(self, method: str, url: str, data: dict = {}, headers: dict = {}) -> str:
+    async def api_wrapper(self, method: str, url: str, data: dict = {}, headers: dict = {}) -> dict:
         """Get information from the API."""
         try:
             async with async_timeout.timeout(TIMEOUT_SECONDS):

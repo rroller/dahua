@@ -25,7 +25,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
 
     entities = []
     if coordinator.supports_infrared_light():
-        entities.append(DahuInfraredLight(coordinator, entry, "Infrared"))
+        entities.append(DahuaInfraredLight(coordinator, entry, "Infrared"))
 
     if coordinator.supports_illuminator():
         entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
@@ -36,7 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     async_add_entities(entities)
 
 
-class DahuInfraredLight(DahuaBaseEntity, LightEntity):
+class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
     """Representation of a Dahua infrared light (for cameras that have them)"""
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
@@ -79,14 +79,14 @@ class DahuInfraredLight(DahuaBaseEntity, LightEntity):
     async def async_turn_on(self, **kwargs):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahuaa_brightness(hass_brightness)
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         await self.coordinator.client.async_set_lighting_v1(True, dahua_brightness)
         await self.coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahuaa_brightness(hass_brightness)
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         await self.coordinator.client.async_set_lighting_v1(False, dahua_brightness)
         await self.coordinator.async_refresh()
 
@@ -140,14 +140,14 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     async def async_turn_on(self, **kwargs):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahuaa_brightness(hass_brightness)
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         await self.coordinator.client.async_set_lighting_v2(True, dahua_brightness)
         await self.coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahuaa_brightness(hass_brightness)
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         await self.coordinator.client.async_set_lighting_v2(False, dahua_brightness)
         await self.coordinator.async_refresh()
 

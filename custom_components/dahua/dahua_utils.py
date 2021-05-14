@@ -1,22 +1,22 @@
 """
-Vairous utilities for Dahua cameras
+Various utilities for Dahua cameras
 """
 
 
 def dahua_brightness_to_hass_brightness(bri_str: str) -> int:
     """
     Converts a dahua brightness (which is 0 to 100 inclusive) and converts it to what HASS
-    expectes, which is 0 to 255 inclusive
+    expects, which is 0 to 255 inclusive
     """
     bri = 100
     if not bri_str:
         bri = int(bri_str)
 
     current = bri / 100
-    return current * 255
+    return int(current * 255)
 
 
-def hass_brightness_to_dahuaa_brightness(hass_brightness: int) -> int:
+def hass_brightness_to_dahua_brightness(hass_brightness: int) -> int:
     """
     Converts a HASS brightness (which is 0 to 255 inclusive) to a Dahua brightness (which is 0 to 100 inclusive)
     """
