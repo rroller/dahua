@@ -8,5 +8,5 @@
         "camera"
     ],
     "iot_class": "Local Polling",
-    "homeassistant": "0.118.0"
+    "render_readme": true
 }
