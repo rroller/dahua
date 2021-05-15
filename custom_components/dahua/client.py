@@ -14,7 +14,6 @@ TIMEOUT_SECONDS = 5
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 HEADERS = {"Content-type": "application/json; charset=UTF-8"}
-WHITE_LIGHT_TYPE = 1
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 

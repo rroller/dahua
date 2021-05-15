@@ -12,10 +12,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup sensor platform."""
     coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    devices = []
-
     # I think most cameras have a motion sensor so we'll blindly add a switch for it
-    devices.append(DahuaMotionDetectionBinarySwitch(coordinator, entry))
+    devices = [DahuaMotionDetectionBinarySwitch(coordinator, entry)]
 
     # But only some cams have a siren, very few do actually
     if coordinator.supports_siren():
@@ -68,7 +66,7 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua siren switch class. Used to enable or disable camera built in sirens"""
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
-        """Turn on/enable the camrea siren"""
+        """Turn on/enable the camera's siren"""
         await self.coordinator.client.async_set_coaxial_control_state(SIREN_TYPE, True)
         await self.coordinator.async_refresh()
 
