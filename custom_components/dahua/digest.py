@@ -45,7 +45,7 @@ class DigestAuth:
 
         response = await self.session.request(method, url, headers=headers, **kwargs)
 
-        # Only try performing digest authentication if the response status is from 400 to 500.
+        # Only try performing digest authentication if the response status is from 401
         if response.status == 401:
             return await self._handle_401(response)
 
@@ -143,6 +143,9 @@ class DigestAuth:
 
         parts = auth_header.split(" ", 1)
         if "digest" == parts[0].lower() and len(parts) > 1:
+            # Close the initial response since we are going making another request and return that response
+            response.close()
+
             self.challenge = parse_key_value_list(parts[1])
 
             return await self.request(

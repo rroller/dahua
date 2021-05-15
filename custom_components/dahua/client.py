@@ -4,6 +4,7 @@ import socket
 import asyncio
 import aiohttp
 import async_timeout
+from homeassistant.helpers.aiohttp_client import async_aiohttp_proxy_web
 from custom_components.dahua.const import STREAM_MAIN, STREAM_SUB
 
 from .digest import DigestAuth
@@ -347,16 +348,20 @@ class DahuaClient:
         codes = ",".join(events)
         url = "http://{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=2".format(self._address_with_port, codes)
         if self._username is not None and self._password is not None:
-            auth = DigestAuth(self._username, self._password, self._session)
-            response = await auth.request("GET", url)
-            response.raise_for_status()
-
-            # https://docs.aiohttp.org/en/stable/streams.html
+            response = None
             try:
+                auth = DigestAuth(self._username, self._password, self._session)
+                response = await auth.request("GET", url)
+                response.raise_for_status()
+
+                # https://docs.aiohttp.org/en/stable/streams.html
                 async for data, _ in response.content.iter_chunks():
                     on_receive(data)
             except Exception as exception:
                 raise ConnectionError() from exception
+            finally:
+                if response is not None:
+                    response.close()
 
     @staticmethod
     async def parse_dahua_api_response(data: str) -> dict:
@@ -383,11 +388,16 @@ class DahuaClient:
         """Get information from the API. This will return the raw response and not process it"""
         try:
             async with async_timeout.timeout(TIMEOUT_SECONDS):
-                auth = DigestAuth(self._username, self._password, self._session)
-                response = await auth.request("GET", url)
-                response.raise_for_status()
+                response = None
+                try:
+                    auth = DigestAuth(self._username, self._password, self._session)
+                    response = await auth.request("GET", url)
+                    response.raise_for_status()
 
-                return await response.read()
+                    return await response.read()
+                finally:
+                    if response is not None:
+                        response.close()
 
         except asyncio.TimeoutError as exception:
             _LOGGER.error("Timeout error fetching information from %s - %s", url, exception)
@@ -403,12 +413,17 @@ class DahuaClient:
         try:
             async with async_timeout.timeout(TIMEOUT_SECONDS):
                 if method == "get":
-                    auth = DigestAuth(self._username, self._password, self._session)
-                    response = await auth.request("GET", url)
-                    response.raise_for_status()
+                    response = None
+                    try:
+                        auth = DigestAuth(self._username, self._password, self._session)
+                        response = await auth.request("GET", url)
+                        response.raise_for_status()
+                        data = await response.text()
+                        return await self.parse_dahua_api_response(data)
+                    finally:
+                        if response is not None:
+                            response.close()
 
-                    data = await response.text()
-                    return await self.parse_dahua_api_response(data)
                 elif method == "put":
                     await self._session.put(url, headers=headers, json=data)
                 elif method == "patch":
