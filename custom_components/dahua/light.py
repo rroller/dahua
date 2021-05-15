@@ -153,7 +153,10 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
 
 class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
-    """Representation of a Dahua light (for cameras that have them). This is the red/blue flashing lights"""
+    """
+    Representation of a Dahua light (for cameras that have them). This is the red/blue flashing lights.
+    The camera will only keep this light on for a few seconds before it automatically turns off.
+    """
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
         super().__init__(coordinator, entry)
