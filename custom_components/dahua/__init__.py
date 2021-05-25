@@ -217,8 +217,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception:  # pylint: disable=broad-except
                     pass
 
-            # When there's a motion start event we'll set a flag to the current timestmap in seconds. We'll reset it when the motion stops
-            # We'll use this elsewhere to know how long to trigger a motion sensor
+            # When there's a motion start event we'll set a flag to the current timestmap in seconds.
+            # We'll reset it when the motion stops. We'll use this elsewhere to know how long to trigger a motion sensor
             if event["Code"] == "VideoMotion":
                 action = event["action"]
                 if action == "Start":
@@ -241,25 +241,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has a siren. For example, the IPC-HDW3849HP-AS-PV does
         https://dahuawiki.com/Template:NameConvention
         """
-        return "-AS-" in self.model
+        return "-AS-PV" in self.model
 
     def supports_security_light(self) -> bool:
         """
-        Returns true if this camera has the red/blud flashing security light feature.  For example, the IPC-HDW3849HP-AS-PV does
-        https://dahuawiki.com/Template:NameConvention
+        Returns true if this camera has the red/blud flashing security light feature.  For example, the
+        IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
         """
-        return "-AS-" in self.model
+        return "-AS-PV" in self.model
 
     def supports_infrared_light(self) -> bool:
         """
-        Returns true if this camera has an infrared light.  For example, the IPC-HDW3849HP-AS-PV does not, but most others do.
-        I don't know of a better way to detect this
+        Returns true if this camera has an infrared light.  For example, the IPC-HDW3849HP-AS-PV does not, but most
+        others do. I don't know of a better way to detect this
         """
-        return "-AS-" not in self.model
+        return "-AS-PV" not in self.model and "-AS-NI" not in self.model and "-AS-LED" not in self.model
 
     def supports_illuminator(self) -> bool:
         """
-        Returns true if this camera has an illuminator (white light for color cameras).  For example, the IPC-HDW3849HP-AS-PV does
+        Returns true if this camera has an illuminator (white light for color cameras).  For example, the
+        IPC-HDW3849HP-AS-PV does
         """
         return "table.Lighting_V2[0][0][0].Mode" in self.data
 

@@ -3,7 +3,7 @@
         "step": {
             "user": {
                 "title": "Add Dahua Camera",
-                "description": "Example address: 192.168.1.201",
+                "description": "Example address: 192.168.1.108",
                 "data": {
                     "username": "Username",
                     "password": "Password",
