@@ -105,3 +105,13 @@ If you wish to work on this component, the easiest way is to follow [HACS Dev Co
 * Clone this repo and open it in Visual Studio Code
 * View -> Command Palette. Type `Tasks: Run Task` and select it, then click `Run Home Assistant on port 9123`
 * Open Home Assistant at http://localhost:9123
+
+# Debugging
+Add to your configuration.yaml:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.dahua: debug
+```
