@@ -197,7 +197,8 @@ class DahuaClient:
 
     async def async_common_config(self) -> dict:
         """
-        async_get_lighting_v1 will fetch the status of the IR light (InfraRed light)
+        async_common_config will fetch the status of the IR light (InfraRed light) and motion detection status (if it is
+        enabled or not)
 
         Example response:
         table.Lighting[0][0].Correction=50
@@ -434,6 +435,6 @@ class DahuaClient:
         except (KeyError, TypeError) as exception:
             _LOGGER.error("TypeError parsing information from %s - %s", url, exception)
         except (aiohttp.ClientError, socket.gaierror) as exception:
-            _LOGGER.error("ClientError fetching information from %s - %s", url, exception)
+            raise exception
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.error("Something really wrong happened! - %s", exception)

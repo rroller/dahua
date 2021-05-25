@@ -64,6 +64,7 @@ The following are confirmed to work:
 
 * IPC-HDW5831R-ZE
 * IPC-T5442T-ZE
+* IPC-HDW2831T-ZS-S2
 * IPC-HDW3849HP-AS-PV
 * Please let me know if you've tested with additional cameras
 

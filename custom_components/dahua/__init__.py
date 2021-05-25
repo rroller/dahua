@@ -8,6 +8,8 @@ import time
 import json
 
 from datetime import timedelta
+
+from aiohttp import ClientError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -106,6 +108,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.events: list = events
         self.motion_timestamp_seconds = 0
         self.motion_listener: CALLBACK_TYPE
+        self.supports_coaxial_control = False
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
@@ -125,14 +128,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             data = {}
 
-            results = await asyncio.gather(
-                self.client.async_get_coaxial_control_io_status(),
-                self.client.async_common_config(),
-            )
-
-            for result in results:
-                data.update(result)
-
             if not self.initialized:
                 results = await asyncio.gather(
                     self.client.async_get_system_info(),
@@ -150,7 +145,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 data["model"] = device_type
                 self.model = device_type
                 self.machine_name = data.get("table.General.MachineName")
+
+                try:
+                    await self.client.async_get_coaxial_control_io_status()
+                    self.supports_coaxial_control = True
+                except ClientError as exception:
+                    pass
+
                 self.initialized = True
+
+            if self.supports_coaxial_control:
+                results = await asyncio.gather(
+                    self.client.async_get_coaxial_control_io_status(),
+                    self.client.async_common_config(),
+                )
+            else:
+                results = await asyncio.gather(
+                    self.client.async_common_config(),
+                )
+
+            for result in results:
+                data.update(result)
 
             if self.supports_security_light():
                 light_v2 = await self.client.async_get_lighting_v2()
