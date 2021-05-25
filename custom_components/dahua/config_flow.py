@@ -118,9 +118,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_USERNAME, default="admin"): str,
+                    vol.Required(CONF_USERNAME): str,
                     vol.Required(CONF_PASSWORD): str,
-                    vol.Required(CONF_ADDRESS, default="192.168.1.213"): str,
+                    vol.Required(CONF_ADDRESS): str,
                     vol.Required(CONF_PORT, default="80"): str,
                     vol.Required(CONF_RTSP_PORT, default="544"): str,
                     vol.Required(CONF_STREAMS, default=STREAMS[0]): vol.In(STREAMS),
