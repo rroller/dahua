@@ -76,7 +76,7 @@ Service | Parameters | Description
 `dahua.set_infrared_mode` | `entity_id`: camera.cam13_main <br /> `mode`: Auto, On, Off <br /> `brightness`: 0 - 100 inclusive| Sets the infrared mode. Useful to set the mode back to Auto
 
 ## Camera
-This will provide a normal HA camera entity (can take snapshots, etc)
+This will provide a normal HA camera entity (can take snapshots, motion detection, etc)
 
 ## Switches
 Switch |  Description |
