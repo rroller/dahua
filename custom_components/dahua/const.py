@@ -5,7 +5,7 @@ DOMAIN = "dahua"
 DOMAIN_DATA = f"{DOMAIN}_data"
 VERSION = "0.5.0"
 ATTRIBUTION = "Data provided by https://ronnieroller.com"
-ISSUE_URL = "https://github.com/custom-components/dahua/issues"
+ISSUE_URL = "https://github.com/rroller/dahua/issues"
 
 # Icons - https://materialdesignicons.com/
 ICON = "mdi:format-quote-close"
