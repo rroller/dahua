@@ -1,0 +1,1 @@
+See https://github.com/custom-components/integration_blueprint/blob/master/tests/README.md
