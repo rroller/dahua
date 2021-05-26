@@ -14,7 +14,7 @@ If you want live streaming, make usre to add the following to your config.yaml:
 ffmpeg:
 stream:
 ```
-
+See [ffmpeg](https://www.home-assistant.io/integrations/ffmpeg/) and [stream](https://www.home-assistant.io/integrations/stream/).
 
 
 ### HACS install
