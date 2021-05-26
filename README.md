@@ -66,6 +66,7 @@ The following are confirmed to work:
 * IPC-T5442T-ZE
 * IPC-HDW2831T-ZS-S2
 * IPC-HDW3849HP-AS-PV
+* IPC-HFW1435S-W
 * Please let me know if you've tested with additional cameras
 
 # Services and Entities
