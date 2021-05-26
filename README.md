@@ -1,11 +1,11 @@
 
 # Home Assistant Dahua Integration
-The `Dahua` integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras in Home Assistant.
+The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras in Home Assistant.
 
 Supports motion events, alarm events (and others), enabling/disabling motion detection, switches for infrared, illuminator (white light), security lights (red/blue flashers), 
 and sirens.
 
-NOTE: Using the switch to turn on/off the infrared light will disable the "auto" mode. Use the service to enable auto mode again (or the camera UI).
+**NOTE**: Using the switch to turn on/off the infrared light will disable the "auto" mode. Use the service to enable auto mode again (or the camera UI).
 
 ## Installation
 
@@ -67,7 +67,12 @@ The following are confirmed to work:
 * IPC-HDW2831T-ZS-S2
 * IPC-HDW3849HP-AS-PV
 * IPC-HFW1435S-W
+* IPC-HFW1435S-W-S2
 * Please let me know if you've tested with additional cameras
+
+# Known Issues
+* IPC-D2B20-ZS doesn't work. Needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201), [7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237)
+* Taking screenshots work, but actual streaming hasn't been confirmed to work
 
 # Services and Entities
 ## Services
