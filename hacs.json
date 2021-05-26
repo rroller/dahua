@@ -8,7 +8,7 @@
         "camera"
     ],
     "iot_class": "Local Polling",
-    "render_readme": true,
+    "render_": true,
     "documentation": "https://github.com/rroller/dahua/blob/main/README.md",
     "issue_tracker": "https://github.com/rroller/dahua/issues",
     "codeowners": ["@rroller"]

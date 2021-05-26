@@ -122,7 +122,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_PASSWORD): str,
                     vol.Required(CONF_ADDRESS): str,
                     vol.Required(CONF_PORT, default="80"): str,
-                    vol.Required(CONF_RTSP_PORT, default="544"): str,
+                    vol.Required(CONF_RTSP_PORT, default="554"): str,
                     vol.Required(CONF_STREAMS, default=STREAMS[0]): vol.In(STREAMS),
                     vol.Optional(CONF_EVENTS, default=DEFUALT_EVENTS): cv.multi_select(ALL_EVENTS),
                 }

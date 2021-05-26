@@ -9,6 +9,14 @@ and sirens.
 
 ## Installation
 
+If you want live streaming, make usre to add the following to your config.yaml:
+```
+ffmpeg:
+stream:
+```
+
+
+
 ### HACS install
 To install with [HACS](https://hacs.xyz/):
 
@@ -49,7 +57,7 @@ $ mv dahua-main/custom_components/dahua <home-assistant-install-directory>/confi
     2. **Password**: Your camera's password
     3. **Address**: Your camera's address, typically just the IP address
     4. **Port**: Your camera's HTTP port. Default is `80`
-    5. **RTSP Port**: Your camera's RTSP port, default is `544`. Used to live stream your camera in HA
+    5. **RTSP Port**: Your camera's RTSP port, default is `554`. Used to live stream your camera in HA
     6. **RTSP Streams**: The RTSP stream you want to use (Main, Sub, or Both). If both, two camera entities will be created
     7. **Events**: The integration will keep a connection open to the camera to capture motion events, alarm events, etc.
        You can select which events you want to monitor and report in HA. If no events are selected then the connection will no be created.
@@ -72,7 +80,6 @@ The following are confirmed to work:
 
 # Known Issues
 * IPC-D2B20-ZS doesn't work. Needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201), [7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237)
-* Taking screenshots work, but actual streaming hasn't been confirmed to work
 
 # Services and Entities
 ## Services
