@@ -274,6 +274,33 @@ class DahuaClient:
         _LOGGER.debug("Setting coaxial control state to %s: %s", io, url)
         return await self.api_wrapper("get", url, headers=HEADERS)
 
+    async def async_set_disarming_linkage(self, enabled: bool) -> dict:
+        """
+        async_set_disarming_linkage will set the camera's disarming linkage (Event -> Disarming in the UI)
+        """
+
+        value = "false"
+        if enabled:
+            value = "true"
+
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage[0].Enable={1}".format(
+            self._address_with_port, value
+        )
+        return await self.api_wrapper("get", url, headers=HEADERS)
+
+    async def async_get_disarming_linkage(self) -> dict:
+        """
+        async_get_disarming_linkage will return true if the disarming linkage (Event -> Disarming in the UI) is enabled
+
+        returns
+        table.DisableLinkage.Enable=false
+        """
+
+        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=DisableLinkage".format(
+            self._address_with_port
+        )
+        return await self.api_wrapper("get", url, headers=HEADERS)
+
     async def enable_motion_detection(self, enabled: bool) -> dict:
         """
         enable_motion_detection will either enable or disable motion detection on the camera depending on the supplied value

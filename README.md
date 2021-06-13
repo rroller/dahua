@@ -97,6 +97,7 @@ Switch |  Description |
 :------------ | :------------ |
 Motion | Enables or disables motion detection on the camera
 Siren | If the camera has a siren, will turn on the siren. Note, it seems sirens only stay on for 10 to 15 seconds before switching off
+Disarming Linkage | Newer firmwares have a "disarming" feature (not sure what it is, but some people use it). This allows one to turn it on/off. This is found in the UI by going to Event -> Disarming
 
 ## Lights
 Light |  Description |

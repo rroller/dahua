@@ -108,7 +108,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.events: list = events
         self.motion_timestamp_seconds = 0
         self.motion_listener: CALLBACK_TYPE
-        self.supports_coaxial_control = False
+        self._supports_coaxial_control = False
+        self._supports_disarming_linkage = False
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
@@ -148,21 +149,25 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 try:
                     await self.client.async_get_coaxial_control_io_status()
-                    self.supports_coaxial_control = True
+                    self._supports_coaxial_control = True
                 except ClientError as exception:
-                    pass
+                    self._supports_coaxial_control = False
+
+                try:
+                    await self.client.async_get_disarming_linkage()
+                    self._supports_disarming_linkage = True
+                except ClientError as exception:
+                    self._supports_disarming_linkage = False
 
                 self.initialized = True
 
-            if self.supports_coaxial_control:
-                results = await asyncio.gather(
-                    self.client.async_get_coaxial_control_io_status(),
-                    self.client.async_common_config(),
-                )
-            else:
-                results = await asyncio.gather(
-                    self.client.async_common_config(),
-                )
+            # Figure out which APIs we need to call and then fan out and gather the results
+            coros = [asyncio.ensure_future(self.client.async_common_config())]
+            if self._supports_disarming_linkage:
+                coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
+            if self._supports_coaxial_control:
+                coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
+            results = await asyncio.gather(*coros)
 
             for result in results:
                 data.update(result)
@@ -269,6 +274,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if motion detection is enabled for the camera
         """
         return self.data.get("table.MotionDetect[0].Enable", "").lower() == "true"
+
+    def is_disarming_linkage_enabled(self) -> bool:
+        """
+        Returns true if disarming linkage is enable
+        """
+        return self.data.get("table.DisableLinkage.Enable", "").lower() == "true"
 
     def is_siren_on(self) -> bool:
         """
