@@ -22,13 +22,11 @@ To install with [HACS](https://hacs.xyz/):
 
 1. Click on HACS in the Home Assistant menu
 2. Click on `Integrations`
-3. Click the top right menu (the three dots)
-4. Select `Custom repositories`
-5. Paste the repository URL (`https://github.com/rroller/dahua`) in the dialog box
-6. Select category `Integration`
-7. Click `Add`
-8. Click `Install`
-9. Add integration
+3. Click the `EXPLORE & ADD REPOSITORIES` button
+4. Search for `Dahua`
+5. Click the `INSTALL THIS REPOSITORY IN HACS` button
+6. Restart Home Assistant
+7. Configure the camera by going to `Configurations` -> `Integrations` -> `ADD INTERATIONS` button, search for `Dahua` and configure the camera.
 
 ### Manual install
 To manually install:
