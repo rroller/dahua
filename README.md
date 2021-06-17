@@ -75,6 +75,7 @@ The following are confirmed to work:
 * IPC-HFW1435S-W
 * IPC-HFW1435S-W-S2
 * IPC-A26
+* IPC-HDW4233C-A
 * Please let me know if you've tested with additional cameras
 
 # Known Issues
