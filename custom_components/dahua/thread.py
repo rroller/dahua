@@ -14,10 +14,9 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 class DahuaEventThread(threading.Thread):
     """Connects to device and subscribes to events. Mainly to capture motion detection events. """
 
-    def __init__(self, hass: HomeAssistant, name: str, client: DahuaClient, on_receive, events: list):
+    def __init__(self, hass: HomeAssistant, client: DahuaClient, on_receive, events: list):
         """Construct a thread listening for events."""
         threading.Thread.__init__(self)
-        self.name = name
         self.hass = hass
         self.stopped = threading.Event()
         self.on_receive = on_receive
@@ -28,6 +27,7 @@ class DahuaEventThread(threading.Thread):
     def run(self):
         """Fetch events"""
         self.started = True
+        _LOGGER.debug("Starting DahuaEventThread")
 
         while 1:
             # submit the coroutine to the event loop thread
@@ -39,12 +39,13 @@ class DahuaEventThread(threading.Thread):
                 # wait for the coroutine to finish
                 future.result()
             except asyncio.TimeoutError as ex:
-                _LOGGER.warning("TimeoutError connecting to %s", self.name)
+                _LOGGER.warning("TimeoutError connecting to camera")
                 future.cancel()
             except Exception as ex:  # pylint: disable=broad-except
                 _LOGGER.debug("%s", ex)
 
             if not self.started:
+                _LOGGER.debug("Exiting DahuaEventThread")
                 return
 
             end_time = int(time.time())
@@ -52,7 +53,7 @@ class DahuaEventThread(threading.Thread):
                 # We are failing fast when trying to connect to the camera. Let's retry slowly
                 time.sleep(60)
 
-            _LOGGER.debug("reconnecting to camera's %s event stream...", self.name)
+            _LOGGER.debug("reconnecting to camera's event stream...")
 
     def stop(self):
         """ Signals to the thread loop that we should stop """
