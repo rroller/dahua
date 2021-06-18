@@ -23,6 +23,8 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 # This service handled setting the infrared mode on the camera to Off, Auto, or Manual... along with the brightness
 SERVICE_SET_INFRARED_MODE = "set_infrared_mode"
+# This service handles setting the video profile mode to day or night
+SERVICE_SET_VIDEO_PROFILE_MODE = "set_video_profile_mode"
 
 # For now we'll only support 1 channel. I don't have any cams where I can test a second channel.
 # I'm not really sure what channel 2 means anyways, it doesn't seem to be the substream.
@@ -57,18 +59,33 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             ]
         )
 
+    platform = entity_platform.async_get_current_platform()
+
     # https://developers.home-assistant.io/docs/dev_101_services/
-    # This will expose a service to enable setting the cameras infrared light to Auto, Manual, and Off along with the brightness
+    # "async_set_video_profile_mode" is called upon calling the service. Defined below in the DahuaCamera class
+    platform.async_register_entity_service(
+        SERVICE_SET_VIDEO_PROFILE_MODE,
+        {
+            vol.Required("mode"): vol.In(
+                [
+                    "Day",
+                    "day",
+                    "Night",
+                    "night",
+                ])
+        },
+        "async_set_video_profile_mode"
+    )
+
+    # Exposes a service to enable setting the cameras infrared light to Auto, Manual, and Off along with the brightness
     if coordinator.supports_infrared_light():
-        # method_name is the method that will be called upon calling the service. It's defined below in the DahuaCamera class
-        method_name = "async_set_infrared_mode"
-        platform = entity_platform.async_get_current_platform()
+        # "async_set_infrared_mode" is the method called upon calling the service. Defined below in DahuaCamera class
         platform.async_register_entity_service(
             SERVICE_SET_INFRARED_MODE,
             {
                 vol.Required("mode"): vol.In(
                     [
-                        "On",  # Dahua uses Manual but that's akward so we'll use On and translate it before we call the Dahua API
+                        "On",  # Dahua uses Manual but that's awkward so use On and translate before we call the cam API
                         "on",
                         "Off",
                         "off",
@@ -77,7 +94,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
                     ]),
                 vol.Optional('brightness', default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
             },
-            method_name
+            "async_set_infrared_mode"
         )
 
 
@@ -145,4 +162,9 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_set_infrared_mode(self, mode: str, brightness: int):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
         await self.coordinator.client.async_set_lighting_v1_mode(mode, brightness)
+        await self.coordinator.async_refresh()
+
+    async def async_set_video_profile_mode(self, mode: str):
+        """ Handles the service call from SERVICE_SET_VIDEO_PROFILE_MODE to set profile mode to day/night """
+        await self.coordinator.client.async_set_video_profile_mode(mode)
         await self.coordinator.async_refresh()

@@ -88,6 +88,7 @@ Service | Parameters | Description
 `camera.enable_motion_detection` | | Enables motion detection
 `camera.disable_motion_detection` | | Disabled motion detection
 `dahua.set_infrared_mode` | `entity_id`: camera.cam13_main <br /> `mode`: Auto, On, Off <br /> `brightness`: 0 - 100 inclusive| Sets the infrared mode. Useful to set the mode back to Auto
+`dahua.set_video_profile_mode` | `entity_id`: camera.cam13_main <br /> `mode`: Day, Night| Sets the video profile mode to day or night
 
 ## Camera
 This will provide a normal HA camera entity (can take snapshots, etc)

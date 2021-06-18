@@ -237,6 +237,28 @@ class DahuaClient:
         )
         return await self.api_wrapper("get", url, headers=HEADERS)
 
+    async def async_set_video_profile_mode(self, mode: str):
+        """
+        async_set_video_profile_mode will set camera's profile mode to day or night
+        Mode should be one of: Day or Night
+        """
+
+        if mode.lower() == "night":
+            mode = "1"
+        else:
+            # Default to "day", which is 0
+            mode = "0"
+
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[0].Config[0]={1}".format(
+            self._address_with_port, mode
+        )
+        value = await self.api_wrapper("get", url, headers=HEADERS)
+        if "OK" in value or "ok" in value:
+            return
+        else:
+            _LOGGER.error("Something really wrong happened! - %s", value)
+            raise Exception("Could not set video profile mode")
+
     async def async_set_lighting_v2(self, enabled: bool, brightness: int) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.

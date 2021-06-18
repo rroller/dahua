@@ -3,10 +3,11 @@
 set_infrared_mode:
   name: Set Infrared Mode on Dahua Camera
   description: Set the infrared light settings on a Dahua camera
+  target:
+    entity:
+      integration: dahua
+      domain: camera
   fields:
-    entity_id:
-      description: Entity ID of the camera to update
-      example: "light.cam_14"
     mode:
       description: "The infrared mode: Auto, On, Off"
       example: "Auto"
@@ -27,3 +28,20 @@ set_infrared_mode:
           max: 100
           step: 1
           mode: slider
+
+set_video_profile_mode:
+  name: Set Dahua Video Profile Mode To Day or Night
+  description: Sets the video profile mode to day or night
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    mode:
+      description: "The profile: Day, Night"
+      example: "Day"
+      selector:
+        select:
+          options:
+            - "Day"
+            - "Night"
