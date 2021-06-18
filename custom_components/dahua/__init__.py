@@ -98,7 +98,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, dahua_client: DahuaClient, events: list) -> None:
         """Initialize."""
         self.client: DahuaClient = dahua_client
-        self.dahua_event: DahuaEventThread = None
+        self.dahua_event: DahuaEventThread
         self.platforms = []
         self.initialized = False
         self.model = ""
@@ -107,16 +107,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.channels = {"1": "1"}
         self.events: list = events
         self.motion_timestamp_seconds = 0
+        self.cross_line_detection_timestamp_seconds = 0
         self.motion_listener: CALLBACK_TYPE
+        self.cross_line_detection_listener: CALLBACK_TYPE
         self._supports_coaxial_control = False
         self._supports_disarming_linkage = False
+        self.dahua_event = DahuaEventThread(hass, dahua_client, self.on_receive, events)
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
     async def async_start_event_listener(self):
         """ setup """
         if self.events is not None:
-            self.dahua_event = DahuaEventThread(self.hass, self.machine_name, self.client, self.on_receive, self.events)
             self.dahua_event.start()
 
     async def async_stop(self, event: Any):
@@ -224,6 +226,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             # When there's a motion start event we'll set a flag to the current timestmap in seconds.
             # We'll reset it when the motion stops. We'll use this elsewhere to know how long to trigger a motion sensor
+            # TODO: Generalize events so we don't create a block for each one
             if event["Code"] == "VideoMotion":
                 action = event["action"]
                 if action == "Start":
@@ -234,12 +237,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self.motion_timestamp_seconds = 0
                     if self.motion_listener:
                         self.motion_listener()
+            if event["Code"] == "CrossLineDetection":
+                action = event["action"]
+                if action == "Start":
+                    self.cross_line_detection_timestamp_seconds = int(time.time())
+                    if self.cross_line_detection_listener:
+                        self.cross_line_detection_listener()
+                elif action == "Stop":
+                    self.cross_line_detection_timestamp_seconds = 0
+                    if self.cross_line_detection_listener:
+                        self.cross_line_detection_listener()
 
             self.hass.bus.fire("dahua_event_received", event)
 
     def add_motion_listener(self, listener: CALLBACK_TYPE):
         """ Adds the motion listener. This callback will be called on motion events """
         self.motion_listener = listener
+
+    def add_cross_line_detection_listener(self, listener: CALLBACK_TYPE):
+        """ Adds the CrossLineDetection listener. This callback will be called on CrossLineDetection events """
+        self.cross_line_detection_listener = listener
 
     def supports_siren(self) -> bool:
         """
