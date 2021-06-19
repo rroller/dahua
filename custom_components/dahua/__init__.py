@@ -115,11 +115,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.dahua_event = DahuaEventThread(hass, dahua_client, self.on_receive, events)
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
-        self._dahua_event_listeners: dict[str, CALLBACK_TYPE] = {}
+        self._dahua_event_listeners: dict[str, CALLBACK_TYPE] = dict()
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to the time the event fire or was cleared.
         # If cleared the time will be 0. The time unit is seconds epoch
-        self._dahua_event_timestamp: dict[str, int] = {}
+        self._dahua_event_timestamp: dict[str, int] = dict()
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
