@@ -1,15 +1,14 @@
 
 # Home Assistant Dahua Integration
-The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras in Home Assistant.
+The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras and doorbells in Home Assistant.
 
-Supports motion events, alarm events (and others), enabling/disabling motion detection, switches for infrared, illuminator (white light), security lights (red/blue flashers), 
-and sirens.
+Supports motion events, alarm events (and others), enabling/disabling motion detection, switches for infrared, illuminator (white light), security lights (red/blue flashers), sirens, doorbell button press events, and more.
 
 **NOTE**: Using the switch to turn on/off the infrared light will disable the "auto" mode. Use the service to enable auto mode again (or the camera UI).
 
 ## Installation
 
-If you want live streaming, make usre to add the following to your config.yaml:
+If you want live-streaming, make sure to add the following to your config.yaml:
 ```
 ffmpeg:
 stream:
@@ -65,8 +64,11 @@ $ mv dahua-main/custom_components/dahua <home-assistant-install-directory>/confi
 
 
 # Known supported cameras
-This integration should word with most Dahua cameras. It has been tested with very old and very new Dahua cameras.
-The following are confirmed to work:
+This integration should word with most Dahua cameras and doorbells. It has been tested with very old and very new Dahua cameras.
+
+Doorbells will have a binary sensor that captures the doorbell pressed event.
+
+These devices are confirmed as working:
 
 * IPC-HDW5831R-ZE
 * IPC-T5442T-ZE
@@ -76,6 +78,7 @@ The following are confirmed to work:
 * IPC-HFW1435S-W-S2
 * IPC-A26
 * IPC-HDW4233C-A
+* DHI-VTO2202F-P 
 * Please let me know if you've tested with additional cameras
 
 # Known Issues
@@ -111,6 +114,8 @@ Security | If the camera has one, turns on/off the security light (red/blue flas
 Sensor |  Description |
 :------------ | :------------ |
 Motion | A sensor that turns on when the camera detects motion
+Button Pressed | A sensor that turns on when a doorbell button is pressed
+Others / A binary sesnor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
 
 # Local development
 If you wish to work on this component, the easiest way is to follow [HACS Dev Container README](https://github.com/custom-components/integration_blueprint/blob/master/.devcontainer/README.md). In short:
