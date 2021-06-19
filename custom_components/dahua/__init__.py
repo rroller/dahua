@@ -17,7 +17,7 @@ from homeassistant.helpers.aiohttp_client import async_aiohttp_proxy_web, async_
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
-from custom_components.dahua.thread import DahuaEventThread
+from custom_components.dahua.thread import DahuaEventThread, DahuaVtoEventThread
 from . import dahua_utils
 from .client import DahuaClient
 
@@ -56,16 +56,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
     address = entry.data.get(CONF_ADDRESS)
-    port = entry.data.get(CONF_PORT)
-    rtsp_port = entry.data.get(CONF_RTSP_PORT)
+    port = int(entry.data.get(CONF_PORT))
+    rtsp_port = int(entry.data.get(CONF_RTSP_PORT))
     events = entry.data.get(CONF_EVENTS)
 
-    session = async_get_clientsession(hass)
-    dahua_client = DahuaClient(
-        username, password, address, port, rtsp_port, session
-    )
-
-    coordinator = DahuaDataUpdateCoordinator(hass, dahua_client, events=events)
+    coordinator = DahuaDataUpdateCoordinator(hass, events=events, address=address, port=port, rtsp_port=rtsp_port,
+                                             username=username, password=password)
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.last_update_success:
@@ -83,8 +79,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     entry.add_update_listener(async_reload_entry)
 
-    await coordinator.async_start_event_listener()
-
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
     )
@@ -95,9 +89,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
-    def __init__(self, hass: HomeAssistant, dahua_client: DahuaClient, events: list) -> None:
+    def __init__(self, hass: HomeAssistant, events: list, address: str, port: int, rtsp_port: int, username: str,
+                 password: str) -> None:
         """Initialize."""
-        self.client: DahuaClient = dahua_client
+        self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port,
+                                               async_get_clientsession(hass))
         self.dahua_event: DahuaEventThread
         self.platforms = []
         self.initialized = False
@@ -112,7 +108,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_disarming_linkage = False
 
         # This thread is what connects to the cameras event stream and fires on_receive when there's an event
-        self.dahua_event = DahuaEventThread(hass, dahua_client, self.on_receive, events)
+        self.dahua_event = DahuaEventThread(hass, self.client, self.on_receive, events)
+        # This thread will connect to VTO devices (Dahua doorbells)
+        self._dahua_vto_event_thread = DahuaVtoEventThread(hass, self.client, self.on_receive_vto_event, host=address,
+                                                           port=5000, username=username, password=password)
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
         self._dahua_event_listeners: dict[str, CALLBACK_TYPE] = dict()
@@ -124,14 +123,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
     async def async_start_event_listener(self):
-        """ setup """
+        """ Starts the event listeners for IP cameras (this does not work for doorbells (VTO)) """
         if self.events is not None:
             self.dahua_event.start()
 
+    async def async_start_vto_event_listener(self):
+        """ Starts the event listeners for doorbells (VTO). This will not work for IP cameras"""
+        if self._dahua_vto_event_thread is not None:
+            self._dahua_vto_event_thread.start()
+
     async def async_stop(self, event: Any):
         """ Stop anything we need to stop """
-        if self.dahua_event is not None:
-            self.dahua_event.stop()
+        self.dahua_event.stop()
+        self._dahua_vto_event_thread.stop()
 
     async def _async_update_data(self):
         """Reload the camera information"""
@@ -139,14 +143,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             data = {}
 
             if not self.initialized:
-                results = await asyncio.gather(
+                responses = await asyncio.gather(
                     self.client.async_get_system_info(),
                     self.client.async_get_machine_name(),
                     self.client.get_software_version(),
                 )
 
-                for result in results:
-                    data.update(result)
+                for response in responses:
+                    data.update(response)
 
                 device_type = data.get("deviceType")
                 if device_type == "IP Camera":
@@ -168,6 +172,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError as exception:
                     self._supports_disarming_linkage = False
 
+                is_doorbell = self.is_doorbell()
+
+                if not is_doorbell:
+                    # Start the event listeners for IP cameras
+                    await self.async_start_event_listener()
+
+                if is_doorbell:
+                    # Start the event listeners for door bells (VTO)
+                    await self.async_start_vto_event_listener()
+
                 self.initialized = True
 
             # Figure out which APIs we need to call and then fan out and gather the results
@@ -188,6 +202,36 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return data
         except Exception as exception:
             raise UpdateFailed() from exception
+
+    def on_receive_vto_event(self, event: dict):
+        self.hass.bus.fire("dahua_event_received", event)
+
+        # Example event:
+        # {'id': 8, 'method': 'client.notifyEventStream', 'params': {'SID': 513, 'eventList': [
+        #   {'Action': 'Start', 'Code': 'VideoMotion',
+        #   'Data': {'LocaleTime': '2021-06-19 15:36:58', 'UTC': 1624088218.0}, 'Index': 0}]}, 'session': 1400947312}
+
+        # This is the event code, example: VideoMotion, CrossLineDetection, etc
+        event_name = event.get("Code", {})
+
+        listener = self._dahua_event_listeners.get(event_name)
+        if listener is not None:
+            action = event.get("Action", "")
+            if action == "Start":
+                self._dahua_event_timestamp[event_name] = int(time.time())
+                listener()
+            elif action == "Stop":
+                self._dahua_event_timestamp[event_name] = 0
+                listener()
+            elif action == "Pulse":
+                state = event.get("Data", {}).get("State", 0)
+                if state == 1:
+                    # button pressed
+                    self._dahua_event_timestamp[event_name] = int(time.time())
+                    listener()
+                else:
+                    self._dahua_event_timestamp[event_name] = 0
+                    listener()
 
     def on_receive(self, data_bytes: bytes):
         """
@@ -238,7 +282,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # This is the event code, example: VideoMotion, CrossLineDetection, etc
             event_name = event["Code"]
 
-            listener = self._dahua_event_listeners[event_name]
+            listener = self._dahua_event_listeners.get(event_name)
             if listener is not None:
                 action = event["action"]
                 if action == "Start":
@@ -275,6 +319,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
         """
         return "-AS-PV" in self.model
+
+    def is_doorbell(self) -> bool:
+        """
+        Returns true if this is a doorbell (VTO)
+        """
+        return self.model.upper().startswith("VTO") or self.model.upper().startswith("DHI")
 
     def supports_infrared_light(self) -> bool:
         """
