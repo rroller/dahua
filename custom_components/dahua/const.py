@@ -17,6 +17,8 @@ DISARMING_ICON = "mdi:alarm-check"
 
 # Device classes - https://www.home-assistant.io/integrations/binary_sensor/#device-class
 MOTION_SENSOR_DEVICE_CLASS = "motion"
+SAFETY_DEVICE_CLASS = "safety"
+CONNECTIVITY_DEVICE_CLASS = "connectivity"
 
 # Platforms
 BINARY_SENSOR = "binary_sensor"

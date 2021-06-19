@@ -24,7 +24,7 @@ from .const import (
 
 STREAMS = [STREAM_MAIN, STREAM_SUB, STREAM_BOTH]
 
-DEFUALT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss", "VideoBlind"]
+DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss", "VideoBlind"]
 
 ALL_EVENTS = ["VideoMotion",
               "VideoLoss",
@@ -124,7 +124,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_PORT, default="80"): str,
                     vol.Required(CONF_RTSP_PORT, default="554"): str,
                     vol.Required(CONF_STREAMS, default=STREAMS[0]): vol.In(STREAMS),
-                    vol.Optional(CONF_EVENTS, default=DEFUALT_EVENTS): cv.multi_select(ALL_EVENTS),
+                    vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(ALL_EVENTS),
                 }
             ),
             errors=self._errors,

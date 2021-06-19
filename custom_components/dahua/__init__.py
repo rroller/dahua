@@ -106,13 +106,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.connected = None
         self.channels = {"1": "1"}
         self.events: list = events
-        self.motion_timestamp_seconds = 0
-        self.cross_line_detection_timestamp_seconds = 0
         self.motion_listener: CALLBACK_TYPE
         self.cross_line_detection_listener: CALLBACK_TYPE
         self._supports_coaxial_control = False
         self._supports_disarming_linkage = False
+
+        # This thread is what connects to the cameras event stream and fires on_receive when there's an event
         self.dahua_event = DahuaEventThread(hass, dahua_client, self.on_receive, events)
+
+        # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
+        self._dahua_event_listeners: dict[str, CALLBACK_TYPE] = {}
+
+        # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to the time the event fire or was cleared.
+        # If cleared the time will be 0. The time unit is seconds epoch
+        self._dahua_event_timestamp: dict[str, int] = {}
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
@@ -224,39 +231,36 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception:  # pylint: disable=broad-except
                     pass
 
-            # When there's a motion start event we'll set a flag to the current timestmap in seconds.
-            # We'll reset it when the motion stops. We'll use this elsewhere to know how long to trigger a motion sensor
-            # TODO: Generalize events so we don't create a block for each one
-            if event["Code"] == "VideoMotion":
+            # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
+            # We'll reset it to 0 when the event stops.
+            # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
+
+            # This is the event code, example: VideoMotion, CrossLineDetection, etc
+            event_name = event["Code"]
+
+            listener = self._dahua_event_listeners[event_name]
+            if listener is not None:
                 action = event["action"]
                 if action == "Start":
-                    self.motion_timestamp_seconds = int(time.time())
-                    if self.motion_listener:
-                        self.motion_listener()
+                    self._dahua_event_timestamp[event_name] = int(time.time())
+                    listener()
                 elif action == "Stop":
-                    self.motion_timestamp_seconds = 0
-                    if self.motion_listener:
-                        self.motion_listener()
-            if event["Code"] == "CrossLineDetection":
-                action = event["action"]
-                if action == "Start":
-                    self.cross_line_detection_timestamp_seconds = int(time.time())
-                    if self.cross_line_detection_listener:
-                        self.cross_line_detection_listener()
-                elif action == "Stop":
-                    self.cross_line_detection_timestamp_seconds = 0
-                    if self.cross_line_detection_listener:
-                        self.cross_line_detection_listener()
+                    self._dahua_event_timestamp[event_name] = 0
+                    listener()
 
             self.hass.bus.fire("dahua_event_received", event)
 
-    def add_motion_listener(self, listener: CALLBACK_TYPE):
-        """ Adds the motion listener. This callback will be called on motion events """
-        self.motion_listener = listener
+    def get_event_timestamp(self, event_name: str) -> int:
+        """
+        Returns the event timestamp. If the event is firing then it will be the time of the firing. Otherwise returns 0.
+        event_name: the event name, example: CrossLineDetection
+        """
+        return self._dahua_event_timestamp.get(event_name, 0)
 
-    def add_cross_line_detection_listener(self, listener: CALLBACK_TYPE):
-        """ Adds the CrossLineDetection listener. This callback will be called on CrossLineDetection events """
-        self.cross_line_detection_listener = listener
+    def add_dahua_event_listener(self, event_name: str, listener: CALLBACK_TYPE):
+        """ Adds an event listener for the given event (CrossLineDetection, etc).
+        This callback will be called when the event fire """
+        self._dahua_event_listeners[event_name] = listener
 
     def supports_siren(self) -> bool:
         """
@@ -319,6 +323,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_serial_number(self) -> str:
         """ returns the device serial number. This is unique per device """
         return self.data.get("serialNumber")
+
+    def get_event_list(self) -> list:
+        """
+        Returns the list of events selected when configuring the camera in Home Assistant. For example:
+        [VideoMotion, VideoLoss, CrossLineDetection]
+        """
+        return self.events
 
     def is_infrared_light_on(self) -> bool:
         """ returns true if the infrared light is on """
