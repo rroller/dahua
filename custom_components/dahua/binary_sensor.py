@@ -13,13 +13,13 @@ from .entity import DahuaBaseEntity
 
 # Override event names. Otherwise we'll generate the name from the event name for example SmartMotionHuman will
 # become "Smart Motion Human"
-NAME_OVERRIDES: dict[str, str] = {
+NAME_OVERRIDES = {
     "VideoMotion": "Motion Alarm",
     "CrossLineDetection": "Cross Line Alarm",
 }
 
 # Override the device class for events
-DEVICE_CLASS_OVERRIDES: dict[str, str] = {
+DEVICE_CLASS_OVERRIDES = {
     "VideoMotion": MOTION_SENSOR_DEVICE_CLASS,
     "CrossLineDetection": MOTION_SENSOR_DEVICE_CLASS,
     "AlarmLocal": SAFETY_DEVICE_CLASS,
