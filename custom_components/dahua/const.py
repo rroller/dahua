@@ -19,6 +19,7 @@ DISARMING_ICON = "mdi:alarm-check"
 MOTION_SENSOR_DEVICE_CLASS = "motion"
 SAFETY_DEVICE_CLASS = "safety"
 CONNECTIVITY_DEVICE_CLASS = "connectivity"
+SOUND_DEVICE_CLASS = "sound"
 
 # Platforms
 BINARY_SENSOR = "binary_sensor"

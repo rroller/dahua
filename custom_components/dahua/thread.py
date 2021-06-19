@@ -1,12 +1,14 @@
 """ Dahua Thread """
 
 import asyncio
+import sys
 import threading
 import logging
 import time
 
 from homeassistant.core import HomeAssistant
 from custom_components.dahua.client import DahuaClient
+from custom_components.dahua.vto import DahuaVTOClient
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -29,7 +31,7 @@ class DahuaEventThread(threading.Thread):
         self.started = True
         _LOGGER.debug("Starting DahuaEventThread")
 
-        while 1:
+        while True:
             # submit the coroutine to the event loop thread
             coro = self.client.stream_events(self.on_receive, self.events)
             future = asyncio.run_coroutine_threadsafe(coro, self.hass.loop)
@@ -54,6 +56,65 @@ class DahuaEventThread(threading.Thread):
                 time.sleep(60)
 
             _LOGGER.debug("reconnecting to camera's event stream...")
+
+    def stop(self):
+        """ Signals to the thread loop that we should stop """
+        self.started = False
+
+
+class DahuaVtoEventThread(threading.Thread):
+    """Connects to device and subscribes to events. Mainly to capture motion detection events. """
+
+    def __init__(self, hass: HomeAssistant, client: DahuaClient, on_receive_vto_event, host: str,
+                 port: int, username: str, password: str):
+        """Construct a thread listening for events."""
+        threading.Thread.__init__(self)
+        self.hass = hass
+        self.stopped = threading.Event()
+        self.on_receive_vto_event = on_receive_vto_event
+        self.client = client
+        self.started = False
+        self._host = host
+        self._port = port
+        self._username = username
+        self._password = password
+        self._is_ssl = False
+
+    def run(self):
+        """Fetch VTO events"""
+        self.started = True
+        _LOGGER.debug("Starting DahuaVtoEventThread")
+
+        while True:
+            try:
+                if not self.started:
+                    _LOGGER.debug("Exiting DahuaVtoEventThread")
+                    return
+
+                _LOGGER.info("Connecting to VTO event stream")
+
+                # TODO: How do I integrate this in with the HA loop? Does it even matter? I think so because
+                # how well do we know when we are shutting down HA?
+                loop = asyncio.new_event_loop()
+
+                client = loop.create_connection(
+                    lambda: DahuaVTOClient(self._host, self._username, self._password, self._is_ssl,
+                                           self.on_receive_vto_event), host=self._host, port=self._port)
+                loop.run_until_complete(client)
+                loop.run_forever()
+                loop.close()
+
+                _LOGGER.warning("Disconnected from VTO, will try to connect in 5 seconds")
+
+                time.sleep(5)
+
+            except Exception as ex:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                line = exc_tb.tb_lineno
+
+                _LOGGER.error(f"Connection to VTO failed will try to connect in 30 seconds, error: {ex}, Line: {line}")
+
+                time.sleep(30)
 
     def stop(self):
         """ Signals to the thread loop that we should stop """

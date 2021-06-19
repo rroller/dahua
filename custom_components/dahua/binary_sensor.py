@@ -7,7 +7,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator
 
 from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
-    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS,
+    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS,
 )
 from .entity import DahuaBaseEntity
 
@@ -16,6 +16,7 @@ from .entity import DahuaBaseEntity
 NAME_OVERRIDES = {
     "VideoMotion": "Motion Alarm",
     "CrossLineDetection": "Cross Line Alarm",
+    "BackKeyLight": "Button Pressed",  # For VTO devices (doorbells)
 }
 
 # Override the device class for events
@@ -29,16 +30,23 @@ DEVICE_CLASS_OVERRIDES = {
     "StorageFailure": CONNECTIVITY_DEVICE_CLASS,
     "StorageLowSpace": SAFETY_DEVICE_CLASS,
     "FireWarning": SAFETY_DEVICE_CLASS,
+    "BackKeyLight": SOUND_DEVICE_CLASS,
 }
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     sensors: list[DahuaEventSensor] = []
     for event_name in coordinator.get_event_list():
         sensors.append(DahuaEventSensor(coordinator, entry, event_name))
+
+    # For doorbells we'll just add these since most people will want them
+    if coordinator.is_doorbell():
+        sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight"))
+        sensors.append(DahuaEventSensor(coordinator, entry, "Invite"))
+        sensors.append(DahuaEventSensor(coordinator, entry, "CallNoAnswered"))
 
     if sensors:
         async_add_devices(sensors)
