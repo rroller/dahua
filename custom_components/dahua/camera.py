@@ -10,7 +10,6 @@ from homeassistant.components.camera import SUPPORT_STREAM, Camera
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.entity import DahuaBaseEntity
 
-
 from .const import (
     CONF_STREAMS,
     DOMAIN,
@@ -25,6 +24,13 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 SERVICE_SET_INFRARED_MODE = "set_infrared_mode"
 # This service handles setting the video profile mode to day or night
 SERVICE_SET_VIDEO_PROFILE_MODE = "set_video_profile_mode"
+SERVICE_SET_CHANNEL_TITLE = "set_channel_title"
+SERVICE_SET_TEXT_OVERLAY = "set_text_overlay"
+SERVICE_SET_CUSTOM_OVERLAY = "set_custom_overlay"
+SERVICE_ENABLE_CHANNEL_TITLE = "enable_channel_title"
+SERVICE_ENABLE_TIME_OVERLay = "enable_time_overlay"
+SERVICE_ENABLE_TEXT_OVERLay = "enable_text_overlay"
+SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
 
 # For now we'll only support 1 channel. I don't have any cams where I can test a second channel.
 # I'm not really sure what channel 2 means anyways, it doesn't seem to be the substream.
@@ -77,6 +83,42 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         "async_set_video_profile_mode"
     )
 
+    platform.async_register_entity_service(
+        SERVICE_ENABLE_CHANNEL_TITLE,
+        {
+            vol.Required("channel", default=0): int,
+            vol.Required("enabled", default=True): bool,
+        },
+        "async_set_enable_channel_title"
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_ENABLE_TIME_OVERLay,
+        {
+            vol.Required("channel", default=0): int,
+            vol.Required("enabled", default=True): bool,
+        },
+        "async_set_enable_time_overlay"
+    )
+    platform.async_register_entity_service(
+        SERVICE_ENABLE_TEXT_OVERLay,
+        {
+            vol.Required("channel", default=0): int,
+            vol.Required("group", default=1): int,
+            vol.Required("enabled", default=False): bool,
+        },
+        "async_set_enable_text_overlay"
+    )
+    platform.async_register_entity_service(
+        SERVICE_ENABLE_CUSTOM_OVERLAY,
+        {
+            vol.Required("channel", default=0): int,
+            vol.Required("group", default=0): int,
+            vol.Required("enabled", default=False): bool,
+        },
+        "async_set_enable_custom_overlay"
+    )
+
     # Exposes a service to enable setting the cameras infrared light to Auto, Manual, and Off along with the brightness
     if coordinator.supports_infrared_light():
         # "async_set_infrared_mode" is the method called upon calling the service. Defined below in DahuaCamera class
@@ -114,7 +156,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         self._motion_status = False
         self._stream_source = coordinator.client.get_rtsp_stream_url(CHANNEL, stream_index)
 
-    @ property
+    @property
     def unique_id(self):
         """Return the entity unique ID."""
         return self._unique_id
@@ -124,7 +166,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         # Send the request to snap a picture and return raw jpg data
         return await self.coordinator.client.async_get_snapshot(CHANNEL)
 
-    @ property
+    @property
     def supported_features(self):
         """Return supported features."""
         return SUPPORT_STREAM
@@ -133,7 +175,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Return the RTSP stream source."""
         return self._stream_source
 
-    @ property
+    @property
     def motion_detection_enabled(self):
         """Camera Motion Detection Status."""
         return self.coordinator.is_motion_detection_enabled()
@@ -154,7 +196,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         except TypeError:
             _LOGGER.debug("Failed disabling motion detection on '%s'. Is it supported by the device?", self._name)
 
-    @ property
+    @property
     def name(self):
         """Return the name of this camera."""
         return self._name
@@ -167,4 +209,19 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_set_video_profile_mode(self, mode: str):
         """ Handles the service call from SERVICE_SET_VIDEO_PROFILE_MODE to set profile mode to day/night """
         await self.coordinator.client.async_set_video_profile_mode(mode)
-        await self.coordinator.async_refresh()
+
+    async def async_set_enable_channel_title(self, channel: int, enabled: bool):
+        """ Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE to set profile mode to day/night """
+        await self.coordinator.client.async_enable_channel_title(channel, enabled)
+
+    async def async_set_enable_time_overlay(self, channel: int, enabled: bool):
+        """ Handles the service call from SERVICE_ENABLE_TIME_OVERLay to set profile mode to day/night """
+        await self.coordinator.client.async_enable_time_overlay(channel, enabled)
+
+    async def async_set_enable_text_overlay(self, channel: int, group: int, enabled: bool):
+        """ Handles the service call from SERVICE_ENABLE_TEXT_OVERLay to set profile mode to day/night """
+        await self.coordinator.client.async_enable_text_overlay(channel, group, enabled)
+
+    async def async_set_enable_custom_overlay(self, channel: int, group: int, enabled: bool):
+        """ Handles the service call from SERVICE_ENABLE_CUSTOM_OVERLAY to set profile mode to day/night """
+        await self.coordinator.client.async_enable_custom_overlay(channel, group, enabled)

@@ -11,7 +11,6 @@ from .digest import DigestAuth
 
 TIMEOUT_SECONDS = 5
 
-
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 HEADERS = {"Content-type": "application/json; charset=UTF-8"}
@@ -28,13 +27,13 @@ class DahuaClient:
     """
 
     def __init__(
-        self,
-        username: str,
-        password: str,
-        address: str,
-        port: int,
-        rtsp_port: int,
-        session: aiohttp.ClientSession
+            self,
+            username: str,
+            password: str,
+            address: str,
+            port: int,
+            rtsp_port: int,
+            session: aiohttp.ClientSession
     ) -> None:
         self._username = username
         self._password = password
@@ -256,8 +255,64 @@ class DahuaClient:
         if "OK" in value or "ok" in value:
             return
         else:
-            _LOGGER.error("Something really wrong happened! - %s", value)
+            _LOGGER.error("Could not set video profile mode! - %s", value)
             raise Exception("Could not set video profile mode")
+
+    async def async_enable_channel_title(self, channel: int, enabled: bool, ):
+        """
+        async_set_enable_channel_title will enable or disables the camera's channel title overlay
+        """
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].ChannelTitle.EncodeBlend={2}".format(
+            self._address_with_port, channel, str(enabled).lower()
+        )
+        value = await self.api_wrapper("get", url, headers=HEADERS)
+        if "OK" in value or "ok" in value:
+            return
+        else:
+            _LOGGER.error("Could not enable or disable overlay %s", value)
+            raise Exception("Could enable/disable channel title")
+
+    async def async_enable_time_overlay(self, channel: int, enabled: bool):
+        """
+        async_set_enable_time_overlay will enable or disables the camera's time overlay
+        """
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].TimeTitle.EncodeBlend={2}".format(
+            self._address_with_port, channel, str(enabled).lower()
+        )
+        value = await self.api_wrapper("get", url, headers=HEADERS)
+        if "OK" in value or "ok" in value:
+            return
+        else:
+            _LOGGER.error("Could not enable or disable overlay %s", value)
+            raise Exception("Could not enable/disable time overylay")
+
+    async def async_enable_text_overlay(self, channel: int, group: int, enabled: bool):
+        """
+        async_set_enable_text_overlay will enable or disables the camera's text overlay
+        """
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].CustomTitle[{2}].EncodeBlend={3}".format(
+            self._address_with_port, channel, group, str(enabled).lower()
+        )
+        value = await self.api_wrapper("get", url, headers=HEADERS)
+        if "OK" in value or "ok" in value:
+            return
+        else:
+            _LOGGER.error("Could not enable or disable overlay %s", value)
+            raise Exception("Could not enable/disable text overlay")
+
+    async def async_enable_custom_overlay(self, channel: int, group: int, enabled: bool):
+        """
+        async_set_enable_custom_overlay will enable or disables the camera's custom overlay
+        """
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].UserDefinedTitle[{2}].EncodeBlend={3}".format(
+            self._address_with_port, channel, group, str(enabled).lower()
+        )
+        value = await self.api_wrapper("get", url, headers=HEADERS)
+        if "OK" in value or "ok" in value:
+            return
+        else:
+            _LOGGER.error("Could not enable or disable overlay %s", value)
+            raise Exception("Could not enable/disable customer overlay")
 
     async def async_set_lighting_v2(self, enabled: bool, brightness: int) -> dict:
         """
@@ -396,7 +451,8 @@ class DahuaClient:
         """
         # Use codes=[All] for all codes
         codes = ",".join(events)
-        url = "http://{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=2".format(self._address_with_port, codes)
+        url = "http://{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=2".format(
+            self._address_with_port, codes)
         if self._username is not None and self._password is not None:
             response = None
             try:

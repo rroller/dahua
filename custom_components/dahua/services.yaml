@@ -29,6 +29,7 @@ set_infrared_mode:
           step: 1
           mode: slider
 
+
 set_video_profile_mode:
   name: Set Dahua Video Profile Mode To Day or Night
   description: Sets the video profile mode to day or night
@@ -45,3 +46,150 @@ set_video_profile_mode:
           options:
             - "Day"
             - "Night"
+
+
+enable_channel_title:
+  name: Enable Channel Title Overlay
+  description: Enables or disable the channel title video overaly
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    channel:
+      name: Channel
+      description: "The camera channel index. Typically 0"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    enabled:
+      name: Enabled
+      description: "If the overlay is enabled or not"
+      example: true
+      required: true
+      default: true
+      selector:
+        boolean:
+
+
+enable_time_overlay:
+  name: Enable Channel Time Overlay
+  description: Enables or disable the channel time video overaly
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    channel:
+      name: Channel
+      description: "The camera channel index. Typically 0"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    enabled:
+      name: Enabled
+      description: "If the overlay is enabled or not"
+      example: true
+      required: true
+      default: true
+      selector:
+        boolean:
+
+
+enable_text_overlay:
+  name: Enable Channel Text Overlay
+  description: Enables or disable the channel text video overaly
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    channel:
+      name: Channel
+      description: "The camera channel index. Typically 0"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    group:
+      name: Group
+      description: "Multiple text overlay groups can exist. The default 1 should be used in most cases"
+      example: 1
+      required: true
+      default: 1
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    enabled:
+      name: Enabled
+      description: "If the overlay is enabled or not"
+      example: true
+      required: true
+      default: false
+      selector:
+        boolean:
+
+
+enable_custom_overlay:
+  name: Enable Channel Custom Text Overlay
+  description: Enables or disable the channel custom text video overaly
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    channel:
+      name: Channel
+      description: "The camera channel index. Typically 0"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    group:
+      name: Group
+      description: "Multiple custom text groups can exist. The default 0 should be used in most cases"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    enabled:
+      name: Enabled
+      description: "If the overlay is enabled or not"
+      example: true
+      required: true
+      default: false
+      selector:
+        boolean:
+
+set_custom_overlay:
+#http://192.168.1.213/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[0].UserDefinedTitle[0].Text=cc1|cc2
+
+set_channel_title:
+#http://192.168.1.213/cgi-bin/configManager.cgi?action=setConfig&ChannelTitle[0].Name=title1|title2|title3
+
+set_text_overlay:
+#http://192.168.1.213/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[0].CustomTitle[1].Text=o1|o2
