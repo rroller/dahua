@@ -70,15 +70,17 @@ Doorbells will have a binary sensor that captures the doorbell pressed event.
 
 These devices are confirmed as working:
 
-* IPC-HDW5831R-ZE
 * IPC-T5442T-ZE
+* IPC-HDW5831R-ZE
 * IPC-HDW2831T-ZS-S2
 * IPC-HDW3849HP-AS-PV
+* IPC-HFW4433F-ZSA
 * IPC-HFW1435S-W
 * IPC-HFW1435S-W-S2
-* IPC-A26
 * IPC-HDW4233C-A
-* DHI-VTO2202F-P 
+* IPC-A26
+* DHI-VTO2202F-P
+* DHI-VTO2211G-P
 * Please let me know if you've tested with additional cameras
 
 # Known Issues
