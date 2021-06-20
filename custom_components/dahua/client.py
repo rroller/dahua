@@ -252,67 +252,74 @@ class DahuaClient:
             self._address_with_port, mode
         )
         value = await self.api_wrapper("get", url, headers=HEADERS)
-        if "OK" in value or "ok" in value:
-            return
-        else:
-            _LOGGER.error("Could not set video profile mode! - %s", value)
+        if "OK" not in value and "ok" not in value:
             raise Exception("Could not set video profile mode")
 
     async def async_enable_channel_title(self, channel: int, enabled: bool, ):
-        """
-        async_set_enable_channel_title will enable or disables the camera's channel title overlay
-        """
+        """ async_set_enable_channel_title will enable or disables the camera's channel title overlay """
         url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].ChannelTitle.EncodeBlend={2}".format(
             self._address_with_port, channel, str(enabled).lower()
         )
         value = await self.api_wrapper("get", url, headers=HEADERS)
-        if "OK" in value or "ok" in value:
-            return
-        else:
-            _LOGGER.error("Could not enable or disable overlay %s", value)
+        if "OK" not in value and "ok" not in value:
             raise Exception("Could enable/disable channel title")
 
     async def async_enable_time_overlay(self, channel: int, enabled: bool):
-        """
-        async_set_enable_time_overlay will enable or disables the camera's time overlay
-        """
+        """ async_set_enable_time_overlay will enable or disables the camera's time overlay """
         url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].TimeTitle.EncodeBlend={2}".format(
             self._address_with_port, channel, str(enabled).lower()
         )
         value = await self.api_wrapper("get", url, headers=HEADERS)
-        if "OK" in value or "ok" in value:
-            return
-        else:
-            _LOGGER.error("Could not enable or disable overlay %s", value)
-            raise Exception("Could not enable/disable time overylay")
+        if "OK" not in value and "ok" not in value:
+            raise Exception("Could not enable/disable time overlay")
 
     async def async_enable_text_overlay(self, channel: int, group: int, enabled: bool):
-        """
-        async_set_enable_text_overlay will enable or disables the camera's text overlay
-        """
+        """ async_set_enable_text_overlay will enable or disables the camera's text overlay """
         url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].CustomTitle[{2}].EncodeBlend={3}".format(
             self._address_with_port, channel, group, str(enabled).lower()
         )
         value = await self.api_wrapper("get", url, headers=HEADERS)
-        if "OK" in value or "ok" in value:
-            return
-        else:
-            _LOGGER.error("Could not enable or disable overlay %s", value)
+        if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable text overlay")
 
     async def async_enable_custom_overlay(self, channel: int, group: int, enabled: bool):
-        """
-        async_set_enable_custom_overlay will enable or disables the camera's custom overlay
-        """
+        """ async_set_enable_custom_overlay will enable or disables the camera's custom overlay """
         url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].UserDefinedTitle[{2}].EncodeBlend={3}".format(
             self._address_with_port, channel, group, str(enabled).lower()
         )
         value = await self.api_wrapper("get", url, headers=HEADERS)
-        if "OK" in value or "ok" in value:
-            return
-        else:
-            _LOGGER.error("Could not enable or disable overlay %s", value)
+        if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable customer overlay")
+
+    async def async_set_service_set_channel_title(self, channel: int, text1: str, text2: str):
+        """ async_set_service_set_channel_title sets the channel title """
+        text = '|'.join(filter(None, [text1, text2]))
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&ChannelTitle[{1}].Name={2}".format(
+            self._address_with_port, channel, text
+        )
+        value = await self.api_wrapper("get", url, headers=HEADERS)
+        if "OK" not in value and "ok" not in value:
+            raise Exception("Could not set text")
+
+    async def async_set_service_set_text_overlay(self, channel: int, group: int, text1: str, text2: str, text3: str, text4: str):
+        """ async_set_service_set_text_overlay sets the video text overlay """
+        text = '|'.join(filter(None, [text1, text2, text3, text4]))
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].CustomTitle[{2}].Text={3}".format(
+            self._address_with_port, channel, group, text
+        )
+        value = await self.api_wrapper("get", url, headers=HEADERS)
+        if "OK" not in value and "ok" not in value:
+            raise Exception("Could not set text")
+
+    async def async_set_service_set_custom_overlay(self, channel: int, group: int, text1: str, text2: str):
+        """ async_set_service_set_custom_overlay sets the customer overlay on the video"""
+        text = '|'.join(filter(None, [text1, text2]))
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].UserDefinedTitle[{2}].Text={3}".format(
+            self._address_with_port, channel, group, text
+        )
+        value = await self.api_wrapper("get", url, headers=HEADERS)
+        if "OK" not in value and "ok" not in value:
+            raise Exception("Could not set text")
 
     async def async_set_lighting_v2(self, enabled: bool, brightness: int) -> dict:
         """

@@ -186,10 +186,149 @@ enable_custom_overlay:
         boolean:
 
 set_custom_overlay:
-#http://192.168.1.213/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[0].UserDefinedTitle[0].Text=cc1|cc2
+  name: Set Custom Text Overlay
+  description: Sets a custom text overlay on the video
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    channel:
+      name: Channel
+      description: "The camera channel index. Typically 0"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    group:
+      name: Group
+      description: "Multiple custom text groups can exist. The default 0 should be used in most cases"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    text1:
+      name: Text 1
+      description: "Custom overlay 1"
+      example: "Text 1"
+      required: false
+      default: ""
+      selector:
+        text:
+    text2:
+      name: Text 2
+      description: "Custom overlay 2"
+      example: "Text 2"
+      required: false
+      default: ""
+      selector:
+        text:
+
 
 set_channel_title:
-#http://192.168.1.213/cgi-bin/configManager.cgi?action=setConfig&ChannelTitle[0].Name=title1|title2|title3
+  name: Sets Channel Title
+  description: Sets a title on the video
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    channel:
+      name: Channel
+      description: "The camera channel index. Typically 0"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    text1:
+      name: Text 1
+      description: "The first title"
+      example: "Front Porch"
+      required: false
+      default: ""
+      selector:
+        text:
+    text2:
+      name: Text 2
+      description: "The second title"
+      example: "House"
+      required: false
+      default: ""
+      selector:
+        text:
+
 
 set_text_overlay:
-#http://192.168.1.213/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[0].CustomTitle[1].Text=o1|o2
+  name: Set text overlay
+  description: Sets a text overlay on the video
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    channel:
+      name: Channel
+      description: "The camera channel index. Typically 0"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    group:
+      name: Group
+      description: "Multiple custom text groups can exist. The default 1 should be used in most cases"
+      example: 1
+      required: true
+      default: 1
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    text1:
+      name: Text 1
+      description: "Text overlay 1"
+      example: "Text 1"
+      required: false
+      default: ""
+      selector:
+        text:
+    text2:
+      name: Text 2
+      description: "Text overlay 2"
+      example: "Text 2"
+      required: false
+      default: ""
+      selector:
+        text:
+    text3:
+      name: Text 3
+      description: "Text overlay 3"
+      example: "Text 3"
+      required: false
+      default: ""
+      selector:
+        text:
+    text4:
+      name: Text 4
+      description: "Text overlay 4"
+      example: "Text 4"
+      required: false
+      default: ""
+      selector:
+        text:

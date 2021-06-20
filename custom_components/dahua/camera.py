@@ -100,6 +100,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         },
         "async_set_enable_time_overlay"
     )
+
     platform.async_register_entity_service(
         SERVICE_ENABLE_TEXT_OVERLay,
         {
@@ -109,6 +110,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         },
         "async_set_enable_text_overlay"
     )
+
     platform.async_register_entity_service(
         SERVICE_ENABLE_CUSTOM_OVERLAY,
         {
@@ -117,6 +119,39 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("enabled", default=False): bool,
         },
         "async_set_enable_custom_overlay"
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SET_CHANNEL_TITLE,
+        {
+            vol.Required("channel", default=0): int,
+            vol.Optional("text1", default=""): str,
+            vol.Optional("text2", default=""): str,
+        },
+        "async_set_service_set_channel_title"
+    )
+    platform.async_register_entity_service(
+        SERVICE_SET_TEXT_OVERLAY,
+        {
+            vol.Required("channel", default=0): int,
+            vol.Required("group", default=0): int,
+            vol.Optional("text1", default=""): str,
+            vol.Optional("text2", default=""): str,
+            vol.Optional("text3", default=""): str,
+            vol.Optional("text4", default=""): str,
+        },
+        "async_set_service_set_text_overlay"
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SET_CUSTOM_OVERLAY,
+        {
+            vol.Required("channel", default=0): int,
+            vol.Required("group", default=0): int,
+            vol.Optional("text1", default=""): str,
+            vol.Optional("text2", default=""): str,
+        },
+        "async_set_service_set_custom_overlay"
     )
 
     # Exposes a service to enable setting the cameras infrared light to Auto, Manual, and Off along with the brightness
@@ -211,17 +246,30 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         await self.coordinator.client.async_set_video_profile_mode(mode)
 
     async def async_set_enable_channel_title(self, channel: int, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE to set profile mode to day/night """
+        """ Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE """
         await self.coordinator.client.async_enable_channel_title(channel, enabled)
 
     async def async_set_enable_time_overlay(self, channel: int, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_TIME_OVERLay to set profile mode to day/night """
+        """ Handles the service call from SERVICE_ENABLE_TIME_OVERLAY  """
         await self.coordinator.client.async_enable_time_overlay(channel, enabled)
 
     async def async_set_enable_text_overlay(self, channel: int, group: int, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_TEXT_OVERLay to set profile mode to day/night """
+        """ Handles the service call from SERVICE_ENABLE_TEXT_OVERLAY """
         await self.coordinator.client.async_enable_text_overlay(channel, group, enabled)
 
     async def async_set_enable_custom_overlay(self, channel: int, group: int, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_CUSTOM_OVERLAY to set profile mode to day/night """
+        """ Handles the service call from SERVICE_ENABLE_CUSTOM_OVERLAY """
         await self.coordinator.client.async_enable_custom_overlay(channel, group, enabled)
+
+    async def async_set_service_set_channel_title(self, channel: int, text1: str, text2: str):
+        """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """
+        await self.coordinator.client.async_set_service_set_channel_title(channel, text1, text2)
+
+    async def async_set_service_set_text_overlay(self, channel: int, group: int, text1: str, text2: str, text3: str,
+                                                   text4: str):
+        """ Handles the service call from SERVICE_SET_TEXT_OVERLAY to set profile mode to day/night """
+        await self.coordinator.client.async_set_service_set_text_overlay(channel, group, text1, text2, text3, text4)
+
+    async def async_set_service_set_custom_overlay(self, channel: int, group: int, text1: str, text2: str):
+        """ Handles the service call from SERVICE_SET_CUSTOM_OVERLAY to set profile mode to day/night """
+        await self.coordinator.client.async_set_service_set_custom_overlay(channel, group, text1, text2)
