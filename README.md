@@ -4,6 +4,8 @@ The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows y
 
 Supports motion events, alarm events (and others), enabling/disabling motion detection, switches for infrared, illuminator (white light), security lights (red/blue flashers), sirens, doorbell button press events, and more.
 
+Also exposes several services to enable/disable motion detection or set the text overlay on the video.
+
 **NOTE**: Using the switch to turn on/off the infrared light will disable the "auto" mode. Use the service to enable auto mode again (or the camera UI).
 
 ## Installation
@@ -88,14 +90,27 @@ These devices are confirmed as working:
 # Known Issues
 * IPC-D2B20-ZS doesn't work. Needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201), [7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237)
 
+# Events
+Events are streamed from the device and then fired on the Home Assistant event bus.
+
+TODO: Expand on this and how examples of how to consume the events.
+
 # Services and Entities
 ## Services
 Service | Parameters | Description
 :------------ | :------------ | :-------------
 `camera.enable_motion_detection` | | Enables motion detection
 `camera.disable_motion_detection` | | Disabled motion detection
-`dahua.set_infrared_mode` | `entity_id`: camera.cam13_main <br /> `mode`: Auto, On, Off <br /> `brightness`: 0 - 100 inclusive| Sets the infrared mode. Useful to set the mode back to Auto
-`dahua.set_video_profile_mode` | `entity_id`: camera.cam13_main <br /> `mode`: Day, Night| Sets the video profile mode to day or night
+`dahua.set_infrared_mode` | `target`: camera.cam13_main <br /> `mode`: Auto, On, Off <br /> `brightness`: 0 - 100 inclusive| Sets the infrared mode. Useful to set the mode back to Auto
+`dahua.set_video_profile_mode` | `target`: camera.cam13_main <br /> `mode`: Day, Night| Sets the video profile mode to day or night
+`dahua.set_channel_title` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `text1`: The text 1<br /> `text2`: The text 2| Sets the channel title 
+`dahua.set_text_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `group`: The group, used to apply multiple of text as an overly, e.g.: 1 <br /> `text1`: The text 1<br /> `text3`: The text 3 <br /> `text4`: The text 4 <br /> `text2`: The text 2 | Sets the text overlay on the video
+`dahua.set_custom_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `group`: The group, used to apply multiple of text as an overly, e.g.: 0 <br /> `text1`: The text 1<br /> `text2`: The text 2 | Sets the custom overlay on the video
+`dahua.enable_channel_title` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `enabled`: True to enable, False to disable | Enables or disables the channel title overlay on the video
+`dahua.enable_time_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `enabled`: True to enable, False to disable | Enables or disables the time overlay on the video
+`dahua.enable_text_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `group`: The group, used to apply multiple of text as an overly, e.g.: 0 <br /> `enabled`: True to enable, False to disable | Enables or disables the text overlay on the video
+`dahua.enable_custom_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `group`: The group, used to apply multiple of text as an overly, e.g.: 0 <br /> `enabled`: True to enable, False to disable | Enables or disables the custom overlay on the video
+
 
 ## Camera
 This will provide a normal HA camera entity (can take snapshots, etc)
@@ -119,7 +134,7 @@ Sensor |  Description |
 :------------ | :------------ |
 Motion | A sensor that turns on when the camera detects motion
 Button Pressed | A sensor that turns on when a doorbell button is pressed
-Others / A binary sesnor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
+Others | A binary senor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
 
 # Local development
 If you wish to work on this component, the easiest way is to follow [HACS Dev Container README](https://github.com/custom-components/integration_blueprint/blob/master/.devcontainer/README.md). In short:

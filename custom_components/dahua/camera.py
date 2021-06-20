@@ -29,7 +29,7 @@ SERVICE_SET_TEXT_OVERLAY = "set_text_overlay"
 SERVICE_SET_CUSTOM_OVERLAY = "set_custom_overlay"
 SERVICE_ENABLE_CHANNEL_TITLE = "enable_channel_title"
 SERVICE_ENABLE_TIME_OVERLay = "enable_time_overlay"
-SERVICE_ENABLE_TEXT_OVERLay = "enable_text_overlay"
+SERVICE_ENABLE_TEXT_OVERLAY = "enable_text_overlay"
 SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
 
 # For now we'll only support 1 channel. I don't have any cams where I can test a second channel.
@@ -102,7 +102,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     )
 
     platform.async_register_entity_service(
-        SERVICE_ENABLE_TEXT_OVERLay,
+        SERVICE_ENABLE_TEXT_OVERLAY,
         {
             vol.Required("channel", default=0): int,
             vol.Required("group", default=1): int,
@@ -266,7 +266,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         await self.coordinator.client.async_set_service_set_channel_title(channel, text1, text2)
 
     async def async_set_service_set_text_overlay(self, channel: int, group: int, text1: str, text2: str, text3: str,
-                                                   text4: str):
+                                                 text4: str):
         """ Handles the service call from SERVICE_SET_TEXT_OVERLAY to set profile mode to day/night """
         await self.coordinator.client.async_set_service_set_text_overlay(channel, group, text1, text2, text3, text4)
 
