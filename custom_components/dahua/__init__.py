@@ -208,32 +208,63 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def on_receive_vto_event(self, event: dict):
         self.hass.bus.fire("dahua_event_received", event)
 
-        # Example event:
-        # {'id': 8, 'method': 'client.notifyEventStream', 'params': {'SID': 513, 'eventList': [
-        #   {'Action': 'Start', 'Code': 'VideoMotion',
-        #   'Data': {'LocaleTime': '2021-06-19 15:36:58', 'UTC': 1624088218.0}, 'Index': 0}]}, 'session': 1400947312}
+        # Example events:
+        # {
+        #   "Code":"VideoMotion",
+        #   "Action":"Start",
+        #   "Data":{
+        #     "LocaleTime":"2021-06-19 15:36:58",
+        #     "UTC":1624088218.0
+        # }
+        #
+        # {
+        #   "Code":"DoorStatus",
+        #   "Action":"Pulse",
+        #   "Data":{
+        #      "LocaleTime":"2021-04-11 21:34:52",
+        #      "Status":"Close",
+        #      "UTC":1618148092
+        #    },
+        #    "Index":0
+        # }
+        #
+        # {
+        #    "Code":"BackKeyLight",
+        #    "Action":"Pulse",
+        #    "Data":{
+        #       "LocaleTime":"2021-06-20 13:52:20",
+        #       "State":1,
+        #       "UTC":1624168340.0
+        #    },
+        #    "Index":-1
+        # }
 
-        # This is the event code, example: VideoMotion, CrossLineDetection, etc
-        event_name = event.get("Code", {})
+        # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, DoorStatus, etc
+        code = event.get("Code", {})
 
-        listener = self._dahua_event_listeners.get(event_name)
+        listener = self._dahua_event_listeners.get(code)
         if listener is not None:
             action = event.get("Action", "")
             if action == "Start":
-                self._dahua_event_timestamp[event_name] = int(time.time())
+                self._dahua_event_timestamp[code] = int(time.time())
                 listener()
             elif action == "Stop":
-                self._dahua_event_timestamp[event_name] = 0
+                self._dahua_event_timestamp[code] = 0
                 listener()
             elif action == "Pulse":
-                state = event.get("Data", {}).get("State", 0)
-                if state == 1:
-                    # button pressed
-                    self._dahua_event_timestamp[event_name] = int(time.time())
-                    listener()
+                if code == "DoorStatus":
+                    if event.get("Data", {}).get("Status", "") == "Open":
+                        self._dahua_event_timestamp[code] = int(time.time())
+                    else:
+                        self._dahua_event_timestamp[code] = 0
                 else:
-                    self._dahua_event_timestamp[event_name] = 0
-                    listener()
+                    state = event.get("Data", {}).get("State", 0)
+                    if state == 1:
+                        # button pressed
+                        self._dahua_event_timestamp[code] = int(time.time())
+                    else:
+                        self._dahua_event_timestamp[code] = 0
+                listener()
 
     def on_receive(self, data_bytes: bytes):
         """

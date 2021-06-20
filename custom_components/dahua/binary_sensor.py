@@ -7,7 +7,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator
 
 from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
-    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS,
+    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS,
 )
 from .entity import DahuaBaseEntity
 
@@ -31,8 +31,8 @@ DEVICE_CLASS_OVERRIDES = {
     "StorageLowSpace": SAFETY_DEVICE_CLASS,
     "FireWarning": SAFETY_DEVICE_CLASS,
     "BackKeyLight": SOUND_DEVICE_CLASS,
+    "DoorStatus": DOOR_DEVICE_CLASS,
 }
-
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
@@ -46,6 +46,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     if coordinator.is_doorbell():
         sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight"))
         sensors.append(DahuaEventSensor(coordinator, entry, "Invite"))
+        sensors.append(DahuaEventSensor(coordinator, entry, "DoorStatus"))
         sensors.append(DahuaEventSensor(coordinator, entry, "CallNoAnswered"))
 
     if sensors:

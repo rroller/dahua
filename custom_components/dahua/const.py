@@ -20,6 +20,7 @@ MOTION_SENSOR_DEVICE_CLASS = "motion"
 SAFETY_DEVICE_CLASS = "safety"
 CONNECTIVITY_DEVICE_CLASS = "connectivity"
 SOUND_DEVICE_CLASS = "sound"
+DOOR_DEVICE_CLASS = "door"
 
 # Platforms
 BINARY_SENSOR = "binary_sensor"
