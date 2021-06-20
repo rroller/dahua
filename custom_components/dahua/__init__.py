@@ -106,6 +106,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.cross_line_detection_listener: CALLBACK_TYPE
         self._supports_coaxial_control = False
         self._supports_disarming_linkage = False
+        self._serial_number: str
 
         # This thread is what connects to the cameras event stream and fires on_receive when there's an event
         self.dahua_event = DahuaEventThread(hass, self.client, self.on_receive, events)
@@ -159,6 +160,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 data["model"] = device_type
                 self.model = device_type
                 self.machine_name = data.get("table.General.MachineName")
+                self._serial_number = data.get("serialNumber")
 
                 try:
                     await self.client.async_get_coaxial_control_io_status()
@@ -371,8 +373,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self.data.get("version")
 
     def get_serial_number(self) -> str:
+
         """ returns the device serial number. This is unique per device """
-        return self.data.get("serialNumber")
+        return self._serial_number
 
     def get_event_list(self) -> list:
         """

@@ -12,23 +12,23 @@ class DahuaBaseEntity(CoordinatorEntity):
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
         super().__init__(coordinator)
         self.config_entry = config_entry
+        self._coordinator = coordinator
 
     # https://developers.home-assistant.io/docs/entity_registry_index
     @property
     def unique_id(self):
         """Return a unique ID to use for this entity."""
-        return self.coordinator.get_serial_number()
+        return self._coordinator.get_serial_number()
 
     # https://developers.home-assistant.io/docs/device_registry_index
     @property
     def device_info(self):
-        # self.coordinator.logger.error("%s", self.coordinator.data)
         return {
-            "identifiers": {(DOMAIN, self.coordinator.get_serial_number())},
-            "name": self.coordinator.get_device_name(),
-            "model": self.coordinator.get_model(),
+            "identifiers": {(DOMAIN, self._coordinator.get_serial_number())},
+            "name": self._coordinator.get_device_name(),
+            "model": self._coordinator.get_model(),
             "manufacturer": "Dahua",
-            "sw_version": self.coordinator.get_firmware_version(),
+            "sw_version": self._coordinator.get_firmware_version(),
         }
 
     @property

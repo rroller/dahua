@@ -42,11 +42,12 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
         super().__init__(coordinator, entry)
         self._name = name
+        self._coordinator = coordinator
 
     @property
     def name(self):
         """Return the name of the light."""
-        return self.coordinator.get_device_name() + " " + self._name
+        return self._coordinator.get_device_name() + " " + self._name
 
     @property
     def unique_id(self):
@@ -54,17 +55,17 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
-        return self.coordinator.get_serial_number() + "_infrared"
+        return self._coordinator.get_serial_number() + "_infrared"
 
     @property
     def is_on(self):
         """Return true if the light is on"""
-        return self.coordinator.is_infrared_light_on()
+        return self._coordinator.is_infrared_light_on()
 
     @property
     def brightness(self):
         """Return the brightness of this light between 0..255 inclusive"""
-        return self.coordinator.get_infrared_brightness()
+        return self._coordinator.get_infrared_brightness()
 
     @property
     def supported_features(self):
@@ -80,14 +81,14 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
-        await self.coordinator.client.async_set_lighting_v1(True, dahua_brightness)
+        await self._coordinator.client.async_set_lighting_v1(True, dahua_brightness)
         await self.coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
-        await self.coordinator.client.async_set_lighting_v1(False, dahua_brightness)
+        await self._coordinator.client.async_set_lighting_v1(False, dahua_brightness)
         await self.coordinator.async_refresh()
 
     @property
@@ -102,11 +103,12 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
         super().__init__(coordinator, entry)
         self._name = name
+        self._coordinator = coordinator
 
     @property
     def name(self):
         """Return the name of the light."""
-        return self.coordinator.get_device_name() + " " + self._name
+        return self._coordinator.get_device_name() + " " + self._name
 
     @property
     def unique_id(self):
@@ -114,18 +116,18 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
-        return self.coordinator.get_serial_number() + "_illuminator"
+        return self._coordinator.get_serial_number() + "_illuminator"
 
     @property
     def is_on(self):
         """Return true if the light is on"""
-        return self.coordinator.is_illuminator_on()
+        return self._coordinator.is_illuminator_on()
 
     @property
     def brightness(self):
         """Return the brightness of this light between 0..255 inclusive"""
 
-        return self.coordinator.get_illuminator_brightness()
+        return self._coordinator.get_illuminator_brightness()
 
     @property
     def supported_features(self):
