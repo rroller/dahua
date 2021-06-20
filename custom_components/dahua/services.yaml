@@ -1,4 +1,5 @@
 # Describes the format for available Dahua services
+# https://developers.home-assistant.io/docs/dev_101_services/
 
 set_infrared_mode:
   name: Set Infrared Mode on Dahua Camera
