@@ -1,6 +1,6 @@
 
 # Home Assistant Dahua Integration
-The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras and doorbells in Home Assistant.
+The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras and doorbells in Home Assistant. It's also confirmed to work with some Lorex cameras.
 
 Supports motion events, alarm events (and others), enabling/disabling motion detection, switches for infrared, illuminator (white light), security lights (red/blue flashers), sirens, doorbell button press events, and more.
 
@@ -78,6 +78,8 @@ These devices are confirmed as working:
 * IPC-HFW1435S-W
 * IPC-HFW1435S-W-S2
 * IPC-HDW4233C-A
+* LNB8005-C
+* LNE8964AB
 * IPC-A26
 * DHI-VTO2202F-P
 * DHI-VTO2211G-P
