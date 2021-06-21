@@ -6,7 +6,7 @@ Supports motion events, alarm events (and others), enabling/disabling motion det
 
 Also exposes several services to enable/disable motion detection or set the text overlay on the video.
 
-**NOTE**: Using the switch to turn on/off the infrared light will disable the "auto" mode. Use the service to enable auto mode again (or the camera UI).
+**NOTE**: Using the switch to turn the infrared light on/off will disable the "auto" mode. Use the service to enable auto mode again (or the camera UI).
 
 ## Installation
 
