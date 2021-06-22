@@ -13,7 +13,6 @@ Also exposes several services to enable/disable motion detection or set the text
 If you want live-streaming, make sure to add the following to your config.yaml:
 ```
 ffmpeg:
-stream:
 ```
 See [ffmpeg](https://www.home-assistant.io/integrations/ffmpeg/) and [stream](https://www.home-assistant.io/integrations/stream/).
 
