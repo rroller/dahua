@@ -143,15 +143,17 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
-        await self.coordinator.client.async_set_lighting_v2(True, dahua_brightness)
-        await self.coordinator.async_refresh()
+        profile_mode = self._coordinator.get_profile_mode()
+        await self._coordinator.client.async_set_lighting_v2(True, dahua_brightness, profile_mode)
+        await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
-        await self.coordinator.client.async_set_lighting_v2(False, dahua_brightness)
-        await self.coordinator.async_refresh()
+        profile_mode = self._coordinator.get_profile_mode()
+        await self._coordinator.client.async_set_lighting_v2(False, dahua_brightness, profile_mode)
+        await self._coordinator.async_refresh()
 
 
 class DahuaSecurityLight(DahuaBaseEntity, LightEntity):

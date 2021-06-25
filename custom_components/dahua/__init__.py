@@ -186,8 +186,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 self.initialized = True
 
+            # We need the profile mode (0=day, 1=night, 2=scene)
+            mode_data = await self.client.async_get_video_in_mode()
+            data.update(mode_data)
+            profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
+
             # Figure out which APIs we need to call and then fan out and gather the results
-            coros = [asyncio.ensure_future(self.client.async_common_config())]
+            coros = [
+                asyncio.ensure_future(self.client.async_common_config(profile_mode)),
+            ]
             if self._supports_disarming_linkage:
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
             if self._supports_coaxial_control:
@@ -404,7 +411,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self.data.get("version")
 
     def get_serial_number(self) -> str:
-
         """ returns the device serial number. This is unique per device """
         return self._serial_number
 
@@ -427,7 +433,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def is_illuminator_on(self) -> bool:
         """Return true if the illuminator light is on"""
-        return self.data.get("table.Lighting_V2[0][0][0].Mode", "") == "Manual"
+        # profile_mode 0=day, 1=night, 2=scene
+        profile_mode = self.get_profile_mode()
+
+        return self.data.get("table.Lighting_V2[0][" + profile_mode + "][0].Mode", "") == "Manual"
 
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
@@ -438,6 +447,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_security_light_on(self) -> bool:
         """Return true if the security light is on. This is the red/blue flashing light"""
         return self.data.get("status.status.WhiteLight", "") == "On"
+
+    def get_profile_mode(self) -> str:
+        # profile_mode 0=day, 1=night, 2=scene
+        return self.data.get("table.VideoInMode[0].Config[0]", "0")
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

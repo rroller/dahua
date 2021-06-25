@@ -170,7 +170,7 @@ class DahuaClient:
         table.Lighting_V2[0][2][0].PercentOfMaxBrightness=100
         table.Lighting_V2[0][2][0].Sensitive=3
         """
-        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=Lighting_V2[0][0][0]".format(
+        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=Lighting_V2".format(
             self._address_with_port
         )
         return await self.api_wrapper("get", url, headers=HEADERS)
@@ -194,10 +194,11 @@ class DahuaClient:
         )
         return await self.api_wrapper("get", url, headers=HEADERS)
 
-    async def async_common_config(self) -> dict:
+    async def async_common_config(self, profile_mode) -> dict:
         """
         async_common_config will fetch the status of the IR light (InfraRed light) and motion detection status (if it is
         enabled or not)
+        profile_mode: = 0=day, 1=night, 2=normal scene
 
         Example response:
         table.Lighting[0][0].Correction=50
@@ -206,8 +207,8 @@ class DahuaClient:
         table.Lighting[0][0].Mode=Auto
         table.Lighting[0][0].Sensitive=3
         """
-        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect&action=getConfig&name=Lighting[0][0]".format(
-            self._address_with_port
+        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect&action=getConfig&name=Lighting[0][{1}]".format(
+            self._address_with_port, profile_mode
         )
         return await self.api_wrapper("get", url, headers=HEADERS)
 
@@ -301,7 +302,8 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_service_set_text_overlay(self, channel: int, group: int, text1: str, text2: str, text3: str, text4: str):
+    async def async_set_service_set_text_overlay(self, channel: int, group: int, text1: str, text2: str, text3: str,
+                                                 text4: str):
         """ async_set_service_set_text_overlay sets the video text overlay """
         text = '|'.join(filter(None, [text1, text2, text3, text4]))
         url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].CustomTitle[{2}].Text={3}".format(
@@ -321,21 +323,38 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_lighting_v2(self, enabled: bool, brightness: int) -> dict:
+    async def async_set_lighting_v2(self, enabled: bool, brightness: int, profile_mode: str) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
         NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
+
+        profile_mode: 0=day, 1=night, 2=scene
         """
 
         # on = Manual, off = Off
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][0][0].Mode={1}&Lighting_V2[0][0][0].MiddleLight[0].Light={2}".format(
-            self._address_with_port, mode, brightness
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][{1}][0].Mode={2}&Lighting_V2[0][{3}][0].MiddleLight[0].Light={4}".format(
+            self._address_with_port, profile_mode, mode, profile_mode, brightness
         )
         _LOGGER.debug("Turning light on: %s", url)
+        return await self.api_wrapper("get", url, headers=HEADERS)
+
+    async def async_get_video_in_mode(self) -> dict:
+        """
+        async_get_video_in_mode will return the profile mode (day/night)
+        0 means config for day,
+        1 means config for night, and
+        2 means config for normal scene.
+
+        table.VideoInMode[0].Config[0]=2
+        table.VideoInMode[0].Mode=0
+        table.VideoInMode[0].TimeSection[0][0]=0 00:00:00-24:00:00
+        """
+
+        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode".format(self._address_with_port)
         return await self.api_wrapper("get", url, headers=HEADERS)
 
     async def async_set_coaxial_control_state(self, dahua_type: int, enabled: bool) -> dict:
