@@ -187,9 +187,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.initialized = True
 
             # We need the profile mode (0=day, 1=night, 2=scene)
-            mode_data = await self.client.async_get_video_in_mode()
-            data.update(mode_data)
-            profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
+            profile_mode = "0"
+            if not self.is_doorbell():
+                mode_data = await self.client.async_get_video_in_mode()
+                data.update(mode_data)
+                profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
 
             # Figure out which APIs we need to call and then fan out and gather the results
             coros = [
