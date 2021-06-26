@@ -4,12 +4,11 @@ import socket
 import asyncio
 import aiohttp
 import async_timeout
-from homeassistant.helpers.aiohttp_client import async_aiohttp_proxy_web
 from custom_components.dahua.const import STREAM_MAIN, STREAM_SUB
 
 from .digest import DigestAuth
 
-TIMEOUT_SECONDS = 5
+TIMEOUT_SECONDS = 10
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 

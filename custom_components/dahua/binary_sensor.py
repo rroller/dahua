@@ -1,5 +1,6 @@
 """Binary sensor platform for dahua."""
 import re
+import time
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
@@ -7,16 +8,34 @@ from custom_components.dahua import DahuaDataUpdateCoordinator
 
 from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
-    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS,
+    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS, NONE_DEVICE_CLASS,
 )
 from .entity import DahuaBaseEntity
 
 # Override event names. Otherwise we'll generate the name from the event name for example SmartMotionHuman will
 # become "Smart Motion Human"
+# BackKeyLight States
+# State   | Description
+# 0       | OK, No Call/Ring
+# 1, 2    | Call/Ring
+# 4       | Voice message
+# 5       | Call answered from VTH
+# 6       | Call not answered
+# 7       | VTH calling VTO
+# 8       | Unlock
+# 9       | Unlock failed
+# 11      | Device rebooted
 NAME_OVERRIDES = {
     "VideoMotion": "Motion Alarm",
     "CrossLineDetection": "Cross Line Alarm",
     "BackKeyLight": "Button Pressed",  # For VTO devices (doorbells)
+    "BackKeyLight-4": "Voice Message Event",  # For VTO devices (doorbells)
+    "BackKeyLight-5": "Call Answered From VTH Event",  # For VTO devices (doorbells)
+    "BackKeyLight-6": "Call Not Answered Event",  # For VTO devices (doorbells)
+    "BackKeyLight-7": "VTH Calling VTO Event",  # For VTO devices (doorbells)
+    "BackKeyLight-8": "Unlock Event",  # For VTO devices (doorbells)
+    "BackKeyLight-9": "Unlock Failed Event",  # For VTO devices (doorbells)
+    "BackKeyLight-11": "Device Rebooted Event",  # For VTO devices (doorbells)
 }
 
 # Override the device class for events
@@ -32,7 +51,15 @@ DEVICE_CLASS_OVERRIDES = {
     "FireWarning": SAFETY_DEVICE_CLASS,
     "BackKeyLight": SOUND_DEVICE_CLASS,
     "DoorStatus": DOOR_DEVICE_CLASS,
+    "BackKeyLight-4": NONE_DEVICE_CLASS,  # "Voice message",
+    "BackKeyLight-5": NONE_DEVICE_CLASS,  # "Call answered from VTH",
+    "BackKeyLight-6": NONE_DEVICE_CLASS,  # "Call not answered",
+    "BackKeyLight-7": NONE_DEVICE_CLASS,  # "VTH calling VTO",
+    "BackKeyLight-8": NONE_DEVICE_CLASS,
+    "BackKeyLight-9": SAFETY_DEVICE_CLASS,
+    "BackKeyLight-11": NONE_DEVICE_CLASS,  # "Device rebooted",
 }
+
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
@@ -45,6 +72,13 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     # For doorbells we'll just add these since most people will want them
     if coordinator.is_doorbell():
         sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight"))
+        sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight-4"))  # Voice Message
+        sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight-5"))  # Call answered from VTH
+        sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight-6"))  # Call not answered
+        sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight-7"))  # VTH calling VTO
+        sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight-8"))  # Unlock
+        sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight-9"))  # Unlock failed
+        sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight-11"))  # Device rebooted
         sensors.append(DahuaEventSensor(coordinator, entry, "Invite"))
         sensors.append(DahuaEventSensor(coordinator, entry, "DoorStatus"))
         sensors.append(DahuaEventSensor(coordinator, entry, "CallNoAnswered"))
@@ -57,7 +91,7 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
     """
     dahua binary_sensor class to record events. Many of these events are configured in the camera UI by going to:
     Setting -> Event -> IVS -> and adding a tripwire rule, etc. See the DahuaEventThread in thread.py on how we connect
-    to the cammera to listen to events.
+    to the camera to listen to events.
     """
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry, event_name: str):
@@ -109,7 +143,12 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
         The async_added_to_hass method adds a listener to the coordinator so when the event is started or stopped
         it calls the async_write_ha_state function. async_write_ha_state gets the current value from this is_on method.
         """
-        return self._coordinator.get_event_timestamp(self._event_name) > 0
+        event_timestamp = self._coordinator.get_event_timestamp(self._event_name)
+        now = int(time.time())
+        if self._event_name.startswith("BackKeyLight-") and event_timestamp > 0 and (now - event_timestamp) >= 30:
+            return False
+
+        return event_timestamp > 0
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
