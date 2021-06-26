@@ -270,6 +270,30 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._dahua_event_timestamp[code] = int(time.time())
                     else:
                         self._dahua_event_timestamp[code] = 0
+                elif code == "BackKeyLight":
+                    # BackKeyLight States
+                    # State   | Description
+                    # 0       | OK, No Call/Ring
+                    # 1, 2    | Call/Ring
+                    # 4       | Voice message
+                    # 5       | Call answered from VTH
+                    # 6       | Call not answered
+                    # 7       | VTH calling VTO
+                    # 8       | Unlock
+                    # 9       | Unlock failed
+                    # 11      | Device rebooted
+                    state = event.get("Data", {}).get("State", 0)
+                    if 4 <= state <= 9 or state == 11:
+                        # Look at binary_sensor where these sensors are created: BackKeyLight-4, BackKeyLight-5, etc...
+                        self._dahua_event_timestamp[f"{code}-{state}"] = int(time.time())
+                    elif state > 0:
+                        # 1, 2 - Call/Ring (button pressed)
+                        # We use "code" here and not "code-state" as seen in the branch above because that branch was
+                        # added later and we don't want to break existing installations. So stay backwards compatible.
+                        self._dahua_event_timestamp[code] = int(time.time())
+                    else:
+                        # 0 - OK, No Call/Ring
+                        self._dahua_event_timestamp[code] = 0
                 else:
                     state = event.get("Data", {}).get("State", 0)
                     if state == 1:

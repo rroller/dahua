@@ -21,6 +21,8 @@ SAFETY_DEVICE_CLASS = "safety"
 CONNECTIVITY_DEVICE_CLASS = "connectivity"
 SOUND_DEVICE_CLASS = "sound"
 DOOR_DEVICE_CLASS = "door"
+LOCK_DEVICE_CLASS = "lock"
+NONE_DEVICE_CLASS = "none"
 
 # Platforms
 BINARY_SENSOR = "binary_sensor"
