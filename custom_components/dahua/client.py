@@ -212,6 +212,12 @@ class DahuaClient:
         )
         return await self.api_wrapper("get", url, headers=HEADERS)
 
+    async def async_get_config(self, name) -> dict:
+        """ async_get_config gets a config by name """
+        # example name=Lighting[0][0]
+        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name={1}".format(self._address_with_port, name)
+        return await self.api_wrapper("get", url, headers=HEADERS)
+
     async def async_set_lighting_v1(self, enabled: bool, brightness: int) -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
         # on = Manual, off = Off

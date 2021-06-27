@@ -107,6 +107,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_coaxial_control = False
         self._supports_disarming_linkage = False
         self._serial_number: str
+        self._profile_mode = "0"
+        self._supports_profile_mode = False
 
         # This thread is what connects to the cameras event stream and fires on_receive when there's an event
         self.dahua_event = DahuaEventThread(hass, self.client, self.on_receive, events)
@@ -180,21 +182,30 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # Start the event listeners for IP cameras
                     await self.async_start_event_listener()
 
-                if is_doorbell:
+                    try:
+                        # Some cams don't support profile modes, check and see... use 2 to check
+                        conf = await self.client.async_get_config("Lighting[0][2]")
+                        # We'll get back an error like this if it doesn't work:
+                        # Error: Error -1 getting param in name=Lighting[0][1]
+                        # Otherwise we'll get multiple lines of config back
+                        self._supports_profile_mode = len(conf) > 1
+                    except ClientError as exception:
+                        _LOGGER.warning("Cam does not support profile mode. Will use mode 0")
+                        self._supports_profile_mode = False
+                else:
                     # Start the event listeners for door bells (VTO)
                     await self.async_start_vto_event_listener()
 
                 self.initialized = True
 
             # We need the profile mode (0=day, 1=night, 2=scene)
-            profile_mode = "0"
-            if not self.is_doorbell():
+            if self._supports_profile_mode and not self.is_doorbell():
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
-                    profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
-                    if not profile_mode:
-                        profile_mode = "0"
+                    self._profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
+                    if not self._profile_mode:
+                        self._profile_mode = "0"
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
@@ -202,7 +213,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             # Figure out which APIs we need to call and then fan out and gather the results
             coros = [
-                asyncio.ensure_future(self.client.async_common_config(profile_mode)),
+                asyncio.ensure_future(self.client.async_common_config(self._profile_mode)),
             ]
             if self._supports_disarming_linkage:
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
@@ -219,7 +230,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             return data
         except Exception as exception:
-            _LOGGER.warn("Failed to sync device state", exc_info=exception)
+            _LOGGER.warning("Failed to sync device state", exc_info=exception)
             raise UpdateFailed() from exception
 
     def on_receive_vto_event(self, event: dict):
@@ -460,7 +471,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
-        return self.data.get("table.VideoInMode[0].Config[0]", "0")
+        return self._profile_mode
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
