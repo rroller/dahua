@@ -193,8 +193,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
                     profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
-                except ClientError as exception:
+                    if not profile_mode:
+                        profile_mode = "0"
+                except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
+                    _LOGGER.debug("Could not get profile mode", exc_info=exception)
                     pass
 
             # Figure out which APIs we need to call and then fan out and gather the results
