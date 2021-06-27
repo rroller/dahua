@@ -219,6 +219,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             return data
         except Exception as exception:
+            _LOGGER.warn("Failed to sync device state", exc_info=exception)
             raise UpdateFailed() from exception
 
     def on_receive_vto_event(self, event: dict):
