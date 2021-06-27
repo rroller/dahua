@@ -7,7 +7,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator
 
 from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
-    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS,
+    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS, VOLUME_HIGH_ICON,
 )
 from .entity import DahuaBaseEntity
 
@@ -33,6 +33,11 @@ DEVICE_CLASS_OVERRIDES = {
     "BackKeyLight": SOUND_DEVICE_CLASS,
     "DoorStatus": DOOR_DEVICE_CLASS,
 }
+
+ICON_OVERRIDES = {
+    "AudioAnomaly": VOLUME_HIGH_ICON,
+}
+
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
@@ -70,6 +75,7 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
         self._coordinator = coordinator
         self._device_name = coordinator.get_device_name()
         self._device_class = DEVICE_CLASS_OVERRIDES.get(event_name, MOTION_SENSOR_DEVICE_CLASS)
+        self._icon_override = ICON_OVERRIDES.get(event_name, None)
 
         # name is the friendly name, example: Cross Line Alarm. If the name is not found in the override it will be
         # generated from the event_name. For example SmartMotionHuman willbecome "Smart Motion Human"
@@ -99,6 +105,10 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
     def device_class(self):
         """Return the class of this binary_sensor, Example: motion"""
         return self._device_class
+
+    @property
+    def icon(self) -> str:
+        return self._icon_override
 
     @property
     def is_on(self):
