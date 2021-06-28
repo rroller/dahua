@@ -34,18 +34,18 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable motion detection."""
-        await self.coordinator.client.enable_motion_detection(True)
-        await self.coordinator.async_refresh()
+        await self._coordinator.client.enable_motion_detection(True)
+        await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable motion detection."""
-        await self.coordinator.client.enable_motion_detection(False)
-        await self.coordinator.async_refresh()
+        await self._coordinator.client.enable_motion_detection(False)
+        await self._coordinator.async_refresh()
 
     @property
     def name(self):
         """Return the name of the switch."""
-        return self.coordinator.get_device_name() + " " + "Motion Detection"
+        return self._coordinator.get_device_name() + " " + "Motion Detection"
 
     @property
     def unique_id(self):
@@ -53,7 +53,7 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
-        return self.coordinator.get_serial_number() + "_motion_detection"
+        return self._coordinator.get_serial_number() + "_motion_detection"
 
     @property
     def icon(self):
@@ -66,7 +66,7 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         Return true if the switch is on.
         Value is fetched from api.get_motion_detection_config
         """
-        return self.coordinator.is_motion_detection_enabled()
+        return self._coordinator.is_motion_detection_enabled()
 
 
 class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
@@ -74,18 +74,18 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable linkage"""
-        await self.coordinator.client.async_set_disarming_linkage(True)
-        await self.coordinator.async_refresh()
+        await self._coordinator.client.async_set_disarming_linkage(True)
+        await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable linkage"""
-        await self.coordinator.client.async_set_disarming_linkage(False)
-        await self.coordinator.async_refresh()
+        await self._coordinator.client.async_set_disarming_linkage(False)
+        await self._coordinator.async_refresh()
 
     @property
     def name(self):
         """Return the name of the switch."""
-        return self.coordinator.get_device_name() + " " + "Disarming"
+        return self._coordinator.get_device_name() + " " + "Disarming"
 
     @property
     def unique_id(self):
@@ -94,7 +94,7 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
         configurable by the user or be changeable see
         https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
-        return self.coordinator.get_serial_number() + "_disarming"
+        return self._coordinator.get_serial_number() + "_disarming"
 
     @property
     def icon(self):
@@ -107,7 +107,7 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
         Return true if the switch is on.
         Value is fetched from client.async_get_linkage
         """
-        return self.coordinator.is_disarming_linkage_enabled()
+        return self._coordinator.is_disarming_linkage_enabled()
 
 
 class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
@@ -115,18 +115,18 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable the camera's siren"""
-        await self.coordinator.client.async_set_coaxial_control_state(SIREN_TYPE, True)
-        await self.coordinator.async_refresh()
+        await self._coordinator.client.async_set_coaxial_control_state(SIREN_TYPE, True)
+        await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable camera siren"""
-        await self.coordinator.client.async_set_coaxial_control_state(SIREN_TYPE, False)
-        await self.coordinator.async_refresh()
+        await self._coordinator.client.async_set_coaxial_control_state(SIREN_TYPE, False)
+        await self._coordinator.async_refresh()
 
     @property
     def name(self):
         """Return the name of the switch."""
-        return self.coordinator.get_device_name() + " Siren"
+        return self._coordinator.get_device_name() + " Siren"
 
     @property
     def unique_id(self):
@@ -134,7 +134,7 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
-        return self.coordinator.get_serial_number() + "_siren"
+        return self._coordinator.get_serial_number() + "_siren"
 
     @property
     def icon(self):
@@ -147,4 +147,4 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         Return true if the siren is on.
         Value is fetched from api.get_motion_detection_config
         """
-        return self.coordinator.is_siren_on()
+        return self._coordinator.is_siren_on()

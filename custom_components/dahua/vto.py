@@ -94,8 +94,6 @@ class DahuaVTOClient(asyncio.Protocol):
     def data_received(self, data):
         try:
             message = self.parse_response(data)
-            _LOGGER.debug(f"Data received: {message}")
-
             message_id = message.get("id")
 
             handler: Callable = self.data_handlers.get(message_id, self.handle_default)

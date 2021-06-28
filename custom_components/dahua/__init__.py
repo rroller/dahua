@@ -234,6 +234,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             raise UpdateFailed() from exception
 
     def on_receive_vto_event(self, event: dict):
+        event["DeviceName"] = self.get_device_name()
+        _LOGGER.debug(f"VTO Data received: {event}")
         self.hass.bus.fire("dahua_event_received", event)
 
         # Example events:
@@ -336,6 +338,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception:  # pylint: disable=broad-except
                     pass
 
+            # Put the vent on the HA event bus
+            event["DeviceName"] = self.get_device_name()
+            _LOGGER.debug(f"Cam Data received: {event}")
+            self.hass.bus.fire("dahua_event_received", event)
+
             # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
             # We'll reset it to 0 when the event stops.
             # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
@@ -352,8 +359,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 elif action == "Stop":
                     self._dahua_event_timestamp[event_name] = 0
                     listener()
-
-            self.hass.bus.fire("dahua_event_received", event)
 
     def get_event_timestamp(self, event_name: str) -> int:
         """
