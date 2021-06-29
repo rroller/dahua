@@ -25,6 +25,11 @@ from .const import (
     PLATFORMS,
 )
 
+"""
+https://developers.home-assistant.io/docs/config_entries_config_flow_handler
+https://developers.home-assistant.io/docs/data_entry_flow_index/
+"""
+
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 STREAMS = [STREAM_MAIN, STREAM_SUB, STREAM_BOTH]
