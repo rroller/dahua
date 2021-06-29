@@ -27,6 +27,7 @@ from .const import (
     CONF_PORT,
     CONF_USERNAME,
     CONF_ADDRESS,
+    CONF_NAME,
     DOMAIN,
     PLATFORMS,
     CONF_RTSP_PORT,
@@ -59,9 +60,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     port = int(entry.data.get(CONF_PORT))
     rtsp_port = int(entry.data.get(CONF_RTSP_PORT))
     events = entry.data.get(CONF_EVENTS)
+    name = entry.data.get(CONF_NAME)
 
     coordinator = DahuaDataUpdateCoordinator(hass, events=events, address=address, port=port, rtsp_port=rtsp_port,
-                                             username=username, password=password)
+                                             username=username, password=password, name=name)
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.last_update_success:
@@ -90,7 +92,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
     def __init__(self, hass: HomeAssistant, events: list, address: str, port: int, rtsp_port: int, username: str,
-                 password: str) -> None:
+                 password: str, name: str) -> None:
         """Initialize."""
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port,
                                                async_get_clientsession(hass))
@@ -98,7 +100,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.platforms = []
         self.initialized = False
         self.model = ""
-        self.machine_name = ""
         self.connected = None
         self.channels = {"1": "1"}
         self.events: list = events
@@ -109,6 +110,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._serial_number: str
         self._profile_mode = "0"
         self._supports_profile_mode = False
+
+        # This is the name given by the user during setup
+        self._name = name
+
+        # This is the name as reported from the camera itself
+        self.machine_name = ""
 
         # This thread is what connects to the cameras event stream and fires on_receive when there's an event
         self.dahua_event = DahuaEventThread(hass, self.client, self.on_receive, events)
@@ -426,6 +433,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_device_name(self) -> str:
         """ returns the device name, e.g. Cam 2 """
+        if self._name is not None:
+            return self._name
+        # Earlier releases of this integration didn't allow for setting the camera name, it always used the machine name
+        # Now we fall back to the machine name if that wasn't supplied at config time.
         return self.machine_name
 
     def get_model(self) -> str:
