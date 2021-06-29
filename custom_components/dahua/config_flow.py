@@ -1,4 +1,6 @@
 """Adds config flow (UI flow) for Dahua IP cameras."""
+import logging
+
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -15,12 +17,15 @@ from .const import (
     CONF_PORT,
     CONF_STREAMS,
     CONF_EVENTS,
+    CONF_NAME,
     STREAM_MAIN,
     STREAM_SUB,
     STREAM_BOTH,
     DOMAIN,
     PLATFORMS,
 )
+
+_LOGGER: logging.Logger = logging.getLogger(__package__)
 
 STREAMS = [STREAM_MAIN, STREAM_SUB, STREAM_BOTH]
 
@@ -71,15 +76,16 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for Dahua Camera API."""
 
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
+    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
     def __init__(self):
         """Initialize."""
         self.dahua_config = {}
         self._errors = {}
+        self.init_info = None
 
     async def async_step_user(self, user_input=None):
-        """Handle a flow initialized by the user."""
+        """Handle a flow initialized by the user to add a camera."""
         self._errors = {}
 
         # Uncomment the next 2 lines if only a single instance of the integration is allowed:
@@ -95,25 +101,40 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input[CONF_RTSP_PORT],
             )
             if data is not None:
-                user_input.update(data)
-                return self.async_create_entry(
-                    title=data["name"],
-                    data=user_input,
-                )
+                # Only allow a camera to be setup once
+                if "serialNumber" in data and data["serialNumber"] is not None:
+                    await self.async_set_unique_id(data["serialNumber"])
+                    self._abort_if_unique_id_configured()
+
+                user_input[CONF_NAME] = data["name"]
+                self.init_info = user_input
+                return await self._show_config_form_name(user_input)
             else:
                 self._errors["base"] = "auth"
 
-            return await self._show_config_form(user_input)
+        return await self._show_config_form_user(user_input)
 
-        return await self._show_config_form(user_input)
+    async def async_step_name(self, user_input=None):
+        """Handle a flow to configure the camera name."""
+        self._errors = {}
+
+        if user_input is not None:
+            if self.init_info is not None:
+                self.init_info.update(user_input)
+                return self.async_create_entry(
+                    title=self.init_info["name"],
+                    data=self.init_info,
+                )
+
+        return await self._show_config_form_name(user_input)
 
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
         return DahuaOptionsFlowHandler(config_entry)
 
-    async def _show_config_form(self, user_input):  # pylint: disable=unused-argument
-        """Show the configuration form to edit location data."""
+    async def _show_config_form_user(self, user_input):  # pylint: disable=unused-argument
+        """Show the configuration form to edit camera name."""
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -130,6 +151,18 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             errors=self._errors,
         )
 
+    async def _show_config_form_name(self, user_input):  # pylint: disable=unused-argument
+        """Show the configuration form to edit location data."""
+        return self.async_show_form(
+            step_id="name",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_NAME, default=user_input[CONF_NAME]): str,
+                }
+            ),
+            errors=self._errors,
+        )
+
     async def _test_credentials(self, username, password, address, port, rtsp_port):
         """Return true if credentials is valid."""
         try:
@@ -138,9 +171,12 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 username, password, address, port, rtsp_port, session
             )
             data = await client.get_machine_name()
+            serial = await client.async_get_system_info()
+            data.update(serial)
             if "name" in data:
                 return data
-        except Exception:  # pylint: disable=broad-except
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.error("Could not connect to Dahua device", exc_info=exception)
             pass
         return None
 

@@ -13,13 +13,20 @@
                     "streams": "RTSP Streams",
                     "events": "Events"
                 }
+            },
+            "name": {
+                "title": "Configure Device Name",
+                "data": {
+                    "name": "Device Name"
+                }
             }
         },
         "error": {
             "auth": "Username, Password, or Address is wrong."
         },
         "abort": {
-            "single_instance_allowed": "Only a single instance is allowed."
+            "single_instance_allowed": "Only a single instance is allowed.",
+            "already_configured": "Only a single instance of a device is allowed."
         }
     },
     "options": {
