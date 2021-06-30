@@ -80,6 +80,7 @@ These devices are confirmed as working:
 * IPC-HFW1435S-W-S2
 * IPC-HDW4233C-A
 * IPC-HDBW1230E-S2
+* IPC-HDBW5421E-Z
 * LNB8005-C
 * LNE8964AB
 * IPC-A26
