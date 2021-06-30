@@ -120,7 +120,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # This thread is what connects to the cameras event stream and fires on_receive when there's an event
         self.dahua_event = DahuaEventThread(hass, self.client, self.on_receive, events)
         # This thread will connect to VTO devices (Dahua doorbells)
-        self._dahua_vto_event_thread = DahuaVtoEventThread(hass, self.client, self.on_receive_vto_event, host=address,
+        self.dahua_vto_event_thread = DahuaVtoEventThread(hass, self.client, self.on_receive_vto_event, host=address,
                                                            port=5000, username=username, password=password)
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
@@ -139,13 +139,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def async_start_vto_event_listener(self):
         """ Starts the event listeners for doorbells (VTO). This will not work for IP cameras"""
-        if self._dahua_vto_event_thread is not None:
-            self._dahua_vto_event_thread.start()
+        if self.dahua_vto_event_thread is not None:
+            self.dahua_vto_event_thread.start()
 
     async def async_stop(self, event: Any):
         """ Stop anything we need to stop """
         self.dahua_event.stop()
-        self._dahua_vto_event_thread.stop()
+        self.dahua_vto_event_thread.stop()
 
     async def _async_update_data(self):
         """Reload the camera information"""
@@ -493,7 +493,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Handle removal of an entry."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    coordinator.dahua_event.stopped.set()
+    coordinator.dahua_event.stop()
+    coordinator.dahua_vto_event_thread.stop()
     unloaded = all(
         await asyncio.gather(
             *[

@@ -32,6 +32,9 @@ class DahuaEventThread(threading.Thread):
         _LOGGER.debug("Starting DahuaEventThread")
 
         while True:
+            if not self.started:
+                _LOGGER.info("Exiting DahuaEventThread")
+                return
             # submit the coroutine to the event loop thread
             coro = self.client.stream_events(self.on_receive, self.events)
             future = asyncio.run_coroutine_threadsafe(coro, self.hass.loop)
@@ -47,7 +50,7 @@ class DahuaEventThread(threading.Thread):
                 _LOGGER.debug("%s", ex)
 
             if not self.started:
-                _LOGGER.debug("Exiting DahuaEventThread")
+                _LOGGER.info("Exiting DahuaEventThread")
                 return
 
             end_time = int(time.time())
@@ -59,7 +62,10 @@ class DahuaEventThread(threading.Thread):
 
     def stop(self):
         """ Signals to the thread loop that we should stop """
-        self.started = False
+        if self.started:
+            _LOGGER.info("Stopping DahuaEventThread")
+            self.stopped.set()
+            self.started = False
 
 
 class DahuaVtoEventThread(threading.Thread):
@@ -88,7 +94,7 @@ class DahuaVtoEventThread(threading.Thread):
         while True:
             try:
                 if not self.started:
-                    _LOGGER.debug("Exiting DahuaVtoEventThread")
+                    _LOGGER.info("Exiting DahuaVtoEventThread")
                     return
 
                 _LOGGER.info("Connecting to VTO event stream")
@@ -109,6 +115,9 @@ class DahuaVtoEventThread(threading.Thread):
                 time.sleep(5)
 
             except Exception as ex:
+                if not self.started:
+                    _LOGGER.info("Exiting DahuaVtoEventThread")
+                    return
                 exc_type, exc_obj, exc_tb = sys.exc_info()
                 line = exc_tb.tb_lineno
 
@@ -118,4 +127,7 @@ class DahuaVtoEventThread(threading.Thread):
 
     def stop(self):
         """ Signals to the thread loop that we should stop """
-        self.started = False
+        if self.started:
+            _LOGGER.info("Stopping DahuaVtoEventThread")
+            self.stopped.set()
+            self.started = False
