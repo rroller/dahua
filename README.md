@@ -91,9 +91,53 @@ These devices are confirmed as working:
 * IPC-D2B20-ZS doesn't work. Needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201), [7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237)
 
 # Events
-Events are streamed from the device and then fired on the Home Assistant event bus.
+Events are streamed from the device and fired on the Home Assistant event bus.
 
-TODO: Expand on this and how examples of how to consume the events.
+Here's example event data:
+
+```json
+{
+    "event_type": "dahua_event_received",
+    "data": {
+        "name": "Cam13",
+        "Code": "VideoMotion",
+        "action": "Start",
+        "index": "0",
+        "data": {
+            "Id": [
+                0
+            ],
+            "RegionName": [
+                "Region1"
+            ],
+            "SmartMotionEnable": false
+        },
+        "DeviceName": "Cam13"
+    },
+    "origin": "LOCAL",
+    "time_fired": "2021-06-30T04:00:28.605290+00:00",
+    "context": {
+        "id": "199542fe3f404f2a0a81031ee495bdd1",
+        "parent_id": null,
+        "user_id": null
+    }
+}
+```
+
+And here's how you configure and event trigger in an automation:
+```yaml
+platform: event
+event_type: dahua_event_received
+event_data:
+  name: Cam13
+  Code: VideoMotion
+  action: Start
+```
+
+And that's it! You can enable debug logging (See at the end of this readme) to print out events to the Home Assisant log
+as they fire. That can help you understand the events. Or you can HA and open Developer Tools -> Events -> and under
+"Listen to events" enter `dahua_event_received` and then click "Start Listening" and wait for events to fire (you might
+need to walk in front of your cam to make motion events fire, or press a button, etc)
 
 # Services and Entities
 Note for ease of use, the integration tries to determine if your device supports certain services, entities and will conditionally add them. But that's sometimes a little hard so it'll just add the entity even if your devices doesn't support.
