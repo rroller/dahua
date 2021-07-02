@@ -397,6 +397,24 @@ class DahuaClient:
         )
         return await self.api_wrapper("get", url, headers=HEADERS)
 
+    async def async_set_record_mode(self, mode: str) -> dict:
+        """
+        async_set_record_mode sets the record mode.
+        mode should be one of: auto, manual, or off
+        """
+
+        if mode.lower() == "auto":
+            mode = "0"
+        elif mode.lower() == "manual" or mode.lower() == "on":
+            mode = "1"
+        elif mode.lower() == "off":
+            mode = "2"
+        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&RecordMode[0].Mode={1}".format(
+            self._address_with_port, mode
+        )
+        _LOGGER.debug("Setting record mode: %s", url)
+        return await self.api_wrapper("get", url, headers=HEADERS)
+
     async def async_get_disarming_linkage(self) -> dict:
         """
         async_get_disarming_linkage will return true if the disarming linkage (Event -> Disarming in the UI) is enabled

@@ -27,6 +27,7 @@ SERVICE_SET_VIDEO_PROFILE_MODE = "set_video_profile_mode"
 SERVICE_SET_CHANNEL_TITLE = "set_channel_title"
 SERVICE_SET_TEXT_OVERLAY = "set_text_overlay"
 SERVICE_SET_CUSTOM_OVERLAY = "set_custom_overlay"
+SERVICE_SET_RECORD_MODE = "set_record_mode"
 SERVICE_ENABLE_CHANNEL_TITLE = "enable_channel_title"
 SERVICE_ENABLE_TIME_OVERLay = "enable_time_overlay"
 SERVICE_ENABLE_TEXT_OVERLAY = "enable_text_overlay"
@@ -154,21 +155,21 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         "async_set_service_set_custom_overlay"
     )
 
+    platform.async_register_entity_service(
+        SERVICE_SET_RECORD_MODE,
+        {
+            vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto", "0", "1", "2", ])
+        },
+        "async_set_record_mode"
+    )
+
     # Exposes a service to enable setting the cameras infrared light to Auto, Manual, and Off along with the brightness
     if coordinator.supports_infrared_light():
         # "async_set_infrared_mode" is the method called upon calling the service. Defined below in DahuaCamera class
         platform.async_register_entity_service(
             SERVICE_SET_INFRARED_MODE,
             {
-                vol.Required("mode"): vol.In(
-                    [
-                        "On",  # Dahua uses Manual but that's awkward so use On and translate before we call the cam API
-                        "on",
-                        "Off",
-                        "off",
-                        "Auto",
-                        "auto",
-                    ]),
+                vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto"]),
                 vol.Optional('brightness', default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
             },
             "async_set_infrared_mode"
@@ -239,6 +240,11 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_set_infrared_mode(self, mode: str, brightness: int):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
         await self.coordinator.client.async_set_lighting_v1_mode(mode, brightness)
+        await self.coordinator.async_refresh()
+
+    async def async_set_record_mode(self, mode: str):
+        """ Handles the service call from SERVICE_SET_RECORD_MODE to set the record mode """
+        await self.coordinator.client.async_set_record_mode(mode)
         await self.coordinator.async_refresh()
 
     async def async_set_video_profile_mode(self, mode: str):

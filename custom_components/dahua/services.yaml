@@ -18,7 +18,7 @@ set_infrared_mode:
           options:
             - "Auto"
             - "On"
-            - "Auto"
+            - "Off"
     brightness:
       description: The infrared brightness, from 0 to 100 inclusive. 100 is the brightest
       example: 100
@@ -333,3 +333,22 @@ set_text_overlay:
       default: ""
       selector:
         text:
+
+set_record_mode:
+  name: Set Record Mode on Dahua Camera
+  description: Sets the record mode (on/off or auto). On is always on recording. Off is always off. Auto based on motion settings, etc.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    mode:
+      description: "The mode: Auto, On, Off"
+      example: "Auto"
+      default: "Auto"
+      selector:
+        select:
+          options:
+            - "Auto"
+            - "On"
+            - "Off"
