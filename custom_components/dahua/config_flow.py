@@ -8,6 +8,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers import config_validation as cv
 
+from . import DahuaRpc2Client
 from .client import DahuaClient
 from .const import (
     CONF_PASSWORD,
@@ -172,14 +173,18 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """Return true if credentials is valid."""
         try:
             session = async_create_clientsession(self.hass)
-            client = DahuaClient(
+            client = DahuaRpc2Client(
                 username, password, address, port, rtsp_port, session
             )
-            data = await client.get_machine_name()
-            serial = await client.async_get_system_info()
-            data.update(serial)
-            if "name" in data:
-                return data
+            await client.login()
+
+            name = await client.get_device_name()
+            serial = await client.get_serial_number()
+
+            return {
+                "name": name,
+                "serialNumber": serial,
+            }
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.error("Could not connect to Dahua device", exc_info=exception)
             pass

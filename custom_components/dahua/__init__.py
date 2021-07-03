@@ -33,6 +33,7 @@ from .const import (
     CONF_RTSP_PORT,
     STARTUP_MESSAGE,
 )
+from .rpc2 import DahuaRpc2Client
 
 SCAN_INTERVAL_SECONDS = timedelta(seconds=30)
 
@@ -96,6 +97,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Initialize."""
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port,
                                                async_get_clientsession(hass))
+        self.rpc2: DahuaRpc2Client = DahuaRpc2Client(username, password, address, port, rtsp_port,
+                                                     async_get_clientsession(hass, verify_ssl=False))
         self.dahua_event: DahuaEventThread
         self.platforms = []
         self.initialized = False
@@ -121,7 +124,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.dahua_event = DahuaEventThread(hass, self.client, self.on_receive, events)
         # This thread will connect to VTO devices (Dahua doorbells)
         self.dahua_vto_event_thread = DahuaVtoEventThread(hass, self.client, self.on_receive_vto_event, host=address,
-                                                           port=5000, username=username, password=password)
+                                                          port=5000, username=username, password=password)
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
         self._dahua_event_listeners: dict[str, CALLBACK_TYPE] = dict()
@@ -153,6 +156,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             data = {}
 
             if not self.initialized:
+                # DEBUG CODE - DO NOT CHECK IN
+                await self.rpc2.login()
+                try:
+                    _LOGGER.error("rcp2 response=%s", (await self.rpc2.get_device_name()))
+                    _LOGGER.error("rcp2 response=%s", (await self.rpc2.get_serial_number()))
+                except Exception as exception:
+                    _LOGGER.error("Error with RPC2=%s", exc_info=exception)
+                await self.rpc2.logout()
+                # END OF DEBUG CODE - DO NOT CHECK IN
+
                 responses = await asyncio.gather(
                     self.client.async_get_system_info(),
                     self.client.async_get_machine_name(),
