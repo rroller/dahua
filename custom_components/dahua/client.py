@@ -4,16 +4,13 @@ import socket
 import asyncio
 import aiohttp
 import async_timeout
-from homeassistant.helpers.aiohttp_client import async_aiohttp_proxy_web
 from custom_components.dahua.const import STREAM_MAIN, STREAM_SUB
 
 from .digest import DigestAuth
 
-TIMEOUT_SECONDS = 5
-
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
-HEADERS = {"Content-type": "application/json; charset=UTF-8"}
+TIMEOUT_SECONDS = 5
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -41,7 +38,7 @@ class DahuaClient:
         self._session = session
         self._port = port
         self._rtsp_port = rtsp_port
-        self._address_with_port = "{0}:{1}".format(address, port)
+        self._base = "http://{0}:{1}".format(address, port)
 
     @staticmethod
     def to_subtype(stream_name: str) -> int:
@@ -85,10 +82,8 @@ class DahuaClient:
         """
         Takes a snapshot of the camera and returns the binary jpeg data
         """
-        url = "http://{0}/cgi-bin/snapshot.cgi?channel={1}".format(
-            self._address_with_port, channel
-        )
-        return await self.api_get_raw_data(url)
+        url = "/cgi-bin/snapshot.cgi?channel={0}".format(channel)
+        return await self.get_bytes(url)
 
     async def async_get_system_info(self) -> dict:
         """
@@ -102,40 +97,32 @@ class DahuaClient:
         updateSerial=IPC-HDW5830R-Z
         updateSerialCloudUpgrade=IPC-HDW5830R-Z:07:01:08:70:52:00:09:0E:03:00:04:8F0:00:00:00:00:00:02:00:00:600
         """
-        url = "http://{0}/cgi-bin/magicBox.cgi?action=getSystemInfo".format(
-            self._address_with_port
-        )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/magicBox.cgi?action=getSystemInfo"
+        return await self.get(url)
 
     async def get_software_version(self) -> dict:
         """
         get_software_version returns the device software version (also known as the firmware version). Example response:
         version=2.800.0000016.0.R,build:2020-06-05
         """
-        url = "http://{0}/cgi-bin/magicBox.cgi?action=getSoftwareVersion".format(
-            self._address_with_port
-        )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/magicBox.cgi?action=getSoftwareVersion"
+        return await self.get(url)
 
     async def get_machine_name(self) -> dict:
         """
         get_machine_name returns the device name. Example response:
         name=FrontDoorCam
         """
-        url = "http://{0}/cgi-bin/magicBox.cgi?action=getMachineName".format(
-            self._address_with_port
-        )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/magicBox.cgi?action=getMachineName"
+        return await self.get(url)
 
     async def get_vendor(self) -> dict:
         """
         get_vendor returns the vendor. Example response:
         vendor=Dahua
         """
-        url = "http://{0}/cgi-bin/magicBox.cgi?action=getVendor".format(
-            self._address_with_port
-        )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/magicBox.cgi?action=getVendor"
+        return await self.get(url)
 
     async def async_get_coaxial_control_io_status(self) -> dict:
         """
@@ -148,12 +135,8 @@ class DahuaClient:
         status.status.Speaker=Off
         status.status.WhiteLight=Off
         """
-        url = (
-            "http://{0}/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=1".format(
-                self._address_with_port
-            )
-        )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=1"
+        return await self.get(url)
 
     async def async_get_lighting_v2(self) -> dict:
         """
@@ -170,10 +153,8 @@ class DahuaClient:
         table.Lighting_V2[0][2][0].PercentOfMaxBrightness=100
         table.Lighting_V2[0][2][0].Sensitive=3
         """
-        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=Lighting_V2".format(
-            self._address_with_port
-        )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting_V2"
+        return await self.get(url)
 
     async def async_get_machine_name(self) -> dict:
         """
@@ -187,12 +168,8 @@ class DahuaClient:
         table.General.MachineName=Cam4
         table.General.MaxOnlineTime=3600
         """
-        url = (
-            "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=General".format(
-                self._address_with_port
-            )
-        )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=General"
+        return await self.get(url)
 
     async def async_common_config(self, profile_mode) -> dict:
         """
@@ -207,16 +184,16 @@ class DahuaClient:
         table.Lighting[0][0].Mode=Auto
         table.Lighting[0][0].Sensitive=3
         """
-        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect&action=getConfig&name=Lighting[0][{1}]".format(
-            self._address_with_port, profile_mode
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect&action=getConfig&name=Lighting[0][{0}]".format(
+            profile_mode
         )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        return await self.get(url)
 
     async def async_get_config(self, name) -> dict:
         """ async_get_config gets a config by name """
         # example name=Lighting[0][0]
-        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name={1}".format(self._address_with_port, name)
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name={0}".format(name)
+        return await self.get(url)
 
     async def async_set_lighting_v1(self, enabled: bool, brightness: int) -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
@@ -238,10 +215,10 @@ class DahuaClient:
         # Dahua api expects the first char to be capital
         mode = mode.capitalize()
 
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&Lighting[0][0].Mode={1}&Lighting[0][0].MiddleLight[0].Light={2}".format(
-            self._address_with_port, mode, brightness
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting[0][0].Mode={0}&Lighting[0][0].MiddleLight[0].Light={1}".format(
+            mode, brightness
         )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        return await self.get(url)
 
     async def async_set_video_profile_mode(self, mode: str):
         """
@@ -255,56 +232,54 @@ class DahuaClient:
             # Default to "day", which is 0
             mode = "0"
 
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[0].Config[0]={1}".format(
-            self._address_with_port, mode
-        )
-        value = await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[0].Config[0]={0}".format(mode)
+        value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set video profile mode")
 
     async def async_enable_channel_title(self, channel: int, enabled: bool, ):
         """ async_set_enable_channel_title will enable or disables the camera's channel title overlay """
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].ChannelTitle.EncodeBlend={2}".format(
-            self._address_with_port, channel, str(enabled).lower()
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].ChannelTitle.EncodeBlend={1}".format(
+            channel, str(enabled).lower()
         )
-        value = await self.api_wrapper("get", url, headers=HEADERS)
+        value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could enable/disable channel title")
 
     async def async_enable_time_overlay(self, channel: int, enabled: bool):
         """ async_set_enable_time_overlay will enable or disables the camera's time overlay """
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].TimeTitle.EncodeBlend={2}".format(
-            self._address_with_port, channel, str(enabled).lower()
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].TimeTitle.EncodeBlend={1}".format(
+            channel, str(enabled).lower()
         )
-        value = await self.api_wrapper("get", url, headers=HEADERS)
+        value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable time overlay")
 
     async def async_enable_text_overlay(self, channel: int, group: int, enabled: bool):
         """ async_set_enable_text_overlay will enable or disables the camera's text overlay """
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].CustomTitle[{2}].EncodeBlend={3}".format(
-            self._address_with_port, channel, group, str(enabled).lower()
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].CustomTitle[{1}].EncodeBlend={2}".format(
+            channel, group, str(enabled).lower()
         )
-        value = await self.api_wrapper("get", url, headers=HEADERS)
+        value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable text overlay")
 
     async def async_enable_custom_overlay(self, channel: int, group: int, enabled: bool):
         """ async_set_enable_custom_overlay will enable or disables the camera's custom overlay """
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].UserDefinedTitle[{2}].EncodeBlend={3}".format(
-            self._address_with_port, channel, group, str(enabled).lower()
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].UserDefinedTitle[{1}].EncodeBlend={2}".format(
+            channel, group, str(enabled).lower()
         )
-        value = await self.api_wrapper("get", url, headers=HEADERS)
+        value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable customer overlay")
 
     async def async_set_service_set_channel_title(self, channel: int, text1: str, text2: str):
         """ async_set_service_set_channel_title sets the channel title """
         text = '|'.join(filter(None, [text1, text2]))
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&ChannelTitle[{1}].Name={2}".format(
-            self._address_with_port, channel, text
+        url = "/cgi-bin/configManager.cgi?action=setConfig&ChannelTitle[{0}].Name={1}".format(
+            channel, text
         )
-        value = await self.api_wrapper("get", url, headers=HEADERS)
+        value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
@@ -312,20 +287,20 @@ class DahuaClient:
                                                  text4: str):
         """ async_set_service_set_text_overlay sets the video text overlay """
         text = '|'.join(filter(None, [text1, text2, text3, text4]))
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].CustomTitle[{2}].Text={3}".format(
-            self._address_with_port, channel, group, text
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].CustomTitle[{1}].Text={2}".format(
+            channel, group, text
         )
-        value = await self.api_wrapper("get", url, headers=HEADERS)
+        value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
     async def async_set_service_set_custom_overlay(self, channel: int, group: int, text1: str, text2: str):
         """ async_set_service_set_custom_overlay sets the customer overlay on the video"""
         text = '|'.join(filter(None, [text1, text2]))
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{1}].UserDefinedTitle[{2}].Text={3}".format(
-            self._address_with_port, channel, group, text
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].UserDefinedTitle[{1}].Text={2}".format(
+            channel, group, text
         )
-        value = await self.api_wrapper("get", url, headers=HEADERS)
+        value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
@@ -342,11 +317,11 @@ class DahuaClient:
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][{1}][0].Mode={2}&Lighting_V2[0][{3}][0].MiddleLight[0].Light={4}".format(
-            self._address_with_port, profile_mode, mode, profile_mode, brightness
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][{0}][0].Mode={1}&Lighting_V2[0][{2}][0].MiddleLight[0].Light={3}".format(
+            profile_mode, mode, profile_mode, brightness
         )
         _LOGGER.debug("Turning light on: %s", url)
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        return await self.get(url)
 
     async def async_get_video_in_mode(self) -> dict:
         """
@@ -360,8 +335,8 @@ class DahuaClient:
         table.VideoInMode[0].TimeSection[0][0]=0 00:00:00-24:00:00
         """
 
-        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode".format(self._address_with_port)
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
+        return await self.get(url)
 
     async def async_set_coaxial_control_state(self, dahua_type: int, enabled: bool) -> dict:
         """
@@ -377,11 +352,10 @@ class DahuaClient:
         if not enabled:
             io = "2"
 
-        url = "http://{0}/cgi-bin/coaxialControlIO.cgi?action=control&channel=0&info[0].Type={1}&info[0].IO={2}".format(
-            self._address_with_port, dahua_type, io
-        )
+        url = "/cgi-bin/coaxialControlIO.cgi?action=control&channel=0&info[0].Type={0}&info[0].IO={1}".format(
+            dahua_type, io)
         _LOGGER.debug("Setting coaxial control state to %s: %s", io, url)
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        return await self.get(url)
 
     async def async_set_disarming_linkage(self, enabled: bool) -> dict:
         """
@@ -392,10 +366,8 @@ class DahuaClient:
         if enabled:
             value = "true"
 
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage[0].Enable={1}".format(
-            self._address_with_port, value
-        )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage[0].Enable={0}".format(value)
+        return await self.get(url)
 
     async def async_set_record_mode(self, mode: str) -> dict:
         """
@@ -409,11 +381,9 @@ class DahuaClient:
             mode = "1"
         elif mode.lower() == "off":
             mode = "2"
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&RecordMode[0].Mode={1}".format(
-            self._address_with_port, mode
-        )
+        url = "/cgi-bin/configManager.cgi?action=setConfig&RecordMode[0].Mode={0}".format(mode)
         _LOGGER.debug("Setting record mode: %s", url)
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        return await self.get(url)
 
     async def async_get_disarming_linkage(self) -> dict:
         """
@@ -423,28 +393,23 @@ class DahuaClient:
         table.DisableLinkage.Enable=false
         """
 
-        url = "http://{0}/cgi-bin/configManager.cgi?action=getConfig&name=DisableLinkage".format(
-            self._address_with_port
-        )
-        return await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=DisableLinkage"
+        return await self.get(url)
 
     async def enable_motion_detection(self, enabled: bool) -> dict:
         """
         enable_motion_detection will either enable or disable motion detection on the camera depending on the supplied value
         """
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[0].Enable={1}&MotionDetect[0].DetectVersion=V3.0".format(
-            self._address_with_port, str(enabled).lower()
-        )
-        response = await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[0].Enable={0}&MotionDetect[0].DetectVersion=V3.0".format(
+            str(enabled).lower())
+        response = await self.get(url)
 
         if "OK" in response:
             return response
 
         # Some older cameras do not support the above API, so try this one
-        url = "http://{0}/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[0].Enable={1}".format(
-            self._address_with_port, str(enabled).lower()
-        )
-        response = await self.api_wrapper("get", url, headers=HEADERS)
+        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[0].Enable={0}".format(str(enabled).lower())
+        response = await self.get(url)
 
         return response
 
@@ -501,8 +466,7 @@ class DahuaClient:
         """
         # Use codes=[All] for all codes
         codes = ",".join(events)
-        url = "http://{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=2".format(
-            self._address_with_port, codes)
+        url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=2".format(self._base, codes)
         if self._username is not None and self._password is not None:
             response = None
             try:
@@ -540,14 +504,14 @@ class DahuaClient:
                 data_dict[parts[0]] = line
         return data_dict
 
-    async def api_get_raw_data(self, url: str) -> bytes:
+    async def get_bytes(self, url: str) -> bytes:
         """Get information from the API. This will return the raw response and not process it"""
         try:
             async with async_timeout.timeout(TIMEOUT_SECONDS):
                 response = None
                 try:
                     auth = DigestAuth(self._username, self._password, self._session)
-                    response = await auth.request("GET", url)
+                    response = await auth.request("GET", self._base + url)
                     response.raise_for_status()
 
                     return await response.read()
@@ -564,28 +528,22 @@ class DahuaClient:
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.error("Something really wrong happened! - %s", exception)
 
-    async def api_wrapper(self, method: str, url: str, data: dict = {}, headers: dict = {}) -> dict:
+    async def get(self, url: str) -> dict:
         """Get information from the API."""
+        url = self._base + url
+        data = {}
         try:
             async with async_timeout.timeout(TIMEOUT_SECONDS):
-                if method == "get":
-                    response = None
-                    try:
-                        auth = DigestAuth(self._username, self._password, self._session)
-                        response = await auth.request("GET", url)
-                        response.raise_for_status()
-                        data = await response.text()
-                        return await self.parse_dahua_api_response(data)
-                    finally:
-                        if response is not None:
-                            response.close()
-
-                elif method == "put":
-                    await self._session.put(url, headers=headers, json=data)
-                elif method == "patch":
-                    await self._session.patch(url, headers=headers, json=data)
-                elif method == "post":
-                    await self._session.post(url, headers=headers, json=data)
+                response = None
+                try:
+                    auth = DigestAuth(self._username, self._password, self._session)
+                    response = await auth.request("GET", url)
+                    response.raise_for_status()
+                    data = await response.text()
+                    return await self.parse_dahua_api_response(data)
+                finally:
+                    if response is not None:
+                        response.close()
         except asyncio.TimeoutError as exception:
             _LOGGER.error("TimeoutError fetching information from %s - %s", url, exception)
         except (KeyError, TypeError) as exception:
