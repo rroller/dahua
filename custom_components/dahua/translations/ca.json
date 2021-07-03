@@ -1,0 +1,45 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Afegiu una càmera Dahua",
+                "description": "Adreça d'exemple: 192.168.1.108",
+                "data": {
+                    "username": "Usuari",
+                    "password": "Contrasenya",
+                    "address": "Adreça IP",
+                    "port": "Port",
+                    "rtsp_port": "Port RTSP",
+                    "streams": "Seqüència RTSP",
+                    "events": "Esdeveniments"
+                }
+            },
+            "name": {
+                "title": "Configureu el nom del dispositiu",
+                "data": {
+                    "name": "Nom del dispositiu"
+                }
+            }
+        },
+        "error": {
+            "auth": "L'usuari, la contrasenya o l'adreça IP són incorrectes."
+        },
+        "abort": {
+            "single_instance_allowed": "Només es permet una única instància.",
+            "already_configured": "Només es permet una única instància per dispositiu."
+        }
+    },
+    "options": {
+        "step": {
+            "user": {
+                "data": {
+                    "binary_sensor": "Sensor binari habilitat",
+                    "sensor": "Sensor habilitat",
+                    "switch": "Interruptor habilitat",
+                    "light": "Llum habilitat",
+                    "camera": "Càmera habilitat"
+                }
+            }
+        }
+    }
+}
