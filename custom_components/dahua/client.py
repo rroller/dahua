@@ -40,30 +40,6 @@ class DahuaClient:
         self._rtsp_port = rtsp_port
         self._base = "http://{0}:{1}".format(address, port)
 
-    @staticmethod
-    def to_subtype(stream_name: str) -> int:
-        """
-        Given a stream name (Main or Sub) returns the subtype index. The index is what the API uses
-        """
-        if stream_name == STREAM_MAIN:
-            return 0
-        elif stream_name == STREAM_SUB:
-            return 1
-
-        # Just default to the main stream
-        return 0
-
-    @staticmethod
-    def to_stream_name(subtype: int) -> str:
-        """
-        Given the subtype, returns the stream name (Main or Sub)
-        """
-        if subtype == 1:
-            return STREAM_SUB
-
-        # Just default to the main stream
-        return STREAM_MAIN
-
     def get_rtsp_stream_url(self, channel: int, subtype: int) -> str:
         """
         Returns the RTSP url for the supplied subtype (subtype is 0=Main stream, 1=Sub stream)
@@ -552,3 +528,27 @@ class DahuaClient:
             raise exception
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.error("Something really wrong happened! - %s", exception)
+
+    @staticmethod
+    def to_subtype(stream_name: str) -> int:
+        """
+        Given a stream name (Main or Sub) returns the subtype index. The index is what the API uses
+        """
+        if stream_name == STREAM_MAIN:
+            return 0
+        elif stream_name == STREAM_SUB:
+            return 1
+
+        # Just default to the main stream
+        return 0
+
+    @staticmethod
+    def to_stream_name(subtype: int) -> str:
+        """
+        Given the subtype, returns the stream name (Main or Sub)
+        """
+        if subtype == 1:
+            return STREAM_SUB
+
+        # Just default to the main stream
+        return STREAM_MAIN
