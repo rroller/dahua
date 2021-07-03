@@ -1,0 +1,45 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Agregar una Camara Dahua",
+                "description": "Dirección de ejemplo: 192.168.1.108",
+                "data": {
+                    "username": "usuario",
+                    "password": "Contraseña",
+                    "address": "Dirección IP",
+                    "port": "Puerto",
+                    "rtsp_port": "Puerto RTSP",
+                    "streams": "Secuencia RTSP",
+                    "events": "Eventos"
+                }
+            },
+            "name": {
+                "title": "Configurar el nombre del dispositivo ",
+                "data": {
+                    "name": "Nombre del dispositivo"
+                }
+            }
+        },
+        "error": {
+            "auth": "Usuario, Contraseña o dirección IP no son correctas."
+        },
+        "abort": {
+            "single_instance_allowed": "Solo se permite una instancia.",
+            "already_configured": "Solo se permite una única instancia por dispositivo."
+        }
+    },
+    "options": {
+        "step": {
+            "user": {
+                "data": {
+                    "binary_sensor": "Sensor binario habilitado",
+                    "sensor": "Sensor habilitado",
+                    "switch": "Interruptor habilitado",
+                    "light": "Luz habilitada",
+                    "camera": "Camara habilitada"
+                }
+            }
+        }
+    }
+}
