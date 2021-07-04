@@ -24,6 +24,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
+from .rpc2 import DahuaRpc2Client
 
 """
 https://developers.home-assistant.io/docs/config_entries_config_flow_handler
@@ -169,20 +170,34 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def _test_credentials(self, username, password, address, port, rtsp_port):
-        """Return true if credentials is valid."""
+        """Return name and serialNumber if credentials is valid."""
+        session = async_create_clientsession(self.hass)
         try:
-            session = async_create_clientsession(self.hass)
-            client = DahuaClient(
-                username, password, address, port, rtsp_port, session
-            )
-            data = await client.get_machine_name()
-            serial = await client.async_get_system_info()
-            data.update(serial)
-            if "name" in data:
-                return data
-        except Exception as exception:  # pylint: disable=broad-except
-            _LOGGER.error("Could not connect to Dahua device", exc_info=exception)
-            pass
+            # The long term goal is to migrate to the DahuaRpc2Client client and remove the DahuaClient
+            # Testing this out via login to see how it goes
+            client = DahuaRpc2Client(username, password, address, port, rtsp_port, session)
+            await client.login()
+            _LOGGER.info("Authenticated with the RPC2 API")
+            name = await client.get_device_name()
+            serial = await client.get_serial_number()
+            await client.logout()
+
+            return {
+                "name": name,
+                "serialNumber": serial,
+            }
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.warning("Could not connect to Dahua device via the RPC2 API, falling back to cgi")
+
+            try:
+                client2 = DahuaClient(username, password, address, port, rtsp_port, session)
+                data = await client2.get_machine_name()
+                serial = await client2.async_get_system_info()
+                data.update(serial)
+                if "name" in data:
+                    return data
+            except Exception as exception:  # pylint: disable=broad-except
+                _LOGGER.warning("Could not connect to Dahua device", exc_info=exception)
         return None
 
 

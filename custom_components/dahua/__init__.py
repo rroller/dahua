@@ -2,7 +2,7 @@
 Custom integration to integrate Dahua cameras with Home Assistant.
 """
 import asyncio
-from typing import Any
+from typing import Any, Dict
 import logging
 import time
 import json
@@ -121,14 +121,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.dahua_event = DahuaEventThread(hass, self.client, self.on_receive, events)
         # This thread will connect to VTO devices (Dahua doorbells)
         self.dahua_vto_event_thread = DahuaVtoEventThread(hass, self.client, self.on_receive_vto_event, host=address,
-                                                           port=5000, username=username, password=password)
+                                                          port=5000, username=username, password=password)
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
-        self._dahua_event_listeners: dict[str, CALLBACK_TYPE] = dict()
+        self._dahua_event_listeners: Dict[str, CALLBACK_TYPE] = dict()
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to the time the event fire or was cleared.
         # If cleared the time will be 0. The time unit is seconds epoch
-        self._dahua_event_timestamp: dict[str, int] = dict()
+        self._dahua_event_timestamp: Dict[str, int] = dict()
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
