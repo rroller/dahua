@@ -29,11 +29,11 @@ class DahuaEventThread(threading.Thread):
     def run(self):
         """Fetch events"""
         self.started = True
-        _LOGGER.debug("Starting DahuaEventThread")
+        _LOGGER.info("Starting DahuaEventThread")
 
         while True:
             if not self.started:
-                _LOGGER.info("Exiting DahuaEventThread")
+                _LOGGER.debug("Exiting DahuaEventThread")
                 return
             # submit the coroutine to the event loop thread
             coro = self.client.stream_events(self.on_receive, self.events)
@@ -50,7 +50,7 @@ class DahuaEventThread(threading.Thread):
                 _LOGGER.debug("%s", ex)
 
             if not self.started:
-                _LOGGER.info("Exiting DahuaEventThread")
+                _LOGGER.debug("Exiting DahuaEventThread")
                 return
 
             end_time = int(time.time())
@@ -89,15 +89,15 @@ class DahuaVtoEventThread(threading.Thread):
     def run(self):
         """Fetch VTO events"""
         self.started = True
-        _LOGGER.debug("Starting DahuaVtoEventThread")
+        _LOGGER.info("Starting DahuaVtoEventThread")
 
         while True:
             try:
                 if not self.started:
-                    _LOGGER.info("Exiting DahuaVtoEventThread")
+                    _LOGGER.debug("Exiting DahuaVtoEventThread")
                     return
 
-                _LOGGER.info("Connecting to VTO event stream")
+                _LOGGER.debug("Connecting to VTO event stream")
 
                 # TODO: How do I integrate this in with the HA loop? Does it even matter? I think so because
                 # how well do we know when we are shutting down HA?
@@ -116,7 +116,7 @@ class DahuaVtoEventThread(threading.Thread):
 
             except Exception as ex:
                 if not self.started:
-                    _LOGGER.info("Exiting DahuaVtoEventThread")
+                    _LOGGER.debug("Exiting DahuaVtoEventThread")
                     return
                 exc_type, exc_obj, exc_tb = sys.exc_info()
                 line = exc_tb.tb_lineno
