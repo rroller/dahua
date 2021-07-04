@@ -5,7 +5,7 @@
                 "title": "Agregar una Camara Dahua",
                 "description": "Dirección de ejemplo: 192.168.1.108",
                 "data": {
-                    "username": "usuario",
+                    "username": "Usuario",
                     "password": "Contraseña",
                     "address": "Dirección IP",
                     "port": "Puerto",
