@@ -32,6 +32,7 @@ SERVICE_ENABLE_CHANNEL_TITLE = "enable_channel_title"
 SERVICE_ENABLE_TIME_OVERLay = "enable_time_overlay"
 SERVICE_ENABLE_TEXT_OVERLAY = "enable_text_overlay"
 SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
+SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 
 # For now we'll only support 1 channel. I don't have any cams where I can test a second channel.
 # I'm not really sure what channel 2 means anyways, it doesn't seem to be the substream.
@@ -120,6 +121,15 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("enabled", default=False): bool,
         },
         "async_set_enable_custom_overlay"
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_ENABLE_ALL_IVS_RULES,
+        {
+            vol.Required("channel", default=0): int,
+            vol.Required("enabled", default=True): bool,
+        },
+        "async_set_enable_all_ivs_rules"
     )
 
     platform.async_register_entity_service(
@@ -266,6 +276,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_set_enable_custom_overlay(self, channel: int, group: int, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_CUSTOM_OVERLAY """
         await self.coordinator.client.async_enable_custom_overlay(channel, group, enabled)
+
+    async def async_set_enable_all_ivs_rules(self, channel: int, enabled: bool):
+        """ Handles the service call from SERVICE_ENABLE_ALL_IVS_RULES """
+        await self.coordinator.client.async_set_all_ivs_rules(channel, enabled)
 
     async def async_set_service_set_channel_title(self, channel: int, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """

@@ -171,6 +171,30 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name={0}".format(name)
         return await self.get(url)
 
+    async def async_get_ivs_rules(self):
+        """
+        returns the IVS rules and if they are enabled or not. [0][1] means channel 0, rule 1
+        table.VideoAnalyseRule[0][1].Enable=true
+        table.VideoAnalyseRule[0][1].Name=IVS-1
+        """
+        return await self.async_get_config("VideoAnalyseRule")
+
+    async def async_set_all_ivs_rules(self, channel: int, enabled: bool):
+        """
+        Sets all IVS rules to enabled or disabled
+        """
+        rules = await self.async_get_ivs_rules()
+        # Supporting up to a max of 11 rules. Just because 11 seems like a high enough number
+        rules_set = []
+        for index in range(10):
+            rule = "table.VideoAnalyseRule[{0}][{1}].Enable".format(channel, index)
+            if rule in rules:
+                rules_set.append("VideoAnalyseRule[{0}][{1}].Enable={2}".format(channel, index, str(enabled).lower()))
+
+        if len(rules_set) > 0:
+            url = "/cgi-bin/configManager.cgi?action=setConfig&" + "&".join(rules_set)
+            return await self.get(url)
+
     async def async_set_lighting_v1(self, enabled: bool, brightness: int) -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
         # on = Manual, off = Off

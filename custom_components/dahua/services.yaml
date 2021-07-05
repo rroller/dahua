@@ -352,3 +352,31 @@ set_record_mode:
             - "Auto"
             - "On"
             - "Off"
+
+enable_all_ivs_rules:
+  name: Enable or Disable All IVS rules
+  description: Enables of disables all IVS rules based on the supplied 'enabled' param
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    channel:
+      name: Channel
+      description: "The camera channel index. Typically 0"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    enabled:
+      name: Enabled
+      description: "If true all IVS rules are enabled. If false, all are disabled"
+      example: true
+      required: true
+      default: true
+      selector:
+        boolean:
