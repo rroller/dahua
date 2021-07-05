@@ -193,7 +193,16 @@ class DahuaClient:
 
         if len(rules_set) > 0:
             url = "/cgi-bin/configManager.cgi?action=setConfig&" + "&".join(rules_set)
-            return await self.get(url)
+            return await self.get(url, True)
+
+    async def async_set_ivs_rule(self, channel: int, index: int, enabled: bool):
+        """
+        Sets and IVS rules to enabled or disabled
+        """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[{0}][{1}].Enable={2}".format(
+            channel, index, str(enabled).lower()
+        )
+        return await self.get(url, True)
 
     async def async_set_lighting_v1(self, enabled: bool, brightness: int) -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
@@ -528,7 +537,7 @@ class DahuaClient:
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.error("Something really wrong happened! - %s", exception)
 
-    async def get(self, url: str) -> dict:
+    async def get(self, url: str, verify_ok=False) -> dict:
         """Get information from the API."""
         url = self._base + url
         data = {}
@@ -540,6 +549,9 @@ class DahuaClient:
                     response = await auth.request("GET", url)
                     response.raise_for_status()
                     data = await response.text()
+                    if verify_ok:
+                        if data.lower().strip() != "ok":
+                            raise Exception(data)
                     return await self.parse_dahua_api_response(data)
                 finally:
                     if response is not None:

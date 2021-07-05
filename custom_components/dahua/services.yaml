@@ -380,3 +380,42 @@ enable_all_ivs_rules:
       default: true
       selector:
         boolean:
+
+enable_ivs_rule:
+  name: Enable or Disable IVS rule
+  description: Enables of disable a single IVS rule based on the supplied 'enabled' param
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    channel:
+      name: Channel
+      description: "The camera channel index. Typically 0"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    index:
+      name: Index
+      description: "The rule index. 0 is a hidden rule, so usually the first rule is rule 1"
+      example: 1
+      required: true
+      default: 1
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    enabled:
+      name: Enabled
+      description: "If true enables the IVS rule, otherwise disables it"
+      example: true
+      required: true
+      default: true
+      selector:
+        boolean:
