@@ -10,6 +10,8 @@ import sys
 
 import aiohttp
 
+from custom_components.dahua.models import CoaxialControlIOStatus
+
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 if sys.version_info > (3, 0):
@@ -65,12 +67,13 @@ class DahuaRpc2Client:
         """
 
         # login1: get session, realm & random for real login
+        self._session_id = None
+        self._id = 0
         url = '{0}/RPC2_Login'.format(self._base)
         method = "global.login"
         params = {'userName': self._username,
                   'password': "",
                   'clientType': "Dahua3.0-Web3.0"}
-        _LOGGER.debug("Attempting login with URL %s", url)
         r = await self.request(method=method, params=params, url=url, verify_result=False)
 
         self._session_id = r['session']
@@ -100,7 +103,6 @@ class DahuaRpc2Client:
         try:
             response = await self.request(method="global.logout")
             if response['result'] is True:
-                _LOGGER.debug("Logged out of Dahua device %s", self._base)
                 return True
             else:
                 _LOGGER.debug("Failed to log out of Dahua device %s", self._base)
@@ -127,3 +129,8 @@ class DahuaRpc2Client:
         """Get the device name"""
         data = await self.get_config({"name": "General"})
         return data["table"]["MachineName"]
+
+    async def get_coaxial_control_io_status(self, channel: int) -> CoaxialControlIOStatus:
+        """ async_get_coaxial_control_io_status returns the the current state of the speaker and white light. """
+        response = await self.request(method="CoaxialControlIO.getStatus", params={"channel": channel})
+        return CoaxialControlIOStatus(response)
