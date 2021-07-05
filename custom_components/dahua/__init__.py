@@ -74,7 +74,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # https://developers.home-assistant.io/docs/config_entries_index/
     for platform in PLATFORMS:
         if entry.options.get(platform, True):
-            # coordinator.platforms.append(platform)
+            coordinator.platforms.append(platform)
             hass.async_add_job(
                 hass.config_entries.async_forward_entry_setup(entry, platform)
             )
@@ -93,32 +93,36 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, events: list, address: str, port: int, rtsp_port: int, username: str,
                  password: str, name: str) -> None:
-        """Initialize."""
-        self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port,
-                                               async_get_clientsession(hass))
-        self.dahua_event: DahuaEventThread
+        """Initialize the coordinator."""
+        session = async_get_clientsession(hass)
+
+        # The client used to communicate with Dahua devices
+        self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, session)
+
+        # The client for Dahua devices with the RPC2 API interface. This is an experimental client
+        # self.rpc2: DahuaRpc2Client = DahuaRpc2Client(username, password, address, port, rtsp_port, session)
+
         self.platforms = []
         self.initialized = False
         self.model = ""
         self.connected = None
         self.channels = {"1": "1"}
         self.events: list = events
-        self.motion_listener: CALLBACK_TYPE
-        self.cross_line_detection_listener: CALLBACK_TYPE
         self._supports_coaxial_control = False
         self._supports_disarming_linkage = False
         self._serial_number: str
         self._profile_mode = "0"
         self._supports_profile_mode = False
 
-        # This is the name given by the user during setup
+        # This is the name for the device given by the user during setup
         self._name = name
 
         # This is the name as reported from the camera itself
         self.machine_name = ""
 
         # This thread is what connects to the cameras event stream and fires on_receive when there's an event
-        self.dahua_event = DahuaEventThread(hass, self.client, self.on_receive, events)
+        self.dahua_event_thread = DahuaEventThread(hass, self.client, self.on_receive, events)
+
         # This thread will connect to VTO devices (Dahua doorbells)
         self.dahua_vto_event_thread = DahuaVtoEventThread(hass, self.client, self.on_receive_vto_event, host=address,
                                                           port=5000, username=username, password=password)
@@ -135,7 +139,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def async_start_event_listener(self):
         """ Starts the event listeners for IP cameras (this does not work for doorbells (VTO)) """
         if self.events is not None:
-            self.dahua_event.start()
+            self.dahua_event_thread.start()
 
     async def async_start_vto_event_listener(self):
         """ Starts the event listeners for doorbells (VTO). This will not work for IP cameras"""
@@ -144,7 +148,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def async_stop(self, event: Any):
         """ Stop anything we need to stop """
-        self.dahua_event.stop()
+        self.dahua_event_thread.stop()
         self.dahua_vto_event_thread.stop()
 
     async def _async_update_data(self):
@@ -153,6 +157,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             data = {}
 
             if not self.initialized:
+
                 responses = await asyncio.gather(
                     self.client.async_get_system_info(),
                     self.client.async_get_machine_name(),
@@ -172,9 +177,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self._serial_number = data.get("serialNumber")
 
                 try:
-                    await self.client.async_get_coaxial_control_io_status()
                     self._supports_coaxial_control = True
-                except ClientError as exception:
+                except ConnectionError as exception:
                     self._supports_coaxial_control = False
 
                 try:
@@ -493,7 +497,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Handle removal of an entry."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    coordinator.dahua_event.stop()
+    coordinator.dahua_event_thread.stop()
     coordinator.dahua_vto_event_thread.stop()
     unloaded = all(
         await asyncio.gather(
