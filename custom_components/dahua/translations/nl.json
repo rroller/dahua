@@ -15,9 +15,9 @@
                 }
             },
             "name": {
-                "title": "Configureer Apparaat Naam",
+                "title": "Configureer Apparaatnaam",
                 "data": {
-                    "name": "Apparaat Naam"
+                    "name": "Apparaatnaam"
                 }
             }
         },
@@ -25,19 +25,19 @@
             "auth": "Gebruikersnaam, Wachtwoord, of Adres is verkeerd."
         },
         "abort": {
-            "single_instance_allowed": "Er is maar 1 intergratie toegestaan.",
-            "already_configured": "Er is al een intergratie geconfigureerd."
+            "single_instance_allowed": "Er is maar 1 integratie toegestaan.",
+            "already_configured": "Er is al een integratie geconfigureerd."
         }
     },
     "options": {
         "step": {
             "user": {
                 "data": {
-                    "binary_sensor": "Binary sensor aktief",
-                    "sensor": "Sensor aktief",
-                    "switch": "Switch aktief",
-                    "light": "Light aktief",
-                    "camera": "Camera aktief"
+                    "binary_sensor": "Binary sensor actief",
+                    "sensor": "Sensor actief",
+                    "switch": "Schakelaar actief",
+                    "light": "Lamp actief",
+                    "camera": "Camera actief"
                 }
             }
         }
