@@ -54,11 +54,13 @@ class DahuaClient:
         )
         return url
 
-    async def async_get_snapshot(self, channel: int) -> bytes:
+    async def async_get_snapshot(self, channel_number: int) -> bytes:
         """
         Takes a snapshot of the camera and returns the binary jpeg data
+        NOTE: channel_number is not the channel_index. channel_number is the index + 1
+        so channel index 0 is channel number 1
         """
-        url = "/cgi-bin/snapshot.cgi?channel={0}".format(channel)
+        url = "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
         return await self.get_bytes(url)
 
     async def async_get_system_info(self) -> dict:
@@ -147,7 +149,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=General"
         return await self.get(url)
 
-    async def async_common_config(self, profile_mode) -> dict:
+    async def async_common_config(self, channel: int, profile_mode) -> dict:
         """
         async_common_config will fetch the status of the IR light (InfraRed light) and motion detection status (if it is
         enabled or not)
@@ -160,8 +162,8 @@ class DahuaClient:
         table.Lighting[0][0].Mode=Auto
         table.Lighting[0][0].Sensitive=3
         """
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect&action=getConfig&name=Lighting[0][{0}]".format(
-            profile_mode
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect&action=getConfig&name=Lighting[{0}][{1}]".format(
+            channel, profile_mode
         )
         return await self.get(url)
 
@@ -204,15 +206,15 @@ class DahuaClient:
         )
         return await self.get(url, True)
 
-    async def async_set_lighting_v1(self, enabled: bool, brightness: int) -> dict:
+    async def async_set_lighting_v1(self, channel: int, enabled: bool, brightness: int) -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
         # on = Manual, off = Off
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        return await self.async_set_lighting_v1_mode(mode, brightness)
+        return await self.async_set_lighting_v1_mode(channel, mode, brightness)
 
-    async def async_set_lighting_v1_mode(self, mode: str, brightness: int) -> dict:
+    async def async_set_lighting_v1_mode(self, channel: int, mode: str, brightness: int) -> dict:
         """
         async_set_lighting_v1_mode will set IR light (InfraRed light) mode and brightness
         Mode should be one of: Manual, Off, or Auto
@@ -224,12 +226,12 @@ class DahuaClient:
         # Dahua api expects the first char to be capital
         mode = mode.capitalize()
 
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting[0][0].Mode={0}&Lighting[0][0].MiddleLight[0].Light={1}".format(
-            mode, brightness
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting[{channel}][0].Mode={mode}&Lighting[{channel}][0].MiddleLight[0].Light={brightness}".format(
+            channel=channel, mode=mode, brightness=brightness
         )
         return await self.get(url)
 
-    async def async_set_video_profile_mode(self, mode: str):
+    async def async_set_video_profile_mode(self, channel: int, mode: str):
         """
         async_set_video_profile_mode will set camera's profile mode to day or night
         Mode should be one of: Day or Night
@@ -241,10 +243,8 @@ class DahuaClient:
             # Default to "day", which is 0
             mode = "0"
 
-        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[0].Config[0]={0}".format(mode)
-        value = await self.get(url)
-        if "OK" not in value and "ok" not in value:
-            raise Exception("Could not set video profile mode")
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{0}].Config[0]={1}".format(channel, mode)
+        return await self.get(url, True)
 
     async def async_enable_channel_title(self, channel: int, enabled: bool, ):
         """ async_set_enable_channel_title will enable or disables the camera's channel title overlay """
@@ -313,7 +313,7 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_lighting_v2(self, enabled: bool, brightness: int, profile_mode: str) -> dict:
+    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
@@ -326,8 +326,8 @@ class DahuaClient:
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][{0}][0].Mode={1}&Lighting_V2[0][{2}][0].MiddleLight[0].Light={3}".format(
-            profile_mode, mode, profile_mode, brightness
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][0].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][0].MiddleLight[0].Light={brightness}".format(
+            channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness
         )
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
@@ -347,7 +347,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
         return await self.get(url)
 
-    async def async_set_coaxial_control_state(self, dahua_type: int, enabled: bool) -> dict:
+    async def async_set_coaxial_control_state(self, channel: int, dahua_type: int, enabled: bool) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera.
 
@@ -361,12 +361,12 @@ class DahuaClient:
         if not enabled:
             io = "2"
 
-        url = "/cgi-bin/coaxialControlIO.cgi?action=control&channel=0&info[0].Type={0}&info[0].IO={1}".format(
-            dahua_type, io)
+        url = "/cgi-bin/coaxialControlIO.cgi?action=control&channel={channel}&info[0].Type={dahua_type}&info[0].IO={io}".format(
+            channel=channel, dahua_type=dahua_type, io=io)
         _LOGGER.debug("Setting coaxial control state to %s: %s", io, url)
         return await self.get(url)
 
-    async def async_set_disarming_linkage(self, enabled: bool) -> dict:
+    async def async_set_disarming_linkage(self, channel: int, enabled: bool) -> dict:
         """
         async_set_disarming_linkage will set the camera's disarming linkage (Event -> Disarming in the UI)
         """
@@ -375,10 +375,10 @@ class DahuaClient:
         if enabled:
             value = "true"
 
-        url = "/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage[0].Enable={0}".format(value)
+        url = "/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage[{0}].Enable={1}".format(channel, value)
         return await self.get(url)
 
-    async def async_set_record_mode(self, mode: str) -> dict:
+    async def async_set_record_mode(self, channel: int, mode: str) -> dict:
         """
         async_set_record_mode sets the record mode.
         mode should be one of: auto, manual, or off
@@ -390,7 +390,7 @@ class DahuaClient:
             mode = "1"
         elif mode.lower() == "off":
             mode = "2"
-        url = "/cgi-bin/configManager.cgi?action=setConfig&RecordMode[0].Mode={0}".format(mode)
+        url = "/cgi-bin/configManager.cgi?action=setConfig&RecordMode[{0}].Mode={1}".format(channel, mode)
         _LOGGER.debug("Setting record mode: %s", url)
         return await self.get(url)
 
@@ -405,19 +405,20 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=DisableLinkage"
         return await self.get(url)
 
-    async def enable_motion_detection(self, enabled: bool) -> dict:
+    async def enable_motion_detection(self, channel: int, enabled: bool) -> dict:
         """
-        enable_motion_detection will either enable or disable motion detection on the camera depending on the supplied value
+        enable_motion_detection will either enable/disable motion detection on the camera depending on the value
         """
-        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[0].Enable={0}&MotionDetect[0].DetectVersion=V3.0".format(
-            str(enabled).lower())
+        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{channel}].Enable={enabled}&MotionDetect[{channel}].DetectVersion=V3.0".format(
+            channel=channel, enabled=str(enabled).lower())
         response = await self.get(url)
 
         if "OK" in response:
             return response
 
         # Some older cameras do not support the above API, so try this one
-        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[0].Enable={0}".format(str(enabled).lower())
+        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].Enable={1}".format(channel,
+                                                                                                str(enabled).lower())
         response = await self.get(url)
 
         return response

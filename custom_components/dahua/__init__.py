@@ -114,6 +114,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._profile_mode = "0"
         self._supports_profile_mode = False
 
+        # TODO: Support multiple channels
+        self._channel = 0
+
         # This is the name for the device given by the user during setup
         self._name = name
 
@@ -224,7 +227,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             # Figure out which APIs we need to call and then fan out and gather the results
             coros = [
-                asyncio.ensure_future(self.client.async_common_config(self._profile_mode)),
+                asyncio.ensure_future(self.client.async_common_config(self._channel, self._profile_mode)),
             ]
             if self._supports_disarming_linkage:
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
@@ -492,6 +495,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
         return self._profile_mode
+
+    def get_channel(self) -> int:
+        """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
+        return self._channel
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

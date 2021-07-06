@@ -57,17 +57,6 @@ enable_channel_title:
       integration: dahua
       domain: camera
   fields:
-    channel:
-      name: Channel
-      description: "The camera channel index. Typically 0"
-      example: 0
-      required: true
-      default: 0
-      selector:
-        number:
-          mode: box
-          min: 0
-          max: 100
     enabled:
       name: Enabled
       description: "If the overlay is enabled or not"
@@ -86,17 +75,6 @@ enable_time_overlay:
       integration: dahua
       domain: camera
   fields:
-    channel:
-      name: Channel
-      description: "The camera channel index. Typically 0"
-      example: 0
-      required: true
-      default: 0
-      selector:
-        number:
-          mode: box
-          min: 0
-          max: 100
     enabled:
       name: Enabled
       description: "If the overlay is enabled or not"
@@ -115,17 +93,6 @@ enable_text_overlay:
       integration: dahua
       domain: camera
   fields:
-    channel:
-      name: Channel
-      description: "The camera channel index. Typically 0"
-      example: 0
-      required: true
-      default: 0
-      selector:
-        number:
-          mode: box
-          min: 0
-          max: 100
     group:
       name: Group
       description: "Multiple text overlay groups can exist. The default 1 should be used in most cases"
@@ -155,17 +122,6 @@ enable_custom_overlay:
       integration: dahua
       domain: camera
   fields:
-    channel:
-      name: Channel
-      description: "The camera channel index. Typically 0"
-      example: 0
-      required: true
-      default: 0
-      selector:
-        number:
-          mode: box
-          min: 0
-          max: 100
     group:
       name: Group
       description: "Multiple custom text groups can exist. The default 0 should be used in most cases"
@@ -194,17 +150,6 @@ set_custom_overlay:
       integration: dahua
       domain: camera
   fields:
-    channel:
-      name: Channel
-      description: "The camera channel index. Typically 0"
-      example: 0
-      required: true
-      default: 0
-      selector:
-        number:
-          mode: box
-          min: 0
-          max: 100
     group:
       name: Group
       description: "Multiple custom text groups can exist. The default 0 should be used in most cases"
@@ -242,17 +187,6 @@ set_channel_title:
       integration: dahua
       domain: camera
   fields:
-    channel:
-      name: Channel
-      description: "The camera channel index. Typically 0"
-      example: 0
-      required: true
-      default: 0
-      selector:
-        number:
-          mode: box
-          min: 0
-          max: 100
     text1:
       name: Text 1
       description: "The first title"
@@ -279,17 +213,6 @@ set_text_overlay:
       integration: dahua
       domain: camera
   fields:
-    channel:
-      name: Channel
-      description: "The camera channel index. Typically 0"
-      example: 0
-      required: true
-      default: 0
-      selector:
-        number:
-          mode: box
-          min: 0
-          max: 100
     group:
       name: Group
       description: "Multiple custom text groups can exist. The default 1 should be used in most cases"
@@ -361,17 +284,6 @@ enable_all_ivs_rules:
       integration: dahua
       domain: camera
   fields:
-    channel:
-      name: Channel
-      description: "The camera channel index. Typically 0"
-      example: 0
-      required: true
-      default: 0
-      selector:
-        number:
-          mode: box
-          min: 0
-          max: 100
     enabled:
       name: Enabled
       description: "If true all IVS rules are enabled. If false, all are disabled"
@@ -389,17 +301,6 @@ enable_ivs_rule:
       integration: dahua
       domain: camera
   fields:
-    channel:
-      name: Channel
-      description: "The camera channel index. Typically 0"
-      example: 0
-      required: true
-      default: 0
-      selector:
-        number:
-          mode: box
-          min: 0
-          max: 100
     index:
       name: Index
       description: "The rule index. 0 is a hidden rule, so usually the first rule is rule 1"

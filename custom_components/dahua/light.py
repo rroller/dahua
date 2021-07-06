@@ -81,14 +81,16 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
-        await self._coordinator.client.async_set_lighting_v1(True, dahua_brightness)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_lighting_v1(channel, True, dahua_brightness)
         await self.coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
-        await self._coordinator.client.async_set_lighting_v1(False, dahua_brightness)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_lighting_v1(channel, False, dahua_brightness)
         await self.coordinator.async_refresh()
 
     @property
@@ -143,16 +145,18 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
+        channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2(True, dahua_brightness, profile_mode)
+        await self._coordinator.client.async_set_lighting_v2(channel, True, dahua_brightness, profile_mode)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
+        channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2(False, dahua_brightness, profile_mode)
+        await self._coordinator.client.async_set_lighting_v2(channel, False, dahua_brightness, profile_mode)
         await self._coordinator.async_refresh()
 
 
@@ -165,11 +169,12 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
         super().__init__(coordinator, entry)
         self._name = name
+        self._coordinator = coordinator
 
     @property
     def name(self):
         """Return the name of the light."""
-        return self.coordinator.get_device_name() + " " + self._name
+        return self._coordinator.get_device_name() + " " + self._name
 
     @property
     def unique_id(self):
@@ -177,12 +182,12 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
-        return self.coordinator.get_serial_number() + "_security"
+        return self._coordinator.get_serial_number() + "_security"
 
     @property
     def is_on(self):
         """Return true if the light is on"""
-        return self.coordinator.is_security_light_on()
+        return self._coordinator.is_security_light_on()
 
     @property
     def should_poll(self):
@@ -191,13 +196,15 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
-        await self.coordinator.client.async_set_coaxial_control_state(SECURITY_LIGHT_TYPE, True)
-        await self.coordinator.async_refresh()
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+        await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
-        await self.coordinator.client.async_set_coaxial_control_state(SECURITY_LIGHT_TYPE, False)
-        await self.coordinator.async_refresh()
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
+        await self._coordinator.async_refresh()
 
     @property
     def icon(self):

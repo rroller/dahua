@@ -35,10 +35,6 @@ SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
 SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
 
-# For now we'll only support 1 channel. I don't have any cams where I can test a second channel.
-# I'm not really sure what channel 2 means anyways, it doesn't seem to be the substream.
-CHANNEL = 1
-
 
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
@@ -89,7 +85,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_ENABLE_CHANNEL_TITLE,
         {
-            vol.Required("channel", default=0): int,
             vol.Required("enabled", default=True): bool,
         },
         "async_set_enable_channel_title"
@@ -98,7 +93,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_ENABLE_TIME_OVERLay,
         {
-            vol.Required("channel", default=0): int,
             vol.Required("enabled", default=True): bool,
         },
         "async_set_enable_time_overlay"
@@ -107,7 +101,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_ENABLE_TEXT_OVERLAY,
         {
-            vol.Required("channel", default=0): int,
             vol.Required("group", default=1): int,
             vol.Required("enabled", default=False): bool,
         },
@@ -117,7 +110,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_ENABLE_CUSTOM_OVERLAY,
         {
-            vol.Required("channel", default=0): int,
             vol.Required("group", default=0): int,
             vol.Required("enabled", default=False): bool,
         },
@@ -127,7 +119,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_ENABLE_ALL_IVS_RULES,
         {
-            vol.Required("channel", default=0): int,
             vol.Required("enabled", default=True): bool,
         },
         "async_set_enable_all_ivs_rules"
@@ -136,7 +127,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_ENABLE_IVS_RULE,
         {
-            vol.Required("channel", default=0): int,
             vol.Required("index", default=1): int,
             vol.Required("enabled", default=True): bool,
         },
@@ -146,7 +136,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_SET_CHANNEL_TITLE,
         {
-            vol.Required("channel", default=0): int,
             vol.Optional("text1", default=""): str,
             vol.Optional("text2", default=""): str,
         },
@@ -155,7 +144,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_SET_TEXT_OVERLAY,
         {
-            vol.Required("channel", default=0): int,
             vol.Required("group", default=0): int,
             vol.Optional("text1", default=""): str,
             vol.Optional("text2", default=""): str,
@@ -168,7 +156,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_SET_CUSTOM_OVERLAY,
         {
-            vol.Required("channel", default=0): int,
             vol.Required("group", default=0): int,
             vol.Optional("text1", default=""): str,
             vol.Optional("text2", default=""): str,
@@ -191,7 +178,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             SERVICE_SET_INFRARED_MODE,
             {
                 vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto"]),
-                vol.Optional('brightness', default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100))
+                vol.Optional('brightness', default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
             },
             "async_set_infrared_mode"
         )
@@ -206,12 +193,13 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         Camera.__init__(self)
 
         name = coordinator.client.to_stream_name(stream_index)
-        self.coordinator = coordinator
+        channel = coordinator.get_channel()
+        self._coordinator = coordinator
         self._name = "{0} {1}".format(config_entry.title, name)
         self._unique_id = coordinator.get_serial_number() + "_" + name
         self._stream_index = stream_index
         self._motion_status = False
-        self._stream_source = coordinator.client.get_rtsp_stream_url(CHANNEL, stream_index)
+        self._stream_source = coordinator.client.get_rtsp_stream_url(channel + 1, stream_index)
 
     @property
     def unique_id(self):
@@ -221,7 +209,8 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_camera_image(self):
         """Return a still image response from the camera."""
         # Send the request to snap a picture and return raw jpg data
-        return await self.coordinator.client.async_get_snapshot(CHANNEL)
+        channel = self._coordinator.get_channel()
+        return await self._coordinator.client.async_get_snapshot(channel + 1)
 
     @property
     def supported_features(self):
@@ -235,21 +224,23 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     @property
     def motion_detection_enabled(self):
         """Camera Motion Detection Status."""
-        return self.coordinator.is_motion_detection_enabled()
+        return self._coordinator.is_motion_detection_enabled()
 
     async def async_enable_motion_detection(self):
         """Enable motion detection in camera."""
         try:
-            await self.coordinator.client.enable_motion_detection(True)
-            await self.coordinator.async_refresh()
+            channel = self._coordinator.get_channel()
+            await self._coordinator.client.enable_motion_detection(channel, True)
+            await self._coordinator.async_refresh()
         except TypeError:
             _LOGGER.debug("Failed enabling motion detection on '%s'. Is it supported by the device?", self._name)
 
     async def async_disable_motion_detection(self):
         """Disable motion detection."""
         try:
-            await self.coordinator.client.enable_motion_detection(False)
-            await self.coordinator.async_refresh()
+            channel = self._coordinator.get_channel()
+            await self._coordinator.client.enable_motion_detection(channel, False)
+            await self._coordinator.async_refresh()
         except TypeError:
             _LOGGER.debug("Failed disabling motion detection on '%s'. Is it supported by the device?", self._name)
 
@@ -260,51 +251,63 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
     async def async_set_infrared_mode(self, mode: str, brightness: int):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
-        await self.coordinator.client.async_set_lighting_v1_mode(mode, brightness)
-        await self.coordinator.async_refresh()
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_lighting_v1_mode(channel, mode, brightness)
+        await self._coordinator.async_refresh()
 
     async def async_set_record_mode(self, mode: str):
         """ Handles the service call from SERVICE_SET_RECORD_MODE to set the record mode """
-        await self.coordinator.client.async_set_record_mode(mode)
-        await self.coordinator.async_refresh()
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_record_mode(channel, mode)
+        await self._coordinator.async_refresh()
 
     async def async_set_video_profile_mode(self, mode: str):
         """ Handles the service call from SERVICE_SET_VIDEO_PROFILE_MODE to set profile mode to day/night """
-        await self.coordinator.client.async_set_video_profile_mode(mode)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_video_profile_mode(channel, mode)
 
-    async def async_set_enable_channel_title(self, channel: int, enabled: bool):
+    async def async_set_enable_channel_title(self, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE """
-        await self.coordinator.client.async_enable_channel_title(channel, enabled)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_enable_channel_title(channel, enabled)
 
-    async def async_set_enable_time_overlay(self, channel: int, enabled: bool):
+    async def async_set_enable_time_overlay(self, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_TIME_OVERLAY  """
-        await self.coordinator.client.async_enable_time_overlay(channel, enabled)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_enable_time_overlay(channel, enabled)
 
-    async def async_set_enable_text_overlay(self, channel: int, group: int, enabled: bool):
+    async def async_set_enable_text_overlay(self, group: int, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_TEXT_OVERLAY """
-        await self.coordinator.client.async_enable_text_overlay(channel, group, enabled)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_enable_text_overlay(channel, group, enabled)
 
-    async def async_set_enable_custom_overlay(self, channel: int, group: int, enabled: bool):
+    async def async_set_enable_custom_overlay(self, group: int, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_CUSTOM_OVERLAY """
-        await self.coordinator.client.async_enable_custom_overlay(channel, group, enabled)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_enable_custom_overlay(channel, group, enabled)
 
-    async def async_set_enable_all_ivs_rules(self, channel: int, enabled: bool):
+    async def async_set_enable_all_ivs_rules(self, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_ALL_IVS_RULES """
-        await self.coordinator.client.async_set_all_ivs_rules(channel, enabled)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_all_ivs_rules(channel, enabled)
 
-    async def async_enable_ivs_rule(self, channel: int, index: int, enabled: bool):
+    async def async_enable_ivs_rule(self, index: int, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_IVS_RULE """
-        await self.coordinator.client.async_set_ivs_rule(channel, index, enabled)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_ivs_rule(channel, index, enabled)
 
-    async def async_set_service_set_channel_title(self, channel: int, text1: str, text2: str):
+    async def async_set_service_set_channel_title(self, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """
-        await self.coordinator.client.async_set_service_set_channel_title(channel, text1, text2)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_service_set_channel_title(channel, text1, text2)
 
-    async def async_set_service_set_text_overlay(self, channel: int, group: int, text1: str, text2: str, text3: str,
+    async def async_set_service_set_text_overlay(self, group: int, text1: str, text2: str, text3: str,
                                                  text4: str):
         """ Handles the service call from SERVICE_SET_TEXT_OVERLAY to set profile mode to day/night """
-        await self.coordinator.client.async_set_service_set_text_overlay(channel, group, text1, text2, text3, text4)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_service_set_text_overlay(channel, group, text1, text2, text3, text4)
 
-    async def async_set_service_set_custom_overlay(self, channel: int, group: int, text1: str, text2: str):
+    async def async_set_service_set_custom_overlay(self, group: int, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CUSTOM_OVERLAY to set profile mode to day/night """
-        await self.coordinator.client.async_set_service_set_custom_overlay(channel, group, text1, text2)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_service_set_custom_overlay(channel, group, text1, text2)

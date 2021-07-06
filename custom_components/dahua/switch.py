@@ -34,12 +34,14 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable motion detection."""
-        await self._coordinator.client.enable_motion_detection(True)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.enable_motion_detection(channel, True)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable motion detection."""
-        await self._coordinator.client.enable_motion_detection(False)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.enable_motion_detection(channel, False)
         await self._coordinator.async_refresh()
 
     @property
@@ -74,12 +76,14 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable linkage"""
-        await self._coordinator.client.async_set_disarming_linkage(True)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_disarming_linkage(channel, True)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable linkage"""
-        await self._coordinator.client.async_set_disarming_linkage(False)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_disarming_linkage(channel, False)
         await self._coordinator.async_refresh()
 
     @property
@@ -115,12 +119,14 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable the camera's siren"""
-        await self._coordinator.client.async_set_coaxial_control_state(SIREN_TYPE, True)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, True)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable camera siren"""
-        await self._coordinator.client.async_set_coaxial_control_state(SIREN_TYPE, False)
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, False)
         await self._coordinator.async_refresh()
 
     @property
