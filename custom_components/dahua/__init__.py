@@ -9,7 +9,7 @@ import json
 
 from datetime import timedelta
 
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientResponseError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -182,8 +182,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self._serial_number = data.get("serialNumber")
 
                 try:
+                    await self.client.async_get_coaxial_control_io_status()
                     self._supports_coaxial_control = True
-                except ConnectionError as exception:
+                except ClientResponseError as exception:
                     self._supports_coaxial_control = False
 
                 try:
