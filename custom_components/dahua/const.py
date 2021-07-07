@@ -41,6 +41,7 @@ CONF_RTSP_PORT = "rtsp_port"
 CONF_STREAMS = "streams"
 CONF_EVENTS = "events"
 CONF_NAME = "name"
+CONF_CHANNEL = "channel"
 
 # Defaults
 DEFAULT_NAME = "Dahua"

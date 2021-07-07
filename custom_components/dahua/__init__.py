@@ -13,7 +13,7 @@ from aiohttp import ClientError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers.aiohttp_client import async_aiohttp_proxy_web, async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
@@ -32,6 +32,7 @@ from .const import (
     PLATFORMS,
     CONF_RTSP_PORT,
     STARTUP_MESSAGE,
+    CONF_CHANNEL,
 )
 
 SCAN_INTERVAL_SECONDS = timedelta(seconds=30)
@@ -61,9 +62,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     rtsp_port = int(entry.data.get(CONF_RTSP_PORT))
     events = entry.data.get(CONF_EVENTS)
     name = entry.data.get(CONF_NAME)
+    channel = entry.data.get(CONF_CHANNEL, 0)
 
     coordinator = DahuaDataUpdateCoordinator(hass, events=events, address=address, port=port, rtsp_port=rtsp_port,
-                                             username=username, password=password, name=name)
+                                             username=username, password=password, name=name, channel=channel)
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.last_update_success:
@@ -92,7 +94,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
     def __init__(self, hass: HomeAssistant, events: list, address: str, port: int, rtsp_port: int, username: str,
-                 password: str, name: str) -> None:
+                 password: str, name: str, channel: int) -> None:
         """Initialize the coordinator."""
         session = async_get_clientsession(hass)
 
@@ -115,7 +117,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_profile_mode = False
 
         # TODO: Support multiple channels
-        self._channel = 0
+        self._channel = channel
 
         # This is the name for the device given by the user during setup
         self._name = name
@@ -395,7 +397,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def supports_security_light(self) -> bool:
         """
-        Returns true if this camera has the red/blud flashing security light feature.  For example, the
+        Returns true if this camera has the red/blue flashing security light feature.  For example, the
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
         """
         return "-AS-PV" in self.model
@@ -418,13 +420,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has an illuminator (white light for color cameras).  For example, the
         IPC-HDW3849HP-AS-PV does
         """
-        return "table.Lighting_V2[0][0][0].Mode" in self.data
+        return "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data
 
     def is_motion_detection_enabled(self) -> bool:
         """
         Returns true if motion detection is enabled for the camera
         """
-        return self.data.get("table.MotionDetect[0].Enable", "").lower() == "true"
+        return self.data.get("table.MotionDetect[{0}].Enable".format(self._channel), "").lower() == "true"
 
     def is_disarming_linkage_enabled(self) -> bool:
         """
@@ -467,12 +469,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def is_infrared_light_on(self) -> bool:
         """ returns true if the infrared light is on """
-        return self.data.get("table.Lighting[0][0].Mode", "") == "Manual"
+        return self.data.get("table.Lighting[{0}][0].Mode".format(self._channel), "") == "Manual"
 
     def get_infrared_brightness(self) -> int:
         """Return the brightness of this light, as reported by the camera itself, between 0..255 inclusive"""
 
-        bri = self.data.get("table.Lighting[0][0].MiddleLight[0].Light")
+        bri = self.data.get("table.Lighting[{0}][0].MiddleLight[0].Light".format(self._channel))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
     def is_illuminator_on(self) -> bool:
@@ -480,12 +482,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # profile_mode 0=day, 1=night, 2=scene
         profile_mode = self.get_profile_mode()
 
-        return self.data.get("table.Lighting_V2[0][" + profile_mode + "][0].Mode", "") == "Manual"
+        return self.data.get("table.Lighting_V2[{0}][{1}][0].Mode".format(self._channel, profile_mode), "") == "Manual"
 
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
 
-        bri = self.data.get("table.Lighting_V2[0][0][0].MiddleLight[0].Light")
+        bri = self.data.get("table.Lighting_V2[{0}][0][0].MiddleLight[0].Light".format(self._channel))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
     def is_security_light_on(self) -> bool:

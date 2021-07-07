@@ -23,6 +23,7 @@ from .const import (
     STREAM_BOTH,
     DOMAIN,
     PLATFORMS,
+    CONF_CHANNEL,
 )
 from .rpc2 import DahuaRpc2Client
 
@@ -105,6 +106,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input[CONF_ADDRESS],
                 user_input[CONF_PORT],
                 user_input[CONF_RTSP_PORT],
+                user_input[CONF_CHANNEL],
             )
             if data is not None:
                 # Only allow a camera to be setup once
@@ -150,6 +152,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_ADDRESS): str,
                     vol.Required(CONF_PORT, default="80"): str,
                     vol.Required(CONF_RTSP_PORT, default="554"): str,
+                    vol.Required(CONF_CHANNEL, default=0): int,
                     vol.Required(CONF_STREAMS, default=STREAMS[0]): vol.In(STREAMS),
                     vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(ALL_EVENTS),
                 }
@@ -169,7 +172,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             errors=self._errors,
         )
 
-    async def _test_credentials(self, username, password, address, port, rtsp_port):
+    async def _test_credentials(self, username, password, address, port, rtsp_port, channel):
         """Return name and serialNumber if credentials is valid."""
         session = async_create_clientsession(self.hass)
         try:

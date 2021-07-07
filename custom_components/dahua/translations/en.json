@@ -11,7 +11,8 @@
                     "port": "Port",
                     "rtsp_port": "RTSP Port",
                     "streams": "RTSP Streams",
-                    "events": "Events"
+                    "events": "Events",
+                    "channel": "Channel (Usually 0 unless you use an nvr)"
                 }
             },
             "name": {
