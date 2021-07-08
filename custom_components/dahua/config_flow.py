@@ -111,7 +111,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             if data is not None:
                 # Only allow a camera to be setup once
                 if "serialNumber" in data and data["serialNumber"] is not None:
-                    await self.async_set_unique_id(data["serialNumber"])
+                    channel = int(user_input[CONF_CHANNEL])
+                    unique_id = data["serialNumber"]
+                    if channel > 0:
+                        unique_id = unique_id + "_" + str(channel)
+                    await self.async_set_unique_id(unique_id)
                     self._abort_if_unique_id_configured()
 
                 user_input[CONF_NAME] = data["name"]

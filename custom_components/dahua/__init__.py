@@ -459,6 +459,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_serial_number(self) -> str:
         """ returns the device serial number. This is unique per device """
+        if self._channel > 0:
+            # We need a unique identifier. For NVRs we get back the same serial, so add the channel to the end of the sn
+            return "{0}_{1}".format(self._serial_number, self._channel)
         return self._serial_number
 
     def get_event_list(self) -> list:
