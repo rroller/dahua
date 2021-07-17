@@ -320,3 +320,23 @@ enable_ivs_rule:
       default: true
       selector:
         boolean:
+
+vto_open_door:
+  name: Open a door via a VTO
+  description: Open a door via a VTO (Doorbell) for supported devices
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    index:
+      name: Door ID
+      description: "The door ID. Default is 1"
+      example: 1
+      required: true
+      default: 1
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
