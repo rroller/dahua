@@ -91,6 +91,7 @@ These devices are confirmed as working:
 * IPC-A26
 * DHI-VTO2202F-P
 * DHI-VTO2211G-P
+* Amcrest AD410 Doorbell
 * C26EP-V2
 * Please let me know if you've tested with additional cameras
 
