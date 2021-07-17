@@ -38,7 +38,9 @@ class DahuaClient:
         self._session = session
         self._port = port
         self._rtsp_port = rtsp_port
-        self._base = "http://{0}:{1}".format(address, port)
+
+        protocol = "https" if port == 443 else "http"
+        self._base = "{0}://{1}:{2}".format(protocol, address, port)
 
     def get_rtsp_stream_url(self, channel: int, subtype: int) -> str:
         """

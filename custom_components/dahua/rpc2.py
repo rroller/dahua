@@ -32,9 +32,10 @@ class DahuaRpc2Client:
         self._password = password
         self._session = session
         self._rtsp_port = rtsp_port
-        self._base = "http://{0}:{1}".format(address, port)
         self._session_id = None
         self._id = 0
+        protocol = "https" if port == 443 else "http"
+        self._base = "{0}://{1}:{2}".format(protocol, address, port)
 
     async def request(self, method, params=None, object_id=None, extra=None, url=None, verify_result=True):
         """Make an RPC request."""
