@@ -74,16 +74,17 @@ Doorbells will have a binary sensor that captures the doorbell pressed event.
 These devices are confirmed as working:
 
 * IPC-T5442T-ZE
+* IPC-HDBW1230E-S2
+* IPC-HDBW5421E-Z
 * IPC-HDW5831R-ZE
 * IPC-HDW2831T-ZS-S2
+* IPC-HDW3549HP-AS-PV
 * IPC-HDW3849HP-AS-PV
+* IPC-HDW4233C-A
 * IPC-HFW4433F-ZSA
 * IPC-HFW1230S
 * IPC-HFW1435S-W
 * IPC-HFW1435S-W-S2
-* IPC-HDW4233C-A
-* IPC-HDBW1230E-S2
-* IPC-HDBW5421E-Z
 * IMOU IPC-K22A / Cube PoE-322A
 * IMOU IPC-A26Z / Ranger Pro Z
 * LNB8005-C
