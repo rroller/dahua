@@ -178,7 +178,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def _test_credentials(self, username, password, address, port, rtsp_port, channel):
         """Return name and serialNumber if credentials is valid."""
-        session = async_create_clientsession(self.hass)
+        session = async_create_clientsession(hass=self.hass, verify_ssl=False)
         try:
             # The long term goal is to migrate to the DahuaRpc2Client client and remove the DahuaClient
             # Testing this out via login to see how it goes

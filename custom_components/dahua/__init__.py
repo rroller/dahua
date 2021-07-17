@@ -96,7 +96,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, events: list, address: str, port: int, rtsp_port: int, username: str,
                  password: str, name: str, channel: int) -> None:
         """Initialize the coordinator."""
-        session = async_get_clientsession(hass)
+        # Self signed certs are used over HTTPS so we'll disable SSL verification
+        session = async_get_clientsession(hass, verify_ssl=False)
 
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, session)
