@@ -407,7 +407,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         Returns true if this is a doorbell (VTO)
         """
-        return self.model.upper().startswith("VTO") or self.model.upper().startswith("DHI")
+        m = self.model.upper()
+        return m.startswith("VTO") or m.startswith("DHI") or m.startswith("AD410")
 
     def supports_infrared_light(self) -> bool:
         """
