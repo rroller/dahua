@@ -32,10 +32,12 @@ DEVICE_CLASS_OVERRIDES = {
     "FireWarning": SAFETY_DEVICE_CLASS,
     "BackKeyLight": SOUND_DEVICE_CLASS,
     "DoorStatus": DOOR_DEVICE_CLASS,
+    "AudioMutation": SOUND_DEVICE_CLASS,
 }
 
 ICON_OVERRIDES = {
     "AudioAnomaly": VOLUME_HIGH_ICON,
+    "AudioMutation": VOLUME_HIGH_ICON,
 }
 
 

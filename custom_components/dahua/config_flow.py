@@ -36,21 +36,22 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 STREAMS = [STREAM_MAIN, STREAM_SUB, STREAM_BOTH]
 
-DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss", "VideoBlind"]
+DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss", "VideoBlind", "AudioMutation",
+                  "CrossRegionDetection", "SmartMotionHuman", "SmartMotionVehicle"]
 
 ALL_EVENTS = ["VideoMotion",
               "VideoLoss",
               "AlarmLocal",
               "CrossLineDetection",
-              "AudioAnomaly",
+              "CrossRegionDetection",
               "AudioMutation",
-              "VideoMotionInfo",
               "SmartMotionHuman",
               "SmartMotionVehicle",
-              "NewFile",
               "VideoBlind",
+              "AudioAnomaly",
+              "VideoMotionInfo",
+              "NewFile",
               "IntelliFrame",
-              "CrossRegionDetection",
               "LeftDetection",
               "TakenAwayDetection",
               "VideoAbnormalDetection",
