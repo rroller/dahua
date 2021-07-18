@@ -215,3 +215,7 @@ logger:
   logs:
     custom_components.dahua: debug
 ```
+
+# References and thanks
+* Thanks to @elad-ba for his work on https://github.com/elad-bar/DahuaVTO2MQTT which was copied and modified and then used here for VTO devices
+* Thanks for the DAHUA_HTTP_API_V2.76.pdf API reference found at http://www.ipcamtalk.com
