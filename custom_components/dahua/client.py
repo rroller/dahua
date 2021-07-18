@@ -407,6 +407,13 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=DisableLinkage"
         return await self.get(url)
 
+    async def async_access_control_open_door(self, door_id: int = 1) -> dict:
+        """
+        async_access_control_open_door opens a door via a VTO
+        """
+        url = "/cgi-bin/accessControl.cgi?action=openDoor&UserID=101&Type=Remote&channel={0}".format(door_id)
+        return await self.get(url)
+
     async def enable_motion_detection(self, channel: int, enabled: bool) -> dict:
         """
         enable_motion_detection will either enable/disable motion detection on the camera depending on the value
