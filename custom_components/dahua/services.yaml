@@ -329,7 +329,7 @@ vto_open_door:
       integration: dahua
       domain: camera
   fields:
-    index:
+    door_id:
       name: Door ID
       description: "The door ID. Default is 1"
       example: 1
