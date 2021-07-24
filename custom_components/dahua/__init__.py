@@ -173,10 +173,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 for response in responses:
                     data.update(response)
 
-                device_type = data.get("deviceType")
-                if device_type == "IP Camera":
+                device_type = data.get("deviceType", None)
+                if device_type == "IP Camera" or device_type is None:
                     # Some firmwares put the device type in the "updateSerial" field. Weird.
-                    device_type = data.get("updateSerial")
+                    device_type = data.get("updateSerial", None)
+                    if device_type is None:
+                        # If it's still none, then call the device type API
+                        dt = await self.client.get_device_type()
+                        device_type = dt.get("type")
                 data["model"] = device_type
                 self.model = device_type
                 self.machine_name = data.get("table.General.MachineName")

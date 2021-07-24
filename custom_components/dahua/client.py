@@ -80,6 +80,17 @@ class DahuaClient:
         url = "/cgi-bin/magicBox.cgi?action=getSystemInfo"
         return await self.get(url)
 
+    async def get_device_type(self) -> dict:
+        """
+        getDeviceType returns the device type. Example response:
+        type=IPC-HDW5831R-ZE
+        ...
+        Some cams might return...
+        type=IP Camera
+        """
+        url = "/cgi-bin/magicBox.cgi?action=getDeviceType"
+        return await self.get(url)
+
     async def get_software_version(self) -> dict:
         """
         get_software_version returns the device software version (also known as the firmware version). Example response:
