@@ -12,7 +12,7 @@
                     "rtsp_port": "Puerto RTSP",
                     "streams": "Secuencia RTSP",
                     "events": "Eventos",
-                    "channel": "Channel (Usually 0 unless you use an nvr)"
+                    "channel": "Canal (Generalmente es el 0 a menos que uses un grabador)"
                 }
             },
             "name": {
