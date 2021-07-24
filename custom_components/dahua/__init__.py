@@ -237,10 +237,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
             if self._supports_coaxial_control:
                 coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
-            results = await asyncio.gather(*coros)
 
+            # Gather results and update the data map
+            results = await asyncio.gather(*coros)
             for result in results:
-                data.update(result)
+                if result is not None:
+                    data.update(result)
 
             if self.supports_security_light():
                 light_v2 = await self.client.async_get_lighting_v2()
