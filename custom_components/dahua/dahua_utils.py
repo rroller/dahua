@@ -9,7 +9,7 @@ def dahua_brightness_to_hass_brightness(bri_str: str) -> int:
     expects, which is 0 to 255 inclusive
     """
     bri = 100
-    if not bri_str:
+    if bri_str:
         bri = int(bri_str)
 
     current = bri / 100
