@@ -257,6 +257,35 @@ set_text_overlay:
       selector:
         text:
 
+set_video_in_day_night_mode:
+  name: Set the Day or Night Color Mode
+  description: "Set the camera's Day/Night Mode. For example, Color, BlackWhite, or Auto"
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    config_type:
+      description: "The config type: general, day, night"
+      example: "general"
+      default: "general"
+      selector:
+        select:
+          options:
+            - "general"
+            - "day"
+            - "night"
+    mode:
+      description: "The mode: Auto, Color, BlackWhite. Note Auto is also known as Brightness by Dahua"
+      example: "Auto"
+      default: "Auto"
+      selector:
+        select:
+          options:
+            - "Auto"
+            - "Color"
+            - "BlackWhite"
+
 set_record_mode:
   name: Set Record Mode on Dahua Camera
   description: Sets the record mode (on/off or auto). On is always on recording. Off is always off. Auto based on motion settings, etc.

@@ -35,6 +35,7 @@ SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
 SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
 SERVICE_VTO_OPEN_DOOR = "vto_open_door"
+SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
@@ -173,6 +174,16 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     )
 
     platform.async_register_entity_service(
+        SERVICE_SET_DAY_NIGHT_MODE,
+        {
+            vol.Required("config_type"): vol.In(["general", "General", "day", "Day", "night", "Night", "0", "1", "2"]),
+            vol.Required("mode"): vol.In(["color", "Color", "brightness", "Brightness", "blackwhite", "BlackWhite",
+                                          "Auto", "auto"])
+        },
+        "async_set_video_in_day_night_mode"
+    )
+
+    platform.async_register_entity_service(
         SERVICE_SET_RECORD_MODE,
         {
             vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto", "0", "1", "2", ])
@@ -262,6 +273,12 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_lighting_v1_mode(channel, mode, brightness)
+        await self._coordinator.async_refresh()
+
+    async def async_set_video_in_day_night_mode(self, config_type: str, mode: str):
+        """ Handles the service call from SERVICE_SET_DAY_NIGHT_MODE to set the day/night color mode """
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_video_in_day_night_mode(channel, config_type, mode)
         await self._coordinator.async_refresh()
 
     async def async_set_record_mode(self, mode: str):

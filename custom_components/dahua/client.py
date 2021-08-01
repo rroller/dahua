@@ -345,6 +345,39 @@ class DahuaClient:
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
 
+    async def async_set_video_in_day_night_mode(self, channel: int, config_type: str, mode: str):
+        """
+        async_set_video_in_day_night_mode will set the video dan/night config. For example to see it to Color or Black
+        and white.
+
+        config_type is one of  "general", "day", or "night"
+        mode is one of: "Color", "Brightness", or "BlackWhite". Note Brightness is also known as "Auto"
+        """
+
+        # Map the input to the Dahua required integer: 0=day, 1=night, 2=general
+        if config_type == "day":
+            config_no = 0
+        elif config_type == "night":
+            config_no = 1
+        else:
+            # general
+            config_no = 2
+
+        # Map the mode
+        if mode is None or mode.lower() == "auto" or mode.lower() == "brightness":
+            mode = "Brightness"
+        elif mode.lower() == "color":
+            mode = "Color"
+        elif mode.lower() == "blackwhite":
+            mode = "BlackWhite"
+
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInDayNight[{0}][{1}].Mode={2}".format(
+            channel, str(config_no), mode
+        )
+        value = await self.get(url)
+        if "OK" not in value and "ok" not in value:
+            raise Exception("Could not set Day/Night mode")
+
     async def async_get_video_in_mode(self) -> dict:
         """
         async_get_video_in_mode will return the profile mode (day/night)
