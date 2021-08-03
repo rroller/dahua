@@ -253,13 +253,14 @@ class DahuaVTOClient(asyncio.Protocol):
             params = message.get("params")
             table = params.get("table")
 
-            for item in table:
-                access_control = item.get('AccessProtocol')
+            if table is not None:
+                for item in table:
+                    access_control = item.get('AccessProtocol')
 
-                if access_control == 'Local':
-                    self.hold_time = item.get('UnlockReloadInterval')
+                    if access_control == 'Local':
+                        self.hold_time = item.get('UnlockReloadInterval')
 
-                    _LOGGER.info(f"Hold time: {self.hold_time}")
+                        _LOGGER.info(f"Hold time: {self.hold_time}")
 
         request_data = {
             "name": "AccessControl"
