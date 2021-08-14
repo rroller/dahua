@@ -214,12 +214,16 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
         name = coordinator.client.to_stream_name(stream_index)
         channel = coordinator.get_channel()
+
+        # I'm really not certain what we should do for the channel.
+        # For NVRs it seems we shouldn't +1 but for individual cams we should.
+        self._channel_number = channel + 1 if channel == 0 else channel
         self._coordinator = coordinator
         self._name = "{0} {1}".format(config_entry.title, name)
         self._unique_id = coordinator.get_serial_number() + "_" + name
         self._stream_index = stream_index
         self._motion_status = False
-        self._stream_source = coordinator.client.get_rtsp_stream_url(channel + 1, stream_index)
+        self._stream_source = coordinator.client.get_rtsp_stream_url(self._channel_number, stream_index)
 
     @property
     def unique_id(self):
@@ -230,7 +234,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Return a still image response from the camera."""
         # Send the request to snap a picture and return raw jpg data
         channel = self._coordinator.get_channel()
-        return await self._coordinator.client.async_get_snapshot(channel + 1)
+        return await self._coordinator.client.async_get_snapshot(self._channel_number)
 
     @property
     def supported_features(self):
