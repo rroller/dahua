@@ -235,7 +235,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             # Figure out which APIs we need to call and then fan out and gather the results
             coros = [
-                asyncio.ensure_future(self.client.async_common_config(self._channel, self._profile_mode)),
+                asyncio.ensure_future(self.client.async_get_config_lighting(self._channel, self._profile_mode)),
+                asyncio.ensure_future(self.client.async_get_config_motion_detection()),
             ]
             if self._supports_disarming_linkage:
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
@@ -250,7 +251,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             if self.supports_security_light():
                 light_v2 = await self.client.async_get_lighting_v2()
-                data.update(light_v2)
+                if light_v2 is not None:
+                    data.update(light_v2)
 
             return data
         except Exception as exception:

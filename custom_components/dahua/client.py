@@ -162,10 +162,15 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=General"
         return await self.get(url)
 
-    async def async_common_config(self, channel: int, profile_mode) -> dict:
+    async def async_get_config(self, name) -> dict:
+        """ async_get_config gets a config by name """
+        # example name=Lighting[0][0]
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name={0}".format(name)
+        return await self.get(url)
+
+    async def async_get_config_lighting(self, channel: int, profile_mode) -> dict:
         """
-        async_common_config will fetch the status of the IR light (InfraRed light) and motion detection status (if it is
-        enabled or not)
+        async_get_config_lighting will fetch the status of the IR light (InfraRed light)
         profile_mode: = 0=day, 1=night, 2=normal scene
 
         Example response:
@@ -175,16 +180,23 @@ class DahuaClient:
         table.Lighting[0][0].Mode=Auto
         table.Lighting[0][0].Sensitive=3
         """
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect&action=getConfig&name=Lighting[{0}][{1}]".format(
-            channel, profile_mode
-        )
-        return await self.get(url)
+        try:
+            return await self.async_get_config("Lighting[{0}][{1}]".format(channel, profile_mode))
+        except aiohttp.ClientResponseError as e:
+            if e.status == 400:
+                # Some cams/dvrs/nvrs might not support this option.
+                # We'll just return an empty response to not break the integration.
+                return {}
+            raise e
 
-    async def async_get_config(self, name) -> dict:
-        """ async_get_config gets a config by name """
-        # example name=Lighting[0][0]
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name={0}".format(name)
-        return await self.get(url)
+    async def async_get_config_motion_detection(self) -> dict:
+        """
+        async_get_config_motion_detection will fetch the motion detection status (enabled or not)
+        Example response:
+        table.MotionDetect[0].DetectVersion=V3.0
+        table.MotionDetect[0].Enable=true
+        """
+        return await self.async_get_config("MotionDetect")
 
     async def async_get_ivs_rules(self):
         """
@@ -594,7 +606,6 @@ class DahuaClient:
     async def get(self, url: str, verify_ok=False) -> dict:
         """Get information from the API."""
         url = self._base + url
-        data = {}
         try:
             async with async_timeout.timeout(TIMEOUT_SECONDS):
                 response = None
