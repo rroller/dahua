@@ -126,7 +126,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.machine_name = ""
 
         # This thread is what connects to the cameras event stream and fires on_receive when there's an event
-        self.dahua_event_thread = DahuaEventThread(hass, self.client, self.on_receive, events)
+        self.dahua_event_thread = DahuaEventThread(hass, self.client, self.on_receive, events, self._channel)
 
         # This thread will connect to VTO devices (Dahua doorbells)
         self.dahua_vto_event_thread = DahuaVtoEventThread(hass, self.client, self.on_receive_vto_event, host=address,
@@ -323,7 +323,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._dahua_event_timestamp[event_key] = 0
                 listener()
 
-    def on_receive(self, data_bytes: bytes):
+    def on_receive(self, data_bytes: bytes, channel: int):
         """
         Takes in bytes from the Dahua event stream, converts to a string, parses to a dict and fires an event with the data on the HA event bus
         Example input:
@@ -364,7 +364,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             # Put the vent on the HA event bus
             event["DeviceName"] = self.get_device_name()
-            _LOGGER.debug(f"Cam Data received: {event}")
+            _LOGGER.debug(f"Cam Data received from channel {channel}: {event}")
             self.hass.bus.fire("dahua_event_received", event)
 
             # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.

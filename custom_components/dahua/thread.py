@@ -16,7 +16,7 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 class DahuaEventThread(threading.Thread):
     """Connects to device and subscribes to events. Mainly to capture motion detection events. """
 
-    def __init__(self, hass: HomeAssistant, client: DahuaClient, on_receive, events: list):
+    def __init__(self, hass: HomeAssistant, client: DahuaClient, on_receive, events: list, channel: int):
         """Construct a thread listening for events."""
         threading.Thread.__init__(self)
         self.hass = hass
@@ -25,6 +25,7 @@ class DahuaEventThread(threading.Thread):
         self.client = client
         self.events = events
         self.started = False
+        self.channel = channel
 
     def run(self):
         """Fetch events"""
@@ -36,7 +37,7 @@ class DahuaEventThread(threading.Thread):
                 _LOGGER.debug("Exiting DahuaEventThread")
                 return
             # submit the coroutine to the event loop thread
-            coro = self.client.stream_events(self.on_receive, self.events)
+            coro = self.client.stream_events(self.on_receive, self.events, self.channel)
             future = asyncio.run_coroutine_threadsafe(coro, self.hass.loop)
             start_time = int(time.time())
 

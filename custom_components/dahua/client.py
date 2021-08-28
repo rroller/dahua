@@ -488,7 +488,7 @@ class DahuaClient:
 
         return response
 
-    async def stream_events(self, on_receive, events: list):
+    async def stream_events(self, on_receive, events: list, channel: int):
         """
         enable_motion_detection will either enable or disable motion detection on the camera depending on the supplied value
 
@@ -541,7 +541,7 @@ class DahuaClient:
         """
         # Use codes=[All] for all codes
         codes = ",".join(events)
-        url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=2".format(self._base, codes)
+        url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=5".format(self._base, codes)
         if self._username is not None and self._password is not None:
             response = None
             try:
@@ -551,7 +551,7 @@ class DahuaClient:
 
                 # https://docs.aiohttp.org/en/stable/streams.html
                 async for data, _ in response.content.iter_chunks():
-                    on_receive(data)
+                    on_receive(data, channel)
             except Exception as exception:
                 raise ConnectionError() from exception
             finally:
