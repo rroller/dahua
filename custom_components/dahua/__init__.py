@@ -109,7 +109,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.initialized = False
         self.model = ""
         self.connected = None
-        self.channels = {"1": "1"}
         self.events: list = events
         self._supports_coaxial_control = False
         self._supports_disarming_linkage = False
@@ -134,6 +133,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                                                           port=5000, username=username, password=password)
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
+        # The key will be formed from self.get_event_key(event_name) and includes the channel
         self._dahua_event_listeners: Dict[str, CALLBACK_TYPE] = dict()
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to the time the event fire or was cleared.
@@ -189,13 +189,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     await self.client.async_get_coaxial_control_io_status()
                     self._supports_coaxial_control = True
-                except ClientResponseError as exception:
+                except ClientResponseError:
                     self._supports_coaxial_control = False
 
                 try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
-                except ClientError as exception:
+                except ClientError:
                     self._supports_disarming_linkage = False
 
                 is_doorbell = self.is_doorbell()
@@ -211,7 +211,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # Error: Error -1 getting param in name=Lighting[0][1]
                         # Otherwise we'll get multiple lines of config back
                         self._supports_profile_mode = len(conf) > 1
-                    except ClientError as exception:
+                    except ClientError:
                         _LOGGER.warning("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
                 else:
@@ -297,29 +297,30 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, DoorStatus, etc
         code = event.get("Code", {})
+        event_key = self.get_event_key(code)
 
-        listener = self._dahua_event_listeners.get(code)
+        listener = self._dahua_event_listeners.get(event_key)
         if listener is not None:
             action = event.get("Action", "")
             if action == "Start":
-                self._dahua_event_timestamp[code] = int(time.time())
+                self._dahua_event_timestamp[event_key] = int(time.time())
                 listener()
             elif action == "Stop":
-                self._dahua_event_timestamp[code] = 0
+                self._dahua_event_timestamp[event_key] = 0
                 listener()
             elif action == "Pulse":
                 if code == "DoorStatus":
                     if event.get("Data", {}).get("Status", "") == "Open":
-                        self._dahua_event_timestamp[code] = int(time.time())
+                        self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
-                        self._dahua_event_timestamp[code] = 0
+                        self._dahua_event_timestamp[event_key] = 0
                 else:
                     state = event.get("Data", {}).get("State", 0)
                     if state == 1:
                         # button pressed
-                        self._dahua_event_timestamp[code] = int(time.time())
+                        self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
-                        self._dahua_event_timestamp[code] = 0
+                        self._dahua_event_timestamp[event_key] = 0
                 listener()
 
     def on_receive(self, data_bytes: bytes):
@@ -353,9 +354,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 key, value = key_value.split('=')
                 event[key] = value
 
-            if event["index"] in self.channels:
-                event["channel"] = self.channels[event["index"]]
-
             # data is a json string, convert it to real json and add it back to the output dic
             if "data" in event:
                 try:
@@ -376,14 +374,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # This is the event code, example: VideoMotion, CrossLineDetection, etc
             event_name = event["Code"]
 
-            listener = self._dahua_event_listeners.get(event_name)
+            event_key = self.get_event_key(event_name)
+            listener = self._dahua_event_listeners.get(event_key)
             if listener is not None:
                 action = event["action"]
                 if action == "Start":
-                    self._dahua_event_timestamp[event_name] = int(time.time())
+                    self._dahua_event_timestamp[event_key] = int(time.time())
                     listener()
                 elif action == "Stop":
-                    self._dahua_event_timestamp[event_name] = 0
+                    self._dahua_event_timestamp[event_key] = 0
                     listener()
 
     def get_event_timestamp(self, event_name: str) -> int:
@@ -391,12 +390,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns the event timestamp. If the event is firing then it will be the time of the firing. Otherwise returns 0.
         event_name: the event name, example: CrossLineDetection
         """
-        return self._dahua_event_timestamp.get(event_name, 0)
+        event_key = self.get_event_key(event_name)
+        return self._dahua_event_timestamp.get(event_key, 0)
 
     def add_dahua_event_listener(self, event_name: str, listener: CALLBACK_TYPE):
         """ Adds an event listener for the given event (CrossLineDetection, etc).
         This callback will be called when the event fire """
-        self._dahua_event_listeners[event_name] = listener
+        event_key = self.get_event_key(event_name)
+        self._dahua_event_listeners[event_key] = listener
 
     def supports_siren(self) -> bool:
         """
@@ -515,6 +516,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
+
+    def get_event_key(self, event_name: str) -> str:
+        """returns the event key we use for listeners. It uses the channel index to support multiple channels"""
+        return "{0}-{1}".format(event_name, self._channel)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
