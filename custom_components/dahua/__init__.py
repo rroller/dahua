@@ -362,6 +362,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception:  # pylint: disable=broad-except
                     pass
 
+            index = 0
+            if "index" in event:
+                try:
+                    index = int(event["index"])
+                except ValueError:
+                    index = 0
+
+            # This is a short term fix. Right now for NVRs this integration creates a thread per channel to listen to events. Every thread gets the same response. We need to
+            # discard events not for this channel. Longer term work should create only a single thread per channel.
+            if index != self._channel:
+                continue
+
             # Put the vent on the HA event bus
             event["DeviceName"] = self.get_device_name()
             _LOGGER.debug(f"Cam Data received from channel {channel}: {event}")
