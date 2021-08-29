@@ -10,7 +10,7 @@ from .digest import DigestAuth
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
-TIMEOUT_SECONDS = 5
+TIMEOUT_SECONDS = 10
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -60,7 +60,8 @@ class DahuaClient:
         """
         Takes a snapshot of the camera and returns the binary jpeg data
         NOTE: channel_number is not the channel_index. channel_number is the index + 1
-        so channel index 0 is channel number 1
+        so channel index 0 is channel number 1. Except for some older firmwares where channel
+        and channel number are the same!
         """
         url = "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
         return await self.get_bytes(url)
@@ -581,27 +582,17 @@ class DahuaClient:
 
     async def get_bytes(self, url: str) -> bytes:
         """Get information from the API. This will return the raw response and not process it"""
-        try:
-            async with async_timeout.timeout(TIMEOUT_SECONDS):
-                response = None
-                try:
-                    auth = DigestAuth(self._username, self._password, self._session)
-                    response = await auth.request("GET", self._base + url)
-                    response.raise_for_status()
+        async with async_timeout.timeout(TIMEOUT_SECONDS):
+            response = None
+            try:
+                auth = DigestAuth(self._username, self._password, self._session)
+                response = await auth.request("GET", self._base + url)
+                response.raise_for_status()
 
-                    return await response.read()
-                finally:
-                    if response is not None:
-                        response.close()
-
-        except asyncio.TimeoutError as exception:
-            _LOGGER.error("Timeout error fetching information from %s - %s", url, exception)
-        except (KeyError, TypeError) as exception:
-            _LOGGER.error("Error parsing information from %s - %s", url, exception)
-        except (aiohttp.ClientError, socket.gaierror) as exception:
-            _LOGGER.error("Error fetching information from %s - %s", url, exception)
-        except Exception as exception:  # pylint: disable=broad-except
-            _LOGGER.error("Something really wrong happened! - %s", exception)
+                return await response.read()
+            finally:
+                if response is not None:
+                    response.close()
 
     async def get(self, url: str, verify_ok=False) -> dict:
         """Get information from the API."""

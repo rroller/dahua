@@ -115,9 +115,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._serial_number: str
         self._profile_mode = "0"
         self._supports_profile_mode = False
-
-        # TODO: Support multiple channels
         self._channel = channel
+
+        # channel_number is not the channel_index. channel_number is the index + 1.
+        # So channel index 0 is channel number 1. Except for some older firmwares where channel
+        # and channel number are the same! We check for this in _async_update_data and adjust the
+        # channel number as needed.
+        self._channel_number = channel + 1
 
         # This is the name for the device given by the user during setup
         self._name = name
@@ -163,6 +167,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             data = {}
 
             if not self.initialized:
+                try:
+                    await self.client.async_get_snapshot(0)
+                    # If we were able to take a snapshot with index 0 then most likely this cams channel needs to be reset
+                    self._channel_number = self._channel
+                except ClientError:
+                    _LOGGER.error("Expected error during getting snapshot")
+                    pass
 
                 responses = await asyncio.gather(
                     self.client.async_get_system_info(),
@@ -528,6 +539,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
+
+    def get_channel_number(self) -> int:
+        """returns the channel number of this camera"""
+        return self._channel_number
 
     def get_event_key(self, event_name: str) -> str:
         """returns the event key we use for listeners. It uses the channel index to support multiple channels"""

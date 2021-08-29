@@ -213,11 +213,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         Camera.__init__(self)
 
         name = coordinator.client.to_stream_name(stream_index)
-        channel = coordinator.get_channel()
-
-        # I'm really not certain what we should do for the channel.
-        # For NVRs it seems we shouldn't +1 but for individual cams we should.
-        self._channel_number = channel + 1 if channel == 0 else channel
+        self._channel_number = coordinator.get_channel_number()
         self._coordinator = coordinator
         self._name = "{0} {1}".format(config_entry.title, name)
         self._unique_id = coordinator.get_serial_number() + "_" + name
