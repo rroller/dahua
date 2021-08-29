@@ -306,7 +306,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # }
 
         # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, DoorStatus, etc
-        code = event.get("Code", {})
+        code = self.translate_event_code(event)
         event_key = self.get_event_key(code)
 
         listener = self._dahua_event_listeners.get(event_key)
@@ -406,6 +406,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 elif action == "Stop":
                     self._dahua_event_timestamp[event_key] = 0
                     listener()
+
+    def translate_event_code(self, event: dict):
+        """
+        translate_event_code will try to convert the event code to a more specific event code if the device has a listener for the more specific type
+        Example event codes: VideoMotion, CrossLineDetection, BackKeyLight, DoorStatus
+        """
+        code = event.get("Code", "")
+
+        # For CrossLineDetection, the event data will look like this... and if there's a human detected then we'll use the SmartMotionHuman code instead
+        # {
+        #    "Code": "CrossRegionDetection",
+        #    "Data": {
+        #        "Object": {
+        #            "ObjectType": "Human",
+        #        }
+        #    }
+        # }
+        if code == "CrossLineDetection":
+            is_human = event.get("Data", {}).get("Object", {}).get("ObjectType", "").lower() == "human"
+            if is_human and self._dahua_event_listeners.get(self.get_event_key(code)) is not None:
+                code = "SmartMotionHuman"
+
+        return code
 
     def get_event_timestamp(self, event_name: str) -> int:
         """

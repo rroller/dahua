@@ -80,7 +80,7 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
         self._icon_override = ICON_OVERRIDES.get(event_name, None)
 
         # name is the friendly name, example: Cross Line Alarm. If the name is not found in the override it will be
-        # generated from the event_name. For example SmartMotionHuman willbecome "Smart Motion Human"
+        # generated from the event_name. For example SmartMotionHuman will become "Smart Motion Human"
         # https://stackoverflow.com/questions/25674532/pythonic-way-to-add-space-before-capital-letter-if-and-only-if-previous-letter-i/25674575
         default_name = re.sub(r"(?<![A-Z])(?<!^)([A-Z])", r" \1", event_name)
         self._name = NAME_OVERRIDES.get(event_name, default_name)
