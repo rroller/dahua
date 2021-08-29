@@ -172,7 +172,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # If we were able to take a snapshot with index 0 then most likely this cams channel needs to be reset
                     self._channel_number = self._channel
                 except ClientError:
-                    _LOGGER.error("Expected error during getting snapshot")
                     pass
 
                 responses = await asyncio.gather(
