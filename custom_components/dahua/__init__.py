@@ -423,7 +423,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         #        }
         #    }
         # }
-        if code == "CrossLineDetection":
+        if code == "CrossLineDetection" or code == "CrossRegionDetection":
             data = event.get("data", event.get("Data", {}))
             is_human = data.get("Object", {}).get("ObjectType", "").lower() == "human"
             if is_human and self._dahua_event_listeners.get(self.get_event_key(code)) is not None:
