@@ -394,7 +394,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
 
             # This is the event code, example: VideoMotion, CrossLineDetection, etc
-            event_name = event["Code"]
+            event_name = self.translate_event_code(event)
 
             event_key = self.get_event_key(event_name)
             listener = self._dahua_event_listeners.get(event_key)
@@ -424,7 +424,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         #    }
         # }
         if code == "CrossLineDetection":
-            is_human = event.get("Data", {}).get("Object", {}).get("ObjectType", "").lower() == "human"
+            data = event.get("data", event.get("Data", {}))
+            is_human = data.get("Object", {}).get("ObjectType", "").lower() == "human"
             if is_human and self._dahua_event_listeners.get(self.get_event_key(code)) is not None:
                 code = "SmartMotionHuman"
 
