@@ -272,6 +272,23 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{0}].Config[0]={1}".format(channel, mode)
         return await self.get(url, True)
 
+    async def async_set_night_switch_mode(self, channel: int, mode: str):
+        """
+        async_set_night_switch_mode is the same as async_set_video_profile_mode when accessing the camera
+        through a lorex NVR
+        Mode should be one of: Day or Night
+        """
+
+        if mode.lower() == "night":
+            mode = "3"
+        else:
+            # Default to "day", which is 0
+            mode = "0"
+
+        url = f"/cgi-bin/configManager.cgi?action=setConfig&VideoInOptions[{channel}].NightOptions.SwitchMode={mode}"
+        _LOGGER.debug("Switching night mode: %s", url)
+        return await self.get(url, True)
+
     async def async_enable_channel_title(self, channel: int, enabled: bool, ):
         """ async_set_enable_channel_title will enable or disables the camera's channel title overlay """
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].ChannelTitle.EncodeBlend={1}".format(

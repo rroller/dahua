@@ -184,7 +184,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     data.update(response)
 
                 device_type = data.get("deviceType", None)
-                if device_type == "IP Camera" or device_type is None:
+                if device_type in ["IP Camera", "31"] or device_type is None:
                     # Some firmwares put the device type in the "updateSerial" field. Weird.
                     device_type = data.get("updateSerial", None)
                     if device_type is None:
