@@ -290,7 +290,12 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_set_video_profile_mode(self, mode: str):
         """ Handles the service call from SERVICE_SET_VIDEO_PROFILE_MODE to set profile mode to day/night """
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_video_profile_mode(channel, mode)
+        model = self._coordinator.get_model()
+        # Some NVRs like the Lorex DHI-NVR4108HS-8P-4KS2 change the day/night mode through a switch
+        if 'NVR4108HS' in model:
+            await self._coordinator.client.async_set_night_switch_mode(channel, mode)
+        else:
+            await self._coordinator.client.async_set_video_profile_mode(channel, mode)
 
     async def async_set_enable_channel_title(self, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE """

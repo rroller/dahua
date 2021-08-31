@@ -12,7 +12,7 @@
                     "rtsp_port": "RTSP Port",
                     "streams": "RTSP Streams",
                     "events": "Events",
-                    "channel": "Channel (Usually 0 unless you use an nvr)"
+                    "channel": "Channel (single cameras are 0, NVRs are the 0 based index)"
                 }
             },
             "name": {
