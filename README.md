@@ -1,6 +1,6 @@
 
 # Home Assistant Dahua Integration
-The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras and doorbells in Home Assistant. It's also confirmed to work with some Lorex cameras.
+The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras, doorbells, NVRs, DVRs in Home Assistant. It's also confirmed to work with some Lorex cameras and Amcrest devices.
 
 Supports motion events, alarm events (and others), enabling/disabling motion detection, switches for infrared, illuminator (white light), security lights (red/blue flashers), sirens, doorbell button press events, and more.
 
@@ -95,6 +95,7 @@ These devices are confirmed as working:
 * DHI-VTO2211G-P
 * Amcrest AD410 Doorbell
 * C26EP-V2
+* Lorex E891AB NVR
 * Please let me know if you've tested with additional cameras
 
 # Known Issues
