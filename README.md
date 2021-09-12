@@ -88,6 +88,7 @@ These devices are confirmed as working:
 * IPC-HFW1435S-W-S2
 * IMOU IPC-K22A / Cube PoE-322A
 * IMOU IPC-A26Z / Ranger Pro Z
+* IMOU IPC-C26E-V2 (partial support)
 * LNB8005-C
 * LNE8964AB
 * IPC-A26
