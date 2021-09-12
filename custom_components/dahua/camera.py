@@ -226,10 +226,9 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Return the entity unique ID."""
         return self._unique_id
 
-    async def async_camera_image(self):
+    async def async_camera_image(self, width: int, height: int):
         """Return a still image response from the camera."""
         # Send the request to snap a picture and return raw jpg data
-        channel = self._coordinator.get_channel()
         return await self._coordinator.client.async_get_snapshot(self._channel_number)
 
     @property
