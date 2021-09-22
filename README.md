@@ -82,10 +82,10 @@ Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | *Consumer Series* |
 | | IPC-A26 |  |  |
 | *1-Series* |
-| | IPC-HFW1230S | IPC-HFW1435S-W |  | 
+| | IPC-HFW1230S | IPC-HFW1435S-W |  |
 | | IPC-HDBW1230E-S2 | IPC-HFW1435S-W-S2  |  |
 | *2-/3-Series* |
-| | IPC-HDW2831T-ZS-S2 |  | IPC-HDW3549HP-AS-PV | 
+| | IPC-HDW2831T-ZS-S2 |  | IPC-HDW3549HP-AS-PV | IPC-HDW3849HP-AS-PV
 | *4-/5-Series* |
 | | IPC-HDW4231EM-ASE | IPC-HFW4433F-ZSA |  | IPC-HDW5831R-ZE
 | | IPC-HDBW4231F-AS | IPC-HDBW5421E-Z |  |
@@ -98,9 +98,9 @@ Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 :------------ | :------------ | :------------ | :------------- | :-------------
 | *IMOU* |
-| | IMOU IPC-A26Z / Ranger Pro Z | 
-| | IMOU IPC-C26E-V2 <sup>*</sup> | 
-| | IMOU IPC-K22A / Cube PoE-322A | 
+| | IMOU IPC-A26Z / Ranger Pro Z |
+| | IMOU IPC-C26E-V2 <sup>*</sup> |
+| | IMOU IPC-K22A / Cube PoE-322A |
 | *Lorex* |
 | | | | | Lorex E891AB
 | | | | | Lorex LNB8005-C
