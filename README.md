@@ -71,33 +71,54 @@ This integration should word with most Dahua cameras and doorbells. It has been 
 
 Doorbells will have a binary sensor that captures the doorbell pressed event.
 
+* **Please let me know if you've tested with additional cameras**
+
 These devices are confirmed as working:
 
-* IPC-T5442T-ZE
-* IPC-HDBW1230E-S2
-* IPC-HDBW5421E-Z
-* IPC-HDW4231EM-ASE
-* IPC-HDW5831R-ZE
-* IPC-HDW2831T-ZS-S2
-* IPC-HDW3549HP-AS-PV
-* IPC-HDW3849HP-AS-PV
-* IPC-HDW4233C-A
-* IPC-HFW4433F-ZSA
-* IPC-HFW1230S
-* IPC-HFW1435S-W
-* IPC-HFW1435S-W-S2
-* IMOU IPC-K22A / Cube PoE-322A
-* IMOU IPC-A26Z / Ranger Pro Z
-* IMOU IPC-C26E-V2 (partial support)
-* LNB8005-C
-* LNE8964AB
-* IPC-A26
-* DHI-VTO2202F-P
-* DHI-VTO2211G-P
-* Amcrest AD410 Doorbell
-* C26EP-V2
-* Lorex E891AB NVR
-* Please let me know if you've tested with additional cameras
+## Dahua cameras
+
+Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
+:------------ | :------------ | :------------ | :------------- | :-------------
+| *Consumer Series* |
+| | IPC-A26 |  |  |
+| *1-Series* |
+| | IPC-HFW1230S | IPC-HFW1435S-W |  |
+| | IPC-HDBW1230E-S2 | IPC-HFW1435S-W-S2  |  |
+| *2-/3-Series* |
+| | IPC-HDW2831T-ZS-S2 |  | IPC-HDW3549HP-AS-PV | IPC-HDW3849HP-AS-PV
+| *4-/5-Series* |
+| | IPC-HDW4231EM-ASE | IPC-HFW4433F-ZSA |  | IPC-HDW5831R-ZE
+| | IPC-HDBW4231F-AS | IPC-HDBW5421E-Z |  |
+| | IPC-HDW4233C-A | IPC-T5442T-ZE |
+| | IPC-HDBW4239R-ASE |
+| | IPC-HDBW4239RP-ASE |
+
+## Other brand cameras
+
+Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
+:------------ | :------------ | :------------ | :------------- | :-------------
+| *IMOU* |
+| | IMOU IPC-A26Z / Ranger Pro Z |
+| | IMOU IPC-C26E-V2 <sup>*</sup> |
+| | IMOU IPC-K22A / Cube PoE-322A |
+| *Lorex* |
+| | | | | Lorex E891AB
+| | | | | Lorex LNB8005-C
+| | | | | Lorex LNE8964AB
+
+<sup>*</sup> partial support
+
+## Doorbell cameras
+
+Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
+:------------ | :------------ | :------------ | :------------- | :-------------
+| *Amcrest* |
+| | | Amcrest AD410
+| *Dahua* |
+| | DHI-VTO2202F-P |
+| | DHI-VTO2211G-P |
+| *IMOU* |
+| | IMOU C26EP-V2 |
 
 # Known Issues
 * IPC-D2B20-ZS doesn't work. Needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201), [7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237)
