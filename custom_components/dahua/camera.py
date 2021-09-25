@@ -1,4 +1,5 @@
 """This component provides basic support for Dahua IP cameras."""
+from __future__ import annotations
 
 import logging
 import voluptuous as vol
@@ -226,7 +227,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Return the entity unique ID."""
         return self._unique_id
 
-    async def async_camera_image(self, width: int, height: int):
+    async def async_camera_image(self, width: int | None = None, height: int | None = None):
         """Return a still image response from the camera."""
         # Send the request to snap a picture and return raw jpg data
         return await self._coordinator.client.async_get_snapshot(self._channel_number)
