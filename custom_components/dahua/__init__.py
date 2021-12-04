@@ -116,6 +116,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._profile_mode = "0"
         self._supports_profile_mode = False
         self._channel = channel
+        self._address = address
 
         # channel_number is not the channel_index. channel_number is the index + 1.
         # So channel index 0 is channel number 1. Except for some older firmwares where channel
@@ -577,6 +578,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """returns the event key we use for listeners. It uses the channel index to support multiple channels"""
         return "{0}-{1}".format(event_name, self._channel)
 
+    def get_address(self) -> str:
+        """returns the IP address of this camera"""
+        return self._address
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Handle removal of an entry."""
