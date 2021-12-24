@@ -102,9 +102,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, session)
 
-        # The client for Dahua devices with the RPC2 API interface. This is an experimental client
-        # self.rpc2: DahuaRpc2Client = DahuaRpc2Client(username, password, address, port, rtsp_port, session)
-
         self.platforms = []
         self.initialized = False
         self.model = ""

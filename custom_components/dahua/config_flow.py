@@ -25,7 +25,6 @@ from .const import (
     PLATFORMS,
     CONF_CHANNEL,
 )
-from .rpc2 import DahuaRpc2Client
 
 """
 https://developers.home-assistant.io/docs/config_entries_config_flow_handler
@@ -181,32 +180,15 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """Return name and serialNumber if credentials is valid."""
         session = async_create_clientsession(hass=self.hass, verify_ssl=False)
         try:
-            # The long term goal is to migrate to the DahuaRpc2Client client and remove the DahuaClient
-            # Testing this out via login to see how it goes
-            client = DahuaRpc2Client(username, password, address, port, rtsp_port, session)
-            await client.login()
-            _LOGGER.info("Authenticated with the RPC2 API")
-            name = await client.get_device_name()
-            serial = await client.get_serial_number()
-            await client.logout()
-
-            return {
-                "name": name,
-                "serialNumber": serial,
-            }
-        except Exception:  # pylint: disable=broad-except
-            _LOGGER.warning("Could not connect to Dahua device via the RPC2 API, falling back to cgi")
-
-            try:
-                client2 = DahuaClient(username, password, address, port, rtsp_port, session)
-                data = await client2.get_machine_name()
-                serial = await client2.async_get_system_info()
-                data.update(serial)
-                if "name" in data:
-                    return data
-            except Exception as exception:  # pylint: disable=broad-except
-                _LOGGER.warning("Could not connect to Dahua device", exc_info=exception)
-        return None
+            client = DahuaClient(username, password, address, port, rtsp_port, session)
+            data = await client.get_machine_name()
+            serial = await client.async_get_system_info()
+            data.update(serial)
+            if "name" in data:
+                return data
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.warning("Could not connect to Dahua device. For iMou devices see " +
+                            "https://github.com/rroller/dahua/issues/6", exc_info=exception)
 
 
 class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
