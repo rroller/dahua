@@ -187,7 +187,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             if "name" in data:
                 return data
         except Exception as exception:  # pylint: disable=broad-except
-            _LOGGER.warning("Could not connect to Dahua device. For iMou devices see " +
+            _LOGGER.error("Could not connect to Dahua device. For iMou devices see " +
                             "https://github.com/rroller/dahua/issues/6", exc_info=exception)
 
 

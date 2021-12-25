@@ -309,7 +309,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         #    "Index":-1
         # }
 
-        # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, DoorStatus, etc
+        # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, PhoneCallDetect, DoorStatus, etc
         code = self.translate_event_code(event)
         event_key = self.get_event_key(code)
 
@@ -431,7 +431,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             data = event.get("data", event.get("Data", {}))
             is_human = data.get("Object", {}).get("ObjectType", "").lower() == "human"
             if is_human and self._dahua_event_listeners.get(self.get_event_key(code)) is not None:
-                code = "SmartMotionHuman"
+                return "SmartMotionHuman"
+
+        # Convert doorbell pressed related events to common event name, DoorbellPressed.
+        # VTO devices will use the event BackKeyLight and the Amcrest devices seem to use PhoneCallDetect
+        if code == "BackKeyLight" or code == "PhoneCallDetect":
+            code = "DoorbellPressed"
 
         return code
 

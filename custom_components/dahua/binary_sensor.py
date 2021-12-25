@@ -16,7 +16,7 @@ from .entity import DahuaBaseEntity
 NAME_OVERRIDES = {
     "VideoMotion": "Motion Alarm",
     "CrossLineDetection": "Cross Line Alarm",
-    "BackKeyLight": "Button Pressed",  # For VTO devices (doorbells)
+    "DoorbellPressed": "Button Pressed",  # For VTO/Doorbell devices
 }
 
 # Override the device class for events
@@ -30,7 +30,7 @@ DEVICE_CLASS_OVERRIDES = {
     "StorageFailure": CONNECTIVITY_DEVICE_CLASS,
     "StorageLowSpace": SAFETY_DEVICE_CLASS,
     "FireWarning": SAFETY_DEVICE_CLASS,
-    "BackKeyLight": SOUND_DEVICE_CLASS,
+    "DoorbellPressed": SOUND_DEVICE_CLASS,
     "DoorStatus": DOOR_DEVICE_CLASS,
     "AudioMutation": SOUND_DEVICE_CLASS,
 }
@@ -51,7 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 
     # For doorbells we'll just add these since most people will want them
     if coordinator.is_doorbell():
-        sensors.append(DahuaEventSensor(coordinator, entry, "BackKeyLight"))
+        sensors.append(DahuaEventSensor(coordinator, entry, "DoorbellPressed"))
         sensors.append(DahuaEventSensor(coordinator, entry, "Invite"))
         sensors.append(DahuaEventSensor(coordinator, entry, "DoorStatus"))
         sensors.append(DahuaEventSensor(coordinator, entry, "CallNoAnswered"))
