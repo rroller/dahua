@@ -30,7 +30,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     if coordinator.supports_illuminator():
         entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
 
-    if coordinator.supports_security_light():
+    if coordinator.supports_security_light() and not coordinator.is_amcrest_doorbell():
+        #  The Amcrest doorbell works a little different and is added in select.py
         entities.append(DahuaSecurityLight(coordinator, entry, "Security Light"))
 
     async_add_entities(entities)

@@ -28,7 +28,8 @@ BINARY_SENSOR = "binary_sensor"
 SWITCH = "switch"
 LIGHT = "light"
 CAMERA = "camera"
-PLATFORMS = [BINARY_SENSOR, SWITCH, LIGHT, CAMERA]
+SELECT = "select"
+PLATFORMS = [BINARY_SENSOR, SWITCH, LIGHT, CAMERA, SELECT]
 
 
 # Configuration and options

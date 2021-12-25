@@ -375,6 +375,22 @@ class DahuaClient:
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
 
+    async def async_set_lighting_v2_for_amcrest_doorbells(self, mode: str) -> dict:
+        """
+        async_set_lighting_v2_for_amcrest_doorbells will turn on or off the white light on Amcrest doorbells
+        mode: On, Off, Flicker
+        """
+        mode = mode.lower()
+        cmd = "Off"
+        if mode == "on":
+            cmd = "ForceOn&Lighting_V2[0][0][1].State=On"
+        elif mode == "strobe" or mode == "flicker":
+            cmd = "ForceOn&Lighting_V2[0][0][1].State=Flicker"
+
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][0][1].Mode={cmd}".format(cmd=cmd)
+        _LOGGER.debug("Turning doorbell light on: %s", url)
+        return await self.get(url)
+
     async def async_set_video_in_day_night_mode(self, channel: int, config_type: str, mode: str):
         """
         async_set_video_in_day_night_mode will set the video dan/night config. For example to see it to Color or Black

@@ -466,14 +466,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has the red/blue flashing security light feature.  For example, the
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
         """
-        return "-AS-PV" in self.model
+        return "-AS-PV" in self.model or self.model == "AD410"
 
     def is_doorbell(self) -> bool:
         """
         Returns true if this is a doorbell (VTO)
         """
         m = self.model.upper()
-        return m.startswith("VTO") or m.startswith("DHI") or m.startswith("AD")
+        return m.startswith("VTO") or m.startswith("DHI") or self.is_amcrest_doorbell()
+
+    def is_amcrest_doorbell(self) -> bool:
+        """
+        Returns true if this is an Amcrest doorbell
+        """
+        return self.model.upper().startswith("AD")
 
     def supports_infrared_light(self) -> bool:
         """
@@ -487,7 +493,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has an illuminator (white light for color cameras).  For example, the
         IPC-HDW3849HP-AS-PV does
         """
-        return "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data
+        return not self.is_amcrest_doorbell() and "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data
 
     def is_motion_detection_enabled(self) -> bool:
         """
