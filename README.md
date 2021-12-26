@@ -58,10 +58,11 @@ $ mv dahua-main/custom_components/dahua <home-assistant-install-directory>/confi
     3. **Address**: Your camera's address, typically just the IP address
     4. **Port**: Your camera's HTTP port. Default is `80`
     5. **RTSP Port**: Your camera's RTSP port, default is `554`. Used to live stream your camera in HA
-    6. **RTSP Streams**: The RTSP stream you want to use (Main, Sub, or Both). If both, two camera entities will be created
-    7. **Events**: The integration will keep a connection open to the camera to capture motion events, alarm events, etc.
+    6. **Events**: The integration will keep a connection open to the camera to capture motion events, alarm events, etc.
        You can select which events you want to monitor and report in HA. If no events are selected then the connection will no be created.
        If you want a specific event that's not listed here open an issue and I'll add it.
+
+NOTE: All streams will be added, even if not enabled in the camera. Just remove the ones you don't want.
 
 ![Dahua Setup](static/setup1.png)
 

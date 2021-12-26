@@ -4,7 +4,6 @@ import socket
 import asyncio
 import aiohttp
 import async_timeout
-from custom_components.dahua.const import STREAM_MAIN, STREAM_SUB
 
 from .digest import DigestAuth
 
@@ -78,8 +77,7 @@ class DahuaClient:
         updateSerial=IPC-HDW5830R-Z
         updateSerialCloudUpgrade=IPC-HDW5830R-Z:07:01:08:70:52:00:09:0E:03:00:04:8F0:00:00:00:00:00:02:00:00:600
         """
-        url = "/cgi-bin/magicBox.cgi?action=getSystemInfo"
-        return await self.get(url)
+        return await self.get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
 
     async def get_device_type(self) -> dict:
         """
@@ -89,32 +87,32 @@ class DahuaClient:
         Some cams might return...
         type=IP Camera
         """
-        url = "/cgi-bin/magicBox.cgi?action=getDeviceType"
-        return await self.get(url)
+        return await self.get("/cgi-bin/magicBox.cgi?action=getDeviceType")
 
     async def get_software_version(self) -> dict:
         """
         get_software_version returns the device software version (also known as the firmware version). Example response:
         version=2.800.0000016.0.R,build:2020-06-05
         """
-        url = "/cgi-bin/magicBox.cgi?action=getSoftwareVersion"
-        return await self.get(url)
+        return await self.get("/cgi-bin/magicBox.cgi?action=getSoftwareVersion")
 
     async def get_machine_name(self) -> dict:
-        """
-        get_machine_name returns the device name. Example response:
-        name=FrontDoorCam
-        """
-        url = "/cgi-bin/magicBox.cgi?action=getMachineName"
-        return await self.get(url)
+        """ get_machine_name returns the device name. Example response: name=FrontDoorCam """
+        return await self.get("/cgi-bin/magicBox.cgi?action=getMachineName")
 
     async def get_vendor(self) -> dict:
-        """
-        get_vendor returns the vendor. Example response:
-        vendor=Dahua
-        """
-        url = "/cgi-bin/magicBox.cgi?action=getVendor"
-        return await self.get(url)
+        """ get_vendor returns the vendor. Example response: vendor=Dahua """
+        return await self.get("/cgi-bin/magicBox.cgi?action=getVendor")
+
+    async def get_max_extra_streams(self) -> int:
+        """ get_max_extra_streams returns the max number of sub streams supported by the camera """
+        try:
+            result = await self.get("/cgi-bin/magicBox.cgi?action=getProductDefinition&name=MaxExtraStream")
+            return int(result.get("table.MaxExtraStreams", "2"))
+        except aiohttp.ClientResponseError as e:
+            pass
+        # If we can't fetch, just assume 2 since that's pretty standard
+        return 2
 
     async def async_get_coaxial_control_io_status(self) -> dict:
         """
@@ -518,9 +516,7 @@ class DahuaClient:
         # Some older cameras do not support the above API, so try this one
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].Enable={1}".format(channel,
                                                                                                 str(enabled).lower())
-        response = await self.get(url)
-
-        return response
+        return await self.get(url)
 
     async def stream_events(self, on_receive, events: list, channel: int):
         """
@@ -655,25 +651,13 @@ class DahuaClient:
             _LOGGER.error("Something really wrong happened! - %s", exception)
 
     @staticmethod
-    def to_subtype(stream_name: str) -> int:
-        """
-        Given a stream name (Main or Sub) returns the subtype index. The index is what the API uses
-        """
-        if stream_name == STREAM_MAIN:
-            return 0
-        elif stream_name == STREAM_SUB:
-            return 1
-
-        # Just default to the main stream
-        return 0
-
-    @staticmethod
     def to_stream_name(subtype: int) -> str:
-        """
-        Given the subtype, returns the stream name (Main or Sub)
-        """
-        if subtype == 1:
-            return STREAM_SUB
-
-        # Just default to the main stream
-        return STREAM_MAIN
+        """ Given the subtype (aka, stream index), returns the stream name (Main or Sub) """
+        if subtype == 0:
+            return "Main"
+        elif subtype == 1:
+            # We originally didn't support more than 1 sub-stream and it we just called it "Sub". To keep backwards
+            # compatibility we'll keep the name "Sub" for the first sub-stream. Others will follow the pattern below
+            return "Sub"
+        else:
+            return "Sub_{0}".format(subtype)

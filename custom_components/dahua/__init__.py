@@ -114,6 +114,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_profile_mode = False
         self._channel = channel
         self._address = address
+        self._max_streams = 3  # 1 main stream + 2 sub-streams by default
 
         # channel_number is not the channel_index. channel_number is the index + 1.
         # So channel index 0 is channel number 1. Except for some older firmwares where channel
@@ -167,10 +168,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if not self.initialized:
                 try:
                     await self.client.async_get_snapshot(0)
-                    # If we were able to take a snapshot with index 0 then most likely this cams channel needs to be reset
+                    # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
                     self._channel_number = self._channel
                 except ClientError:
                     pass
+
+                # Find the max number of streams. 1 main stream + n number of sub-streams
+                self._max_streams = await self.client.get_max_extra_streams() + 1
 
                 responses = await asyncio.gather(
                     self.client.async_get_system_info(),
@@ -589,6 +593,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_address(self) -> str:
         """returns the IP address of this camera"""
         return self._address
+
+    def get_max_streams(self) -> int:
+        """Returns the max number of streams supported by the device. All streams might not be enabled though"""
+        return self._max_streams
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Handle removal of an entry."""

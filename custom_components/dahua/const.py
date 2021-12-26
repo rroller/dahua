@@ -56,8 +56,3 @@ If you have any issues with this you need to open an issue here:
 {ISSUE_URL}
 -------------------------------------------------------------------
 """
-
-# Stream Names
-STREAM_MAIN = "Main"
-STREAM_SUB = "Sub"
-STREAM_BOTH = "Both"

@@ -12,11 +12,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.entity import DahuaBaseEntity
 
 from .const import (
-    CONF_STREAMS,
     DOMAIN,
-    STREAM_MAIN,
-    STREAM_SUB,
-    STREAM_BOTH,
 )
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
@@ -42,26 +38,16 @@ SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
-    streams = config_entry.data[CONF_STREAMS]
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    max_streams = coordinator.get_max_streams()
 
-    if streams in (STREAM_MAIN, STREAM_BOTH):
+    # Note the stream_index is 0 based. The main stream is index 0
+    for stream_index in range(max_streams):
         async_add_entities(
             [
                 DahuaCamera(
                     coordinator,
-                    coordinator.client.to_subtype(STREAM_MAIN),
-                    config_entry,
-                )
-            ]
-        )
-
-    if streams in (STREAM_SUB, STREAM_BOTH):
-        async_add_entities(
-            [
-                DahuaCamera(
-                    coordinator,
-                    coordinator.client.to_subtype(STREAM_SUB),
+                    stream_index,
                     config_entry,
                 )
             ]

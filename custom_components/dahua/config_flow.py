@@ -15,12 +15,8 @@ from .const import (
     CONF_ADDRESS,
     CONF_RTSP_PORT,
     CONF_PORT,
-    CONF_STREAMS,
     CONF_EVENTS,
     CONF_NAME,
-    STREAM_MAIN,
-    STREAM_SUB,
-    STREAM_BOTH,
     DOMAIN,
     PLATFORMS,
     CONF_CHANNEL,
@@ -32,8 +28,6 @@ https://developers.home-assistant.io/docs/data_entry_flow_index/
 """
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
-
-STREAMS = [STREAM_MAIN, STREAM_SUB, STREAM_BOTH]
 
 DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss", "VideoBlind", "AudioMutation",
                   "CrossRegionDetection", "SmartMotionHuman", "SmartMotionVehicle"]
@@ -157,7 +151,6 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_PORT, default="80"): str,
                     vol.Required(CONF_RTSP_PORT, default="554"): str,
                     vol.Required(CONF_CHANNEL, default=0): int,
-                    vol.Required(CONF_STREAMS, default=STREAMS[0]): vol.In(STREAMS),
                     vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(ALL_EVENTS),
                 }
             ),
