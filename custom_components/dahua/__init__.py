@@ -109,6 +109,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.events: list = events
         self._supports_coaxial_control = False
         self._supports_disarming_linkage = False
+        self._supports_smart_motion_detection = False
         self._serial_number: str
         self._profile_mode = "0"
         self._supports_profile_mode = False
@@ -216,6 +217,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError:
                     self._supports_disarming_linkage = False
 
+                try:
+                    await self.client.async_get_smart_motion_detection()
+                    self._supports_smart_motion_detection = True
+                except ClientError:
+                    self._supports_smart_motion_detection = False
+
                 is_doorbell = self.is_doorbell()
 
                 if not is_doorbell:
@@ -260,6 +267,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
             if self._supports_coaxial_control:
                 coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
+            if self._supports_smart_motion_detection:
+                coros.append(asyncio.ensure_future(self.client.async_get_smart_motion_detection()))
 
             # Gather results and update the data map
             results = await asyncio.gather(*coros)
@@ -473,16 +482,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return "-AS-PV" in self.model or self.model == "AD410"
 
     def is_doorbell(self) -> bool:
-        """
-        Returns true if this is a doorbell (VTO)
-        """
+        """ Returns true if this is a doorbell (VTO) """
         m = self.model.upper()
         return m.startswith("VTO") or m.startswith("DHI") or self.is_amcrest_doorbell()
 
     def is_amcrest_doorbell(self) -> bool:
-        """
-        Returns true if this is an Amcrest doorbell
-        """
+        """ Returns true if this is an Amcrest doorbell """
         return self.model.upper().startswith("AD")
 
     def supports_infrared_light(self) -> bool:
@@ -500,21 +505,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return not self.is_amcrest_doorbell() and "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data
 
     def is_motion_detection_enabled(self) -> bool:
-        """
-        Returns true if motion detection is enabled for the camera
-        """
+        """ Returns true if motion detection is enabled for the camera """
         return self.data.get("table.MotionDetect[{0}].Enable".format(self._channel), "").lower() == "true"
 
     def is_disarming_linkage_enabled(self) -> bool:
-        """
-        Returns true if disarming linkage is enable
-        """
+        """ Returns true if disarming linkage is enable """
         return self.data.get("table.DisableLinkage.Enable", "").lower() == "true"
 
+    def is_smart_motion_detection_enabled(self) -> bool:
+        """ Returns true if smart motion detection is enabled """
+        return self.data.get("table.SmartMotionDetect[0].Enable", "").lower() == "true"
+
     def is_siren_on(self) -> bool:
-        """
-        Returns true if the camera siren is on
-        """
+        """ Returns true if the camera siren is on """
         return self.data.get("status.status.Speaker", "").lower() == "on"
 
     def get_device_name(self) -> str:
@@ -597,6 +600,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_max_streams(self) -> int:
         """Returns the max number of streams supported by the device. All streams might not be enabled though"""
         return self._max_streams
+
+    def supports_smart_motion_detection(self) -> bool:
+        """ True if smart motion detection is supported"""
+        return self._supports_smart_motion_detection
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

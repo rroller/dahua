@@ -222,13 +222,27 @@ class DahuaClient:
             return await self.get(url, True)
 
     async def async_set_ivs_rule(self, channel: int, index: int, enabled: bool):
-        """
-        Sets and IVS rules to enabled or disabled
-        """
+        """ Sets and IVS rules to enabled or disabled """
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[{0}][{1}].Enable={2}".format(
             channel, index, str(enabled).lower()
         )
         return await self.get(url, True)
+
+    async def async_enabled_smart_motion_detection(self, enabled: bool):
+        """ Enables or disabled smart motion detection """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[0].Enable={0}".format(str(enabled).lower())
+        return await self.get(url, True)
+
+    async def async_get_smart_motion_detection(self) -> dict:
+        """
+        Gets the status of smart motion detection. Example output:
+        table.SmartMotionDetect[0].Enable=true
+        table.SmartMotionDetect[0].ObjectTypes.Human=true
+        table.SmartMotionDetect[0].ObjectTypes.Vehicle=false
+        table.SmartMotionDetect[0].Sensitivity=Middle
+        """
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
+        return await self.get(url)
 
     async def async_set_lighting_v1(self, channel: int, enabled: bool, brightness: int) -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
