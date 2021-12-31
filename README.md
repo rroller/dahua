@@ -93,7 +93,8 @@ Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | IPC-HDW4233C-A | IPC-T5442T-ZE |
 | | IPC-HDBW4239R-ASE |
 | | IPC-HDBW4239RP-ASE |
-
+| *Panoramic Series* |
+| |  |  | IPC-EW5531-AS | 
 ## Other brand cameras
 
 Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
