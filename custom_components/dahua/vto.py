@@ -37,8 +37,6 @@ DAHUA_ALLOWED_DETAILS = [
     DAHUA_SERIAL_NUMBER
 ]
 
-ENDPOINT_ACCESS_CONTROL = "accessControl.cgi?action=openDoor&UserID=101&Type=Remote&channel="
-
 
 class DahuaVTOClient(asyncio.Protocol):
     requestId: int
@@ -76,11 +74,10 @@ class DahuaVTOClient(asyncio.Protocol):
 
         # This is the hook back into HA
         self.on_receive_vto_event = on_receive_vto_event
-
         self._loop = asyncio.get_event_loop()
 
     def connection_made(self, transport):
-        _LOGGER.debug("Connection established")
+        _LOGGER.debug("VTO connection established")
 
         try:
             self.transport = transport
@@ -266,6 +263,15 @@ class DahuaVTOClient(asyncio.Protocol):
 
         self.send(DAHUA_CONFIG_MANAGER_GETCONFIG, handle_access_control, request_data)
 
+    async def cancel_call(self):
+        _LOGGER.info("Cancelling call on VTO")
+
+        def cancel(message):
+            _LOGGER.info(f"Got cancel call response: {message}")
+
+        self.send("console.runCmd", cancel, {"command": "hc"})
+        return True
+
     def load_version(self):
         _LOGGER.info("Get version")
 
@@ -325,52 +331,6 @@ class DahuaVTOClient(asyncio.Protocol):
         }
 
         self.send(DAHUA_GLOBAL_KEEPALIVE, handle_keep_alive, request_data)
-
-    def access_control_open_door(self, door_id: int = 1):
-        is_locked = self.lock_status.get(door_id, False)
-        should_unlock = False
-
-        try:
-            if is_locked:
-                _LOGGER.info(f"Access Control - Door #{door_id} is already unlocked, ignoring request")
-
-            else:
-                is_locked = True
-                should_unlock = True
-
-                self.lock_status[door_id] = is_locked
-                self.publish_lock_state(door_id, False)
-
-                url = f"{self.base_url}{ENDPOINT_ACCESS_CONTROL}{door_id}"
-
-                response = requests.get(url, verify=False, auth=self.auth)
-
-                response.raise_for_status()
-
-        except Exception as ex:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-
-            _LOGGER.error(f"Failed to open door, error: {ex}, Line: {exc_tb.tb_lineno}")
-
-        if should_unlock and is_locked:
-            Timer(float(self.hold_time), self.magnetic_unlock, (self, door_id)).start()
-
-    @staticmethod
-    def magnetic_unlock(self, door_id):
-        self.lock_status[door_id] = False
-        self.publish_lock_state(door_id, True)
-
-    def publish_lock_state(self, door_id: int, is_locked: bool):
-        state = "Locked" if is_locked else "Unlocked"
-
-        _LOGGER.info(f"Access Control - {state} magnetic lock #{door_id}")
-
-        message = {
-            "door": door_id,
-            "isLocked": is_locked
-        }
-
-        _LOGGER.info("locked %s", json.dumps(message, indent=4))
 
     @staticmethod
     def parse_response(response):

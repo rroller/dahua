@@ -369,3 +369,12 @@ vto_open_door:
           mode: box
           min: 0
           max: 100
+
+vto_cancel_call:
+  name: Cancel VTO call
+  description: Cancels a VTO call
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+

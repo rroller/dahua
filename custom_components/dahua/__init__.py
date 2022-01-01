@@ -34,6 +34,7 @@ from .const import (
     STARTUP_MESSAGE,
     CONF_CHANNEL,
 )
+from .vto import DahuaVTOClient
 
 SCAN_INTERVAL_SECONDS = timedelta(seconds=30)
 
@@ -604,6 +605,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def supports_smart_motion_detection(self) -> bool:
         """ True if smart motion detection is supported"""
         return self._supports_smart_motion_detection
+
+    def get_vto_client(self) -> DahuaVTOClient:
+        """
+        Returns an instance of the connected VTO client if this is a VTO device. We need this because there's different
+        ways to call a VTO device and the VTO client will handle that. For example, to hang up a call
+        """
+        return self.dahua_vto_event_thread.vto_client
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

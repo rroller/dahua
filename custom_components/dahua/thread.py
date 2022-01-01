@@ -86,6 +86,7 @@ class DahuaVtoEventThread(threading.Thread):
         self._username = username
         self._password = password
         self._is_ssl = False
+        self.vto_client = None
 
     def run(self):
         """Fetch VTO events"""
@@ -104,9 +105,19 @@ class DahuaVtoEventThread(threading.Thread):
                 # how well do we know when we are shutting down HA?
                 loop = asyncio.new_event_loop()
 
-                client = loop.create_connection(
-                    lambda: DahuaVTOClient(self._host, self._username, self._password, self._is_ssl,
-                                           self.on_receive_vto_event), host=self._host, port=self._port)
+                def vto_client_lambda():
+                    # Notice how we set vto_client client here. This is so nasty, I'm embarrassed to put this into the
+                    # code, but I'm not a python expert and it works well enough and this is just a spare time project
+                    # so here it is. We need to capture an instance of the DahuaVTOClient so we can use it later on
+                    # in switches to execute commands on the VTO. We need the client connected to the event loop
+                    # which is done through loop.create_connection. This makes it awkward to capture... which is why
+                    # I've done this. I'm sure there's a better way :)
+                    self.vto_client = DahuaVTOClient(self._host, self._username, self._password, self._is_ssl,
+                                                     self.on_receive_vto_event)
+                    return self.vto_client
+
+                client = loop.create_connection(vto_client_lambda, host=self._host, port=self._port)
+
                 loop.run_until_complete(client)
                 loop.run_forever()
                 loop.close()

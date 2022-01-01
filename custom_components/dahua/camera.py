@@ -32,6 +32,7 @@ SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
 SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
 SERVICE_VTO_OPEN_DOOR = "vto_open_door"
+SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 
 
@@ -128,6 +129,12 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("door_id", default=1): int,
         },
         "async_vto_open_door"
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_VTO_CANCEL_CALL,
+        {},
+        "async_vto_cancel_call"
     )
 
     platform.async_register_entity_service(
@@ -316,6 +323,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_vto_open_door(self, door_id: int):
         """ Handles the service call from SERVICE_VTO_OPEN_DOOR """
         await self._coordinator.client.async_access_control_open_door(door_id)
+
+    async def async_vto_cancel_call(self):
+        """ Handles the service call from SERVICE_VTO_CANCEL_CALL to cancel VTO calls """
+        await self._coordinator.get_vto_client().cancel_call()
 
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """
