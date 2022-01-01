@@ -93,12 +93,12 @@ class DahuaVTOClient(asyncio.Protocol):
 
     def data_received(self, data):
         try:
-            message = self.parse_response(data)
-            message_id = message.get("id")
+            messages = self.parse_response(data)
+            for message in messages:
+                message_id = message.get("id")
 
-            handler: Callable = self.data_handlers.get(message_id, self.handle_default)
-            handler(message)
-
+                handler: Callable = self.data_handlers.get(message_id, self.handle_default)
+                handler(message)
         except Exception as ex:
             exc_type, exc_obj, exc_tb = sys.exc_info()
 
@@ -109,8 +109,6 @@ class DahuaVTOClient(asyncio.Protocol):
             event_list = params.get("eventList")
 
             for message in event_list:
-                code = message.get("Code")
-
                 for k in self.dahua_details:
                     if k in DAHUA_ALLOWED_DETAILS:
                         message[k] = self.dahua_details.get(k)
@@ -376,16 +374,20 @@ class DahuaVTOClient(asyncio.Protocol):
 
     @staticmethod
     def parse_response(response):
-        result = None
+        result = []
 
         try:
+            # Messages can look like like the following, note, this was shorted with ...
+            # Note that there can 0 or more events per line. Typically it's 1 event, but sometimes 2 events will arrive.
+            # This example shows 2 events
+            # \x00\x00\x00DHIP*Q\xa8f\x08\x00\x00\x00m\x04\x00\x00\x00\x00\x00\x00m\x04\x00\x00\x00\x00\x00\x00{"id":8,"method":"client.notifyEventStream","params":{"SID":513,"eventList":[{"Action":"Start","Code":"CrossRegionDetection"...},"session":1722306858}\n \x00\x00\x00DHIP*Q\xa8f\x08\x00\x00\x00\xe8\x00\x00\x00\x00\x00\x00\x00\xe8\x00\x00\x00\x00\x00\x00\x00{"id":8,"method":"client.notifyEventStream","params":{"SID":513,"eventList":[{"Action":"Pulse","Code":"IntelliFrame",..."session":1722306858}\n'
+
             response_parts = str(response).split("\\x00")
             for response_part in response_parts:
                 if response_part.startswith("{"):
                     end = response_part.rindex("}") + 1
                     message = response_part[0:end]
-
-                    result = json.loads(message)
+                    result.append(json.loads(message))
 
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
