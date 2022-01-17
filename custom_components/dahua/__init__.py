@@ -218,6 +218,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError:
                     self._supports_disarming_linkage = False
 
+                # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
+                # The following lines are for Dahua devices
                 try:
                     await self.client.async_get_smart_motion_detection()
                     self._supports_smart_motion_detection = True
@@ -270,6 +272,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
             if self._supports_smart_motion_detection:
                 coros.append(asyncio.ensure_future(self.client.async_get_smart_motion_detection()))
+            if self.supports_smart_motion_detection_amcrest():
+                coros.append(asyncio.ensure_future(self.client.async_get_video_analyse_rules_for_amcrest()))
 
             # Gather results and update the data map
             results = await asyncio.gather(*coros)
@@ -515,7 +519,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def is_smart_motion_detection_enabled(self) -> bool:
         """ Returns true if smart motion detection is enabled """
-        return self.data.get("table.SmartMotionDetect[0].Enable", "").lower() == "true"
+        if self.supports_smart_motion_detection_amcrest():
+            return self.data.get("table.VideoAnalyseRule[0][0].Enable", "").lower() == "true"
+        else:
+            return self.data.get("table.SmartMotionDetect[0].Enable", "").lower() == "true"
 
     def is_siren_on(self) -> bool:
         """ Returns true if the camera siren is on """
@@ -605,6 +612,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def supports_smart_motion_detection(self) -> bool:
         """ True if smart motion detection is supported"""
         return self._supports_smart_motion_detection
+
+    def supports_smart_motion_detection_amcrest(self) -> bool:
+        """ True if smart motion detection is supported for an amcrest device"""
+        return self.model == "AD410"
 
     def get_vto_client(self) -> DahuaVTOClient:
         """

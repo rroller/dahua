@@ -197,6 +197,14 @@ class DahuaClient:
         """
         return await self.async_get_config("MotionDetect")
 
+    async def async_get_video_analyse_rules_for_amcrest(self):
+        """
+        returns the VideoAnalyseRule and if they are enabled or not.
+        Example output:
+          table.VideoAnalyseRule[0][0].Enable=false
+        """
+        return await self.async_get_config("VideoAnalyseRule[0][0].Enable")
+
     async def async_get_ivs_rules(self):
         """
         returns the IVS rules and if they are enabled or not. [0][1] means channel 0, rule 1
@@ -222,14 +230,14 @@ class DahuaClient:
             return await self.get(url, True)
 
     async def async_set_ivs_rule(self, channel: int, index: int, enabled: bool):
-        """ Sets and IVS rules to enabled or disabled """
+        """ Sets and IVS rules to enabled or disabled. This also works for Amcrest smart motion detection"""
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[{0}][{1}].Enable={2}".format(
             channel, index, str(enabled).lower()
         )
         return await self.get(url, True)
 
     async def async_enabled_smart_motion_detection(self, enabled: bool):
-        """ Enables or disabled smart motion detection """
+        """ Enables or disabled smart motion detection for Dahua devices (doesn't work for Amcrest)"""
         url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[0].Enable={0}".format(str(enabled).lower())
         return await self.get(url, True)
 

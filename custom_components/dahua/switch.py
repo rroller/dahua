@@ -21,7 +21,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     # But only some cams have a siren, very few do actually
     if coordinator.supports_siren():
         devices.append(DahuaSirenBinarySwitch(coordinator, entry))
-    if coordinator.supports_smart_motion_detection():
+    if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
         devices.append(DahuaSmartMotionDetectionBinarySwitch(coordinator, entry))
 
     try:
@@ -123,12 +123,18 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on SmartMotionDetect"""
-        await self._coordinator.client.async_enabled_smart_motion_detection(True)
+        if self._coordinator.supports_smart_motion_detection_amcrest():
+            await self._coordinator.client.async_set_ivs_rule(0, 0, True)
+        else:
+            await self._coordinator.client.async_enabled_smart_motion_detection(True)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off SmartMotionDetect"""
-        await self._coordinator.client.async_enabled_smart_motion_detection(False)
+        if self._coordinator.supports_smart_motion_detection_amcrest():
+            await self._coordinator.client.async_set_ivs_rule(0, 0, False)
+        else:
+            await self._coordinator.client.async_enabled_smart_motion_detection(False)
         await self._coordinator.async_refresh()
 
     @property
