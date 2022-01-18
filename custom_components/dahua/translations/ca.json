@@ -38,6 +38,7 @@
                     "sensor": "Sensor habilitat",
                     "switch": "Interruptor habilitat",
                     "light": "Llum habilitat",
+                    "select": "Select enabled",
                     "camera": "Càmera habilitat"
                 }
             }

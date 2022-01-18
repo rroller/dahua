@@ -38,6 +38,7 @@
                     "sensor": "Sensor enabled",
                     "switch": "Switch enabled",
                     "light": "Light enabled",
+                    "select": "Select enabled",
                     "camera": "Camera enabled"
                 }
             }

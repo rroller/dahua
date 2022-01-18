@@ -38,6 +38,7 @@
                     "sensor": "Sensor actief",
                     "switch": "Schakelaar actief",
                     "light": "Lamp actief",
+                    "select": "Select enabled",
                     "camera": "Camera actief"
                 }
             }

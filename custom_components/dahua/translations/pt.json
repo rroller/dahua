@@ -38,6 +38,7 @@
                     "sensor": "Ativar entidades do tipo Sensor",
                     "switch": "Ativar entidades do tipo Switch",
                     "light": "Ativar entidades do tipo Light",
+                    "select": "Select enabled",
                     "camera": "Ativar entidades do tipo Camera"
                 }
             }
