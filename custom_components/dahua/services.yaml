@@ -286,6 +286,14 @@ set_video_in_day_night_mode:
             - "Color"
             - "BlackWhite"
 
+reboot:
+  name: Reboots the device
+  description: "Reboots the device"
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+
 set_record_mode:
   name: Set Record Mode on Dahua Camera
   description: Sets the record mode (on/off or auto). On is always on recording. Off is always off. Auto based on motion settings, etc.

@@ -34,6 +34,7 @@ SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
 SERVICE_VTO_OPEN_DOOR = "vto_open_door"
 SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
+SERVICE_REBOOT = "reboot"
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
@@ -178,6 +179,12 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     )
 
     platform.async_register_entity_service(
+        SERVICE_REBOOT,
+        {},
+        "async_reboot"
+    )
+
+    platform.async_register_entity_service(
         SERVICE_SET_RECORD_MODE,
         {
             vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto", "0", "1", "2", ])
@@ -273,6 +280,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_video_in_day_night_mode(channel, config_type, mode)
         await self._coordinator.async_refresh()
+
+    async def async_reboot(self):
+        """ Handles the service call from SERVICE_REBOOT to reboot the device """
+        await self._coordinator.client.reboot()
 
     async def async_set_record_mode(self, mode: str):
         """ Handles the service call from SERVICE_SET_RECORD_MODE to set the record mode """

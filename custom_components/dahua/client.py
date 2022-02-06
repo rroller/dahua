@@ -104,6 +104,10 @@ class DahuaClient:
         """ get_vendor returns the vendor. Example response: vendor=Dahua """
         return await self.get("/cgi-bin/magicBox.cgi?action=getVendor")
 
+    async def reboot(self) -> dict:
+        """ Reboots the device """
+        return await self.get("/cgi-bin/magicBox.cgi?action=reboot")
+
     async def get_max_extra_streams(self) -> int:
         """ get_max_extra_streams returns the max number of sub streams supported by the camera """
         try:
