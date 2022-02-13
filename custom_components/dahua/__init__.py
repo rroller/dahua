@@ -111,6 +111,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_coaxial_control = False
         self._supports_disarming_linkage = False
         self._supports_smart_motion_detection = False
+        self._supports_lighting = False
         self._serial_number: str
         self._profile_mode = "0"
         self._supports_profile_mode = False
@@ -233,6 +234,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 is_doorbell = self.is_doorbell()
                 _LOGGER.info("Device is a doorbell=%s", is_doorbell)
 
+                try:
+                    await self.client.async_get_config_lighting(self._channel, self._profile_mode)
+                    self._supports_lighting = True
+                except ClientError:
+                    self._supports_lighting = False
+                    pass
+                _LOGGER.info("Device supports lighting=%s", self.supports_infrared_light())
+
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
                     await self.async_start_event_listener()
@@ -274,9 +283,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             # Figure out which APIs we need to call and then fan out and gather the results
             coros = [
-                asyncio.ensure_future(self.client.async_get_config_lighting(self._channel, self._profile_mode)),
                 asyncio.ensure_future(self.client.async_get_config_motion_detection()),
             ]
+            if self.supports_infrared_light():
+                coros.append(
+                    asyncio.ensure_future(self.client.async_get_config_lighting(self._channel, self._profile_mode)))
             if self._supports_disarming_linkage:
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
             if self._supports_coaxial_control:
@@ -513,7 +524,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has an infrared light.  For example, the IPC-HDW3849HP-AS-PV does not, but most
         others do. I don't know of a better way to detect this
         """
-        return "-AS-PV" not in self.model and "-AS-NI" not in self.model and "-AS-LED" not in self.model
+        if not self._supports_lighting:
+            return False
+        return "-AS-PV" not in self.model and "-AS-NI" not in self.model
 
     def supports_illuminator(self) -> bool:
         """
