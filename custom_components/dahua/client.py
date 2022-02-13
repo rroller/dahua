@@ -9,7 +9,7 @@ from .digest import DigestAuth
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
-TIMEOUT_SECONDS = 10
+TIMEOUT_SECONDS = 20
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -155,14 +155,9 @@ class DahuaClient:
         async_get_lighting_v1 will fetch the status of the IR light (InfraRed light)
 
         Example response:
-        table.General.LocalNo=8
-        table.General.LockLoginEnable=false
-        table.General.LockLoginTimes=3
-        table.General.LoginFailLockTime=1800
         table.General.MachineName=Cam4
-        table.General.MaxOnlineTime=3600
         """
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=General"
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=General.MachineName"
         return await self.get(url)
 
     async def async_get_config(self, name) -> dict:
@@ -668,13 +663,17 @@ class DahuaClient:
                     if response is not None:
                         response.close()
         except asyncio.TimeoutError as exception:
-            _LOGGER.error("TimeoutError fetching information from %s - %s", url, exception)
+            _LOGGER.warning("TimeoutError fetching information from %s", url)
+            raise exception
         except (KeyError, TypeError) as exception:
-            _LOGGER.error("TypeError parsing information from %s - %s", url, exception)
+            _LOGGER.warning("TypeError fetching information from %s", url)
+            raise exception
         except (aiohttp.ClientError, socket.gaierror) as exception:
+            _LOGGER.debug("ClientError fetching information from %s", url)
             raise exception
         except Exception as exception:  # pylint: disable=broad-except
-            _LOGGER.error("Something really wrong happened! - %s", exception)
+            _LOGGER.warning("Exception fetching information from %s", url)
+            raise exception
 
     @staticmethod
     def to_stream_name(subtype: int) -> str:

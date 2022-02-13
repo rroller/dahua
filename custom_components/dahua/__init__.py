@@ -12,7 +12,7 @@ from datetime import timedelta
 from aiohttp import ClientError, ClientResponseError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
@@ -164,28 +164,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         """Reload the camera information"""
-        try:
-            data = {}
+        data = {}
 
-            if not self.initialized:
+        # Do the one time initialization (do this when Home Assistant starts)
+        if not self.initialized:
+            try:
                 try:
                     await self.client.async_get_snapshot(0)
                     # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
                     self._channel_number = self._channel
                 except ClientError:
                     pass
+                _LOGGER.info("Using channel number %s", self._channel_number)
 
                 # Find the max number of streams. 1 main stream + n number of sub-streams
                 self._max_streams = await self.client.get_max_extra_streams() + 1
+                _LOGGER.info("Using max streams %s", self._max_streams)
 
-                responses = await asyncio.gather(
-                    self.client.async_get_system_info(),
-                    self.client.async_get_machine_name(),
-                    self.client.get_software_version(),
-                )
-
-                for response in responses:
-                    data.update(response)
+                machine_name = await self.client.async_get_machine_name()
+                sys_info = await self.client.async_get_system_info()
+                version = await self.client.get_software_version()
+                data.update(machine_name)
+                data.update(sys_info)
+                data.update(version)
 
                 device_type = data.get("deviceType", None)
                 # Lorex NVRs return deviceType=31, but the model is in the updateSerial
@@ -211,12 +212,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_coaxial_control = True
                 except ClientResponseError:
                     self._supports_coaxial_control = False
+                _LOGGER.info("Device supports Coaxial Control=%s", self._supports_coaxial_control)
 
                 try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
                 except ClientError:
                     self._supports_disarming_linkage = False
+                _LOGGER.info("Device supports disarming linkage=%s", self._supports_disarming_linkage)
 
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
                 # The following lines are for Dahua devices
@@ -225,8 +228,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_smart_motion_detection = True
                 except ClientError:
                     self._supports_smart_motion_detection = False
+                _LOGGER.info("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
                 is_doorbell = self.is_doorbell()
+                _LOGGER.info("Device is a doorbell=%s", self.is_doorbell)
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -240,14 +245,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # Otherwise we'll get multiple lines of config back
                         self._supports_profile_mode = len(conf) > 1
                     except ClientError:
-                        _LOGGER.warning("Cam does not support profile mode. Will use mode 0")
+                        _LOGGER.info("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
+                    _LOGGER.info("Device supports profile mode=%s", self._supports_profile_mode)
                 else:
-                    # Start the event listeners for door bells (VTO)
+                    # Start the event listeners for doorbells (VTO)
                     await self.async_start_vto_event_listener()
 
                 self.initialized = True
+            except Exception as exception:
+                _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
+                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
 
+        # This is the event loop code that's called every n seconds
+        try:
             # We need the profile mode (0=day, 1=night, 2=scene)
             if self._supports_profile_mode and not self.is_doorbell():
                 try:
@@ -288,7 +299,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             return data
         except Exception as exception:
-            _LOGGER.warning("Failed to sync device state", exc_info=exception)
+            _LOGGER.warning("Failed to sync device state for %s. See README to enable debug logs to get full exception",
+                            self._address)
+            _LOGGER.debug("Failed to sync device state for %s", self._address, exc_info=exception)
             raise UpdateFailed() from exception
 
     def on_receive_vto_event(self, event: dict):

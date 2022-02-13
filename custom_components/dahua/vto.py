@@ -89,6 +89,7 @@ class DahuaVTOClient(asyncio.Protocol):
             _LOGGER.error(f"Failed to handle message, error: {ex}, Line: {exc_tb.tb_lineno}")
 
     def data_received(self, data):
+        _LOGGER.debug(f"Event data {self.host}: '{data}'")
         try:
             messages = self.parse_response(data)
             for message in messages:
@@ -341,19 +342,22 @@ class DahuaVTOClient(asyncio.Protocol):
             # Note that there can 0 or more events per line. Typically it's 1 event, but sometimes 2 events will arrive.
             # This example shows 2 events
             # \x00\x00\x00DHIP*Q\xa8f\x08\x00\x00\x00m\x04\x00\x00\x00\x00\x00\x00m\x04\x00\x00\x00\x00\x00\x00{"id":8,"method":"client.notifyEventStream","params":{"SID":513,"eventList":[{"Action":"Start","Code":"CrossRegionDetection"...},"session":1722306858}\n \x00\x00\x00DHIP*Q\xa8f\x08\x00\x00\x00\xe8\x00\x00\x00\x00\x00\x00\x00\xe8\x00\x00\x00\x00\x00\x00\x00{"id":8,"method":"client.notifyEventStream","params":{"SID":513,"eventList":[{"Action":"Pulse","Code":"IntelliFrame",..."session":1722306858}\n'
-            # Another exmaple
+            # Another example
             # \x00\x00\x00DHIP\x8c-\x96{\x08\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00{"id":8,"method":"client.notifyEventStream","params":{"SID":513,"eventList":[{"Action":"State","Code":"VideoMotionInfo","Data":[{"Id":0,"Region":[4194303,4194303,4128767,3997695,3801087,3801087,3932159,3407871,3932159,3932158,3932156,3735548,3678204,2101244,2047,2097663,3146239,524799],"RegionName":"Region1","State":"Active","Threshold":54}],"Index":0}]},"session":1722306858}\n
 
-            response_parts = str(response).split("\\x00")
+            data = str(response)
+
+            response_parts = data.split("\\x00")
             for response_part in response_parts:
                 if response_part.startswith("{\""):
-                    end = response_part.rindex("}") + 1
-                    message = response_part[0:end]
-                    result.append(json.loads(message))
-
+                    end = response_part.rfind("}") + 1
+                    if end > 0:
+                        message = response_part[0:end]
+                        result.append(json.loads(message))
+                    else:
+                        _LOGGER.error(f"Malformed or truncated message returned from device '{response_part}'")
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-
             _LOGGER.error(f"Failed to read data: {response}, error: {e}, Line: {exc_tb.tb_lineno}")
 
         return result
