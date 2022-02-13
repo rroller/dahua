@@ -3,7 +3,6 @@
 NAME = "Dahua"
 DOMAIN = "dahua"
 DOMAIN_DATA = f"{DOMAIN}_data"
-VERSION = "0.5.0"
 ATTRIBUTION = "Data provided by https://ronnieroller.com"
 ISSUE_URL = "https://github.com/rroller/dahua/issues"
 
@@ -50,7 +49,6 @@ DEFAULT_NAME = "Dahua"
 STARTUP_MESSAGE = f"""
 -------------------------------------------------------------------
 {NAME}
-Version: {VERSION}
 This is a custom integration for Dahua cameras!
 If you have any issues with this you need to open an issue here:
 {ISSUE_URL}

@@ -231,7 +231,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.info("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
                 is_doorbell = self.is_doorbell()
-                _LOGGER.info("Device is a doorbell=%s", self.is_doorbell)
+                _LOGGER.info("Device is a doorbell=%s", is_doorbell)
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
