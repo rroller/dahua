@@ -9,6 +9,11 @@ import json
 
 from datetime import timedelta
 
+#  OZZIII BEGIN
+from homeassistant.components.tag import async_scan_tag
+import hashlib
+#  OZZIII END
+
 from aiohttp import ClientError, ClientResponseError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
@@ -355,6 +360,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, PhoneCallDetect, DoorStatus, etc
         code = self.translate_event_code(event)
+        
+        # OZZIII BEGIN  FIRE TAG READER
+        if code == "AccessControl":
+            card_id = event.get("Data", {}).get("CardNo", "")
+            if card_id:
+                card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
+                asyncio.run_coroutine_threadsafe(
+                    async_scan_tag(self.hass, card_id_md5, self.get_device_name()), self.hass.loop
+                ).result()
+                return
+        # OZZIII END
+        
+        
         event_key = self.get_event_key(code)
 
         listener = self._dahua_event_listeners.get(event_key)
