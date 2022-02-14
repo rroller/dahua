@@ -177,6 +177,7 @@ need to walk in front of your cam to make motion events fire, or press a button,
 ## Example Code Events
 | Code | Description |
 | ----- | ----------- |
+| BackKeyLight    | Unit Events, See Below States |
 | VideoMotion     | motion detection event |
 | VideoLoss  | video loss detection event |
 | VideoBlind     | video blind detection event |
