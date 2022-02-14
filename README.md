@@ -174,6 +174,43 @@ as they fire. That can help you understand the events. Or you can HA and open De
 "Listen to events" enter `dahua_event_received` and then click "Start Listening" and wait for events to fire (you might
 need to walk in front of your cam to make motion events fire, or press a button, etc)
 
+## Example Code Events
+| Code | Description |
+| ----- | ----------- |
+| BackKeyLight    | Unit Events, See Below States |
+| VideoMotion     | motion detection event |
+| VideoLoss  | video loss detection event |
+| VideoBlind     | video blind detection event |
+| AlarmLocal     | alarm detection event |
+| CrossLineDetection     | tripwire event |
+| CrossRegionDetection     | intrusion event |
+| LeftDetection     | abandoned object detection |
+| TakenAwayDetection     | missing object detection |
+| VideoAbnormalDetection    | scene change event |
+| FaceDetection    | face detect event |
+| AudioMutation    | intensity change |
+| AudioAnomaly    | input abnormal |
+| VideoUnFocus    | defocus detect event |
+| WanderDetection    | loitering detection event |
+| RioterDetection    | People Gathering event |
+| ParkingDetection    | parking detection event |
+| MoveDetection    | fast moving event |
+| MDResult    | motion detection data reporting event. The motion detect window contains 18 rows and 22 columns. The event info contains motion detect data with mask of every row |
+| HeatImagingTemper    | temperature alarm event |
+
+## BackKeyLight States
+| State | Description |
+| ----- | ----------- |
+| 0     | OK, No Call/Ring |
+| 1, 2  | Call/Ring |
+| 4     | Voice message |
+| 5     | Call answered from VTH |
+| 6     | Call **not** answered |
+| 7     | VTH calling VTO |
+| 8     | Unlock |
+| 9     | Unlock failed |
+| 11    | Device rebooted |
+
 # Services and Entities
 Note for ease of use, the integration tries to determine if your device supports certain services, entities and will conditionally add them. But that's sometimes a little hard so it'll just add the entity even if your devices doesn't support.
 I'd rather opt into extra entities than to create a complicated flow to determine what's supported and what isn't. You can simply disable the entities you don't want. An example of this is the "door open state" for doorbells. Not all doorbells support this.
