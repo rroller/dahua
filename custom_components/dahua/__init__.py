@@ -296,6 +296,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_smart_motion_detection()))
             if self.supports_smart_motion_detection_amcrest():
                 coros.append(asyncio.ensure_future(self.client.async_get_video_analyse_rules_for_amcrest()))
+            if self.is_amcrest_doorbell():
+                coros.append(asyncio.ensure_future(self.client.async_get_light_global_enabled()))
 
             # Gather results and update the data map
             results = await asyncio.gather(*coros)
@@ -600,6 +602,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         profile_mode = self.get_profile_mode()
 
         return self.data.get("table.Lighting_V2[{0}][{1}][0].Mode".format(self._channel, profile_mode), "") == "Manual"
+
+    def is_ring_light_on(self) -> bool:
+        """Return true if ring light is on for an Amcrest Doorbell"""
+        return self.data.get("table.LightGlobal[0].Enable") == "true"
 
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""

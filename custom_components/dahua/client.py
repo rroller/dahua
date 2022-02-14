@@ -240,6 +240,11 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[0].Enable={0}".format(str(enabled).lower())
         return await self.get(url, True)
 
+    async def async_set_light_global_enabled(self, enabled: bool):
+        """ Turns the blue ring light on/off for Amcrest doorbells """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&LightGlobal[0].Enable={0}".format(str(enabled).lower())
+        return await self.get(url, True)
+
     async def async_get_smart_motion_detection(self) -> dict:
         """
         Gets the status of smart motion detection. Example output:
@@ -249,6 +254,15 @@ class DahuaClient:
         table.SmartMotionDetect[0].Sensitivity=Middle
         """
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
+        return await self.get(url)
+
+    async def async_get_light_global_enabled(self) -> dict:
+        """
+        Returns the state of the Amcrest blue ring light (if it's on or off)
+        Example output:
+        table.LightGlobal[0].Enable=true
+        """
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=LightGlobal[0].Enable"
         return await self.get(url)
 
     async def async_set_lighting_v1(self, channel: int, enabled: bool, brightness: int) -> dict:
