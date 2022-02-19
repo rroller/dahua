@@ -48,7 +48,7 @@ def parse_event(data: str) -> list[dict[str, any]]:
     # We will split on "--myboundary" and then skip the first 3 lines so we end up with a string that starts with Code=
     event_blocks = re.split(r'--myboundary\n', data)
 
-    events = [{}]
+    events = []
 
     for event_block in event_blocks:
         # Skip the first 3 lines... the first line looks like: Content-Type: text/plain
