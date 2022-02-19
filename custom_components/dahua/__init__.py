@@ -5,7 +5,6 @@ import asyncio
 from typing import Any, Dict
 import logging
 import time
-import json
 
 from datetime import timedelta
 
@@ -34,6 +33,7 @@ from .const import (
     STARTUP_MESSAGE,
     CONF_CHANNEL,
 )
+from .dahua_utils import parse_event
 from .vto import DahuaVTOClient
 
 SCAN_INTERVAL_SECONDS = timedelta(seconds=30)
@@ -401,25 +401,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         }
         """
         data = data_bytes.decode("utf-8", errors="ignore")
+        events = parse_event(data)
 
-        for line in data.split("\r\n"):
-            if not line.startswith("Code="):
-                continue
+        if len(events) == 0:
+            return
 
-            event = dict()
-            event["name"] = self.get_device_name()
-            for key_value in line.split(';'):
-                key, value = key_value.split('=')
-                event[key] = value
+        _LOGGER.debug(f"Events received from {self.get_address()} on channel {channel}: {events}")
 
-            # data is a json string, convert it to real json and add it back to the output dic
-            if "data" in event:
-                try:
-                    data = json.loads(event["data"])
-                    event["data"] = data
-                except Exception:  # pylint: disable=broad-except
-                    pass
-
+        for event in events:
             index = 0
             if "index" in event:
                 try:
@@ -433,8 +422,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 continue
 
             # Put the vent on the HA event bus
+            event["name"] = self.get_device_name()
             event["DeviceName"] = self.get_device_name()
-            _LOGGER.debug(f"Cam Data received from channel {channel}: {event}")
             self.hass.bus.fire("dahua_event_received", event)
 
             # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
