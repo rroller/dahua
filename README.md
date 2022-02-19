@@ -282,6 +282,20 @@ logger:
     custom_components.dahua: debug
 ```
 
+# Curl/HTTP commands
+
+```bash
+# Stream events
+curl -s --digest -u admin:$DAHUA_PASSWORD  "http://192.168.1.203/cgi-bin/eventManager.cgi?action=attach&codes=[All]&heartbeat=5"
+
+# List IVS rules
+http://192.168.1.203/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule
+
+# Enable/Disable IVS rules for [0][3] ... 0 is the channel, 3 is the rule index. Use the right index as required
+http://192.168.1.203/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[0][3].Enable=false
+```
+
 # References and thanks
 * Thanks to @elad-ba for his work on https://github.com/elad-bar/DahuaVTO2MQTT which was copied and modified and then used here for VTO devices
 * Thanks for the DAHUA_HTTP_API_V2.76.pdf API reference found at http://www.ipcamtalk.com
+* Thanks to all the people opening issues, reporting bugs, pasting commands, etc
