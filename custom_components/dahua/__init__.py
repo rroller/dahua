@@ -308,7 +308,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if result is not None:
                     data.update(result)
 
-            if self.supports_security_light() or self.is_amcrest_flood_light:
+            if self.supports_security_light() or self.is_amcrest_flood_light():
                 light_v2 = await self.client.async_get_lighting_v2()
                 if light_v2 is not None:
                     data.update(light_v2)
