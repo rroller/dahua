@@ -293,6 +293,9 @@ http://192.168.1.203/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalys
 
 # Enable/Disable IVS rules for [0][3] ... 0 is the channel, 3 is the rule index. Use the right index as required
 http://192.168.1.203/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[0][3].Enable=false
+
+# Enable/disable Audio Linkage for an IVS rule
+http://192.168.1.203/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[0][3].EventHandler.VoiceEnable=false
 ```
 
 # References and thanks
