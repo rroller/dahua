@@ -141,7 +141,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     @property
     def supported_features(self):
         """Flag supported features."""
-        return DAHUA_SUPPORTED_OPTIONS
+        return 0
 
     @property
     def should_poll(self):
