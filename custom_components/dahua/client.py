@@ -54,7 +54,7 @@ class DahuaClient:
             channel,
             subtype,
         )
-        if subtype==3 :
+        if subtype == 3:
             url = "rtsp://{0}:{1}@{2}".format(
                 self._username,
                 self._password,
@@ -85,13 +85,12 @@ class DahuaClient:
         updateSerial=IPC-HDW5830R-Z
         updateSerialCloudUpgrade=IPC-HDW5830R-Z:07:01:08:70:52:00:09:0E:03:00:04:8F0:00:00:00:00:00:02:00:00:600
         """
-        not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
-        unique_cam_id = md5((not_hashed_id).encode('UTF-8')).hexdigest()
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
         except aiohttp.ClientResponseError as e:
-            return {"serialNumber":unique_cam_id}
-
+            not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
+            unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
+            return {"serialNumber": unique_cam_id}
 
     async def get_device_type(self) -> dict:
         """
@@ -104,7 +103,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getDeviceType")
         except aiohttp.ClientResponseError as e:
-            return {"type":"Generic RTSP"}
+            return {"type": "Generic RTSP"}
 
     async def get_software_version(self) -> dict:
         """
@@ -114,23 +113,23 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSoftwareVersion")
         except aiohttp.ClientResponseError as e:
-            return {"version":"1.0"}
+            return {"version": "1.0"}
 
     async def get_machine_name(self) -> dict:
         """ get_machine_name returns the device name. Example response: name=FrontDoorCam """
-        not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
-        unique_cam_id = md5((not_hashed_id).encode('UTF-8')).hexdigest()
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getMachineName")
         except aiohttp.ClientResponseError as e:
-            return {"name":unique_cam_id}
+            not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
+            unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
+            return {"name": unique_cam_id}
 
     async def get_vendor(self) -> dict:
         """ get_vendor returns the vendor. Example response: vendor=Dahua """
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getVendor")
         except aiohttp.ClientResponseError as e:
-            return {"vendor":"Generic RTSP"}
+            return {"vendor": "Generic RTSP"}
 
     async def reboot(self) -> dict:
         """ Reboots the device """
@@ -186,12 +185,12 @@ class DahuaClient:
         table.General.MachineName=Cam4
         """
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=General.MachineName"
-        not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
-        unique_cam_id = md5((not_hashed_id).encode('UTF-8')).hexdigest()
         try:
             return await self.get(url)
         except aiohttp.ClientResponseError as e:
-            return {"table.General.MachineName":unique_cam_id}
+            not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
+            unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
+            return {"table.General.MachineName": unique_cam_id}
 
     async def async_get_config(self, name) -> dict:
         """ async_get_config gets a config by name """
@@ -233,8 +232,7 @@ class DahuaClient:
         try:
             return await self.async_get_config("MotionDetect")
         except aiohttp.ClientResponseError as e:
-            return {"table.MotionDetect[0].Enable":"false"}
-        
+            return {"table.MotionDetect[0].Enable": "false"}
 
     async def async_get_video_analyse_rules_for_amcrest(self):
         """
@@ -245,9 +243,7 @@ class DahuaClient:
         try:
             return await self.async_get_config("VideoAnalyseRule[0][0].Enable")
         except aiohttp.ClientResponseError as e:
-            return {"table.VideoAnalyseRule[0][0].Enable":"false"}
-        
-        
+            return {"table.VideoAnalyseRule[0][0].Enable": "false"}
 
     async def async_get_ivs_rules(self):
         """
@@ -576,7 +572,7 @@ class DahuaClient:
         try:
             return await self.get(url)
         except aiohttp.ClientResponseError as e:
-            return {"table.DisableLinkage.Enable":"false"}
+            return {"table.DisableLinkage.Enable": "false"}
 
     async def async_access_control_open_door(self, door_id: int = 1) -> dict:
         """
@@ -657,7 +653,7 @@ class DahuaClient:
         url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=5".format(self._base, codes)
         if self._username is not None and self._password is not None:
             response = None
-            
+
             try:
                 auth = DigestAuth(self._username, self._password, self._session)
                 response = await auth.request("GET", url)
@@ -670,7 +666,7 @@ class DahuaClient:
                 pass
             finally:
                 if response is not None:
-                    response.close()          
+                    response.close()
 
     @staticmethod
     async def parse_dahua_api_response(data: str) -> dict:
