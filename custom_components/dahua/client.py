@@ -163,7 +163,7 @@ class DahuaClient:
         """
         async_get_lighting_v2 will fetch the status of the camera light (also known as the illuminator)
         NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
-        Note all cameras have this feature.
+        Not all cameras have this feature.
 
         Example response:
         table.Lighting_V2[0][2][0].Correction=50
@@ -449,6 +449,29 @@ class DahuaClient:
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
 
+    # async def async_set_lighting_v2_for_amcrest_flood_lights(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
+    async def async_set_lighting_v2_for_amcrest_flood_lights(self, channel: int, enabled: bool, profile_mode: str) -> dict:
+        """
+        async_set_lighting_v2_for_amcrest_floodlights will turn on or off the flood light on the camera. If turning on, the brightness will be used.
+        brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
+        NOTE: While the flood lights do support an auto or "smart" mode, the api does not handle this change properly.
+              If one wishes to make the change back to auto, it must be done in the 'Amcrest Smart Home' smartphone app.
+
+        profile_mode: 0=day, 1=night, 2=scene
+        """
+
+        # on = Manual, off = Off
+        mode = "Manual"
+        if not enabled:
+            mode = "Off"
+        url_base = "/cgi-bin/configManager.cgi?action=setConfig"
+        mode_cmnd = f'Lighting_V2[{channel}][{profile_mode}][1].Mode={mode}'
+        # brightness_cmnd = f'Lighting_V2[{channel}][{profile_mode}][1].MiddleLight[0].Light={brightness}'
+        # url = f'{url_base}&{mode_cmnd}&{brightness_cmnd}'
+        url = f'{url_base}&{mode_cmnd}'
+        _LOGGER.debug("Switching light: %s", url)
+        return await self.get(url)
+
     async def async_set_lighting_v2_for_amcrest_doorbells(self, mode: str) -> dict:
         """
         async_set_lighting_v2_for_amcrest_doorbells will turn on or off the white light on Amcrest doorbells
@@ -458,7 +481,7 @@ class DahuaClient:
         cmd = "Off"
         if mode == "on":
             cmd = "ForceOn&Lighting_V2[0][0][1].State=On"
-        elif mode == "strobe" or mode == "flicker":
+        elif mode in ('strobe', 'flicker'):
             cmd = "ForceOn&Lighting_V2[0][0][1].State=Flicker"
 
         url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][0][1].Mode={cmd}".format(cmd=cmd)

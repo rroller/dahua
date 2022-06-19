@@ -30,6 +30,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     if coordinator.supports_illuminator():
         entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
 
+    if coordinator.is_amcrest_flood_light():
+        entities.append(AmcrestFloodLight(coordinator, entry, "Flood Light"))
+
     if coordinator.supports_security_light() and not coordinator.is_amcrest_doorbell():
         #  The Amcrest doorbell works a little different and is added in select.py
         entities.append(DahuaSecurityLight(coordinator, entry, "Security Light"))
@@ -138,7 +141,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     @property
     def supported_features(self):
         """Flag supported features."""
-        return DAHUA_SUPPORTED_OPTIONS
+        return 0
 
     @property
     def should_poll(self):
@@ -199,6 +202,61 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         await self._coordinator.client.async_set_light_global_enabled(False)
+        await self._coordinator.async_refresh()
+
+
+class AmcrestFloodLight(DahuaBaseEntity, LightEntity):
+    """
+        Representation of a Amcrest Flood Light (for cameras that have them)
+        Unlike the 'Dahua Illuminator', Amcrest Flood Lights do not play nicely
+        with adjusting the 'White Light' brightness.
+    """
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
+        super().__init__(coordinator, entry)
+        self._name = name
+        self._coordinator = coordinator
+
+    @property
+    def name(self):
+        """Return the name of the light."""
+        return self._coordinator.get_device_name() + " " + self._name
+
+    @property
+    def unique_id(self):
+        """
+        A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
+        see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
+        """
+        return self._coordinator.get_serial_number() + "_flood_light"
+
+    @property
+    def is_on(self):
+        """Return true if the light is on"""
+        return self._coordinator.is_amcrest_flood_light_on()
+
+    @property
+    def supported_features(self):
+        """Flag supported features."""
+        return DAHUA_SUPPORTED_OPTIONS
+
+    @property
+    def should_poll(self):
+        """Don't poll."""
+        return False
+
+    async def async_turn_on(self, **kwargs):
+        """Turn the light on"""
+        channel = self._coordinator.get_channel()
+        profile_mode = self._coordinator.get_profile_mode()
+        await self._coordinator.client.async_set_lighting_v2_for_amcrest_flood_lights(channel, True, profile_mode)
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):
+        """Turn the light off"""
+        channel = self._coordinator.get_channel()
+        profile_mode = self._coordinator.get_profile_mode()
+        await self._coordinator.client.async_set_lighting_v2_for_amcrest_flood_lights(channel, False, profile_mode)
         await self._coordinator.async_refresh()
 
 
