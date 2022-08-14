@@ -4,15 +4,15 @@ Custom integration to integrate Dahua cameras with Home Assistant.
 import asyncio
 from typing import Any, Dict
 import logging
+import ssl
 import time
 
 from datetime import timedelta
 
-from aiohttp import ClientError, ClientResponseError
+from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
@@ -98,10 +98,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                  password: str, name: str, channel: int) -> None:
         """Initialize the coordinator."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
-        session = async_get_clientsession(hass, verify_ssl=False)
+        ssl_context = ssl.create_default_context()
+        ssl_context.set_ciphers("DEFAULT")
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        connector = TCPConnector(enable_cleanup_closed=True, ssl=ssl_context)
+        self._session = ClientSession(connector=connector)
 
         # The client used to communicate with Dahua devices
-        self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, session)
+        self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session)
 
         self.platforms = []
         self.initialized = False
@@ -162,6 +167,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Stop anything we need to stop """
         self.dahua_event_thread.stop()
         self.dahua_vto_event_thread.stop()
+        await self._close_session()
+
+    async def _close_session(self) -> None:
+        _LOGGER.debug("Closing Session")
+        if self._session != None:
+            try:
+                await self._session.close()
+                self._session = None
+            except Exception as e:
+                _LOGGER.exception("serverConnect - failed to close session")
 
     async def _async_update_data(self):
         """Reload the camera information"""
