@@ -349,7 +349,6 @@ class DahuaVTOClient(asyncio.Protocol):
 
             jsons = DahuaVTOClient.extract_json_objects(data)
             for j in jsons:
-                _LOGGER.warning(f"Got json={j}")
                 result.append(j)
             return result
         except Exception as e:
