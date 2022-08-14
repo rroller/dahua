@@ -8,9 +8,9 @@ import logging
 import json
 import asyncio
 import hashlib
+from json import JSONDecoder
 from threading import Timer
 from typing import Optional, Callable
-import requests
 from requests.auth import HTTPDigestAuth
 
 PROTOCOLS = {
@@ -347,20 +347,36 @@ class DahuaVTOClient(asyncio.Protocol):
 
             data = str(response)
 
-            response_parts = data.split("\\x00")
-            for response_part in response_parts:
-                if response_part.startswith("{\""):
-                    end = response_part.rfind("}") + 1
-                    if end > 0:
-                        message = response_part[0:end]
-                        result.append(json.loads(message))
-                    else:
-                        _LOGGER.error(f"Malformed or truncated message returned from device '{response_part}'")
+            jsons = DahuaVTOClient.extract_json_objects(data)
+            for j in jsons:
+                _LOGGER.warning(f"Got json={j}")
+                result.append(j)
+            return result
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             _LOGGER.error(f"Failed to read data: {response}, error: {e}, Line: {exc_tb.tb_lineno}")
 
         return result
+
+    @staticmethod
+    def extract_json_objects(text, decoder=JSONDecoder()):
+        """Find JSON objects in text, and yield the decoded JSON data
+
+        Does not attempt to look for JSON arrays, text, or other JSON types outside
+        of a parent JSON object.
+        https://stackoverflow.com/questions/54235528/how-to-find-json-object-in-text-with-python/54235803
+        """
+        pos = 0
+        while True:
+            match = text.find('{', pos)
+            if match == -1:
+                break
+            try:
+                result, index = decoder.raw_decode(text[match:])
+                yield result
+                pos = match + index
+            except ValueError:
+                pos = match + 1
 
     @staticmethod
     def _get_hashed_password(random, realm, username, password):
