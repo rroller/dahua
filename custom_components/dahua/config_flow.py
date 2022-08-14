@@ -66,6 +66,8 @@ ALL_EVENTS = ["VideoMotion",
               "CrowdDetection",
               "FireWarning",
               "FireWarningInfo",
+              "ObjectPlacementDetection",
+              "ObjectRemovalDetection",
               ]
 
 """
