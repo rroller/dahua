@@ -4,6 +4,7 @@ logger:
   default: info
   logs:
     custom_components.dahua: debug
+    custom_components.integration_blueprint: debug
 
 # If you need to debug uncommment the line below (doc: https://www.home-assistant.io/integrations/debugpy/)
 # debugpy:

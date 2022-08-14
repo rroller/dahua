@@ -1,7 +1,8 @@
 // See https://aka.ms/vscode-remote/devcontainer.json for format details.
+// Source: https://github.com/custom-components/integration_blueprint/blob/master/.devcontainer/devcontainer.json
 {
-	"image": "ludeeus/container:integration-debian",
-	"name": "Dahua integration development",
+	"image": "ghcr.io/ludeeus/devcontainer/integration:stable",
+	"name": "Blueprint integration development",
 	"context": "..",
 	"appPort": [
 		"9123:8123"
