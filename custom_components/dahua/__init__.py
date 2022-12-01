@@ -464,14 +464,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def translate_event_code(self, event: dict):
         """
-        translate_event_code will try to convert the event code to a more specific event code if the device has a listener for the more specific type
+        translate_event_code will try to convert the event code to a less specific event code if the device doesn't have a listener for the more specific type
         Example event codes: VideoMotion, CrossLineDetection, BackKeyLight, DoorStatus
         """
         code = event.get("Code", "")
 
         # For CrossLineDetection, the event data will look like this... and if there's a human detected then we'll use the SmartMotionHuman code instead
         # {
-        #    "Code": "CrossRegionDetection",
+        #    "Code": "CrossLineDetection",
         #    "Data": {
         #        "Object": {
         #            "ObjectType": "Human",
@@ -481,7 +481,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if code == "CrossLineDetection" or code == "CrossRegionDetection":
             data = event.get("data", event.get("Data", {}))
             is_human = data.get("Object", {}).get("ObjectType", "").lower() == "human"
-            if is_human and self._dahua_event_listeners.get(self.get_event_key(code)) is not None:
+            if is_human and self._dahua_event_listeners.get(self.get_event_key(code)) is None:
                 return "SmartMotionHuman"
 
         # Convert doorbell pressed related events to common event name, DoorbellPressed.
