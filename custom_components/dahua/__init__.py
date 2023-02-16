@@ -9,7 +9,7 @@ import time
 
 from datetime import timedelta
 
-from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
+from aiohttp import ClientError, ClientResponseError, ClientConnectorError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
@@ -280,9 +280,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await self.async_start_vto_event_listener()
 
                 self.initialized = True
+            except ClientConnectorError as exception:
+                #_LOGGER.warning(exception)
+                raise
+                # raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet") from exception
             except Exception as exception:
+                _LOGGER.warning("before")
                 _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
-                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
+                _LOGGER.warning("after")
+                _LOGGER.warning("after2: %s" % exception)
+                _LOGGER.warning("after3: %s" % dir(exception))
+                _LOGGER.warning("after4")
+                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet") from exception
 
         # This is the event loop code that's called every n seconds
         try:
