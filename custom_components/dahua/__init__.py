@@ -103,6 +103,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
         connector = TCPConnector(enable_cleanup_closed=True, ssl=ssl_context)
+        _LOGGER.warning("CREATING client session")
         self._session = ClientSession(connector=connector)
 
         # The client used to communicate with Dahua devices
@@ -152,6 +153,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._dahua_event_timestamp: Dict[str, int] = dict()
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
+    def __del__(self):
+        _LOGGER.warning("Dahua being deleted")
 
     async def async_start_event_listener(self):
         """ Starts the event listeners for IP cameras (this does not work for doorbells (VTO)) """
@@ -280,8 +283,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await self.async_start_vto_event_listener()
 
                 self.initialized = True
-            except ClientConnectorError as exception:
-                #_LOGGER.warning(exception)
+            except (ClientConnectorError, asyncio.TimeoutError) as exception:
+                _LOGGER.warning(exception)
                 raise
                 # raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet") from exception
             except Exception as exception:
