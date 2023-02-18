@@ -70,6 +70,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.last_update_success:
+        _LOGGER.warning("dahua async_setup_entry for init, data not ready")
         raise ConfigEntryNotReady
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
@@ -180,7 +181,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         try:
-            await self._async_update_data_int()
+            data = await self._async_update_data_int()
+            return data
         except Exception as ex:
             # If we let an exception bubble up, it seems to result in self being
             # deleted. So clean up first.
