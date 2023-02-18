@@ -103,7 +103,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
         connector = TCPConnector(enable_cleanup_closed=True, ssl=ssl_context)
-        _LOGGER.warning("CREATING client session")
         self._session = ClientSession(connector=connector)
 
         # The client used to communicate with Dahua devices
@@ -153,8 +152,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._dahua_event_timestamp: Dict[str, int] = dict()
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
-    def __del__(self):
-        _LOGGER.warning("Dahua being deleted")
 
     async def async_start_event_listener(self):
         """ Starts the event listeners for IP cameras (this does not work for doorbells (VTO)) """
@@ -182,6 +179,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.exception("serverConnect - failed to close session")
 
     async def _async_update_data(self):
+        try:
+            await self._async_update_data_int()
+        except Exception as ex:
+            # If we let an exception bubble up, it seems to result in self being
+            # deleted. So clean up first.
+            await self._close_session()
+            raise
+    
+    async def _async_update_data_int(self):
         """Reload the camera information"""
         data = {}
 
@@ -285,8 +291,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.initialized = True
             except (ClientConnectorError, asyncio.TimeoutError) as exception:
                 _LOGGER.warning(exception)
+                # Pass the exception on up.
+                # homeassistant/helpers/update_coordinator.py:_async_refresh()
+                # gracefully handles some common errors like timeout and connection errors.
                 raise
-                # raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet") from exception
             except Exception as exception:
                 _LOGGER.warning("before")
                 _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
