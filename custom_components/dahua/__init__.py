@@ -296,6 +296,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # gracefully handles some common errors like timeout and connection errors.
                 raise
             except Exception as exception:
+                _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
                 raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet") from exception
 
         # This is the event loop code that's called every n seconds
