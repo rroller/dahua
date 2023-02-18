@@ -291,7 +291,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.initialized = True
             except (ClientConnectorError, asyncio.TimeoutError) as exception:
                 _LOGGER.warning(exception)
-                # Pass the exception on up.
+                # Pass the exception on up. Our caller
                 # homeassistant/helpers/update_coordinator.py:_async_refresh()
                 # gracefully handles some common errors like timeout and connection errors.
                 raise
