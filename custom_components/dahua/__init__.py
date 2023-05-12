@@ -369,7 +369,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 asyncio.run_coroutine_threadsafe(
                     async_scan_tag(self.hass, card_id_md5, self.get_device_name()), self.hass.loop
                 ).result()
-                return
         # OZZIII END
         
         
