@@ -386,3 +386,28 @@ vto_cancel_call:
       integration: dahua
       domain: camera
 
+set_focus_zoom:
+  name: Set the Dahua Focus and Zoom
+  description: Sets the camera's focus and zoom
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    focus:
+      name: focus
+      description: "Decimal Value for Focus"
+      example: "0.758333"
+      required: true
+      default: "0.758333"
+      selector:
+        text:
+    zoom:
+      name: zoom
+      description: "Decimal value for zoom"
+      example: "0.898502"
+      required: true
+      default: "0.898502"
+      selector:
+        text:
+

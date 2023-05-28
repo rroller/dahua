@@ -346,6 +346,15 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{0}].Config[0]={1}".format(channel, mode)
         return await self.get(url, True)
 
+    async def async_adjustfocus_v1(self, focus: str, zoom: str):
+        """
+        async_adjustfocus will set the zoom and focus
+        """
+
+
+        url = "/cgi-bin/devVideoInput.cgi?action=adjustFocus&focus={0}&zoom={1}".format(focus, zoom)
+        return await self.get(url, True)
+        
     async def async_set_night_switch_mode(self, channel: int, mode: str):
         """
         async_set_night_switch_mode is the same as async_set_video_profile_mode when accessing the camera
