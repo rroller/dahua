@@ -9,7 +9,7 @@ import time
 
 from datetime import timedelta
 
-from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
+from aiohttp import ClientError, ClientResponseError, ClientConnectorError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
@@ -70,6 +70,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.last_update_success:
+        _LOGGER.warning("dahua async_setup_entry for init, data not ready")
         raise ConfigEntryNotReady
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
@@ -179,6 +180,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.exception("serverConnect - failed to close session")
 
     async def _async_update_data(self):
+        try:
+            data = await self._async_update_data_int()
+            return data
+        except Exception as ex:
+            # If we let an exception bubble up, it seems to result in self being
+            # deleted. So clean up first.
+            await self._close_session()
+            raise
+    
+    async def _async_update_data_int(self):
         """Reload the camera information"""
         data = {}
 
@@ -280,9 +291,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await self.async_start_vto_event_listener()
 
                 self.initialized = True
+            except (ClientConnectorError, asyncio.TimeoutError) as exception:
+                _LOGGER.warning(exception)
+                # Pass the exception on up. Our caller
+                # homeassistant/helpers/update_coordinator.py:_async_refresh()
+                # gracefully handles some common errors like timeout and connection errors.
+                raise
             except Exception as exception:
                 _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
-                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
+                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet") from exception
 
         # This is the event loop code that's called every n seconds
         try:
