@@ -12,7 +12,7 @@ from datetime import timedelta
 from homeassistant.components.tag import async_scan_tag
 import hashlib
 
-from aiohttp import ClientError, ClientResponseError, ClientConnectorError, ClientSession, TCPConnector
+from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
@@ -183,16 +183,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.exception("serverConnect - failed to close session")
 
     async def _async_update_data(self):
-        try:
-            data = await self._async_update_data_int()
-            return data
-        except Exception as ex:
-            # If we let an exception bubble up, it seems to result in self being
-            # deleted. So clean up first.
-            await self._close_session()
-            raise
-    
-    async def _async_update_data_int(self):
         """Reload the camera information"""
         data = {}
 
@@ -264,7 +254,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.info("Device is a doorbell=%s", is_doorbell)
 
                 is_amcrest_flood_light = self.is_amcrest_flood_light()
-                _LOGGER.info("Device is an Amcrest floodlight=%s",is_amcrest_flood_light)
+                _LOGGER.info("Device is an Amcrest floodlight=%s", is_amcrest_flood_light)
 
                 try:
                     await self.client.async_get_config_lighting(self._channel, self._profile_mode)
@@ -272,7 +262,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError:
                     self._supports_lighting = False
                     pass
-                _LOGGER.info("Device supports infrared lighting=%s",self.supports_infrared_light())
+                _LOGGER.info("Device supports infrared lighting=%s", self.supports_infrared_light())
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -294,15 +284,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await self.async_start_vto_event_listener()
 
                 self.initialized = True
-            except (ClientConnectorError, asyncio.TimeoutError) as exception:
-                _LOGGER.warning(exception)
-                # Pass the exception on up. Our caller
-                # homeassistant/helpers/update_coordinator.py:_async_refresh()
-                # gracefully handles some common errors like timeout and connection errors.
-                raise
             except Exception as exception:
                 _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
-                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet") from exception
+                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
 
         # This is the event loop code that's called every n seconds
         try:
@@ -550,7 +534,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
         m = self.model.upper()
-        return m.startswith("VTO") or m.startswith("DH-VTO") or ("NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell()
+        return m.startswith("VTO") or m.startswith("DH-VTO") or (
+                    "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell()
 
     def is_amcrest_doorbell(self) -> bool:
         """ Returns true if this is an Amcrest doorbell """
@@ -574,7 +559,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has an illuminator (white light for color cameras).  For example, the
         IPC-HDW3849HP-AS-PV does
         """
-        return not ( self.is_amcrest_doorbell() or self.is_amcrest_flood_light() ) and "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data
+        return not (
+                    self.is_amcrest_doorbell() or self.is_amcrest_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(
+            self._channel) in self.data
 
     def is_motion_detection_enabled(self) -> bool:
         """ Returns true if motion detection is enabled for the camera """
