@@ -139,7 +139,7 @@ class DahuaClient:
         """ get_max_extra_streams returns the max number of sub streams supported by the camera """
         try:
             result = await self.get("/cgi-bin/magicBox.cgi?action=getProductDefinition&name=MaxExtraStream")
-            return int(result.get("table.MaxExtraStreams", "2"))
+            return int(result.get("table.MaxExtraStream", "2"))
         except aiohttp.ClientResponseError as e:
             pass
         # If we can't fetch, just assume 2 since that's pretty standard
