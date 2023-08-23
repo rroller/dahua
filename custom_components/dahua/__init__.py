@@ -189,14 +189,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # Do the one time initialization (do this when Home Assistant starts)
         if not self.initialized:
             try:
-                try:
-                    await self.client.async_get_snapshot(0)
-                    # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
-                    self._channel_number = self._channel
-                except ClientError:
-                    pass
-                _LOGGER.info("Using channel number %s", self._channel_number)
-
                 # Find the max number of streams. 1 main stream + n number of sub-streams
                 self._max_streams = await self.client.get_max_extra_streams() + 1
                 _LOGGER.info("Using max streams %s", self._max_streams)
@@ -226,6 +218,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.model = device_type
                 self.machine_name = data.get("table.General.MachineName")
                 self._serial_number = data.get("serialNumber")
+
+                try:
+                    await self.client.async_get_snapshot(0)
+                    # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
+                    # but check if unit is not a doorbell first as channel 0 doesnt exist for VTOs
+                    if not self.is_doorbell():
+                        self._channel_number = self._channel
+                except ClientError:
+                    pass
+                _LOGGER.info("Using channel number %s", self._channel_number)
 
                 try:
                     await self.client.async_get_coaxial_control_io_status()
