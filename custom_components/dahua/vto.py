@@ -337,6 +337,12 @@ class DahuaVTOClient(asyncio.Protocol):
         def handle_keep_alive(message):
             Timer(self.keep_alive_interval, self.keep_alive).start()
 
+            message_id = message.get('id')
+            if message_id is not None and message_id in self.data_handlers:
+                del self.data_handlers[message_id]
+            else:
+                _LOGGER.warning(f'Could not delete keep alive handler with message ID {message_id}.')
+
         request_data = {
             "timeout": self.keep_alive_interval,
             "action": True
