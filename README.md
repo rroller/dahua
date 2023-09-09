@@ -118,6 +118,7 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | *Dahua* |
 | | DHI-VTO2202F-P |
 | | DHI-VTO2211G-P |
+| | DHI-VTO3311Q-WP |
 | *IMOU* |
 | | IMOU C26EP-V2 |
 
