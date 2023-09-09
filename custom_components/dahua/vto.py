@@ -53,6 +53,7 @@ class DahuaVTOClient(asyncio.Protocol):
     lock_status: {}
     auth: HTTPDigestAuth
     data_handlers: {}
+    buffer: bytearray
 
     def __init__(self, host: str, username: str, password: str, is_ssl: bool, on_receive_vto_event):
         self.dahua_details = {}
@@ -71,6 +72,7 @@ class DahuaVTOClient(asyncio.Protocol):
         self.hold_time = 0
         self.lock_status = {}
         self.data_handlers = {}
+        self.buffer = bytearray()
 
         # This is the hook back into HA
         self.on_receive_vto_event = on_receive_vto_event
@@ -90,17 +92,26 @@ class DahuaVTOClient(asyncio.Protocol):
 
     def data_received(self, data):
         _LOGGER.debug(f"Event data {self.host}: '{data}'")
-        try:
-            messages = self.parse_response(data)
-            for message in messages:
-                message_id = message.get("id")
 
-                handler: Callable = self.data_handlers.get(message_id, self.handle_default)
-                handler(message)
-        except Exception as ex:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
+        self.buffer += data
 
-            _LOGGER.error(f"Failed to handle message, error: {ex}, Line: {exc_tb.tb_lineno}")
+        while b'\n' in self.buffer:
+
+            newline_index = self.buffer.find(b'\n') + 1
+            packet = self.buffer[:newline_index]
+            self.buffer = self.buffer[newline_index:]
+
+            try:
+                messages = self.parse_response(packet)
+                for message in messages:
+                    message_id = message.get("id")
+
+                    handler: Callable = self.data_handlers.get(message_id, self.handle_default)
+                    handler(message)
+            except Exception as ex:
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+
+                _LOGGER.error(f"Failed to handle message, error: {ex}, Line: {exc_tb.tb_lineno}")
 
     def handle_notify_event_stream(self, params):
         try:
@@ -325,6 +336,12 @@ class DahuaVTOClient(asyncio.Protocol):
 
         def handle_keep_alive(message):
             Timer(self.keep_alive_interval, self.keep_alive).start()
+
+            message_id = message.get('id')
+            if message_id is not None and message_id in self.data_handlers:
+                del self.data_handlers[message_id]
+            else:
+                _LOGGER.warning(f'Could not delete keep alive handler with message ID {message_id}.')
 
         request_data = {
             "timeout": self.keep_alive_interval,
