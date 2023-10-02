@@ -411,3 +411,30 @@ set_focus_zoom:
       selector:
         text:
 
+set_privacy_masking:
+  name: Set the Dahua Privacy Masking
+  description: Enables or disabled the cameras privacy masking
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    index:
+      name: Index
+      description: "The mask index. 0 is the first mask"
+      example: 0
+      required: true
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+    enabled:
+      name: Enabled
+      description: "If true enables the mask, otherwise disables it"
+      example: true
+      required: true
+      default: true
+      selector:
+        boolean:
