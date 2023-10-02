@@ -354,6 +354,17 @@ class DahuaClient:
 
         url = "/cgi-bin/devVideoInput.cgi?action=adjustFocus&focus={0}&zoom={1}".format(focus, zoom)
         return await self.get(url, True)
+
+    async def async_setprivacymask(self, index: int, enabled: bool):
+        """
+        async_setprivacymask will enable or disable the privacy mask
+        """
+
+
+        url = "/cgi-bin/configManager.cgi?action=setConfig&PrivacyMasking[0][{0}].Enable={1}".format(
+            index, str(enabled).lower()
+        )
+        return await self.get(url, True)
         
     async def async_set_night_switch_mode(self, channel: int, mode: str):
         """
