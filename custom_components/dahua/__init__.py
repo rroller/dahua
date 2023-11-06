@@ -253,8 +253,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 is_doorbell = self.is_doorbell()
                 _LOGGER.info("Device is a doorbell=%s", is_doorbell)
 
-                is_amcrest_flood_light = self.is_amcrest_flood_light()
-                _LOGGER.info("Device is an Amcrest floodlight=%s", is_amcrest_flood_light)
+                is_flood_light = self.is_flood_light()
+                _LOGGER.info("Device is a floodlight=%s", is_flood_light)
 
                 try:
                     await self.client.async_get_config_lighting(self._channel, self._profile_mode)
@@ -327,7 +327,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if result is not None:
                     data.update(result)
 
-            if self.supports_security_light() or self.is_amcrest_flood_light():
+            if self.supports_security_light() or self.is_flood_light():
                 light_v2 = await self.client.async_get_lighting_v2()
                 if light_v2 is not None:
                     data.update(light_v2)
@@ -541,9 +541,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Returns true if this is an Amcrest doorbell """
         return self.model.upper().startswith("AD")
 
-    def is_amcrest_flood_light(self) -> bool:
-        """ Returns true if this camera is an Amcrest Floodlight camera (eg.ASH26-W) """
-        return self.model.upper().startswith("ASH26")
+    def is_flood_light(self) -> bool:
+        """ Returns true if this camera is an floodlight camera (eg.ASH26-W) """
+        m = self.model.upper()
+        return m.startswith("ASH26") or "L26N" in m or "L46N" in m
 
     def supports_infrared_light(self) -> bool:
         """
@@ -560,7 +561,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         IPC-HDW3849HP-AS-PV does
         """
         return not (
-                    self.is_amcrest_doorbell() or self.is_amcrest_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(
+                    self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(
             self._channel) in self.data
 
     def is_motion_detection_enabled(self) -> bool:
@@ -629,7 +630,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         return self.data.get("table.Lighting_V2[{0}][{1}][0].Mode".format(self._channel, profile_mode), "") == "Manual"
 
-    def is_amcrest_flood_light_on(self) -> bool:
+    def is_flood_light_on(self) -> bool:
         """Return true if the amcrest flood light light is on"""
         # profile_mode 0=day, 1=night, 2=scene
         profile_mode = self.get_profile_mode()

@@ -30,7 +30,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     if coordinator.supports_illuminator():
         entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
 
-    if coordinator.is_amcrest_flood_light():
+    if coordinator.is_flood_light():
         entities.append(AmcrestFloodLight(coordinator, entry, "Flood Light"))
 
     if coordinator.supports_security_light() and not coordinator.is_amcrest_doorbell():
@@ -233,7 +233,7 @@ class AmcrestFloodLight(DahuaBaseEntity, LightEntity):
     @property
     def is_on(self):
         """Return true if the light is on"""
-        return self._coordinator.is_amcrest_flood_light_on()
+        return self._coordinator.is_flood_light_on()
 
     @property
     def supported_features(self):
