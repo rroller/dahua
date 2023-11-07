@@ -306,6 +306,23 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=LightGlobal[0].Enable"
         return await self.get(url)
 
+    async def async_get_floodlightmode(self) -> dict:
+        """ async_get_config_floodlightmode gets floodlight mode """
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=FloodLightMode.Mode"
+        try:
+            return await self.async_get_config("FloodLightMode.Mode")
+        except aiohttp.ClientResponseError as e:
+            return {}
+
+    async def async_set_floodlightmode(self, mode: int) -> dict:
+        """ async_set_floodlightmode will set the floodlight lighting control  """
+        # 1 - Motion Acvtivation
+        # 2 - Manual (for manual switching)
+        # 3 - Schedule
+        # 4 - PIR
+        url = "/cgi-bin/configManager.cgi?action=setConfig&FloodLightMode.Mode={mode}".format(mode=mode)
+        return await self.get(url)
+
     async def async_set_lighting_v1(self, channel: int, enabled: bool, brightness: int) -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
         # on = Manual, off = Off
