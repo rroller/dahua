@@ -365,7 +365,7 @@ class DahuaClient:
             index, str(enabled).lower()
         )
         return await self.get(url, True)
-        
+
     async def async_set_night_switch_mode(self, channel: int, mode: str):
         """
         async_set_night_switch_mode is the same as async_set_video_profile_mode when accessing the camera
@@ -469,10 +469,10 @@ class DahuaClient:
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
 
-    # async def async_set_lighting_v2_for_amcrest_flood_lights(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
-    async def async_set_lighting_v2_for_amcrest_flood_lights(self, channel: int, enabled: bool, profile_mode: str) -> dict:
+    # async def async_set_lighting_v2_for_flood_lights(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
+    async def async_set_lighting_v2_for_flood_lights(self, channel: int, enabled: bool, profile_mode: str) -> dict:
         """
-        async_set_lighting_v2_for_amcrest_floodlights will turn on or off the flood light on the camera. If turning on, the brightness will be used.
+        async_set_lighting_v2_for_floodlights will turn on or off the flood light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
         NOTE: While the flood lights do support an auto or "smart" mode, the api does not handle this change properly.
               If one wishes to make the change back to auto, it must be done in the 'Amcrest Smart Home' smartphone app.

@@ -522,7 +522,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has a siren. For example, the IPC-HDW3849HP-AS-PV does
         https://dahuawiki.com/Template:NameConvention
         """
-        return "-AS-PV" in self.model
+        m = self.model.upper()
+        return "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
 
     def supports_security_light(self) -> bool:
         """
@@ -544,7 +545,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_flood_light(self) -> bool:
         """ Returns true if this camera is an floodlight camera (eg.ASH26-W) """
         m = self.model.upper()
-        return m.startswith("ASH26") or "L26N" in m or "L46N" in m
+        return m.startswith("ASH26") or "L26N" in m or "L46N" in m or m.startswith("V261LC") or m.startswith("W452ASD")
 
     def supports_infrared_light(self) -> bool:
         """
@@ -631,11 +632,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self.data.get("table.Lighting_V2[{0}][{1}][0].Mode".format(self._channel, profile_mode), "") == "Manual"
 
     def is_flood_light_on(self) -> bool:
-        """Return true if the amcrest flood light light is on"""
-        # profile_mode 0=day, 1=night, 2=scene
-        profile_mode = self.get_profile_mode()
 
-        return self.data.get(f'table.Lighting_V2[{self._channel}][{profile_mode}][1].Mode') == "Manual"
+        if self._supports_coaxial_control:
+          #'coaxialControlIO.cgi?action=getStatus&channel=1'
+            return self.data.get("status.status.WhiteLight", "") == "On"
+        else:
+            """Return true if the amcrest flood light light is on"""
+            # profile_mode 0=day, 1=night, 2=scene
+            profile_mode = self.get_profile_mode()
+
+            return self.data.get(f'table.Lighting_V2[{self._channel}][{profile_mode}][1].Mode') == "Manual"
 
     def is_ring_light_on(self) -> bool:
         """Return true if ring light is on for an Amcrest Doorbell"""
