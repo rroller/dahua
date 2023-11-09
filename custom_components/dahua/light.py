@@ -216,7 +216,6 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         super().__init__(coordinator, entry)
         self._name = name
         self._coordinator = coordinator
-        self._store_mode = "2"
 
     @property
     def name(self):
@@ -250,7 +249,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         """Turn the light on"""
         if self._coordinator._supports_coaxial_control:
             channel = self._coordinator.get_channel()
-            self._store_mode = await self._coordinator.client.async_get_floodlightmode()
+            self._coordinator._floodlight_mode = await self._coordinator.client.async_get_floodlightmode()
             await self._coordinator.client.async_set_floodlightmode(2)
             await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
             await self._coordinator.async_refresh()
@@ -266,7 +265,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         if self._coordinator._supports_coaxial_control:
             channel = self._coordinator.get_channel()
             await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
-            await self._coordinator.client.async_set_floodlightmode(self._store_mode)
+            await self._coordinator.client.async_set_floodlightmode(self._coordinator._floodlight_mode)
             await self._coordinator.async_refresh()
         else:
             channel = self._coordinator.get_channel()

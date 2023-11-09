@@ -312,7 +312,7 @@ class DahuaClient:
         try:
             return await self.async_get_config("FloodLightMode.Mode")
         except aiohttp.ClientResponseError as e:
-            return {}
+            return 2
 
     async def async_set_floodlightmode(self, mode: int) -> dict:
         """ async_set_floodlightmode will set the floodlight lighting control  """

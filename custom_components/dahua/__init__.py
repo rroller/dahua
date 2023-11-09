@@ -155,6 +155,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # If cleared the time will be 0. The time unit is seconds epoch
         self._dahua_event_timestamp: Dict[str, int] = dict()
 
+        self._floodlight_mode = 2
+
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
     async def async_start_event_listener(self):
