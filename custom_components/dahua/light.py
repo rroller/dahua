@@ -30,8 +30,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     if coordinator.supports_illuminator():
         entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
 
-    if coordinator.is_amcrest_flood_light():
-        entities.append(AmcrestFloodLight(coordinator, entry, "Flood Light"))
+    if coordinator.is_flood_light():
+        entities.append(FloodLight(coordinator, entry, "Flood Light"))
 
     if coordinator.supports_security_light() and not coordinator.is_amcrest_doorbell():
         #  The Amcrest doorbell works a little different and is added in select.py
@@ -205,9 +205,9 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
         await self._coordinator.async_refresh()
 
 
-class AmcrestFloodLight(DahuaBaseEntity, LightEntity):
+class FloodLight(DahuaBaseEntity, LightEntity):
     """
-        Representation of a Amcrest Flood Light (for cameras that have them)
+        Representation of a Amcrest, Dahua, and Lorex Flood Light (for cameras that have them)
         Unlike the 'Dahua Illuminator', Amcrest Flood Lights do not play nicely
         with adjusting the 'White Light' brightness.
     """
@@ -233,7 +233,7 @@ class AmcrestFloodLight(DahuaBaseEntity, LightEntity):
     @property
     def is_on(self):
         """Return true if the light is on"""
-        return self._coordinator.is_amcrest_flood_light_on()
+        return self._coordinator.is_flood_light_on()
 
     @property
     def supported_features(self):
@@ -247,17 +247,31 @@ class AmcrestFloodLight(DahuaBaseEntity, LightEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
-        channel = self._coordinator.get_channel()
-        profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2_for_amcrest_flood_lights(channel, True, profile_mode)
-        await self._coordinator.async_refresh()
+        if self._coordinator._supports_coaxial_control:
+            channel = self._coordinator.get_channel()
+            self._coordinator._floodlight_mode = await self._coordinator.client.async_get_floodlightmode()
+            await self._coordinator.client.async_set_floodlightmode(2)
+            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+            await self._coordinator.async_refresh()
+
+        else:
+            channel = self._coordinator.get_channel()
+            profile_mode = self._coordinator.get_profile_mode()
+            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(channel, True, profile_mode)
+            await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
-        channel = self._coordinator.get_channel()
-        profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2_for_amcrest_flood_lights(channel, False, profile_mode)
-        await self._coordinator.async_refresh()
+        if self._coordinator._supports_coaxial_control:
+            channel = self._coordinator.get_channel()
+            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
+            await self._coordinator.client.async_set_floodlightmode(self._coordinator._floodlight_mode)
+            await self._coordinator.async_refresh()
+        else:
+            channel = self._coordinator.get_channel()
+            profile_mode = self._coordinator.get_profile_mode()
+            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(channel, False, profile_mode)
+            await self._coordinator.async_refresh()
 
 
 class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
