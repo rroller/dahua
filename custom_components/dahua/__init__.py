@@ -121,6 +121,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_disarming_linkage = False
         self._supports_smart_motion_detection = False
         self._supports_lighting = False
+        self._supports_floodlightmode = False
         self._serial_number: str
         self._profile_mode = "0"
         self._supports_profile_mode = False
@@ -257,6 +258,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 is_flood_light = self.is_flood_light()
                 _LOGGER.info("Device is a floodlight=%s", is_flood_light)
+
+                self._supports_floodlightmode = self.supports_floodlightmode()
 
                 try:
                     await self.client.async_get_config_lighting(self._channel, self._profile_mode)
@@ -549,6 +552,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         m = self.model.upper()
         return m.startswith("ASH26") or "L26N" in m or "L46N" in m or m.startswith("V261LC") or m.startswith("W452ASD")
 
+    def supports_floodlightmode(self) -> bool:
+        """ Returns true if this camera supports floodlight mode """
+        return "W452ASD" in self.model.upper() or "L46N" in self.model.upper()
+
     def supports_infrared_light(self) -> bool:
         """
         Returns true if this camera has an infrared light.  For example, the IPC-HDW3849HP-AS-PV does not, but most
@@ -635,7 +642,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def is_flood_light_on(self) -> bool:
 
-        if self._supports_coaxial_control:
+        if self._supports_floodlightmode:
           #'coaxialControlIO.cgi?action=getStatus&channel=1'
             return self.data.get("status.status.WhiteLight", "") == "On"
         else:
