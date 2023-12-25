@@ -538,11 +538,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Returns true if this is a doorbell (VTO) """
         m = self.model.upper()
         return m.startswith("VTO") or m.startswith("DH-VTO") or (
-                    "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell()
+                    "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell()
 
     def is_amcrest_doorbell(self) -> bool:
         """ Returns true if this is an Amcrest doorbell """
         return self.model.upper().startswith("AD")
+
+    def is_empiretech_doorbell(self) -> bool:
+        """ Returns true if this is an EmpireTech doorbell """
+        return self.model.upper().startswith("DB2X")
 
     def is_flood_light(self) -> bool:
         """ Returns true if this camera is an floodlight camera (eg.ASH26-W) """
