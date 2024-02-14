@@ -1,0 +1,47 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Ajouter une caméra Dahua",
+                "description": "Adresse exemple : 192.168.1.108",
+                "data": {
+                    "username": "Nom d'utilisateur",
+                    "password": "Mot de passe",
+                    "address": "Adresse",
+                    "port": "Port",
+                    "rtsp_port": "Port RTSP",
+                    "streams": "Flux RTSP",
+                    "events": "Événements",
+                    "channel": "Canal (les caméras individuelles sont 0, les NVR sont indexés à partir de 0)"
+                }
+            },
+            "name": {
+                "title": "Configurer le nom du périphérique",
+                "data": {
+                    "name": "Nom du périphérique"
+                }
+            }
+        },
+        "error": {
+            "auth": "Nom d'utilisateur, mot de passe ou adresse incorrect."
+        },
+        "abort": {
+            "single_instance_allowed": "Une seule instance est autorisée.",
+            "already_configured": "Une seule instance d'un périphérique est autorisée."
+        }
+    },
+    "options": {
+        "step": {
+            "user": {
+                "data": {
+                    "binary_sensor": "Capteur binaire activé",
+                    "sensor": "Capteur activé",
+                    "switch": "Interrupteur activé",
+                    "light": "Lumière activée",
+                    "select": "Sélection activée",
+                    "camera": "Caméra activée"
+                }
+            }
+        }
+    }
+}
