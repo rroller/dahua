@@ -316,7 +316,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         channel = self._coordinator.get_channel()
         model = self._coordinator.get_model()
         # Some NVRs like the Lorex DHI-NVR4108HS-8P-4KS2 change the day/night mode through a switch
-        if 'NVR4108HS' in model:
+        if 'NVR4108HS' or 'IPC-Color4K' in model:
             await self._coordinator.client.async_set_night_switch_mode(channel, mode)
         else:
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
