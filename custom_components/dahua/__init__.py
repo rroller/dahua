@@ -539,7 +539,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
         m = self.model.upper()
-        return m.startswith("VTO") or m.startswith("DH-VTO") or (
+        return m.startswith("VTO") or m.startswith("DH-VTO") or m.startswith("AV-VTA") or (
                     "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell()
 
     def is_amcrest_doorbell(self) -> bool:
