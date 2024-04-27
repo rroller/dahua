@@ -114,7 +114,7 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 :------------ | :------------ | :------------ | :------------- | :-------------
 | *Amcrest* |
-| | | Amcrest AD410
+| | Amcrest AD110 | Amcrest AD410
 | *Dahua* |
 | | DHI-VTO2202F-P |
 | | DHI-VTO2211G-P |
