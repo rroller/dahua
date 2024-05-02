@@ -119,13 +119,13 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
 
         This is the magic part of this sensor along with the async_added_to_hass method below.
         The async_added_to_hass method adds a listener to the coordinator so when the event is started or stopped
-        it calls the async_write_ha_state function. async_write_ha_state gets the current value from this is_on method.
+        it calls the schedule_update_ha_state function. schedule_update_ha_state gets the current value from this is_on method.
         """
         return self._coordinator.get_event_timestamp(self._event_name) > 0
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
-        self._coordinator.add_dahua_event_listener(self._event_name, self.async_write_ha_state)
+        self._coordinator.add_dahua_event_listener(self._event_name, self.schedule_update_ha_state)
 
     @property
     def should_poll(self) -> bool:
