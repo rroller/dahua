@@ -7,16 +7,13 @@ See https://developers.home-assistant.io/docs/core/entity/light
 from homeassistant.core import HomeAssistant
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
-    SUPPORT_BRIGHTNESS,
-    LightEntity,
+    LightEntity, LightEntityFeature, ColorMode,
 )
 
 from . import DahuaDataUpdateCoordinator, dahua_utils
 from .const import DOMAIN, SECURITY_LIGHT_ICON, INFRARED_ICON
 from .entity import DahuaBaseEntity
 from .client import SECURITY_LIGHT_TYPE
-
-DAHUA_SUPPORTED_OPTIONS = SUPPORT_BRIGHTNESS
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
@@ -75,9 +72,19 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         return self._coordinator.get_infrared_brightness()
 
     @property
+    def color_mode(self) -> ColorMode | str | None:
+        """Return the color mode of the light."""
+        return ColorMode.BRIGHTNESS
+
+    @property
+    def supported_color_modes(self) -> set[str]:
+        """Flag supported color modes."""
+        return {self.color_mode}
+
+    @property
     def supported_features(self):
         """Flag supported features."""
-        return DAHUA_SUPPORTED_OPTIONS
+        return LightEntityFeature.EFFECT
 
     @property
     def should_poll(self):
@@ -137,6 +144,11 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         """Return the brightness of this light between 0..255 inclusive"""
 
         return self._coordinator.get_illuminator_brightness()
+
+    @property
+    def color_mode(self) -> ColorMode | str | None:
+        """Return the color mode of the light."""
+        return ColorMode.BRIGHTNESS
 
     @property
     def supported_features(self):
@@ -238,7 +250,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
     @property
     def supported_features(self):
         """Flag supported features."""
-        return DAHUA_SUPPORTED_OPTIONS
+        return LightEntityFeature.EFFECT
 
     @property
     def should_poll(self):
