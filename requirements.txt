@@ -1,6 +1,2 @@
-homeassistant~=2024.1.0
-ha-ffmpeg==3.0.2
-voluptuous~=0.12.1
-aiohttp~=3.7.4.post0
-yarl~=1.6.3
-requests~=2.25.1
+homeassistant~=2024.6.0
+ha-ffmpeg==3.2.0
