@@ -104,6 +104,9 @@ class DahuaVTOClient(asyncio.Protocol):
             try:
                 messages = self.parse_response(packet)
                 for message in messages:
+                    if message is None:
+                        continue
+
                     message_id = message.get("id")
 
                     handler: Callable = self.data_handlers.get(message_id, self.handle_default)
@@ -115,6 +118,8 @@ class DahuaVTOClient(asyncio.Protocol):
 
     def handle_notify_event_stream(self, params):
         try:
+            if params is None:
+                return
             event_list = params.get("eventList")
 
             for message in event_list:
@@ -183,6 +188,8 @@ class DahuaVTOClient(asyncio.Protocol):
         _LOGGER.debug("Prepare pre-login message")
 
         def handle_pre_login(message):
+            if message is None:
+                return
             error = message.get("error")
             params = message.get("params")
 
@@ -210,6 +217,8 @@ class DahuaVTOClient(asyncio.Protocol):
         _LOGGER.debug("Prepare login message")
 
         def handle_login(message):
+            if message is None:
+                return
             params = message.get("params")
             keep_alive_interval = params.get("keepAliveInterval")
 
@@ -241,6 +250,8 @@ class DahuaVTOClient(asyncio.Protocol):
         _LOGGER.info("Attach event manager")
 
         def handle_attach_event_manager(message):
+            if message is None:
+                return
             method = message.get("method")
             params = message.get("params")
 
@@ -257,6 +268,9 @@ class DahuaVTOClient(asyncio.Protocol):
         _LOGGER.info("Get access control configuration")
 
         def handle_access_control(message):
+            if message is None:
+                return
+
             params = message.get("params")
             table = params.get("table")
 
@@ -288,6 +302,9 @@ class DahuaVTOClient(asyncio.Protocol):
         _LOGGER.info("Get version")
 
         def handle_version(message):
+            if message is None:
+                return
+
             params = message.get("params")
             version_details = params.get("version", {})
             build_date = version_details.get("BuildDate")
@@ -304,6 +321,9 @@ class DahuaVTOClient(asyncio.Protocol):
         _LOGGER.info("Get device type")
 
         def handle_device_type(message):
+            if message is None:
+                return
+
             params = message.get("params")
             device_type = params.get("type")
 
@@ -317,6 +337,9 @@ class DahuaVTOClient(asyncio.Protocol):
         _LOGGER.info("Get serial number")
 
         def handle_serial_number(message):
+            if message is None:
+                return
+
             params = message.get("params")
             table = params.get("table", {})
             serial_number = table.get("UUID")
@@ -336,6 +359,8 @@ class DahuaVTOClient(asyncio.Protocol):
 
         def handle_keep_alive(message):
             Timer(self.keep_alive_interval, self.keep_alive).start()
+            if message is None:
+                return
 
             message_id = message.get('id')
             if message_id is not None and message_id in self.data_handlers:
