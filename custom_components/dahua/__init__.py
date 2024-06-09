@@ -82,7 +82,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     for platform in PLATFORMS:
         if entry.options.get(platform, True):
             coordinator.platforms.append(platform)
-            hass.async_add_job(
+            hass.async_create_task(
                 hass.config_entries.async_forward_entry_setup(entry, platform)
             )
 
@@ -540,7 +540,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Returns true if this is a doorbell (VTO) """
         m = self.model.upper()
         return m.startswith("VTO") or m.startswith("DH-VTO") or (
-                    "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
+                "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
 
     def is_amcrest_doorbell(self) -> bool:
         """ Returns true if this is an Amcrest doorbell """
@@ -574,7 +574,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         IPC-HDW3849HP-AS-PV does
         """
         return not (
-                    self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(
+                self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(
             self._channel) in self.data
 
     def is_motion_detection_enabled(self) -> bool:
@@ -646,7 +646,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_flood_light_on(self) -> bool:
 
         if self._supports_coaxial_control:
-          #'coaxialControlIO.cgi?action=getStatus&channel=1'
+            # 'coaxialControlIO.cgi?action=getStatus&channel=1'
             return self.data.get("status.status.WhiteLight", "") == "On"
         else:
             """Return true if the amcrest flood light light is on"""
