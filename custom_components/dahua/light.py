@@ -216,6 +216,16 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
         await self._coordinator.client.async_set_light_global_enabled(False)
         await self._coordinator.async_refresh()
 
+    @property
+    def color_mode(self) -> ColorMode | str | None:
+        """Return the color mode of the light."""
+        return ColorMode.ONOFF
+
+    @property
+    def supported_color_modes(self) -> set[str]:
+        """Flag supported color modes."""
+        return {self.color_mode}
+
 
 class FloodLight(DahuaBaseEntity, LightEntity):
     """
@@ -336,3 +346,13 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     def icon(self):
         """Return the icon of this switch."""
         return SECURITY_LIGHT_ICON
+
+    @property
+    def color_mode(self) -> ColorMode | str | None:
+        """Return the color mode of the light."""
+        return ColorMode.ONOFF
+
+    @property
+    def supported_color_modes(self) -> set[str]:
+        """Flag supported color modes."""
+        return {self.color_mode}
