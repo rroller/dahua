@@ -102,11 +102,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                  password: str, name: str, channel: int) -> None:
         """Initialize the coordinator."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
-        ssl_context = ssl.create_default_context()
-        ssl_context.set_ciphers("DEFAULT")
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        connector = TCPConnector(enable_cleanup_closed=True, ssl=ssl_context)
+        connector = TCPConnector(enable_cleanup_closed=True, ssl=False)
         self._session = ClientSession(connector=connector)
 
         # The client used to communicate with Dahua devices
