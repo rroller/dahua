@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 import logging
+import voluptuous as vol
 
-from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
-import voluptuous as vol
+from homeassistant.components.camera import Camera, CameraEntityFeature
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.entity import DahuaBaseEntity
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+)
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
