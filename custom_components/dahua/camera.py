@@ -2,18 +2,16 @@
 from __future__ import annotations
 
 import logging
-import voluptuous as vol
 
+from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
-from homeassistant.components.camera import Camera, CameraEntityFeature
+import voluptuous as vol
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.entity import DahuaBaseEntity
 
-from .const import (
-    DOMAIN,
-)
+from .const import DOMAIN
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -316,7 +314,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         channel = self._coordinator.get_channel()
         model = self._coordinator.get_model()
         # Some NVRs like the Lorex DHI-NVR4108HS-8P-4KS2 change the day/night mode through a switch
-        if 'NVR4108HS' or 'IPC-Color4K' in model:
+        if any(substring in model for substring in ['NVR4108HS', 'IPC-Color4K']):
             await self._coordinator.client.async_set_night_switch_mode(channel, mode)
         else:
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
