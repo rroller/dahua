@@ -269,13 +269,12 @@ class FloodLight(DahuaBaseEntity, LightEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
-        if self._coordinator._supports_coaxial_control:
+        if self._coordinator._supports_floodlightmode:
             channel = self._coordinator.get_channel()
             self._coordinator._floodlight_mode = await self._coordinator.client.async_get_floodlightmode()
             await self._coordinator.client.async_set_floodlightmode(2)
             await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
             await self._coordinator.async_refresh()
-
         else:
             channel = self._coordinator.get_channel()
             profile_mode = self._coordinator.get_profile_mode()
@@ -284,7 +283,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
-        if self._coordinator._supports_coaxial_control:
+        if self._coordinator._supports_floodlightmode:
             channel = self._coordinator.get_channel()
             await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
             await self._coordinator.client.async_set_floodlightmode(self._coordinator._floodlight_mode)
