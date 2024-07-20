@@ -121,6 +121,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_disarming_linkage = False
         self._supports_smart_motion_detection = False
         self._supports_lighting = False
+        self._supports_floodlightmode = False
         self._serial_number: str
         self._profile_mode = "0"
         self._supports_profile_mode = False
@@ -259,6 +260,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 is_flood_light = self.is_flood_light()
                 _LOGGER.info("Device is a floodlight=%s", is_flood_light)
+                
+                self._supports_floodlightmode = self.supports_floodlightmode()
 
                 try:
                     await self.client.async_get_config_lighting(self._channel, self._profile_mode)
@@ -568,6 +571,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return False
         return "-AS-PV" not in self.model and "-AS-NI" not in self.model
 
+    def supports_floodlightmode(self) -> bool:
+        """ Returns true if this camera supports floodlight mode """
+        return "W452ASD" in self.model.upper() or "L46N" in self.model.upper()
+
     def supports_illuminator(self) -> bool:
         """
         Returns true if this camera has an illuminator (white light for color cameras).  For example, the
@@ -645,14 +652,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def is_flood_light_on(self) -> bool:
 
-        if self._supports_coaxial_control:
-            # 'coaxialControlIO.cgi?action=getStatus&channel=1'
+        if self._supports_floodlightmode:
+          #'coaxialControlIO.cgi?action=getStatus&channel=1'
             return self.data.get("status.status.WhiteLight", "") == "On"
         else:
             """Return true if the amcrest flood light light is on"""
             # profile_mode 0=day, 1=night, 2=scene
             profile_mode = self.get_profile_mode()
-
             return self.data.get(f'table.Lighting_V2[{self._channel}][{profile_mode}][1].Mode') == "Manual"
 
     def is_ring_light_on(self) -> bool:
