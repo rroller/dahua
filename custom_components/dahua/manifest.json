@@ -5,7 +5,7 @@
   "documentation": "https://github.com/rroller/dahua",
   "issue_tracker": "https://github.com/rroller/dahua/issues",
   "dependencies": [],
-  "version": "0.5.0",
+  "version": "0.9.60",
   "config_flow": true,
   "codeowners": [
     "@rroller"
