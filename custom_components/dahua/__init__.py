@@ -17,6 +17,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, Config, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
 from custom_components.dahua.thread import DahuaEventThread, DahuaVtoEventThread
@@ -40,6 +41,11 @@ from .dahua_utils import parse_event
 from .vto import DahuaVTOClient
 
 SCAN_INTERVAL_SECONDS = timedelta(seconds=30)
+
+SSL_CONTEXT = ssl.create_default_context()
+SSL_CONTEXT.set_ciphers("DEFAULT")
+SSL_CONTEXT.check_hostname = False
+SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -82,9 +88,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     for platform in PLATFORMS:
         if entry.options.get(platform, True):
             coordinator.platforms.append(platform)
-            hass.async_create_task(
-                hass.config_entries.async_forward_entry_setup(entry, platform)
-            )
+            await hass.config_entries.async_forward_entry_setups(entry, [platform])
 
     entry.add_update_listener(async_reload_entry)
 
@@ -102,11 +106,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                  password: str, name: str, channel: int) -> None:
         """Initialize the coordinator."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
-        ssl_context = ssl.create_default_context()
-        ssl_context.set_ciphers("DEFAULT")
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        connector = TCPConnector(enable_cleanup_closed=True, ssl=ssl_context)
+        connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
         self._session = ClientSession(connector=connector)
 
         # The client used to communicate with Dahua devices
