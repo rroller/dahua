@@ -629,10 +629,7 @@ class DahuaClient:
         """
 
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=DisableLinkage"
-        try:
-            return await self.get(url)
-        except aiohttp.ClientResponseError as e:
-            return {"table.DisableLinkage.Enable": "false"}
+        return await self.get(url)
 
     async def async_access_control_open_door(self, door_id: int = 1) -> dict:
         """
