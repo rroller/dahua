@@ -30,6 +30,12 @@ https://developers.home-assistant.io/docs/config_entries_config_flow_handler
 https://developers.home-assistant.io/docs/data_entry_flow_index/
 """
 
+SSL_CONTEXT = ssl.create_default_context()
+#SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
+SSL_CONTEXT.set_ciphers("DEFAULT")
+SSL_CONTEXT.check_hostname = False
+SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss", "VideoBlind", "AudioMutation",
@@ -177,11 +183,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     async def _test_credentials(self, username, password, address, port, rtsp_port, channel):
         """Return name and serialNumber if credentials is valid."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
-        ssl_context = ssl.create_default_context()
-        ssl_context.set_ciphers("DEFAULT")
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        connector = TCPConnector(enable_cleanup_closed=True, ssl=ssl_context)
+        connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
         session = ClientSession(connector=connector)
         try:
             client = DahuaClient(username, password, address, port, rtsp_port, session)
