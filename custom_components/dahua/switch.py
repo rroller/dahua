@@ -4,7 +4,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.components.switch import SwitchEntity
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
-from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON
+from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON
 from .entity import DahuaBaseEntity
 from .client import SIREN_TYPE
 
@@ -27,6 +27,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     try:
         await coordinator.client.async_get_disarming_linkage()
         devices.append(DahuaDisarmingLinkageBinarySwitch(coordinator, entry))
+        devices.append(DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry))
     except ClientError as exception:
         pass
 
@@ -117,6 +118,46 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
         """
         return self._coordinator.is_disarming_linkage_enabled()
 
+class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
+    """will set the camera's event notifications when device is disarmed (Event -> Disarming -> Event Notifications in the UI)"""
+
+    async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
+        """Turn on/enable event notifications"""
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_event_notifications(channel, True)
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
+        """Turn off/disable event notifications"""
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_event_notifications(channel, False)
+        await self._coordinator.async_refresh()
+
+    @property
+    def name(self):
+        """Return the name of the switch."""
+        return self._coordinator.get_device_name() + " " + "Event Notifications"
+
+    @property
+    def unique_id(self):
+        """
+        A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be
+        configurable by the user or be changeable see
+        https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
+        """
+        return self._coordinator.get_serial_number() + "_event_notifications"
+
+    @property
+    def icon(self):
+        """Return the icon of this switch."""
+        return BELL_ICON
+
+    @property
+    def is_on(self):
+        """
+        Return true if the switch is on.
+        """
+        return self._coordinator.is_event_notifications_enabled()
 
 class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """Enables or disables the Smart Motion Detection option in the camera"""
