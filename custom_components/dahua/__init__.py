@@ -537,7 +537,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has the red/blue flashing security light feature.  For example, the
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
         """
-        return "-AS-PV" in self.model or self.model == "AD410"
+        return "-AS-PV" in self.model or self.model == "AD410" or self.model.startswith("IP8M")
 
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
