@@ -320,6 +320,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     asyncio.ensure_future(self.client.async_get_config_lighting(self._channel, self._profile_mode)))
             if self._supports_disarming_linkage:
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
+                coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
             if self._supports_coaxial_control:
                 coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
             if self._supports_smart_motion_detection:
@@ -538,7 +539,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has the red/blue flashing security light feature.  For example, the
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
         """
-        return "-AS-PV" in self.model or self.model == "AD410" or self.model.startswith("IP8M")
+        return "-AS-PV" in self.model or self.model == "AD410"
 
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
@@ -592,6 +593,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_disarming_linkage_enabled(self) -> bool:
         """ Returns true if disarming linkage is enable """
         return self.data.get("table.DisableLinkage.Enable", "").lower() == "true"
+
+    def is_event_notifications_enabled(self) -> bool:
+        """ Returns true if event notifications is enable """
+        return self.data.get("table.DisableEventNotify.Enable", "").lower() == "false"
 
     def is_smart_motion_detection_enabled(self) -> bool:
         """ Returns true if smart motion detection is enabled """
