@@ -99,7 +99,7 @@ Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 :------------ | :------------ | :------------ | :------------- | :-------------
 | *IMOU* |
-| | IMOU IPC-A26Z / Ranger Pro Z |
+| | IMOU IPC-A26Z / Ranger Pro Z | | IMOU DB61i
 | | IMOU IPC-C26E-V2 <sup>*</sup> |
 | | IMOU IPC-K22A / Cube PoE-322A |
 | *Lorex* |
