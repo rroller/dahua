@@ -36,8 +36,6 @@
             }
         }
     },
-    //  Podman stuff
-    "runArgs": ["--userns=keep-id"],
     "containerUser": "vscode",
     "updateRemoteUserUID": true,
     "containerEnv": {
