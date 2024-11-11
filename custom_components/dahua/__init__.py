@@ -120,6 +120,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.events: list = events
         self._supports_coaxial_control = False
         self._supports_disarming_linkage = False
+        self._supports_event_notifications = False
         self._supports_smart_motion_detection = False
         self._supports_lighting = False
         self._supports_floodlightmode = False
@@ -247,6 +248,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_disarming_linkage = False
                 _LOGGER.info("Device supports disarming linkage=%s", self._supports_disarming_linkage)
 
+                try:
+                    await self.client.async_get_event_notifications()
+                    self._supports_event_notifications = True
+                except ClientError:
+                    self._supports_event_notifications = False
+                _LOGGER.info("Device supports event notifications=%s", self._supports_event_notifications)
+
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
                 # The following lines are for Dahua devices
                 try:
@@ -261,7 +269,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 is_flood_light = self.is_flood_light()
                 _LOGGER.info("Device is a floodlight=%s", is_flood_light)
-                
+
                 self._supports_floodlightmode = self.supports_floodlightmode()
 
                 try:
@@ -320,6 +328,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     asyncio.ensure_future(self.client.async_get_config_lighting(self._channel, self._profile_mode)))
             if self._supports_disarming_linkage:
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
+            if self._supports_event_notifications:
                 coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
             if self._supports_coaxial_control:
                 coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
@@ -538,14 +547,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         Returns true if this camera has the red/blue flashing security light feature.  For example, the
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
+        Addressed issue https://github.com/rroller/dahua/pull/405
         """
-        return "-AS-PV" in self.model or self.model == "AD410"
+        return "-AS-PV" in self.model or self.model == "AD410" or self.model.startswith("IP8M-2796E")
 
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
         m = self.model.upper()
         return m.startswith("VTO") or m.startswith("DH-VTO") or (
-                "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
+            "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
 
     def is_amcrest_doorbell(self) -> bool:
         """ Returns true if this is an Amcrest doorbell """
@@ -583,7 +593,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         IPC-HDW3849HP-AS-PV does
         """
         return not (
-                self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(
+            self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(
             self._channel) in self.data
 
     def is_motion_detection_enabled(self) -> bool:
@@ -659,7 +669,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_flood_light_on(self) -> bool:
 
         if self._supports_floodlightmode:
-          #'coaxialControlIO.cgi?action=getStatus&channel=1'
+          # 'coaxialControlIO.cgi?action=getStatus&channel=1'
             return self.data.get("status.status.WhiteLight", "") == "On"
         else:
             """Return true if the amcrest flood light light is on"""

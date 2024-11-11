@@ -99,7 +99,7 @@ Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 :------------ | :------------ | :------------ | :------------- | :-------------
 | *IMOU* |
-| | IMOU IPC-A26Z / Ranger Pro Z |
+| | IMOU IPC-A26Z / Ranger Pro Z | | IMOU DB61i
 | | IMOU IPC-C26E-V2 <sup>*</sup> |
 | | IMOU IPC-K22A / Cube PoE-322A |
 | *Lorex* |
@@ -120,7 +120,7 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | DHI-VTO2211G-P |
 | | DHI-VTO3311Q-WP |
 | *IMOU* |
-| | IMOU C26EP-V2 |
+| | IMOU C26EP-V2 | | IMOU DB61i
 
 # Known Issues
 * IPC-D2B20-ZS doesn't work. Needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201), [7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237)

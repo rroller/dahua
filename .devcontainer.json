@@ -36,6 +36,11 @@
             }
         }
     },
+    "containerUser": "vscode",
+    "updateRemoteUserUID": true,
+    "containerEnv": {
+        "HOME": "/home/vscode"
+    },
     "remoteUser": "vscode",
     "features": {
         "ghcr.io/devcontainers/features/rust:1": {}
