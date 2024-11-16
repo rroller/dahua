@@ -664,8 +664,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def is_infrared_light_on(self) -> bool:
         """ returns true if the infrared light is on """
-        _LOGGER.info("is_infrared_on_channel=%s", self._channel)
- #       _LOGGER.info("infrared_state=%s", self.data.get("table.Lighting[{0}][0].Mode".format(self._channel),""))
         return self.data.get("table.Lighting[{0}][0].Mode".format(self._channel),"") == "Manual"
 
     def get_infrared_brightness(self) -> int:
