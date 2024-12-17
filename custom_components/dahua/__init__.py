@@ -564,7 +564,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
         Addressed issue https://github.com/rroller/dahua/pull/405
         """
-        return "-AS-PV" in self.model or self.model == "AD410" or self.model.startswith("IP8M-2796E")
+        return "-AS-PV" in self.model or self.model == "AD410" or self.model == "DB61i" or self.model.startswith("IP8M-2796E")
 
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
@@ -573,8 +573,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
 
     def is_amcrest_doorbell(self) -> bool:
-        """ Returns true if this is an Amcrest doorbell """
-        return self.model.upper().startswith("AD")
+        """ Returns true if this is an Amcrest doorbell - IMOU DB61i is identical """
+        return self.model.upper().startswith("AD") or self.model.upper().startswith("DB6")
 
     def is_empiretech_doorbell(self) -> bool:
         """ Returns true if this is an EmpireTech doorbell """
@@ -733,7 +733,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def supports_smart_motion_detection_amcrest(self) -> bool:
         """ True if smart motion detection is supported for an amcrest device"""
-        return self.model == "AD410"
+        return self.model == "AD410" or self.model == "DB61i"
 
     def get_vto_client(self) -> DahuaVTOClient:
         """
