@@ -1,6 +1,7 @@
 {
   "domain": "dahua",
   "name": "Dahua",
+  "after_dependencies": ["tag"],
   "codeowners": [
     "@rroller"
   ],
