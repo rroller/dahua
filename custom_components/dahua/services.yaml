@@ -10,6 +10,7 @@ set_infrared_mode:
       domain: camera
   fields:
     mode:
+      name: Mode
       description: "The infrared mode: Auto, On, Off"
       example: "Auto"
       default: "Auto"
@@ -20,6 +21,7 @@ set_infrared_mode:
             - "On"
             - "Off"
     brightness:
+      name: Brightness
       description: The infrared brightness, from 0 to 100 inclusive. 100 is the brightest
       example: 100
       default: 100
@@ -40,6 +42,7 @@ set_video_profile_mode:
       domain: camera
   fields:
     mode:
+      name: Mode
       description: "The profile: Day, Night"
       example: "Day"
       selector:
@@ -266,6 +269,7 @@ set_video_in_day_night_mode:
       domain: camera
   fields:
     config_type:
+      name: Config Type
       description: "The config type: general, day, night"
       example: "general"
       default: "general"
@@ -276,6 +280,7 @@ set_video_in_day_night_mode:
             - "day"
             - "night"
     mode:
+      name: Mode
       description: "The mode: Auto, Color, BlackWhite. Note Auto is also known as Brightness by Dahua"
       example: "Auto"
       default: "Auto"
@@ -303,6 +308,7 @@ set_record_mode:
       domain: camera
   fields:
     mode:
+      name: Mode
       description: "The mode: Auto, On, Off"
       example: "Auto"
       default: "Auto"
