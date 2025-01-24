@@ -149,11 +149,11 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     def color_mode(self) -> ColorMode | str | None:
         """Return the color mode of the light."""
         return ColorMode.BRIGHTNESS
-
+    
     @property
-    def supported_features(self):
-        """Flag supported features."""
-        return 0
+    def supported_color_modes(self) -> set[str]:
+        """Flag supported color modes."""
+        return {self.color_mode}
 
     @property
     def should_poll(self):
@@ -261,6 +261,16 @@ class FloodLight(DahuaBaseEntity, LightEntity):
     def supported_features(self):
         """Flag supported features."""
         return LightEntityFeature.EFFECT
+    
+    @property
+    def color_mode(self) -> ColorMode | str | None:
+        """Return the color mode of the light."""
+        return ColorMode.ONOFF
+
+    @property
+    def supported_color_modes(self) -> set[str]:
+        """Flag supported color modes."""
+        return {self.color_mode}
 
     @property
     def should_poll(self):

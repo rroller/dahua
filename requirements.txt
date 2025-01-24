@@ -1,4 +1,4 @@
-homeassistant~=2024.10.4
+homeassistant~=2025.1.2
 ha-ffmpeg==3.2.2
 colorlog==6.8.2
 pip>=24.3.1
