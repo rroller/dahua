@@ -50,16 +50,6 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
-
-async def async_setup(hass: HomeAssistant, config: ConfigType):
-    """
-    Set up this integration with the UI. YAML is not supported.
-    https://developers.home-assistant.io/docs/asyncio_working_with_async/
-    """
-    hass.data.setdefault(DOMAIN, {})
-    return True
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Set up this integration using UI."""
     if hass.data.get(DOMAIN) is None:
