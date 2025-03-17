@@ -7,6 +7,7 @@ import async_timeout
 
 from .digest import DigestAuth
 from hashlib import md5
+from urllib.parse import quote
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -47,8 +48,8 @@ class DahuaClient:
         Returns the RTSP url for the supplied subtype (subtype is 0=Main stream, 1=Sub stream)
         """
         url = "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel={4}&subtype={5}".format(
-            self._username,
-            self._password,
+            quote(self._username),
+            quote(self._password),
             self._address,
             self._rtsp_port,
             channel,
@@ -743,7 +744,7 @@ class DahuaClient:
                 async for data, _ in response.content.iter_chunks():
                     on_receive(data, channel)
             except Exception as exception:
-                pass
+                _LOGGER.exception(exception)
             finally:
                 if response is not None:
                     response.close()
