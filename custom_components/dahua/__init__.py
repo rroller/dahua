@@ -752,7 +752,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Fetch the current privacy mode status from the camera"""
         try:
             config = await self.rpc2_client.get_privacy_mode_config()
-            enabled = config.get("table", [{}])[0].get("Enable", False)
+            # Extract the Enable flag from the table array
+            table = config.get("table", [])
+            if table and len(table) > 0:
+                enabled = table[0].get("Enable", False)
+            else:
+                enabled = False
             return {"privacy_mode_enabled": enabled}
         except Exception as exception:
             _LOGGER.debug("Failed to fetch privacy mode status: %s", exception)

@@ -1,4 +1,5 @@
 """Switch platform for dahua."""
+import logging
 from aiohttp import ClientError
 from homeassistant.core import HomeAssistant
 from homeassistant.components.switch import SwitchEntity
@@ -7,6 +8,8 @@ from custom_components.dahua import DahuaDataUpdateCoordinator
 from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON, PRIVACY_MODE_ICON
 from .entity import DahuaBaseEntity
 from .client import SIREN_TYPE
+
+_LOGGER: logging.Logger = logging.getLogger(__package__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
@@ -254,13 +257,23 @@ class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn on privacy mode."""
-        await self._coordinator.rpc2_client.set_privacy_mode(True)
-        await self._coordinator.async_refresh()
+        try:
+            result = await self._coordinator.rpc2_client.set_privacy_mode(True)
+            if result:
+                await self._coordinator.async_refresh()
+        except Exception as e:
+            _LOGGER.error("Failed to turn on privacy mode: %s", e)
+            raise
 
     async def async_turn_off(self, **kwargs):
         """Turn off privacy mode."""
-        await self._coordinator.rpc2_client.set_privacy_mode(False)
-        await self._coordinator.async_refresh()
+        try:
+            result = await self._coordinator.rpc2_client.set_privacy_mode(False)
+            if result:
+                await self._coordinator.async_refresh()
+        except Exception as e:
+            _LOGGER.error("Failed to turn off privacy mode: %s", e)
+            raise
 
     @property
     def name(self):

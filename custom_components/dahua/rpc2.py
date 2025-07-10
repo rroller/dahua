@@ -53,10 +53,18 @@ class DahuaRpc2Client:
             url = "{0}/RPC2".format(self._base)
 
         resp = await self._session.post(url, data=json.dumps(data))
-        resp_json = json.loads(await resp.text())
+        resp_text = await resp.text()
+        
+        try:
+            resp_json = json.loads(resp_text)
+        except json.JSONDecodeError as e:
+            _LOGGER.error("Failed to parse JSON response: %s", resp_text)
+            raise ConnectionError(f"Invalid JSON response: {resp_text}")
 
-        if verify_result and resp_json['result'] is False:
-            raise ConnectionError(str(resp))
+        if verify_result and resp_json.get('result') is False:
+            error_msg = resp_json.get('error', {})
+            _LOGGER.error("RPC2 request failed: %s", error_msg)
+            raise ConnectionError(f"RPC2 error: {error_msg}")
 
         return resp_json
 
@@ -138,11 +146,19 @@ class DahuaRpc2Client:
 
     async def get_privacy_mode_config(self) -> dict:
         """Gets the current privacy mode (LeLensMask) configuration."""
+        await self._ensure_logged_in()
         response = await self.get_config({"name": "LeLensMask"})
         return response
 
+    async def _ensure_logged_in(self):
+        """Ensure we have a valid session, login if needed."""
+        if not self._session_id:
+            await self.login()
+
     async def set_privacy_mode(self, enabled: bool) -> bool:
         """Sets privacy mode on or off."""
+        await self._ensure_logged_in()
+        
         # Default time sections for all days, all hours
         default_time_sections = [
             ["1 00:00:00-23:59:59", "0 00:00:00-23:59:59", "0 00:00:00-23:59:59", 
@@ -159,5 +175,15 @@ class DahuaRpc2Client:
             "options": []
         }
         
-        response = await self.request(method="configManager.setConfig", params=params)
-        return response['result']
+        try:
+            response = await self.request(method="configManager.setConfig", params=params)
+            # For configManager.setConfig, success is indicated by result being True or the method completing without error
+            return response.get('result', True) is not False
+        except ConnectionError as e:
+            # If session expired, try to login again and retry once
+            if "session" in str(e).lower() or "login" in str(e).lower():
+                _LOGGER.info("Session expired, re-logging in and retrying")
+                await self.login()
+                response = await self.request(method="configManager.setConfig", params=params)
+                return response.get('result', True) is not False
+            raise
