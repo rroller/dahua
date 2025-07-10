@@ -24,6 +24,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from custom_components.dahua.thread import DahuaEventThread, DahuaVtoEventThread
 from . import dahua_utils
 from .client import DahuaClient
+from .rpc2 import DahuaRpc2Client
 
 from .const import (
     CONF_EVENTS,
@@ -102,6 +103,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session)
+        
+        # RPC2 client for advanced features like privacy mode
+        self.rpc2_client: DahuaRpc2Client = DahuaRpc2Client(username, password, address, port, rtsp_port, self._session)
+        self._rpc2_available = False
 
         self.platforms = []
         self.initialized = False
@@ -281,6 +286,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     pass
                 _LOGGER.info("Device supports Lighting_V2=%s", self._supports_lighting_v2)
 
+                # Test RPC2 client availability
+                try:
+                    await self.rpc2_client.login()
+                    self._rpc2_available = True
+                    _LOGGER.info("RPC2 client initialized successfully")
+                except Exception as exception:
+                    self._rpc2_available = False
+                    _LOGGER.debug("RPC2 client not available: %s", exception)
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -342,6 +355,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_light_global_enabled()))
             if self._supports_lighting_v2:   #add lighing_v2 API if it is supported
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
+            if self._rpc2_available:
+                coros.append(asyncio.ensure_future(self._fetch_privacy_mode_status()))
 
 
             # Gather results and update the data map
@@ -724,6 +739,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def supports_smart_motion_detection_amcrest(self) -> bool:
         """ True if smart motion detection is supported for an amcrest device"""
         return self.model == "AD410" or self.model == "DB61i"
+
+    def supports_privacy_mode(self) -> bool:
+        """ True if privacy mode is supported (RPC2 client available)"""
+        return self._rpc2_available
+
+    def is_privacy_mode_enabled(self) -> bool:
+        """ True if privacy mode is enabled"""
+        return self.data.get("privacy_mode_enabled", False)
+
+    async def _fetch_privacy_mode_status(self) -> dict:
+        """ Fetch the current privacy mode status from the camera"""
+        try:
+            config = await self.rpc2_client.get_privacy_mode_config()
+            enabled = config.get("table", [{}])[0].get("Enable", False)
+            return {"privacy_mode_enabled": enabled}
+        except Exception as exception:
+            _LOGGER.debug("Failed to fetch privacy mode status: %s", exception)
+            return {"privacy_mode_enabled": False}
 
     def get_vto_client(self) -> DahuaVTOClient:
         """

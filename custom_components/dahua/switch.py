@@ -32,7 +32,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         pass
 
     # Add privacy mode switch if RPC2 client is available
-    if hasattr(coordinator, 'rpc2_client') and coordinator.rpc2_client:
+    if coordinator.supports_privacy_mode():
         devices.append(DahuaPrivacyModeBinarySwitch(coordinator, entry))
 
     async_add_devices(devices)
@@ -280,8 +280,4 @@ class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def is_on(self):
         """Return true if privacy mode is on."""
-        try:
-            # Since we don't have a coordinator method yet, we'll check directly
-            return self._coordinator.data.get("privacy_mode_enabled", False)
-        except (KeyError, AttributeError):
-            return False
+        return self._coordinator.is_privacy_mode_enabled()
