@@ -135,3 +135,29 @@ class DahuaRpc2Client:
         """ async_get_coaxial_control_io_status returns the the current state of the speaker and white light. """
         response = await self.request(method="CoaxialControlIO.getStatus", params={"channel": channel})
         return CoaxialControlIOStatus(response)
+
+    async def get_privacy_mode_config(self) -> dict:
+        """Gets the current privacy mode (LeLensMask) configuration."""
+        response = await self.get_config({"name": "LeLensMask"})
+        return response
+
+    async def set_privacy_mode(self, enabled: bool) -> bool:
+        """Sets privacy mode on or off."""
+        # Default time sections for all days, all hours
+        default_time_sections = [
+            ["1 00:00:00-23:59:59", "0 00:00:00-23:59:59", "0 00:00:00-23:59:59", 
+             "0 00:00:00-23:59:59", "0 00:00:00-23:59:59", "0 00:00:00-23:59:59"]
+        ] * 7
+        
+        params = {
+            "name": "LeLensMask",
+            "table": [{
+                "Enable": enabled,
+                "LastPosition": [-0.5861111111111111, -0.2061111111111111, 0.0078125],
+                "TimeSection": default_time_sections
+            }],
+            "options": []
+        }
+        
+        response = await self.request(method="configManager.setConfig", params=params)
+        return response['result']

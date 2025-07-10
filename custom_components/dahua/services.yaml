@@ -444,3 +444,20 @@ set_privacy_masking:
       default: true
       selector:
         boolean:
+
+set_privacy_mode:
+  name: Set Privacy Mode
+  description: Enables or disables the camera's privacy mode (lens masking)
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    enabled:
+      name: Enabled
+      description: "If true enables privacy mode, otherwise disables it"
+      example: true
+      required: true
+      default: true
+      selector:
+        boolean:
