@@ -63,8 +63,37 @@ class DahuaRpc2Client:
 
         if verify_result and resp_json.get('result') is False:
             error_msg = resp_json.get('error', {})
-            _LOGGER.error("RPC2 request failed: %s", error_msg)
-            raise ConnectionError(f"RPC2 error: {error_msg}")
+            error_code = error_msg.get('code', 0)
+            
+            # Check if it's a session error (code 287637505 means "Invalid session")
+            if error_code == 287637505 or 'session' in str(error_msg).lower():
+                _LOGGER.info("Session expired, attempting to re-login")
+                # Clear the session and try to login again
+                self._session_id = None
+                await self.login()
+                
+                # Retry the request with the new session
+                if self._session_id:
+                    data['session'] = self._session_id
+                    resp = await self._session.post(url, data=json.dumps(data))
+                    resp_text = await resp.text()
+                    try:
+                        resp_json = json.loads(resp_text)
+                    except json.JSONDecodeError as e:
+                        _LOGGER.error("Failed to parse JSON response after re-login: %s", resp_text)
+                        raise ConnectionError(f"Invalid JSON response: {resp_text}")
+                    
+                    # Check the result again
+                    if resp_json.get('result') is False:
+                        error_msg = resp_json.get('error', {})
+                        _LOGGER.error("RPC2 request failed after re-login: %s", error_msg)
+                        raise ConnectionError(f"RPC2 error: {error_msg}")
+                else:
+                    _LOGGER.error("Failed to re-login after session expiry")
+                    raise ConnectionError(f"RPC2 error: {error_msg}")
+            else:
+                _LOGGER.error("RPC2 request failed: %s", error_msg)
+                raise ConnectionError(f"RPC2 error: {error_msg}")
 
         return resp_json
 
@@ -175,15 +204,6 @@ class DahuaRpc2Client:
             "options": []
         }
         
-        try:
-            response = await self.request(method="configManager.setConfig", params=params)
-            # For configManager.setConfig, success is indicated by result being True or the method completing without error
-            return response.get('result', True) is not False
-        except ConnectionError as e:
-            # If session expired, try to login again and retry once
-            if "session" in str(e).lower() or "login" in str(e).lower():
-                _LOGGER.info("Session expired, re-logging in and retrying")
-                await self.login()
-                response = await self.request(method="configManager.setConfig", params=params)
-                return response.get('result', True) is not False
-            raise
+        response = await self.request(method="configManager.setConfig", params=params)
+        # For configManager.setConfig, success is indicated by result being True or the method completing without error
+        return response.get('result', True) is not False
