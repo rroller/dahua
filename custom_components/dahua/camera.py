@@ -37,6 +37,7 @@ SERVICE_VTO_OPEN_DOOR = "vto_open_door"
 SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 SERVICE_REBOOT = "reboot"
+SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
@@ -224,6 +225,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             "async_set_infrared_mode"
         )
 
+    platform.async_register_entity_service(
+        SERVICE_GOTO_PRESET_POSITION,
+        {
+            vol.Required('position', default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
+        },
+        "async_goto_preset_position"
+    )
 
 class DahuaCamera(DahuaBaseEntity, Camera):
     """An implementation of a Dahua IP camera."""
@@ -293,6 +301,12 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_lighting_v1_mode(channel, mode, brightness)
+        await self._coordinator.async_refresh()
+
+    async def async_goto_preset_position(self, position: int):
+        """ Handles the service call from SERVICE_GOTO_PRESET_POSITION to go to a specific preset position """
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_goto_preset_position(channel, position)
         await self._coordinator.async_refresh()
 
     async def async_set_video_in_day_night_mode(self, config_type: str, mode: str):
