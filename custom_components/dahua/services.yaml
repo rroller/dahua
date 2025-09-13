@@ -444,3 +444,11 @@ set_privacy_masking:
       default: true
       selector:
         boolean:
+
+autofocus:
+  name: Dahua Camera AutoFocus
+  description: "Autofocuses the Camera"
+  target:
+    entity:
+      integration: dahua
+      domain: number

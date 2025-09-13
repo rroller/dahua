@@ -75,14 +75,16 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         "async_set_video_profile_mode"
     )
 
-    platform.async_register_entity_service(
-        SERVICE_SET_FOCUS_ZOOM,
-        {
-            vol.Required("focus", default=""): str,
-            vol.Required("zoom", default=""): str,
-        },
-        "async_adjustfocus"
-    )
+    if coordinator.supports_focus_zoom:
+
+        platform.async_register_entity_service(
+            SERVICE_SET_FOCUS_ZOOM,
+            {
+                vol.Required("focus", default=""): str,
+                vol.Required("zoom", default=""): str,
+            },
+            "async_adjustfocus"
+        )
 
     platform.async_register_entity_service(
         SERVICE_SET_PRIVACY_MASKING,
