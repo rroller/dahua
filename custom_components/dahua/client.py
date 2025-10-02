@@ -737,34 +737,13 @@ class DahuaClient:
         )
         if self._username is not None and self._password is not None:
             response = None
-            keepalive_task = None
 
             try:
                 auth = DigestAuth(self._username, self._password, self._session)
-                response = await auth.request("GET", url)
+                # Disable timeout for infinite event stream (fixes 5-minute disconnection)
+                timeout = aiohttp.ClientTimeout(total=None)
+                response = await auth.request("GET", url, timeout=timeout)
                 response.raise_for_status()
-
-                # Create keepalive task to send heartbeat messages
-                async def send_keepalive():
-                    """Send keepalive messages to prevent connection timeout"""
-                    keepalive_url = f"{self._base}/cgi-bin/eventManager.cgi?action=getEventIndexes&heartbeat={heartbeat_interval}"
-                    while True:
-                        try:
-                            await asyncio.sleep(heartbeat_interval)
-                            _LOGGER.debug("Sending heartbeat keepalive")
-                            # Send a lightweight request to keep the connection alive
-                            keepalive_auth = DigestAuth(self._username, self._password, self._session)
-                            keepalive_response = await keepalive_auth.request("GET", keepalive_url)
-                            keepalive_response.close()
-                        except asyncio.CancelledError:
-                            _LOGGER.debug("Keepalive task cancelled")
-                            break
-                        except Exception as e:
-                            _LOGGER.warning(f"Error sending keepalive: {e}")
-                            break
-
-                # Start keepalive task
-                keepalive_task = asyncio.create_task(send_keepalive())
 
                 # https://docs.aiohttp.org/en/stable/streams.html
                 async for data, _ in response.content.iter_chunks():
@@ -772,14 +751,6 @@ class DahuaClient:
             except Exception as exception:
                 _LOGGER.exception(exception)
             finally:
-                # Clean up keepalive task
-                if keepalive_task:
-                    keepalive_task.cancel()
-                    try:
-                        await keepalive_task
-                    except asyncio.CancelledError:
-                        pass
-
                 if response is not None:
                     response.close()
 
