@@ -77,23 +77,31 @@ These devices are confirmed as working:
 
 ## Dahua cameras
 
+
+## Dahua cameras
+
 Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 :------------ | :------------ | :------------ | :------------- | :-------------
 | *Consumer Series* |
-| | IPC-A26 |  |  |
+| | A26 |  |  |
 | *1-Series* |
-| | IPC-HFW1230S | IPC-HFW1435S-W |  |
-| | IPC-HDBW1230E-S2 | IPC-HFW1435S-W-S2  |  |
+| | HFW1230S | HFW1435S-W |  |
+| | HDBW1230E-S2 | HFW1435S-W-S2  |  |
+| | |HDBW1431EP-S-0360B | |
 | *2-/3-Series* |
-| | IPC-HDW2831T-ZS-S2 |  | IPC-HDW3549HP-AS-PV | IPC-HDW3849HP-AS-PV
+| | HDW2831T-ZS-S2 |  | HDW3549HP-AS-PV | HDW3849HP-AS-PV
+| | HDBW2231FP-AS-0280B-S2 |
 | *4-/5-Series* |
-| | IPC-HDW4231EM-ASE | IPC-HFW4433F-ZSA |  | IPC-HDW5831R-ZE
-| | IPC-HDBW4231F-AS | IPC-HDBW5421E-Z |  |
-| | IPC-HDW4233C-A | IPC-T5442T-ZE |
-| | IPC-HDBW4239R-ASE |
-| | IPC-HDBW4239RP-ASE |
+| | HDW4231EM-ASE | HFW4433F-ZSA |  | HDW5831R-ZE
+| | HDBW4231F-AS | HDBW5421E-Z |  |
+| | HDW4233C-A | T5442T-ZE |
+| | HDBW4239R-ASE |
+| | HDBW4239RP-ASE |
+| *6-/7-Series* |
+| | HDPW7564N-SP |
 | *Panoramic Series* |
-| |  |  | IPC-EW5531-AS | 
+| |  |  | EW5531-AS | 
+
 ## Other brand cameras
 
 Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
