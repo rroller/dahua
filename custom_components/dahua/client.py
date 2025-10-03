@@ -48,8 +48,8 @@ class DahuaClient:
         Returns the RTSP url for the supplied subtype (subtype is 0=Main stream, 1=Sub stream)
         """
         url = "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel={4}&subtype={5}".format(
-            quote(self._username),
-            quote(self._password),
+            quote(self._username, safe=''),
+            quote(self._password, safe=''),
             self._address,
             self._rtsp_port,
             channel,
