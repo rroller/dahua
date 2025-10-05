@@ -4,6 +4,7 @@ Custom integration to integrate Dahua cameras with Home Assistant.
 import asyncio
 from typing import Any, Dict
 import logging
+import socket
 import ssl
 import time
 
@@ -49,6 +50,24 @@ SSL_CONTEXT.check_hostname = False
 SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
+
+def create_keepalive_socket(addr_info):
+    """Create a socket with TCP keepalive enabled (matching Scrypted's approach)."""
+    family, type_, proto, _, _ = addr_info
+    sock = socket.socket(family=family, type=type_, proto=proto)
+
+    # Enable TCP keepalive (equivalent to stream.socket.setKeepAlive(true) in Scrypted)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+    # Configure keepalive parameters to prevent connection timeout
+    if hasattr(socket, 'TCP_KEEPIDLE'):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)  # Start after 60s idle
+    if hasattr(socket, 'TCP_KEEPINTVL'):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 60)  # Probe every 60s
+    if hasattr(socket, 'TCP_KEEPCNT'):
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)    # 5 failed probes
+
+    return sock
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Set up this integration using UI."""
@@ -97,7 +116,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                  password: str, name: str, channel: int) -> None:
         """Initialize the coordinator."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
-        connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
+        # Enable TCP keepalive on sockets to prevent event stream timeout (matching Scrypted)
+        connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT, socket_factory=create_keepalive_socket)
         self._session = ClientSession(connector=connector)
 
         # The client used to communicate with Dahua devices
