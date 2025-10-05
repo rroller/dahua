@@ -444,3 +444,22 @@ set_privacy_masking:
       default: true
       selector:
         boolean:
+
+goto_preset_position:
+  name: Go to a preset position
+  description: Go to a position already preset
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    position:
+      name: Position
+      description: Position number, from 1 to 10 inclusive. 
+      example: 1
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 10
+          mode: box
