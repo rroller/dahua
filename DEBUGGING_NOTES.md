@@ -1,7 +1,27 @@
 # Dahua Event Stream Timeout Debugging
 
 ## Problem
-Event stream from `eventManager.cgi` endpoint disconnects with timeout errors every few minutes (observed: 1-5 minute intervals, NOT the expected 5-minute timeout pattern).
+Event stream from `eventManager.cgi` endpoint disconnects with timeout errors exactly every 5 minutes.
+
+**Impact:** Missing IVS events (e.g., door opening detection) during 1-2 second reconnection gap.
+
+## SOLUTION FOUND ✅ (Oct 5, 2025)
+
+**Fix:** Add `timeout=ClientTimeout(total=None)` to ClientSession in `__init__.py` line 122
+```python
+self._session = ClientSession(connector=connector, timeout=ClientTimeout(total=None))
+```
+
+**Validation:** Tested in dev environment - NO timeouts after 10+ minutes (baseline had timeouts every 5 minutes)
+
+**Status:** Ready for production deployment
+
+---
+
+## Debugging History
+
+### Root Cause
+aiohttp's default `ClientTimeout(total=300)` kills infinite streams after 5 minutes total duration, even though camera sends heartbeats every 5 seconds. The timeout is based on total request duration, not idle time.
 
 ## Production Logs Analysis (Oct 4, 2025)
 - Errors occurred at erratic intervals: 1-4 minutes (NOT a consistent 5-minute pattern)
@@ -23,8 +43,8 @@ Event stream from `eventManager.cgi` endpoint disconnects with timeout errors ev
 
 ### Attempt 3: Disable Session Timeout (Commit 029f44d)
 **Approach:** Set `timeout=ClientTimeout(total=None)` on ClientSession
-**Result:** Not tested - reverted before deployment
-**Reverted:** Yes
+**Result:** NEVER TESTED - User rejected before deployment (Oct 4, 2025)
+**Reverted:** Yes (never deployed to production)
 
 ## Root Cause Analysis
 
@@ -123,3 +143,63 @@ const response = await this.request({
 - TCP keepalive alone is insufficient - must ALSO disable/remove timeout
 - Scrypted works because: NO timeout + TCP keepalive
 - Need to ensure aiohttp truly has NO timeout (may require session-level AND request-level configuration)
+
+## Root Cause Identified (Oct 5, 2025)
+
+### Production Log Analysis - Baseline HACS Version
+**Timeouts occur EXACTLY every 5 minutes:**
+- 07:41:51/52, 07:46:52/53, 07:51:53/54, 07:56:54/55, etc.
+- Two errors 1 second apart (two cameras)
+- Pattern proves this is aiohttp default 300-second timeout
+
+### Why Timeout Occurs
+The camera sends heartbeat every 5 seconds (`&heartbeat=5` parameter in URL), so stream is NOT idle.
+
+**aiohttp's `ClientTimeout(total=300)` limits TOTAL request duration, not idle time.**
+
+The event stream is an infinite stream - it runs forever. After 5 minutes (300 seconds), aiohttp's total timeout kills the connection even though:
+- Camera is actively sending heartbeats every 5 seconds
+- No network issues
+- Connection is healthy
+
+### Impact
+**Missing IVS events** - During reconnection gap (1-2 seconds), events like door opening are lost.
+
+### Solution
+Disable total timeout: `ClientSession(connector=connector, timeout=ClientTimeout(total=None))`
+
+This tells aiohttp the request can run indefinitely (infinite stream).
+
+## Testing in Dev Environment (Oct 5, 2025)
+
+### Test 2: Baseline Test (TCP Keepalive Only)
+**Environment:** dev-dahua-fix (port 8130)
+**Started:** 12:10:16 UTC (9:10 AM local)
+**Code:** TCP keepalive enabled, NO timeout changes
+
+**Results:**
+- 12:15:17 UTC (9:15 AM) - First timeout - 5:01 after start
+- 12:20:18 UTC (9:20 AM) - Second timeout - 5:01 after first
+- Pattern confirmed: Timeouts every 5 minutes exactly
+- **Conclusion:** Baseline behavior reproduced in dev environment
+
+### Test 3: Fix Applied (TCP Keepalive + Timeout Disabled)
+**Environment:** dev-dahua-fix (port 8130)
+**Started:** 12:25:43 UTC (9:25 AM local)
+**Code:** TCP keepalive enabled + `timeout=ClientTimeout(total=None)` on session
+**Change:** Added line 122 in `__init__.py`:
+```python
+self._session = ClientSession(connector=connector, timeout=ClientTimeout(total=None))
+```
+
+**Results:**
+- 12:30:43 UTC (9:30 AM) - 5 minutes - NO timeout ✅
+- 12:35:43 UTC (9:35 AM) - 10 minutes - NO timeout ✅
+- 12:36:35 UTC (9:36 AM) - 10:52 elapsed - Still running, no timeouts
+- **Conclusion:** FIX SUCCESSFUL - No timeouts observed after 10+ minutes
+
+**Comparison:**
+- Baseline (TCP keepalive only): Timeouts at 5:01, 10:02, 15:03...
+- With fix (TCP keepalive + timeout=None): NO timeouts after 10:52
+
+**Status:** Ready for production deployment
