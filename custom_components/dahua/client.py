@@ -759,18 +759,13 @@ class DahuaClient:
         """
         # Use codes=[All] for all codes
         codes = ",".join(events)
-        heartbeat_interval = 5
-        url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat={2}".format(
-            self._base, codes, heartbeat_interval
-        )
+        url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=5".format(self._base, codes)
         if self._username is not None and self._password is not None:
             response = None
 
             try:
                 auth = DigestAuth(self._username, self._password, self._session)
-                # Disable timeout for infinite event stream (fixes 5-minute disconnection)
-                timeout = aiohttp.ClientTimeout(total=None)
-                response = await auth.request("GET", url, timeout=timeout)
+                response = await auth.request("GET", url)
                 response.raise_for_status()
 
                 # https://docs.aiohttp.org/en/stable/streams.html
