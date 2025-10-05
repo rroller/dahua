@@ -90,7 +90,36 @@ connector = TCPConnector(
 3. Monitor logs for minimum 1 hour (preferably 4+ hours)
 4. Success criteria: No timeout errors in event stream
 
+## Test Results
+
+### Test 1: TCP Keepalive Only (Oct 5, 2025 12:56 AM - 1:01 AM)
+**Result:** FAILED
+- 4 timeout errors between 12:56 AM and 1:01 AM
+- Same error pattern: `asyncio.TimeoutError` at line 744
+- Interval: ~1-2 minutes (same as before)
+- **Conclusion:** TCP keepalive alone is NOT sufficient
+
+**Reverted:** Oct 5, 2025 1:05 AM - Restored upstream HACS version (unchanged in 7 months)
+
+### Further Investigation: Scrypted vs Our Implementation
+
+**Key Difference Found:**
+- **Scrypted:** Uses Node.js `http`/`https` with `follow-redirects`, passes NO timeout parameter → infinite timeout
+- **Our code:** Uses aiohttp which has a **default 5-minute total timeout** even when not explicitly set
+
+**Scrypted's listenEvents request:**
+```typescript
+const response = await this.request({
+    url: `http://${this.ip}/cgi-bin/eventManager.cgi?action=attach&codes=[All]`,
+    responseType: 'readable'
+    // NO timeout parameter - infinite timeout
+})
+```
+
+**Critical Finding:** The TCP keepalive is secondary. The PRIMARY difference is that Scrypted has **NO timeout at all** on the HTTP request, while aiohttp defaults to 5-minute timeout.
+
 ## Notes
 - Previous attempts tried to fix at wrong layer (application vs. network)
-- Scrypted's success proves TCP keepalive is the correct approach
-- All timeout-disabling changes were counterproductive and have been removed
+- TCP keepalive alone is insufficient - must ALSO disable/remove timeout
+- Scrypted works because: NO timeout + TCP keepalive
+- Need to ensure aiohttp truly has NO timeout (may require session-level AND request-level configuration)
