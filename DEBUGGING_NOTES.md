@@ -7,14 +7,18 @@ Event stream from `eventManager.cgi` endpoint disconnects with timeout errors ex
 
 ## SOLUTION FOUND ✅ (Oct 5, 2025)
 
-**Fix:** Add `timeout=ClientTimeout(total=None)` to ClientSession in `__init__.py` line 122
-```python
-self._session = ClientSession(connector=connector, timeout=ClientTimeout(total=None))
-```
+**Fix:** Combined approach - TCP keepalive + timeout disabled
 
-**Validation:** Tested in dev environment - NO timeouts after 10+ minutes (baseline had timeouts every 5 minutes)
+**Changes required:**
+1. Import socket and add `create_keepalive_socket()` function (lines 6, 54-70)
+2. Enable TCP keepalive in connector (line 120): `socket_factory=create_keepalive_socket`
+3. Disable timeout on session (line 122): `timeout=ClientTimeout(total=None)`
 
-**Status:** Ready for production deployment
+**Validation:** Tested combination in dev environment - NO timeouts after 10+ minutes (baseline had timeouts every 5 minutes)
+
+**Important:** TCP keepalive alone was tested and FAILED (Test 1). Timeout=None alone was NOT tested. Only the COMBINATION was validated.
+
+**Status:** Ready for production deployment (both changes together)
 
 ---
 
@@ -183,12 +187,26 @@ This tells aiohttp the request can run indefinitely (infinite stream).
 - Pattern confirmed: Timeouts every 5 minutes exactly
 - **Conclusion:** Baseline behavior reproduced in dev environment
 
-### Test 3: Fix Applied (TCP Keepalive + Timeout Disabled)
+### Test 3: Combined Fix (TCP Keepalive + Timeout Disabled)
 **Environment:** dev-dahua-fix (port 8130)
 **Started:** 12:25:43 UTC (9:25 AM local)
-**Code:** TCP keepalive enabled + `timeout=ClientTimeout(total=None)` on session
-**Change:** Added line 122 in `__init__.py`:
+**Code:**
+- TCP keepalive enabled (from commit 077b316)
+- `timeout=ClientTimeout(total=None)` added (commit 169216f)
+
+**Complete changes in repository:**
 ```python
+# Line 6: Import socket
+import socket
+
+# Lines 54-70: TCP keepalive function
+def create_keepalive_socket(addr_info):
+    # ... (full function)
+
+# Line 120: Enable keepalive
+connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT, socket_factory=create_keepalive_socket)
+
+# Line 122: Disable timeout
 self._session = ClientSession(connector=connector, timeout=ClientTimeout(total=None))
 ```
 
@@ -196,10 +214,13 @@ self._session = ClientSession(connector=connector, timeout=ClientTimeout(total=N
 - 12:30:43 UTC (9:30 AM) - 5 minutes - NO timeout ✅
 - 12:35:43 UTC (9:35 AM) - 10 minutes - NO timeout ✅
 - 12:36:35 UTC (9:36 AM) - 10:52 elapsed - Still running, no timeouts
-- **Conclusion:** FIX SUCCESSFUL - No timeouts observed after 10+ minutes
+- **Conclusion:** COMBINATION SUCCESSFUL - No timeouts observed after 10+ minutes
 
 **Comparison:**
-- Baseline (TCP keepalive only): Timeouts at 5:01, 10:02, 15:03...
-- With fix (TCP keepalive + timeout=None): NO timeouts after 10:52
+- Test 1 (TCP keepalive only): Timeouts at 5:01, 10:02, etc - FAILED
+- Test 2 (Baseline in dev): Timeouts at 5:01, 10:01, etc - Confirmed problem
+- Test 3 (TCP keepalive + timeout=None): NO timeouts after 10:52 - SUCCESS
 
-**Status:** Ready for production deployment
+**Important Note:** Only the COMBINATION was tested and validated. Unknown if timeout=None alone would be sufficient.
+
+**Status:** Ready for production deployment (deploy complete modified __init__.py file)
