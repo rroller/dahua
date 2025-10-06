@@ -12,7 +12,7 @@ from datetime import timedelta
 from homeassistant.components.tag import async_scan_tag
 import hashlib
 
-from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
+from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
@@ -98,7 +98,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Initialize the coordinator."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
         connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
-        self._session = ClientSession(connector=connector)
+        # Disable total timeout for infinite event stream (default 5-minute timeout causes disconnects)
+        self._session = ClientSession(connector=connector, timeout=ClientTimeout(total=None))
 
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session)
