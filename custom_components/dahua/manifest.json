@@ -1,7 +1,9 @@
 {
   "domain": "dahua",
   "name": "Dahua",
-  "after_dependencies": ["tag"],
+  "after_dependencies": [
+    "tag"
+  ],
   "codeowners": [
     "@rroller"
   ],
@@ -9,5 +11,5 @@
   "documentation": "https://github.com/rroller/dahua",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/rroller/dahua/issues",
-  "version": "0.9.75"
+  "version": "0.9.76"
 }
