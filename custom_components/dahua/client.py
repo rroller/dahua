@@ -297,7 +297,7 @@ class DahuaClient:
         """
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
         return await self.get(url)
-    
+
     async def async_get_ptz_position(self) -> dict:
         """
         Gets the status of PTZ Example output:
@@ -365,7 +365,7 @@ class DahuaClient:
             channel=channel, mode=mode, brightness=brightness
         )
         return await self.get(url)
-    
+
     async def async_goto_preset_position(self, channel: int, position: int) -> dict:
         """
         async_goto_preset_position will go to a specific preset position
@@ -397,7 +397,6 @@ class DahuaClient:
         async_adjustfocus will set the zoom and focus
         """
 
-
         url = "/cgi-bin/devVideoInput.cgi?action=adjustFocus&focus={0}&zoom={1}".format(focus, zoom)
         return await self.get(url, True)
 
@@ -405,7 +404,6 @@ class DahuaClient:
         """
         async_setprivacymask will enable or disable the privacy mask
         """
-
 
         url = "/cgi-bin/configManager.cgi?action=setConfig&PrivacyMasking[0][{0}].Enable={1}".format(
             index, str(enabled).lower()
@@ -772,7 +770,7 @@ class DahuaClient:
                 async for data, _ in response.content.iter_chunks():
                     on_receive(data, channel)
             except Exception as exception:
-                _LOGGER.exception(exception)
+                pass
             finally:
                 if response is not None:
                     response.close()
