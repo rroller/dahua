@@ -20,6 +20,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     if coordinator.is_amcrest_doorbell() and coordinator.supports_security_light():
         devices.append(DahuaDoorbellLightSelect(coordinator, entry))
 
+    #if coordinator._supports_ptz_position:
+    devices.append(DahuaCameraPresetPositionSelect(coordinator, entry))
+    
     async_add_devices(devices)
 
 
@@ -49,6 +52,39 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         await self._coordinator.client.async_set_lighting_v2_for_amcrest_doorbells(option)
+        await self._coordinator.async_refresh()
+
+    @property
+    def name(self):
+        return self._attr_name
+
+    @property
+    def unique_id(self):
+        """ https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements """
+        return self._attr_unique_id
+
+
+class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
+    """allows """
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+        DahuaBaseEntity.__init__(self, coordinator, config_entry)
+        SelectEntity.__init__(self)
+        self._coordinator = coordinator
+        self._attr_name = f"{coordinator.get_device_name()} Preset Position"
+        self._attr_unique_id = f"{coordinator.get_serial_number()}_preset_position"
+        self._attr_options = ["Manual","1","2","3","4","5","6","7","8","9","10"]
+
+    @property
+    def current_option(self) -> str:
+        presetID = self._coordinator.data.get("status.PresetID", "0")
+        if presetID == "0":
+            return "Manual"
+        return presetID
+
+    async def async_select_option(self, option: str) -> None:
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_goto_preset_position(channel, int(option))
         await self._coordinator.async_refresh()
 
     @property
