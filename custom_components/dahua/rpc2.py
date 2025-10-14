@@ -198,7 +198,6 @@ class DahuaRpc2Client:
             "name": "LeLensMask",
             "table": [{
                 "Enable": enabled,
-                "LastPosition": [-0.5861111111111111, -0.2061111111111111, 0.0078125],
                 "TimeSection": default_time_sections
             }],
             "options": []
