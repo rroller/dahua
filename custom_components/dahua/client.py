@@ -7,6 +7,7 @@ import async_timeout
 
 from .digest import DigestAuth
 from hashlib import md5
+from urllib.parse import quote
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -47,8 +48,8 @@ class DahuaClient:
         Returns the RTSP url for the supplied subtype (subtype is 0=Main stream, 1=Sub stream)
         """
         url = "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel={4}&subtype={5}".format(
-            self._username,
-            self._password,
+            quote(self._username, safe=''),
+            quote(self._password, safe=''),
             self._address,
             self._rtsp_port,
             channel,
@@ -297,6 +298,23 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
         return await self.get(url)
 
+    async def async_get_ptz_position(self) -> dict:
+        """
+        Gets the status of PTZ Example output:
+        status.Action=Preset
+        status.MoveStatus=Idle
+        status.PTS=0
+        status.Postion[0]=91.600000
+        status.Postion[1]=-2.600000
+        status.Postion[2]=1.000000
+        status.PresetID=2
+        status.Sequence=0
+        status.UTC=0
+        status.ZoomStatus=Idle
+        """
+        url = "/cgi-bin/ptz.cgi?action=getStatus"
+        return await self.get(url)
+
     async def async_get_light_global_enabled(self) -> dict:
         """
         Returns the state of the Amcrest blue ring light (if it's on or off)
@@ -348,6 +366,17 @@ class DahuaClient:
         )
         return await self.get(url)
 
+    async def async_goto_preset_position(self, channel: int, position: int) -> dict:
+        """
+        async_goto_preset_position will go to a specific preset position
+        Position should be between 1 and 10 inclusive.
+        """
+
+        url = "/cgi-bin/ptz.cgi?action=start&channel={0}&code=GotoPreset&arg1=0&arg2={1}&arg3=0".format(
+            channel, position
+        )
+        return await self.get(url)
+
     async def async_set_video_profile_mode(self, channel: int, mode: str):
         """
         async_set_video_profile_mode will set camera's profile mode to day or night
@@ -368,7 +397,6 @@ class DahuaClient:
         async_adjustfocus will set the zoom and focus
         """
 
-
         url = "/cgi-bin/devVideoInput.cgi?action=adjustFocus&focus={0}&zoom={1}".format(focus, zoom)
         return await self.get(url, True)
 
@@ -376,7 +404,6 @@ class DahuaClient:
         """
         async_setprivacymask will enable or disable the privacy mask
         """
-
 
         url = "/cgi-bin/configManager.cgi?action=setConfig&PrivacyMasking[0][{0}].Enable={1}".format(
             index, str(enabled).lower()

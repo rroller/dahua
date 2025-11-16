@@ -1,14 +1,15 @@
 {
   "domain": "dahua",
   "name": "Dahua",
-  "iot_class": "local_polling",
-  "documentation": "https://github.com/rroller/dahua",
-  "issue_tracker": "https://github.com/rroller/dahua/issues",
-  "dependencies": [],
-  "version": "0.9.66  ",
-  "config_flow": true,
+  "after_dependencies": [
+    "tag"
+  ],
   "codeowners": [
     "@rroller"
   ],
-  "requirements": []
+  "config_flow": true,
+  "documentation": "https://github.com/rroller/dahua",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/rroller/dahua/issues",
+  "version": "0.9.76"
 }
