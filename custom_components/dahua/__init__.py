@@ -570,7 +570,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         https://dahuawiki.com/Template:NameConvention
         """
         m = self.model.upper()
-        return "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
+        return "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD") or "Color4M-T" in self.model
 
     def supports_security_light(self) -> bool:
         """
@@ -578,7 +578,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
         Addressed issue https://github.com/rroller/dahua/pull/405
         """
-        return "-AS-PV" in self.model or self.model == "AD410" or self.model == "DB61i" or self.model.startswith("IP8M-2796E")
+        return "-AS-PV" in self.model or self.model == "AD410" or self.model == "DB61i" or self.model.startswith("IP8M-2796E") or "Color4M-T" in self.model
 
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
