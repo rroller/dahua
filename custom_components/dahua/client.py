@@ -35,13 +35,14 @@ class DahuaClient:
     ) -> None:
         self._username = username
         self._password = password
-        self._address = address
+        # Strip trailing slashes from address to prevent malformed URLs like http://host/:80
+        self._address = address.rstrip('/')
         self._session = session
         self._port = port
         self._rtsp_port = rtsp_port
 
         protocol = "https" if int(port) == 443 else "http"
-        self._base = "{0}://{1}:{2}".format(protocol, address, port)
+        self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
 
     def get_rtsp_stream_url(self, channel: int, subtype: int) -> str:
         """
