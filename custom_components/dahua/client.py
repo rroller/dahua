@@ -764,12 +764,32 @@ class DahuaClient:
 
             try:
                 auth = DigestAuth(self._username, self._password, self._session)
-                response = await auth.request("GET", url)
+                response = await auth.request("GET", url, timeout=aiohttp.ClientTimeout(total=3600))
                 response.raise_for_status()
 
                 # https://docs.aiohttp.org/en/stable/streams.html
-                async for data, _ in response.content.iter_chunks():
-                    on_receive(data, channel)
+                # Monitor heartbeat - timeout if no data for 15 seconds (3x heartbeat interval)
+                chunk_iterator = response.content.iter_chunks()
+
+                while True:
+                    try:
+                        # Wait for next chunk with 15-second timeout
+                        data, _ = await asyncio.wait_for(
+                            chunk_iterator.__anext__(),
+                            timeout=15.0
+                        )
+
+                        on_receive(data, channel)
+
+                    except asyncio.TimeoutError:
+                        _LOGGER.debug("No data received for 15+ seconds, reconnecting...")
+                        raise
+                    except StopAsyncIteration:
+                        break
+
+            except asyncio.TimeoutError:
+                # Re-raise to trigger reconnection in thread.py
+                raise
             except Exception as exception:
                 pass
             finally:
