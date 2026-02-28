@@ -7,18 +7,22 @@ See https://developers.home-assistant.io/docs/core/entity/light
 from homeassistant.core import HomeAssistant
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
-    LightEntity, LightEntityFeature, ColorMode,
+    LightEntity,
+    LightEntityFeature,
+    ColorMode,
 )
 
-from . import DahuaDataUpdateCoordinator, dahua_utils
-from .const import DOMAIN, SECURITY_LIGHT_ICON, INFRARED_ICON
+from . import DahuaConfigEntry, DahuaDataUpdateCoordinator, dahua_utils
+from .const import SECURITY_LIGHT_ICON, INFRARED_ICON
 from .entity import DahuaBaseEntity
 from .client import SECURITY_LIGHT_TYPE
 
 
-async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: DahuaConfigEntry, async_add_entities
+):
     """Setup light platform."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
 
     entities = []
     if coordinator.supports_infrared_light():
@@ -51,7 +55,7 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -94,17 +98,25 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
     async def async_turn_on(self, **kwargs):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
+            hass_brightness
+        )
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(channel, True, dahua_brightness)
+        await self._coordinator.client.async_set_lighting_v1(
+            channel, True, dahua_brightness
+        )
         await self.coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
+            hass_brightness
+        )
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(channel, False, dahua_brightness)
+        await self._coordinator.client.async_set_lighting_v1(
+            channel, False, dahua_brightness
+        )
         await self.coordinator.async_refresh()
 
     @property
@@ -124,7 +136,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -149,7 +161,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     def color_mode(self) -> ColorMode | str | None:
         """Return the color mode of the light."""
         return ColorMode.BRIGHTNESS
-    
+
     @property
     def supported_color_modes(self) -> set[str]:
         """Flag supported color modes."""
@@ -163,19 +175,27 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     async def async_turn_on(self, **kwargs):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
+            hass_brightness
+        )
         channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2(channel, True, dahua_brightness, profile_mode)
+        await self._coordinator.client.async_set_lighting_v2(
+            channel, True, dahua_brightness, profile_mode
+        )
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
+            hass_brightness
+        )
         channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2(channel, False, dahua_brightness, profile_mode)
+        await self._coordinator.client.async_set_lighting_v2(
+            channel, False, dahua_brightness, profile_mode
+        )
         await self._coordinator.async_refresh()
 
 
@@ -190,7 +210,7 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -229,9 +249,9 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
 
 class FloodLight(DahuaBaseEntity, LightEntity):
     """
-        Representation of a Amcrest, Dahua, and Lorex Flood Light (for cameras that have them)
-        Unlike the 'Dahua Illuminator', Amcrest Flood Lights do not play nicely
-        with adjusting the 'White Light' brightness.
+    Representation of a Amcrest, Dahua, and Lorex Flood Light (for cameras that have them)
+    Unlike the 'Dahua Illuminator', Amcrest Flood Lights do not play nicely
+    with adjusting the 'White Light' brightness.
     """
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
@@ -242,7 +262,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -261,7 +281,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
     def supported_features(self):
         """Flag supported features."""
         return LightEntityFeature.EFFECT
-    
+
     @property
     def color_mode(self) -> ColorMode | str | None:
         """Return the color mode of the light."""
@@ -281,27 +301,39 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         """Turn the light on"""
         if self._coordinator._supports_floodlightmode:
             channel = self._coordinator.get_channel()
-            self._coordinator._floodlight_mode = await self._coordinator.client.async_get_floodlightmode()
+            self._coordinator._floodlight_mode = (
+                await self._coordinator.client.async_get_floodlightmode()
+            )
             await self._coordinator.client.async_set_floodlightmode(2)
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+            await self._coordinator.client.async_set_coaxial_control_state(
+                channel, SECURITY_LIGHT_TYPE, True
+            )
             await self._coordinator.async_refresh()
         else:
             channel = self._coordinator.get_channel()
             profile_mode = self._coordinator.get_profile_mode()
-            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(channel, True, profile_mode)
+            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(
+                channel, True, profile_mode
+            )
             await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         if self._coordinator._supports_floodlightmode:
             channel = self._coordinator.get_channel()
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
-            await self._coordinator.client.async_set_floodlightmode(self._coordinator._floodlight_mode)
+            await self._coordinator.client.async_set_coaxial_control_state(
+                channel, SECURITY_LIGHT_TYPE, False
+            )
+            await self._coordinator.client.async_set_floodlightmode(
+                self._coordinator._floodlight_mode
+            )
             await self._coordinator.async_refresh()
         else:
             channel = self._coordinator.get_channel()
             profile_mode = self._coordinator.get_profile_mode()
-            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(channel, False, profile_mode)
+            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(
+                channel, False, profile_mode
+            )
             await self._coordinator.async_refresh()
 
 
@@ -319,7 +351,7 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -342,13 +374,17 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+        await self._coordinator.client.async_set_coaxial_control_state(
+            channel, SECURITY_LIGHT_TYPE, True
+        )
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
+        await self._coordinator.client.async_set_coaxial_control_state(
+            channel, SECURITY_LIGHT_TYPE, False
+        )
         await self._coordinator.async_refresh()
 
     @property

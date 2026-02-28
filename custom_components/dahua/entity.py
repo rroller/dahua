@@ -1,4 +1,5 @@
 """DahuaBaseEntity class"""
+
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, ATTRIBUTION
@@ -6,10 +7,14 @@ from .const import DOMAIN, ATTRIBUTION
 """
 For a list of entity types, see https://developers.home-assistant.io/docs/core/entity/
 """
+
+
 class DahuaBaseEntity(CoordinatorEntity):
     """
     DahuaBaseEntity is the base entity for all Dahua entities
     """
+
+    _attr_has_entity_name = True
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
         super().__init__(coordinator)

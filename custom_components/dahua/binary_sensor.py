@@ -1,13 +1,18 @@
 """Binary sensor platform for dahua."""
+
 import re
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.core import HomeAssistant
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaConfigEntry, DahuaDataUpdateCoordinator
 
 from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
-    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS, VOLUME_HIGH_ICON,
+    SAFETY_DEVICE_CLASS,
+    CONNECTIVITY_DEVICE_CLASS,
+    SOUND_DEVICE_CLASS,
+    DOOR_DEVICE_CLASS,
+    VOLUME_HIGH_ICON,
 )
 from .entity import DahuaBaseEntity
 
@@ -41,9 +46,11 @@ ICON_OVERRIDES = {
 }
 
 
-async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
+async def async_setup_entry(
+    hass: HomeAssistant, entry: DahuaConfigEntry, async_add_devices
+):
     """Setup binary_sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: DahuaDataUpdateCoordinator = entry.runtime_data
 
     sensors: list[DahuaEventSensor] = []
     for event_name in coordinator.get_event_list():
@@ -67,7 +74,9 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
     to the cammera to listen to events.
     """
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry, event_name: str):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, config_entry, event_name: str
+    ):
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         BinarySensorEntity.__init__(self)
 
@@ -76,7 +85,9 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
 
         self._coordinator = coordinator
         self._device_name = coordinator.get_device_name()
-        self._device_class = DEVICE_CLASS_OVERRIDES.get(event_name, MOTION_SENSOR_DEVICE_CLASS)
+        self._device_class = DEVICE_CLASS_OVERRIDES.get(
+            event_name, MOTION_SENSOR_DEVICE_CLASS
+        )
         self._icon_override = ICON_OVERRIDES.get(event_name, None)
 
         # name is the friendly name, example: Cross Line Alarm. If the name is not found in the override it will be
@@ -87,7 +98,9 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
 
         # Build the unique ID. This will convert the name to lower underscores. For example, "Smart Motion Vehicle" will
         # become "smart_motion_vehicle" and will be added as a suffix to the device serial number
-        self._unique_id = coordinator.get_serial_number() + "_" + self._name.lower().replace(" ", "_")
+        self._unique_id = (
+            coordinator.get_serial_number() + "_" + self._name.lower().replace(" ", "_")
+        )
         if event_name == "VideoMotion":
             # We need this for backwards compatibility as the VideoMotion was created with a unique ID of just the
             # serial number and we don't want to break people who are upgrading
@@ -100,8 +113,8 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
 
     @property
     def name(self):
-        """Return the name of the binary_sensor. Example: Cam14 Motion Alarm"""
-        return f"{self._device_name} {self._name}"
+        """Return the name of the binary_sensor. Example: Motion Alarm"""
+        return self._name
 
     @property
     def device_class(self):
@@ -125,7 +138,9 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
-        self._coordinator.add_dahua_event_listener(self._event_name, self.schedule_update_ha_state)
+        self._coordinator.add_dahua_event_listener(
+            self._event_name, self.schedule_update_ha_state
+        )
 
     @property
     def should_poll(self) -> bool:

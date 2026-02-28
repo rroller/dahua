@@ -65,6 +65,21 @@ NOTE: All streams will be added, even if not enabled in the camera. Just remove 
 
 ![Dahua Setup](static/setup1.png)
 
+### Removal
+To remove the integration:
+
+1. In the HA left menu, click `Settings`
+2. Click `Devices & services`
+3. Find the `Dahua` integration and click on it
+4. Click the three-dot menu on the device you want to remove and select `Delete`
+
+If you also want to remove the integration files from HACS:
+
+1. Click on HACS in the Home Assistant menu
+2. Click on `Integrations`
+3. Find `Dahua`, click the three-dot menu, and select `Remove`
+4. Restart Home Assistant
+
 
 # Known supported cameras
 This integration should word with most Dahua cameras and doorbells. It has been tested with very old and very new Dahua cameras.
