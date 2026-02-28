@@ -21,16 +21,23 @@ def dahua_command(func):
             return await func(*args, **kwargs)
         except (aiohttp.ClientError, socket.gaierror) as err:
             raise HomeAssistantError(
-                f"Could not communicate with Dahua device: {err}"
+                translation_domain=DOMAIN,
+                translation_key="communication_error",
+                translation_placeholders={"error": str(err)},
             ) from err
         except asyncio.TimeoutError as err:
             raise HomeAssistantError(
-                "Timed out communicating with Dahua device"
+                translation_domain=DOMAIN,
+                translation_key="timeout_error",
             ) from err
         except HomeAssistantError:
             raise
         except Exception as err:
-            raise HomeAssistantError(f"Dahua device command failed: {err}") from err
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
 
     return wrapper
 
@@ -68,6 +75,7 @@ class DahuaBaseEntity(CoordinatorEntity):
             "manufacturer": "Dahua",
             "configuration_url": "http://" + self._coordinator.get_address(),
             "sw_version": self._coordinator.get_firmware_version(),
+            "serial_number": self._coordinator.get_serial_number(),
         }
 
     @property

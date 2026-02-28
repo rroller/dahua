@@ -999,6 +999,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
            v = self.data.get(f"status.{key}", "")
         return v
 
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: DahuaConfigEntry, device_entry
+) -> bool:
+    """Allow manual removal of a device from the integration."""
+    return True
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bool:
     """Handle removal of an entry."""
     coordinator = entry.runtime_data

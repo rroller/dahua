@@ -13,7 +13,6 @@ from homeassistant.components.light import (
 )
 
 from . import DahuaConfigEntry, DahuaDataUpdateCoordinator, dahua_utils
-from .const import SECURITY_LIGHT_ICON, INFRARED_ICON
 from .entity import DahuaBaseEntity, dahua_command
 from .client import SECURITY_LIGHT_TYPE
 
@@ -28,20 +27,20 @@ async def async_setup_entry(
 
     entities = []
     if coordinator.supports_infrared_light():
-        entities.append(DahuaInfraredLight(coordinator, entry, "Infrared"))
+        entities.append(DahuaInfraredLight(coordinator, entry))
 
     if coordinator.supports_illuminator():
-        entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
+        entities.append(DahuaIlluminator(coordinator, entry))
 
     if coordinator.is_flood_light():
-        entities.append(FloodLight(coordinator, entry, "Flood Light"))
+        entities.append(FloodLight(coordinator, entry))
 
     if coordinator.supports_security_light() and not coordinator.is_amcrest_doorbell():
         #  The Amcrest doorbell works a little different and is added in select.py
-        entities.append(DahuaSecurityLight(coordinator, entry, "Security Light"))
+        entities.append(DahuaSecurityLight(coordinator, entry))
 
     if coordinator.is_amcrest_doorbell():
-        entities.append(AmcrestRingLight(coordinator, entry, "Ring Light"))
+        entities.append(AmcrestRingLight(coordinator, entry))
 
     async_add_entities(entities)
 
@@ -49,15 +48,11 @@ async def async_setup_entry(
 class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
     """Representation of a Dahua infrared light (for cameras that have them)"""
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
-        super().__init__(coordinator, entry)
-        self._name = name
-        self._coordinator = coordinator
+    _attr_translation_key = "infrared"
 
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._name
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._coordinator = coordinator
 
     @property
     def unique_id(self):
@@ -123,24 +118,15 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         )
         await self.coordinator.async_refresh()
 
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return INFRARED_ICON
-
 
 class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     """Representation of a Dahua light (for cameras that have them)"""
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
-        super().__init__(coordinator, entry)
-        self._name = name
-        self._coordinator = coordinator
+    _attr_translation_key = "illuminator"
 
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._name
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._coordinator = coordinator
 
     @property
     def unique_id(self):
@@ -208,15 +194,11 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 class AmcrestRingLight(DahuaBaseEntity, LightEntity):
     """Representation of a Amcrest ring light"""
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
-        super().__init__(coordinator, entry)
-        self._name = name
-        self._coordinator = coordinator
+    _attr_translation_key = "ring_light"
 
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._name
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._coordinator = coordinator
 
     @property
     def unique_id(self):
@@ -262,15 +244,11 @@ class FloodLight(DahuaBaseEntity, LightEntity):
     with adjusting the 'White Light' brightness.
     """
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
-        super().__init__(coordinator, entry)
-        self._name = name
-        self._coordinator = coordinator
+    _attr_translation_key = "flood_light"
 
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._name
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._coordinator = coordinator
 
     @property
     def unique_id(self):
@@ -353,15 +331,11 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     The camera will only keep this light on for a few seconds before it automatically turns off.
     """
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
-        super().__init__(coordinator, entry)
-        self._name = name
-        self._coordinator = coordinator
+    _attr_translation_key = "security_light"
 
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._name
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._coordinator = coordinator
 
     @property
     def unique_id(self):
@@ -398,11 +372,6 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
             channel, SECURITY_LIGHT_TYPE, False
         )
         await self._coordinator.async_refresh()
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return SECURITY_LIGHT_ICON
 
     @property
     def color_mode(self) -> ColorMode | str | None:

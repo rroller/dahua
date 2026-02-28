@@ -43,9 +43,9 @@ class TestDoorbellLightSelect:
         sel = DahuaDoorbellLightSelect(mock_coordinator, mock_config_entry)
         assert sel.unique_id == "SERIAL123_security_light"
 
-    def test_name(self, mock_coordinator, mock_config_entry):
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
         sel = DahuaDoorbellLightSelect(mock_coordinator, mock_config_entry)
-        assert sel.name == "Security Light"
+        assert sel._attr_translation_key == "security_light"
 
     def test_current_option_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {
@@ -89,6 +89,14 @@ class TestPresetPositionSelect:
     def test_unique_id(self, mock_coordinator, mock_config_entry):
         sel = DahuaCameraPresetPositionSelect(mock_coordinator, mock_config_entry)
         assert sel.unique_id == "SERIAL123_preset_position"
+
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
+        sel = DahuaCameraPresetPositionSelect(mock_coordinator, mock_config_entry)
+        assert sel._attr_translation_key == "preset_position"
+
+    def test_disabled_by_default(self, mock_coordinator, mock_config_entry):
+        sel = DahuaCameraPresetPositionSelect(mock_coordinator, mock_config_entry)
+        assert sel._attr_entity_registry_enabled_default is False
 
     def test_current_option_manual(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {"status.PresetID": "0"}

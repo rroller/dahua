@@ -94,50 +94,46 @@ class TestAsyncSetupEntry:
 
 class TestDahuaInfraredLight:
     def test_unique_id(self, mock_coordinator, mock_config_entry):
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
         assert light.unique_id == "SERIAL123_infrared"
 
-    def test_name(self, mock_coordinator, mock_config_entry):
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
-        assert light.name == "Infrared"
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
+        assert light._attr_translation_key == "infrared"
 
     def test_is_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {"table.Lighting[0][0].Mode": "Manual"}
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
         assert light.is_on is True
 
     def test_brightness(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {"table.Lighting[0][0].MiddleLight[0].Light": "100"}
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
         assert light.brightness == 255
 
     def test_color_mode(self, mock_coordinator, mock_config_entry):
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
         assert light.color_mode == ColorMode.BRIGHTNESS
 
-    def test_icon(self, mock_coordinator, mock_config_entry):
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
-        assert light.icon == "mdi:weather-night"
-
     def test_supported_color_modes(self, mock_coordinator, mock_config_entry):
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
         assert light.supported_color_modes == {ColorMode.BRIGHTNESS}
 
     def test_supported_features(self, mock_coordinator, mock_config_entry):
         from homeassistant.components.light import LightEntityFeature
 
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
         assert light.supported_features == LightEntityFeature.EFFECT
 
     def test_should_poll(self, mock_coordinator, mock_config_entry):
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
         assert light.should_poll is False
 
     @pytest.mark.asyncio
     async def test_turn_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.client.async_set_lighting_v1 = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_on(**{ATTR_BRIGHTNESS: 255})
         mock_coordinator.client.async_set_lighting_v1.assert_called_once_with(
@@ -148,7 +144,7 @@ class TestDahuaInfraredLight:
     async def test_turn_off(self, mock_coordinator, mock_config_entry):
         mock_coordinator.client.async_set_lighting_v1 = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = DahuaInfraredLight(mock_coordinator, mock_config_entry, "Infrared")
+        light = DahuaInfraredLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_off()
         mock_coordinator.client.async_set_lighting_v1.assert_called_once()
@@ -158,44 +154,44 @@ class TestDahuaInfraredLight:
 
 class TestDahuaIlluminator:
     def test_unique_id(self, mock_coordinator, mock_config_entry):
-        light = DahuaIlluminator(mock_coordinator, mock_config_entry, "Illuminator")
+        light = DahuaIlluminator(mock_coordinator, mock_config_entry)
         assert light.unique_id == "SERIAL123_illuminator"
 
-    def test_name(self, mock_coordinator, mock_config_entry):
-        light = DahuaIlluminator(mock_coordinator, mock_config_entry, "Illuminator")
-        assert light.name == "Illuminator"
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
+        light = DahuaIlluminator(mock_coordinator, mock_config_entry)
+        assert light._attr_translation_key == "illuminator"
 
     def test_brightness(self, mock_coordinator, mock_config_entry):
         mock_coordinator._profile_mode = "0"
         mock_coordinator.data = {
             "table.Lighting_V2[0][0][0].MiddleLight[0].Light": "50"
         }
-        light = DahuaIlluminator(mock_coordinator, mock_config_entry, "Illuminator")
+        light = DahuaIlluminator(mock_coordinator, mock_config_entry)
         assert light.brightness == 127
 
     def test_color_mode(self, mock_coordinator, mock_config_entry):
-        light = DahuaIlluminator(mock_coordinator, mock_config_entry, "Illuminator")
+        light = DahuaIlluminator(mock_coordinator, mock_config_entry)
         assert light.color_mode == ColorMode.BRIGHTNESS
 
     def test_supported_color_modes(self, mock_coordinator, mock_config_entry):
-        light = DahuaIlluminator(mock_coordinator, mock_config_entry, "Illuminator")
+        light = DahuaIlluminator(mock_coordinator, mock_config_entry)
         assert light.supported_color_modes == {ColorMode.BRIGHTNESS}
 
     def test_should_poll(self, mock_coordinator, mock_config_entry):
-        light = DahuaIlluminator(mock_coordinator, mock_config_entry, "Illuminator")
+        light = DahuaIlluminator(mock_coordinator, mock_config_entry)
         assert light.should_poll is False
 
     def test_is_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator._profile_mode = "0"
         mock_coordinator.data = {"table.Lighting_V2[0][0][0].Mode": "Manual"}
-        light = DahuaIlluminator(mock_coordinator, mock_config_entry, "Illuminator")
+        light = DahuaIlluminator(mock_coordinator, mock_config_entry)
         assert light.is_on is True
 
     @pytest.mark.asyncio
     async def test_turn_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.client.async_set_lighting_v2 = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = DahuaIlluminator(mock_coordinator, mock_config_entry, "Illuminator")
+        light = DahuaIlluminator(mock_coordinator, mock_config_entry)
 
         await light.async_turn_on(**{ATTR_BRIGHTNESS: 128})
         mock_coordinator.client.async_set_lighting_v2.assert_called_once()
@@ -206,7 +202,7 @@ class TestDahuaIlluminator:
     async def test_turn_off(self, mock_coordinator, mock_config_entry):
         mock_coordinator.client.async_set_lighting_v2 = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = DahuaIlluminator(mock_coordinator, mock_config_entry, "Illuminator")
+        light = DahuaIlluminator(mock_coordinator, mock_config_entry)
 
         await light.async_turn_off()
         call_args = mock_coordinator.client.async_set_lighting_v2.call_args
@@ -215,23 +211,27 @@ class TestDahuaIlluminator:
 
 class TestAmcrestRingLight:
     def test_unique_id(self, mock_coordinator, mock_config_entry):
-        light = AmcrestRingLight(mock_coordinator, mock_config_entry, "Ring Light")
+        light = AmcrestRingLight(mock_coordinator, mock_config_entry)
         assert light.unique_id == "SERIAL123_ring_light"
+
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
+        light = AmcrestRingLight(mock_coordinator, mock_config_entry)
+        assert light._attr_translation_key == "ring_light"
 
     def test_is_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {"table.LightGlobal[0].Enable": "true"}
-        light = AmcrestRingLight(mock_coordinator, mock_config_entry, "Ring Light")
+        light = AmcrestRingLight(mock_coordinator, mock_config_entry)
         assert light.is_on is True
 
     def test_color_mode(self, mock_coordinator, mock_config_entry):
-        light = AmcrestRingLight(mock_coordinator, mock_config_entry, "Ring Light")
+        light = AmcrestRingLight(mock_coordinator, mock_config_entry)
         assert light.color_mode == ColorMode.ONOFF
 
     @pytest.mark.asyncio
     async def test_turn_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.client.async_set_light_global_enabled = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = AmcrestRingLight(mock_coordinator, mock_config_entry, "Ring Light")
+        light = AmcrestRingLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_on()
         mock_coordinator.client.async_set_light_global_enabled.assert_called_once_with(
@@ -242,7 +242,7 @@ class TestAmcrestRingLight:
     async def test_turn_off(self, mock_coordinator, mock_config_entry):
         mock_coordinator.client.async_set_light_global_enabled = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = AmcrestRingLight(mock_coordinator, mock_config_entry, "Ring Light")
+        light = AmcrestRingLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_off()
         mock_coordinator.client.async_set_light_global_enabled.assert_called_once_with(
@@ -252,35 +252,35 @@ class TestAmcrestRingLight:
 
 class TestFloodLight:
     def test_unique_id(self, mock_coordinator, mock_config_entry):
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
         assert light.unique_id == "SERIAL123_flood_light"
 
-    def test_name(self, mock_coordinator, mock_config_entry):
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
-        assert light.name == "Flood Light"
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
+        light = FloodLight(mock_coordinator, mock_config_entry)
+        assert light._attr_translation_key == "flood_light"
 
     def test_color_mode(self, mock_coordinator, mock_config_entry):
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
         assert light.color_mode == ColorMode.ONOFF
 
     def test_supported_color_modes(self, mock_coordinator, mock_config_entry):
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
         assert light.supported_color_modes == {ColorMode.ONOFF}
 
     def test_supported_features(self, mock_coordinator, mock_config_entry):
         from homeassistant.components.light import LightEntityFeature
 
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
         assert light.supported_features == LightEntityFeature.EFFECT
 
     def test_should_poll(self, mock_coordinator, mock_config_entry):
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
         assert light.should_poll is False
 
     def test_is_on_with_floodlightmode(self, mock_coordinator, mock_config_entry):
         mock_coordinator._supports_floodlightmode = True
         mock_coordinator.data = {"status.status.WhiteLight": "On"}
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
         assert light.is_on is True
 
     @pytest.mark.asyncio
@@ -292,7 +292,7 @@ class TestFloodLight:
         mock_coordinator.client.async_set_floodlightmode = AsyncMock()
         mock_coordinator.client.async_set_coaxial_control_state = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_on()
         mock_coordinator.client.async_set_floodlightmode.assert_called_once_with(2)
@@ -307,7 +307,7 @@ class TestFloodLight:
         mock_coordinator.client.async_set_floodlightmode = AsyncMock()
         mock_coordinator.client.async_set_coaxial_control_state = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_off()
         mock_coordinator.client.async_set_coaxial_control_state.assert_called_once()
@@ -320,7 +320,7 @@ class TestFloodLight:
         mock_coordinator._supports_floodlightmode = False
         mock_coordinator.client.async_set_lighting_v2_for_flood_lights = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_on()
         mock_coordinator.client.async_set_lighting_v2_for_flood_lights.assert_called_once()
@@ -336,7 +336,7 @@ class TestFloodLight:
         mock_coordinator._supports_floodlightmode = False
         mock_coordinator.client.async_set_lighting_v2_for_flood_lights = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = FloodLight(mock_coordinator, mock_config_entry, "Flood Light")
+        light = FloodLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_off()
         call_args = (
@@ -347,55 +347,41 @@ class TestFloodLight:
 
 class TestAmcrestRingLightExtended:
     def test_supported_color_modes(self, mock_coordinator, mock_config_entry):
-        light = AmcrestRingLight(mock_coordinator, mock_config_entry, "Ring Light")
+        light = AmcrestRingLight(mock_coordinator, mock_config_entry)
         assert light.supported_color_modes == {ColorMode.ONOFF}
 
 
 class TestDahuaSecurityLight:
     def test_unique_id(self, mock_coordinator, mock_config_entry):
-        light = DahuaSecurityLight(
-            mock_coordinator, mock_config_entry, "Security Light"
-        )
+        light = DahuaSecurityLight(mock_coordinator, mock_config_entry)
         assert light.unique_id == "SERIAL123_security"
 
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
+        light = DahuaSecurityLight(mock_coordinator, mock_config_entry)
+        assert light._attr_translation_key == "security_light"
+
     def test_should_poll(self, mock_coordinator, mock_config_entry):
-        light = DahuaSecurityLight(
-            mock_coordinator, mock_config_entry, "Security Light"
-        )
+        light = DahuaSecurityLight(mock_coordinator, mock_config_entry)
         assert light.should_poll is False
 
     def test_supported_color_modes(self, mock_coordinator, mock_config_entry):
-        light = DahuaSecurityLight(
-            mock_coordinator, mock_config_entry, "Security Light"
-        )
+        light = DahuaSecurityLight(mock_coordinator, mock_config_entry)
         assert light.supported_color_modes == {ColorMode.ONOFF}
 
     def test_is_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {"status.status.WhiteLight": "On"}
-        light = DahuaSecurityLight(
-            mock_coordinator, mock_config_entry, "Security Light"
-        )
+        light = DahuaSecurityLight(mock_coordinator, mock_config_entry)
         assert light.is_on is True
 
-    def test_icon(self, mock_coordinator, mock_config_entry):
-        light = DahuaSecurityLight(
-            mock_coordinator, mock_config_entry, "Security Light"
-        )
-        assert light.icon == "mdi:alarm-light-outline"
-
     def test_color_mode(self, mock_coordinator, mock_config_entry):
-        light = DahuaSecurityLight(
-            mock_coordinator, mock_config_entry, "Security Light"
-        )
+        light = DahuaSecurityLight(mock_coordinator, mock_config_entry)
         assert light.color_mode == ColorMode.ONOFF
 
     @pytest.mark.asyncio
     async def test_turn_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.client.async_set_coaxial_control_state = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = DahuaSecurityLight(
-            mock_coordinator, mock_config_entry, "Security Light"
-        )
+        light = DahuaSecurityLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_on()
         mock_coordinator.client.async_set_coaxial_control_state.assert_called_once_with(
@@ -406,9 +392,7 @@ class TestDahuaSecurityLight:
     async def test_turn_off(self, mock_coordinator, mock_config_entry):
         mock_coordinator.client.async_set_coaxial_control_state = AsyncMock()
         mock_coordinator.async_refresh = AsyncMock()
-        light = DahuaSecurityLight(
-            mock_coordinator, mock_config_entry, "Security Light"
-        )
+        light = DahuaSecurityLight(mock_coordinator, mock_config_entry)
 
         await light.async_turn_off()
         mock_coordinator.client.async_set_coaxial_control_state.assert_called_once_with(

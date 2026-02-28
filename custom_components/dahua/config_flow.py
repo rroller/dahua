@@ -1,4 +1,5 @@
 """Adds config flow (UI flow) for Dahua IP cameras."""
+
 import logging
 import ssl
 
@@ -31,53 +32,63 @@ https://developers.home-assistant.io/docs/data_entry_flow_index/
 """
 
 SSL_CONTEXT = ssl.create_default_context()
-#SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
+# SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
 SSL_CONTEXT.set_ciphers("DEFAULT")
 SSL_CONTEXT.check_hostname = False
 SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
-DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss", "VideoBlind", "AudioMutation",
-                  "CrossRegionDetection", "SmartMotionHuman", "SmartMotionVehicle"]
+DEFAULT_EVENTS = [
+    "VideoMotion",
+    "CrossLineDetection",
+    "AlarmLocal",
+    "VideoLoss",
+    "VideoBlind",
+    "AudioMutation",
+    "CrossRegionDetection",
+    "SmartMotionHuman",
+    "SmartMotionVehicle",
+]
 
-ALL_EVENTS = ["VideoMotion",
-              "VideoLoss",
-              "AlarmLocal",
-              "CrossLineDetection",
-              "CrossRegionDetection",
-              "AudioMutation",
-              "SmartMotionHuman",
-              "SmartMotionVehicle",
-              "VideoBlind",
-              "AudioAnomaly",
-              "VideoMotionInfo",
-              "NewFile",
-              "IntelliFrame",
-              "LeftDetection",
-              "TakenAwayDetection",
-              "VideoAbnormalDetection",
-              "FaceDetection",
-              "VideoUnFocus",
-              "WanderDetection",
-              "RioterDetection",
-              "ParkingDetection",
-              "MoveDetection",
-              "StorageNotExist",
-              "StorageFailure",
-              "StorageLowSpace",
-              "AlarmOutput",
-              "InterVideoAccess",
-              "NTPAdjustTime",
-              "TimeChange",
-              "MDResult",
-              "HeatImagingTemper",
-              "CrowdDetection",
-              "FireWarning",
-              "FireWarningInfo",
-              "ObjectPlacementDetection",
-              "ObjectRemovalDetection",
-              ]
+ALL_EVENTS = [
+    "VideoMotion",
+    "VideoLoss",
+    "AlarmLocal",
+    "CrossLineDetection",
+    "CrossRegionDetection",
+    "AudioMutation",
+    "SmartMotionHuman",
+    "SmartMotionVehicle",
+    "VideoBlind",
+    "AudioAnomaly",
+    "VideoMotionInfo",
+    "NewFile",
+    "IntelliFrame",
+    "LeftDetection",
+    "TakenAwayDetection",
+    "VideoAbnormalDetection",
+    "FaceDetection",
+    "VideoUnFocus",
+    "WanderDetection",
+    "RioterDetection",
+    "ParkingDetection",
+    "MoveDetection",
+    "StorageNotExist",
+    "StorageFailure",
+    "StorageLowSpace",
+    "AlarmOutput",
+    "InterVideoAccess",
+    "NTPAdjustTime",
+    "TimeChange",
+    "MDResult",
+    "HeatImagingTemper",
+    "CrowdDetection",
+    "FireWarning",
+    "FireWarningInfo",
+    "ObjectPlacementDetection",
+    "ObjectRemovalDetection",
+]
 
 """
 https://developers.home-assistant.io/docs/data_entry_flow_index
@@ -147,7 +158,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth(self, entry_data):
         """Handle reauthentication when credentials become invalid."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        self._reauth_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
         return await self._show_reauth_form()
 
     async def async_step_reauth_confirm(self, user_input=None):
@@ -188,12 +201,69 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             errors=self._errors,
         )
 
+    async def async_step_reconfigure(self, user_input=None):
+        """Handle reconfiguration of the integration."""
+        self._errors = {}
+
+        if user_input is not None:
+            entry = self._get_reconfigure_entry()
+            data = await self._test_credentials(
+                entry.data[CONF_USERNAME],
+                entry.data[CONF_PASSWORD],
+                user_input[CONF_ADDRESS],
+                user_input[CONF_PORT],
+                user_input[CONF_RTSP_PORT],
+                user_input[CONF_CHANNEL],
+            )
+            if data is not None:
+                if "serialNumber" in data and data["serialNumber"] is not None:
+                    channel = int(user_input[CONF_CHANNEL])
+                    unique_id = data["serialNumber"]
+                    if channel > 0:
+                        unique_id = unique_id + "_" + str(channel)
+                    await self.async_set_unique_id(unique_id)
+                    self._abort_if_unique_id_mismatch()
+
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data={**entry.data, **user_input},
+                )
+            else:
+                self._errors["base"] = "auth"
+
+        entry = self._get_reconfigure_entry()
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_ADDRESS, default=entry.data.get(CONF_ADDRESS, "")
+                    ): str,
+                    vol.Required(
+                        CONF_PORT, default=entry.data.get(CONF_PORT, "80")
+                    ): str,
+                    vol.Required(
+                        CONF_RTSP_PORT, default=entry.data.get(CONF_RTSP_PORT, "554")
+                    ): str,
+                    vol.Required(
+                        CONF_CHANNEL, default=entry.data.get(CONF_CHANNEL, 0)
+                    ): int,
+                    vol.Optional(
+                        CONF_EVENTS, default=entry.data.get(CONF_EVENTS, DEFAULT_EVENTS)
+                    ): cv.multi_select(ALL_EVENTS),
+                }
+            ),
+            errors=self._errors,
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
         return DahuaOptionsFlowHandler()
 
-    async def _show_config_form_user(self, user_input):  # pylint: disable=unused-argument
+    async def _show_config_form_user(
+        self, user_input
+    ):  # pylint: disable=unused-argument
         """Show the configuration form to edit camera name."""
         return self.async_show_form(
             step_id="user",
@@ -205,13 +275,17 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_PORT, default="80"): str,
                     vol.Required(CONF_RTSP_PORT, default="554"): str,
                     vol.Required(CONF_CHANNEL, default=0): int,
-                    vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(ALL_EVENTS),
+                    vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(
+                        ALL_EVENTS
+                    ),
                 }
             ),
             errors=self._errors,
         )
 
-    async def _show_config_form_name(self, user_input):  # pylint: disable=unused-argument
+    async def _show_config_form_name(
+        self, user_input
+    ):  # pylint: disable=unused-argument
         """Show the configuration form to edit location data."""
         return self.async_show_form(
             step_id="name",
@@ -223,7 +297,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             errors=self._errors,
         )
 
-    async def _test_credentials(self, username, password, address, port, rtsp_port, channel):
+    async def _test_credentials(
+        self, username, password, address, port, rtsp_port, channel
+    ):
         """Return name and serialNumber if credentials is valid."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
         connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
@@ -236,8 +312,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             if "name" in data:
                 return data
         except Exception as exception:  # pylint: disable=broad-except
-            _LOGGER.error("Could not connect to Dahua device. For iMou devices see " +
-                            "https://github.com/rroller/dahua/issues/6", exc_info=exception)
+            _LOGGER.error(
+                "Could not connect to Dahua device. For iMou devices see "
+                + "https://github.com/rroller/dahua/issues/6",
+                exc_info=exception,
+            )
         finally:
             await session.close()
 

@@ -1,0 +1,37 @@
+{
+    "entity": {
+        "binary_sensor": {
+            "audio_anomaly": {
+                "default": "mdi:volume-high"
+            },
+            "audio_mutation": {
+                "default": "mdi:volume-high"
+            }
+        },
+        "switch": {
+            "motion_detection": {
+                "default": "mdi:motion-sensor"
+            },
+            "disarming": {
+                "default": "mdi:alarm-check"
+            },
+            "event_notifications": {
+                "default": "mdi:bell-ring"
+            },
+            "smart_motion_detection": {
+                "default": "mdi:motion-sensor"
+            },
+            "siren": {
+                "default": "mdi:bullhorn"
+            }
+        },
+        "light": {
+            "infrared": {
+                "default": "mdi:weather-night"
+            },
+            "security_light": {
+                "default": "mdi:alarm-light-outline"
+            }
+        }
+    }
+}

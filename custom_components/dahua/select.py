@@ -32,11 +32,12 @@ async def async_setup_entry(
 class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
     """allows one to turn the doorbell light on/off/strobe"""
 
+    _attr_translation_key = "security_light"
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         SelectEntity.__init__(self)
         self._coordinator = coordinator
-        self._attr_name = "Security Light"
         self._attr_unique_id = f"{coordinator.get_serial_number()}_security_light"
         self._attr_options = ["Off", "On", "Strobe"]
 
@@ -61,10 +62,6 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        return self._attr_name
-
-    @property
     def unique_id(self):
         """https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements"""
         return self._attr_unique_id
@@ -73,11 +70,13 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
 class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
     """allows"""
 
+    _attr_translation_key = "preset_position"
+    _attr_entity_registry_enabled_default = False
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         SelectEntity.__init__(self)
         self._coordinator = coordinator
-        self._attr_name = "Preset Position"
         self._attr_unique_id = f"{coordinator.get_serial_number()}_preset_position"
         self._attr_options = [
             "Manual",
@@ -107,10 +106,6 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_goto_preset_position(channel, int(option))
         await self._coordinator.async_refresh()
-
-    @property
-    def name(self):
-        return self._attr_name
 
     @property
     def unique_id(self):

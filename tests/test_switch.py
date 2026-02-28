@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
+from homeassistant.helpers.entity import EntityCategory
 
 from custom_components.dahua.switch import (
     DahuaDisarmingEventNotificationsLinkageBinarySwitch,
@@ -84,13 +85,13 @@ class TestMotionDetectionSwitch:
         sw = DahuaMotionDetectionBinarySwitch(mock_coordinator, mock_config_entry)
         assert sw.unique_id == "SERIAL123_motion_detection"
 
-    def test_name(self, mock_coordinator, mock_config_entry):
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
         sw = DahuaMotionDetectionBinarySwitch(mock_coordinator, mock_config_entry)
-        assert sw.name == "Motion Detection"
+        assert sw._attr_translation_key == "motion_detection"
 
-    def test_icon(self, mock_coordinator, mock_config_entry):
+    def test_entity_category(self, mock_coordinator, mock_config_entry):
         sw = DahuaMotionDetectionBinarySwitch(mock_coordinator, mock_config_entry)
-        assert sw.icon == "mdi:motion-sensor"
+        assert sw._attr_entity_category == EntityCategory.CONFIG
 
     def test_is_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {"table.MotionDetect[0].Enable": "true"}
@@ -123,13 +124,9 @@ class TestSirenSwitch:
         sw = DahuaSirenBinarySwitch(mock_coordinator, mock_config_entry)
         assert sw.unique_id == "SERIAL123_siren"
 
-    def test_name(self, mock_coordinator, mock_config_entry):
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
         sw = DahuaSirenBinarySwitch(mock_coordinator, mock_config_entry)
-        assert sw.name == "Siren"
-
-    def test_icon(self, mock_coordinator, mock_config_entry):
-        sw = DahuaSirenBinarySwitch(mock_coordinator, mock_config_entry)
-        assert sw.icon == "mdi:bullhorn"
+        assert sw._attr_translation_key == "siren"
 
     def test_is_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {"status.status.Speaker": "On"}
@@ -164,13 +161,13 @@ class TestSmartMotionDetectionSwitch:
         sw = DahuaSmartMotionDetectionBinarySwitch(mock_coordinator, mock_config_entry)
         assert sw.unique_id == "SERIAL123_smart_motion_detection"
 
-    def test_name(self, mock_coordinator, mock_config_entry):
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
         sw = DahuaSmartMotionDetectionBinarySwitch(mock_coordinator, mock_config_entry)
-        assert sw.name == "Smart Motion Detection"
+        assert sw._attr_translation_key == "smart_motion_detection"
 
-    def test_icon(self, mock_coordinator, mock_config_entry):
+    def test_entity_category(self, mock_coordinator, mock_config_entry):
         sw = DahuaSmartMotionDetectionBinarySwitch(mock_coordinator, mock_config_entry)
-        assert sw.icon == "mdi:motion-sensor"
+        assert sw._attr_entity_category == EntityCategory.CONFIG
 
     def test_is_on_dahua(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {"table.SmartMotionDetect[0].Enable": "true"}
@@ -229,13 +226,13 @@ class TestDisarmingLinkageSwitch:
         sw = DahuaDisarmingLinkageBinarySwitch(mock_coordinator, mock_config_entry)
         assert sw.unique_id == "SERIAL123_disarming"
 
-    def test_name(self, mock_coordinator, mock_config_entry):
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
         sw = DahuaDisarmingLinkageBinarySwitch(mock_coordinator, mock_config_entry)
-        assert sw.name == "Disarming"
+        assert sw._attr_translation_key == "disarming"
 
-    def test_icon(self, mock_coordinator, mock_config_entry):
+    def test_entity_category(self, mock_coordinator, mock_config_entry):
         sw = DahuaDisarmingLinkageBinarySwitch(mock_coordinator, mock_config_entry)
-        assert sw.icon == "mdi:alarm-check"
+        assert sw._attr_entity_category == EntityCategory.CONFIG
 
     def test_is_on(self, mock_coordinator, mock_config_entry):
         mock_coordinator.data = {"table.DisableLinkage.Enable": "true"}
@@ -272,17 +269,17 @@ class TestEventNotificationsSwitch:
         )
         assert sw.unique_id == "SERIAL123_event_notifications"
 
-    def test_name(self, mock_coordinator, mock_config_entry):
+    def test_translation_key(self, mock_coordinator, mock_config_entry):
         sw = DahuaDisarmingEventNotificationsLinkageBinarySwitch(
             mock_coordinator, mock_config_entry
         )
-        assert sw.name == "Event Notifications"
+        assert sw._attr_translation_key == "event_notifications"
 
-    def test_icon(self, mock_coordinator, mock_config_entry):
+    def test_entity_category(self, mock_coordinator, mock_config_entry):
         sw = DahuaDisarmingEventNotificationsLinkageBinarySwitch(
             mock_coordinator, mock_config_entry
         )
-        assert sw.icon == "mdi:bell-ring"
+        assert sw._attr_entity_category == EntityCategory.CONFIG
 
     @pytest.mark.asyncio
     async def test_turn_off(self, mock_coordinator, mock_config_entry):

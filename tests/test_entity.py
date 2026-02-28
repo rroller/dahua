@@ -51,20 +51,27 @@ async def test_dahua_command_success():
 
 @pytest.mark.asyncio
 async def test_dahua_command_client_error():
-    with pytest.raises(HomeAssistantError, match="Could not communicate"):
+    with pytest.raises(HomeAssistantError) as exc_info:
         await _dummy_client_error()
+    assert exc_info.value.translation_domain == DOMAIN
+    assert exc_info.value.translation_key == "communication_error"
+    assert exc_info.value.translation_placeholders["error"] == "connection refused"
 
 
 @pytest.mark.asyncio
 async def test_dahua_command_gaierror():
-    with pytest.raises(HomeAssistantError, match="Could not communicate"):
+    with pytest.raises(HomeAssistantError) as exc_info:
         await _dummy_gaierror()
+    assert exc_info.value.translation_domain == DOMAIN
+    assert exc_info.value.translation_key == "communication_error"
 
 
 @pytest.mark.asyncio
 async def test_dahua_command_timeout():
-    with pytest.raises(HomeAssistantError, match="Timed out"):
+    with pytest.raises(HomeAssistantError) as exc_info:
         await _dummy_timeout()
+    assert exc_info.value.translation_domain == DOMAIN
+    assert exc_info.value.translation_key == "timeout_error"
 
 
 @pytest.mark.asyncio
@@ -75,8 +82,11 @@ async def test_dahua_command_ha_error_passthrough():
 
 @pytest.mark.asyncio
 async def test_dahua_command_generic_error():
-    with pytest.raises(HomeAssistantError, match="command failed"):
+    with pytest.raises(HomeAssistantError) as exc_info:
         await _dummy_generic_error()
+    assert exc_info.value.translation_domain == DOMAIN
+    assert exc_info.value.translation_key == "command_failed"
+    assert exc_info.value.translation_placeholders["error"] == "something broke"
 
 
 # --- DahuaBaseEntity tests ---
@@ -95,9 +105,15 @@ def test_base_entity_device_info(mock_coordinator, mock_config_entry):
     assert info["model"] == "IPC-HDW5831R-ZE"
     assert info["manufacturer"] == "Dahua"
     assert "192.168.1.108" in info["configuration_url"]
+    assert info["serial_number"] == "SERIAL123"
 
 
 def test_base_entity_extra_state_attributes(mock_coordinator, mock_config_entry):
     entity = DahuaBaseEntity(mock_coordinator, mock_config_entry)
     attrs = entity.extra_state_attributes
     assert attrs["integration"] == DOMAIN
+
+
+def test_base_entity_has_entity_name(mock_coordinator, mock_config_entry):
+    entity = DahuaBaseEntity(mock_coordinator, mock_config_entry)
+    assert entity._attr_has_entity_name is True

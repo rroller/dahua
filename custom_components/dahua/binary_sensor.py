@@ -2,47 +2,44 @@
 
 import re
 
-from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.components.binary_sensor import (
+    BinarySensorDeviceClass,
+    BinarySensorEntity,
+)
 from homeassistant.core import HomeAssistant
 from custom_components.dahua import DahuaConfigEntry, DahuaDataUpdateCoordinator
 
-from .const import (
-    MOTION_SENSOR_DEVICE_CLASS,
-    SAFETY_DEVICE_CLASS,
-    CONNECTIVITY_DEVICE_CLASS,
-    SOUND_DEVICE_CLASS,
-    DOOR_DEVICE_CLASS,
-    VOLUME_HIGH_ICON,
-)
 from .entity import DahuaBaseEntity
 
-# Override event names. Otherwise we'll generate the name from the event name for example SmartMotionHuman will
-# become "Smart Motion Human"
-NAME_OVERRIDES = {
-    "VideoMotion": "Motion Alarm",
-    "CrossLineDetection": "Cross Line Alarm",
-    "DoorbellPressed": "Button Pressed",  # For VTO/Doorbell devices
+# Translation keys for known events. Events listed here will use _attr_translation_key.
+# Events not listed here will compute _attr_name from the CamelCase event name.
+TRANSLATION_KEY_OVERRIDES = {
+    "VideoMotion": "motion_alarm",
+    "CrossLineDetection": "cross_line_alarm",
+    "DoorbellPressed": "button_pressed",
 }
 
 # Override the device class for events
 DEVICE_CLASS_OVERRIDES = {
-    "VideoMotion": MOTION_SENSOR_DEVICE_CLASS,
-    "CrossLineDetection": MOTION_SENSOR_DEVICE_CLASS,
-    "AlarmLocal": SAFETY_DEVICE_CLASS,
-    "VideoLoss": SAFETY_DEVICE_CLASS,
-    "VideoBlind": SAFETY_DEVICE_CLASS,
-    "StorageNotExist": CONNECTIVITY_DEVICE_CLASS,
-    "StorageFailure": CONNECTIVITY_DEVICE_CLASS,
-    "StorageLowSpace": SAFETY_DEVICE_CLASS,
-    "FireWarning": SAFETY_DEVICE_CLASS,
-    "DoorbellPressed": SOUND_DEVICE_CLASS,
-    "DoorStatus": DOOR_DEVICE_CLASS,
-    "AudioMutation": SOUND_DEVICE_CLASS,
+    "VideoMotion": BinarySensorDeviceClass.MOTION,
+    "CrossLineDetection": BinarySensorDeviceClass.MOTION,
+    "AlarmLocal": BinarySensorDeviceClass.SAFETY,
+    "VideoLoss": BinarySensorDeviceClass.SAFETY,
+    "VideoBlind": BinarySensorDeviceClass.SAFETY,
+    "StorageNotExist": BinarySensorDeviceClass.CONNECTIVITY,
+    "StorageFailure": BinarySensorDeviceClass.CONNECTIVITY,
+    "StorageLowSpace": BinarySensorDeviceClass.SAFETY,
+    "FireWarning": BinarySensorDeviceClass.SAFETY,
+    "DoorbellPressed": BinarySensorDeviceClass.SOUND,
+    "DoorStatus": BinarySensorDeviceClass.DOOR,
+    "AudioMutation": BinarySensorDeviceClass.SOUND,
 }
 
+# Icon overrides are now in icons.json for events with translation keys.
+# For dynamic events that don't have translation keys, we keep icon overrides here.
 ICON_OVERRIDES = {
-    "AudioAnomaly": VOLUME_HIGH_ICON,
-    "AudioMutation": VOLUME_HIGH_ICON,
+    "AudioAnomaly": "mdi:volume-high",
+    "AudioMutation": "mdi:volume-high",
 }
 
 PARALLEL_UPDATES = 0
@@ -87,21 +84,36 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
 
         self._coordinator = coordinator
         self._device_name = coordinator.get_device_name()
-        self._device_class = DEVICE_CLASS_OVERRIDES.get(
-            event_name, MOTION_SENSOR_DEVICE_CLASS
+        self._attr_device_class = DEVICE_CLASS_OVERRIDES.get(
+            event_name, BinarySensorDeviceClass.MOTION
         )
-        self._icon_override = ICON_OVERRIDES.get(event_name, None)
 
-        # name is the friendly name, example: Cross Line Alarm. If the name is not found in the override it will be
-        # generated from the event_name. For example SmartMotionHuman will become "Smart Motion Human"
-        # https://stackoverflow.com/questions/25674532/pythonic-way-to-add-space-before-capital-letter-if-and-only-if-previous-letter-i/25674575
-        default_name = re.sub(r"(?<![A-Z])(?<!^)([A-Z])", r" \1", event_name)
-        self._name = NAME_OVERRIDES.get(event_name, default_name)
+        # Use translation key for known events, compute name for dynamic/unknown events
+        translation_key = TRANSLATION_KEY_OVERRIDES.get(event_name)
+        if translation_key:
+            self._attr_translation_key = translation_key
+        else:
+            # Generate friendly name from CamelCase event name
+            # https://stackoverflow.com/questions/25674532/pythonic-way-to-add-space-before-capital-letter-if-and-only-if-previous-letter-i/25674575
+            default_name = re.sub(r"(?<![A-Z])(?<!^)([A-Z])", r" \1", event_name)
+            self._attr_name = default_name
+
+        # Icon override for dynamic events (known events use icons.json)
+        if not translation_key:
+            self._icon_override = ICON_OVERRIDES.get(event_name, None)
+        else:
+            self._icon_override = None
 
         # Build the unique ID. This will convert the name to lower underscores. For example, "Smart Motion Vehicle" will
         # become "smart_motion_vehicle" and will be added as a suffix to the device serial number
+        if translation_key:
+            friendly_name = translation_key.replace("_", " ")
+        else:
+            friendly_name = self._attr_name
         self._unique_id = (
-            coordinator.get_serial_number() + "_" + self._name.lower().replace(" ", "_")
+            coordinator.get_serial_number()
+            + "_"
+            + friendly_name.lower().replace(" ", "_")
         )
         if event_name == "VideoMotion":
             # We need this for backwards compatibility as the VideoMotion was created with a unique ID of just the
@@ -112,16 +124,6 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
     def unique_id(self):
         """Return the entity unique ID."""
         return self._unique_id
-
-    @property
-    def name(self):
-        """Return the name of the binary_sensor. Example: Motion Alarm"""
-        return self._name
-
-    @property
-    def device_class(self):
-        """Return the class of this binary_sensor, Example: motion"""
-        return self._device_class
 
     @property
     def icon(self) -> str:
