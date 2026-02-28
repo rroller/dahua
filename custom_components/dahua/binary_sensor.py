@@ -1,12 +1,16 @@
 """Binary sensor platform for dahua."""
 
+from __future__ import annotations
+
 import re
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from custom_components.dahua import DahuaConfigEntry, DahuaDataUpdateCoordinator
 
 from .entity import DahuaBaseEntity
@@ -46,8 +50,10 @@ PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: DahuaConfigEntry, async_add_devices
-):
+    hass: HomeAssistant,
+    entry: DahuaConfigEntry,
+    async_add_devices: AddEntitiesCallback,
+) -> None:
     """Setup binary_sensor platform."""
     coordinator: DahuaDataUpdateCoordinator = entry.runtime_data
 
@@ -69,13 +75,16 @@ async def async_setup_entry(
 class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
     """
     dahua binary_sensor class to record events. Many of these events are configured in the camera UI by going to:
-    Setting -> Event -> IVS -> and adding a tripwire rule, etc. See the DahuaEventThread in thread.py on how we connect
-    to the cammera to listen to events.
+    Setting -> Event -> IVS -> and adding a tripwire rule, etc. Events are received via async event streaming
+    in the coordinator.
     """
 
     def __init__(
-        self, coordinator: DahuaDataUpdateCoordinator, config_entry, event_name: str
-    ):
+        self,
+        coordinator: DahuaDataUpdateCoordinator,
+        config_entry: ConfigEntry,
+        event_name: str,
+    ) -> None:
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         BinarySensorEntity.__init__(self)
 
@@ -109,7 +118,7 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
         if translation_key:
             friendly_name = translation_key.replace("_", " ")
         else:
-            friendly_name = self._attr_name
+            friendly_name = self._attr_name or event_name
         self._unique_id = (
             coordinator.get_serial_number()
             + "_"
@@ -121,16 +130,16 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
             self._unique_id = coordinator.get_serial_number()
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """Return the entity unique ID."""
         return self._unique_id
 
     @property
-    def icon(self) -> str:
+    def icon(self) -> str | None:
         return self._icon_override
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """
         Return true if the event is activated.
 
@@ -140,7 +149,7 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
         """
         return self._coordinator.get_event_timestamp(self._event_name) > 0
 
-    async def async_added_to_hass(self):
+    async def async_added_to_hass(self) -> None:
         """Connect to dispatcher listening for entity data notifications."""
         self._coordinator.add_dahua_event_listener(
             self._event_name, self.schedule_update_ha_state

@@ -64,10 +64,10 @@
 | docs-troubleshooting | **Pass** | Troubleshooting section in README |
 | docs-use-cases | **Pass** | Use cases section in README |
 
-## Platinum Tier (for future reference)
+## Platinum Tier
 
 | Rule | Status | Notes |
 |------|--------|-------|
-| async-dependency | **Partial** | Uses aiohttp but has legacy `thread.py` |
-| inject-websession | **Fail** | Creates own `aiohttp.ClientSession` |
-| strict-typing | **Fail** | No strict mypy config |
+| async-dependency | **Pass** | All I/O uses aiohttp; no sync libraries |
+| inject-websession | **Pass** | Uses `async_create_clientsession(hass, verify_ssl=False)` |
+| strict-typing | **Pass** | `py.typed` marker, `mypy --strict` passes all 17 source files |

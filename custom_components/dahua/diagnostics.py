@@ -1,5 +1,7 @@
 """Diagnostics support for Dahua."""
 
+from typing import Any
+
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
 
@@ -11,7 +13,7 @@ TO_REDACT = {CONF_PASSWORD, CONF_USERNAME}
 
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: DahuaConfigEntry
-) -> dict:
+) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
     coordinator = entry.runtime_data
 

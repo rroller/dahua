@@ -1,13 +1,14 @@
 """Adds config flow (UI flow) for Dahua IP cameras."""
 
+from __future__ import annotations
+
 import logging
-import ssl
+from typing import Any
 
 import voluptuous as vol
 
-from aiohttp import ClientSession, TCPConnector
-
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigEntry, ConfigFlowResult
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers import config_validation as cv
@@ -30,12 +31,6 @@ from .const import (
 https://developers.home-assistant.io/docs/config_entries_config_flow_handler
 https://developers.home-assistant.io/docs/data_entry_flow_index/
 """
-
-SSL_CONTEXT = ssl.create_default_context()
-# SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
-SSL_CONTEXT.set_ciphers("DEFAULT")
-SSL_CONTEXT.check_hostname = False
-SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -101,13 +96,16 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize."""
-        self.dahua_config = {}
-        self._errors = {}
-        self.init_info = None
+        self.dahua_config: dict[str, Any] = {}
+        self._errors: dict[str, str] = {}
+        self.init_info: dict[str, Any] | None = None
+        self._reauth_entry: ConfigEntry | None = None
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle a flow initialized by the user to add a camera."""
         self._errors = {}
 
@@ -142,7 +140,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return await self._show_config_form_user(user_input)
 
-    async def async_step_name(self, user_input=None):
+    async def async_step_name(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle a flow to configure the camera name."""
         self._errors = {}
 
@@ -156,26 +156,29 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return await self._show_config_form_name(user_input)
 
-    async def async_step_reauth(self, entry_data):
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Handle reauthentication when credentials become invalid."""
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
         )
         return await self._show_reauth_form()
 
-    async def async_step_reauth_confirm(self, user_input=None):
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle user input for reauthentication."""
         self._errors = {}
 
         if user_input is not None:
+            assert self._reauth_entry is not None
             entry = self._reauth_entry
             data = await self._test_credentials(
                 user_input[CONF_USERNAME],
                 user_input[CONF_PASSWORD],
-                entry.data[CONF_ADDRESS],
-                entry.data[CONF_PORT],
-                entry.data[CONF_RTSP_PORT],
-                entry.data.get(CONF_CHANNEL, 0),
+                str(entry.data[CONF_ADDRESS]),
+                str(entry.data[CONF_PORT]),
+                str(entry.data[CONF_RTSP_PORT]),
+                int(entry.data.get(CONF_CHANNEL, 0)),
             )
             if data is not None:
                 self.hass.config_entries.async_update_entry(
@@ -188,7 +191,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return await self._show_reauth_form()
 
-    async def _show_reauth_form(self):
+    async def _show_reauth_form(self) -> ConfigFlowResult:
         """Show the reauthentication form."""
         return self.async_show_form(
             step_id="reauth_confirm",
@@ -201,7 +204,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             errors=self._errors,
         )
 
-    async def async_step_reconfigure(self, user_input=None):
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle reconfiguration of the integration."""
         self._errors = {}
 
@@ -258,12 +263,12 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
+    def async_get_options_flow(config_entry: ConfigEntry) -> DahuaOptionsFlowHandler:
         return DahuaOptionsFlowHandler()
 
     async def _show_config_form_user(
-        self, user_input
-    ):  # pylint: disable=unused-argument
+        self, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:  # pylint: disable=unused-argument
         """Show the configuration form to edit camera name."""
         return self.async_show_form(
             step_id="user",
@@ -284,28 +289,37 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def _show_config_form_name(
-        self, user_input
-    ):  # pylint: disable=unused-argument
+        self, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:  # pylint: disable=unused-argument
         """Show the configuration form to edit location data."""
         return self.async_show_form(
             step_id="name",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_NAME, default=user_input[CONF_NAME]): str,
+                    vol.Required(
+                        CONF_NAME,
+                        default=user_input[CONF_NAME] if user_input else "",
+                    ): str,
                 }
             ),
             errors=self._errors,
         )
 
     async def _test_credentials(
-        self, username, password, address, port, rtsp_port, channel
-    ):
+        self,
+        username: str,
+        password: str,
+        address: str,
+        port: str,
+        rtsp_port: str,
+        channel: int,
+    ) -> dict[str, Any] | None:
         """Return name and serialNumber if credentials is valid."""
-        # Self signed certs are used over HTTPS so we'll disable SSL verification
-        connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
-        session = ClientSession(connector=connector)
+        session = async_create_clientsession(self.hass, verify_ssl=False)
         try:
-            client = DahuaClient(username, password, address, port, rtsp_port, session)
+            client = DahuaClient(
+                username, password, address, int(port), int(rtsp_port), session
+            )
             data = await client.get_machine_name()
             serial = await client.async_get_system_info()
             data.update(serial)
@@ -317,19 +331,22 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 + "https://github.com/rroller/dahua/issues/6",
                 exc_info=exception,
             )
-        finally:
-            await session.close()
+        return None
 
 
 class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
     """Dahua config flow options handler."""
 
-    async def async_step_init(self, user_input=None):  # pylint: disable=unused-argument
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:  # pylint: disable=unused-argument
         """Manage the options."""
-        self.options = dict(self.config_entry.options)
+        self.options: dict[str, Any] = dict(self.config_entry.options)
         return await self.async_step_user()
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle a flow initialized by the user."""
         if user_input is not None:
             self.options.update(user_input)
@@ -345,7 +362,7 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             ),
         )
 
-    async def _update_options(self):
+    async def _update_options(self) -> ConfigFlowResult:
         """Update config entry options."""
         return self.async_create_entry(
             title=self.config_entry.data.get(CONF_USERNAME), data=self.options

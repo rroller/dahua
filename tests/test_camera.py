@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from custom_components.dahua.camera import DahuaCamera, async_setup_entry
+from custom_components.dahua.camera import DahuaCamera
 
 
 class TestAsyncSetupEntry:
@@ -15,7 +15,6 @@ class TestAsyncSetupEntry:
         """Creates one camera per stream."""
         mock_coordinator._max_streams = 3
         mock_config_entry.runtime_data = mock_coordinator
-        added = []
 
         # async_setup_entry calls entity_platform which needs hass context;
         # we'll test the DahuaCamera class directly instead

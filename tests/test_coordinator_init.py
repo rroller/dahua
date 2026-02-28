@@ -1,29 +1,15 @@
 """Tests for coordinator initialization and setup/unload."""
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 from homeassistant.exceptions import PlatformNotReady
 from homeassistant.helpers.update_coordinator import UpdateFailed
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dahua import (
-    DahuaDataUpdateCoordinator,
     async_setup_entry,
     async_unload_entry,
-)
-from custom_components.dahua.const import (
-    CONF_ADDRESS,
-    CONF_CHANNEL,
-    CONF_EVENTS,
-    CONF_NAME,
-    CONF_PASSWORD,
-    CONF_PORT,
-    CONF_RTSP_PORT,
-    CONF_USERNAME,
-    DOMAIN,
 )
 
 
@@ -82,7 +68,7 @@ class TestAsyncUpdateDataInit:
             "async_start_event_listener",
             new_callable=AsyncMock,
         ):
-            data = await mock_coordinator._async_update_data()
+            await mock_coordinator._async_update_data()
 
         assert mock_coordinator.initialized is True
         assert mock_coordinator._supports_coaxial_control is True

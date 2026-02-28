@@ -4,13 +4,19 @@ Illuminator for for Dahua cameras that have white light illuminators.
 See https://developers.home-assistant.io/docs/core/entity/light
 """
 
+from __future__ import annotations
+
+from typing import Any
+
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.components.light import (
+from homeassistant.components.light import (  # type: ignore[attr-defined]
     ATTR_BRIGHTNESS,
     LightEntity,
     LightEntityFeature,
     ColorMode,
 )
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import DahuaConfigEntry, DahuaDataUpdateCoordinator, dahua_utils
 from .entity import DahuaBaseEntity, dahua_command
@@ -20,12 +26,14 @@ PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: DahuaConfigEntry, async_add_entities
-):
+    hass: HomeAssistant,
+    entry: DahuaConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Setup light platform."""
     coordinator = entry.runtime_data
 
-    entities = []
+    entities: list[LightEntity] = []
     if coordinator.supports_infrared_light():
         entities.append(DahuaInfraredLight(coordinator, entry))
 
@@ -50,12 +58,14 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
 
     _attr_translation_key = "infrared"
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, entry: ConfigEntry
+    ) -> None:
         super().__init__(coordinator, entry)
         self._coordinator = coordinator
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
@@ -63,37 +73,37 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         return self._coordinator.get_serial_number() + "_infrared"
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return true if the light is on"""
         return self._coordinator.is_infrared_light_on()
 
     @property
-    def brightness(self):
+    def brightness(self) -> int:
         """Return the brightness of this light between 0..255 inclusive"""
         return self._coordinator.get_infrared_brightness()
 
     @property
-    def color_mode(self) -> ColorMode | str | None:
+    def color_mode(self) -> ColorMode | None:
         """Return the color mode of the light."""
         return ColorMode.BRIGHTNESS
 
     @property
-    def supported_color_modes(self) -> set[str]:
+    def supported_color_modes(self) -> set[ColorMode]:
         """Flag supported color modes."""
-        return {self.color_mode}
+        return {ColorMode.BRIGHTNESS}
 
     @property
-    def supported_features(self):
+    def supported_features(self) -> LightEntityFeature:
         """Flag supported features."""
         return LightEntityFeature.EFFECT
 
     @property
-    def should_poll(self):
+    def should_poll(self) -> bool:
         """Don't poll."""
         return False
 
     @dahua_command
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
@@ -106,7 +116,7 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         await self.coordinator.async_refresh()
 
     @dahua_command
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
@@ -124,12 +134,14 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
     _attr_translation_key = "illuminator"
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, entry: ConfigEntry
+    ) -> None:
         super().__init__(coordinator, entry)
         self._coordinator = coordinator
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
@@ -137,33 +149,33 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         return self._coordinator.get_serial_number() + "_illuminator"
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return true if the light is on"""
         return self._coordinator.is_illuminator_on()
 
     @property
-    def brightness(self):
+    def brightness(self) -> int:
         """Return the brightness of this light between 0..255 inclusive"""
 
         return self._coordinator.get_illuminator_brightness()
 
     @property
-    def color_mode(self) -> ColorMode | str | None:
+    def color_mode(self) -> ColorMode | None:
         """Return the color mode of the light."""
         return ColorMode.BRIGHTNESS
 
     @property
-    def supported_color_modes(self) -> set[str]:
+    def supported_color_modes(self) -> set[ColorMode]:
         """Flag supported color modes."""
-        return {self.color_mode}
+        return {ColorMode.BRIGHTNESS}
 
     @property
-    def should_poll(self):
+    def should_poll(self) -> bool:
         """Don't poll."""
         return False
 
     @dahua_command
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
@@ -177,7 +189,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         await self._coordinator.async_refresh()
 
     @dahua_command
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
@@ -196,12 +208,14 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
 
     _attr_translation_key = "ring_light"
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, entry: ConfigEntry
+    ) -> None:
         super().__init__(coordinator, entry)
         self._coordinator = coordinator
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue).
         Should not be configurable by the user or be changeable
@@ -210,31 +224,31 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
         return self._coordinator.get_serial_number() + "_ring_light"
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return true if the light is on"""
         return self._coordinator.is_ring_light_on()
 
     @dahua_command
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on"""
         await self._coordinator.client.async_set_light_global_enabled(True)
         await self._coordinator.async_refresh()
 
     @dahua_command
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off"""
         await self._coordinator.client.async_set_light_global_enabled(False)
         await self._coordinator.async_refresh()
 
     @property
-    def color_mode(self) -> ColorMode | str | None:
+    def color_mode(self) -> ColorMode | None:
         """Return the color mode of the light."""
         return ColorMode.ONOFF
 
     @property
-    def supported_color_modes(self) -> set[str]:
+    def supported_color_modes(self) -> set[ColorMode]:
         """Flag supported color modes."""
-        return {self.color_mode}
+        return {ColorMode.ONOFF}
 
 
 class FloodLight(DahuaBaseEntity, LightEntity):
@@ -246,12 +260,14 @@ class FloodLight(DahuaBaseEntity, LightEntity):
 
     _attr_translation_key = "flood_light"
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, entry: ConfigEntry
+    ) -> None:
         super().__init__(coordinator, entry)
         self._coordinator = coordinator
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
@@ -259,38 +275,38 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         return self._coordinator.get_serial_number() + "_flood_light"
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return true if the light is on"""
         return self._coordinator.is_flood_light_on()
 
     @property
-    def supported_features(self):
+    def supported_features(self) -> LightEntityFeature:
         """Flag supported features."""
         return LightEntityFeature.EFFECT
 
     @property
-    def color_mode(self) -> ColorMode | str | None:
+    def color_mode(self) -> ColorMode | None:
         """Return the color mode of the light."""
         return ColorMode.ONOFF
 
     @property
-    def supported_color_modes(self) -> set[str]:
+    def supported_color_modes(self) -> set[ColorMode]:
         """Flag supported color modes."""
-        return {self.color_mode}
+        return {ColorMode.ONOFF}
 
     @property
-    def should_poll(self):
+    def should_poll(self) -> bool:
         """Don't poll."""
         return False
 
     @dahua_command
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on"""
         if self._coordinator._supports_floodlightmode:
             channel = self._coordinator.get_channel()
-            self._coordinator._floodlight_mode = (
-                await self._coordinator.client.async_get_floodlightmode()
-            )
+            result = await self._coordinator.client.async_get_floodlightmode()
+            if isinstance(result, int):
+                self._coordinator._floodlight_mode = result
             await self._coordinator.client.async_set_floodlightmode(2)
             await self._coordinator.client.async_set_coaxial_control_state(
                 channel, SECURITY_LIGHT_TYPE, True
@@ -305,7 +321,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
             await self._coordinator.async_refresh()
 
     @dahua_command
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off"""
         if self._coordinator._supports_floodlightmode:
             channel = self._coordinator.get_channel()
@@ -333,12 +349,14 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
 
     _attr_translation_key = "security_light"
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, entry: ConfigEntry
+    ) -> None:
         super().__init__(coordinator, entry)
         self._coordinator = coordinator
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
@@ -346,17 +364,17 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         return self._coordinator.get_serial_number() + "_security"
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return true if the light is on"""
         return self._coordinator.is_security_light_on()
 
     @property
-    def should_poll(self):
+    def should_poll(self) -> bool:
         """Don't poll."""
         return False
 
     @dahua_command
-    async def async_turn_on(self, **kwargs):
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the light on"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_coaxial_control_state(
@@ -365,7 +383,7 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         await self._coordinator.async_refresh()
 
     @dahua_command
-    async def async_turn_off(self, **kwargs):
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the light off"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_coaxial_control_state(
@@ -374,11 +392,11 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def color_mode(self) -> ColorMode | str | None:
+    def color_mode(self) -> ColorMode | None:
         """Return the color mode of the light."""
         return ColorMode.ONOFF
 
     @property
-    def supported_color_modes(self) -> set[str]:
+    def supported_color_modes(self) -> set[ColorMode]:
         """Flag supported color modes."""
-        return {self.color_mode}
+        return {ColorMode.ONOFF}

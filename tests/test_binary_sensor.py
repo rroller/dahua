@@ -6,9 +6,6 @@ from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from custom_components.dahua.binary_sensor import (
     DahuaEventSensor,
     async_setup_entry,
-    DEVICE_CLASS_OVERRIDES,
-    ICON_OVERRIDES,
-    TRANSLATION_KEY_OVERRIDES,
 )
 
 

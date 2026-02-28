@@ -91,8 +91,8 @@ def mock_client() -> AsyncMock:
 
     # Static/simple methods - use real implementations
     client.to_stream_name = DahuaClient.to_stream_name
-    client.get_rtsp_stream_url.side_effect = (
-        lambda channel, subtype: f"rtsp://admin:password@192.168.1.108:554/cam/realmonitor?channel={channel}&subtype={subtype}"
+    client.get_rtsp_stream_url.side_effect = lambda channel, subtype: (
+        f"rtsp://admin:password@192.168.1.108:554/cam/realmonitor?channel={channel}&subtype={subtype}"
     )
 
     return client
@@ -143,7 +143,6 @@ def mock_coordinator(hass, mock_config_entry, mock_client):
     coordinator._dahua_event_listeners = {}
     coordinator._dahua_event_timestamp = {}
     coordinator._floodlight_mode = 2
-    coordinator._session = AsyncMock()
     coordinator.data = {}
     coordinator.logger = MagicMock()
     coordinator.name = DOMAIN

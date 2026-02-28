@@ -348,7 +348,7 @@ class TestEnableMotionDetection:
             mock_auth = mock_auth_cls.return_value
             mock_auth.request = AsyncMock(side_effect=[mock_resp_fail, mock_resp_ok])
 
-            result = await client.enable_motion_detection(0, True)
+            await client.enable_motion_detection(0, True)
             assert mock_auth.request.call_count == 2
 
 
@@ -950,7 +950,7 @@ class TestAsyncGetIvsRules:
             new_callable=AsyncMock,
             return_value={"table.VideoAnalyseRule[0][0].Enable": "true"},
         ) as mock_cfg:
-            result = await client.async_get_ivs_rules()
+            await client.async_get_ivs_rules()
             mock_cfg.assert_called_once_with("VideoAnalyseRule")
 
 

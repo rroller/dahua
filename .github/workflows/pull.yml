@@ -18,16 +18,15 @@ jobs:
         - name: Hassfest validation
           uses: "home-assistant/actions/hassfest@master"
 
-  style:
+  lint:
     runs-on: "ubuntu-latest"
-    name: Check style formatting
+    name: Ruff lint and format
     steps:
         - uses: "actions/checkout@v6"
-        - uses: "actions/setup-python@v6"
+        - uses: "astral-sh/ruff-action@v3"
+        - uses: "astral-sh/ruff-action@v3"
           with:
-            python-version: "3.x"
-        - run: python3 -m pip install black
-        - run: black .
+            args: "format --check"
 
   tests:
     runs-on: "ubuntu-latest"

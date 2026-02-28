@@ -150,10 +150,13 @@ async def test_reauth_flow_success(hass: HomeAssistant):
     )
     entry.add_to_hass(hass)
 
-    with patch(
-        "custom_components.dahua.config_flow.DahuaFlowHandler._test_credentials",
-        return_value=MOCK_DEVICE_DATA,
-    ), patch.object(hass.config_entries, "async_reload"):
+    with (
+        patch(
+            "custom_components.dahua.config_flow.DahuaFlowHandler._test_credentials",
+            return_value=MOCK_DEVICE_DATA,
+        ),
+        patch.object(hass.config_entries, "async_reload"),
+    ):
         result = await hass.config_entries.flow.async_init(
             DOMAIN,
             context={

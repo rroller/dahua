@@ -4,8 +4,13 @@ https://developers.home-assistant.io/docs/core/entity/select
 Requires HomeAssistant 2021.7.0 or greater
 """
 
+from __future__ import annotations
+
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.components.select import SelectEntity
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
 from custom_components.dahua import DahuaConfigEntry, DahuaDataUpdateCoordinator
 from .entity import DahuaBaseEntity, dahua_command
 
@@ -13,12 +18,14 @@ PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: DahuaConfigEntry, async_add_devices
-):
+    hass: HomeAssistant,
+    entry: DahuaConfigEntry,
+    async_add_devices: AddEntitiesCallback,
+) -> None:
     """Setup select platform."""
     coordinator: DahuaDataUpdateCoordinator = entry.runtime_data
 
-    devices = []
+    devices: list[SelectEntity] = []
 
     if coordinator.is_amcrest_doorbell() and coordinator.supports_security_light():
         devices.append(DahuaDoorbellLightSelect(coordinator, entry))
@@ -34,7 +41,9 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
 
     _attr_translation_key = "security_light"
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, config_entry: ConfigEntry
+    ) -> None:
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         SelectEntity.__init__(self)
         self._coordinator = coordinator
@@ -42,7 +51,7 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
         self._attr_options = ["Off", "On", "Strobe"]
 
     @property
-    def current_option(self) -> str:
+    def current_option(self) -> str | None:
         mode = self._coordinator.data.get("table.Lighting_V2[0][0][1].Mode", "")
         state = self._coordinator.data.get("table.Lighting_V2[0][0][1].State", "")
 
@@ -62,9 +71,9 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements"""
-        return self._attr_unique_id
+        return str(self._attr_unique_id)
 
 
 class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
@@ -73,7 +82,9 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
     _attr_translation_key = "preset_position"
     _attr_entity_registry_enabled_default = False
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, config_entry: ConfigEntry
+    ) -> None:
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         SelectEntity.__init__(self)
         self._coordinator = coordinator
@@ -93,11 +104,11 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
         ]
 
     @property
-    def current_option(self) -> str:
-        presetID = self._coordinator.data.get("status.PresetID", "0")
-        if presetID == "0":
+    def current_option(self) -> str | None:
+        preset_id: str = str(self._coordinator.data.get("status.PresetID", "0"))
+        if preset_id == "0":
             return "Manual"
-        return presetID
+        return preset_id
 
     @dahua_command
     async def async_select_option(self, option: str) -> None:
@@ -108,6 +119,6 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def unique_id(self):
+    def unique_id(self) -> str:
         """https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements"""
-        return self._attr_unique_id
+        return str(self._attr_unique_id)

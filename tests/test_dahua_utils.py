@@ -77,13 +77,7 @@ class TestParseEvent:
         assert events == []
 
     def test_malformed_no_code(self):
-        data = (
-            "--myboundary\n"
-            "Content-Type: text/plain\n"
-            "Content-Length: 10\n"
-            "\n"
-            "NotACode"
-        )
+        data = "--myboundary\nContent-Type: text/plain\nContent-Length: 10\n\nNotACode"
         events = parse_event(data)
         assert events == []
 

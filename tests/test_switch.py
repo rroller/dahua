@@ -1,6 +1,6 @@
 """Tests for switch platform."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
