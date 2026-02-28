@@ -40,6 +40,8 @@ jobs:
         with:
           python-version: "3.13"
           cache: "pip"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libturbojpeg0-dev
       - name: Install requirements
         run: python3 -m pip install -r requirements_test.txt
       - name: Run tests
@@ -50,6 +52,7 @@ jobs:
             --durations=10 \
             -n auto \
             --cov custom_components.dahua \
+            --cov-config=.coveragerc \
             -o console_output_style=count \
             -p no:sugar \
             tests

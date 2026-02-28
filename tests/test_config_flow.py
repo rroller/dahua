@@ -138,3 +138,99 @@ async def test_options_flow(hass: HomeAssistant):
     assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result["data"]["light"] is False
     assert result["data"]["camera"] is True
+
+
+async def test_reauth_flow_success(hass: HomeAssistant):
+    """Test reauthentication flow with valid new credentials."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=MOCK_USER_INPUT,
+        title="Test Camera",
+        unique_id="ABC123456",
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.dahua.config_flow.DahuaFlowHandler._test_credentials",
+        return_value=MOCK_DEVICE_DATA,
+    ), patch.object(hass.config_entries, "async_reload"):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "reauth_confirm"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_USERNAME: "admin",
+                CONF_PASSWORD: "newpassword",
+            },
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.ABORT
+        assert result["reason"] == "reauth_successful"
+
+
+async def test_reauth_flow_invalid_credentials(hass: HomeAssistant):
+    """Test reauthentication flow with invalid credentials shows error."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=MOCK_USER_INPUT,
+        title="Test Camera",
+        unique_id="ABC123456",
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.dahua.config_flow.DahuaFlowHandler._test_credentials",
+        return_value=None,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={
+                CONF_USERNAME: "admin",
+                CONF_PASSWORD: "wrongpassword",
+            },
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "reauth_confirm"
+        assert result["errors"]["base"] == "auth"
+
+
+async def test_user_flow_with_channel_gt_0(hass: HomeAssistant):
+    """Test config flow with channel > 0 appends channel to unique_id."""
+    input_with_channel = {**MOCK_USER_INPUT, CONF_CHANNEL: 1}
+
+    with patch(
+        "custom_components.dahua.config_flow.DahuaFlowHandler._test_credentials",
+        return_value=MOCK_DEVICE_DATA,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input=input_with_channel,
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.FORM
+        assert result["step_id"] == "name"
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={CONF_NAME: "NVR Channel 1"},
+        )
+        assert result["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+        assert result["title"] == "NVR Channel 1"

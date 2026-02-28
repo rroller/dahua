@@ -1,0 +1,5 @@
+[run]
+omit =
+    custom_components/dahua/vto.py
+    custom_components/dahua/rpc2.py
+    custom_components/dahua/digest.py
