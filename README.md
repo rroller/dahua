@@ -7,6 +7,22 @@ Also exposes several services to enable/disable motion detection or set the text
 
 **NOTE**: Using the switch to turn on/off the infrared light will disable the "auto" mode. Use the service to enable auto mode again (or the camera UI).
 
+## Use Cases
+
+- **Security monitoring**: Get real-time motion, intrusion, and alarm events pushed to Home Assistant. Trigger automations to record video, send notifications, or turn on lights when motion is detected.
+- **Doorbell automation**: Detect doorbell presses and trigger notifications, unlock doors via VTO, or play announcements. Integrate with other smart home devices for a complete visitor management workflow.
+- **Night vision control**: Automate infrared and illuminator lights based on time of day, presence, or ambient light conditions.
+- **PTZ preset positions**: Move cameras to preset positions on a schedule or in response to events (e.g., point at the driveway when the garage opens).
+- **Video overlay management**: Dynamically update text overlays on camera feeds (e.g., show current temperature, occupancy count, or alarm status).
+- **Multi-camera NVR setups**: Monitor multiple cameras connected to a single NVR, each as a separate channel with independent events and controls.
+
+## How Data is Updated
+
+The integration uses two methods to keep entity states current:
+
+- **Polling (every 30 seconds)**: A `DataUpdateCoordinator` polls the camera's HTTP API to fetch motion detection status, lighting configuration, disarming linkage state, profile mode, PTZ position, and other settings. This ensures all entity states stay in sync even if an event is missed.
+- **Event streaming (real-time)**: The integration maintains a persistent HTTP connection to the camera's event manager API (`eventManager.cgi?action=attach`) to receive events like motion detection, cross-line detection, and alarms as they happen. For VTO doorbells, a separate TCP connection on port 5000 streams doorbell press, door status, and call events. Events are fired on the Home Assistant event bus as `dahua_event_received` and immediately update binary sensor states.
+
 Why not use the Amcrest integration already provided by Home Assistant? The Amcrest integration is missing features that this integration provides and I want an integration that is branded as Dahua. Amcrest are rebranded Dahua cams. With this integration living outside of HA, it can be developed faster and released more often. HA has release schedules and rigerous review processes which I'm not ready for while developing this integration. Once this integration is mature I'd like to move it into HA directly.
 
 ## Installation
@@ -164,8 +180,53 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | *IMOU* |
 | | IMOU C26EP-V2 | IMOU IPC-K46 | IMOU DB61i
 
-# Known Issues
-* IPC-D2B20-ZS doesn't work. Needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201), [7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237)
+# Known Limitations
+
+* **iMou / cloud-only devices**: Devices that require the iMou cloud service (and don't expose a local HTTP API) are not supported. See [issue #6](https://github.com/rroller/dahua/issues/6) for details.
+* **IPC-D2B20-ZS**: This model doesn't work directly. It needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201) — see [#7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [#8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237).
+* **Firmware quirks**: Some older firmwares use non-standard channel numbering (channel 0 instead of channel 1). The integration auto-detects this, but if entities show incorrect data, try changing the channel setting.
+* **Auto mode vs manual control**: Turning infrared or illuminator lights on/off via the switch disables the camera's "auto" mode. Use the `set_infrared_mode` service with `mode: Auto` to restore automatic control.
+* **Siren duration**: Camera sirens typically auto-disable after 10-15 seconds. The siren switch will show as "on" briefly before the camera turns it off.
+* **Preset position select**: The preset position entity is disabled by default since most cameras don't use PTZ presets. Enable it in the entity settings if needed.
+* **Entity detection**: The integration tries to detect which features your device supports, but sometimes adds entities for unsupported features. Simply disable any entities that don't work with your device.
+* **Discovery**: Dahua cameras do not advertise via standard Home Assistant discovery protocols (SSDP, Zeroconf, DHCP). Cameras must be added manually via the config flow.
+
+# Troubleshooting
+
+## Camera won't connect
+* Verify the camera is reachable by opening `http://<camera-ip>` in a browser.
+* Ensure the username and password are correct. Try logging into the camera's web UI with the same credentials.
+* Check that the HTTP port (default 80) matches what the camera is configured to use.
+* For HTTPS cameras, the integration accepts self-signed certificates automatically.
+
+## Events not firing
+* Make sure you selected the events you want when setting up the integration. You can change them by removing and re-adding the integration, or using the reconfigure flow.
+* Open **Developer Tools -> Events** in Home Assistant, listen for `dahua_event_received`, and trigger an event (e.g., walk in front of the camera) to verify events are being received.
+* Enable debug logging (see below) to see event stream connection status.
+* Some events (e.g., CrossLineDetection, SmartMotionHuman) require IVS rules to be configured in the camera's own UI first.
+
+## Entities show unavailable
+* This usually means the camera is unreachable or returned an error. Check your network connection to the camera.
+* If the camera requires re-authentication, you'll see a notification in Home Assistant. Use the reauth flow to update credentials.
+* Restart the integration by going to **Settings -> Devices & services -> Dahua** and clicking **Reload**.
+
+## Streams not loading
+* Ensure the RTSP port (default 554) is correct and accessible.
+* Make sure `ffmpeg` is configured in your `configuration.yaml` (see Installation section).
+* Try accessing the RTSP stream directly: `rtsp://user:pass@camera-ip:554/cam/realmonitor?channel=1&subtype=0`
+
+## NVR setup
+* Each NVR channel must be added as a separate integration entry. Use the channel index (0-based) when configuring.
+* Channel 0 is the first camera, channel 1 is the second, and so on.
+
+## Debug logging
+Add to your `configuration.yaml` and restart:
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.dahua: debug
+```
 
 # Events
 Events are streamed from the device and fired on the Home Assistant event bus.
@@ -240,6 +301,102 @@ need to walk in front of your cam to make motion events fire, or press a button,
 | MDResult    | motion detection data reporting event. The motion detect window contains 18 rows and 22 columns. The event info contains motion detect data with mask of every row |
 | HeatImagingTemper    | temperature alarm event |
 
+## Example Automations
+
+### Send a notification on motion detection
+```yaml
+automation:
+  - alias: "Camera motion notification"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.front_porch_motion_alarm
+        to: "on"
+    action:
+      - action: notify.mobile_app_phone
+        data:
+          title: "Motion Detected"
+          message: "Motion detected on Front Porch camera"
+          data:
+            image: /api/camera_proxy/camera.front_porch_main
+```
+
+### Turn on lights when motion is detected at night
+```yaml
+automation:
+  - alias: "Driveway motion lights"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.driveway_cam_motion_alarm
+        to: "on"
+    condition:
+      - condition: sun
+        after: sunset
+        before: sunrise
+    action:
+      - action: light.turn_on
+        target:
+          entity_id: light.driveway_flood_light
+      - delay: "00:05:00"
+      - action: light.turn_off
+        target:
+          entity_id: light.driveway_flood_light
+```
+
+### Doorbell press notification with snapshot
+```yaml
+automation:
+  - alias: "Doorbell pressed"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.front_door_button_pressed
+        to: "on"
+    action:
+      - action: camera.snapshot
+        target:
+          entity_id: camera.front_door_main
+        data:
+          filename: /config/www/doorbell_snapshot.jpg
+      - action: notify.mobile_app_phone
+        data:
+          title: "Doorbell"
+          message: "Someone is at the front door"
+          data:
+            image: /local/doorbell_snapshot.jpg
+```
+
+### Move PTZ camera to preset on event
+```yaml
+automation:
+  - alias: "Point camera at gate when opened"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.gate_sensor
+        to: "on"
+    action:
+      - action: dahua.goto_preset_position
+        target:
+          entity_id: camera.backyard_main
+        data:
+          position: 2
+```
+
+### Listen for raw events on the event bus
+```yaml
+automation:
+  - alias: "Log all Dahua events"
+    trigger:
+      - platform: event
+        event_type: dahua_event_received
+        event_data:
+          Code: CrossLineDetection
+          action: Start
+    action:
+      - action: notify.persistent_notification
+        data:
+          title: "Tripwire Alert"
+          message: "Cross-line detection triggered on {{ trigger.event.data.name }}"
+```
+
 ## BackKeyLight States
 | State | Description |
 | ----- | ----------- |
@@ -253,9 +410,52 @@ need to walk in front of your cam to make motion events fire, or press a button,
 | 9     | Unlock failed |
 | 11    | Device rebooted |
 
-# Services and Entities
-Note for ease of use, the integration tries to determine if your device supports certain services, entities and will conditionally add them. But that's sometimes a little hard so it'll just add the entity even if your devices doesn't support.
-I'd rather opt into extra entities than to create a complicated flow to determine what's supported and what isn't. You can simply disable the entities you don't want. An example of this is the "door open state" for doorbells. Not all doorbells support this.
+# Supported Functions
+
+The integration creates entities and services based on what your device supports. Not all devices support all features — the integration probes the camera at setup time and adds entities accordingly. You can disable any entities that don't apply to your device.
+
+## Entities
+
+### Camera
+Entity | Description | Added when
+:--- | :--- | :---
+Camera (Main) | Main stream with live view, snapshots, and RTSP streaming | Always
+Camera (Sub) | Sub stream(s) with lower resolution | Always (one per sub-stream)
+
+### Binary Sensors
+Entity | Description | Device class | Added when
+:--- | :--- | :--- | :---
+Motion alarm | Motion detection event | `motion` | VideoMotion event selected
+Cross line alarm | Tripwire / cross-line event | `motion` | CrossLineDetection event selected
+Button pressed | Doorbell button press | `sound` | Doorbell devices
+Door status | Door open/close state | `door` | Doorbell devices
+Smart Motion Human | Human detected by smart motion | `motion` | SmartMotionHuman event selected
+Smart Motion Vehicle | Vehicle detected by smart motion | `motion` | SmartMotionVehicle event selected
+Other events | One sensor per selected event type | `motion` (default) | Based on event selection
+
+### Switches
+Entity | Description | Category | Added when
+:--- | :--- | :--- | :---
+Motion detection | Enable/disable motion detection | Config | Always
+Disarming | Toggle disarming linkage (Event -> Disarming) | Config | Device supports disarming API
+Event notifications | Toggle event notifications when disarmed | Config | Device supports disarming API
+Smart motion detection | Enable/disable smart motion detection | Config | Device supports smart motion
+Siren | Activate the camera's built-in siren | — | AS-PV models, L46N, W452ASD
+
+### Lights
+Entity | Description | Added when
+:--- | :--- | :---
+Infrared | Infrared LED control with brightness | Device has infrared lighting
+Illuminator | White light control with brightness | Device has Lighting_V2 support
+Flood light | Flood light on/off | ASH26, L26N, L46N, V261LC, W452ASD models
+Security light | Red/blue flashing alarm light | AS-PV models, AD410, DB61i, IP8M-2796E
+Ring light | Doorbell ring light on/off | Amcrest doorbells (AD/DB6 models)
+
+### Selects
+Entity | Description | Added when
+:--- | :--- | :---
+Security light | Doorbell light mode (Off/On/Strobe) | Amcrest doorbells with security light
+Preset position | PTZ preset position (1-10 or Manual) | Always (disabled by default)
 
 ## Services
 Service | Parameters | Description
@@ -283,30 +483,6 @@ Service | Parameters | Description
 `dahua.reboot` | `target`: camera.cam13_main <br />Reboots the device 
 
 
-## Camera
-This will provide a normal HA camera entity (can take snapshots, etc)
-
-## Switches
-Switch |  Description |
-:------------ | :------------ |
-Motion | Enables or disables motion detection on the camera
-Siren | If the camera has a siren, will turn on the siren. Note, it seems sirens only stay on for 10 to 15 seconds before switching off
-Disarming Linkage | Newer firmwares have a "disarming" feature (not sure what it is, but some people use it). This allows one to turn it on/off. This is found in the UI by going to Event -> Disarming
-
-## Lights
-Light |  Description |
-:------------ | :------------ |
-Infrared | Turns on/off the infrared light. Using this switch will disable the "auto" mode. If you want to enable auto mode again then use the service to enable auto. When in auto, this switch will not report the on/off state.
-Illuminator | If the camera has one, turns on/off the illuminator light (white light). Using this switch will disable the "auto" mode. If you want to enable auto mode again then use the service to enable auto. When in auto, this switch will not report the on/off state.
-Security | If the camera has one, turns on/off the security light (red/blue flashing light). This light stays on for 10 to 15 seconds before the camera auto turns it off.
-
-## Binary Sensors
-Sensor |  Description |
-:------------ | :------------ |
-Motion | A sensor that turns on when the camera detects motion
-Button Pressed | A sensor that turns on when a doorbell button is pressed
-Others | A binary senor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
-
 # Local development
 If you wish to work on this component, the easiest way is to follow [HACS Dev Container README](https://github.com/custom-components/integration_blueprint/blob/master/.devcontainer/README.md). In short:
 
@@ -316,16 +492,6 @@ If you wish to work on this component, the easiest way is to follow [HACS Dev Co
 * Clone this repo and open it in Visual Studio Code
 * View -> Command Palette. Type `Tasks: Run Task` and select it, then click `Run Home Assistant on port 9123`
 * Open Home Assistant at http://localhost:9123
-
-# Debugging
-Add to your configuration.yaml:
-
-```yaml
-logger:
-  default: info
-  logs:
-    custom_components.dahua: debug
-```
 
 # Curl/HTTP commands
 
