@@ -1,6 +1,6 @@
 {
     "name": "rroller/dahua",
-    "image": "mcr.microsoft.com/devcontainers/python:3.12-bullseye",
+    "image": "mcr.microsoft.com/devcontainers/python:3.13-bullseye",
     "postCreateCommand": "scripts/setup",
     "forwardPorts": [
         8123
