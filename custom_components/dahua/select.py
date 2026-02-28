@@ -7,7 +7,9 @@ Requires HomeAssistant 2021.7.0 or greater
 from homeassistant.core import HomeAssistant
 from homeassistant.components.select import SelectEntity
 from custom_components.dahua import DahuaConfigEntry, DahuaDataUpdateCoordinator
-from .entity import DahuaBaseEntity
+from .entity import DahuaBaseEntity, dahua_command
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -51,6 +53,7 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
 
         return "Off"
 
+    @dahua_command
     async def async_select_option(self, option: str) -> None:
         await self._coordinator.client.async_set_lighting_v2_for_amcrest_doorbells(
             option
@@ -97,7 +100,10 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
             return "Manual"
         return presetID
 
+    @dahua_command
     async def async_select_option(self, option: str) -> None:
+        if option == "Manual":
+            return
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_goto_preset_position(channel, int(option))
         await self._coordinator.async_refresh()

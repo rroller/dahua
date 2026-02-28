@@ -10,7 +10,7 @@ from homeassistant.helpers import entity_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature, StreamType
 
 from custom_components.dahua import DahuaConfigEntry, DahuaDataUpdateCoordinator
-from custom_components.dahua.entity import DahuaBaseEntity
+from custom_components.dahua.entity import DahuaBaseEntity, dahua_command
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -35,6 +35,8 @@ SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 SERVICE_REBOOT = "reboot"
 SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -285,6 +287,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Return the entity unique ID."""
         return self._unique_id
 
+    @dahua_command
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ):
@@ -306,6 +309,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Camera Motion Detection Status."""
         return self._coordinator.is_motion_detection_enabled()
 
+    @dahua_command
     async def async_enable_motion_detection(self):
         """Enable motion detection in camera."""
         try:
@@ -318,6 +322,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
                 self._name,
             )
 
+    @dahua_command
     async def async_disable_motion_detection(self):
         """Disable motion detection."""
         try:
@@ -335,6 +340,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Return the name of this camera."""
         return self._name
 
+    @dahua_command
     async def async_set_infrared_mode(self, mode: str, brightness: int):
         """Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness"""
         channel = self._coordinator.get_channel()
@@ -343,12 +349,14 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         )
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_goto_preset_position(self, position: int):
         """Handles the service call from SERVICE_GOTO_PRESET_POSITION to go to a specific preset position"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_goto_preset_position(channel, position)
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_set_video_in_day_night_mode(self, config_type: str, mode: str):
         """Handles the service call from SERVICE_SET_DAY_NIGHT_MODE to set the day/night color mode"""
         channel = self._coordinator.get_channel()
@@ -357,16 +365,19 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         )
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_reboot(self):
         """Handles the service call from SERVICE_REBOOT to reboot the device"""
         await self._coordinator.client.reboot()
 
+    @dahua_command
     async def async_set_record_mode(self, mode: str):
         """Handles the service call from SERVICE_SET_RECORD_MODE to set the record mode"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_record_mode(channel, mode)
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_set_video_profile_mode(self, mode: str):
         """Handles the service call from SERVICE_SET_VIDEO_PROFILE_MODE to set profile mode to day/night"""
         channel = self._coordinator.get_channel()
@@ -377,25 +388,30 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         else:
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
 
+    @dahua_command
     async def async_adjustfocus(self, focus: str, zoom: str):
         """Handles the service call from SERVICE_SET_INFRARED_MODE to set zoom and focus"""
         await self._coordinator.client.async_adjustfocus_v1(focus, zoom)
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_set_privacy_masking(self, index: int, enabled: bool):
         """Handles the service call from SERVICE_SET_PRIVACY_MASKING to control the privacy masking"""
         await self._coordinator.client.async_setprivacymask(index, enabled)
 
+    @dahua_command
     async def async_set_enable_channel_title(self, enabled: bool):
         """Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_enable_channel_title(channel, enabled)
 
+    @dahua_command
     async def async_set_enable_time_overlay(self, enabled: bool):
         """Handles the service call from SERVICE_ENABLE_TIME_OVERLAY"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_enable_time_overlay(channel, enabled)
 
+    @dahua_command
     async def async_set_enable_text_overlay(self, group: int, enabled: bool):
         """Handles the service call from SERVICE_ENABLE_TEXT_OVERLAY"""
         channel = self._coordinator.get_channel()
@@ -403,6 +419,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             channel, group, enabled
         )
 
+    @dahua_command
     async def async_set_enable_custom_overlay(self, group: int, enabled: bool):
         """Handles the service call from SERVICE_ENABLE_CUSTOM_OVERLAY"""
         channel = self._coordinator.get_channel()
@@ -410,24 +427,29 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             channel, group, enabled
         )
 
+    @dahua_command
     async def async_set_enable_all_ivs_rules(self, enabled: bool):
         """Handles the service call from SERVICE_ENABLE_ALL_IVS_RULES"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_all_ivs_rules(channel, enabled)
 
+    @dahua_command
     async def async_enable_ivs_rule(self, index: int, enabled: bool):
         """Handles the service call from SERVICE_ENABLE_IVS_RULE"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_ivs_rule(channel, index, enabled)
 
+    @dahua_command
     async def async_vto_open_door(self, door_id: int):
         """Handles the service call from SERVICE_VTO_OPEN_DOOR"""
         await self._coordinator.client.async_access_control_open_door(door_id)
 
+    @dahua_command
     async def async_vto_cancel_call(self):
         """Handles the service call from SERVICE_VTO_CANCEL_CALL to cancel VTO calls"""
         await self._coordinator.get_vto_client().cancel_call()
 
+    @dahua_command
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
         """Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night"""
         channel = self._coordinator.get_channel()
@@ -435,6 +457,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             channel, text1, text2
         )
 
+    @dahua_command
     async def async_set_service_set_text_overlay(
         self, group: int, text1: str, text2: str, text3: str, text4: str
     ):
@@ -444,6 +467,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             channel, group, text1, text2, text3, text4
         )
 
+    @dahua_command
     async def async_set_service_set_custom_overlay(
         self, group: int, text1: str, text2: str
     ):

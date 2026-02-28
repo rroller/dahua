@@ -45,6 +45,8 @@ ICON_OVERRIDES = {
     "AudioMutation": VOLUME_HIGH_ICON,
 }
 
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: DahuaConfigEntry, async_add_devices

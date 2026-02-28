@@ -6,8 +6,10 @@ from homeassistant.components.switch import SwitchEntity
 from custom_components.dahua import DahuaConfigEntry, DahuaDataUpdateCoordinator
 
 from .const import DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON
-from .entity import DahuaBaseEntity
+from .entity import DahuaBaseEntity, dahua_command
 from .client import SIREN_TYPE
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -45,12 +47,14 @@ async def async_setup_entry(
 class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua motion detection switch class. Used to enable or disable motion detection"""
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable motion detection."""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.enable_motion_detection(channel, True)
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable motion detection."""
         channel = self._coordinator.get_channel()
@@ -87,12 +91,14 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """will set the camera's disarming linkage (Event -> Disarming in the UI)"""
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable linkage"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_disarming_linkage(channel, True)
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable linkage"""
         channel = self._coordinator.get_channel()
@@ -132,12 +138,14 @@ class DahuaDisarmingEventNotificationsLinkageBinarySwitch(
 ):
     """will set the camera's event notifications when device is disarmed (Event -> Disarming -> Event Notifications in the UI)"""
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable event notifications"""
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_event_notifications(channel, True)
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable event notifications"""
         channel = self._coordinator.get_channel()
@@ -174,6 +182,7 @@ class DahuaDisarmingEventNotificationsLinkageBinarySwitch(
 class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """Enables or disables the Smart Motion Detection option in the camera"""
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on SmartMotionDetect"""
         if self._coordinator.supports_smart_motion_detection_amcrest():
@@ -182,6 +191,7 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
             await self._coordinator.client.async_enabled_smart_motion_detection(True)
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off SmartMotionDetect"""
         if self._coordinator.supports_smart_motion_detection_amcrest():
@@ -218,6 +228,7 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua siren switch class. Used to enable or disable camera built in sirens"""
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable the camera's siren"""
         channel = self._coordinator.get_channel()
@@ -226,6 +237,7 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         )
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable camera siren"""
         channel = self._coordinator.get_channel()

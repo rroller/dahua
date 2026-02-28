@@ -14,8 +14,10 @@ from homeassistant.components.light import (
 
 from . import DahuaConfigEntry, DahuaDataUpdateCoordinator, dahua_utils
 from .const import SECURITY_LIGHT_ICON, INFRARED_ICON
-from .entity import DahuaBaseEntity
+from .entity import DahuaBaseEntity, dahua_command
 from .client import SECURITY_LIGHT_TYPE
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -95,6 +97,7 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         """Don't poll."""
         return False
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
@@ -107,6 +110,7 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         )
         await self.coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
@@ -172,6 +176,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         """Don't poll."""
         return False
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):
         """Turn the light on with the current brightness"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
@@ -185,6 +190,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         )
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
@@ -226,11 +232,13 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
         """Return true if the light is on"""
         return self._coordinator.is_ring_light_on()
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
         await self._coordinator.client.async_set_light_global_enabled(True)
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         await self._coordinator.client.async_set_light_global_enabled(False)
@@ -297,6 +305,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         """Don't poll."""
         return False
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
         if self._coordinator._supports_floodlightmode:
@@ -317,6 +326,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
             )
             await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         if self._coordinator._supports_floodlightmode:
@@ -371,6 +381,7 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         """Don't poll."""
         return False
 
+    @dahua_command
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
         channel = self._coordinator.get_channel()
@@ -379,6 +390,7 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         )
         await self._coordinator.async_refresh()
 
+    @dahua_command
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         channel = self._coordinator.get_channel()

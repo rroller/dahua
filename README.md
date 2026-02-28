@@ -57,7 +57,8 @@ $ mv dahua-main/custom_components/dahua <home-assistant-install-directory>/confi
     3. **Address**: Your camera's address, typically just the IP address
     4. **Port**: Your camera's HTTP port. Default is `80`
     5. **RTSP Port**: Your camera's RTSP port, default is `554`. Used to live stream your camera in HA
-    6. **Events**: The integration will keep a connection open to the camera to capture motion events, alarm events, etc.
+    6. **Channel**: The camera channel index (0-based). Standalone cameras use `0`. For NVRs, each camera is a separate channel. Add a separate integration entry per channel.
+    7. **Events**: The integration will keep a connection open to the camera to capture motion events, alarm events, etc.
        You can select which events you want to monitor and report in HA. If no events are selected then the connection will no be created.
        If you want a specific event that's not listed here open an issue and I'll add it.
 
@@ -79,6 +80,19 @@ If you also want to remove the integration files from HACS:
 2. Click on `Integrations`
 3. Find `Dahua`, click the three-dot menu, and select `Remove`
 4. Restart Home Assistant
+
+### Configuration Options
+
+After adding the integration you can adjust which entity platforms are enabled by clicking
+`CONFIGURE` on the integration card. The following platforms can be toggled on or off:
+
+Option | Description | Default
+:------------ | :------------ | :-------------
+`binary_sensor` | Motion, alarm, and doorbell event sensors | Enabled
+`camera` | Camera entities with live streaming and snapshots | Enabled
+`light` | Infrared, illuminator, flood light, and security light controls | Enabled
+`select` | Preset position and doorbell light mode selectors | Enabled
+`switch` | Motion detection, siren, disarming, and smart motion detection toggles | Enabled
 
 
 # Known supported cameras

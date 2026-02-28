@@ -1,8 +1,39 @@
 """DahuaBaseEntity class"""
 
+import asyncio
+import functools
+import socket
+
+import aiohttp
+
 from custom_components.dahua import DahuaDataUpdateCoordinator
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, ATTRIBUTION
+
+
+def dahua_command(func):
+    """Wrap async methods to raise HomeAssistantError on device communication failures."""
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except (aiohttp.ClientError, socket.gaierror) as err:
+            raise HomeAssistantError(
+                f"Could not communicate with Dahua device: {err}"
+            ) from err
+        except asyncio.TimeoutError as err:
+            raise HomeAssistantError(
+                "Timed out communicating with Dahua device"
+            ) from err
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            raise HomeAssistantError(f"Dahua device command failed: {err}") from err
+
+    return wrapper
+
 
 """
 For a list of entity types, see https://developers.home-assistant.io/docs/core/entity/
