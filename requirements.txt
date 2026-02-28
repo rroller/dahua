@@ -2,4 +2,4 @@ homeassistant~=2025.1.2
 ha-ffmpeg==3.2.2
 colorlog==6.8.2
 pip>=24.3.1
-ruff==0.7.3
+ruff==0.15.4
