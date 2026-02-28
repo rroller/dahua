@@ -5,11 +5,11 @@
     "tag"
   ],
   "codeowners": [
-    "@rroller"
+    "@brianegge"
   ],
   "config_flow": true,
-  "documentation": "https://github.com/rroller/dahua",
+  "documentation": "https://github.com/brianegge/dahua",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/rroller/dahua/issues",
+  "issue_tracker": "https://github.com/brianegge/dahua/issues",
   "version": "0.9.83"
 }

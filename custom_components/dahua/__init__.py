@@ -734,7 +734,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         Returns true if this camera has the red/blue flashing security light feature.  For example, the
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
-        Addressed issue https://github.com/rroller/dahua/pull/405
+        Addressed issue https://github.com/brianegge/dahua/pull/405
         """
         return (
             "-AS-PV" in self.model

@@ -50,7 +50,7 @@ To manually install:
 
 ```bash
 # Download a copy of this repository
-$ wget https://github.com/rroller/dahua/archive/dahua-main.zip
+$ wget https://github.com/brianegge/dahua/archive/dahua-main.zip
 
 # Unzip the archive
 $ unzip dahua-main.zip
@@ -182,7 +182,7 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 
 # Known Limitations
 
-* **iMou / cloud-only devices**: Devices that require the iMou cloud service (and don't expose a local HTTP API) are not supported. See [issue #6](https://github.com/rroller/dahua/issues/6) for details.
+* **iMou / cloud-only devices**: Devices that require the iMou cloud service (and don't expose a local HTTP API) are not supported. See [issue #6](https://github.com/brianegge/dahua/issues/6) for details.
 * **IPC-D2B20-ZS**: This model doesn't work directly. It needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201) — see [#7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [#8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237).
 * **Firmware quirks**: Some older firmwares use non-standard channel numbering (channel 0 instead of channel 1). The integration auto-detects this, but if entities show incorrect data, try changing the channel setting.
 * **Auto mode vs manual control**: Turning infrared or illuminator lights on/off via the switch disables the camera's "auto" mode. Use the `set_infrared_mode` service with `mode: Auto` to restore automatic control.

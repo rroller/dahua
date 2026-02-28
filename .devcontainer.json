@@ -1,5 +1,5 @@
 {
-    "name": "rroller/dahua",
+    "name": "brianegge/dahua",
     "image": "mcr.microsoft.com/devcontainers/python:3.13-bullseye",
     "postCreateCommand": "scripts/setup",
     "forwardPorts": [

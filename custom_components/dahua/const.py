@@ -5,7 +5,7 @@ NAME = "Dahua"
 DOMAIN = "dahua"
 DOMAIN_DATA = f"{DOMAIN}_data"
 ATTRIBUTION = "Data provided by https://ronnieroller.com"
-ISSUE_URL = "https://github.com/rroller/dahua/issues"
+ISSUE_URL = "https://github.com/brianegge/dahua/issues"
 
 # Icons - https://materialdesignicons.com/
 ICON = "mdi:format-quote-close"
