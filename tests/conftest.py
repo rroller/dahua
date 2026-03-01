@@ -128,6 +128,7 @@ def mock_coordinator(hass, mock_config_entry, mock_client):
     coordinator._supports_floodlightmode = False
     coordinator._supports_profile_mode = False
     coordinator._serial_number = "SERIAL123"
+    coordinator._update_serial = ""
     coordinator._profile_mode = "0"
     coordinator._preset_position = "0"
     coordinator._channel = 0

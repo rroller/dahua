@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import socket
 import asyncio
-from collections.abc import Callable
+import time
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 import aiohttp
@@ -20,6 +21,29 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 TIMEOUT_SECONDS = 20
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
+
+
+_MULTIPART_BOUNDARY = "dahua-audio"
+
+
+def _parse_adts_frames(data: bytes) -> list[bytes]:
+    """Parse ADTS-framed AAC data into individual frames."""
+    frames: list[bytes] = []
+    offset = 0
+    while offset < len(data) - 7:
+        if data[offset] != 0xFF or (data[offset + 1] & 0xF0) != 0xF0:
+            offset += 1
+            continue
+        frame_length = (
+            ((data[offset + 3] & 0x03) << 11)
+            | (data[offset + 4] << 3)
+            | ((data[offset + 5] >> 5) & 0x07)
+        )
+        if frame_length < 7 or offset + frame_length > len(data):
+            break
+        frames.append(data[offset : offset + frame_length])
+        offset += frame_length
+    return frames
 
 
 class DahuaClient:
@@ -904,6 +928,100 @@ class DahuaClient:
                 # We didn't get a key=value. We just got a key. Just stick it in the dictionary and move on
                 data_dict[parts[0]] = line
         return data_dict
+
+    async def async_post_audio(
+        self,
+        audio_data: bytes,
+        channel: int,
+        encoding: str = "G.711A",
+        duration: float = 0,
+    ) -> None:
+        """POST audio to the camera speaker via multipart MIME streaming.
+
+        Uses ``httptype=multipart`` with each ADTS frame sent as a separate
+        MIME part.  This gives the camera explicit frame boundaries so its
+        decoder always receives complete, decodable units.  Parts are paced
+        at the AAC frame rate (128 ms for 8 kHz) to keep the playback buffer
+        fed without overrun.
+
+        For non-AAC encodings, falls back to a single MIME part.
+        """
+        boundary = _MULTIPART_BOUNDARY
+        url = (
+            "{0}/cgi-bin/audio.cgi?action=postAudio&httptype=multipart&channel={1}"
+        ).format(self._base, channel)
+        headers = {
+            "Content-Type": (
+                "multipart/x-mixed-replace; boundary={0}".format(boundary)
+            ),
+        }
+        content_type = "Audio/{0}".format(encoding)
+
+        # Prime digest auth with a lightweight GET so the POST is
+        # authenticated on first attempt (camera drops un-authed POSTs).
+        prime_auth = DigestAuth(self._username, self._password, self._session)
+        async with async_timeout.timeout(TIMEOUT_SECONDS):
+            prime_resp = await prime_auth.request(
+                "GET", self._base + "/cgi-bin/magicBox.cgi?action=getMachineName"
+            )
+            prime_resp.close()
+
+        auth = DigestAuth(
+            self._username,
+            self._password,
+            self._session,
+            {
+                "last_nonce": prime_auth.last_nonce,
+                "nonce_count": prime_auth.nonce_count,
+                "challenge": prime_auth.challenge,
+            },
+        )
+
+        if duration <= 0:
+            duration = len(audio_data) / 8000.0
+
+        # Parse ADTS frames for frame-aligned delivery; fall back to
+        # a single part for non-AAC encodings.
+        frames = _parse_adts_frames(audio_data) if encoding == "AAC" else []
+        if not frames:
+            frames = [audio_data]
+        frame_interval = duration / len(frames) if len(frames) > 1 else duration
+
+        async def _stream() -> AsyncIterator[bytes]:
+            start = time.monotonic()
+            for i, frame in enumerate(frames):
+                part = (
+                    (
+                        "--{boundary}\r\n"
+                        "Content-Type: {ct}\r\n"
+                        "Content-Length: {length}\r\n"
+                        "\r\n"
+                    )
+                    .format(boundary=boundary, ct=content_type, length=len(frame))
+                    .encode()
+                    + frame
+                    + b"\r\n"
+                )
+                yield part
+                if i < len(frames) - 1:
+                    target = start + (i + 1) * frame_interval
+                    delay = target - time.monotonic()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+            yield "--{0}--\r\n".format(boundary).encode()
+
+        response = None
+        try:
+            async with async_timeout.timeout(duration + 10):
+                response = await auth.request(
+                    "POST", url, headers=headers, data=_stream()
+                )
+        except asyncio.TimeoutError:
+            # Expected for cameras that treat this as a streaming endpoint
+            pass
+        finally:
+            if response is not None:
+                response.close()
 
     async def get_bytes(self, url: str) -> bytes:
         """Get information from the API. This will return the raw response and not process it"""

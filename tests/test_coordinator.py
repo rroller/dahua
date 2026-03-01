@@ -91,6 +91,79 @@ class TestSupportsSiren:
         assert mock_coordinator.supports_siren() is False
 
 
+class TestSupportsSpeaker:
+    """Test supports_speaker() against real Dahua model suffixes."""
+
+    def test_as_suffix(self, mock_coordinator):
+        """AS = Audio Speaker."""
+        mock_coordinator.model = "IPC-HDW5442TP-AS"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_ase_suffix(self, mock_coordinator):
+        """ASE = Audio Speaker + Event I/O."""
+        mock_coordinator.model = "IPC-HFW5442TP-ASE-S3"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_ase_led_suffix(self, mock_coordinator):
+        """ASE-LED variant."""
+        mock_coordinator.model = "IPC-HDW5849HP-ASE-LED"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_pv_suffix(self, mock_coordinator):
+        """PV = Active Visual deterrence (siren + lights)."""
+        mock_coordinator.model = "IPC-HFW1841EN-PV"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_as_pv_suffix(self, mock_coordinator):
+        """AS-PV models have both audio speaker and siren."""
+        mock_coordinator.model = "IPC-HDW3849HP-AS-PV"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_older_as_models(self, mock_coordinator):
+        mock_coordinator.model = "IPC-HDW2431TP-AS"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_older_as_models_2(self, mock_coordinator):
+        mock_coordinator.model = "IPC-HDW2531TP-AS"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_siren_floodlight_l46n(self, mock_coordinator):
+        """L46N floodlight models have sirens."""
+        mock_coordinator.model = "IPC-L46N"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_doorbell(self, mock_coordinator):
+        mock_coordinator.model = "AD410"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_ze_no_speaker(self, mock_coordinator):
+        """ZE = Zoom, no speaker."""
+        mock_coordinator.model = "IPC-HFW5442EP-ZE"
+        assert mock_coordinator.supports_speaker() is False
+
+    def test_regular_ipc_no_speaker(self, mock_coordinator):
+        mock_coordinator.model = "IPC-HDW5831R-ZE"
+        assert mock_coordinator.supports_speaker() is False
+
+    def test_generic_model_with_update_serial_as(self, mock_coordinator):
+        """When deviceType is generic, updateSerial has the real model."""
+        mock_coordinator.model = "E891AB"
+        mock_coordinator._update_serial = "IPC-HDW5442TP-AS"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_generic_model_with_update_serial_pv(self, mock_coordinator):
+        """PV suffix detected via updateSerial."""
+        mock_coordinator.model = "E891AB"
+        mock_coordinator._update_serial = "IPC-HFW1841EN-PV"
+        assert mock_coordinator.supports_speaker() is True
+
+    def test_generic_model_with_update_serial_no_speaker(self, mock_coordinator):
+        """updateSerial without speaker suffix still returns False."""
+        mock_coordinator.model = "E891AB"
+        mock_coordinator._update_serial = "IPC-HFW5442EP-ZE"
+        assert mock_coordinator.supports_speaker() is False
+
+
 class TestSupportsInfraredLight:
     def test_regular_ipc_with_lighting(self, mock_coordinator):
         mock_coordinator._supports_lighting = True

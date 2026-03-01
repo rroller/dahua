@@ -8,6 +8,11 @@
                 "default": "mdi:volume-high"
             }
         },
+        "media_player": {
+            "speaker": {
+                "default": "mdi:speaker"
+            }
+        },
         "switch": {
             "motion_detection": {
                 "default": "mdi:motion-sensor"

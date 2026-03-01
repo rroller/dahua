@@ -131,6 +131,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._supports_lighting = False
         self._supports_floodlightmode = False
         self._serial_number: str
+        self._update_serial = ""
         self._profile_mode = "0"
         self._preset_position = "0"
         self._supports_profile_mode = False
@@ -286,6 +287,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.model = str(device_type) if device_type else ""
                 self.machine_name = str(data.get("table.General.MachineName", ""))
                 self._serial_number = str(data.get("serialNumber", ""))
+                self._update_serial = str(data.get("updateSerial", ""))
 
                 try:
                     await self.client.async_get_snapshot(0)
@@ -976,6 +978,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def supports_smart_motion_detection(self) -> bool:
         """True if smart motion detection is supported"""
         return self._supports_smart_motion_detection
+
+    def supports_speaker(self) -> bool:
+        """Returns true if this camera has a speaker.
+
+        Checks both ``model`` (deviceType) and ``_update_serial`` (updateSerial)
+        because some firmwares report a generic deviceType (e.g. "E891AB") while
+        the real Dahua model with feature suffixes is in updateSerial.
+
+        Detection is based on Dahua model suffix conventions:
+        - ``-AS`` = Audio Speaker (also catches -ASE = Audio Speaker + Event I/O)
+        - ``-PV`` = Active Visual deterrence (siren + warning lights)
+        - Siren models (L46N, W452ASD) and doorbells also have speakers.
+        """
+        m = self.model.upper()
+        u = self._update_serial.upper()
+        return (
+            "-AS" in m
+            or "-PV" in m
+            or "-AS" in u
+            or "-PV" in u
+            or self.supports_siren()
+            or self.is_doorbell()
+        )
 
     def supports_smart_motion_detection_amcrest(self) -> bool:
         """True if smart motion detection is supported for an amcrest device"""

@@ -61,7 +61,8 @@
                     "switch": "Switch enabled",
                     "light": "Light enabled",
                     "select": "Select enabled",
-                    "camera": "Camera enabled"
+                    "camera": "Camera enabled",
+                    "media_player": "Media player enabled"
                 }
             }
         }
@@ -110,6 +111,11 @@
             },
             "ring_light": {
                 "name": "Ring light"
+            }
+        },
+        "media_player": {
+            "speaker": {
+                "name": "Speaker"
             }
         },
         "select": {
