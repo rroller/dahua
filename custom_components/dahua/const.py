@@ -10,14 +10,33 @@ ISSUE_URL = "https://github.com/brianegge/dahua/issues"
 # Icons - https://materialdesignicons.com/
 ICON = "mdi:format-quote-close"
 
+MOTION_DETECTION_ICON = "mdi:motion-sensor"
+SECURITY_LIGHT_ICON = "mdi:alarm-light-outline"
+SIREN_ICON = "mdi:bullhorn"
+INFRARED_ICON = "mdi:weather-night"
+DISARMING_ICON = "mdi:alarm-check"
+VOLUME_HIGH_ICON = "mdi:volume-high"
+BELL_ICON = "mdi:bell-ring"
+ZOOM_ICON = "mdi:magnify-plus"
+FOCUS_ICON = "mdi:camera-iris"
+
+
+# Device classes - https://www.home-assistant.io/integrations/binary_sensor/#device-class
+MOTION_SENSOR_DEVICE_CLASS = "motion"
+SAFETY_DEVICE_CLASS = "safety"
+CONNECTIVITY_DEVICE_CLASS = "connectivity"
+SOUND_DEVICE_CLASS = "sound"
+DOOR_DEVICE_CLASS = "door"
+
 # Platforms
 BINARY_SENSOR = "binary_sensor"
 SWITCH = "switch"
 LIGHT = "light"
 CAMERA = "camera"
 SELECT = "select"
+NUMBER = "number"
 MEDIA_PLAYER = "media_player"
-PLATFORMS = [BINARY_SENSOR, SWITCH, LIGHT, CAMERA, SELECT, MEDIA_PLAYER]
+PLATFORMS = [BINARY_SENSOR, SWITCH, LIGHT, CAMERA, SELECT, NUMBER, MEDIA_PLAYER]
 
 
 # Configuration and options

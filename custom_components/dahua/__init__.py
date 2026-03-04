@@ -130,6 +130,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._supports_ptz_position = False
         self._supports_lighting = False
         self._supports_floodlightmode = False
+        self._supports_zoom_focus = False
         self._serial_number: str
         self._update_serial = ""
         self._profile_mode = "0"
@@ -395,6 +396,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "Device supports audio.cgi=%s", self._supports_audio_cgi
                     )
 
+                try:
+                    await self.client.async_get_zoomfocus_v1()
+                    self._supports_zoom_focus = True
+                except ClientError:
+                    self._supports_zoom_focus = False
+                    pass
+                _LOGGER.info("Device supports Zoom/Focus=%s", self._supports_zoom_focus)
+
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
                     await self.async_start_event_listener()
@@ -519,6 +528,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             if self._supports_lighting_v2:  # add lighing_v2 API if it is supported
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
+            if self._supports_zoom_focus:
+                coros.append(
+                    asyncio.ensure_future(self.client.async_get_zoomfocus_v1())
+                )
 
             # Gather results and update the data map
             results = await asyncio.gather(*coros)
@@ -1022,6 +1035,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """True if smart motion detection is supported for an amcrest device"""
         return self.model == "AD410" or self.model == "DB61i"
 
+    def supports_focus_zoom(self) -> bool:
+        """True if camera is varifocal"""
+        return self._supports_zoom_focus
+
     def get_vto_client(self) -> DahuaVTOClient | None:
         """
         Returns an instance of the connected VTO client if this is a VTO device. We need this because there's different
@@ -1032,8 +1049,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def get_status_value(self, key):
         v = self.data.get(f"status.status.{key}")
         if v is None:
-           v = self.data.get(f"status.{key}", "")
+            v = self.data.get(f"status.{key}", "")
         return v
+
+    def get_zoom(self) -> float:
+        return float(self.data.get("status.Zoom")) if self._supports_zoom_focus else 0
+
+    def get_focus(self) -> float:
+        return float(self.data.get("status.Focus")) if self._supports_zoom_focus else 0
 
 async def async_remove_config_entry_device(
     hass: HomeAssistant, config_entry: DahuaConfigEntry, device_entry: Any

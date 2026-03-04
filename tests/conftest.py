@@ -83,6 +83,7 @@ def mock_client() -> AsyncMock:
     client.async_get_config_lighting.side_effect = ClientError()
     client.async_get_lighting_v2.side_effect = ClientError()
     client.async_get_audio_input.side_effect = ClientError()
+    client.async_get_zoomfocus_v1.side_effect = ClientError()
     client.async_get_config.side_effect = ClientError()
 
     # Periodic polling defaults
@@ -127,6 +128,7 @@ def mock_coordinator(hass, mock_config_entry, mock_client):
     coordinator._supports_lighting = True
     coordinator._supports_lighting_v2 = False
     coordinator._supports_audio_cgi = False
+    coordinator._supports_zoom_focus = False
     coordinator._supports_floodlightmode = False
     coordinator._supports_profile_mode = False
     coordinator._serial_number = "SERIAL123"

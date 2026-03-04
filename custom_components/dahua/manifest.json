@@ -2,7 +2,9 @@
   "domain": "dahua",
   "name": "Dahua",
   "after_dependencies": [
-    "tag"
+    "tag",
+    "number",
+    "media_player"
   ],
   "codeowners": [
     "@brianegge"

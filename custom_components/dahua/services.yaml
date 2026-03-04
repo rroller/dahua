@@ -463,3 +463,11 @@ goto_preset_position:
           min: 1
           max: 10
           mode: box
+
+autofocus:
+  name: Dahua Camera AutoFocus
+  description: "Autofocuses the Camera"
+  target:
+    entity:
+      integration: dahua
+      domain: number
