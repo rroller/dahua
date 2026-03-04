@@ -48,6 +48,10 @@ async def async_setup_entry(
     except ClientError:
         pass
 
+    # Add privacy mode switch if RPC2 client is available
+    if hasattr(coordinator, "rpc2_client") and coordinator.rpc2_client:
+        devices.append(DahuaPrivacyModeBinarySwitch(coordinator, entry))
+
     async_add_devices(devices)
 
 
@@ -242,3 +246,41 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         Value is fetched from api.get_motion_detection_config
         """
         return self._coordinator.is_siren_on()
+
+
+class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
+    """Dahua privacy mode switch class. Used to enable or disable privacy mode."""
+
+    async def async_turn_on(self, **kwargs):
+        """Turn on privacy mode."""
+        await self._coordinator.rpc2_client.set_privacy_mode(True)
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):
+        """Turn off privacy mode."""
+        await self._coordinator.rpc2_client.set_privacy_mode(False)
+        await self._coordinator.async_refresh()
+
+    @property
+    def name(self):
+        """Return the name of the switch."""
+        return self._coordinator.get_device_name() + " Privacy Mode"
+
+    @property
+    def unique_id(self):
+        """Return unique ID."""
+        return self._coordinator.get_serial_number() + "_privacy_mode"
+
+    @property
+    def icon(self):
+        """Return the icon of this switch."""
+        return "mdi:eye-off"
+
+    @property
+    def is_on(self):
+        """Return true if privacy mode is on."""
+        try:
+            # Since we don't have a coordinator method yet, we'll check directly
+            return self._coordinator.data.get("privacy_mode_enabled", False)
+        except (KeyError, AttributeError):
+            return False

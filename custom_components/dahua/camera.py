@@ -22,6 +22,7 @@ SERVICE_SET_INFRARED_MODE = "set_infrared_mode"
 SERVICE_SET_VIDEO_PROFILE_MODE = "set_video_profile_mode"
 SERVICE_SET_FOCUS_ZOOM = "set_focus_zoom"
 SERVICE_SET_PRIVACY_MASKING = "set_privacy_masking"
+SERVICE_SET_PRIVACY_MODE = "set_privacy_mode"
 SERVICE_SET_CHANNEL_TITLE = "set_channel_title"
 SERVICE_SET_TEXT_OVERLAY = "set_text_overlay"
 SERVICE_SET_CUSTOM_OVERLAY = "set_custom_overlay"
@@ -98,6 +99,14 @@ async def async_setup_entry(
             vol.Required("enabled", default=False): bool,
         },
         "async_set_privacy_masking",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SET_PRIVACY_MODE,
+        {
+            vol.Required("enabled", default=False): bool,
+        },
+        "async_set_privacy_mode",
     )
 
     platform.async_register_entity_service(

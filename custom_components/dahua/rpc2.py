@@ -67,8 +67,44 @@ class DahuaRpc2Client:
         resp = await self._session.post(url, data=json.dumps(data))
         resp_json: dict[str, Any] = json.loads(await resp.text())
 
-        if verify_result and resp_json["result"] is False:
-            raise ConnectionError(str(resp))
+        if verify_result and resp_json.get("result") is False:
+            error_msg = resp_json.get("error", {})
+            error_code = error_msg.get("code", 0)
+
+            # Check if it's a session error (code 287637505 means "Invalid session")
+            if error_code == 287637505 or "session" in str(error_msg).lower():
+                _LOGGER.info("Session expired, attempting to re-login")
+                # Clear the session and try to login again
+                self._session_id = None
+                await self.login()
+
+                # Retry the request with the new session
+                if self._session_id:
+                    data["session"] = self._session_id
+                    resp = await self._session.post(url, data=json.dumps(data))
+                    resp_text = await resp.text()
+                    try:
+                        resp_json = json.loads(resp_text)
+                    except json.JSONDecodeError:
+                        _LOGGER.error(
+                            "Failed to parse JSON response after re-login: %s",
+                            resp_text,
+                        )
+                        raise ConnectionError(f"Invalid JSON response: {resp_text}")
+
+                    # Check the result again
+                    if resp_json.get("result") is False:
+                        error_msg = resp_json.get("error", {})
+                        _LOGGER.error(
+                            "RPC2 request failed after re-login: %s", error_msg
+                        )
+                        raise ConnectionError(f"RPC2 error: {error_msg}")
+                else:
+                    _LOGGER.error("Failed to re-login after session expiry")
+                    raise ConnectionError(f"RPC2 error: {error_msg}")
+            else:
+                _LOGGER.error("RPC2 request failed: %s", error_msg)
+                raise ConnectionError(f"RPC2 error: {error_msg}")
 
         return resp_json
 
@@ -158,4 +194,51 @@ class DahuaRpc2Client:
         response = await self.request(
             method="CoaxialControlIO.getStatus", params={"channel": channel}
         )
-        return CoaxialControlIOStatus(api_response=response)
+        return CoaxialControlIOStatus(response)
+
+    async def get_privacy_mode_config(self) -> dict:
+        """Gets the current privacy mode (LeLensMask) configuration."""
+        await self._ensure_logged_in()
+        response = await self.get_config({"name": "LeLensMask"})
+        return response
+
+    async def _ensure_logged_in(self):
+        """Ensure we have a valid session, login if needed."""
+        if not self._session_id:
+            await self.login()
+
+    async def set_privacy_mode(self, enabled: bool) -> bool:
+        """Sets privacy mode on or off."""
+        await self._ensure_logged_in()
+
+        # Default time sections for all days, all hours
+        default_time_sections = [
+            [
+                "1 00:00:00-23:59:59",
+                "0 00:00:00-23:59:59",
+                "0 00:00:00-23:59:59",
+                "0 00:00:00-23:59:59",
+                "0 00:00:00-23:59:59",
+                "0 00:00:00-23:59:59",
+            ]
+        ] * 7
+
+        params = {
+            "name": "LeLensMask",
+            "table": [
+                {
+                    "Enable": enabled,
+                    "LastPosition": [
+                        -0.5861111111111111,
+                        -0.2061111111111111,
+                        0.0078125,
+                    ],
+                    "TimeSection": default_time_sections,
+                }
+            ],
+            "options": [],
+        }
+
+        response = await self.request(method="configManager.setConfig", params=params)
+        # For configManager.setConfig, success is indicated by result being True or the method completing without error
+        return response.get("result", True) is not False
