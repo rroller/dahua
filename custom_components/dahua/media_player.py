@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import subprocess
 from typing import Any
 
@@ -82,17 +83,36 @@ def _convert_to_aac(audio_data: bytes) -> tuple[bytes, float]:
     return result.stdout, duration
 
 
+def _resolve_media_id(media_id: str) -> str | Path:
+    """Resolve a media_id to a local path or URL.
+
+    Handles media-source://media_source/local/... URIs by mapping them to
+    the /media directory.  Returns a Path for local files and a string URL
+    for remote resources.
+    """
+    prefix = "media-source://media_source/local/"
+    if media_id.startswith(prefix):
+        return Path("/media") / media_id[len(prefix) :]
+    if media_id.startswith("/"):
+        return Path(media_id)
+    return media_id
+
+
 async def _fetch_and_convert_audio(
-    hass: HomeAssistant, url: str
+    hass: HomeAssistant, media_id: str
 ) -> tuple[bytes, float]:
-    """Fetch audio from URL and convert to AAC format.
+    """Fetch audio from a URL or local path and convert to AAC format.
 
     Returns a tuple of (aac_bytes, duration_seconds).
     """
-    session = async_get_clientsession(hass)
-    async with session.get(url) as response:
-        response.raise_for_status()
-        audio_data = await response.read()
+    source = _resolve_media_id(media_id)
+    if isinstance(source, Path):
+        audio_data = await hass.async_add_executor_job(source.read_bytes)
+    else:
+        session = async_get_clientsession(hass)
+        async with session.get(source) as response:
+            response.raise_for_status()
+            audio_data = await response.read()
 
     return await hass.async_add_executor_job(_convert_to_aac, audio_data)
 
@@ -116,15 +136,26 @@ class DahuaSpeaker(DahuaBaseEntity, MediaPlayerEntity):
         media_id: str,
         **kwargs: Any,
     ) -> None:
-        """Play audio on the camera speaker."""
+        """Play audio on the camera speaker.
+
+        Tries the HTTP ``audio.cgi`` endpoint first.  If the camera resets the
+        connection (common on Lorex and older Dahua firmwares), falls back to
+        RTSP ONVIF backchannel which is more widely supported.
+        """
         self._attr_state = MediaPlayerState.PLAYING
         self.async_write_ha_state()
         try:
             aac_data, duration = await _fetch_and_convert_audio(self.hass, media_id)
             channel = self._coordinator.get_channel_number()
-            await self._coordinator.client.async_post_audio(
-                aac_data, channel, encoding="AAC", duration=duration
-            )
+            try:
+                await self._coordinator.client.async_post_audio(
+                    aac_data, channel, encoding="AAC", duration=duration
+                )
+            except Exception as exc:
+                _LOGGER.info("HTTP audio.cgi failed (%s), trying RTSP backchannel", exc)
+                await self._coordinator.client.async_post_audio_backchannel(
+                    aac_data, channel, duration=duration
+                )
         finally:
             self._attr_state = MediaPlayerState.IDLE
             self.async_write_ha_state()

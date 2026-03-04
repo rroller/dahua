@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import random
+import re
 import socket
 import asyncio
+import struct
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
@@ -985,43 +988,262 @@ class DahuaClient:
         frames = _parse_adts_frames(audio_data) if encoding == "AAC" else []
         if not frames:
             frames = [audio_data]
-        frame_interval = duration / len(frames) if len(frames) > 1 else duration
 
-        async def _stream() -> AsyncIterator[bytes]:
-            start = time.monotonic()
-            for i, frame in enumerate(frames):
-                part = (
-                    (
-                        "--{boundary}\r\n"
-                        "Content-Type: {ct}\r\n"
-                        "Content-Length: {length}\r\n"
-                        "\r\n"
-                    )
-                    .format(boundary=boundary, ct=content_type, length=len(frame))
-                    .encode()
-                    + frame
-                    + b"\r\n"
+        # Build the complete multipart body up-front so the POST is sent
+        # with a Content-Length header.  Many Dahua cameras reject chunked
+        # transfer encoding (async-generator streaming) and immediately
+        # disconnect.
+        body_parts: list[bytes] = []
+        for frame in frames:
+            body_parts.append(
+                (
+                    "--{boundary}\r\n"
+                    "Content-Type: {ct}\r\n"
+                    "Content-Length: {length}\r\n"
+                    "\r\n"
                 )
-                yield part
-                if i < len(frames) - 1:
-                    target = start + (i + 1) * frame_interval
-                    delay = target - time.monotonic()
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-            yield "--{0}--\r\n".format(boundary).encode()
+                .format(boundary=boundary, ct=content_type, length=len(frame))
+                .encode()
+                + frame
+                + b"\r\n"
+            )
+        body_parts.append("--{0}--\r\n".format(boundary).encode())
+        body = b"".join(body_parts)
 
         response = None
         try:
             async with async_timeout.timeout(duration + 10):
-                response = await auth.request(
-                    "POST", url, headers=headers, data=_stream()
-                )
+                response = await auth.request("POST", url, headers=headers, data=body)
         except asyncio.TimeoutError:
             # Expected for cameras that treat this as a streaming endpoint
             pass
         finally:
             if response is not None:
                 response.close()
+
+    async def async_post_audio_backchannel(
+        self,
+        audio_data: bytes,
+        channel: int,
+        duration: float = 0,
+    ) -> None:
+        """Send audio to the camera speaker via RTSP ONVIF backchannel.
+
+        This method is used for cameras whose firmware does not expose the
+        ``audio.cgi`` HTTP endpoint.  It negotiates an RTSP session with the
+        ``Require: www.onvif.org/ver20/backchannel`` header, which causes the
+        camera to advertise a ``sendonly`` audio track.  Audio is then streamed
+        as RTP packets over TCP-interleaved RTSP.
+
+        ``audio_data`` must be AAC in ADTS framing at 8 kHz mono (the same
+        output produced by ``_convert_to_aac``).
+        """
+        frames = _parse_adts_frames(audio_data)
+        if not frames:
+            raise RuntimeError("No ADTS frames found in audio data")
+
+        if duration <= 0:
+            duration = len(audio_data) / 8000.0
+        frame_interval = duration / len(frames) if len(frames) > 1 else duration
+
+        cam_host = self._address
+        rtsp_port = self._rtsp_port
+        rtsp_url = "rtsp://{}:{}/cam/realmonitor?channel={}&subtype=0".format(
+            cam_host, rtsp_port, channel + 1
+        )
+        uri_path = "/cam/realmonitor?channel={}&subtype=0".format(channel + 1)
+
+        reader: asyncio.StreamReader
+        writer: asyncio.StreamWriter
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(cam_host, int(rtsp_port)),
+            timeout=TIMEOUT_SECONDS,
+        )
+
+        cseq = 0
+        session_id = ""
+
+        async def _rtsp_send(method: str, url: str, extra_headers: str = "") -> str:
+            nonlocal cseq
+            cseq += 1
+            msg = "{} {} RTSP/1.0\r\nCSeq: {}\r\n{}".format(
+                method, url, cseq, extra_headers
+            )
+            if not msg.endswith("\r\n\r\n"):
+                msg += "\r\n"
+            writer.write(msg.encode())
+            await writer.drain()
+
+            resp_bytes = b""
+            while b"\r\n\r\n" not in resp_bytes:
+                chunk = await asyncio.wait_for(reader.read(4096), timeout=10)
+                if not chunk:
+                    break
+                resp_bytes += chunk
+            resp = resp_bytes.decode(errors="replace")
+
+            # If there's a Content-Length, read the body too
+            cl = re.search(r"Content-Length:\s*(\d+)", resp, re.IGNORECASE)
+            if cl:
+                body_start = resp_bytes.find(b"\r\n\r\n") + 4
+                body_needed = int(cl.group(1)) - (len(resp_bytes) - body_start)
+                if body_needed > 0:
+                    body_extra = await asyncio.wait_for(
+                        reader.readexactly(body_needed), timeout=10
+                    )
+                    resp += body_extra.decode(errors="replace")
+            return resp
+
+        try:
+            # --- DESCRIBE (unauthenticated to get digest challenge) ---
+            resp = await _rtsp_send(
+                "DESCRIBE",
+                rtsp_url,
+                "Accept: application/sdp\r\n"
+                "Require: www.onvif.org/ver20/backchannel\r\n",
+            )
+
+            # Parse digest challenge from 401
+            realm_m = re.search(r'realm="([^"]+)"', resp)
+            nonce_m = re.search(r'nonce="([^"]+)"', resp)
+            if not (realm_m and nonce_m):
+                raise RuntimeError("RTSP auth challenge not found: " + resp[:200])
+            realm = realm_m.group(1)
+            nonce = nonce_m.group(1)
+
+            def _digest(method: str, uri: str) -> str:
+                ha1 = md5(
+                    "{}:{}:{}".format(self._username, realm, self._password).encode()
+                ).hexdigest()
+                ha2 = md5("{}:{}".format(method, uri).encode()).hexdigest()
+                resp_hash = md5("{}:{}:{}".format(ha1, nonce, ha2).encode()).hexdigest()
+                return (
+                    'Digest username="{}", realm="{}", nonce="{}", '
+                    'uri="{}", response="{}"'
+                ).format(self._username, realm, nonce, uri, resp_hash)
+
+            # --- DESCRIBE (authenticated) ---
+            resp = await _rtsp_send(
+                "DESCRIBE",
+                rtsp_url,
+                "Accept: application/sdp\r\n"
+                "Require: www.onvif.org/ver20/backchannel\r\n"
+                "Authorization: {}\r\n".format(_digest("DESCRIBE", uri_path)),
+            )
+            if "200" not in resp.split("\r\n")[0]:
+                raise RuntimeError("RTSP DESCRIBE failed: " + resp[:200])
+
+            # Parse SDP to find backchannel track (sendonly audio)
+            bc_track = None
+            for line in resp.split("\n"):
+                line = line.strip()
+                if line.startswith("a=control:trackID="):
+                    current_track = line.split("=", 1)[1]
+                if line == "a=sendonly":
+                    bc_track = current_track
+            if not bc_track:
+                raise RuntimeError("No backchannel track found in SDP")
+
+            # --- SETUP backchannel track (TCP interleaved) ---
+            setup_url = "{}/trackID={}".format(rtsp_url, bc_track)
+            setup_uri = "{}/trackID={}".format(uri_path, bc_track)
+            resp = await _rtsp_send(
+                "SETUP",
+                setup_url,
+                "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n"
+                "Authorization: {}\r\n".format(_digest("SETUP", setup_uri)),
+            )
+            if "200" not in resp.split("\r\n")[0]:
+                raise RuntimeError("RTSP SETUP failed: " + resp[:200])
+
+            # Extract session ID
+            sess_m = re.search(r"Session:\s*([^;\r\n]+)", resp)
+            if sess_m:
+                session_id = sess_m.group(1).strip()
+
+            # Parse interleaved channel from Transport header
+            il_m = re.search(r"interleaved=(\d+)-(\d+)", resp)
+            rtp_channel = int(il_m.group(1)) if il_m else 0
+
+            # --- PLAY ---
+            play_headers = "Authorization: {}\r\n".format(_digest("PLAY", uri_path))
+            if session_id:
+                play_headers += "Session: {}\r\n".format(session_id)
+            resp = await _rtsp_send("PLAY", rtsp_url, play_headers)
+            if "200" not in resp.split("\r\n")[0]:
+                raise RuntimeError("RTSP PLAY failed: " + resp[:200])
+
+            # --- Stream audio as RTP over interleaved TCP ---
+            seq = random.randint(0, 0xFFFF)
+            ts = random.randint(0, 0xFFFFFFFF)
+            ssrc = random.randint(0, 0xFFFFFFFF)
+            payload_type = 97  # matches SDP
+
+            start = time.monotonic()
+            for i, adts_frame in enumerate(frames):
+                # Strip ADTS header (7 bytes, or 9 if CRC present)
+                header_len = 7
+                if len(adts_frame) > 1 and not (adts_frame[1] & 0x01):
+                    header_len = 9  # CRC present
+                raw_aac = adts_frame[header_len:]
+                if not raw_aac:
+                    continue
+
+                # AU header section for AAC-hbr:
+                # 2 bytes AU-headers-length (in bits) + 2 bytes AU-header
+                au_size = len(raw_aac)
+                au_headers_length = 16  # 16 bits = one 2-byte AU header
+                au_header = (au_size << 3) & 0xFFF8  # 13-bit size, 3-bit index=0
+                au_section = struct.pack(">HH", au_headers_length, au_header)
+
+                # RTP header
+                seq = (seq + 1) & 0xFFFF
+                rtp_header = struct.pack(
+                    ">BBHII",
+                    0x80,  # V=2, P=0, X=0, CC=0
+                    0x80 | payload_type if i == len(frames) - 1 else payload_type,
+                    seq,
+                    ts & 0xFFFFFFFF,
+                    ssrc,
+                )
+                rtp_packet = rtp_header + au_section + raw_aac
+
+                # RTSP interleaved frame: $ + channel + length + data
+                interleaved = (
+                    struct.pack(">cBH", b"$", rtp_channel, len(rtp_packet)) + rtp_packet
+                )
+
+                writer.write(interleaved)
+                await writer.drain()
+
+                # Advance RTP timestamp (1024 samples per AAC frame at 8kHz)
+                ts += 1024
+
+                # Pace at the frame rate
+                if i < len(frames) - 1:
+                    target = start + (i + 1) * frame_interval
+                    delay = target - time.monotonic()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+
+            # Small delay to let the camera play the last frames
+            await asyncio.sleep(0.5)
+
+            # --- TEARDOWN ---
+            td_headers = "Authorization: {}\r\n".format(_digest("TEARDOWN", uri_path))
+            if session_id:
+                td_headers += "Session: {}\r\n".format(session_id)
+            try:
+                await _rtsp_send("TEARDOWN", rtsp_url, td_headers)
+            except Exception:
+                pass
+
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
 
     async def get_bytes(self, url: str) -> bytes:
         """Get information from the API. This will return the raw response and not process it"""
