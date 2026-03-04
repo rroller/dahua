@@ -932,6 +932,21 @@ class DahuaClient:
                 data_dict[parts[0]] = line
         return data_dict
 
+    async def async_get_audio_input(self, channel: int) -> dict[str, Any]:
+        """Probe audio.cgi with a read-only GET to check if the endpoint exists.
+
+        Returns the parsed response on success.  Lets ``ClientError`` propagate
+        on failure so the caller can treat it as "not supported".
+        """
+        url = (
+            "{0}/cgi-bin/audio.cgi?action=getAudio&httptype=singlepart&channel={1}"
+        ).format(self._base, channel)
+        async with async_timeout.timeout(TIMEOUT_SECONDS):
+            auth = DigestAuth(self._username, self._password, self._session)
+            response = await auth.request("GET", url)
+            response.raise_for_status()
+            response.close()
+
     async def async_post_audio(
         self,
         audio_data: bytes,

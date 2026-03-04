@@ -147,12 +147,22 @@ class DahuaSpeaker(DahuaBaseEntity, MediaPlayerEntity):
         try:
             aac_data, duration = await _fetch_and_convert_audio(self.hass, media_id)
             channel = self._coordinator.get_channel_number()
-            try:
-                await self._coordinator.client.async_post_audio(
-                    aac_data, channel, encoding="AAC", duration=duration
-                )
-            except Exception as exc:
-                _LOGGER.info("HTTP audio.cgi failed (%s), trying RTSP backchannel", exc)
+            if self._coordinator.supports_audio_cgi():
+                try:
+                    await self._coordinator.client.async_post_audio(
+                        aac_data, channel, encoding="AAC", duration=duration
+                    )
+                except Exception as exc:
+                    _LOGGER.warning(
+                        "HTTP audio.cgi failed unexpectedly (%s), "
+                        "disabling and falling back to RTSP backchannel",
+                        exc,
+                    )
+                    self._coordinator._supports_audio_cgi = False
+                    await self._coordinator.client.async_post_audio_backchannel(
+                        aac_data, channel, duration=duration
+                    )
+            else:
                 await self._coordinator.client.async_post_audio_backchannel(
                     aac_data, channel, duration=duration
                 )

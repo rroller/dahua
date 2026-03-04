@@ -31,5 +31,6 @@ async def async_get_config_entry_diagnostics(
             "smart_motion_detection": coordinator.supports_smart_motion_detection(),
             "flood_light": coordinator.is_flood_light(),
             "doorbell": coordinator.is_doorbell(),
+            "audio_cgi": coordinator.supports_audio_cgi(),
         },
     }

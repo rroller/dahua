@@ -92,8 +92,11 @@ class TestDahuaSpeaker:
         assert speaker.supported_features == MediaPlayerEntityFeature.PLAY_MEDIA
 
     @pytest.mark.asyncio
-    async def test_play_media(self, hass, mock_coordinator, mock_config_entry):
-        """async_play_media fetches, converts, and posts audio."""
+    async def test_play_media_http_when_supported(
+        self, hass, mock_coordinator, mock_config_entry
+    ):
+        """When audio_cgi is supported, uses HTTP audio.cgi."""
+        mock_coordinator._supports_audio_cgi = True
         mock_coordinator.client.async_post_audio = AsyncMock()
         speaker = DahuaSpeaker(mock_coordinator, mock_config_entry)
         speaker.hass = hass
@@ -111,7 +114,58 @@ class TestDahuaSpeaker:
                 fake_aac, 1, encoding="AAC", duration=5.0
             )
 
-        # State should be back to IDLE
+        assert speaker._attr_state == MediaPlayerState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_play_media_rtsp_when_not_supported(
+        self, hass, mock_coordinator, mock_config_entry
+    ):
+        """When audio_cgi is not supported, goes directly to RTSP backchannel."""
+        mock_coordinator._supports_audio_cgi = False
+        mock_coordinator.client.async_post_audio = AsyncMock()
+        mock_coordinator.client.async_post_audio_backchannel = AsyncMock()
+        speaker = DahuaSpeaker(mock_coordinator, mock_config_entry)
+        speaker.hass = hass
+        speaker.async_write_ha_state = MagicMock()
+
+        fake_aac = b"\x00\x01\x02"
+        with patch(
+            "custom_components.dahua.media_player._fetch_and_convert_audio",
+            return_value=(fake_aac, 5.0),
+        ):
+            await speaker.async_play_media("music", "http://example.com/audio.wav")
+
+        mock_coordinator.client.async_post_audio.assert_not_called()
+        mock_coordinator.client.async_post_audio_backchannel.assert_called_once_with(
+            fake_aac, 1, duration=5.0
+        )
+        assert speaker._attr_state == MediaPlayerState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_play_media_http_fallback_disables_flag(
+        self, hass, mock_coordinator, mock_config_entry
+    ):
+        """When HTTP fails at runtime, flag is cleared and RTSP fallback is used."""
+        mock_coordinator._supports_audio_cgi = True
+        mock_coordinator.client.async_post_audio = AsyncMock(
+            side_effect=aiohttp.ClientError("connection reset")
+        )
+        mock_coordinator.client.async_post_audio_backchannel = AsyncMock()
+        speaker = DahuaSpeaker(mock_coordinator, mock_config_entry)
+        speaker.hass = hass
+        speaker.async_write_ha_state = MagicMock()
+
+        fake_aac = b"\x00\x01\x02"
+        with patch(
+            "custom_components.dahua.media_player._fetch_and_convert_audio",
+            return_value=(fake_aac, 5.0),
+        ):
+            await speaker.async_play_media("music", "http://example.com/audio.wav")
+
+        assert mock_coordinator._supports_audio_cgi is False
+        mock_coordinator.client.async_post_audio_backchannel.assert_called_once_with(
+            fake_aac, 1, duration=5.0
+        )
         assert speaker._attr_state == MediaPlayerState.IDLE
 
     @pytest.mark.asyncio
@@ -119,6 +173,7 @@ class TestDahuaSpeaker:
         self, hass, mock_coordinator, mock_config_entry
     ):
         """State transitions: IDLE -> PLAYING -> IDLE."""
+        mock_coordinator._supports_audio_cgi = True
         mock_coordinator.client.async_post_audio = AsyncMock()
         speaker = DahuaSpeaker(mock_coordinator, mock_config_entry)
         speaker.hass = hass

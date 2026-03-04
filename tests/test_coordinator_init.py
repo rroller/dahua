@@ -192,6 +192,78 @@ class TestAsyncUpdateDataInit:
         assert mock_coordinator._supports_lighting_v2 is False
 
     @pytest.mark.asyncio
+    async def test_audio_cgi_supported(self, mock_coordinator, mock_client):
+        """audio.cgi probe sets flag to True on success for speaker models."""
+        mock_coordinator.initialized = False
+        mock_client.async_get_system_info.return_value = {
+            "serialNumber": "SERIAL123",
+            "deviceType": "IPC-HDW3849HP-AS-PV",
+        }
+        mock_client.async_get_config_lighting.side_effect = None
+        mock_client.async_get_config_lighting.return_value = {}
+        mock_client.async_get_lighting_v2.side_effect = None
+        mock_client.async_get_lighting_v2.return_value = {}
+        mock_client.async_get_audio_input.side_effect = None
+        mock_client.async_get_audio_input.return_value = None
+        mock_client.async_get_config.side_effect = aiohttp.ClientError()
+
+        with patch.object(
+            mock_coordinator,
+            "async_start_event_listener",
+            new_callable=AsyncMock,
+        ):
+            await mock_coordinator._async_update_data()
+
+        assert mock_coordinator._supports_audio_cgi is True
+
+    @pytest.mark.asyncio
+    async def test_audio_cgi_not_supported(self, mock_coordinator, mock_client):
+        """audio.cgi probe sets flag to False on ClientError for speaker models."""
+        mock_coordinator.initialized = False
+        mock_client.async_get_system_info.return_value = {
+            "serialNumber": "SERIAL123",
+            "deviceType": "IPC-HDW3849HP-AS-PV",
+        }
+        mock_client.async_get_config_lighting.side_effect = None
+        mock_client.async_get_config_lighting.return_value = {}
+        mock_client.async_get_lighting_v2.side_effect = None
+        mock_client.async_get_lighting_v2.return_value = {}
+        # async_get_audio_input already has ClientError side_effect from conftest
+        mock_client.async_get_config.side_effect = aiohttp.ClientError()
+
+        with patch.object(
+            mock_coordinator,
+            "async_start_event_listener",
+            new_callable=AsyncMock,
+        ):
+            await mock_coordinator._async_update_data()
+
+        assert mock_coordinator._supports_audio_cgi is False
+
+    @pytest.mark.asyncio
+    async def test_audio_cgi_skipped_for_non_speaker(
+        self, mock_coordinator, mock_client
+    ):
+        """audio.cgi probe is skipped for cameras without speakers."""
+        mock_coordinator.initialized = False
+        mock_coordinator.model = "IPC-HDW5831R-ZE"  # no speaker
+        mock_client.async_get_config_lighting.side_effect = None
+        mock_client.async_get_config_lighting.return_value = {}
+        mock_client.async_get_lighting_v2.side_effect = None
+        mock_client.async_get_lighting_v2.return_value = {}
+        mock_client.async_get_config.side_effect = aiohttp.ClientError()
+
+        with patch.object(
+            mock_coordinator,
+            "async_start_event_listener",
+            new_callable=AsyncMock,
+        ):
+            await mock_coordinator._async_update_data()
+
+        assert mock_coordinator._supports_audio_cgi is False
+        mock_client.async_get_audio_input.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_auth_failure_triggers_reauth(self, mock_coordinator, mock_client):
         """401 response triggers reauth flow."""
         mock_coordinator.initialized = False

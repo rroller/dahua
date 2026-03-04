@@ -140,6 +140,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._max_streams = 3  # 1 main stream + 2 sub-streams by default
 
         self._supports_lighting_v2 = False
+        self._supports_audio_cgi = False
 
         # channel_number is not the channel_index. channel_number is the index + 1.
         # So channel index 0 is channel number 1. Except for some older firmwares where channel
@@ -382,6 +383,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.info(
                     "Device supports Lighting_V2=%s", self._supports_lighting_v2
                 )
+
+                # Check audio.cgi support (only for cameras with speakers)
+                if self.supports_speaker():
+                    try:
+                        await self.client.async_get_audio_input(self._channel_number)
+                        self._supports_audio_cgi = True
+                    except ClientError:
+                        self._supports_audio_cgi = False
+                    _LOGGER.info(
+                        "Device supports audio.cgi=%s", self._supports_audio_cgi
+                    )
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -1001,6 +1013,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or self.supports_siren()
             or self.is_doorbell()
         )
+
+    def supports_audio_cgi(self) -> bool:
+        """True if the camera supports the HTTP audio.cgi endpoint."""
+        return self._supports_audio_cgi
 
     def supports_smart_motion_detection_amcrest(self) -> bool:
         """True if smart motion detection is supported for an amcrest device"""
