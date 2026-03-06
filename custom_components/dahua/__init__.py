@@ -650,7 +650,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def is_siren_on(self) -> bool:
         """ Returns true if the camera siren is on """
-        return self.data.get("status.status.Speaker", "").lower() == "on"
+        return self.get_status_value("Speaker").lower() == "on"
 
     def get_device_name(self) -> str:
         """ returns the device name, e.g. Cam 2 """
@@ -702,7 +702,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         if self._supports_floodlightmode:
           # 'coaxialControlIO.cgi?action=getStatus&channel=1'
-            return self.data.get("status.status.WhiteLight", "") == "On"
+            return self.get_status_value("WhiteLight").lower() == "on"
         else:
             """Return true if the amcrest flood light light is on"""
             # profile_mode 0=day, 1=night, 2=scene
@@ -721,7 +721,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def is_security_light_on(self) -> bool:
         """Return true if the security light is on. This is the red/blue flashing light"""
-        return self.data.get("status.status.WhiteLight", "") == "On"
+        return self.get_status_value("WhiteLight").lower() == "on"
 
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
@@ -762,6 +762,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return self.dahua_vto_event_thread.vto_client
 
+    def get_status_value(self, key):
+        v = self.data.get(f"status.status.{key}")
+        if v is None:
+           v = self.data.get(f"status.{key}", "")
+        return v
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Handle removal of an entry."""
