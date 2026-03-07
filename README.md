@@ -89,13 +89,16 @@ Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | HDBW1230E-S2 | HFW1435S-W-S2  |  |
 | | |HDBW1431EP-S-0360B | |
 | *2-/3-Series* |
-| | HDW2831T-ZS-S2 | HFW2449S-S-IL | HDW3549HP-AS-PV | HDW3849HP-AS-PV
-| | HDBW2231FP-AS-0280B-S2 | HFW3441E-AS-S2
+| | HDW2831T-ZS-S2 | HDW2431TP-AS | HDW3549HP-AS-PV | HDW3849HP-AS-PV
+| | HDBW2231FP-AS-0280B-S2 | HFW2449S-S-IL
+| | | HFW3441E-AS-S2
 | *4-/5-Series* |
 | | HDW4231EM-ASE | HFW4433F-ZSA |  | HDW5831R-ZE
 | | HDBW4231F-AS | HDBW5421E-Z |  |
 | | HDW4233C-A | T5442T-ZE |
-| | HDBW4239R-ASE |
+| | HDBW4239R-ASE | T5442TM-AS |
+| | | B5442E-Z4E |
+| | | B54IR-ASE |
 | | HDBW4239RP-ASE |
 | *6-/7-Series* |
 | | HDPW7564N-SP |
@@ -106,6 +109,8 @@ Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 
 Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 :------------ | :------------ | :------------ | :------------- | :-------------
+| *Amcrest* |
+| | | | Amcrest IP5M-T1179E | Amcrest IPC-Color4K-T
 | *IMOU* |
 | | IMOU IPC-A26Z / Ranger Pro Z | | IMOU DB61i
 | | IMOU IPC-C26E-V2 <sup>*</sup> |
