@@ -21,7 +21,6 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
-from custom_components.dahua.thread import DahuaEventThread, DahuaVtoEventThread
 from . import dahua_utils
 from .client import DahuaClient
 
@@ -65,8 +64,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     name = entry.data.get(CONF_NAME)
     channel = entry.data.get(CONF_CHANNEL, 0)
 
-    coordinator = DahuaDataUpdateCoordinator(hass, events=events, address=address, port=port, rtsp_port=rtsp_port,
-                                             username=username, password=password, name=name, channel=channel)
+    coordinator = DahuaDataUpdateCoordinator(hass, entry=entry, events=events, address=address, port=port,
+                                             rtsp_port=rtsp_port, username=username, password=password, name=name,
+                                             channel=channel)
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.last_update_success:
@@ -93,8 +93,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
-    def __init__(self, hass: HomeAssistant, events: list, address: str, port: int, rtsp_port: int, username: str,
-                 password: str, name: str, channel: int) -> None:
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, events: list, address: str, port: int, rtsp_port: int,
+                 username: str, password: str, name: str, channel: int) -> None:
         """Initialize the coordinator."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
         connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
@@ -103,6 +103,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session)
 
+        self.config_entry = entry
         self.platforms = []
         self.initialized = False
         self.model = ""
@@ -137,12 +138,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # This is the name as reported from the camera itself
         self.machine_name = ""
 
-        # This thread is what connects to the cameras event stream and fires on_receive when there's an event
-        self.dahua_event_thread = DahuaEventThread(hass, self.client, self.on_receive, events, self._channel)
+        # VTO connection credentials
+        self._username = username
+        self._password = password
 
-        # This thread will connect to VTO devices (Dahua doorbells)
-        self.dahua_vto_event_thread = DahuaVtoEventThread(hass, self.client, self.on_receive_vto_event, host=address,
-                                                          port=5000, username=username, password=password)
+        # Async tasks for event streaming (replaces threads)
+        self._event_task: asyncio.Task | None = None
+        self._vto_task: asyncio.Task | None = None
+        self._vto_client: DahuaVTOClient | None = None
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
         # The key will be formed from self.get_event_key(event_name) and includes the channel
@@ -159,22 +162,66 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def async_start_event_listener(self):
         """ Starts the event listeners for IP cameras (this does not work for doorbells (VTO)) """
         if self.events is not None:
-            self.dahua_event_thread.start()
+            self._event_task = asyncio.create_task(self._async_stream_events())
 
     async def async_start_vto_event_listener(self):
         """ Starts the event listeners for doorbells (VTO). This will not work for IP cameras"""
-        if self.dahua_vto_event_thread is not None:
-            self.dahua_vto_event_thread.start()
+        self._vto_task = asyncio.create_task(self._async_stream_vto_events())
 
-    async def async_stop(self, event: Any):
+    async def _async_stream_events(self):
+        """Continuously stream events from the camera, reconnecting on failure."""
+        while True:
+            start_time = time.monotonic()
+            try:
+                await self.client.stream_events(self.on_receive, self.events, self._channel)
+            except asyncio.CancelledError:
+                raise
+            except Exception as ex:
+                _LOGGER.warning("Event stream for %s ended unexpectedly: %s", self._address, ex)
+
+            elapsed = time.monotonic() - start_time
+            if elapsed < 10:
+                _LOGGER.debug("Event stream for %s failed quickly, retrying in 60s", self._address)
+                await asyncio.sleep(60)
+            else:
+                _LOGGER.debug("Reconnecting to event stream for %s", self._address)
+
+    async def _async_stream_vto_events(self):
+        """Continuously stream VTO events from a doorbell, reconnecting on failure."""
+        while True:
+            try:
+                _LOGGER.debug("Connecting to VTO event stream at %s", self._address)
+                loop = asyncio.get_event_loop()
+                _, protocol = await loop.create_connection(
+                    lambda: DahuaVTOClient(
+                        self._address, self._username, self._password, False, self.on_receive_vto_event
+                    ),
+                    host=self._address,
+                    port=5000,
+                )
+                self._vto_client = protocol
+                await protocol.disconnected
+                _LOGGER.warning("Disconnected from VTO at %s, reconnecting in 5s", self._address)
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                raise
+            except Exception as ex:
+                _LOGGER.error("VTO connection to %s failed, retrying in 30s: %s", self._address, ex)
+                await asyncio.sleep(30)
+
+    async def async_stop(self, event: Any = None):
         """ Stop anything we need to stop """
-        self.dahua_event_thread.stop()
-        self.dahua_vto_event_thread.stop()
+        if self._event_task is not None:
+            self._event_task.cancel()
+            self._event_task = None
+        if self._vto_task is not None:
+            self._vto_task.cancel()
+            self._vto_task = None
         await self._close_session()
 
     async def _close_session(self) -> None:
         _LOGGER.debug("Closing Session")
-        if self._session != None:
+        if self._session is not None:
             try:
                 await self._session.close()
                 self._session = None
@@ -313,6 +360,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await self.async_start_vto_event_listener()
 
                 self.initialized = True
+            except ClientResponseError as exception:
+                if exception.status == 401:
+                    _LOGGER.warning("Authentication failed for %s, starting reauth", self._address)
+                    self.config_entry.async_start_reauth(self.hass)
+                    raise UpdateFailed("Authentication failed") from exception
+                _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
+                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
             except Exception as exception:
                 _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
                 raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
@@ -760,7 +814,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns an instance of the connected VTO client if this is a VTO device. We need this because there's different
         ways to call a VTO device and the VTO client will handle that. For example, to hang up a call
         """
-        return self.dahua_vto_event_thread.vto_client
+        return self._vto_client
 
     def get_status_value(self, key):
         v = self.data.get(f"status.status.{key}")
@@ -771,8 +825,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Handle removal of an entry."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    coordinator.dahua_event_thread.stop()
-    coordinator.dahua_vto_event_thread.stop()
+    await coordinator.async_stop()
     unloaded = all(
         await asyncio.gather(
             *[

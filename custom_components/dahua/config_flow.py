@@ -145,6 +145,49 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return await self._show_config_form_name(user_input)
 
+    async def async_step_reauth(self, entry_data):
+        """Handle reauthentication when credentials become invalid."""
+        self._reauth_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        return await self._show_reauth_form()
+
+    async def async_step_reauth_confirm(self, user_input=None):
+        """Handle user input for reauthentication."""
+        self._errors = {}
+
+        if user_input is not None:
+            entry = self._reauth_entry
+            data = await self._test_credentials(
+                user_input[CONF_USERNAME],
+                user_input[CONF_PASSWORD],
+                entry.data[CONF_ADDRESS],
+                entry.data[CONF_PORT],
+                entry.data[CONF_RTSP_PORT],
+                entry.data.get(CONF_CHANNEL, 0),
+            )
+            if data is not None:
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data={**entry.data, **user_input},
+                )
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
+            self._errors["base"] = "auth"
+
+        return await self._show_reauth_form()
+
+    async def _show_reauth_form(self):
+        """Show the reauthentication form."""
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
+            errors=self._errors,
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
@@ -195,6 +238,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.error("Could not connect to Dahua device. For iMou devices see " +
                             "https://github.com/rroller/dahua/issues/6", exc_info=exception)
+        finally:
+            await session.close()
 
 
 class DahuaOptionsFlowHandler(config_entries.OptionsFlow):

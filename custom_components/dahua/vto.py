@@ -9,7 +9,6 @@ import json
 import asyncio
 import hashlib
 from json import JSONDecoder
-from threading import Timer
 from typing import Optional, Callable
 from requests.auth import HTTPDigestAuth
 
@@ -74,9 +73,12 @@ class DahuaVTOClient(asyncio.Protocol):
         self.data_handlers = {}
         self.buffer = bytearray()
 
+        self._keep_alive_handle = None
+
         # This is the hook back into HA
         self.on_receive_vto_event = on_receive_vto_event
         self._loop = asyncio.get_event_loop()
+        self.disconnected = self._loop.create_future()
 
     def connection_made(self, transport):
         _LOGGER.debug("VTO connection established")
@@ -140,12 +142,20 @@ class DahuaVTOClient(asyncio.Protocol):
     def eof_received(self):
         _LOGGER.info('Server sent EOF message')
 
-        self._loop.stop()
+        if self._keep_alive_handle is not None:
+            self._keep_alive_handle.cancel()
+            self._keep_alive_handle = None
+        if not self.disconnected.done():
+            self.disconnected.set_result(True)
 
     def connection_lost(self, exc):
         _LOGGER.error('server closed the connection')
 
-        self._loop.stop()
+        if self._keep_alive_handle is not None:
+            self._keep_alive_handle.cancel()
+            self._keep_alive_handle = None
+        if not self.disconnected.done():
+            self.disconnected.set_result(True)
 
     def send(self, action, handler, params=None):
         if params is None:
@@ -231,7 +241,7 @@ class DahuaVTOClient(asyncio.Protocol):
                 self.load_device_type()
                 self.attach_event_manager()
 
-                Timer(self.keep_alive_interval, self.keep_alive).start()
+                self._keep_alive_handle = self._loop.call_later(self.keep_alive_interval, self.keep_alive)
 
         password = self._get_hashed_password(self.random, self.realm, self.username, self.password)
 
@@ -358,7 +368,7 @@ class DahuaVTOClient(asyncio.Protocol):
         _LOGGER.debug("Keep alive")
 
         def handle_keep_alive(message):
-            Timer(self.keep_alive_interval, self.keep_alive).start()
+            self._keep_alive_handle = self._loop.call_later(self.keep_alive_interval, self.keep_alive)
             if message is None:
                 return
 

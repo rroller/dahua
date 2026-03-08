@@ -6,7 +6,7 @@ import voluptuous as vol
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_platform
-from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.components.camera import Camera, CameraEntityFeature, StreamType
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.entity import DahuaBaseEntity
@@ -249,6 +249,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         self._stream_index = stream_index
         self._motion_status = False
         self._stream_source = coordinator.client.get_rtsp_stream_url(self._channel_number, stream_index)
+        self._attr_frontend_stream_type = StreamType.WEB_RTC
 
     @property
     def unique_id(self):

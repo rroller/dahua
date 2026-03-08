@@ -770,8 +770,10 @@ class DahuaClient:
                 # https://docs.aiohttp.org/en/stable/streams.html
                 async for data, _ in response.content.iter_chunks():
                     on_receive(data, channel)
+            except asyncio.CancelledError:
+                raise
             except Exception as exception:
-                pass
+                _LOGGER.debug("Event stream ended: %s", exception)
             finally:
                 if response is not None:
                     response.close()
