@@ -3,7 +3,7 @@
         "step": {
             "user": {
                 "title": "Agregar una Camara Dahua",
-                "description": "Dirección de ejemplo: 192.168.1.108",
+                "description": "Dirección IP de ejemplo: 192.168.1.108",
                 "data": {
                     "username": "Usuario",
                     "password": "Contraseña",
@@ -16,18 +16,27 @@
                 }
             },
             "name": {
-                "title": "Configurar el nombre del dispositivo ",
+                "title": "Configurar el nombre del dispositivo",
                 "data": {
                     "name": "Nombre del dispositivo"
+                }
+            },
+            "reauth_confirm": {
+                "title": "Re-autenticar la cámara Dahua",
+                "description": "Las credenciales de {name} ya no son válidas. Ingrese credenciales actualizadas.",
+                "data": {
+                    "username": "Usuario",
+                    "password": "Contraseña"
                 }
             }
         },
         "error": {
-            "auth": "Usuario, Contraseña o dirección IP no son correctas."
+            "auth": "Usuario, Contraseña o Dirección IP no son correctas."
         },
         "abort": {
             "single_instance_allowed": "Solo se permite una instancia.",
-            "already_configured": "Solo se permite una única instancia por dispositivo."
+            "already_configured": "Solo se permite una única instancia por dispositivo.",
+            "reauth_successful": "Reautenticación exitosa."
         }
     },
     "options": {
@@ -38,7 +47,7 @@
                     "sensor": "Sensor habilitado",
                     "switch": "Interruptor habilitado",
                     "light": "Luz habilitada",
-                    "select": "Select enabled",
+                    "select": "Seleccionar habilitado",
                     "camera": "Camara habilitada"
                 }
             }
