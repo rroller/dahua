@@ -968,6 +968,29 @@ class DahuaClient:
                 data_dict[parts[0]] = line
         return data_dict
 
+    async def async_get_audio_encode_enabled(self, channel: int) -> bool:
+        """Check if audio encoding is enabled on the main stream.
+
+        Returns True if audio is enabled, False otherwise.
+        """
+        config = await self.async_get_config(
+            "Encode[{0}].MainFormat[0]".format(channel)
+        )
+        value = config.get(
+            "table.Encode[{0}].MainFormat[0].AudioEnable".format(channel), "false"
+        )
+        return str(value).lower() == "true"
+
+    async def async_set_audio_encode_enabled(self, channel: int, enabled: bool) -> None:
+        """Enable or disable audio encoding on the main and extra streams."""
+        value = str(enabled).lower()
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            "&Encode[{ch}].MainFormat[0].AudioEnable={val}"
+            "&Encode[{ch}].ExtraFormat[0].AudioEnable={val}"
+        ).format(ch=channel, val=value)
+        await self.get(url, True)
+
     async def async_get_audio_input(self, channel: int) -> dict[str, Any]:
         """Probe audio.cgi with a read-only GET to check if the endpoint exists.
 
@@ -1031,12 +1054,16 @@ class DahuaClient:
             },
         )
 
-        if duration <= 0:
-            duration = len(audio_data) / 8000.0
-
         # Parse ADTS frames for frame-aligned delivery; fall back to
         # a single part for non-AAC encodings.
         frames = _parse_adts_frames(audio_data) if encoding == "AAC" else []
+
+        if duration <= 0:
+            if frames:
+                # AAC at 8 kHz: 1024 samples/frame = 128 ms/frame
+                duration = len(frames) * 1024.0 / 8000.0
+            else:
+                duration = len(audio_data) / 8000.0
         if not frames:
             frames = [audio_data]
 
@@ -1093,9 +1120,12 @@ class DahuaClient:
         if not frames:
             raise RuntimeError("No ADTS frames found in audio data")
 
+        # AAC at 8 kHz uses 1024 samples per frame = 128 ms per frame.
+        # We use this fixed interval rather than deriving from the reported
+        # duration, which may be zero when ffmpeg converts from piped input.
+        frame_interval = 1024.0 / 8000.0  # 0.128 s
         if duration <= 0:
-            duration = len(audio_data) / 8000.0
-        frame_interval = duration / len(frames) if len(frames) > 1 else duration
+            duration = len(frames) * frame_interval
 
         cam_host = self._address
         rtsp_port = self._rtsp_port

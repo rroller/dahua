@@ -6,6 +6,11 @@ __pycache__
 */dist/*
 
 
+# manual test credentials and generated audio
+manual_tests/.env
+manual_tests/*.wav
+manual_tests/*.aac
+
 # misc
 .coverage
 .vscode

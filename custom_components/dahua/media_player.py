@@ -15,6 +15,7 @@ from homeassistant.components.media_player import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from custom_components.dahua import DahuaConfigEntry, DahuaDataUpdateCoordinator
@@ -24,6 +25,8 @@ from .entity import DahuaBaseEntity, dahua_command
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 PARALLEL_UPDATES = 1
+
+SERVICE_ENABLE_AUDIO = "enable_audio"
 
 
 async def async_setup_entry(
@@ -36,6 +39,17 @@ async def async_setup_entry(
 
     if coordinator.supports_speaker():
         async_add_entities([DahuaSpeaker(coordinator, entry)])
+
+        try:
+            platform = entity_platform.async_get_current_platform()
+            platform.async_register_entity_service(
+                SERVICE_ENABLE_AUDIO,
+                {},
+                "async_enable_audio",
+            )
+        except RuntimeError:
+            # Platform not available (e.g. in tests calling setup directly)
+            pass
 
 
 def _convert_to_aac(audio_data: bytes) -> tuple[bytes, float]:
@@ -142,6 +156,13 @@ class DahuaSpeaker(DahuaBaseEntity, MediaPlayerEntity):
         connection (common on Lorex and older Dahua firmwares), falls back to
         RTSP ONVIF backchannel which is more widely supported.
         """
+        if self._coordinator.is_audio_encoding_enabled() is False:
+            _LOGGER.warning(
+                "Audio encoding is disabled on %s. Speaker playback "
+                "will not work. Call the enable_audio service on this "
+                "entity to enable it",
+                self._coordinator.get_device_name(),
+            )
         self._attr_state = MediaPlayerState.PLAYING
         self.async_write_ha_state()
         try:
@@ -169,3 +190,20 @@ class DahuaSpeaker(DahuaBaseEntity, MediaPlayerEntity):
         finally:
             self._attr_state = MediaPlayerState.IDLE
             self.async_write_ha_state()
+
+    @dahua_command
+    async def async_enable_audio(self) -> None:
+        """Enable audio encoding on the camera.
+
+        This is required for RTSP backchannel speaker playback to work.
+        Some cameras (especially Lorex/older Dahua firmwares) ship with
+        audio encoding disabled by default.  The setting persists across
+        reboots.
+        """
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_audio_encode_enabled(channel, True)
+        self._coordinator._audio_encoding_enabled = True
+        _LOGGER.info(
+            "Audio encoding enabled on %s",
+            self._coordinator.get_device_name(),
+        )

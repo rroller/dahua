@@ -142,6 +142,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._supports_lighting_v2 = False
         self._supports_audio_cgi = False
+        self._audio_encoding_enabled: bool | None = None
 
         # channel_number is not the channel_index. channel_number is the index + 1.
         # So channel index 0 is channel number 1. Except for some older firmwares where channel
@@ -395,6 +396,30 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.info(
                         "Device supports audio.cgi=%s", self._supports_audio_cgi
                     )
+
+                    # Check if audio encoding is enabled (required for
+                    # RTSP backchannel speaker playback)
+                    try:
+                        self._audio_encoding_enabled = (
+                            await self.client.async_get_audio_encode_enabled(
+                                self._channel
+                            )
+                        )
+                    except (ClientError, Exception):  # noqa: BLE001
+                        self._audio_encoding_enabled = None
+                    if self._audio_encoding_enabled is False:
+                        _LOGGER.warning(
+                            "Audio encoding is disabled on %s. Speaker playback "
+                            "will not work until audio is enabled. Call the "
+                            "enable_audio service on the media player entity "
+                            "to enable it",
+                            self._name,
+                        )
+                    else:
+                        _LOGGER.info(
+                            "Audio encoding enabled=%s",
+                            self._audio_encoding_enabled,
+                        )
 
                 try:
                     await self.client.async_get_zoomfocus_v1()
@@ -1030,6 +1055,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def supports_audio_cgi(self) -> bool:
         """True if the camera supports the HTTP audio.cgi endpoint."""
         return self._supports_audio_cgi
+
+    def is_audio_encoding_enabled(self) -> bool | None:
+        """True if audio encoding is enabled on the camera.
+
+        Returns None if the status could not be determined.
+        """
+        return self._audio_encoding_enabled
 
     def supports_smart_motion_detection_amcrest(self) -> bool:
         """True if smart motion detection is supported for an amcrest device"""

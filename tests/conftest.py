@@ -128,6 +128,7 @@ def mock_coordinator(hass, mock_config_entry, mock_client):
     coordinator._supports_lighting = True
     coordinator._supports_lighting_v2 = False
     coordinator._supports_audio_cgi = False
+    coordinator._audio_encoding_enabled = None
     coordinator._supports_zoom_focus = False
     coordinator._supports_floodlightmode = False
     coordinator._supports_profile_mode = False

@@ -1,6 +1,18 @@
 # Describes the format for available Dahua services
 # https://developers.home-assistant.io/docs/dev_101_services/
 
+enable_audio:
+  name: Enable Audio Encoding
+  description: >-
+    Enable audio encoding on the camera. Required for speaker playback
+    via RTSP backchannel. Some cameras (especially Lorex/older Dahua
+    firmwares) ship with audio disabled by default. The setting persists
+    across reboots.
+  target:
+    entity:
+      integration: dahua
+      domain: media_player
+
 set_infrared_mode:
   name: Set Infrared Mode on Dahua Camera
   description: Set the infrared light settings on a Dahua camera
