@@ -20,6 +20,14 @@
                 "data": {
                     "name": "Device Name"
                 }
+            },
+            "reauth_confirm": {
+                "title": "Re-authenticate Dahua Camera",
+                "description": "The credentials for {name} are no longer valid. Please enter updated credentials.",
+                "data": {
+                    "username": "Username",
+                    "password": "Password"
+                }
             }
         },
         "error": {
@@ -27,7 +35,8 @@
         },
         "abort": {
             "single_instance_allowed": "Only a single instance is allowed.",
-            "already_configured": "Only a single instance of a device is allowed."
+            "already_configured": "Only a single instance of a device is allowed.",
+            "reauth_successful": "Re-authentication was successful."
         }
     },
     "options": {
