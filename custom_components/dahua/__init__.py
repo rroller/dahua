@@ -12,7 +12,7 @@ from datetime import timedelta
 from typing import Any
 
 import aiohttp
-from aiohttp import ClientError, ClientResponseError
+from aiohttp import ClientConnectorError, ClientError, ClientResponseError
 from homeassistant.components.tag import async_scan_tag
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
@@ -263,7 +263,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             try:
                 # Find the max number of streams. 1 main stream + n number of sub-streams
                 self._max_streams = await self.client.get_max_extra_streams() + 1
-                _LOGGER.info("Using max streams %s", self._max_streams)
+                _LOGGER.debug("Using max streams %s", self._max_streams)
 
                 machine_name = await self.client.async_get_machine_name()
                 sys_info = await self.client.async_get_system_info()
@@ -300,14 +300,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._channel_number = self._channel
                 except ClientError:
                     pass
-                _LOGGER.info("Using channel number %s", self._channel_number)
+                _LOGGER.debug("Using channel number %s", self._channel_number)
 
                 try:
                     await self.client.async_get_coaxial_control_io_status()
                     self._supports_coaxial_control = True
                 except ClientResponseError:
                     self._supports_coaxial_control = False
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Device supports Coaxial Control=%s", self._supports_coaxial_control
                 )
 
@@ -316,7 +316,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._supports_disarming_linkage = True
                 except ClientError:
                     self._supports_disarming_linkage = False
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Device supports disarming linkage=%s",
                     self._supports_disarming_linkage,
                 )
@@ -326,7 +326,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._supports_event_notifications = True
                 except ClientError:
                     self._supports_event_notifications = False
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Device supports event notifications=%s",
                     self._supports_event_notifications,
                 )
@@ -338,7 +338,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._supports_ptz_position = True
                 except ClientError:
                     self._supports_ptz_position = False
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Device supports PTZ position=%s", self._supports_ptz_position
                 )
 
@@ -349,16 +349,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._supports_smart_motion_detection = True
                 except ClientError:
                     self._supports_smart_motion_detection = False
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Device supports smart motion detection=%s",
                     self._supports_smart_motion_detection,
                 )
 
                 is_doorbell = self.is_doorbell()
-                _LOGGER.info("Device is a doorbell=%s", is_doorbell)
+                _LOGGER.debug("Device is a doorbell=%s", is_doorbell)
 
                 is_flood_light = self.is_flood_light()
-                _LOGGER.info("Device is a floodlight=%s", is_flood_light)
+                _LOGGER.debug("Device is a floodlight=%s", is_flood_light)
 
                 self._supports_floodlightmode = self.supports_floodlightmode()
 
@@ -370,7 +370,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except ClientError:
                     self._supports_lighting = False
                     pass
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Device supports infrared lighting=%s",
                     self.supports_infrared_light(),
                 )
@@ -382,7 +382,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except ClientError:
                     self._supports_lighting_v2 = False
                     pass
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Device supports Lighting_V2=%s", self._supports_lighting_v2
                 )
 
@@ -393,7 +393,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         self._supports_audio_cgi = True
                     except ClientError:
                         self._supports_audio_cgi = False
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "Device supports audio.cgi=%s", self._supports_audio_cgi
                     )
 
@@ -416,7 +416,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             self._name,
                         )
                     else:
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "Audio encoding enabled=%s",
                             self._audio_encoding_enabled,
                         )
@@ -427,7 +427,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 except ClientError:
                     self._supports_zoom_focus = False
                     pass
-                _LOGGER.info("Device supports Zoom/Focus=%s", self._supports_zoom_focus)
+                _LOGGER.debug(
+                    "Device supports Zoom/Focus=%s", self._supports_zoom_focus
+                )
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -441,11 +443,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         # Otherwise we'll get multiple lines of config back
                         self._supports_profile_mode = len(conf) > 1
                     except ClientError:
-                        _LOGGER.info(
+                        _LOGGER.debug(
                             "Cam does not support profile mode. Will use mode 0"
                         )
                         self._supports_profile_mode = False
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "Device supports profile mode=%s", self._supports_profile_mode
                     )
                 else:
@@ -461,10 +463,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if self.config_entry is not None:
                         self.config_entry.async_start_reauth(self.hass)
                     raise UpdateFailed("Authentication failed") from exception
-                _LOGGER.error(
-                    "Failed to initialize device at %s",
+                _LOGGER.warning(
+                    "Failed to initialize device at %s: %s",
                     self._address,
-                    exc_info=exception,
+                    exception,
+                )
+                raise PlatformNotReady(
+                    "Dahua device at " + self._address + " isn't fully initialized yet"
+                )
+            except ClientConnectorError as exception:
+                _LOGGER.warning(
+                    "Cannot connect to %s: %s",
+                    self._address,
+                    exception,
                 )
                 raise PlatformNotReady(
                     "Dahua device at " + self._address + " isn't fully initialized yet"
