@@ -5,7 +5,7 @@ from homeassistant.components.number import NumberEntity
 from homeassistant.helpers import entity_platform
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
-from .const import DOMAIN, ZOOM_ICON, FOCUS_ICON
+from .const import ZOOM_ICON, FOCUS_ICON
 from .entity import DahuaBaseEntity
 
 SERVICE_AUTOFOCUS = "autofocus"
@@ -13,7 +13,7 @@ SERVICE_AUTOFOCUS = "autofocus"
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: DahuaDataUpdateCoordinator = entry.runtime_data
 
     # But only some cams have a siren, very few do actually
     if coordinator.supports_focus_zoom():
