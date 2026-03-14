@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
-from homeassistant.exceptions import PlatformNotReady
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.dahua import (
@@ -281,14 +280,14 @@ class TestAsyncUpdateDataInit:
         mock_coordinator.config_entry.async_start_reauth.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_generic_failure_raises_platform_not_ready(
+    async def test_generic_failure_raises_update_failed(
         self, mock_coordinator, mock_client
     ):
-        """Generic exception during init raises PlatformNotReady."""
+        """Generic exception during init raises UpdateFailed."""
         mock_coordinator.initialized = False
         mock_client.get_max_extra_streams.side_effect = RuntimeError("boom")
 
-        with pytest.raises(PlatformNotReady):
+        with pytest.raises(UpdateFailed):
             await mock_coordinator._async_update_data()
 
     @pytest.mark.asyncio

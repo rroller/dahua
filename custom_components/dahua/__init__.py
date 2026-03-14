@@ -17,7 +17,7 @@ from homeassistant.components.tag import async_scan_tag
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -468,27 +468,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     self._address,
                     exception,
                 )
-                raise PlatformNotReady(
+                raise UpdateFailed(
                     "Dahua device at " + self._address + " isn't fully initialized yet"
-                )
+                ) from exception
             except ClientConnectorError as exception:
                 _LOGGER.warning(
                     "Cannot connect to %s: %s",
                     self._address,
                     exception,
                 )
-                raise PlatformNotReady(
+                raise UpdateFailed(
                     "Dahua device at " + self._address + " isn't fully initialized yet"
-                )
+                ) from exception
             except Exception as exception:
-                _LOGGER.error(
-                    "Failed to initialize device at %s",
+                _LOGGER.warning(
+                    "Failed to initialize device at %s: %s",
                     self._address,
-                    exc_info=exception,
+                    exception,
                 )
-                raise PlatformNotReady(
+                raise UpdateFailed(
                     "Dahua device at " + self._address + " isn't fully initialized yet"
-                )
+                ) from exception
 
         # This is the event loop code that's called every n seconds
         try:
