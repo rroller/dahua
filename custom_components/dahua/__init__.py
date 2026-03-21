@@ -594,6 +594,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if code == "CrossLineDetection" or code == "CrossRegionDetection":
             data = event.get("data", event.get("Data", {}))
             is_human = data.get("Object", {}).get("ObjectType", "").lower() == "human"
+            is_vehicle = data.get("Object", {}).get("ObjectType", "").lower() == "vehicle"
+            if is_human and self._dahua_event_listeners.get(self.get_event_key("SmartMotionHuman")) is not None:
+                return "SmartMotionHuman"
+            if is_vehicle and self._dahua_event_listeners.get(self.get_event_key("SmartMotionVehicle")) is not None:
+                return "SmartMotionVehicle"
             if is_human and self._dahua_event_listeners.get(self.get_event_key(code)) is None:
                 return "SmartMotionHuman"
 
