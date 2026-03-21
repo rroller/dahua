@@ -484,9 +484,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             card_id = event.get("Data", {}).get("CardNo", "")
             if card_id:
                 card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
-                asyncio.run_coroutine_threadsafe(
-                    async_scan_tag(self.hass, card_id_md5, self.get_device_name()), self.hass.loop
-                ).result()
+                self.hass.async_create_task(
+                    async_scan_tag(self.hass, card_id_md5, self.get_device_name())
+                )
 
         listener = self._dahua_event_listeners.get(event_key)
         if listener is not None:
