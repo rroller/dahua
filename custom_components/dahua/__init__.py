@@ -477,40 +477,42 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # }
 
         # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, PhoneCallDetect, DoorStatus, etc
-        code = self.translate_event_code(event)
-        event_key = self.get_event_key(code)
+        codes = self.translate_event_code(event)
 
-        if code == "AccessControl":
-            card_id = event.get("Data", {}).get("CardNo", "")
-            if card_id:
-                card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
-                self.hass.async_create_task(
-                    async_scan_tag(self.hass, card_id_md5, self.get_device_name())
-                )
+        for code in codes:
+            event_key = self.get_event_key(code)
 
-        listener = self._dahua_event_listeners.get(event_key)
-        if listener is not None:
-            action = event.get("Action", "")
-            if action == "Start":
-                self._dahua_event_timestamp[event_key] = int(time.time())
-                listener()
-            elif action == "Stop":
-                self._dahua_event_timestamp[event_key] = 0
-                listener()
-            elif action == "Pulse":
-                if code == "DoorStatus":
-                    if event.get("Data", {}).get("Status", "") == "Open":
-                        self._dahua_event_timestamp[event_key] = int(time.time())
+            if code == "AccessControl":
+                card_id = event.get("Data", {}).get("CardNo", "")
+                if card_id:
+                    card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
+                    self.hass.async_create_task(
+                        async_scan_tag(self.hass, card_id_md5, self.get_device_name())
+                    )
+
+            listener = self._dahua_event_listeners.get(event_key)
+            if listener is not None:
+                action = event.get("Action", "")
+                if action == "Start":
+                    self._dahua_event_timestamp[event_key] = int(time.time())
+                    listener()
+                elif action == "Stop":
+                    self._dahua_event_timestamp[event_key] = 0
+                    listener()
+                elif action == "Pulse":
+                    if code == "DoorStatus":
+                        if event.get("Data", {}).get("Status", "") == "Open":
+                            self._dahua_event_timestamp[event_key] = int(time.time())
+                        else:
+                            self._dahua_event_timestamp[event_key] = 0
                     else:
-                        self._dahua_event_timestamp[event_key] = 0
-                else:
-                    state = event.get("Data", {}).get("State", 0)
-                    if state == 1:
-                        # button pressed
-                        self._dahua_event_timestamp[event_key] = int(time.time())
-                    else:
-                        self._dahua_event_timestamp[event_key] = 0
-                listener()
+                        state = event.get("Data", {}).get("State", 0)
+                        if state == 1:
+                            # button pressed
+                            self._dahua_event_timestamp[event_key] = int(time.time())
+                        else:
+                            self._dahua_event_timestamp[event_key] = 0
+                    listener()
 
     def on_receive(self, data_bytes: bytes, channel: int):
         """
@@ -562,52 +564,57 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
 
             # This is the event code, example: VideoMotion, CrossLineDetection, etc
-            event_name = self.translate_event_code(event)
+            event_names = self.translate_event_code(event)
 
-            event_key = self.get_event_key(event_name)
-            listener = self._dahua_event_listeners.get(event_key)
-            if listener is not None:
-                action = event["action"]
-                if action == "Start":
-                    self._dahua_event_timestamp[event_key] = int(time.time())
-                    listener()
-                elif action == "Stop":
-                    self._dahua_event_timestamp[event_key] = 0
-                    listener()
+            for event_name in event_names:
+                event_key = self.get_event_key(event_name)
+                listener = self._dahua_event_listeners.get(event_key)
+                if listener is not None:
+                    action = event["action"]
+                    if action == "Start":
+                        self._dahua_event_timestamp[event_key] = int(time.time())
+                        listener()
+                    elif action == "Stop":
+                        self._dahua_event_timestamp[event_key] = 0
+                        listener()
 
     def translate_event_code(self, event: dict):
         """
-        translate_event_code will try to convert the event code to a less specific event code if the device doesn't have a listener for the more specific type
-        Example event codes: VideoMotion, CrossLineDetection, BackKeyLight, DoorStatus
+        translate_event_code returns a list of event codes to dispatch.
+        For CrossLine/CrossRegion events with a recognized ObjectType, returns both the
+        original code AND the SmartMotion* code (if listeners exist), so both sensors fire.
         """
         code = event.get("Code", "")
 
-        # For CrossLineDetection, the event data will look like this... and if there's a human detected then we'll use the SmartMotionHuman code instead
-        # {
-        #    "Code": "CrossLineDetection",
-        #    "Data": {
-        #        "Object": {
-        #            "ObjectType": "Human",
-        #        }
-        #    }
-        # }
         if code == "CrossLineDetection" or code == "CrossRegionDetection":
             data = event.get("data", event.get("Data", {}))
-            is_human = data.get("Object", {}).get("ObjectType", "").lower() == "human"
-            is_vehicle = data.get("Object", {}).get("ObjectType", "").lower() == "vehicle"
-            if is_human and self._dahua_event_listeners.get(self.get_event_key("SmartMotionHuman")) is not None:
-                return "SmartMotionHuman"
-            if is_vehicle and self._dahua_event_listeners.get(self.get_event_key("SmartMotionVehicle")) is not None:
-                return "SmartMotionVehicle"
-            if is_human and self._dahua_event_listeners.get(self.get_event_key(code)) is None:
-                return "SmartMotionHuman"
+            object_type = data.get("Object", {}).get("ObjectType", "").lower()
+            codes = []
+
+            # Always include the original CrossLine/CrossRegion if a listener exists
+            if self._dahua_event_listeners.get(self.get_event_key(code)) is not None:
+                codes.append(code)
+
+            # Also include SmartMotion translation if applicable
+            if object_type == "human":
+                if self._dahua_event_listeners.get(self.get_event_key("SmartMotionHuman")) is not None:
+                    codes.append("SmartMotionHuman")
+                elif not codes:
+                    codes.append("SmartMotionHuman")
+            elif object_type == "vehicle":
+                if self._dahua_event_listeners.get(self.get_event_key("SmartMotionVehicle")) is not None:
+                    codes.append("SmartMotionVehicle")
+                elif not codes:
+                    codes.append("SmartMotionVehicle")
+
+            return codes if codes else [code]
 
         # Convert doorbell pressed related events to common event name, DoorbellPressed.
         # VTO devices will use the event BackKeyLight and the Amcrest devices seem to use PhoneCallDetect
         if code == "BackKeyLight" or code == "PhoneCallDetect":
-            code = "DoorbellPressed"
+            return ["DoorbellPressed"]
 
-        return code
+        return [code]
 
     def get_event_timestamp(self, event_name: str) -> int:
         """
