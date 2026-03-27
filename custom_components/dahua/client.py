@@ -630,7 +630,12 @@ class DahuaClient:
             value = "true"
 
         url = "/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage[{0}].Enable={1}".format(channel, value)
-        return await self.get(url)
+        try:
+            return await self.get(url)
+        except aiohttp.ClientResponseError:
+            # Some cameras (e.g. DH-P3D-3F-PV-P) don't support channel-indexed disarming linkage
+            url = "/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage.Enable={0}".format(value)
+            return await self.get(url)
 
     async def async_set_event_notifications(self, channel: int, enabled: bool) -> dict:
         """
@@ -642,7 +647,12 @@ class DahuaClient:
             value = "false"
 
         url = "/cgi-bin/configManager.cgi?action=setConfig&DisableEventNotify[{0}].Enable={1}".format(channel, value)
-        return await self.get(url)
+        try:
+            return await self.get(url)
+        except aiohttp.ClientResponseError:
+            # Some cameras (e.g. DH-P3D-3F-PV-P) don't support channel-indexed event notifications
+            url = "/cgi-bin/configManager.cgi?action=setConfig&DisableEventNotify.Enable={0}".format(value)
+            return await self.get(url)
 
     async def async_set_record_mode(self, channel: int, mode: str) -> dict:
         """
