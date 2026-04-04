@@ -68,7 +68,7 @@ def parse_event(data: str) -> list[dict[str, any]]:
         # And we want to put each key/value pair into a dictionary...
         event = dict()
         for key_value in event_block.split(';'):
-            key, value = key_value.split('=')
+            key, value = key_value.split('=', 1)
             event[key] = value
 
         # data is a json string, convert it to real json and add it back to the output dic
