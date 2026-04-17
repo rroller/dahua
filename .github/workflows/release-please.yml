@@ -1,0 +1,36 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Daily at 13:17 UTC. Picks up the release PR created/updated by
+    # push runs and merges it, producing at most one release per day.
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # On the daily schedule, merge any open release PR so a release is cut.
+      # On push runs we only update the release PR; merging happens on cron.
+      - name: Merge release PR (daily)
+        if: github.event_name == 'schedule' && steps.release.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_JSON: ${{ steps.release.outputs.pr }}
+        run: |
+          PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
+          echo "Merging release PR #$PR_NUMBER"
+          gh pr merge "$PR_NUMBER" --squash --delete-branch

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "dahua",
+      "include-component-in-tag": false,
+      "include-v-in-tag": false,
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "custom_components/dahua/manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    }
+  }
+}
