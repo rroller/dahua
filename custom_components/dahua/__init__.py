@@ -15,7 +15,7 @@ import hashlib
 from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
@@ -237,7 +237,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 # Find the max number of streams. 1 main stream + n number of sub-streams
                 self._max_streams = await self.client.get_max_extra_streams() + 1
-                _LOGGER.info("Using max streams %s", self._max_streams)
+                _LOGGER.debug("Using max streams %s", self._max_streams)
 
                 machine_name = await self.client.async_get_machine_name()
                 sys_info = await self.client.async_get_system_info()
@@ -273,28 +273,28 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._channel_number = self._channel
                 except ClientError:
                     pass
-                _LOGGER.info("Using channel number %s", self._channel_number)
+                _LOGGER.debug("Using channel number %s", self._channel_number)
 
                 try:
                     await self.client.async_get_coaxial_control_io_status()
                     self._supports_coaxial_control = True
                 except ClientResponseError:
                     self._supports_coaxial_control = False
-                _LOGGER.info("Device supports Coaxial Control=%s", self._supports_coaxial_control)
+                _LOGGER.debug("Device supports Coaxial Control=%s", self._supports_coaxial_control)
 
                 try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
                 except ClientError:
                     self._supports_disarming_linkage = False
-                _LOGGER.info("Device supports disarming linkage=%s", self._supports_disarming_linkage)
+                _LOGGER.debug("Device supports disarming linkage=%s", self._supports_disarming_linkage)
 
                 try:
                     await self.client.async_get_event_notifications()
                     self._supports_event_notifications = True
                 except ClientError:
                     self._supports_event_notifications = False
-                _LOGGER.info("Device supports event notifications=%s", self._supports_event_notifications)
+                _LOGGER.debug("Device supports event notifications=%s", self._supports_event_notifications)
 
                 # PTZ
                 # The following lines are for Dahua devices
@@ -303,7 +303,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_ptz_position = True
                 except ClientError:
                     self._supports_ptz_position = False
-                _LOGGER.info("Device supports PTZ position=%s", self._supports_ptz_position)
+                _LOGGER.debug("Device supports PTZ position=%s", self._supports_ptz_position)
 
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
                 # The following lines are for Dahua devices
@@ -312,13 +312,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_smart_motion_detection = True
                 except ClientError:
                     self._supports_smart_motion_detection = False
-                _LOGGER.info("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
+                _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
                 is_doorbell = self.is_doorbell()
-                _LOGGER.info("Device is a doorbell=%s", is_doorbell)
+                _LOGGER.debug("Device is a doorbell=%s", is_doorbell)
 
                 is_flood_light = self.is_flood_light()
-                _LOGGER.info("Device is a floodlight=%s", is_flood_light)
+                _LOGGER.debug("Device is a floodlight=%s", is_flood_light)
 
                 self._supports_floodlightmode = self.supports_floodlightmode()
 
@@ -328,7 +328,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError:
                     self._supports_lighting = False
                     pass
-                _LOGGER.info("Device supports infrared lighting=%s", self.supports_infrared_light())
+                _LOGGER.debug("Device supports infrared lighting=%s", self.supports_infrared_light())
 
 #Checking lighting_v2 support
                 try:
@@ -337,7 +337,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError:
                     self._supports_lighting_v2 = False
                     pass
-                _LOGGER.info("Device supports Lighting_V2=%s", self._supports_lighting_v2)
+                _LOGGER.debug("Device supports Lighting_V2=%s", self._supports_lighting_v2)
 
 
                 if not is_doorbell:
@@ -352,9 +352,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # Otherwise we'll get multiple lines of config back
                         self._supports_profile_mode = len(conf) > 1
                     except ClientError:
-                        _LOGGER.info("Cam does not support profile mode. Will use mode 0")
+                        _LOGGER.debug("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
-                    _LOGGER.info("Device supports profile mode=%s", self._supports_profile_mode)
+                    _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
                 else:
                     # Start the event listeners for doorbells (VTO)
                     await self.async_start_vto_event_listener()
@@ -365,11 +365,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.warning("Authentication failed for %s, starting reauth", self._address)
                     self.config_entry.async_start_reauth(self.hass)
                     raise UpdateFailed("Authentication failed") from exception
-                _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
-                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
+                _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
+                raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
             except Exception as exception:
-                _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
-                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
+                _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
+                raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
 
         # This is the event loop code that's called every n seconds
         try:
