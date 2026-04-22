@@ -15,7 +15,7 @@ import hashlib
 from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
@@ -242,7 +242,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 # Find the max number of streams. 1 main stream + n number of sub-streams
                 self._max_streams = await self.client.get_max_extra_streams() + 1
-                _LOGGER.info("Using max streams %s", self._max_streams)
+                _LOGGER.debug("Using max streams %s", self._max_streams)
 
                 machine_name = await self.client.async_get_machine_name()
                 sys_info = await self.client.async_get_system_info()
@@ -278,28 +278,28 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._channel_number = self._channel
                 except ClientError:
                     pass
-                _LOGGER.info("Using channel number %s", self._channel_number)
+                _LOGGER.debug("Using channel number %s", self._channel_number)
 
                 try:
                     await self.client.async_get_coaxial_control_io_status()
                     self._supports_coaxial_control = True
                 except ClientResponseError:
                     self._supports_coaxial_control = False
-                _LOGGER.info("Device supports Coaxial Control=%s", self._supports_coaxial_control)
+                _LOGGER.debug("Device supports Coaxial Control=%s", self._supports_coaxial_control)
 
                 try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
                 except ClientError:
                     self._supports_disarming_linkage = False
-                _LOGGER.info("Device supports disarming linkage=%s", self._supports_disarming_linkage)
+                _LOGGER.debug("Device supports disarming linkage=%s", self._supports_disarming_linkage)
 
                 try:
                     await self.client.async_get_event_notifications()
                     self._supports_event_notifications = True
                 except ClientError:
                     self._supports_event_notifications = False
-                _LOGGER.info("Device supports event notifications=%s", self._supports_event_notifications)
+                _LOGGER.debug("Device supports event notifications=%s", self._supports_event_notifications)
 
                 # PTZ
                 # The following lines are for Dahua devices
@@ -308,7 +308,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_ptz_position = True
                 except ClientError:
                     self._supports_ptz_position = False
-                _LOGGER.info("Device supports PTZ position=%s", self._supports_ptz_position)
+                _LOGGER.debug("Device supports PTZ position=%s", self._supports_ptz_position)
 
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
                 # The following lines are for Dahua devices
@@ -317,13 +317,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_smart_motion_detection = True
                 except ClientError:
                     self._supports_smart_motion_detection = False
-                _LOGGER.info("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
+                _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
                 is_doorbell = self.is_doorbell()
-                _LOGGER.info("Device is a doorbell=%s", is_doorbell)
+                _LOGGER.debug("Device is a doorbell=%s", is_doorbell)
 
                 is_flood_light = self.is_flood_light()
-                _LOGGER.info("Device is a floodlight=%s", is_flood_light)
+                _LOGGER.debug("Device is a floodlight=%s", is_flood_light)
 
                 self._supports_floodlightmode = self.supports_floodlightmode()
 
@@ -333,7 +333,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError:
                     self._supports_lighting = False
                     pass
-                _LOGGER.info("Device supports infrared lighting=%s", self.supports_infrared_light())
+                _LOGGER.debug("Device supports infrared lighting=%s", self.supports_infrared_light())
 
 #Checking lighting_v2 support
                 try:
@@ -342,7 +342,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError:
                     self._supports_lighting_v2 = False
                     pass
-                _LOGGER.info("Device supports Lighting_V2=%s", self._supports_lighting_v2)
+                _LOGGER.debug("Device supports Lighting_V2=%s", self._supports_lighting_v2)
 
                 # Test RPC2 client availability
                 try:
@@ -365,9 +365,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # Otherwise we'll get multiple lines of config back
                         self._supports_profile_mode = len(conf) > 1
                     except ClientError:
-                        _LOGGER.info("Cam does not support profile mode. Will use mode 0")
+                        _LOGGER.debug("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
-                    _LOGGER.info("Device supports profile mode=%s", self._supports_profile_mode)
+                    _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
                 else:
                     # Start the event listeners for doorbells (VTO)
                     await self.async_start_vto_event_listener()
@@ -378,11 +378,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.warning("Authentication failed for %s, starting reauth", self._address)
                     self.config_entry.async_start_reauth(self.hass)
                     raise UpdateFailed("Authentication failed") from exception
-                _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
-                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
+                _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
+                raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
             except Exception as exception:
-                _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
-                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
+                _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
+                raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
 
         # This is the event loop code that's called every n seconds
         try:
@@ -492,40 +492,42 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # }
 
         # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, PhoneCallDetect, DoorStatus, etc
-        code = self.translate_event_code(event)
-        event_key = self.get_event_key(code)
+        codes = self.translate_event_code(event)
 
-        if code == "AccessControl":
-            card_id = event.get("Data", {}).get("CardNo", "")
-            if card_id:
-                card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
-                asyncio.run_coroutine_threadsafe(
-                    async_scan_tag(self.hass, card_id_md5, self.get_device_name()), self.hass.loop
-                ).result()
+        for code in codes:
+            event_key = self.get_event_key(code)
 
-        listener = self._dahua_event_listeners.get(event_key)
-        if listener is not None:
-            action = event.get("Action", "")
-            if action == "Start":
-                self._dahua_event_timestamp[event_key] = int(time.time())
-                listener()
-            elif action == "Stop":
-                self._dahua_event_timestamp[event_key] = 0
-                listener()
-            elif action == "Pulse":
-                if code == "DoorStatus":
-                    if event.get("Data", {}).get("Status", "") == "Open":
-                        self._dahua_event_timestamp[event_key] = int(time.time())
+            if code == "AccessControl":
+                card_id = event.get("Data", {}).get("CardNo", "")
+                if card_id:
+                    card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
+                    self.hass.async_create_task(
+                        async_scan_tag(self.hass, card_id_md5, self.get_device_name())
+                    )
+
+            listener = self._dahua_event_listeners.get(event_key)
+            if listener is not None:
+                action = event.get("Action", "")
+                if action == "Start":
+                    self._dahua_event_timestamp[event_key] = int(time.time())
+                    listener()
+                elif action == "Stop":
+                    self._dahua_event_timestamp[event_key] = 0
+                    listener()
+                elif action == "Pulse":
+                    if code == "DoorStatus":
+                        if event.get("Data", {}).get("Status", "") == "Open":
+                            self._dahua_event_timestamp[event_key] = int(time.time())
+                        else:
+                            self._dahua_event_timestamp[event_key] = 0
                     else:
-                        self._dahua_event_timestamp[event_key] = 0
-                else:
-                    state = event.get("Data", {}).get("State", 0)
-                    if state == 1:
-                        # button pressed
-                        self._dahua_event_timestamp[event_key] = int(time.time())
-                    else:
-                        self._dahua_event_timestamp[event_key] = 0
-                listener()
+                        state = event.get("Data", {}).get("State", 0)
+                        if state == 1:
+                            # button pressed
+                            self._dahua_event_timestamp[event_key] = int(time.time())
+                        else:
+                            self._dahua_event_timestamp[event_key] = 0
+                    listener()
 
     def on_receive(self, data_bytes: bytes, channel: int):
         """
@@ -577,47 +579,57 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
 
             # This is the event code, example: VideoMotion, CrossLineDetection, etc
-            event_name = self.translate_event_code(event)
+            event_names = self.translate_event_code(event)
 
-            event_key = self.get_event_key(event_name)
-            listener = self._dahua_event_listeners.get(event_key)
-            if listener is not None:
-                action = event["action"]
-                if action == "Start":
-                    self._dahua_event_timestamp[event_key] = int(time.time())
-                    listener()
-                elif action == "Stop":
-                    self._dahua_event_timestamp[event_key] = 0
-                    listener()
+            for event_name in event_names:
+                event_key = self.get_event_key(event_name)
+                listener = self._dahua_event_listeners.get(event_key)
+                if listener is not None:
+                    action = event["action"]
+                    if action == "Start":
+                        self._dahua_event_timestamp[event_key] = int(time.time())
+                        listener()
+                    elif action == "Stop":
+                        self._dahua_event_timestamp[event_key] = 0
+                        listener()
 
     def translate_event_code(self, event: dict):
         """
-        translate_event_code will try to convert the event code to a less specific event code if the device doesn't have a listener for the more specific type
-        Example event codes: VideoMotion, CrossLineDetection, BackKeyLight, DoorStatus
+        translate_event_code returns a list of event codes to dispatch.
+        For CrossLine/CrossRegion events with a recognized ObjectType, returns both the
+        original code AND the SmartMotion* code (if listeners exist), so both sensors fire.
         """
         code = event.get("Code", "")
 
-        # For CrossLineDetection, the event data will look like this... and if there's a human detected then we'll use the SmartMotionHuman code instead
-        # {
-        #    "Code": "CrossLineDetection",
-        #    "Data": {
-        #        "Object": {
-        #            "ObjectType": "Human",
-        #        }
-        #    }
-        # }
         if code == "CrossLineDetection" or code == "CrossRegionDetection":
             data = event.get("data", event.get("Data", {}))
-            is_human = data.get("Object", {}).get("ObjectType", "").lower() == "human"
-            if is_human and self._dahua_event_listeners.get(self.get_event_key(code)) is None:
-                return "SmartMotionHuman"
+            object_type = data.get("Object", {}).get("ObjectType", "").lower()
+            codes = []
+
+            # Always include the original CrossLine/CrossRegion if a listener exists
+            if self._dahua_event_listeners.get(self.get_event_key(code)) is not None:
+                codes.append(code)
+
+            # Also include SmartMotion translation if applicable
+            if object_type == "human":
+                if self._dahua_event_listeners.get(self.get_event_key("SmartMotionHuman")) is not None:
+                    codes.append("SmartMotionHuman")
+                elif not codes:
+                    codes.append("SmartMotionHuman")
+            elif object_type == "vehicle":
+                if self._dahua_event_listeners.get(self.get_event_key("SmartMotionVehicle")) is not None:
+                    codes.append("SmartMotionVehicle")
+                elif not codes:
+                    codes.append("SmartMotionVehicle")
+
+            return codes if codes else [code]
 
         # Convert doorbell pressed related events to common event name, DoorbellPressed.
         # VTO devices will use the event BackKeyLight and the Amcrest devices seem to use PhoneCallDetect
         if code == "BackKeyLight" or code == "PhoneCallDetect":
-            code = "DoorbellPressed"
+            return ["DoorbellPressed"]
 
-        return code
+        return [code]
 
     def get_event_timestamp(self, event_name: str) -> int:
         """

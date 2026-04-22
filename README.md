@@ -262,7 +262,7 @@ Switch |  Description |
 :------------ | :------------ |
 Motion | Enables or disables motion detection on the camera
 Siren | If the camera has a siren, will turn on the siren. Note, it seems sirens only stay on for 10 to 15 seconds before switching off
-Disarming Linkage | Newer firmwares have a "disarming" feature (not sure what it is, but some people use it). This allows one to turn it on/off. This is found in the UI by going to Event -> Disarming
+Disarming Linkage | Newer firmwares introduce a "disarming" feature, accessible from the camera web UI under Event → One-click disarm / Disarming. When enabled, the disarm toggle suppresses the linkage actions configured in the Disarming section specifically, while leaving all other alarm linkage actions untouched. Detection remains fully active throughout. This allows one to turn it on/off.
 
 ## Lights
 Light |  Description |
