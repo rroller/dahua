@@ -1,12 +1,15 @@
 """Switch platform for dahua."""
+import logging
 from aiohttp import ClientError
 from homeassistant.core import HomeAssistant
 from homeassistant.components.switch import SwitchEntity
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
-from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON
+from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON, PRIVACY_MODE_ICON
 from .entity import DahuaBaseEntity
 from .client import SIREN_TYPE
+
+_LOGGER: logging.Logger = logging.getLogger(__package__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
@@ -30,6 +33,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         devices.append(DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry))
     except ClientError as exception:
         pass
+
+    # Add privacy mode switch if RPC2 client is available
+    if coordinator.supports_privacy_mode():
+        devices.append(DahuaPrivacyModeBinarySwitch(coordinator, entry))
 
     async_add_devices(devices)
 
@@ -243,3 +250,47 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         Value is fetched from api.get_motion_detection_config
         """
         return self._coordinator.is_siren_on()
+
+
+class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
+    """Dahua privacy mode switch class. Used to enable or disable privacy mode."""
+
+    async def async_turn_on(self, **kwargs):
+        """Turn on privacy mode."""
+        try:
+            result = await self._coordinator.rpc2_client.set_privacy_mode(True)
+            if result:
+                await self._coordinator.async_refresh()
+        except Exception as e:
+            _LOGGER.error("Failed to turn on privacy mode: %s", e)
+            raise
+
+    async def async_turn_off(self, **kwargs):
+        """Turn off privacy mode."""
+        try:
+            result = await self._coordinator.rpc2_client.set_privacy_mode(False)
+            if result:
+                await self._coordinator.async_refresh()
+        except Exception as e:
+            _LOGGER.error("Failed to turn off privacy mode: %s", e)
+            raise
+
+    @property
+    def name(self):
+        """Return the name of the switch."""
+        return self._coordinator.get_device_name() + " Privacy Mode"
+
+    @property
+    def unique_id(self):
+        """Return unique ID."""
+        return self._coordinator.get_serial_number() + "_privacy_mode"
+
+    @property
+    def icon(self):
+        """Return the icon of this switch."""
+        return PRIVACY_MODE_ICON
+
+    @property
+    def is_on(self):
+        """Return true if privacy mode is on."""
+        return self._coordinator.is_privacy_mode_enabled()
