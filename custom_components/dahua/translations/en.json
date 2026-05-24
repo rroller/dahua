@@ -48,7 +48,8 @@
                     "switch": "Switch enabled",
                     "light": "Light enabled",
                     "select": "Select enabled",
-                    "camera": "Camera enabled"
+                    "camera": "Camera enabled",
+                    "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)"
                 }
             }
         }
