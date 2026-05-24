@@ -23,6 +23,7 @@ from .const import (
     DOMAIN,
     PLATFORMS,
     CONF_CHANNEL,
+    CONF_AUTO_DETECT_CHANNEL,
 )
 
 """
@@ -256,14 +257,19 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             self.options.update(user_input)
             return await self._update_options()
 
+        schema = {
+            vol.Required(x, default=self.options.get(x, True)): bool
+            for x in sorted(PLATFORMS)
+        }
+        schema[
+            vol.Required(
+                CONF_AUTO_DETECT_CHANNEL,
+                default=self.options.get(CONF_AUTO_DETECT_CHANNEL, True),
+            )
+        ] = bool
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(x, default=self.options.get(x, True)): bool
-                    for x in sorted(PLATFORMS)
-                }
-            ),
+            data_schema=vol.Schema(schema),
         )
 
     async def _update_options(self):
