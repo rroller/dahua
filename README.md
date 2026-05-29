@@ -80,44 +80,37 @@ These devices are confirmed as working:
 
 ## Dahua cameras
 
-Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
-:------------ | :------------ | :------------ | :------------- | :-------------
-| *Consumer Series* |
-| | A26 |  |  |
-| *1-Series* |
-| | HFW1230S | HFW1435S-W |  |
-| | HDBW1230E-S2 | HFW1435S-W-S2  |  |
-| | |HDBW1431EP-S-0360B | |
-| *2-/3-Series* |
-| | HDW2831T-ZS-S2 | HDW2431TP-AS | HDW3549HP-AS-PV | HDW3849HP-AS-PV
-| | HDBW2231FP-AS-0280B-S2 | HFW2449S-S-IL
-| | | HFW3441E-AS-S2
-| *4-/5-Series* |
-| | HDW4231EM-ASE | HFW4433F-ZSA |  | HDW5831R-ZE
-| | HDBW4231F-AS | HDBW5421E-Z |  |
-| | HDW4233C-A | T5442T-ZE |
-| | HDBW4239R-ASE | T5442TM-AS |
-| | | B5442E-Z4E |
-| | | B54IR-ASE |
-| | HDBW4239RP-ASE |
-| *6-/7-Series* |
-| | HDPW7564N-SP |
-| *Panoramic Series* |
-| |  |  | EW5531-AS | 
-
-Additional confirmed models:
-
-- `IPC-HFW1431S1-S4`
-- `IPC-HDW4631EM-ASE`
-- `IPC-HDBW2431R-ZS`
-- `DH-SD1A203T-GN`
-- `DH-SD42212S-HN`
-- `DH-TPC-BF2221P-B3F4` <sup>**</sup>
-- `IPC-HFW3549T1-AS-PV-0280B-S3` <sup>***</sup>
-
-<sup>**</sup> Hybrid thermal imaging camera. Both video channels work if the device is added twice, once per channel. Fire detection works. Smoking detection is available on the device, but it is not currently listed by this integration.
-
-<sup>***</sup> Reported working with firmware `2.840.0000000.26.R`, build `2023-12-21`, and after update to `2.840.0000000.27.R`, build `2024-03-22`.
+Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 6 Megapixels | 8 Megapixels
+:------------ | :------------ | :------------ | :------------- | :------------- | :-------------
+| *Consumer Series* |  |  |  |  |  |
+|  | A26 |  |  |  |  |
+| *1-Series* |  |  |  |  |  |
+|  | HFW1230S | HFW1431S1-S4 |  |  |  |
+|  | HDBW1230E-S2 | HFW1435S-W |  |  |  |
+|  |  | HFW1435S-W-S2 |  |  |  |
+|  |  | HDBW1431EP-S-0360B |  |  |  |
+| *2-/3-Series* |  |  |  |  |  |
+|  | HDW2831T-ZS-S2 | HDW2431TP-AS | HDW3549HP-AS-PV |  | HDW3849HP-AS-PV |
+|  | HDBW2231FP-AS-0280B-S2 | HDBW2431R-ZS | HFW3549T1-AS-PV-0280B-S3 |  |  |
+|  |  | HFW2449S-S-IL |  |  |  |
+|  |  | HFW3441E-AS-S2 |  |  |  |
+| *4-/5-Series* |  |  |  |  |  |
+|  | HDW4231EM-ASE | HFW4433F-ZSA |  | HDW4631EM-ASE | HDW5831R-ZE |
+|  | HDBW4231F-AS | HDBW5421E-Z |  |  |  |
+|  | HDW4233C-A | T5442T-ZE |  |  |  |
+|  | HDBW4239R-ASE | T5442TM-AS |  |  |  |
+|  |  | B5442E-Z4E |  |  |  |
+|  |  | B54IR-ASE |  |  |  |
+|  | HDBW4239RP-ASE |  |  |  |  |
+| *PTZ Series* |  |  |  |  |  |
+|  | SD1A203T-GN |  |  |  |  |
+|  | SD42212S-HN |  |  |  |  |
+| *Thermal Series* |  |  |  |  |  |
+|  | TPC-BF2221P-B3F4 |  |  |  |  |
+| *6-/7-Series* |  |  |  |  |  |
+|  | HDPW7564N-SP |  |  |  |  |
+| *Panoramic Series* |  |  |  |  |  |
+|  |  |  | EW5531-AS |  |  |
 
 ## Other brand cameras
 
