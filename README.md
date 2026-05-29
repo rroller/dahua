@@ -105,24 +105,19 @@ Series | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | *Panoramic Series* |
 | |  |  | EW5531-AS | 
 
-## Community reports from issue #333
-
-The following community confirmations were reported in [#333](https://github.com/rroller/dahua/issues/333).
-Some of these models already appear in the tables above; this section preserves the exact user-reported model strings and notes.
+Additional confirmed models:
 
 - `IPC-HFW1431S1-S4`
-- `DH-TPC-BF2221P-B3F4` (Hybrid Thermal Imaging Camera)
-  - Both video channels work when the camera is added twice, once per channel
-  - Fire detection works
-  - Smoking detection was reported by the user as available on the device, but it is not currently listed by this integration
 - `IPC-HDW4631EM-ASE`
 - `IPC-HDBW2431R-ZS`
-- `IPC-HDBW4239R-ASE`
 - `DH-SD1A203T-GN`
 - `DH-SD42212S-HN`
-- `IPC-HFW3549T1-AS-PV-0280B-S3`
-  - Reported working with firmware `2.840.0000000.26.R`, build `2023-12-21`
-  - Still working after update to firmware `2.840.0000000.27.R`, build `2024-03-22`
+- `DH-TPC-BF2221P-B3F4` <sup>**</sup>
+- `IPC-HFW3549T1-AS-PV-0280B-S3` <sup>***</sup>
+
+<sup>**</sup> Hybrid thermal imaging camera. Both video channels work if the device is added twice, once per channel. Fire detection works. Smoking detection is available on the device, but it is not currently listed by this integration.
+
+<sup>***</sup> Reported working with firmware `2.840.0000000.26.R`, build `2023-12-21`, and after update to `2.840.0000000.27.R`, build `2024-03-22`.
 
 ## Other brand cameras
 
