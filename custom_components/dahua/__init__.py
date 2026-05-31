@@ -36,6 +36,7 @@ from .const import (
     CONF_RTSP_PORT,
     STARTUP_MESSAGE,
     CONF_CHANNEL,
+    CONF_AUTO_DETECT_CHANNEL,
 )
 from .dahua_utils import parse_event
 from .vto import DahuaVTOClient
@@ -265,15 +266,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.machine_name = data.get("table.General.MachineName")
                 self._serial_number = data.get("serialNumber")
 
-                try:
-                    await self.client.async_get_snapshot(0)
-                    # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
-                    # but check if unit is not a doorbell first as channel 0 doesnt exist for VTOs
-                    if not self.is_doorbell():
-                        self._channel_number = self._channel
-                except ClientError:
-                    pass
-                _LOGGER.debug("Using channel number %s", self._channel_number)
+                # Some Dahua firmwares index channels from 0, others from 1. The default
+                # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
+                # 0-indexed and reset channel_number accordingly. Users on cameras where this
+                # heuristic gets it wrong (HTTP snapshot at 0 succeeds but RTSP only streams
+                # on channel=1) can disable it via the integration options.
+                auto_detect = self.config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True)
+                if auto_detect:
+                    try:
+                        await self.client.async_get_snapshot(0)
+                        # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
+                        # but check if unit is not a doorbell first as channel 0 doesnt exist for VTOs
+                        if not self.is_doorbell():
+                            self._channel_number = self._channel
+                    except ClientError:
+                        pass
+                _LOGGER.debug("Using channel number %s (auto_detect=%s)", self._channel_number, auto_detect)
 
                 try:
                     await self.client.async_get_coaxial_control_io_status()

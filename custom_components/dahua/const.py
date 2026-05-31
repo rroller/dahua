@@ -43,6 +43,7 @@ CONF_STREAMS = "streams"
 CONF_EVENTS = "events"
 CONF_NAME = "name"
 CONF_CHANNEL = "channel"
+CONF_AUTO_DETECT_CHANNEL = "auto_detect_channel"
 
 # Defaults
 DEFAULT_NAME = "Dahua"
