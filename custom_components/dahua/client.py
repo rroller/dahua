@@ -495,21 +495,23 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
+    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str, index: int = 0) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
         NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
 
         profile_mode: 0=day, 1=night, 2=scene
+        index: the Lighting_V2 light index. White light is index 0 on single-illuminator cams but a
+               later index on dual-illuminator (-IL) models, so the caller passes the resolved index.
         """
 
         # on = Manual, off = Off
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][0].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][0].MiddleLight[0].Light={brightness}".format(
-            channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{index}].MiddleLight[0].Light={brightness}".format(
+            channel=channel, profile_mode=profile_mode, index=index, mode=mode, brightness=brightness
         )
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)

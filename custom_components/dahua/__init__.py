@@ -362,6 +362,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     except ClientError:
                         _LOGGER.debug("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
+                    if not self._supports_profile_mode:
+                        # The legacy Lighting[0][2] probe is empty on some cams (e.g. white-light/dual
+                        # illuminator models). Fall back to the VideoInMode API, which is the canonical
+                        # source for the active day/night profile.
+                        try:
+                            mode_data = await self.client.async_get_video_in_mode()
+                            self._supports_profile_mode = "table.VideoInMode[0].Config[0]" in mode_data
+                        except ClientError:
+                            self._supports_profile_mode = False
                     _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
                 else:
                     # Start the event listeners for doorbells (VTO)
@@ -766,11 +775,28 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         bri = self.data.get("table.Lighting[{0}][0].MiddleLight[0].Light".format(self._channel))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
+    def get_illuminator_index(self, profile_mode) -> int:
+        """
+        Return the Lighting_V2 array index of the white-light illuminator for the given profile.
+
+        On single-illuminator cameras the white light is at index 0, but on dual-illuminator
+        models (e.g. the -IL series) index 0 is the InfraredLight and the white light lives at a
+        later index. We locate it by LightType so the right light is read/controlled regardless of
+        layout. Falls back to 0 when no WhiteLight entry is present (legacy behaviour).
+        """
+        for index in range(0, 3):
+            light_type = self.data.get(
+                "table.Lighting_V2[{0}][{1}][{2}].LightType".format(self._channel, profile_mode, index))
+            if light_type == "WhiteLight":
+                return index
+        return 0
+
     def is_illuminator_on(self) -> bool:
         """Return true if the illuminator light is on"""
         # profile_mode 0=day, 1=night, 2=scene
-        profile_mode = self.get_profile_mode()       
-        return self.data.get("table.Lighting_V2[{0}][{1}][0].Mode".format(self._channel, profile_mode), "") == "Manual"
+        profile_mode = self.get_profile_mode()
+        index = self.get_illuminator_index(profile_mode)
+        return self.data.get("table.Lighting_V2[{0}][{1}][{2}].Mode".format(self._channel, profile_mode, index), "") == "Manual"
 
     def is_flood_light_on(self) -> bool:
 
@@ -789,8 +815,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
-
-        bri = self.data.get("table.Lighting_V2[{0}][0][0].MiddleLight[0].Light".format(self._channel))
+        # profile_mode 0=day, 1=night, 2=scene
+        profile_mode = self.get_profile_mode()
+        index = self.get_illuminator_index(profile_mode)
+        bri = self.data.get("table.Lighting_V2[{0}][{1}][{2}].MiddleLight[0].Light".format(self._channel, profile_mode, index))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
     def is_security_light_on(self) -> bool:
