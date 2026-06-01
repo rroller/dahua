@@ -121,6 +121,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._profile_mode = "0"
         self._preset_position = "0"
         self._supports_profile_mode = False
+        # Newer cameras (e.g. dual-illuminator models) select the active day/night profile through
+        # the VideoInMode ConfigEx string instead of the Config[0] index. Detected during polling.
+        self._supports_config_ex = False
         self._channel = channel
         self._address = address
         self._max_streams = 3  # 1 main stream + 2 sub-streams by default
@@ -395,9 +398,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
-                    self._profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
-                    if not self._profile_mode:
-                        self._profile_mode = "0"
+                    # Newer cameras (e.g. dual-illuminator models) keep VideoInMode.Config as a
+                    # static index list ([0,1]) and report the *active* day/night profile in the
+                    # ConfigEx string ("Day"/"Night"). Older cameras put the active profile directly
+                    # in Config[0]. Prefer ConfigEx when the camera reports it - on those cameras
+                    # Config[0] is always 0 and would make us think we're permanently in day mode.
+                    config_ex = mode_data.get("table.VideoInMode[0].ConfigEx")
+                    if config_ex is not None:
+                        self._supports_config_ex = True
+                        self._profile_mode = "1" if str(config_ex).lower() == "night" else "0"
+                    else:
+                        self._supports_config_ex = False
+                        self._profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
+                        if not self._profile_mode:
+                            self._profile_mode = "0"
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
@@ -828,6 +842,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
         return self._profile_mode
+
+    def supports_config_ex(self) -> bool:
+        """True if the camera selects the day/night profile via VideoInMode.ConfigEx (newer models)
+        rather than the Config[0] index. See _async_update_data for details."""
+        return self._supports_config_ex
 
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""

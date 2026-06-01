@@ -393,6 +393,30 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{0}].Config[0]={1}".format(channel, mode)
         return await self.get(url, True)
 
+    async def async_set_video_profile_config_ex(self, channel: int, mode: str):
+        """
+        async_set_video_profile_config_ex forces the day/night profile on cameras that expose
+        VideoInMode.ConfigEx (e.g. newer dual-illuminator models). Mode should be one of: Day or Night.
+
+        These cameras keep VideoInMode.Config as a static index list ([0,1]) and select the profile
+        through the ConfigEx string. The integration used to write Config[0], which does nothing
+        useful here and is ignored by the firmware.
+
+        We must also set VideoInMode.Mode=4 ("manual"), which is exactly what the camera's own web UI
+        sends when you toggle day/night by hand. If the camera is left on an automatic switch mode
+        (e.g. Mode=2 = by brightness) it re-evaluates and reverts the forced profile within seconds;
+        when a profile also turns the white illuminator on, the light fools the brightness sensor and
+        the camera oscillates between day and night endlessly. Mode=4 pins the requested profile so
+        it sticks. Verified against the device: Mode=2 + forced Night reverts to Day in ~8s, while
+        Mode=4 + forced Night holds indefinitely.
+        """
+
+        config_ex = "Night" if mode.lower() == "night" else "Day"
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{ch}].Mode=4&VideoInMode[{ch}].ConfigEx={cfg}".format(
+            ch=channel, cfg=config_ex
+        )
+        return await self.get(url, True)
+
     async def async_adjustfocus_v1(self, focus: str, zoom: str):
         """
         async_adjustfocus will set the zoom and focus

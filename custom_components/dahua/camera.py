@@ -333,6 +333,11 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         # Some NVRs like the Lorex DHI-NVR4108HS-8P-4KS2 change the day/night mode through a switch
         if any(substring in model for substring in ['NVR4108HS', 'IPC-Color4K']):
             await self._coordinator.client.async_set_night_switch_mode(channel, mode)
+        elif self._coordinator.supports_config_ex():
+            # Newer cameras select the profile via VideoInMode.ConfigEx + Mode=4 (manual). Writing
+            # Config[0] (the old path) is ignored by these cameras, so the profile never sticks and
+            # the brightness auto-switch keeps flipping it - see async_set_video_profile_config_ex.
+            await self._coordinator.client.async_set_video_profile_config_ex(channel, mode)
         else:
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
         # Refresh immediately so dependent entities (e.g. the illuminator light, whose state is
