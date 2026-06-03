@@ -393,6 +393,29 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{0}].Config[0]={1}".format(channel, mode)
         return await self.get(url, True)
 
+    async def async_set_video_profile_config_ex(self, channel: int, mode: str):
+        """
+        async_set_video_profile_config_ex selects the day/night profile on cameras that expose
+        VideoInMode.ConfigEx (e.g. newer dual-illuminator models). Mode should be one of: Day or Night.
+
+        These cameras keep VideoInMode.Config as a static index list and select the active profile
+        through the ConfigEx string ("Day"/"Night"). Writing Config[0] (the old path) is rejected by
+        this firmware, so we drive ConfigEx instead.
+
+        We also set VideoInMode.Mode=4, which pins the chosen profile so it is held instead of being
+        re-evaluated by an automatic day/night switch. Verified against the device via:
+            setConfig&VideoInMode[0].Mode=4&VideoInMode[0].ConfigEx=Day
+            setConfig&VideoInMode[0].Mode=4&VideoInMode[0].ConfigEx=Night
+        Both switch the profile correctly. (The camera's own web UI can mislabel this working mode,
+        but the API call itself works.)
+        """
+
+        config_ex = "Night" if mode.lower() == "night" else "Day"
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{ch}].Mode=4&VideoInMode[{ch}].ConfigEx={cfg}".format(
+            ch=channel, cfg=config_ex
+        )
+        return await self.get(url, True)
+
     async def async_adjustfocus_v1(self, focus: str, zoom: str):
         """
         async_adjustfocus will set the zoom and focus
@@ -495,21 +518,23 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
+    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str, index: int = 0) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
         NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
 
         profile_mode: 0=day, 1=night, 2=scene
+        index: the Lighting_V2 light index. White light is index 0 on single-illuminator cams but a
+               later index on dual-illuminator (-IL) models, so the caller passes the resolved index.
         """
 
         # on = Manual, off = Off
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][0].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][0].MiddleLight[0].Light={brightness}".format(
-            channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{index}].MiddleLight[0].Light={brightness}".format(
+            channel=channel, profile_mode=profile_mode, index=index, mode=mode, brightness=brightness
         )
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
