@@ -368,10 +368,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     if not self._supports_profile_mode:
                         # The legacy Lighting[0][2] probe is empty on some cams (e.g. white-light/dual
                         # illuminator models). Fall back to the VideoInMode API, which is the canonical
-                        # source for the active day/night profile.
+                        # source for the active day/night profile. Dual-illuminator models report an
+                        # empty Config list and expose the profile through ConfigEx instead, so accept
+                        # either key - otherwise supports_config_ex() stays False and the service
+                        # wrongly falls back to writing Config[0], which these cameras reject.
                         try:
                             mode_data = await self.client.async_get_video_in_mode()
-                            self._supports_profile_mode = "table.VideoInMode[0].Config[0]" in mode_data
+                            self._supports_profile_mode = (
+                                "table.VideoInMode[0].Config[0]" in mode_data
+                                or "table.VideoInMode[0].ConfigEx" in mode_data
+                            )
                         except ClientError:
                             self._supports_profile_mode = False
                     _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
