@@ -789,8 +789,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
-
-        bri = self.data.get("table.Lighting_V2[{0}][0][0].MiddleLight[0].Light".format(self._channel))
+        profile_mode = self.get_profile_mode()
+        bri = self.data.get("table.Lighting_V2[{0}][{1}][0].MiddleLight[0].Light".format(self._channel, profile_mode))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
     def is_security_light_on(self) -> bool:
