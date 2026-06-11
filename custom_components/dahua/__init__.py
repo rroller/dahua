@@ -341,18 +341,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
 #Checking lighting_v2 support
                 try:
-                    await self.client.async_get_lighting_v2()
+                    lighting_v2_data = await self.client.async_get_lighting_v2()
                     self._supports_lighting_v2 = True
                     # Detect which light type(s) this camera uses for illuminator brightness.
                     # MiddleLight is mutually exclusive with FarLight/NearLight.
                     channel = self._channel
                     middle_key = "table.Lighting_V2[{0}][0][0].MiddleLight[0].Light".format(channel)
-                    if middle_key in self.data:
+                    if middle_key in lighting_v2_data:
                         self._illuminator_brightness_keys = ["MiddleLight"]
                     else:
                         for light_type in ["FarLight", "NearLight"]:
                             test_key = "table.Lighting_V2[{0}][0][0].{1}[0].Light".format(channel, light_type)
-                            if test_key in self.data:
+                            if test_key in lighting_v2_data:
                                 self._illuminator_brightness_keys.append(light_type)
                     if self._illuminator_brightness_keys:
                         _LOGGER.debug("Illuminator uses %s for brightness", ",".join(self._illuminator_brightness_keys))
