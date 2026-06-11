@@ -126,6 +126,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._max_streams = 3  # 1 main stream + 2 sub-streams by default
 
         self._supports_lighting_v2 = False
+        self._illuminator_brightness_keys = []
 
         # channel_number is not the channel_index. channel_number is the index + 1.
         # So channel index 0 is channel number 1. Except for some older firmwares where channel
@@ -342,6 +343,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     await self.client.async_get_lighting_v2()
                     self._supports_lighting_v2 = True
+                    # Detect which light type(s) this camera uses for illuminator brightness.
+                    # MiddleLight is mutually exclusive with FarLight/NearLight.
+                    channel = self._channel
+                    middle_key = "table.Lighting_V2[{0}][0][0].MiddleLight[0].Light".format(channel)
+                    if middle_key in self.data:
+                        self._illuminator_brightness_keys = ["MiddleLight"]
+                    else:
+                        for light_type in ["FarLight", "NearLight"]:
+                            test_key = "table.Lighting_V2[{0}][0][0].{1}[0].Light".format(channel, light_type)
+                            if test_key in self.data:
+                                self._illuminator_brightness_keys.append(light_type)
+                    if self._illuminator_brightness_keys:
+                        _LOGGER.debug("Illuminator uses %s for brightness", ",".join(self._illuminator_brightness_keys))
+                    else:
+                        _LOGGER.debug("Could not detect illuminator brightness light type")
                 except ClientError:
                     self._supports_lighting_v2 = False
                     pass
@@ -790,8 +806,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
         profile_mode = self.get_profile_mode()
-        bri = self.data.get("table.Lighting_V2[{0}][{1}][0].MiddleLight[0].Light".format(self._channel, profile_mode))
-        return dahua_utils.dahua_brightness_to_hass_brightness(bri)
+        if not self._illuminator_brightness_keys:
+            return dahua_utils.dahua_brightness_to_hass_brightness(None)
+        # Average the brightness across all light types the camera uses (e.g. FarLight + NearLight)
+        total = 0
+        count = 0
+        for light_type in self._illuminator_brightness_keys:
+            bri = self.data.get("table.Lighting_V2[{0}][{1}][0].{2}[0].Light".format(
+                self._channel, profile_mode, light_type))
+            if bri is not None:
+                total += int(bri)
+                count += 1
+        if count == 0:
+            return dahua_utils.dahua_brightness_to_hass_brightness(None)
+        return dahua_utils.dahua_brightness_to_hass_brightness(str(total // count))
 
     def is_security_light_on(self) -> bool:
         """Return true if the security light is on. This is the red/blue flashing light"""
@@ -800,6 +828,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
         return self._profile_mode
+
+    def get_illuminator_brightness_keys(self) -> list:
+        """Return the list of light type keys used for illuminator brightness (e.g. ['FarLight', 'NearLight'])"""
+        return self._illuminator_brightness_keys if self._illuminator_brightness_keys else ["MiddleLight"]
 
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
