@@ -557,9 +557,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ValueError:
                     index = 0
 
-            # This is a short term fix. Right now for NVRs this integration creates a thread per channel to listen to events. Every thread gets the same response. We need to
+            # This is a short term fix. Right now for NVRs/DVRs this integration creates a thread per channel to listen to events. Every thread gets the same response. We need to
             # discard events not for this channel. Longer term work should create only a single thread per channel.
-            if index != self._channel:
+            # Single cameras (including hybrid/thermal cameras that report events on an internal
+            # sub-channel index different from their configured channel) aren't sharing this stream
+            # with other config entries, so there's nothing to filter out.
+            if index != self._channel and self.is_multichannel_device():
                 continue
 
             # Put the vent on the HA event bus
@@ -657,8 +660,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
         m = self.model.upper()
-        return m.startswith("VTO") or m.startswith("DH-VTO") or (
-            "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
+        return "VTO" in m or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
+
+    def is_multichannel_device(self) -> bool:
+        """
+        Returns true if another config entry shares this device's address (e.g. an NVR/DVR with one
+        entry per channel, or a hybrid camera added twice for its visual and thermal channels). In
+        that case every entry's event stream carries events for every channel, so each entry must
+        filter out events meant for the others. A device with only one config entry pointed at it
+        isn't sharing its stream, so nothing needs to be filtered out by channel index.
+        """
+        entries = self.hass.config_entries.async_entries(DOMAIN)
+        return sum(1 for e in entries if e.data.get(CONF_ADDRESS) == self._address) > 1
 
     def is_amcrest_doorbell(self) -> bool:
         """ Returns true if this is an Amcrest doorbell - IMOU DB61i is identical """
