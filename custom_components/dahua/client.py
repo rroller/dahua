@@ -6,6 +6,7 @@ import aiohttp
 import async_timeout
 
 from .digest import DigestAuth
+from .rpc2 import DahuaRpc2Client
 from hashlib import md5
 from urllib.parse import quote
 
@@ -315,6 +316,78 @@ class DahuaClient:
         """
         url = "/cgi-bin/ptz.cgi?action=getStatus"
         return await self.get(url)
+
+    @staticmethod
+    def parse_ptz_preset_ids(data: list) -> list[int]:
+        """Return sorted positive preset IDs from ptz.getPresets."""
+        preset_ids: set[int] = set()
+        if not isinstance(data, list):
+            return []
+        for preset in data:
+            if not isinstance(preset, dict):
+                continue
+            value = preset.get("Index")
+            if isinstance(value, bool):
+                continue
+            try:
+                preset_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if preset_id > 0:
+                preset_ids.add(preset_id)
+        return sorted(preset_ids)
+
+    @staticmethod
+    def _new_rpc2_session() -> aiohttp.ClientSession:
+        """Use an isolated RPC2 session whose cookie jar accepts IP hosts."""
+        return aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(enable_cleanup_closed=True, ssl=False),
+            cookie_jar=aiohttp.CookieJar(unsafe=True),
+        )
+
+    async def async_get_ptz_preset_ids(self, channel_index: int) -> list[int]:
+        """Read the real preset IDs exposed by Web5.0 RPC2."""
+        async with self._new_rpc2_session() as session:
+            rpc2 = DahuaRpc2Client(
+                self._username, self._password, self._address, self._port,
+                self._rtsp_port, session
+            )
+            try:
+                async with async_timeout.timeout(5):
+                    presets = await rpc2.async_get_ptz_presets(channel_index)
+                ids = self.parse_ptz_preset_ids(presets)
+                if presets and not ids:
+                    raise ValueError("Dahua RPC2 preset response contains no valid IDs")
+                return ids
+            finally:
+                try:
+                    async with async_timeout.timeout(3):
+                        logout_ok = await rpc2.logout()
+                    if not logout_ok:
+                        _LOGGER.debug(
+                            "RPC2 logout reported failure after preset discovery"
+                        )
+                except Exception:
+                    _LOGGER.debug("RPC2 logout failed after preset discovery", exc_info=True)
+
+    async def async_goto_preset_rpc2(self, channel: int, position: int) -> dict:
+        """Go to a real preset through the hardware-validated RPC2 contract."""
+        async with self._new_rpc2_session() as session:
+            rpc2 = DahuaRpc2Client(
+                self._username, self._password, self._address, self._port,
+                self._rtsp_port, session
+            )
+            try:
+                async with async_timeout.timeout(5):
+                    return await rpc2.async_goto_preset_position(channel, position)
+            finally:
+                try:
+                    async with async_timeout.timeout(3):
+                        logout_ok = await rpc2.logout()
+                    if not logout_ok:
+                        _LOGGER.debug("RPC2 logout reported failure after GotoPreset")
+                except Exception:
+                    _LOGGER.debug("RPC2 logout failed after GotoPreset", exc_info=True)
 
     async def async_get_light_global_enabled(self) -> dict:
         """

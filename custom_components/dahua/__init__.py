@@ -23,6 +23,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
 from . import dahua_utils
 from .client import DahuaClient
+from .model_profiles import is_sdt4e425
 
 from .const import (
     CONF_EVENTS,
@@ -304,13 +305,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_event_notifications = False
                 _LOGGER.debug("Device supports event notifications=%s", self._supports_event_notifications)
 
-                # PTZ
-                # The following lines are for Dahua devices
-                try:
-                    await self.client.async_get_ptz_position()
-                    self._supports_ptz_position = True
-                except ClientError:
+                # PTZ position readback. The SDT4E425 PTZ sensor is controllable,
+                # but firmware V3.200.0000027.6.R returns HTTP 400 for CGI getStatus.
+                # Do not conflate PTZ/preset control with CGI position readback.
+                if is_sdt4e425(self.model):
                     self._supports_ptz_position = False
+                else:
+                    try:
+                        await self.client.async_get_ptz_position()
+                        self._supports_ptz_position = True
+                    except ClientError:
+                        self._supports_ptz_position = False
                 _LOGGER.debug("Device supports PTZ position=%s", self._supports_ptz_position)
 
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
