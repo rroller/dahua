@@ -772,14 +772,53 @@ class DahuaClient:
         if self._username is not None and self._password is not None:
             response = None
 
+            # The camera sends a multipart stream delimited by "--myboundary\n". TCP chunk
+            # boundaries (from iter_chunks) almost never line up with these event boundaries, so
+            # dispatching each raw chunk straight to on_receive regularly splits one event's JSON
+            # payload across two chunks. That either silently drops the event (truncated JSON
+            # fails to parse) or throws mid-parse and kills the whole connection - which can drop
+            # a paired "Stop" event and leave a binary_sensor stuck on. Buffer bytes here and only
+            # hand off blocks that are known-complete (bounded by two boundary markers).
+            buffer = b""
+            # Safety valve: if we somehow never see a boundary (e.g. camera sends something
+            # unexpected), don't let the buffer grow forever - drop it and let the stream error
+            # out so the caller reconnects.
+            max_buffer_size = 1_000_000
+            boundary_marker = b"--myboundary"
+            marker_len = len(boundary_marker)
+
             try:
                 auth = DigestAuth(self._username, self._password, self._session)
-                response = await auth.request("GET", url)
+                # sock_read: the camera sends a heartbeat every 5s (see heartbeat=5 above). If we
+                # go well beyond that without any bytes, the connection is dead but silently so
+                # (no FIN/RST) - without this the read can hang indefinitely instead of raising so
+                # _async_stream_events can reconnect.
+                timeout = aiohttp.ClientTimeout(total=None, sock_read=30, sock_connect=TIMEOUT_SECONDS)
+                response = await auth.request("GET", url, timeout=timeout)
                 response.raise_for_status()
 
                 # https://docs.aiohttp.org/en/stable/streams.html
                 async for data, _ in response.content.iter_chunks():
-                    on_receive(data, channel)
+                    buffer += data
+                    if len(buffer) > max_buffer_size:
+                        buffer = b""
+                        raise ValueError("Event stream buffer exceeded %d bytes without a boundary" % max_buffer_size)
+
+                    while True:
+                        idx = buffer.find(boundary_marker)
+                        if idx == -1:
+                            buffer = b""
+                            break
+                        if idx > 0:
+                            buffer = buffer[idx:]
+
+                        next_idx = buffer.find(boundary_marker, marker_len)
+                        if next_idx == -1:
+                            break
+
+                        complete_block = buffer[:next_idx]
+                        buffer = buffer[next_idx:]
+                        on_receive(complete_block, channel)
             except asyncio.CancelledError:
                 raise
             except Exception as exception:

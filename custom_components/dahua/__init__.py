@@ -15,7 +15,7 @@ import hashlib
 from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryNotReady, PlatformNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
@@ -36,7 +36,6 @@ from .const import (
     CONF_RTSP_PORT,
     STARTUP_MESSAGE,
     CONF_CHANNEL,
-    CONF_AUTO_DETECT_CHANNEL,
 )
 from .dahua_utils import parse_event
 from .vto import DahuaVTOClient
@@ -160,21 +159,51 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=SCAN_INTERVAL_SECONDS)
 
+    def _get_stream_peers(self) -> list:
+        """
+        Returns the list of coordinators that share this physical device's event stream
+        (keyed by address). A hybrid camera (or an NVR channel) is set up in HA as one
+        config entry per channel, but they're all the same physical device - and that
+        device only reliably pushes live event payloads to ONE open "attach" session at
+        a time. A second, independent connection doesn't error out (it keeps receiving
+        heartbeats), it just silently stops getting real event data. So instead of each
+        coordinator opening its own connection, only the first one for a given address
+        opens one, and every event it receives is fanned out to all peers sharing that
+        address - each peer's own on_receive() already filters by its own channel index.
+        """
+        registry = self.hass.data[DOMAIN].setdefault("_event_stream_peers", {})
+        return registry.setdefault(self._address, [])
+
     async def async_start_event_listener(self):
         """ Starts the event listeners for IP cameras (this does not work for doorbells (VTO)) """
-        if self.events is not None:
+        if self.events is None:
+            return
+        peers = self._get_stream_peers()
+        peers.append(self)
+        if len(peers) == 1:
+            # First coordinator for this physical device - own the shared connection.
             self._event_task = asyncio.create_task(self._async_stream_events())
 
     async def async_start_vto_event_listener(self):
         """ Starts the event listeners for doorbells (VTO). This will not work for IP cameras"""
         self._vto_task = asyncio.create_task(self._async_stream_vto_events())
 
+    def _dispatch_received(self, data_bytes: bytes, channel: int):
+        """Fan raw event stream data out to every coordinator sharing this device's address."""
+        for coordinator in self._get_stream_peers():
+            coordinator.on_receive(data_bytes, channel)
+
     async def _async_stream_events(self):
-        """Continuously stream events from the camera, reconnecting on failure."""
+        """Continuously stream events from the camera, reconnecting on failure.
+
+        This is the single shared connection for this device's address - see
+        _get_stream_peers(). Only the coordinator that owns it (the first one to call
+        async_start_event_listener for this address) runs this loop.
+        """
         while True:
             start_time = time.monotonic()
             try:
-                await self.client.stream_events(self.on_receive, self.events, self._channel)
+                await self.client.stream_events(self._dispatch_received, self.events, self._channel)
             except asyncio.CancelledError:
                 raise
             except Exception as ex:
@@ -212,9 +241,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def async_stop(self, event: Any = None):
         """ Stop anything we need to stop """
-        if self._event_task is not None:
-            self._event_task.cancel()
-            self._event_task = None
+        if self.events is not None:
+            peers = self._get_stream_peers()
+            was_owner = self._event_task is not None
+            if self in peers:
+                peers.remove(self)
+            if self._event_task is not None:
+                self._event_task.cancel()
+                self._event_task = None
+            if was_owner and peers:
+                # We owned the shared connection for this device - hand it off so the
+                # remaining channel(s) don't lose their event stream.
+                peers[0]._event_task = asyncio.create_task(peers[0]._async_stream_events())
         if self._vto_task is not None:
             self._vto_task.cancel()
             self._vto_task = None
@@ -238,7 +276,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 # Find the max number of streams. 1 main stream + n number of sub-streams
                 self._max_streams = await self.client.get_max_extra_streams() + 1
-                _LOGGER.debug("Using max streams %s", self._max_streams)
+                _LOGGER.info("Using max streams %s", self._max_streams)
 
                 machine_name = await self.client.async_get_machine_name()
                 sys_info = await self.client.async_get_system_info()
@@ -266,43 +304,36 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.machine_name = data.get("table.General.MachineName")
                 self._serial_number = data.get("serialNumber")
 
-                # Some Dahua firmwares index channels from 0, others from 1. The default
-                # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
-                # 0-indexed and reset channel_number accordingly. Users on cameras where this
-                # heuristic gets it wrong (HTTP snapshot at 0 succeeds but RTSP only streams
-                # on channel=1) can disable it via the integration options.
-                auto_detect = self.config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True)
-                if auto_detect:
-                    try:
-                        await self.client.async_get_snapshot(0)
-                        # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
-                        # but check if unit is not a doorbell first as channel 0 doesnt exist for VTOs
-                        if not self.is_doorbell():
-                            self._channel_number = self._channel
-                    except ClientError:
-                        pass
-                _LOGGER.debug("Using channel number %s (auto_detect=%s)", self._channel_number, auto_detect)
+                try:
+                    await self.client.async_get_snapshot(0)
+                    # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
+                    # but check if unit is not a doorbell first as channel 0 doesnt exist for VTOs
+                    if not self.is_doorbell():
+                        self._channel_number = self._channel
+                except ClientError:
+                    pass
+                _LOGGER.info("Using channel number %s", self._channel_number)
 
                 try:
                     await self.client.async_get_coaxial_control_io_status()
                     self._supports_coaxial_control = True
                 except ClientResponseError:
                     self._supports_coaxial_control = False
-                _LOGGER.debug("Device supports Coaxial Control=%s", self._supports_coaxial_control)
+                _LOGGER.info("Device supports Coaxial Control=%s", self._supports_coaxial_control)
 
                 try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
                 except ClientError:
                     self._supports_disarming_linkage = False
-                _LOGGER.debug("Device supports disarming linkage=%s", self._supports_disarming_linkage)
+                _LOGGER.info("Device supports disarming linkage=%s", self._supports_disarming_linkage)
 
                 try:
                     await self.client.async_get_event_notifications()
                     self._supports_event_notifications = True
                 except ClientError:
                     self._supports_event_notifications = False
-                _LOGGER.debug("Device supports event notifications=%s", self._supports_event_notifications)
+                _LOGGER.info("Device supports event notifications=%s", self._supports_event_notifications)
 
                 # PTZ
                 # The following lines are for Dahua devices
@@ -311,7 +342,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_ptz_position = True
                 except ClientError:
                     self._supports_ptz_position = False
-                _LOGGER.debug("Device supports PTZ position=%s", self._supports_ptz_position)
+                _LOGGER.info("Device supports PTZ position=%s", self._supports_ptz_position)
 
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
                 # The following lines are for Dahua devices
@@ -320,13 +351,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_smart_motion_detection = True
                 except ClientError:
                     self._supports_smart_motion_detection = False
-                _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
+                _LOGGER.info("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
                 is_doorbell = self.is_doorbell()
-                _LOGGER.debug("Device is a doorbell=%s", is_doorbell)
+                _LOGGER.info("Device is a doorbell=%s", is_doorbell)
 
                 is_flood_light = self.is_flood_light()
-                _LOGGER.debug("Device is a floodlight=%s", is_flood_light)
+                _LOGGER.info("Device is a floodlight=%s", is_flood_light)
 
                 self._supports_floodlightmode = self.supports_floodlightmode()
 
@@ -336,7 +367,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError:
                     self._supports_lighting = False
                     pass
-                _LOGGER.debug("Device supports infrared lighting=%s", self.supports_infrared_light())
+                _LOGGER.info("Device supports infrared lighting=%s", self.supports_infrared_light())
 
 #Checking lighting_v2 support
                 try:
@@ -345,7 +376,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except ClientError:
                     self._supports_lighting_v2 = False
                     pass
-                _LOGGER.debug("Device supports Lighting_V2=%s", self._supports_lighting_v2)
+                _LOGGER.info("Device supports Lighting_V2=%s", self._supports_lighting_v2)
 
 
                 if not is_doorbell:
@@ -360,9 +391,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # Otherwise we'll get multiple lines of config back
                         self._supports_profile_mode = len(conf) > 1
                     except ClientError:
-                        _LOGGER.debug("Cam does not support profile mode. Will use mode 0")
+                        _LOGGER.info("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
-                    _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
+                    _LOGGER.info("Device supports profile mode=%s", self._supports_profile_mode)
                 else:
                     # Start the event listeners for doorbells (VTO)
                     await self.async_start_vto_event_listener()
@@ -373,11 +404,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.warning("Authentication failed for %s, starting reauth", self._address)
                     self.config_entry.async_start_reauth(self.hass)
                     raise UpdateFailed("Authentication failed") from exception
-                _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
-                raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
+                _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
+                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
             except Exception as exception:
-                _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
-                raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
+                _LOGGER.error("Failed to initialize device at %s", self._address, exc_info=exception)
+                raise PlatformNotReady("Dahua device at " + self._address + " isn't fully initialized yet")
 
         # This is the event loop code that's called every n seconds
         try:
@@ -550,41 +581,50 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         _LOGGER.debug(f"Events received from {self.get_address()} on channel {channel}: {events}")
 
         for event in events:
-            index = 0
-            if "index" in event:
-                try:
-                    index = int(event["index"])
-                except ValueError:
-                    index = 0
+            try:
+                index = 0
+                if "index" in event:
+                    try:
+                        index = int(event["index"])
+                    except ValueError:
+                        index = 0
 
-            # This is a short term fix. Right now for NVRs this integration creates a thread per channel to listen to events. Every thread gets the same response. We need to
-            # discard events not for this channel. Longer term work should create only a single thread per channel.
-            if index != self._channel:
-                continue
+                # This is a short term fix. Right now for NVRs/DVRs this integration creates a thread per channel to listen to events. Every thread gets the same response. We need to
+                # discard events not for this channel. Longer term work should create only a single thread per channel.
+                # Single cameras (including hybrid/thermal cameras that report events on an internal
+                # sub-channel index different from their configured channel) aren't sharing this stream
+                # with other config entries, so there's nothing to filter out.
+                if index != self._channel and self.is_multichannel_device():
+                    continue
 
-            # Put the vent on the HA event bus
-            event["name"] = self.get_device_name()
-            event["DeviceName"] = self.get_device_name()
-            self.hass.bus.fire("dahua_event_received", event)
+                # Put the vent on the HA event bus
+                event["name"] = self.get_device_name()
+                event["DeviceName"] = self.get_device_name()
+                self.hass.bus.fire("dahua_event_received", event)
 
-            # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
-            # We'll reset it to 0 when the event stops.
-            # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
+                # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
+                # We'll reset it to 0 when the event stops.
+                # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
 
-            # This is the event code, example: VideoMotion, CrossLineDetection, etc
-            event_names = self.translate_event_code(event)
+                # This is the event code, example: VideoMotion, CrossLineDetection, etc
+                event_names = self.translate_event_code(event)
 
-            for event_name in event_names:
-                event_key = self.get_event_key(event_name)
-                listener = self._dahua_event_listeners.get(event_key)
-                if listener is not None:
-                    action = event["action"]
-                    if action == "Start":
-                        self._dahua_event_timestamp[event_key] = int(time.time())
-                        listener()
-                    elif action == "Stop":
-                        self._dahua_event_timestamp[event_key] = 0
-                        listener()
+                for event_name in event_names:
+                    event_key = self.get_event_key(event_name)
+                    listener = self._dahua_event_listeners.get(event_key)
+                    if listener is not None:
+                        action = event["action"]
+                        if action == "Start":
+                            self._dahua_event_timestamp[event_key] = int(time.time())
+                            listener()
+                        elif action == "Stop":
+                            self._dahua_event_timestamp[event_key] = 0
+                            listener()
+            except Exception:
+                # One malformed/unexpected event (e.g. an odd payload shape from a hybrid/thermal
+                # channel) must not take down the whole event stream connection - that would drop
+                # every event behind it until the next reconnect.
+                _LOGGER.exception("Failed to process event from %s: %s", self.get_address(), event)
 
     def translate_event_code(self, event: dict):
         """
@@ -657,8 +697,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
         m = self.model.upper()
-        return m.startswith("VTO") or m.startswith("DH-VTO") or (
-            "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
+        return "VTO" in m or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
+
+    def is_multichannel_device(self) -> bool:
+        """
+        Returns true if another config entry shares this device's address (e.g. an NVR/DVR with one
+        entry per channel, or a hybrid camera added twice for its visual and thermal channels). In
+        that case every entry's event stream carries events for every channel, so each entry must
+        filter out events meant for the others. A device with only one config entry pointed at it
+        isn't sharing its stream, so nothing needs to be filtered out by channel index.
+        """
+        entries = self.hass.config_entries.async_entries(DOMAIN)
+        return sum(1 for e in entries if e.data.get(CONF_ADDRESS) == self._address) > 1
 
     def is_amcrest_doorbell(self) -> bool:
         """ Returns true if this is an Amcrest doorbell - IMOU DB61i is identical """
