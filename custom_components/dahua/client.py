@@ -35,6 +35,9 @@ class DahuaClient:
     ) -> None:
         self._username = username
         self._password = password
+        # One digest challenge shared by every request this client makes, so a
+        # call doesn't have to take a 401 before it can authenticate.
+        self._digest_state = {}
         # Strip trailing slashes from address to prevent malformed URLs like http://host/:80
         self._address = address.rstrip('/')
         self._session = session
@@ -773,7 +776,7 @@ class DahuaClient:
             response = None
 
             try:
-                auth = DigestAuth(self._username, self._password, self._session)
+                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                 response = await auth.request("GET", url)
                 response.raise_for_status()
 
@@ -814,7 +817,7 @@ class DahuaClient:
         async with async_timeout.timeout(TIMEOUT_SECONDS):
             response = None
             try:
-                auth = DigestAuth(self._username, self._password, self._session)
+                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                 response = await auth.request("GET", self._base + url)
                 response.raise_for_status()
 
@@ -830,7 +833,7 @@ class DahuaClient:
             async with async_timeout.timeout(TIMEOUT_SECONDS):
                 response = None
                 try:
-                    auth = DigestAuth(self._username, self._password, self._session)
+                    auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                     response = await auth.request("GET", url)
                     response.raise_for_status()
                     data = await response.text()
