@@ -12,6 +12,12 @@ from urllib.parse import quote
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 TIMEOUT_SECONDS = 20
+
+# The event stream asks the device to heartbeat at this interval, so a socket
+# that has delivered nothing for a comfortable multiple of it has stalled.
+EVENT_STREAM_HEARTBEAT_SECONDS = 5
+EVENT_STREAM_READ_TIMEOUT_SECONDS = 60
+
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -768,13 +774,20 @@ class DahuaClient:
         """
         # Use codes=[All] for all codes
         codes = ",".join(events)
-        url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=5".format(self._base, codes)
+        url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat={2}".format(
+            self._base, codes, EVENT_STREAM_HEARTBEAT_SECONDS)
         if self._username is not None and self._password is not None:
             response = None
 
             try:
+                # A long poll must not inherit the session's default total
+                # timeout, which tears a healthy stream down every 5 minutes.
+                # Bound it on read instead, so a socket that stops delivering
+                # is detected but one that keeps heartbeating is left alone.
+                timeout = aiohttp.ClientTimeout(
+                    total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
                 auth = DigestAuth(self._username, self._password, self._session)
-                response = await auth.request("GET", url)
+                response = await auth.request("GET", url, timeout=timeout)
                 response.raise_for_status()
 
                 # https://docs.aiohttp.org/en/stable/streams.html

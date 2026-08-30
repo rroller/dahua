@@ -43,6 +43,10 @@ from .vto import DahuaVTOClient
 
 SCAN_INTERVAL_SECONDS = timedelta(seconds=30)
 
+# A stream that keeps heartbeating but has stopped reporting events looks
+# healthy to a read timeout, so recycle it periodically as well.
+EVENT_STREAM_MAX_LIFETIME_SECONDS = 3600
+
 SSL_CONTEXT = ssl.create_default_context()
 SSL_CONTEXT.set_ciphers("DEFAULT")
 SSL_CONTEXT.check_hostname = False
@@ -174,9 +178,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         while True:
             start_time = time.monotonic()
             try:
-                await self.client.stream_events(self.on_receive, self.events, self._channel)
+                await asyncio.wait_for(
+                    self.client.stream_events(self.on_receive, self.events, self._channel),
+                    timeout=EVENT_STREAM_MAX_LIFETIME_SECONDS,
+                )
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError:
+                _LOGGER.debug("Recycling event stream for %s", self._address)
             except Exception as ex:
                 _LOGGER.warning("Event stream for %s ended unexpectedly: %s", self._address, ex)
 
