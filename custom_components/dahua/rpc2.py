@@ -9,10 +9,10 @@ import logging
 import sys
 
 import aiohttp
-
 from custom_components.dahua.models import CoaxialControlIOStatus
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
+_PARAMS_UNSET = object()
 
 if sys.version_info > (3, 0):
     unicode = str
@@ -33,15 +33,16 @@ class DahuaRpc2Client:
         self._session = session
         self._rtsp_port = rtsp_port
         self._session_id = None
+        self._ptz_objects: dict[int, int] = {}
         self._id = 0
         protocol = "https" if int(port) == 443 else "http"
         self._base = "{0}://{1}:{2}".format(protocol, address, port)
 
-    async def request(self, method, params=None, object_id=None, extra=None, url=None, verify_result=True):
+    async def request(self, method, params=_PARAMS_UNSET, object_id=None, extra=None, url=None, verify_result=True):
         """Make an RPC request."""
         self._id += 1
         data = {'method': method, 'id': self._id}
-        if params is not None:
+        if params is not _PARAMS_UNSET:
             data['params'] = params
         if object_id:
             data['object'] = object_id
@@ -52,11 +53,24 @@ class DahuaRpc2Client:
         if not url:
             url = "{0}/RPC2".format(self._base)
 
-        resp = await self._session.post(url, data=json.dumps(data))
+        resp = await self._session.post(url, json=data)
         resp_json = json.loads(await resp.text())
 
         if verify_result and resp_json['result'] is False:
-            raise ConnectionError(str(resp))
+            error = resp_json.get("error")
+            details = []
+            if isinstance(error, dict):
+                if error.get("code") is not None:
+                    details.append("code={0}".format(error["code"]))
+                if isinstance(error.get("message"), str):
+                    message = error["message"].replace("\r", " ").replace("\n", " ")
+                    details.append("message={0}".format(message[:200]))
+            suffix = " ({0})".format(", ".join(details)) if details else ""
+            raise ConnectionError(
+                "Dahua RPC2 method {0} returned result=false{1}".format(
+                    method, suffix
+                )
+            )
 
         return resp_json
 
@@ -69,17 +83,21 @@ class DahuaRpc2Client:
 
         # login1: get session, realm & random for real login
         self._session_id = None
+        self._ptz_objects.clear()
         self._id = 0
         url = '{0}/RPC2_Login'.format(self._base)
         method = "global.login"
         params = {'userName': self._username,
                   'password': "",
-                  'clientType': "Dahua3.0-Web3.0"}
-        r = await self.request(method=method, params=params, url=url, verify_result=False)
+                  'clientType': "Web5.0"}
+        r = await self.request(
+            method=method, params=params, url=url, verify_result=False
+        )
 
         self._session_id = r['session']
         realm = r['params']['realm']
         random = r['params']['random']
+        authority_type = r['params'].get('encryption') or "Default"
 
         # Password encryption algorithm. Reversed from rpcCore.getAuthByType
         pwd_phrase = self._username + ":" + realm + ":" + self._password
@@ -94,22 +112,99 @@ class DahuaRpc2Client:
         # login2: the real login
         params = {'userName': self._username,
                   'password': pass_hash,
-                  'clientType': "Dahua3.0-Web3.0",
-                  'authorityType': "Default",
-                  'passwordType': "Default"}
-        return await self.request(method=method, params=params, url=url)
+                  'clientType': "Web5.0",
+                  'realm': realm,
+                  'random': random,
+                  'passwordType': "Default",
+                  'authorityType': authority_type}
+        response = await self.request(method=method, params=params, url=url)
+        authenticated_session = response.get('session')
+        if not isinstance(authenticated_session, str) or not authenticated_session:
+            raise ConnectionError(
+                "Dahua RPC2 authenticated login response is missing session"
+            )
+        self._session_id = authenticated_session
+        _LOGGER.debug("RPC2 login succeeded")
+        return response
 
     async def logout(self) -> bool:
         """Logs out of the current session. Returns true if the logout was successful"""
+        if not self._session_id:
+            self._ptz_objects.clear()
+            return True
         try:
             response = await self.request(method="global.logout")
             if response['result'] is True:
+                _LOGGER.debug("RPC2 logout succeeded")
                 return True
-            else:
-                _LOGGER.debug("Failed to log out of Dahua device %s", self._base)
-                return False
-        except Exception as exception:
+            _LOGGER.debug("RPC2 logout reported result=false")
             return False
+        except Exception:
+            _LOGGER.debug("RPC2 logout failed", exc_info=True)
+            return False
+        finally:
+            self._session_id = None
+            self._ptz_objects.clear()
+
+    async def async_get_ptz_object(self, channel: int) -> int:
+        """Return the session-scoped PTZ object for one logical channel."""
+        if channel in self._ptz_objects:
+            return self._ptz_objects[channel]
+        if not self._session_id:
+            await self.login()
+        response = await self.request(
+            method="ptz.factory.instance",
+            params={"channel": channel},
+        )
+        object_id = response.get("result")
+        if (
+            isinstance(object_id, bool)
+            or not isinstance(object_id, int)
+            or object_id <= 0
+        ):
+            raise ConnectionError("Dahua RPC2 returned an invalid PTZ object")
+        self._ptz_objects[channel] = object_id
+        _LOGGER.debug("RPC2 ptz.factory.instance succeeded channel=%d", channel)
+        return object_id
+
+    async def async_goto_preset_position(self, channel: int, position: int) -> dict:
+        """Move to a preset using the exact Dahua RPC2 GotoPreset contract."""
+        object_id = await self.async_get_ptz_object(channel)
+        response = await self.request(
+            method="ptz.start",
+            object_id=object_id,
+            params={
+                "code": "GotoPreset",
+                "arg1": position,
+                "arg2": 0,
+                "arg3": 0,
+            },
+        )
+        _LOGGER.debug(
+            "RPC2 GotoPreset succeeded channel=%d preset_id=%d",
+            channel,
+            position,
+        )
+        return response
+
+    async def async_get_ptz_presets(self, channel: int) -> list[dict]:
+        """Return the firmware's real presets for one dynamic PTZ object."""
+        object_id = await self.async_get_ptz_object(channel)
+        response = await self.request(
+            method="ptz.getPresets",
+            object_id=object_id,
+            params=None,
+        )
+        params = response.get("params")
+        if not isinstance(params, dict) or not isinstance(params.get("presets"), list):
+            raise ValueError("Dahua RPC2 response is missing params.presets")
+        presets = params["presets"]
+        _LOGGER.debug(
+            "RPC2 ptz.getPresets succeeded channel=%d preset_count=%d",
+            channel,
+            len(presets),
+        )
+        return presets
 
     async def current_time(self):
         """Get the current time on the device."""
