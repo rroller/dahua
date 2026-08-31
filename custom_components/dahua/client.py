@@ -6,12 +6,19 @@ import aiohttp
 import async_timeout
 
 from .digest import DigestAuth
+from .rpc2 import DahuaRpc2Client
 from hashlib import md5
 from urllib.parse import quote
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 TIMEOUT_SECONDS = 20
+
+# The event stream asks the device to heartbeat at this interval, so a socket
+# that has delivered nothing for a comfortable multiple of it has stalled.
+EVENT_STREAM_HEARTBEAT_SECONDS = 5
+EVENT_STREAM_READ_TIMEOUT_SECONDS = 60
+
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -319,6 +326,78 @@ class DahuaClient:
         url = "/cgi-bin/ptz.cgi?action=getStatus"
         return await self.get(url)
 
+    @staticmethod
+    def parse_ptz_preset_ids(data: list) -> list[int]:
+        """Return sorted positive preset IDs from ptz.getPresets."""
+        preset_ids: set[int] = set()
+        if not isinstance(data, list):
+            return []
+        for preset in data:
+            if not isinstance(preset, dict):
+                continue
+            value = preset.get("Index")
+            if isinstance(value, bool):
+                continue
+            try:
+                preset_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if preset_id > 0:
+                preset_ids.add(preset_id)
+        return sorted(preset_ids)
+
+    @staticmethod
+    def _new_rpc2_session() -> aiohttp.ClientSession:
+        """Use an isolated RPC2 session whose cookie jar accepts IP hosts."""
+        return aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(enable_cleanup_closed=True, ssl=False),
+            cookie_jar=aiohttp.CookieJar(unsafe=True),
+        )
+
+    async def async_get_ptz_preset_ids(self, channel_index: int) -> list[int]:
+        """Read the real preset IDs exposed by Web5.0 RPC2."""
+        async with self._new_rpc2_session() as session:
+            rpc2 = DahuaRpc2Client(
+                self._username, self._password, self._address, self._port,
+                self._rtsp_port, session
+            )
+            try:
+                async with async_timeout.timeout(5):
+                    presets = await rpc2.async_get_ptz_presets(channel_index)
+                ids = self.parse_ptz_preset_ids(presets)
+                if presets and not ids:
+                    raise ValueError("Dahua RPC2 preset response contains no valid IDs")
+                return ids
+            finally:
+                try:
+                    async with async_timeout.timeout(3):
+                        logout_ok = await rpc2.logout()
+                    if not logout_ok:
+                        _LOGGER.debug(
+                            "RPC2 logout reported failure after preset discovery"
+                        )
+                except Exception:
+                    _LOGGER.debug("RPC2 logout failed after preset discovery", exc_info=True)
+
+    async def async_goto_preset_rpc2(self, channel: int, position: int) -> dict:
+        """Go to a real preset through the hardware-validated RPC2 contract."""
+        async with self._new_rpc2_session() as session:
+            rpc2 = DahuaRpc2Client(
+                self._username, self._password, self._address, self._port,
+                self._rtsp_port, session
+            )
+            try:
+                async with async_timeout.timeout(5):
+                    return await rpc2.async_goto_preset_position(channel, position)
+            finally:
+                try:
+                    async with async_timeout.timeout(3):
+                        logout_ok = await rpc2.logout()
+                    if not logout_ok:
+                        _LOGGER.debug("RPC2 logout reported failure after GotoPreset")
+                except Exception:
+                    _LOGGER.debug("RPC2 logout failed after GotoPreset", exc_info=True)
+
     async def async_get_light_global_enabled(self) -> dict:
         """
         Returns the state of the Amcrest blue ring light (if it's on or off)
@@ -394,6 +473,29 @@ class DahuaClient:
             mode = "0"
 
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{0}].Config[0]={1}".format(channel, mode)
+        return await self.get(url, True)
+
+    async def async_set_video_profile_config_ex(self, channel: int, mode: str):
+        """
+        async_set_video_profile_config_ex selects the day/night profile on cameras that expose
+        VideoInMode.ConfigEx (e.g. newer dual-illuminator models). Mode should be one of: Day or Night.
+
+        These cameras keep VideoInMode.Config as a static index list and select the active profile
+        through the ConfigEx string ("Day"/"Night"). Writing Config[0] (the old path) is rejected by
+        this firmware, so we drive ConfigEx instead.
+
+        We also set VideoInMode.Mode=4, which pins the chosen profile so it is held instead of being
+        re-evaluated by an automatic day/night switch. Verified against the device via:
+            setConfig&VideoInMode[0].Mode=4&VideoInMode[0].ConfigEx=Day
+            setConfig&VideoInMode[0].Mode=4&VideoInMode[0].ConfigEx=Night
+        Both switch the profile correctly. (The camera's own web UI can mislabel this working mode,
+        but the API call itself works.)
+        """
+
+        config_ex = "Night" if mode.lower() == "night" else "Day"
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{ch}].Mode=4&VideoInMode[{ch}].ConfigEx={cfg}".format(
+            ch=channel, cfg=config_ex
+        )
         return await self.get(url, True)
 
     async def async_adjustfocus_v1(self, focus: str, zoom: str):
@@ -498,21 +600,23 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
+    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str, index: int = 0) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
         NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
 
         profile_mode: 0=day, 1=night, 2=scene
+        index: the Lighting_V2 light index. White light is index 0 on single-illuminator cams but a
+               later index on dual-illuminator (-IL) models, so the caller passes the resolved index.
         """
 
         # on = Manual, off = Off
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][0].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][0].MiddleLight[0].Light={brightness}".format(
-            channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{index}].MiddleLight[0].Light={brightness}".format(
+            channel=channel, profile_mode=profile_mode, index=index, mode=mode, brightness=brightness
         )
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
@@ -771,13 +875,20 @@ class DahuaClient:
         """
         # Use codes=[All] for all codes
         codes = ",".join(events)
-        url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat=5".format(self._base, codes)
+        url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat={2}".format(
+            self._base, codes, EVENT_STREAM_HEARTBEAT_SECONDS)
         if self._username is not None and self._password is not None:
             response = None
 
             try:
+                # A long poll must not inherit the session's default total
+                # timeout, which tears a healthy stream down every 5 minutes.
+                # Bound it on read instead, so a socket that stops delivering
+                # is detected but one that keeps heartbeating is left alone.
+                timeout = aiohttp.ClientTimeout(
+                    total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
                 auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
-                response = await auth.request("GET", url)
+                response = await auth.request("GET", url, timeout=timeout)
                 response.raise_for_status()
 
                 # https://docs.aiohttp.org/en/stable/streams.html
