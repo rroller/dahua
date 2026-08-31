@@ -41,7 +41,7 @@ async def test_heartbeat_interval_matches_the_read_timeout():
             > client_module.EVENT_STREAM_HEARTBEAT_SECONDS * 2)
 
 
-async def test_stalled_stream_ends_so_the_caller_can_reconnect(monkeypatch):
+async def test_stalled_stream_ends_so_the_caller_can_reconnect(monkeypatch, socket_enabled):
     """A socket that goes quiet must not hold the stream open forever."""
     monkeypatch.setattr(client_module, "EVENT_STREAM_READ_TIMEOUT_SECONDS", 1)
 
