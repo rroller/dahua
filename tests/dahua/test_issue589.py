@@ -1,6 +1,5 @@
 """Tests for SDT4E425 dual-sensor and RPC2 preset support."""
 
-import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -53,6 +52,9 @@ class _FakeCoordinator:
     def get_max_streams(self):
         return 3
 
+    def supports_infrared_light(self):
+        return False
+
 
 class _CapturedCamera:
     def __init__(
@@ -81,7 +83,7 @@ def test_model_profile_is_narrow():
     assert not is_sdt4e425(None)
 
 
-def test_sdt4e425_creates_two_sensors_with_three_streams(monkeypatch):
+async def test_sdt4e425_creates_two_sensors_with_three_streams(monkeypatch):
     monkeypatch.setattr(camera_platform, "DahuaCamera", _CapturedCamera)
     monkeypatch.setattr(
         camera_platform.entity_platform,
@@ -94,7 +96,7 @@ def test_sdt4e425_creates_two_sensors_with_three_streams(monkeypatch):
     entry = SimpleNamespace(entry_id="entry", title="Camera")
     entities = []
 
-    asyncio.run(camera_platform.async_setup_entry(hass, entry, entities.extend))
+    await camera_platform.async_setup_entry(hass, entry, entities.extend)
 
     assert [
         (
@@ -115,7 +117,7 @@ def test_sdt4e425_creates_two_sensors_with_three_streams(monkeypatch):
     ]
 
 
-def test_other_models_keep_native_stream_setup(monkeypatch):
+async def test_other_models_keep_native_stream_setup(monkeypatch):
     monkeypatch.setattr(camera_platform, "DahuaCamera", _CapturedCamera)
     monkeypatch.setattr(
         camera_platform.entity_platform,
@@ -128,7 +130,7 @@ def test_other_models_keep_native_stream_setup(monkeypatch):
     entry = SimpleNamespace(entry_id="entry", title="Camera")
     entities = []
 
-    asyncio.run(camera_platform.async_setup_entry(hass, entry, entities.extend))
+    await camera_platform.async_setup_entry(hass, entry, entities.extend)
 
     assert len(entities) == 3
     assert [entity.stream_index for entity in entities] == [0, 1, 2]
@@ -136,7 +138,7 @@ def test_other_models_keep_native_stream_setup(monkeypatch):
     assert all(entity.media_channel is None for entity in entities)
 
 
-def test_rpc2_web5_login_promotes_authenticated_session():
+async def test_rpc2_web5_login_promotes_authenticated_session():
     session = _FakeSession(
         [
             {
@@ -153,14 +155,14 @@ def test_rpc2_web5_login_promotes_authenticated_session():
     )
     client = DahuaRpc2Client("user", "password", "192.0.2.1", 80, 554, session)
 
-    asyncio.run(client.login())
+    await client.login()
 
     assert client._session_id == "S2"
     assert session.calls[0][1]["params"]["clientType"] == "Web5.0"
     assert session.calls[1][1]["session"] == "S1"
 
 
-def test_rpc2_get_presets_sends_explicit_null_params():
+async def test_rpc2_get_presets_sends_explicit_null_params():
     session = _FakeSession(
         [
             {
@@ -173,7 +175,7 @@ def test_rpc2_get_presets_sends_explicit_null_params():
     client._session_id = "S2"
     client._ptz_objects[1] = 42
 
-    presets = asyncio.run(client.async_get_ptz_presets(1))
+    presets = await client.async_get_ptz_presets(1)
 
     assert [preset["Index"] for preset in presets] == [1, 5]
     payload = session.calls[0][1]
@@ -183,13 +185,13 @@ def test_rpc2_get_presets_sends_explicit_null_params():
     assert payload["params"] is None
 
 
-def test_rpc2_goto_preset_uses_observed_payload():
+async def test_rpc2_goto_preset_uses_observed_payload():
     session = _FakeSession([{"result": True, "params": {}}])
     client = DahuaRpc2Client("user", "password", "192.0.2.1", 80, 554, session)
     client._session_id = "S2"
     client._ptz_objects[1] = 42
 
-    asyncio.run(client.async_goto_preset_position(1, 3))
+    await client.async_goto_preset_position(1, 3)
 
     payload = session.calls[0][1]
     assert payload["method"] == "ptz.start"
@@ -216,7 +218,7 @@ def test_parse_ptz_preset_ids_filters_and_sorts():
     ) == [1, 5]
 
 
-def test_sdt4e425_select_uses_real_preset_ids(monkeypatch):
+async def test_sdt4e425_select_uses_real_preset_ids(monkeypatch):
     monkeypatch.setattr(
         select_platform.DahuaBaseEntity,
         "__init__",
@@ -240,7 +242,7 @@ def test_sdt4e425_select_uses_real_preset_ids(monkeypatch):
     assert entity.options == ["Manual", "1", "3", "5"]
     assert entity.current_option == "Manual"
 
-    asyncio.run(entity.async_select_option("3"))
+    await entity.async_select_option("3")
 
     coordinator.client.async_goto_preset_rpc2.assert_awaited_once_with(1, 3)
     coordinator.async_refresh.assert_awaited_once()
