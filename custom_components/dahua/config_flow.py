@@ -267,6 +267,14 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
                 default=self.options.get(CONF_AUTO_DETECT_CHANNEL, True),
             )
         ] = bool
+        schema[
+            vol.Optional(
+                CONF_EVENTS,
+                default=self.options.get(
+                    CONF_EVENTS, self.config_entry.data.get(CONF_EVENTS, DEFAULT_EVENTS)
+                ),
+            )
+        ] = cv.multi_select(ALL_EVENTS)
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(schema),
