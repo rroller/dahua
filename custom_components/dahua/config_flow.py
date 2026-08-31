@@ -271,6 +271,14 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             )
         ] = bool
         schema[
+            vol.Optional(
+                CONF_EVENTS,
+                default=self.options.get(
+                    CONF_EVENTS, self.config_entry.data.get(CONF_EVENTS, DEFAULT_EVENTS)
+                ),
+            )
+        ] = cv.multi_select(ALL_EVENTS)
+        schema[
             vol.Required(
                 CONF_SCAN_INTERVAL,
                 default=self.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),

@@ -57,6 +57,15 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
+def get_configured_events(entry: ConfigEntry) -> list:
+    """Returns the events this entry subscribes to.
+
+    Options win when present, so the subscription can be changed after setup.
+    Entries created before the option existed only carry the setup-time value.
+    """
+    return entry.options.get(CONF_EVENTS, entry.data.get(CONF_EVENTS))
+
+
 def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
     """Returns how often this entry polls its device.
 
@@ -82,7 +91,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     address = entry.data.get(CONF_ADDRESS)
     port = int(entry.data.get(CONF_PORT))
     rtsp_port = int(entry.data.get(CONF_RTSP_PORT))
-    events = entry.data.get(CONF_EVENTS)
+    events = get_configured_events(entry)
     name = entry.data.get(CONF_NAME)
     channel = entry.data.get(CONF_CHANNEL, 0)
 
