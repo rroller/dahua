@@ -111,7 +111,7 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
                 self._rpc2_channel, int(option)
             )
         else:
-            channel = self._coordinator.get_channel()
+            channel = self._coordinator.get_channel_number()
             await self._coordinator.client.async_goto_preset_position(channel, int(option))
         await self._coordinator.async_refresh()
 

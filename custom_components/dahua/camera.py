@@ -350,7 +350,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
     async def async_goto_preset_position(self, position: int):
         """Go to a preset, using RPC2 only for the SDT4E425."""
-        channel = self._logical_channel
+        channel = self._channel_number
         if is_sdt4e425(self._coordinator.get_model()):
             await self._coordinator.client.async_goto_preset_rpc2(1, position)
         else:
