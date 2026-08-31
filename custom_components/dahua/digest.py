@@ -12,6 +12,9 @@ from yarl import URL
 # Copied and then modified from https://github.com/aio-libs/aiohttp/pull/2213
 # I really wish this was baked into aiohttp :-(
 
+# How many times one request may answer a 401 before giving up.
+MAX_AUTH_ATTEMPTS = 3
+
 
 class DigestAuth:
     """HTTP digest authentication helper.
@@ -25,39 +28,102 @@ class DigestAuth:
 
         self.username = username
         self.password = password
-        self.last_nonce = previous.get("last_nonce", "")
-        self.nonce_count = previous.get("nonce_count", 0)
-        self.challenge = previous.get("challenge")
-        self.args = {}
+        # Held by reference, so a challenge accepted by one request is reused by
+        # the next. Callers passing nothing keep the old per-request behaviour.
+        self._state = previous
         self.session = session
 
+    # Challenge and nonce count live in the shared state, exposed as attributes.
+    @property
+    def challenge(self):
+        return self._state.get("challenge")
+
+    @challenge.setter
+    def challenge(self, value):
+        self._state["challenge"] = value
+
+    @property
+    def last_nonce(self):
+        return self._state.get("last_nonce", "")
+
+    @last_nonce.setter
+    def last_nonce(self, value):
+        self._state["last_nonce"] = value
+
+    @property
+    def nonce_count(self):
+        return self._state.get("nonce_count", 0)
+
+    @nonce_count.setter
+    def nonce_count(self, value):
+        self._state["nonce_count"] = value
+
     async def request(self, method, url, *, headers=None, **kwargs):
-        """Makes a request"""
+        """Makes a request, absorbing digest challenges up to a fixed budget."""
         if headers is None:
             headers = {}
 
-        # Save the args so we can re-run the request
-        self.args = {"method": method, "url": url, "headers": headers, "kwargs": kwargs}
+        refused = 0
+        response = None
 
-        if self.challenge:
-            authorization = self._build_digest_header(method.upper(), url)
-            headers["AUTHORIZATION"] = authorization
+        for _ in range(MAX_AUTH_ATTEMPTS):
+            attempt_headers = dict(headers)
+            sent_nonce = None
 
-        response = await self.session.request(method, url, headers=headers, **kwargs)
+            if self.challenge:
+                authorization = self._build_digest_header(method.upper(), url)
+                if authorization:
+                    attempt_headers["AUTHORIZATION"] = authorization
+                    sent_nonce = self.challenge.get("nonce")
+                else:
+                    # A challenge we cannot build a header from would otherwise
+                    # fail every later request too. Drop it and probe instead.
+                    self.challenge = None
 
-        # Only try performing digest authentication if the response status is from 401
-        if response.status == 401:
-            return await self._handle_401(response)
+            response = await self.session.request(method, url, headers=attempt_headers, **kwargs)
+
+            if response.status != 401:
+                return response
+
+            challenge = self._parse_401(response)
+            if challenge is None:
+                return response
+
+            if sent_nonce is not None:
+                stale = str(challenge.get("stale", "")).lower() == "true"
+                if challenge.get("nonce") == sent_nonce and not stale:
+                    # Same nonce, not flagged stale: either the credentials are
+                    # wrong or our nonce count arrived out of order. One retry
+                    # covers the count; a second failure means it is the password.
+                    refused += 1
+                    if refused > 1:
+                        self.challenge = None
+                        return response
+
+            response.close()
+            self.challenge = challenge
 
         return response
+
+    def _parse_401(self, response: ClientResponse):
+        """Returns the digest challenge carried by a 401, or None."""
+        parts = response.headers.get("www-authenticate", "").split(" ", 1)
+        if "digest" == parts[0].lower() and len(parts) > 1:
+            try:
+                return parse_key_value_list(parts[1])
+            except (IndexError, ValueError):
+                return None
+        return None
 
     def _build_digest_header(self, method, url):
         """
         :rtype: str
         """
 
-        realm = self.challenge["realm"]
-        nonce = self.challenge["nonce"]
+        realm = self.challenge.get("realm")
+        nonce = self.challenge.get("nonce")
+        if realm is None or nonce is None:
+            return ""
         qop = self.challenge.get("qop")
         algorithm = self.challenge.get("algorithm", "MD5").upper()
         opaque = self.challenge.get("opaque")
@@ -133,29 +199,6 @@ class DigestAuth:
             base += ', qop="auth", nc=%s, cnonce="%s"' % (ncvalue, cnonce)
 
         return "Digest %s" % base
-
-    async def _handle_401(self, response: ClientResponse):
-        """
-        Takes the given response and tries digest-auth, if needed.
-        :rtype: ClientResponse
-        """
-        auth_header = response.headers.get("www-authenticate", "")
-
-        parts = auth_header.split(" ", 1)
-        if "digest" == parts[0].lower() and len(parts) > 1:
-            # Close the initial response since we are going making another request and return that response
-            response.close()
-
-            self.challenge = parse_key_value_list(parts[1])
-
-            return await self.request(
-                self.args["method"],
-                self.args["url"],
-                headers=self.args["headers"],
-                **self.args["kwargs"],
-            )
-
-        return response
 
 
 def parse_pair(pair):
