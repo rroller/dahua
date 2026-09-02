@@ -38,6 +38,7 @@ from .const import (
     STARTUP_MESSAGE,
     CONF_CHANNEL,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_USE_HTTPS,
 )
 from .dahua_utils import parse_event
 from .vto import DahuaVTOClient
@@ -64,6 +65,16 @@ def get_configured_events(entry: ConfigEntry) -> list:
     return entry.options.get(CONF_EVENTS, entry.data.get(CONF_EVENTS))
 
 
+def get_configured_use_https(entry: ConfigEntry):
+    """Whether this entry forces HTTPS.
+
+    None means "decide from the port", which is what the client did before the
+    option existed: HTTPS only on 443. An unticked box must keep that, so it
+    reads as None rather than False.
+    """
+    return True if entry.data.get(CONF_USE_HTTPS) else None
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Set up this integration using UI."""
     if hass.data.get(DOMAIN) is None:
@@ -78,10 +89,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     events = get_configured_events(entry)
     name = entry.data.get(CONF_NAME)
     channel = entry.data.get(CONF_CHANNEL, 0)
+    use_https = get_configured_use_https(entry)
 
     coordinator = DahuaDataUpdateCoordinator(hass, entry=entry, events=events, address=address, port=port,
                                              rtsp_port=rtsp_port, username=username, password=password, name=name,
-                                             channel=channel)
+                                             channel=channel, use_https=use_https)
     await coordinator.async_config_entry_first_refresh()
 
     if not coordinator.last_update_success:
@@ -109,14 +121,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, events: list, address: str, port: int, rtsp_port: int,
-                 username: str, password: str, name: str, channel: int) -> None:
+                 username: str, password: str, name: str, channel: int,
+                 use_https: bool = None) -> None:
         """Initialize the coordinator."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
         connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
         self._session = ClientSession(connector=connector)
 
         # The client used to communicate with Dahua devices
-        self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session)
+        self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session,
+                                               use_https)
 
         # self.config_entry = entry
         self.platforms = []

@@ -44,6 +44,7 @@ CONF_EVENTS = "events"
 CONF_NAME = "name"
 CONF_CHANNEL = "channel"
 CONF_AUTO_DETECT_CHANNEL = "auto_detect_channel"
+CONF_USE_HTTPS = "use_https"
 
 # Defaults
 DEFAULT_NAME = "Dahua"
