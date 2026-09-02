@@ -10,6 +10,7 @@
                     "address": "Address",
                     "port": "Port",
                     "rtsp_port": "RTSP Port",
+                    "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)",
                     "streams": "RTSP Streams",
                     "events": "Events",
                     "channel": "Channel (single cameras are 0, NVRs are the 0 based index)"
@@ -28,6 +29,17 @@
                     "username": "Username",
                     "password": "Password"
                 }
+            },
+            "reconfigure": {
+                "title": "Dahua Camera Connection",
+                "description": "Update how Home Assistant reaches this device. Credentials are unchanged; use re-authentication for those.",
+                "data": {
+                    "address": "Address",
+                    "port": "Port",
+                    "rtsp_port": "RTSP Port",
+                    "channel": "Channel (single cameras are 0, NVRs are the 0 based index)",
+                    "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)"
+                }
             }
         },
         "error": {
@@ -36,7 +48,8 @@
         "abort": {
             "single_instance_allowed": "Only a single instance is allowed.",
             "already_configured": "Only a single instance of a device is allowed.",
-            "reauth_successful": "Re-authentication was successful."
+            "reauth_successful": "Re-authentication was successful.",
+            "reconfigure_successful": "Connection settings updated"
         }
     },
     "options": {

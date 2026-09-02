@@ -26,7 +26,8 @@ class DahuaRpc2Client:
             address: str,
             port: int,
             rtsp_port: int,
-            session: aiohttp.ClientSession
+            session: aiohttp.ClientSession,
+            use_https: bool = None
     ) -> None:
         self._username = username
         self._password = password
@@ -35,7 +36,10 @@ class DahuaRpc2Client:
         self._session_id = None
         self._ptz_objects: dict[int, int] = {}
         self._id = 0
-        protocol = "https" if int(port) == 443 else "http"
+        if use_https is None:
+            use_https = int(port) == 443
+        self._use_https = use_https
+        protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, address, port)
 
     async def request(self, method, params=_PARAMS_UNSET, object_id=None, extra=None, url=None, verify_result=True):

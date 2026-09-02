@@ -38,7 +38,8 @@ class DahuaClient:
             address: str,
             port: int,
             rtsp_port: int,
-            session: aiohttp.ClientSession
+            session: aiohttp.ClientSession,
+            use_https: bool = None
     ) -> None:
         self._username = username
         self._password = password
@@ -51,7 +52,11 @@ class DahuaClient:
         self._port = port
         self._rtsp_port = rtsp_port
 
-        protocol = "https" if int(port) == 443 else "http"
+        # Callers that do not say keep the old behaviour: HTTPS only on 443.
+        if use_https is None:
+            use_https = int(port) == 443
+        self._use_https = use_https
+        protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
 
     def get_rtsp_stream_url(self, channel: int, subtype: int) -> str:
@@ -359,7 +364,7 @@ class DahuaClient:
         async with self._new_rpc2_session() as session:
             rpc2 = DahuaRpc2Client(
                 self._username, self._password, self._address, self._port,
-                self._rtsp_port, session
+                self._rtsp_port, session, self._use_https
             )
             try:
                 async with async_timeout.timeout(5):
@@ -384,7 +389,7 @@ class DahuaClient:
         async with self._new_rpc2_session() as session:
             rpc2 = DahuaRpc2Client(
                 self._username, self._password, self._address, self._port,
-                self._rtsp_port, session
+                self._rtsp_port, session, self._use_https
             )
             try:
                 async with async_timeout.timeout(5):
