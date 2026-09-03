@@ -166,7 +166,12 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2(channel, True, dahua_brightness, profile_mode)
+        if self._coordinator.is_nvr_channel():
+            await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                self._coordinator.get_channel_number(), True
+            )
+        else:
+            await self._coordinator.client.async_set_lighting_v2(channel, True, dahua_brightness, profile_mode)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
@@ -175,7 +180,12 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2(channel, False, dahua_brightness, profile_mode)
+        if self._coordinator.is_nvr_channel():
+            await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                self._coordinator.get_channel_number(), False
+            )
+        else:
+            await self._coordinator.client.async_set_lighting_v2(channel, False, dahua_brightness, profile_mode)
         await self._coordinator.async_refresh()
 
 
@@ -283,7 +293,12 @@ class FloodLight(DahuaBaseEntity, LightEntity):
             channel = self._coordinator.get_channel()
             self._coordinator._floodlight_mode = await self._coordinator.client.async_get_floodlightmode()
             await self._coordinator.client.async_set_floodlightmode(2)
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+            if self._coordinator.is_nvr_channel():
+                await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                    self._coordinator.get_channel_number(), True
+                )
+            else:
+                await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
             await self._coordinator.async_refresh()
         else:
             channel = self._coordinator.get_channel()
@@ -295,7 +310,12 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         """Turn the light off"""
         if self._coordinator._supports_floodlightmode:
             channel = self._coordinator.get_channel()
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
+            if self._coordinator.is_nvr_channel():
+                await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                    self._coordinator.get_channel_number(), False
+                )
+            else:
+                await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
             await self._coordinator.client.async_set_floodlightmode(self._coordinator._floodlight_mode)
             await self._coordinator.async_refresh()
         else:
@@ -342,13 +362,23 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+        if self._coordinator.is_nvr_channel():
+            await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                self._coordinator.get_channel_number(), True
+            )
+        else:
+            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
+        if self._coordinator.is_nvr_channel():
+            await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                self._coordinator.get_channel_number(), False
+            )
+        else:
+            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
         await self._coordinator.async_refresh()
 
     @property
