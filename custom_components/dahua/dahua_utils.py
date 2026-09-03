@@ -23,7 +23,9 @@ def hass_brightness_to_dahua_brightness(hass_brightness: int) -> int:
     Converts a HASS brightness (which is 0 to 255 inclusive) to a Dahua brightness (which is 0 to 100 inclusive)
     """
     if hass_brightness is None:
-        hass_brightness = 100
+        # No brightness asked for means full. Full on the HASS scale is 255;
+        # 100 here is a Dahua-scale value and came out as 39% instead.
+        hass_brightness = 255
     return int((hass_brightness / 255) * 100)
 
 
