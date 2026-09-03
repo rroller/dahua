@@ -42,6 +42,7 @@ def _coordinator(**options):
     c._supports_coaxial_control = True
     c._supports_smart_motion_detection = True
     c._supports_lighting_v2 = True
+    c._supports_privacy_mode = True
     c._supports_lighting = True          # gates supports_infrared_light()
     c._supports_floodlightmode = False
     c._channel_number = 1
@@ -68,6 +69,7 @@ INFRARED = "async_get_config_lighting"
 DISARMING = "async_get_disarming_linkage"
 NOTIFICATIONS = "async_get_event_notifications"
 SMART_MOTION = "async_get_smart_motion_detection"
+PRIVACY = "async_get_privacy_mode"
 
 
 async def test_everything_is_fetched_when_every_platform_is_on():
@@ -75,7 +77,7 @@ async def test_everything_is_fetched_when_every_platform_is_on():
     calls = await _poll()
 
     for api in (PTZ, COAXIAL, MOTION, LIGHTING_V2, INFRARED, DISARMING,
-                NOTIFICATIONS, SMART_MOTION):
+                NOTIFICATIONS, SMART_MOTION, PRIVACY):
         assert api in calls, f"{api} stopped being fetched by default"
 
 
@@ -89,7 +91,7 @@ async def test_ptz_position_is_skipped_without_the_select_platform():
 async def test_switch_reads_are_skipped_without_the_switch_platform():
     calls = await _poll(switch=False)
 
-    for api in (DISARMING, NOTIFICATIONS, SMART_MOTION):
+    for api in (DISARMING, NOTIFICATIONS, SMART_MOTION, PRIVACY):
         assert api not in calls, f"{api} is only read by a switch"
 
 
@@ -119,10 +121,10 @@ async def test_motion_detection_survives_either_reader():
 # --- turning one platform off must not take another's reads with it ----------
 
 @pytest.mark.parametrize("disabled,still_wanted", [
-    ("select", [COAXIAL, MOTION, LIGHTING_V2, DISARMING]),
-    ("light", [PTZ, COAXIAL, MOTION, DISARMING, SMART_MOTION]),
+    ("select", [COAXIAL, MOTION, LIGHTING_V2, DISARMING, PRIVACY]),
+    ("light", [PTZ, COAXIAL, MOTION, DISARMING, SMART_MOTION, PRIVACY]),
     ("switch", [PTZ, COAXIAL, MOTION, LIGHTING_V2, INFRARED]),
-    ("binary_sensor", [PTZ, COAXIAL, MOTION, LIGHTING_V2, DISARMING]),
+    ("binary_sensor", [PTZ, COAXIAL, MOTION, LIGHTING_V2, DISARMING, PRIVACY]),
 ])
 async def test_disabling_one_platform_leaves_the_others_alone(disabled, still_wanted):
     calls = await _poll(**{disabled: False})

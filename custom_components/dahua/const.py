@@ -15,6 +15,7 @@ INFRARED_ICON = "mdi:weather-night"
 DISARMING_ICON = "mdi:alarm-check"
 VOLUME_HIGH_ICON = "mdi:volume-high"
 BELL_ICON = "mdi:bell-ring"
+PRIVACY_MODE_ICON = "mdi:shield-lock"
 
 # Device classes - https://www.home-assistant.io/integrations/binary_sensor/#device-class
 MOTION_SENSOR_DEVICE_CLASS = "motion"
