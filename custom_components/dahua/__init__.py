@@ -133,6 +133,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     return True
 
 
+# Every config entry for one NVR used to open its own connection pool, so the
+# channels of a single device never reused a connection between them. Share one
+# pool per address instead, reference counted so the last entry to unload closes
+# it. Sessions stay per entry; only the connector underneath is shared.
+_HOST_CONNECTORS: dict = {}
+
+
+def _acquire_connector(address: str) -> TCPConnector:
+    """Returns the shared connector for this address, creating it if needed."""
+    holder = _HOST_CONNECTORS.get(address)
+    if holder is None or holder[0].closed:
+        holder = [TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT), 0]
+        _HOST_CONNECTORS[address] = holder
+    holder[1] += 1
+    return holder[0]
+
+
+async def _release_connector(address: str) -> None:
+    """Drops a reference, closing the connector once nothing is using it."""
+    holder = _HOST_CONNECTORS.get(address)
+    if holder is None:
+        return
+    holder[1] -= 1
+    if holder[1] <= 0:
+        _HOST_CONNECTORS.pop(address, None)
+        await holder[0].close()
+
+
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
@@ -140,9 +168,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                  username: str, password: str, name: str, channel: int,
                  use_https: bool = None) -> None:
         """Initialize the coordinator."""
-        # Self signed certs are used over HTTPS so we'll disable SSL verification
-        connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
-        self._session = ClientSession(connector=connector)
+        # Self signed certs are used over HTTPS so we'll disable SSL verification.
+        # connector_owner=False keeps the shared pool alive when this session closes.
+        self._session = ClientSession(
+            connector=_acquire_connector(address), connector_owner=False
+        )
 
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session,
@@ -287,6 +317,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self._session = None
             except Exception as e:
                 _LOGGER.exception("serverConnect - failed to close session")
+            finally:
+                await _release_connector(self._address)
 
     async def _async_update_data(self):
         """Reload the camera information"""
