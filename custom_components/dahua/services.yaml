@@ -463,3 +463,20 @@ goto_preset_position:
           min: 1
           max: 10
           mode: box
+
+set_privacy_mode:
+  name: Set Privacy Mode
+  description: Enables or disables the camera's lens privacy mask
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    enabled:
+      name: Enabled
+      description: "If true enables privacy mode, otherwise disables it"
+      example: true
+      required: true
+      default: true
+      selector:
+        boolean:
