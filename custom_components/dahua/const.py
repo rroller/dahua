@@ -45,9 +45,17 @@ CONF_NAME = "name"
 CONF_CHANNEL = "channel"
 CONF_AUTO_DETECT_CHANNEL = "auto_detect_channel"
 CONF_USE_HTTPS = "use_https"
+CONF_SCAN_INTERVAL = "scan_interval"
 
 # Defaults
 DEFAULT_NAME = "Dahua"
+# How often the coordinator polls each device for its settings. Events do not
+# come from polling - they arrive on the event stream - so this only paces the
+# configuration read-back.
+DEFAULT_SCAN_INTERVAL = 30
+# Below this the polling costs more than it tells you, especially on an NVR
+# where every channel is a separate entry against the same host.
+MIN_SCAN_INTERVAL = 10
 
 STARTUP_MESSAGE = f"""
 -------------------------------------------------------------------

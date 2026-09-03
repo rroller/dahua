@@ -39,11 +39,13 @@ from .const import (
     CONF_CHANNEL,
     CONF_AUTO_DETECT_CHANNEL,
     CONF_USE_HTTPS,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
+    MIN_SCAN_INTERVAL,
 )
 from .dahua_utils import parse_event
 from .vto import DahuaVTOClient
 
-SCAN_INTERVAL_SECONDS = timedelta(seconds=30)
 
 # A stream that keeps heartbeating but has stopped reporting events looks
 # healthy to a read timeout, so recycle it periodically as well.
@@ -73,6 +75,20 @@ def get_configured_use_https(entry: ConfigEntry):
     reads as None rather than False.
     """
     return True if entry.data.get(CONF_USE_HTTPS) else None
+
+
+def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
+    """Returns how often this entry polls its device.
+
+    Options win when present. Values below MIN_SCAN_INTERVAL are raised to it,
+    so a hand-edited entry cannot hammer the device.
+    """
+    seconds = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError):
+        seconds = DEFAULT_SCAN_INTERVAL
+    return timedelta(seconds=max(seconds, MIN_SCAN_INTERVAL))
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
@@ -191,7 +207,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER,
             config_entry=entry,
             name=DOMAIN,
-            update_interval=SCAN_INTERVAL_SECONDS,
+            update_interval=get_configured_scan_interval(entry),
         )
 
     async def async_start_event_listener(self):

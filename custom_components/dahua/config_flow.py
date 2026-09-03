@@ -25,6 +25,9 @@ from .const import (
     CONF_CHANNEL,
     CONF_AUTO_DETECT_CHANNEL,
     CONF_USE_HTTPS,
+    CONF_SCAN_INTERVAL,
+    DEFAULT_SCAN_INTERVAL,
+    MIN_SCAN_INTERVAL,
 )
 
 """
@@ -315,6 +318,12 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
             )
         ] = cv.multi_select(ALL_EVENTS)
+        schema[
+            vol.Required(
+                CONF_SCAN_INTERVAL,
+                default=self.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+            )
+        ] = vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL))
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(schema),
