@@ -403,6 +403,37 @@ class DahuaClient:
                 except Exception:
                     _LOGGER.debug("RPC2 logout failed after GotoPreset", exc_info=True)
 
+    async def _async_privacy_mode_rpc2(self, action, description: str):
+        """Run one privacy-mode operation in an isolated RPC2 session."""
+        async with self._new_rpc2_session() as session:
+            rpc2 = DahuaRpc2Client(
+                self._username, self._password, self._address, self._port,
+                self._rtsp_port, session, self._use_https
+            )
+            try:
+                async with async_timeout.timeout(5):
+                    return await action(rpc2)
+            finally:
+                try:
+                    async with async_timeout.timeout(3):
+                        logout_ok = await rpc2.logout()
+                    if not logout_ok:
+                        _LOGGER.debug("RPC2 logout reported failure after %s", description)
+                except Exception:
+                    _LOGGER.debug("RPC2 logout failed after %s", description, exc_info=True)
+
+    async def async_get_privacy_mode(self) -> bool:
+        """Return True if the camera's lens privacy mask is enabled."""
+        return await self._async_privacy_mode_rpc2(
+            lambda rpc2: rpc2.async_get_privacy_mode(), "privacy mode read"
+        )
+
+    async def async_set_privacy_mode(self, enabled: bool) -> None:
+        """Enable or disable the camera's lens privacy mask."""
+        await self._async_privacy_mode_rpc2(
+            lambda rpc2: rpc2.async_set_privacy_mode(enabled), "privacy mode write"
+        )
+
     async def async_get_light_global_enabled(self) -> dict:
         """
         Returns the state of the Amcrest blue ring light (if it's on or off)
