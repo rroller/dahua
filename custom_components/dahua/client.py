@@ -19,6 +19,24 @@ TIMEOUT_SECONDS = 20
 EVENT_STREAM_HEARTBEAT_SECONDS = 5
 EVENT_STREAM_READ_TIMEOUT_SECONDS = 60
 
+# One NVR carries a config entry per channel, and every entry sets itself up at
+# the same moment. Dahua's HTTP server is small: a dozen simultaneous CGI calls
+# can wedge it, and because the entries then fail together they retry together,
+# so the burst repeats and the device never recovers. Cap concurrent requests
+# per host, shared across every client for that address.
+MAX_CONCURRENT_REQUESTS_PER_HOST = 2
+_HOST_LIMITS: dict = {}
+
+
+def _host_limiter(address: str) -> asyncio.Semaphore:
+    """Returns the semaphore shared by every client talking to this address."""
+    limiter = _HOST_LIMITS.get(address)
+    if limiter is None:
+        limiter = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS_PER_HOST)
+        _HOST_LIMITS[address] = limiter
+    return limiter
+
+
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -56,6 +74,8 @@ class DahuaClient:
         if use_https is None:
             use_https = int(port) == 443
         self._use_https = use_https
+        # Keyed by address so every entry for one NVR shares a single budget.
+        self._host_limit = _host_limiter(self._address)
         protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
 
@@ -905,7 +925,9 @@ class DahuaClient:
 
     async def get_bytes(self, url: str) -> bytes:
         """Get information from the API. This will return the raw response and not process it"""
-        async with async_timeout.timeout(TIMEOUT_SECONDS):
+        # The timeout covers the wait for a slot as well as the request, so a
+        # busy host sheds load instead of building an unbounded queue.
+        async with async_timeout.timeout(TIMEOUT_SECONDS), self._host_limit:
             response = None
             try:
                 auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
@@ -921,7 +943,7 @@ class DahuaClient:
         """Get information from the API."""
         url = self._base + url
         try:
-            async with async_timeout.timeout(TIMEOUT_SECONDS):
+            async with async_timeout.timeout(TIMEOUT_SECONDS), self._host_limit:
                 response = None
                 try:
                     auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
