@@ -76,6 +76,7 @@ class DahuaClient:
         self._use_https = use_https
         # Keyed by address so every entry for one NVR shares a single budget.
         self._host_limit = _host_limiter(self._address)
+        self._rpc2_session_instance = None
         protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
 
@@ -379,49 +380,66 @@ class DahuaClient:
             cookie_jar=aiohttp.CookieJar(unsafe=True),
         )
 
+    def _rpc2_session(self) -> aiohttp.ClientSession:
+        """Returns this client's RPC2 session, building it on first use.
+
+        Sessions are meant to be long lived. Creating one per call also built a
+        connector and a connection pool each time, and threw them away again.
+        """
+        if self._rpc2_session_instance is None or self._rpc2_session_instance.closed:
+            self._rpc2_session_instance = self._new_rpc2_session()
+        return self._rpc2_session_instance
+
+    async def close(self) -> None:
+        """Releases anything this client owns. Safe to call more than once."""
+        session = self._rpc2_session_instance
+        self._rpc2_session_instance = None
+        if session is not None and not session.closed:
+            await session.close()
+
     async def async_get_ptz_preset_ids(self, channel_index: int) -> list[int]:
         """Read the real preset IDs exposed by Web5.0 RPC2."""
-        async with self._new_rpc2_session() as session:
-            rpc2 = DahuaRpc2Client(
-                self._username, self._password, self._address, self._port,
-                self._rtsp_port, session, self._use_https
-            )
+        session = self._rpc2_session()
+        rpc2 = DahuaRpc2Client(
+            self._username, self._password, self._address, self._port,
+            self._rtsp_port, session, self._use_https
+        )
+        try:
+            async with async_timeout.timeout(5):
+                presets = await rpc2.async_get_ptz_presets(channel_index)
+            ids = self.parse_ptz_preset_ids(presets)
+            if presets and not ids:
+                raise ValueError("Dahua RPC2 preset response contains no valid IDs")
+            return ids
+        finally:
             try:
-                async with async_timeout.timeout(5):
-                    presets = await rpc2.async_get_ptz_presets(channel_index)
-                ids = self.parse_ptz_preset_ids(presets)
-                if presets and not ids:
-                    raise ValueError("Dahua RPC2 preset response contains no valid IDs")
-                return ids
-            finally:
-                try:
-                    async with async_timeout.timeout(3):
-                        logout_ok = await rpc2.logout()
-                    if not logout_ok:
-                        _LOGGER.debug(
-                            "RPC2 logout reported failure after preset discovery"
-                        )
-                except Exception:
-                    _LOGGER.debug("RPC2 logout failed after preset discovery", exc_info=True)
+                async with async_timeout.timeout(3):
+                    logout_ok = await rpc2.logout()
+                if not logout_ok:
+                    _LOGGER.debug(
+                        "RPC2 logout reported failure after preset discovery"
+                    )
+            except Exception:
+                _LOGGER.debug("RPC2 logout failed after preset discovery", exc_info=True)
 
     async def async_goto_preset_rpc2(self, channel: int, position: int) -> dict:
         """Go to a real preset through the hardware-validated RPC2 contract."""
-        async with self._new_rpc2_session() as session:
-            rpc2 = DahuaRpc2Client(
-                self._username, self._password, self._address, self._port,
-                self._rtsp_port, session, self._use_https
-            )
+        session = self._rpc2_session()
+        rpc2 = DahuaRpc2Client(
+            self._username, self._password, self._address, self._port,
+            self._rtsp_port, session, self._use_https
+        )
+        try:
+            async with async_timeout.timeout(5):
+                return await rpc2.async_goto_preset_position(channel, position)
+        finally:
             try:
-                async with async_timeout.timeout(5):
-                    return await rpc2.async_goto_preset_position(channel, position)
-            finally:
-                try:
-                    async with async_timeout.timeout(3):
-                        logout_ok = await rpc2.logout()
-                    if not logout_ok:
-                        _LOGGER.debug("RPC2 logout reported failure after GotoPreset")
-                except Exception:
-                    _LOGGER.debug("RPC2 logout failed after GotoPreset", exc_info=True)
+                async with async_timeout.timeout(3):
+                    logout_ok = await rpc2.logout()
+                if not logout_ok:
+                    _LOGGER.debug("RPC2 logout reported failure after GotoPreset")
+            except Exception:
+                _LOGGER.debug("RPC2 logout failed after GotoPreset", exc_info=True)
 
     async def async_get_light_global_enabled(self) -> dict:
         """
@@ -922,6 +940,26 @@ class DahuaClient:
                 # We didn't get a key=value. We just got a key. Just stick it in the dictionary and move on
                 data_dict[parts[0]] = line
         return data_dict
+
+    async def async_probe_snapshot(self, channel_number: int) -> None:
+        """Checks the snapshot endpoint answers for a channel, without fetching the image.
+
+        Used only to work out how this device numbers its channels, so the JPEG
+        body is never needed. Reading it would pull a full-resolution image per
+        entry at setup, which is the worst possible moment on a busy NVR.
+        Raises the same errors async_get_snapshot would.
+        """
+        url = self._base + "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
+        async with async_timeout.timeout(TIMEOUT_SECONDS), self._host_limit:
+            response = None
+            try:
+                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
+                response = await auth.request("GET", url)
+                response.raise_for_status()
+            finally:
+                if response is not None:
+                    # close() rather than read(): drops the body without transferring it
+                    response.close()
 
     async def get_bytes(self, url: str) -> bytes:
         """Get information from the API. This will return the raw response and not process it"""
