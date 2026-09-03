@@ -864,6 +864,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
 
+    def is_nvr_channel(self) -> bool:
+        """Return whether this entry represents a camera channel on an NVR."""
+        return self._channel > 0 or "NVR" in self.model.upper()
+
     def get_channel_number(self) -> int:
         """returns the channel number of this camera"""
         return self._channel_number

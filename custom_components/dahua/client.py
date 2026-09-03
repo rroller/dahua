@@ -727,6 +727,16 @@ class DahuaClient:
         _LOGGER.debug("Setting coaxial control state to %s: %s", io, url)
         return await self.get(url)
 
+    async def async_set_nvr_coaxial_control_state(self, channel: int, enabled: bool) -> dict:
+        """Set an NVR-connected camera's active deterrence light state."""
+        io = 1 if enabled else 2
+        url = (
+            "/cgi-bin/coaxialControlIO.cgi?action=control&channel={channel}"
+            "&info[0].Type=1&info[0].IO={io}&info[0].TriggerMode=2"
+        ).format(channel=channel, io=io)
+        _LOGGER.debug("Setting NVR coaxial control state to %s: %s", io, url)
+        return await self.get(url)
+
     async def async_set_disarming_linkage(self, channel: int, enabled: bool) -> dict:
         """
         async_set_disarming_linkage will set the camera's disarming linkage (Event -> Disarming in the UI)
