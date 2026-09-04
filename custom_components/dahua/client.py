@@ -182,7 +182,7 @@ class DahuaClient:
         # If we can't fetch, just assume 2 since that's pretty standard
         return 3
 
-    async def async_get_coaxial_control_io_status(self) -> dict:
+    async def async_get_coaxial_control_io_status(self, channel: int = 1) -> dict:
         """
         async_get_coaxial_control_io_status returns the the current state of the speaker and white light.
         Note that the "white light" here seems to also work for cameras that have the red/blue flashing alarm light
@@ -193,7 +193,7 @@ class DahuaClient:
         status.status.Speaker=Off
         status.status.WhiteLight=Off
         """
-        url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=1"
+        url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel={channel}".format(channel=channel)
         return await self.get(url)
 
     async def async_get_lighting_v2(self) -> dict:
