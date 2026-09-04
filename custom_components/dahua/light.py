@@ -30,9 +30,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     if coordinator.is_flood_light():
         entities.append(FloodLight(coordinator, entry, "Flood Light"))
 
-    if coordinator.supports_security_light() and not coordinator.is_amcrest_doorbell():
+    if (
+        coordinator.supports_security_light() or coordinator.is_nvr_channel()
+    ) and not coordinator.is_amcrest_doorbell():
         #  The Amcrest doorbell works a little different and is added in select.py
-        entities.append(DahuaSecurityLight(coordinator, entry, "Security Light"))
+        security_light_name = "Warning Light" if coordinator.is_nvr_channel() else "Security Light"
+        entities.append(DahuaSecurityLight(coordinator, entry, security_light_name))
 
     if coordinator.is_amcrest_doorbell():
         entities.append(AmcrestRingLight(coordinator, entry, "Ring Light"))
@@ -168,7 +171,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         profile_mode = self._coordinator.get_profile_mode()
         if self._coordinator.is_nvr_channel():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
-                self._coordinator.get_channel_number(), True
+                self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, True
             )
         else:
             await self._coordinator.client.async_set_lighting_v2(channel, True, dahua_brightness, profile_mode)
@@ -182,7 +185,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         profile_mode = self._coordinator.get_profile_mode()
         if self._coordinator.is_nvr_channel():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
-                self._coordinator.get_channel_number(), False
+                self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, False
             )
         else:
             await self._coordinator.client.async_set_lighting_v2(channel, False, dahua_brightness, profile_mode)
@@ -295,7 +298,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
             await self._coordinator.client.async_set_floodlightmode(2)
             if self._coordinator.is_nvr_channel():
                 await self._coordinator.client.async_set_nvr_coaxial_control_state(
-                    self._coordinator.get_channel_number(), True
+                    self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, True
                 )
             else:
                 await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
@@ -312,7 +315,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
             channel = self._coordinator.get_channel()
             if self._coordinator.is_nvr_channel():
                 await self._coordinator.client.async_set_nvr_coaxial_control_state(
-                    self._coordinator.get_channel_number(), False
+                    self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, False
                 )
             else:
                 await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
@@ -364,7 +367,7 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         channel = self._coordinator.get_channel()
         if self._coordinator.is_nvr_channel():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
-                self._coordinator.get_channel_number(), True
+                self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, True
             )
         else:
             await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
@@ -375,7 +378,7 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         channel = self._coordinator.get_channel()
         if self._coordinator.is_nvr_channel():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
-                self._coordinator.get_channel_number(), False
+                self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, False
             )
         else:
             await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
