@@ -133,6 +133,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     return True
 
 
+# Every config entry for one NVR used to open its own connection pool, so the
+# channels of a single device never reused a connection between them. Share one
+# pool per address instead, reference counted so the last entry to unload closes
+# it. Sessions stay per entry; only the connector underneath is shared.
+_HOST_CONNECTORS: dict = {}
+
+
+def _acquire_connector(address: str) -> TCPConnector:
+    """Returns the shared connector for this address, creating it if needed."""
+    holder = _HOST_CONNECTORS.get(address)
+    if holder is None or holder[0].closed:
+        holder = [TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT), 0]
+        _HOST_CONNECTORS[address] = holder
+    holder[1] += 1
+    return holder[0]
+
+
+async def _release_connector(address: str) -> None:
+    """Drops a reference, closing the connector once nothing is using it."""
+    holder = _HOST_CONNECTORS.get(address)
+    if holder is None:
+        return
+    holder[1] -= 1
+    if holder[1] <= 0:
+        _HOST_CONNECTORS.pop(address, None)
+        await holder[0].close()
+
+
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
@@ -140,9 +168,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                  username: str, password: str, name: str, channel: int,
                  use_https: bool = None) -> None:
         """Initialize the coordinator."""
-        # Self signed certs are used over HTTPS so we'll disable SSL verification
-        connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
-        self._session = ClientSession(connector=connector)
+        # Self signed certs are used over HTTPS so we'll disable SSL verification.
+        # connector_owner=False keeps the shared pool alive when this session closes.
+        self._session = ClientSession(
+            connector=_acquire_connector(address), connector_owner=False
+        )
 
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session,
@@ -277,12 +307,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _close_session(self) -> None:
         _LOGGER.debug("Closing Session")
+        try:
+            await self.client.close()
+        except Exception:
+            _LOGGER.debug("Failed to close the client's RPC2 session", exc_info=True)
         if self._session is not None:
             try:
                 await self._session.close()
                 self._session = None
             except Exception as e:
                 _LOGGER.exception("serverConnect - failed to close session")
+            finally:
+                await _release_connector(self._address)
 
     async def _async_update_data(self):
         """Reload the camera information"""
@@ -329,7 +365,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 auto_detect = self.config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True)
                 if auto_detect:
                     try:
-                        await self.client.async_get_snapshot(0)
+                        await self.client.async_probe_snapshot(0)
                         # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
                         # but check if unit is not a doorbell first as channel 0 doesnt exist for VTOs
                         if not self.is_doorbell():
@@ -454,23 +490,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
                     pass
             
-            # We need the ptz status
-            if self._supports_ptz_position:
+            # The profile mode above has to be read first because the lighting
+            # call below needs it. The PTZ position does not, so it joins the
+            # fan-out rather than costing an extra round trip ahead of it.
+            async def _ptz_position():
                 try:
-                    ptz_data = await self.client.async_get_ptz_position()
-                    data.update(ptz_data)
-                    self._preset_position = ptz_data.get("status.PresetID", "0")
-                    if not self._preset_position:
-                        self._preset_position = "0"
+                    return await self.client.async_get_ptz_position()
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get preset position", exc_info=exception)
-                    pass
+                    return None
 
             # Figure out which APIs we need to call and then fan out and gather the results
             coros = [
                 asyncio.ensure_future(self.client.async_get_config_motion_detection()),
             ]
+            if self._supports_ptz_position:
+                coros.append(asyncio.ensure_future(_ptz_position()))
             if self.supports_infrared_light():
                 coros.append(
                     asyncio.ensure_future(self.client.async_get_config_lighting(self._channel, self._profile_mode)))
@@ -501,7 +537,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if result is not None:
                     data.update(result)
 
-            if self.supports_security_light() or self.is_flood_light():
+            if self._supports_ptz_position:
+                self._preset_position = data.get("status.PresetID", "0") or "0"
+
+            # Only if it was not already fetched above: on a camera that both
+            # supports the v2 API and reports a security light, this was being
+            # requested twice on every poll.
+            if (self.supports_security_light() or self.is_flood_light()) and not self._supports_lighting_v2:
                 light_v2 = await self.client.async_get_lighting_v2()
                 if light_v2 is not None:
                     data.update(light_v2)
