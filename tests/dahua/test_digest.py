@@ -3,12 +3,23 @@ import asyncio
 import hashlib
 import re
 
+import pytest
+
+from custom_components.dahua import client as client_module
 from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.digest import DigestAuth
 
 REALM = "DahuaRpc"
 USER = "admin"
 PASSWORD = "secret"
+
+
+@pytest.fixture(autouse=True)
+def _clean_host_digest_state():
+    """A challenge is now shared per host, so it outlives a test unless cleared."""
+    client_module._HOST_DIGEST_STATE.clear()
+    yield
+    client_module._HOST_DIGEST_STATE.clear()
 
 
 def _params(header: str) -> dict:
