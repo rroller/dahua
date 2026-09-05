@@ -167,7 +167,8 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         if self._coordinator.supports_smart_motion_detection_amcrest():
             await self._coordinator.client.async_set_ivs_rule(0, 0, True)
         else:
-            await self._coordinator.client.async_enabled_smart_motion_detection(True)
+            await self._coordinator.client.async_enabled_smart_motion_detection(
+                self._coordinator.get_channel(), True)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
@@ -175,7 +176,8 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         if self._coordinator.supports_smart_motion_detection_amcrest():
             await self._coordinator.client.async_set_ivs_rule(0, 0, False)
         else:
-            await self._coordinator.client.async_enabled_smart_motion_detection(False)
+            await self._coordinator.client.async_enabled_smart_motion_detection(
+                self._coordinator.get_channel(), False)
         await self._coordinator.async_refresh()
 
     @property

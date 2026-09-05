@@ -124,9 +124,11 @@ async def test_smart_motion_uses_the_dahua_api_by_default():
     await s.async_turn_on()
     await s.async_turn_off()
 
+    # The channel goes with it. Without it every channel of an NVR wrote
+    # SmartMotionDetect[0], setting channel one's option from any camera.
     assert c.client.calls == [
-        ("async_enabled_smart_motion_detection", True),
-        ("async_enabled_smart_motion_detection", False),
+        ("async_enabled_smart_motion_detection", 4, True),
+        ("async_enabled_smart_motion_detection", 4, False),
     ]
 
 

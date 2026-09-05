@@ -1129,11 +1129,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self.data.get("table.DisableEventNotify.Enable", "").lower() == "false"
 
     def is_smart_motion_detection_enabled(self) -> bool:
-        """ Returns true if smart motion detection is enabled """
+        """ Returns true if smart motion detection is enabled
+
+        SmartMotionDetect is a host-wide read that returns a row per channel,
+        and the rows are sparse: a device only reports the channels the option
+        is configured on. Reading row 0 for every channel reported one camera's
+        setting for all of them, and reported false for the whole NVR when
+        there is no row 0 at all.
+        """
         if self.supports_smart_motion_detection_amcrest():
             return self.data.get("table.VideoAnalyseRule[0][0].Enable", "").lower() == "true"
-        else:
-            return self.data.get("table.SmartMotionDetect[0].Enable", "").lower() == "true"
+        value = self.data.get("table.SmartMotionDetect[{0}].Enable".format(self._channel))
+        if value is None:
+            # A single camera reports one row, and that row is row 0.
+            value = self.data.get("table.SmartMotionDetect[0].Enable", "")
+        return value.lower() == "true"
 
     def is_siren_on(self) -> bool:
         """ Returns true if the camera siren is on """
