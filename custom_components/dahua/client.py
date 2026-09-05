@@ -399,9 +399,15 @@ class DahuaClient:
         )
         return await self.get(url, True)
 
-    async def async_enabled_smart_motion_detection(self, enabled: bool):
-        """ Enables or disabled smart motion detection for Dahua devices (doesn't work for Amcrest)"""
-        url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[0].Enable={0}".format(str(enabled).lower())
+    async def async_enabled_smart_motion_detection(self, channel: int, enabled: bool):
+        """ Enables or disabled smart motion detection for Dahua devices (doesn't work for Amcrest)
+
+        SmartMotionDetect is indexed by channel, like MotionDetect. Writing to
+        [0] from every channel of an NVR set channel one's option no matter
+        which camera the switch belonged to.
+        """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[{0}].Enable={1}".format(
+            channel, str(enabled).lower())
         return await self.get(url, True)
 
     async def async_set_light_global_enabled(self, enabled: bool):
