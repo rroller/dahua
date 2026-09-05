@@ -18,7 +18,7 @@ ISSUE_PLACEHOLDERS = {
     "device_unreachable": {"address", "entries", "minutes", "port"},
     "http_dead_https_available": {"address", "entries", "minutes", "port"},
 }
-FIX_FLOW_PLACEHOLDERS = {"address", "entries"}
+FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
 
 
 def _placeholders(text: str) -> set:
@@ -26,16 +26,31 @@ def _placeholders(text: str) -> set:
 
 
 @pytest.mark.parametrize("key", ["device_unreachable", "http_dead_https_available"])
-def test_every_issue_the_code_raises_has_english_text(key):
-    assert {"title", "description"} <= set(EN["issues"][key])
+def test_every_issue_the_code_raises_has_a_title(key):
     assert EN["issues"][key]["title"].strip()
-    assert EN["issues"][key]["description"].strip()
 
 
-def test_the_fixable_issue_has_a_fix_flow_step():
-    """is_fixable=True with no fix_flow gives a card whose button goes nowhere."""
-    step = EN["issues"]["http_dead_https_available"]["fix_flow"]["step"]["confirm"]
+def test_a_fixable_issue_has_a_fix_flow_and_no_description():
+    """hassfest treats description and fix_flow as mutually exclusive.
+
+    An issue is either something you read (title + description) or something
+    you act on (title + fix_flow). Supplying both fails validation with
+    "two or more values in the same group of exclusion 'fixable'", so the
+    explanation has to live in the fix flow's own step.
+    """
+    issue = EN["issues"]["http_dead_https_available"]
+    assert "fix_flow" in issue
+    assert "description" not in issue
+
+    step = issue["fix_flow"]["step"]["confirm"]
     assert {"title", "description"} <= set(step)
+    assert step["description"].strip()
+
+
+def test_an_unfixable_issue_has_a_description_and_no_fix_flow():
+    issue = EN["issues"]["device_unreachable"]
+    assert issue["description"].strip()
+    assert "fix_flow" not in issue
 
 
 def test_the_fix_flow_can_abort():
@@ -43,17 +58,11 @@ def test_the_fix_flow_can_abort():
     assert "not_configured" in abort
 
 
-def test_the_unfixable_issue_has_no_fix_flow():
-    """A fix_flow on is_fixable=False would offer a button that does nothing."""
-    assert "fix_flow" not in EN["issues"]["device_unreachable"]
-
-
 @pytest.mark.parametrize("key", ["device_unreachable", "http_dead_https_available"])
 def test_no_text_uses_a_placeholder_the_code_does_not_supply(key):
     """An unsupplied placeholder renders literally as {whatever}."""
-    used = _placeholders(EN["issues"][key]["title"]) | _placeholders(
-        EN["issues"][key]["description"]
-    )
+    issue = EN["issues"][key]
+    used = _placeholders(issue["title"]) | _placeholders(issue.get("description", ""))
     assert used <= ISSUE_PLACEHOLDERS[key], f"unsupplied: {used - ISSUE_PLACEHOLDERS[key]}"
 
 

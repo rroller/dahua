@@ -76,12 +76,11 @@
         },
         "http_dead_https_available": {
             "title": "Dahua device at {address} answers on HTTPS but not on port {port}",
-            "description": "The Dahua device at {address} has stopped answering on port {port}, but it accepts connections on port 443. Some Dahua firmwares stop serving plain HTTP while HTTPS keeps working.\n\nHome Assistant can switch the {entries} entries for this device over to HTTPS on port 443.",
             "fix_flow": {
                 "step": {
                     "confirm": {
                         "title": "Switch {address} to HTTPS",
-                        "description": "This changes {entries} Dahua configuration entries for {address} to port 443 with HTTPS, reloading them one at a time.\n\nYour username and password are not changed."
+                        "description": "The Dahua device at {address} has stopped answering on port {port}, but it accepts connections on port 443. Some Dahua firmwares stop serving plain HTTP while HTTPS keeps working.\n\nThis changes the {entries} Dahua configuration entries for {address} to port 443 with HTTPS, reloading them one at a time.\n\nYour username and password are not changed."
                     }
                 },
                 "abort": {

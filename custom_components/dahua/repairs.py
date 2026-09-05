@@ -64,5 +64,6 @@ class SwitchToHttpsRepairFlow(RepairsFlow):
             description_placeholders={
                 "address": str(self._address),
                 "entries": str(len(entries)),
+                "port": str(entries[0].data.get(CONF_PORT, "80")),
             },
         )
