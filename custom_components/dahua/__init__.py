@@ -14,7 +14,8 @@ import hashlib
 
 from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -140,8 +141,168 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 _HOST_CONNECTORS: dict = {}
 
 
+# How many consecutive failed refreshes before we call a host unreachable. At
+# the default 30s interval that is about two and a half minutes, long enough to
+# ride out a single dropped poll.
+UNREACHABLE_AFTER_FAILURES = 5
+
+# A TCP probe is cheap but not free, and a wedged host fails every single poll.
+HTTPS_PROBE_MIN_INTERVAL = 600
+
+ISSUE_UNREACHABLE = "unreachable_{0}"
+ISSUE_HTTP_DEAD_HTTPS_AVAILABLE = "http_dead_https_available_{0}"
+
+# address -> {"consecutive": int, "since": float, "entry_ids": set, "last_probe": float}
+#
+# Module level rather than on the coordinator, for two reasons. A failed setup
+# never publishes its coordinator to hass.data, because
+# async_config_entry_first_refresh raises first, so every retry would build and
+# discard a fresh counter. And an NVR has one config entry per channel, so the
+# count must be shared or eight channels of one box raise eight separate cards.
+_HOST_FAILURES: dict = {}
+
+
+def normalize_address(address: str) -> str:
+    """One device, one key.
+
+    DahuaClient rstrips the address before keying its request limiter, but
+    _acquire_connector did not, so a trailing slash could leave a single device
+    holding two differently keyed pools. Everything host scoped goes through
+    this.
+    """
+    return (address or "").strip().rstrip("/")
+
+
+def _entries_for_address(hass: HomeAssistant, address: str) -> list:
+    """Every config entry pointing at this host."""
+    wanted = normalize_address(address)
+    return [
+        entry
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if normalize_address(entry.data.get(CONF_ADDRESS)) == wanted
+    ]
+
+
+async def _async_probe_tcp(address: str, port: int, timeout: float = 5.0) -> bool:
+    """Can we open a TCP connection? No HTTP, no credentials, no retry."""
+    writer = None
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(address, port), timeout
+        )
+        return True
+    except Exception:  # pylint: disable=broad-except
+        return False
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+
+async def _async_evaluate_host(hass: HomeAssistant, address: str) -> None:
+    """Decide which card, if any, this host has earned.
+
+    Some Dahua firmwares stop serving plain HTTP while HTTPS keeps working. If
+    that is what happened we can say so and offer to switch. Otherwise all we
+    can honestly report is that the device is not answering.
+    """
+    address = normalize_address(address)
+    unreachable_id = ISSUE_UNREACHABLE.format(address)
+    https_id = ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
+
+    entries = _entries_for_address(hass, address)
+    if not entries:
+        return
+
+    # Nothing to offer if this host is already reached over HTTPS.
+    already_https = any(
+        str(entry.data.get(CONF_PORT)) == "443" or entry.data.get(CONF_USE_HTTPS)
+        for entry in entries
+    )
+
+    state = _HOST_FAILURES.get(address)
+    https_is_open = False
+    if not already_https and state is not None:
+        state["last_probe"] = time.time()
+        https_is_open = await _async_probe_tcp(address, 443)
+
+    minutes = 1
+    if state:
+        minutes = max(1, int((time.time() - state.get("since", time.time())) / 60))
+
+    placeholders = {
+        "address": address,
+        "entries": str(len(entries)),
+        "minutes": str(minutes),
+        "port": str(entries[0].data.get(CONF_PORT, "80")),
+    }
+
+    if https_is_open:
+        ir.async_delete_issue(hass, DOMAIN, unreachable_id)
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            https_id,
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="http_dead_https_available",
+            translation_placeholders=placeholders,
+            data={"address": address},
+        )
+    else:
+        ir.async_delete_issue(hass, DOMAIN, https_id)
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            unreachable_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="device_unreachable",
+            translation_placeholders=placeholders,
+            learn_more_url="https://github.com/rroller/dahua#debugging",
+        )
+
+
+@callback
+def async_record_host_failure(hass: HomeAssistant, address: str, entry_id: str) -> None:
+    """Note a failed refresh, raising a card once it stops looking like a blip."""
+    address = normalize_address(address)
+    state = _HOST_FAILURES.setdefault(
+        address,
+        {"consecutive": 0, "since": time.time(), "entry_ids": set(), "last_probe": 0},
+    )
+    state["consecutive"] += 1
+    state["entry_ids"].add(entry_id)
+
+    if state["consecutive"] < UNREACHABLE_AFTER_FAILURES:
+        return
+    # Re-evaluate on the threshold, then only as often as the probe interval
+    # allows, so a wedged host does not get probed on every poll.
+    if state["consecutive"] == UNREACHABLE_AFTER_FAILURES or (
+        time.time() - state.get("last_probe", 0) >= HTTPS_PROBE_MIN_INTERVAL
+    ):
+        hass.async_create_task(_async_evaluate_host(hass, address))
+
+
+@callback
+def async_record_host_success(hass: HomeAssistant, address: str) -> None:
+    """The device answered, so withdraw anything we said about it.
+
+    Keyed by host: if any channel of an NVR replies, the box is up.
+    """
+    address = normalize_address(address)
+    if _HOST_FAILURES.pop(address, None) is None:
+        return
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address))
+
+
 def _acquire_connector(address: str) -> TCPConnector:
     """Returns the shared connector for this address, creating it if needed."""
+    address = normalize_address(address)
     holder = _HOST_CONNECTORS.get(address)
     if holder is None or holder[0].closed:
         holder = [TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT), 0]
@@ -152,6 +313,7 @@ def _acquire_connector(address: str) -> TCPConnector:
 
 async def _release_connector(address: str) -> None:
     """Drops a reference, closing the connector once nothing is using it."""
+    address = normalize_address(address)
     holder = _HOST_CONNECTORS.get(address)
     if holder is None:
         return
@@ -469,9 +631,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self.config_entry.async_start_reauth(self.hass)
                     raise UpdateFailed("Authentication failed") from exception
                 _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
+                async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
                 raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
             except Exception as exception:
                 _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
+                async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
                 raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
 
         # This is the event loop code that's called every n seconds
@@ -542,11 +706,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if light_v2 is not None:
                     data.update(light_v2)
 
+            async_record_host_success(self.hass, self._address)
             return data
         except Exception as exception:
             _LOGGER.warning("Failed to sync device state for %s. See README to enable debug logs to get full exception",
                             self._address)
             _LOGGER.debug("Failed to sync device state for %s", self._address, exc_info=exception)
+            async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
             raise UpdateFailed() from exception
 
     def on_receive_vto_event(self, event: dict):
@@ -958,6 +1124,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id)
+
+    # If that was the last entry for this host, withdraw anything we said
+    # about it rather than leaving an orphaned card in Repairs.
+    address = normalize_address(entry.data.get(CONF_ADDRESS))
+    if not _entries_for_address(hass, address):
+        _HOST_FAILURES.pop(address, None)
+        ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
+        ir.async_delete_issue(
+            hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
+        )
 
     return unloaded
 
