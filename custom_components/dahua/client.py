@@ -4,7 +4,6 @@ import socket
 import asyncio
 import time
 import aiohttp
-import async_timeout
 
 from .digest import DigestAuth
 from .rpc2 import DahuaRpc2Client
@@ -496,7 +495,7 @@ class DahuaClient:
             self._rtsp_port, session, self._use_https
         )
         try:
-            async with async_timeout.timeout(5):
+            async with asyncio.timeout(5):
                 presets = await rpc2.async_get_ptz_presets(channel_index)
             ids = self.parse_ptz_preset_ids(presets)
             if presets and not ids:
@@ -504,7 +503,7 @@ class DahuaClient:
             return ids
         finally:
             try:
-                async with async_timeout.timeout(3):
+                async with asyncio.timeout(3):
                     logout_ok = await rpc2.logout()
                 if not logout_ok:
                     _LOGGER.debug(
@@ -521,11 +520,11 @@ class DahuaClient:
             self._rtsp_port, session, self._use_https
         )
         try:
-            async with async_timeout.timeout(5):
+            async with asyncio.timeout(5):
                 return await rpc2.async_goto_preset_position(channel, position)
         finally:
             try:
-                async with async_timeout.timeout(3):
+                async with asyncio.timeout(3):
                     logout_ok = await rpc2.logout()
                 if not logout_ok:
                     _LOGGER.debug("RPC2 logout reported failure after GotoPreset")
@@ -1041,7 +1040,7 @@ class DahuaClient:
         Raises the same errors async_get_snapshot would.
         """
         url = self._base + "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
-        async with async_timeout.timeout(TIMEOUT_SECONDS), self._host_limit:
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
             response = None
             try:
                 auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
@@ -1056,7 +1055,7 @@ class DahuaClient:
         """Get information from the API. This will return the raw response and not process it"""
         # The timeout covers the wait for a slot as well as the request, so a
         # busy host sheds load instead of building an unbounded queue.
-        async with async_timeout.timeout(TIMEOUT_SECONDS), self._host_limit:
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
             response = None
             try:
                 auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
@@ -1109,7 +1108,7 @@ class DahuaClient:
         """Make the request. One caller per shared read reaches here."""
         url = self._base + url
         try:
-            async with async_timeout.timeout(TIMEOUT_SECONDS), self._host_limit:
+            async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
                 response = None
                 try:
                     auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
