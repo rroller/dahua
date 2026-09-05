@@ -481,9 +481,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
-                    self._profile_mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
-                    if not self._profile_mode:
-                        self._profile_mode = "0"
+                    self._profile_mode = self.read_profile_mode(mode_data)
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
@@ -897,6 +895,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_security_light_on(self) -> bool:
         """Return true if the security light is on. This is the red/blue flashing light"""
         return self.get_status_value("WhiteLight").lower() == "on"
+
+    def read_profile_mode(self, mode_data: dict) -> str:
+        """Picks this channel's day/night profile out of the VideoInMode table.
+
+        The read is host-wide -- getConfig&name=VideoInMode returns a row per
+        channel -- so an NVR channel has to take its own row. Reading row 0 for
+        every channel gave the whole device channel 1's day/night profile, and
+        that profile is then what selects which Lighting[channel][profile] the
+        IR light is read from and written to.
+
+        Falls back to row 0, which is all a single-channel camera returns.
+        """
+        mode = mode_data.get("table.VideoInMode[{0}].Config[0]".format(self._channel))
+        if mode is None:
+            mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
+        return mode or "0"
 
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
