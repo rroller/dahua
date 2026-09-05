@@ -2,6 +2,7 @@
 import logging
 import socket
 import asyncio
+import time
 import aiohttp
 import async_timeout
 
@@ -59,6 +60,58 @@ def _digest_state(address: str, username: str) -> dict:
     if state is None:
         state = _HOST_DIGEST_STATE[key] = {}
     return state
+
+
+# Most of what a coordinator reads every poll carries no channel argument:
+# MotionDetect, DisableLinkage, DisableEventNotify, SmartMotionDetect,
+# Lighting_V2, VideoInMode, coaxialControlIO and ptz.cgi are all host-wide. An
+# NVR with eleven config entries therefore asks eleven times for byte-identical
+# answers, every cycle. Share them.
+#
+# The key is the URL, so nothing has to be classified by hand: a read that does
+# carry a channel has a different URL per channel and is never shared. Only
+# reads are cached; anything else drops the host's entries, because a write is
+# how these values change.
+HOST_CACHE_TTL_SECONDS = 5
+_HOST_CACHE: dict = {}
+
+# CGI reads are "action=getSomething". Everything else -- setConfig, reboot,
+# ptz control, door open -- is a write. Unrecognised is treated as a write,
+# which is the safe way round.
+READ_ACTION_PREFIX = "action=get"
+
+
+def _is_read(url: str) -> bool:
+    return READ_ACTION_PREFIX in url
+
+
+def clear_host_cache(address: str) -> None:
+    """Drop every shared read for this host.
+
+    Called on every write, since a write is the reason a value the device
+    reports would change, and when the last entry for the host goes away.
+    """
+    for key in [k for k in _HOST_CACHE if k[0] == address]:
+        del _HOST_CACHE[key]
+
+
+class _SharedRead:
+    """One read of one URL, shared by every entry on the host that wants it.
+
+    While the request is in flight, later callers wait on the same task rather
+    than issuing their own. Once it lands, it answers again for the TTL.
+    """
+
+    __slots__ = ("task", "expires_at")
+
+    def __init__(self, task: asyncio.Task) -> None:
+        self.task = task
+        self.expires_at = None  # stamped when the request lands
+
+    def is_usable(self, now: float) -> bool:
+        if not self.task.done():
+            return True
+        return self.expires_at is not None and now < self.expires_at
 
 
 SECURITY_LIGHT_TYPE = 1
@@ -1010,7 +1063,44 @@ class DahuaClient:
                     response.close()
 
     async def get(self, url: str, verify_ok=False) -> dict:
-        """Get information from the API."""
+        """Get information from the API, sharing the read across this host.
+
+        Two entries for one NVR asking the same question at the same moment get
+        one round trip between them, and a repeat inside the TTL gets none.
+        """
+        if not _is_read(url):
+            clear_host_cache(self._address)
+            return await self._request(url, verify_ok)
+
+        # Credentials are part of the key: entries for one host may be
+        # configured with different users, and a successful read is not
+        # otherwise scoped to who made it.
+        key = (self._address, self._username, url)
+        now = time.monotonic()
+        entry = _HOST_CACHE.get(key)
+        if entry is None or not entry.is_usable(now):
+            # Registering before the request starts is what makes this work:
+            # the per-host limiter queues callers inside _request, so by the
+            # time the first one has a slot the rest are already sharing it.
+            entry = _SharedRead(asyncio.ensure_future(self._request(url, verify_ok)))
+            _HOST_CACHE[key] = entry
+
+        # Shielded so that one entry's cancelled refresh -- a reload, a
+        # timeout -- does not take the read away from the others.
+        result = await asyncio.shield(entry.task)
+
+        # A read is only published once it lands. A failure leaves the expiry
+        # unset, so is_usable rejects it and the next poll asks the device
+        # again rather than being told no for the rest of the TTL. And a write
+        # that dropped this entry while it was in flight has already replaced
+        # it, so it settles for whoever is waiting without going back in.
+        if _HOST_CACHE.get(key) is entry and entry.expires_at is None:
+            entry.expires_at = time.monotonic() + HOST_CACHE_TTL_SECONDS
+
+        return dict(result)
+
+    async def _request(self, url: str, verify_ok=False) -> dict:
+        """Make the request. One caller per shared read reaches here."""
         url = self._base + url
         try:
             async with async_timeout.timeout(TIMEOUT_SECONDS), self._host_limit:
