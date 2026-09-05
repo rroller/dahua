@@ -6,7 +6,7 @@ from aiohttp import web
 import pytest
 
 from custom_components.dahua import client as client_module
-from custom_components.dahua.client import DahuaClient
+from custom_components.dahua.client import DahuaClient, EventStreamClosed
 
 
 class CapturingSession:
@@ -25,8 +25,10 @@ async def test_stream_request_is_bounded_on_read_not_total():
     session = CapturingSession()
     client = DahuaClient("u", "p", "d", 80, 554, session)
 
-    # stream_events swallows its own exceptions, so this returns normally.
-    await client.stream_events(lambda data, channel: None, ["All"], 0)
+    # The session raises to stop the call once it has the arguments, and
+    # stream_events no longer swallows that.
+    with pytest.raises(RuntimeError):
+        await client.stream_events(lambda data, channel: None, ["All"], 0)
 
     timeout = session.kwargs["timeout"]
     assert isinstance(timeout, aiohttp.ClientTimeout)
@@ -65,14 +67,106 @@ async def test_stalled_stream_ends_so_the_caller_can_reconnect(monkeypatch, sock
     received = []
 
     try:
-        await asyncio.wait_for(
-            client.stream_events(lambda data, channel: received.append(data), ["All"], 0),
-            timeout=10,
-        )
-    except asyncio.TimeoutError:
-        pytest.fail("stream did not end after the socket went quiet")
+        with pytest.raises(Exception) as caught:
+            await asyncio.wait_for(
+                client.stream_events(lambda data, channel: received.append(data), ["All"], 0),
+                timeout=10,
+            )
+        # aiohttp's read timeout subclasses asyncio.TimeoutError, so identify
+        # it precisely rather than by the base class the outer wait_for uses.
+        assert isinstance(caught.value, aiohttp.ServerTimeoutError),             "expected the socket read timeout, got %r" % (caught.value,)
     finally:
         await session.close()
         await runner.cleanup()
 
     assert received, "the heartbeat before the stall should have been delivered"
+
+
+# --- a stream that ends must say so ----------------------------------------
+#
+# Every failure used to be caught inside stream_events and logged at DEBUG, so
+# the caller's warning was unreachable and a device refusing the subscription
+# left no trace anywhere. That silence is why an affected user's Home Assistant
+# log contained nothing at all about their NVR.
+
+class _EndingSession:
+    """A device that accepts the subscription and then closes it."""
+
+    def __init__(self, status=200, chunks=()):
+        self.status = status
+        self.chunks = chunks
+        self.requested = False
+
+    async def request(self, method, url, headers=None, **kwargs):
+        self.requested = True
+        return _EndingResponse(self.status, self.chunks)
+
+
+class _EndingResponse:
+    def __init__(self, status, chunks):
+        self.status = status
+        self.headers = {}
+        self.content = _Content(chunks)
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise aiohttp.ClientResponseError(None, (), status=self.status)
+
+    def close(self):
+        return None
+
+
+class _Content:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    async def iter_chunks(self):
+        for c in self._chunks:
+            yield c, True
+
+
+async def test_a_device_that_closes_the_stream_raises():
+    """A long poll that returns is a failure, not a result."""
+    client = DahuaClient("u", "p", "d", 80, 554, _EndingSession(chunks=[b"Heartbeat"]))
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: None, ["All"], 0)
+
+
+async def test_an_empty_200_raises_too():
+    """The quietest failure of all: attach accepted, nothing ever sent."""
+    client = DahuaClient("u", "p", "d", 80, 554, _EndingSession(chunks=[]))
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: None, ["All"], 0)
+
+
+async def test_an_http_error_reaches_the_caller():
+    client = DahuaClient("u", "p", "d", 80, 554, _EndingSession(status=401))
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.stream_events(lambda data, channel: None, ["All"], 0)
+
+
+async def test_missing_credentials_raise_instead_of_looping_silently():
+    """Name the reason: without it this passes on the end-of-stream raise
+    instead, and the guard could be deleted with every test still green."""
+    session = _EndingSession()
+    client = DahuaClient(None, None, "d", 80, 554, session)
+
+    with pytest.raises(EventStreamClosed) as caught:
+        await client.stream_events(lambda data, channel: None, ["All"], 0)
+
+    assert "credentials" in str(caught.value)
+    assert session.requested is False, "it tried to talk to the device anyway"
+
+
+async def test_chunks_still_reach_the_handler_before_the_close():
+    got = []
+    client = DahuaClient("u", "p", "d", 80, 554,
+                         _EndingSession(chunks=[b"a", b"b", b"c"]))
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
+
+    assert got == [b"a", b"b", b"c"]

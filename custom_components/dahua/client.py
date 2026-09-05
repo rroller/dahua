@@ -113,6 +113,16 @@ class _SharedRead:
         return self.expires_at is not None and now < self.expires_at
 
 
+class EventStreamClosed(Exception):
+    """The device ended the event stream.
+
+    A long poll that returns is a failure, not a result: the connection is
+    meant to stay open until we recycle it. A device that refuses
+    action=attach by answering 200 and closing would otherwise leave no trace
+    anywhere.
+    """
+
+
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -985,30 +995,36 @@ class DahuaClient:
         codes = ",".join(events)
         url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat={2}".format(
             self._base, codes, EVENT_STREAM_HEARTBEAT_SECONDS)
-        if self._username is not None and self._password is not None:
-            response = None
+        if self._username is None or self._password is None:
+            # Returning quietly here spun a silent sixty second retry loop that
+            # never did anything and never said so.
+            raise EventStreamClosed(
+                "Cannot subscribe to events on %s without credentials" % self._address)
 
-            try:
-                # A long poll must not inherit the session's default total
-                # timeout, which tears a healthy stream down every 5 minutes.
-                # Bound it on read instead, so a socket that stops delivering
-                # is detected but one that keeps heartbeating is left alone.
-                timeout = aiohttp.ClientTimeout(
-                    total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
-                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
-                response = await auth.request("GET", url, timeout=timeout)
-                response.raise_for_status()
+        response = None
 
-                # https://docs.aiohttp.org/en/stable/streams.html
-                async for data, _ in response.content.iter_chunks():
-                    on_receive(data, channel)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exception:
-                _LOGGER.debug("Event stream ended: %s", exception)
-            finally:
-                if response is not None:
-                    response.close()
+        try:
+            # A long poll must not inherit the session's default total
+            # timeout, which tears a healthy stream down every 5 minutes.
+            # Bound it on read instead, so a socket that stops delivering
+            # is detected but one that keeps heartbeating is left alone.
+            timeout = aiohttp.ClientTimeout(
+                total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
+            auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
+            response = await auth.request("GET", url, timeout=timeout)
+            response.raise_for_status()
+
+            # https://docs.aiohttp.org/en/stable/streams.html
+            async for data, _ in response.content.iter_chunks():
+                on_receive(data, channel)
+        finally:
+            if response is not None:
+                response.close()
+
+        # Falling out of the loop means the device closed the stream on us.
+        # It raises no exception, so without this the caller cannot tell a
+        # refused subscription from a healthy one.
+        raise EventStreamClosed("Event stream to %s closed by the device" % self._address)
 
     @staticmethod
     async def parse_dahua_api_response(data: str) -> dict:

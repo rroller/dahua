@@ -62,6 +62,21 @@ EVENT_STREAM_JITTER = 0.1
 # would otherwise be retried by every channel at once, sixty seconds later.
 EVENT_STREAM_RETRY_SECONDS = 60
 
+# A stream that lived this long was working, so reconnect at once. Anything
+# shorter gets backed off, because the fast path used to have no delay at all:
+# a device closing the socket at eleven seconds reconnected forever, silently.
+EVENT_STREAM_HEALTHY_SECONDS = 60
+EVENT_STREAM_SHORT_RETRY_SECONDS = 10
+
+
+def event_stream_retry_delay(lived_seconds: float) -> float:
+    """How long to wait before re-attaching, given how long the stream lasted."""
+    if lived_seconds < 10:
+        return jittered(EVENT_STREAM_RETRY_SECONDS)
+    if lived_seconds < EVENT_STREAM_HEALTHY_SECONDS:
+        return jittered(EVENT_STREAM_SHORT_RETRY_SECONDS)
+    return 0.0
+
 
 def jittered(seconds: float, fraction: float = EVENT_STREAM_JITTER) -> float:
     """Spread a shared interval so simultaneous callers stop being simultaneous."""
@@ -373,6 +388,8 @@ class DahuaHostEventStream:
         self._owner = None  # whose client the stream currently borrows
         self._events: frozenset = frozenset()
         self._task: asyncio.Task | None = None
+        # Whether the last attach failed, so an outage is reported once.
+        self._failing = False
 
     @property
     def coordinators(self) -> list:
@@ -449,16 +466,28 @@ class DahuaHostEventStream:
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
+                self._failing = False
                 _LOGGER.debug("Recycling event stream for %s", self._address)
             except Exception as ex:  # pylint: disable=broad-except
-                _LOGGER.warning(
-                    "Event stream for %s ended unexpectedly: %s", self._address, ex
-                )
+                # Say it once per outage, not once per retry. Silence was the
+                # old behaviour and it is why these failures went unreported;
+                # a warning every sixty seconds forever is the other extreme.
+                if not self._failing:
+                    self._failing = True
+                    _LOGGER.warning(
+                        "Event stream for %s ended unexpectedly: %s", self._address, ex
+                    )
+                else:
+                    _LOGGER.debug(
+                        "Event stream for %s still failing: %s", self._address, ex
+                    )
+            else:
+                self._failing = False
 
-            if time.monotonic() - start_time < 10:
-                retry_in = jittered(EVENT_STREAM_RETRY_SECONDS)
+            retry_in = event_stream_retry_delay(time.monotonic() - start_time)
+            if retry_in:
                 _LOGGER.debug(
-                    "Event stream for %s failed quickly, retrying in %.0fs",
+                    "Reconnecting to event stream for %s in %.0fs",
                     self._address,
                     retry_in,
                 )
