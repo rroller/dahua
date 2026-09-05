@@ -752,12 +752,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 self._supports_floodlightmode = self.supports_floodlightmode()
 
-                try:
-                    await self.client.async_get_config_lighting(self._channel, self._profile_mode)
-                    self._supports_lighting = True
-                except ClientError:
-                    self._supports_lighting = False
-                    pass
+                self._supports_lighting = await self.async_detect_lighting_support()
                 _LOGGER.debug("Device supports infrared lighting=%s", self.supports_infrared_light())
 
 #Checking lighting_v2 support
@@ -1248,6 +1243,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if mode is None:
             mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
         return mode or "0"
+
+    async def async_detect_lighting_support(self) -> bool:
+        """Does this channel have an infrared light?
+
+        Judged by what comes back, not by an exception. async_get_config
+        catches aiohttp.ClientResponseError and returns {}, so an
+        exception-only probe could never fail: every device was marked as
+        having an IR light and then fetched Lighting[channel][mode] on every
+        poll, forever. The profile mode probe reads its result the same way.
+        """
+        try:
+            conf = await self.client.async_get_config_lighting(self._channel, self._profile_mode)
+        except ClientError:
+            return False
+        return len(conf) > 0
 
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
