@@ -77,6 +77,10 @@ class DahuaClient:
         # Keyed by address so every entry for one NVR shares a single budget.
         self._host_limit = _host_limiter(self._address)
         self._rpc2_session_instance = None
+        # True once this device has failed to report a serial number and we have had
+        # to derive its identity from the connection details instead. That derivation
+        # includes the password, so the identity changes if the password does.
+        self.identity_derived_from_credentials = False
         protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
 
@@ -126,6 +130,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
         except aiohttp.ClientResponseError as e:
+            self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"serialNumber": unique_cam_id}
@@ -158,6 +163,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getMachineName")
         except aiohttp.ClientResponseError as e:
+            self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"name": unique_cam_id}
@@ -226,6 +232,7 @@ class DahuaClient:
         try:
             return await self.get(url)
         except aiohttp.ClientResponseError as e:
+            self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"table.General.MachineName": unique_cam_id}
