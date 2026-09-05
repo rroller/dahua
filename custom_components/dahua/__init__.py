@@ -4,6 +4,7 @@ Custom integration to integrate Dahua cameras with Home Assistant.
 import asyncio
 from typing import Any, Dict
 import logging
+import random
 import ssl
 import time
 
@@ -50,6 +51,24 @@ from .vto import DahuaVTOClient
 # A stream that keeps heartbeating but has stopped reporting events looks
 # healthy to a read timeout, so recycle it periodically as well.
 EVENT_STREAM_MAX_LIFETIME_SECONDS = 3600
+
+# An NVR gets one config entry per channel, and they all start within a moment
+# of each other, so a fixed lifetime makes every channel drop and re-attach in
+# the same second, once an hour. Spreading them means the device sees a trickle
+# of reconnections instead of a burst.
+EVENT_STREAM_JITTER = 0.1
+
+# The same applies after a failure: a device that rejected every channel at once
+# would otherwise be retried by every channel at once, sixty seconds later.
+EVENT_STREAM_RETRY_SECONDS = 60
+
+
+def jittered(seconds: float, fraction: float = EVENT_STREAM_JITTER) -> float:
+    """Spread a shared interval so simultaneous callers stop being simultaneous."""
+    if seconds <= 0 or fraction <= 0:
+        return seconds
+    spread = seconds * fraction
+    return max(1.0, seconds + random.uniform(-spread, spread))
 
 SSL_CONTEXT = ssl.create_default_context()
 SSL_CONTEXT.set_ciphers("DEFAULT")
@@ -256,7 +275,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await asyncio.wait_for(
                     self.client.stream_events(self.on_receive, self.events, self._channel),
-                    timeout=EVENT_STREAM_MAX_LIFETIME_SECONDS,
+                    timeout=jittered(EVENT_STREAM_MAX_LIFETIME_SECONDS),
                 )
             except asyncio.CancelledError:
                 raise
@@ -267,8 +286,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             elapsed = time.monotonic() - start_time
             if elapsed < 10:
-                _LOGGER.debug("Event stream for %s failed quickly, retrying in 60s", self._address)
-                await asyncio.sleep(60)
+                retry_in = jittered(EVENT_STREAM_RETRY_SECONDS)
+                _LOGGER.debug(
+                    "Event stream for %s failed quickly, retrying in %.0fs",
+                    self._address,
+                    retry_in,
+                )
+                await asyncio.sleep(retry_in)
             else:
                 _LOGGER.debug("Reconnecting to event stream for %s", self._address)
 
