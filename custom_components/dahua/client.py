@@ -37,6 +37,30 @@ def _host_limiter(address: str) -> asyncio.Semaphore:
     return limiter
 
 
+# The digest challenge a device hands out is not per connection: any request
+# with the right credentials can use it. Eleven config entries for one NVR were
+# each taking a 401 to get their own copy of the same challenge, at exactly the
+# moment the device is least able to spare the round trips.
+#
+# Sharing it also fixes the nonce count. Digest asks the client to send a
+# strictly increasing nc for a given nonce; eleven clients each counting from
+# one against the same nonce is what replay protection exists to reject.
+_HOST_DIGEST_STATE: dict = {}
+
+
+def _digest_state(address: str, username: str) -> dict:
+    """The digest state shared by every client for this host and user.
+
+    Keyed by user as well as host because the response digest is built from the
+    credentials, and entries for one NVR need not share them.
+    """
+    key = (address, username)
+    state = _HOST_DIGEST_STATE.get(key)
+    if state is None:
+        state = _HOST_DIGEST_STATE[key] = {}
+    return state
+
+
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -61,11 +85,12 @@ class DahuaClient:
     ) -> None:
         self._username = username
         self._password = password
-        # One digest challenge shared by every request this client makes, so a
-        # call doesn't have to take a 401 before it can authenticate.
-        self._digest_state = {}
         # Strip trailing slashes from address to prevent malformed URLs like http://host/:80
         self._address = address.rstrip('/')
+        # One digest challenge shared by every request to this host, so a call
+        # doesn't have to take a 401 before it can authenticate -- and neither
+        # does the next config entry for the same NVR.
+        self._digest_state = _digest_state(self._address, username)
         self._session = session
         self._port = port
         self._rtsp_port = rtsp_port
