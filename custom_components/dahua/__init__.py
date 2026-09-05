@@ -24,7 +24,7 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
 from . import dahua_utils
-from .client import DahuaClient
+from .client import DahuaClient, clear_host_cache
 from .model_profiles import is_sdt4e425
 
 from .const import (
@@ -339,6 +339,7 @@ async def _release_connector(address: str) -> None:
     holder[1] -= 1
     if holder[1] <= 0:
         _HOST_CONNECTORS.pop(address, None)
+        clear_host_cache(address)
         await holder[0].close()
 
 

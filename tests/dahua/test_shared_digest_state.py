@@ -12,7 +12,13 @@ from custom_components.dahua.client import (
 
 from .test_digest import PASSWORD, USER, FakeSession, nc_of
 
-URL = "/cgi-bin/magicBox.cgi?action=getSystemInfo"
+# Each client reads a *different* URL. Reads are shared per host by URL, so
+# eleven clients asking the same question would collapse to one request and
+# these tests would be measuring the read cache rather than the digest state.
+# In practice a channel makes nine different reads a poll anyway, and the
+# challenge is shared across all of them regardless.
+def _url(n):
+    return "/cgi-bin/magicBox.cgi?action=getSystemInfo&n=%d" % n
 
 
 @pytest.fixture(autouse=True)
@@ -37,10 +43,10 @@ def _probes(session):
 
 async def test_the_second_entry_does_not_re_probe():
     session = FakeSession()
-    await _client(session).get(URL)
+    await _client(session).get(_url(0))
     before = len(session.requests)
 
-    await _client(session).get(URL)
+    await _client(session).get(_url(1))
 
     assert len(session.requests) == before + 1, "the second entry took its own 401"
 
@@ -55,7 +61,7 @@ async def test_the_cold_start_burst_does_not_grow_with_the_channel_count():
     session = FakeSession()
     clients = [_client(session) for _ in range(11)]
 
-    await asyncio.gather(*(c.get(URL) for c in clients))
+    await asyncio.gather(*(c.get(_url(i)) for i, c in enumerate(clients)))
 
     assert len(_probes(session)) <= MAX_CONCURRENT_REQUESTS_PER_HOST, (
         "%d of 11 entries challenged the device" % len(_probes(session))
@@ -66,10 +72,11 @@ async def test_thirty_entries_cost_no_more_probes_than_eleven():
     """The property stated plainly: the burst is capped, not proportional."""
     small, large = FakeSession(), FakeSession()
 
-    await asyncio.gather(*(_client(small).get(URL) for _ in range(11)))
+    await asyncio.gather(*(_client(small).get(_url(i)) for i in range(11)))
     client_module._HOST_DIGEST_STATE.clear()
     client_module._HOST_LIMITS.clear()
-    await asyncio.gather(*(_client(large).get(URL) for _ in range(30)))
+    client_module._HOST_CACHE.clear()
+    await asyncio.gather(*(_client(large).get(_url(i)) for i in range(30)))
 
     assert len(_probes(large)) <= len(_probes(small))
 
@@ -78,7 +85,7 @@ async def test_every_caller_still_gets_its_answer():
     session = FakeSession(body="key=value")
     clients = [_client(session) for _ in range(11)]
 
-    results = await asyncio.gather(*(c.get(URL) for c in clients))
+    results = await asyncio.gather(*(c.get(_url(i)) for i, c in enumerate(clients)))
 
     assert all(r == {"key": "value"} for r in results)
 
@@ -116,8 +123,8 @@ async def test_the_count_keeps_rising_across_entries():
     session = FakeSession(strict_nc=True)
     clients = [_client(session) for _ in range(11)]
 
-    for c in clients:
-        await c.get(URL)
+    for i, c in enumerate(clients):
+        await c.get(_url(i))
 
     counts = [nc_of(r) for r in session.requests if nc_of(r)]
     assert len(set(counts)) == len(counts), "the same count was sent twice"
@@ -129,7 +136,7 @@ async def test_a_strict_device_accepts_every_entry():
     session = FakeSession(strict_nc=True, body="key=value")
     clients = [_client(session) for _ in range(11)]
 
-    results = await asyncio.gather(*(c.get(URL) for c in clients))
+    results = await asyncio.gather(*(c.get(_url(i)) for i, c in enumerate(clients)))
 
     assert all(r == {"key": "value"} for r in results)
 
@@ -140,11 +147,12 @@ async def test_a_rotated_nonce_is_picked_up_once_for_the_whole_host():
     """When the device moves on, one entry absorbs the stale 401, not eleven."""
     session = FakeSession()
     clients = [_client(session) for _ in range(11)]
-    await clients[0].get(URL)
+    await clients[0].get(_url(0))
 
     session.nonce = "nonce-2"
     already_sent = len(session.requests)
-    await asyncio.gather(*(c.get(URL) for c in clients))
+    client_module._HOST_CACHE.clear()
+    await asyncio.gather(*(c.get(_url(i)) for i, c in enumerate(clients)))
 
     after = session.requests[already_sent:]
     stale = [r for r in after
@@ -162,4 +170,4 @@ async def test_a_wrong_password_still_gives_up():
     c = _client(session)
 
     with pytest.raises(Exception):
-        await c.get(URL)
+        await c.get(_url(0))
