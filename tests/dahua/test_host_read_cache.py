@@ -282,3 +282,93 @@ async def test_the_ttl_stays_under_the_shortest_poll_a_user_can_ask_for():
     from custom_components.dahua.const import MIN_SCAN_INTERVAL
 
     assert 0 < HOST_CACHE_TTL_SECONDS < MIN_SCAN_INTERVAL
+
+
+# --- settings reads outlive a poll cycle ------------------------------------
+#
+# A single camera shares nothing with anybody, so the coalescing above does not
+# help it at all. What helps is not re-asking the device for settings that only
+# change when something writes them -- and a write already drops the cache.
+
+STATUS = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=1"
+PTZ_STATUS = "/cgi-bin/ptz.cgi?action=getStatus"
+
+
+def test_a_settings_read_outlives_a_poll_interval():
+    from custom_components.dahua.client import _cache_lifetime
+    from custom_components.dahua.const import DEFAULT_SCAN_INTERVAL
+
+    assert _cache_lifetime(MOTION) > DEFAULT_SCAN_INTERVAL
+
+
+def test_a_status_read_does_not():
+    """PTZ position and siren state change without anyone writing them."""
+    from custom_components.dahua.client import _cache_lifetime
+    from custom_components.dahua.const import MIN_SCAN_INTERVAL
+
+    assert _cache_lifetime(PTZ_STATUS) < MIN_SCAN_INTERVAL
+    assert _cache_lifetime(STATUS) < MIN_SCAN_INTERVAL
+
+
+async def test_one_camera_stops_re_reading_its_settings_every_poll(monkeypatch):
+    """The case a single-entry install actually has.
+
+    Time is advanced by a poll interval between cycles, otherwise five calls in
+    a row fit inside any TTL and the test proves nothing.
+    """
+    from custom_components.dahua.const import DEFAULT_SCAN_INTERVAL
+
+    now = [1000.0]
+    monkeypatch.setattr(client_module.time, "monotonic", lambda: now[0])
+    probe = _Probe(hold=0)
+    c = _client(probe)
+
+    for _ in range(5):                      # five poll cycles, 30s apart
+        await c.get(MOTION)
+        await c.get(LINKAGE)
+        now[0] += DEFAULT_SCAN_INTERVAL
+
+    assert probe.calls == 2, (
+        "settings were re-read across %d poll cycles (%d requests)"
+        % (5, probe.calls)
+    )
+
+
+async def test_status_is_re_read_across_those_same_cycles(monkeypatch):
+    """The other half: the long TTL must not silently freeze live state."""
+    from custom_components.dahua.const import DEFAULT_SCAN_INTERVAL
+
+    now = [1000.0]
+    monkeypatch.setattr(client_module.time, "monotonic", lambda: now[0])
+    probe = _Probe(hold=0)
+    c = _client(probe)
+
+    for _ in range(5):
+        await c.get(PTZ_STATUS)
+        now[0] += DEFAULT_SCAN_INTERVAL
+
+    assert probe.calls == 5, "a status read was served stale across polls"
+
+
+async def test_status_is_still_polled_every_cycle():
+    probe = _Probe(hold=0)
+    c = _client(probe)
+
+    await c.get(PTZ_STATUS)
+    client_module._HOST_CACHE[(c._address, "u", PTZ_STATUS)].expires_at = 0
+    await c.get(PTZ_STATUS)
+
+    assert probe.calls == 2, "a status read was served stale"
+
+
+async def test_a_write_still_refreshes_settings_immediately():
+    """Toggling a switch in Home Assistant must not wait out the long TTL."""
+    probe = _Probe(hold=0)
+    c = _client(probe)
+    await c.get(MOTION)
+
+    await c.get(WRITE)
+    await c.get(MOTION)
+
+    assert probe.calls == 3
+    assert probe.urls[-1].endswith(MOTION)
