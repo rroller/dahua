@@ -68,5 +68,25 @@
                 }
             }
         }
+    },
+    "issues": {
+        "device_unreachable": {
+            "title": "Dahua device at {address} is not responding",
+            "description": "Home Assistant has not been able to reach the Dahua device at {address} for about {minutes} minutes. {entries} configuration entries use this device.\n\nCheck that it is powered on and reachable on your network. The debugging section of the documentation explains how to capture logs.\n\nThis message disappears on its own as soon as the device answers again."
+        },
+        "http_dead_https_available": {
+            "title": "Dahua device at {address} answers on HTTPS but not on port {port}",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Switch {address} to HTTPS",
+                        "description": "The Dahua device at {address} has stopped answering on port {port}, but it accepts connections on port 443. Some Dahua firmwares stop serving plain HTTP while HTTPS keeps working.\n\nThis changes the {entries} Dahua configuration entries for {address} to port 443 with HTTPS, reloading them one at a time.\n\nYour username and password are not changed."
+                    }
+                },
+                "abort": {
+                    "not_configured": "No Dahua configuration entries use {address} any more."
+                }
+            }
+        }
     }
 }
