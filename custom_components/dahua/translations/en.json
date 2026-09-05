@@ -62,6 +62,7 @@
                     "light": "Light enabled",
                     "select": "Select enabled",
                     "camera": "Camera enabled",
+                    "button": "Button enabled",
                     "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
                     "events": "Events to subscribe to",
                     "scan_interval": "Seconds between device polls (events are not affected)"

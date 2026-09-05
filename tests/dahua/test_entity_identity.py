@@ -19,11 +19,13 @@ import pytest
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua import binary_sensor as bs_module
+from custom_components.dahua import button as button_module
 from custom_components.dahua import camera as camera_module
 from custom_components.dahua import light as light_module
 from custom_components.dahua import select as select_module
 from custom_components.dahua import switch as switch_module
 from custom_components.dahua.binary_sensor import DahuaEventSensor
+from custom_components.dahua.button import DahuaOpenDoorButton, DahuaRebootButton
 from custom_components.dahua.camera import DahuaCamera
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.light import (
@@ -121,7 +123,8 @@ class _Entry:
 @pytest.fixture(autouse=True)
 def _skip_ha_plumbing(monkeypatch):
     """Build the real entities, skipping only Home Assistant's own __init__."""
-    for module in (bs_module, camera_module, light_module, select_module, switch_module):
+    for module in (bs_module, button_module, camera_module, light_module,
+                   select_module, switch_module):
         monkeypatch.setattr(module.DahuaBaseEntity, "__init__", lambda self, c, e: None)
     monkeypatch.setattr(bs_module.BinarySensorEntity, "__init__", lambda self: None)
     monkeypatch.setattr(select_module.SelectEntity, "__init__", lambda self: None)
@@ -164,6 +167,9 @@ GOLDEN_SUFFIXES = [
     ("_ring_light", lambda c: AmcrestRingLight(c, _Entry(), "Ring Light")),
     ("_flood_light", lambda c: FloodLight(c, _Entry(), "Flood Light")),
     ("_security", lambda c: DahuaSecurityLight(c, _Entry(), "Security")),
+    # button.py
+    ("_reboot", lambda c: _bare(DahuaRebootButton, c)),
+    ("_open_door", lambda c: _bare(DahuaOpenDoorButton, c)),
     # select.py
     ("_security_light", lambda c: DahuaDoorbellLightSelect(c, _Entry())),
     ("_preset_position", lambda c: DahuaCameraPresetPositionSelect(c, _Entry())),
@@ -208,6 +214,8 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_ring_light",
         "4L03CB4PAZC9E8F_2_flood_light",
         "4L03CB4PAZC9E8F_2_security",
+        "4L03CB4PAZC9E8F_2_reboot",
+        "4L03CB4PAZC9E8F_2_open_door",
         "4L03CB4PAZC9E8F_2_security_light",
         "4L03CB4PAZC9E8F_2_preset_position",
         "4L03CB4PAZC9E8F_2_1_preset_position",
