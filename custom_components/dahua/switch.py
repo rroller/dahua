@@ -19,8 +19,14 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     ]
 
     # But only some cams have a siren, very few do actually
-    if coordinator.supports_siren():
-        devices.append(DahuaSirenBinarySwitch(coordinator, entry))
+    if coordinator.supports_siren() or coordinator.is_nvr_channel():
+        devices.append(
+            DahuaSirenBinarySwitch(
+                coordinator,
+                entry,
+                name="Alarm" if coordinator.is_nvr_channel() else "Siren",
+            )
+        )
     if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
         devices.append(DahuaSmartMotionDetectionBinarySwitch(coordinator, entry))
 
@@ -206,22 +212,36 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua siren switch class. Used to enable or disable camera built in sirens"""
 
+    def __init__(self, coordinator, entry, name="Siren"):
+        super().__init__(coordinator, entry)
+        self._name = name
+
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable the camera's siren"""
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, True)
+        if self._coordinator.is_nvr_channel():
+            await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                self._coordinator.get_channel_number(), SIREN_TYPE, True
+            )
+        else:
+            await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, True)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable camera siren"""
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, False)
+        if self._coordinator.is_nvr_channel():
+            await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                self._coordinator.get_channel_number(), SIREN_TYPE, False
+            )
+        else:
+            await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, False)
         await self._coordinator.async_refresh()
 
     @property
     def name(self):
         """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " Siren"
+        return self._coordinator.get_device_name() + " " + self._name
 
     @property
     def unique_id(self):

@@ -214,7 +214,7 @@ class DahuaClient:
         # If we can't fetch, just assume 2 since that's pretty standard
         return 3
 
-    async def async_get_coaxial_control_io_status(self) -> dict:
+    async def async_get_coaxial_control_io_status(self, channel: int = 1) -> dict:
         """
         async_get_coaxial_control_io_status returns the the current state of the speaker and white light.
         Note that the "white light" here seems to also work for cameras that have the red/blue flashing alarm light
@@ -225,7 +225,7 @@ class DahuaClient:
         status.status.Speaker=Off
         status.status.WhiteLight=Off
         """
-        url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=1"
+        url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel={channel}".format(channel=channel)
         return await self.get(url)
 
     async def async_get_lighting_v2(self) -> dict:
@@ -775,6 +775,18 @@ class DahuaClient:
         url = "/cgi-bin/coaxialControlIO.cgi?action=control&channel={channel}&info[0].Type={dahua_type}&info[0].IO={io}".format(
             channel=channel, dahua_type=dahua_type, io=io)
         _LOGGER.debug("Setting coaxial control state to %s: %s", io, url)
+        return await self.get(url)
+
+    async def async_set_nvr_coaxial_control_state(
+        self, channel: int, dahua_type: int, enabled: bool
+    ) -> dict:
+        """Set an NVR-connected camera's coaxial deterrence state."""
+        io = 1 if enabled else 2
+        url = (
+            "/cgi-bin/coaxialControlIO.cgi?action=control&channel={channel}"
+            "&info[0].Type={dahua_type}&info[0].IO={io}&info[0].TriggerMode=2"
+        ).format(channel=channel, dahua_type=dahua_type, io=io)
+        _LOGGER.debug("Setting NVR coaxial control state to %s: %s", io, url)
         return await self.get(url)
 
     async def async_set_disarming_linkage(self, channel: int, enabled: bool) -> dict:

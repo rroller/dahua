@@ -30,9 +30,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     if coordinator.is_flood_light():
         entities.append(FloodLight(coordinator, entry, "Flood Light"))
 
-    if coordinator.supports_security_light() and not coordinator.is_amcrest_doorbell():
+    if (
+        coordinator.supports_security_light() or coordinator.is_nvr_channel()
+    ) and not coordinator.is_amcrest_doorbell():
         #  The Amcrest doorbell works a little different and is added in select.py
-        entities.append(DahuaSecurityLight(coordinator, entry, "Security Light"))
+        security_light_name = "Warning Light" if coordinator.is_nvr_channel() else "Security Light"
+        entities.append(DahuaSecurityLight(coordinator, entry, security_light_name))
 
     if coordinator.is_amcrest_doorbell():
         entities.append(AmcrestRingLight(coordinator, entry, "Ring Light"))
@@ -283,7 +286,12 @@ class FloodLight(DahuaBaseEntity, LightEntity):
             channel = self._coordinator.get_channel()
             self._coordinator._floodlight_mode = await self._coordinator.client.async_get_floodlightmode()
             await self._coordinator.client.async_set_floodlightmode(2)
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+            if self._coordinator.is_nvr_channel():
+                await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                    self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, True
+                )
+            else:
+                await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
             await self._coordinator.async_refresh()
         else:
             channel = self._coordinator.get_channel()
@@ -295,7 +303,12 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         """Turn the light off"""
         if self._coordinator._supports_floodlightmode:
             channel = self._coordinator.get_channel()
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
+            if self._coordinator.is_nvr_channel():
+                await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                    self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, False
+                )
+            else:
+                await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
             await self._coordinator.client.async_set_floodlightmode(self._coordinator._floodlight_mode)
             await self._coordinator.async_refresh()
         else:
@@ -342,13 +355,23 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+        if self._coordinator.is_nvr_channel():
+            await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, True
+            )
+        else:
+            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
+        if self._coordinator.is_nvr_channel():
+            await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, False
+            )
+        else:
+            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
         await self._coordinator.async_refresh()
 
     @property

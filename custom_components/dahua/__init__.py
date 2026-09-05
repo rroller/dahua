@@ -689,7 +689,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Using channel number %s (auto_detect=%s)", self._channel_number, auto_detect)
 
                 try:
-                    await self.client.async_get_coaxial_control_io_status()
+                    coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
+                    await self.client.async_get_coaxial_control_io_status(coaxial_channel)
                     self._supports_coaxial_control = True
                 except ClientResponseError:
                     self._supports_coaxial_control = False
@@ -828,7 +829,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if self._supports_event_notifications:
                 coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
             if self._supports_coaxial_control:
-                coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
+                coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
+                coros.append(
+                    asyncio.ensure_future(
+                        self.client.async_get_coaxial_control_io_status(coaxial_channel)
+                    )
+                )
             if self._supports_smart_motion_detection:
                 coros.append(asyncio.ensure_future(self.client.async_get_smart_motion_detection()))
             if self.supports_smart_motion_detection_amcrest():
@@ -1233,6 +1239,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
+
+    def is_nvr_channel(self) -> bool:
+        """Return whether this entry represents a camera channel on an NVR."""
+        return self._channel > 0 or "NVR" in self.model.upper()
 
     def get_channel_number(self) -> int:
         """returns the channel number of this camera"""
