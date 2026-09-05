@@ -17,7 +17,6 @@ from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnecto
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
-from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
@@ -130,11 +129,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     coordinator = DahuaDataUpdateCoordinator(hass, entry=entry, events=events, address=address, port=port,
                                              rtsp_port=rtsp_port, username=username, password=password, name=name,
                                              channel=channel, use_https=use_https)
-    await coordinator.async_config_entry_first_refresh()
-
-    if not coordinator.last_update_success:
-        _LOGGER.warning("dahua async_setup_entry for init, data not ready")
-        raise ConfigEntryNotReady
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except Exception:
+        # The coordinator opens a session and takes a reference on the host's
+        # shared connection pool in its constructor, and only async_stop gives
+        # them back. Nothing reaches async_stop unless the coordinator makes it
+        # into hass.data, which a failed setup never does -- so without this,
+        # every retry against a device that is not answering leaks one session
+        # and one reference, forever, and Home Assistant retries forever.
+        await coordinator.async_stop()
+        raise
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
@@ -144,7 +149,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             coordinator.platforms.append(platform)
             await hass.config_entries.async_forward_entry_setups(entry, [platform])
 
-    entry.add_update_listener(async_reload_entry)
+    # Wrapped, because unloading does not clear an entry's update listeners.
+    # A plain add_update_listener leaves one behind on every reload, and then a
+    # single options change fires as many reloads as the entry has ever had --
+    # against an NVR, exactly the burst that wedges it.
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
@@ -324,7 +333,10 @@ def _acquire_connector(address: str) -> TCPConnector:
     address = normalize_address(address)
     holder = _HOST_CONNECTORS.get(address)
     if holder is None or holder[0].closed:
-        holder = [TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT), 0]
+        # enable_cleanup_closed is deliberately not set: aiohttp ignores it on
+        # every Python that Home Assistant now runs on, and warns once per
+        # connector in the user's log for the trouble.
+        holder = [TCPConnector(ssl=SSL_CONTEXT), 0]
         _HOST_CONNECTORS[address] = holder
     holder[1] += 1
     return holder[0]
