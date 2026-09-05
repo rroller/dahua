@@ -39,11 +39,21 @@ def test_the_average_is_still_the_interval_asked_for():
     )
 
 
-def test_eleven_streams_land_in_different_seconds():
-    """The case this exists for: one NVR, one entry per channel."""
+def test_eleven_streams_do_not_reconnect_together():
+    """The case this exists for: one NVR, one entry per channel.
+
+    Not "all eleven differ". Eleven draws over the ~720 seconds this spreads
+    them across collide by the birthday problem 7.5% of the time, so asserting
+    eleven distinct values failed one CI run in thirteen -- on every pull
+    request in the repository, not just ones touching this code.
+
+    What matters is that they are spread at all: without jitter all eleven land
+    in the same second, forever. Ten or more distinct is the normal case, and
+    over 20000 trials the fewest ever seen was eight.
+    """
     seconds = {int(jittered(EVENT_STREAM_MAX_LIFETIME_SECONDS)) for _ in range(11)}
 
-    assert len(seconds) == 11
+    assert len(seconds) >= 8, "eleven channels are still reconnecting in lockstep"
 
 
 def test_the_retry_after_a_failure_is_spread_too():
