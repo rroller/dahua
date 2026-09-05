@@ -342,6 +342,158 @@ async def _release_connector(address: str) -> None:
         await holder[0].close()
 
 
+class DahuaHostEventStream:
+    """One event stream for a host, shared by every channel configured on it.
+
+    The device's event stream is not per channel: attaching to it returns every
+    channel's events regardless of who asked. An NVR with eleven channels was
+    therefore holding eleven identical streams and having ten of them throw each
+    event away. This holds one, and hands each event to the channels that want
+    it.
+    """
+
+    def __init__(self, hass: HomeAssistant, address: str) -> None:
+        self._hass = hass
+        self._address = address
+        # channel index -> coordinators listening on that channel
+        self._by_channel: Dict[int, list] = {}
+        self._owner = None  # whose client the stream currently borrows
+        self._events: frozenset = frozenset()
+        self._task: asyncio.Task | None = None
+
+    @property
+    def coordinators(self) -> list:
+        return [c for group in self._by_channel.values() for c in group]
+
+    def _union(self) -> frozenset:
+        """Every event any channel on this host asked for.
+
+        Attaching with one channel's list would silently stop delivering the
+        codes another channel selected.
+        """
+        union = set()
+        for coordinator in self.coordinators:
+            union.update(coordinator.events or [])
+        return frozenset(union)
+
+    def register(self, coordinator) -> None:
+        self._by_channel.setdefault(coordinator.get_channel(), []).append(coordinator)
+        if self._owner is None:
+            self._owner = coordinator
+        self._restart_if_needed()
+
+    async def unregister(self, coordinator) -> bool:
+        """Drop a channel. Returns True when nothing is left on this host."""
+        group = self._by_channel.get(coordinator.get_channel(), [])
+        if coordinator in group:
+            group.remove(coordinator)
+        if not group:
+            self._by_channel.pop(coordinator.get_channel(), None)
+
+        remaining = self.coordinators
+        if not remaining:
+            await self.async_stop()
+            return True
+
+        # The stream borrows the owner's client, and unloading an entry closes
+        # its session, so hand the stream to someone still here.
+        if coordinator is self._owner:
+            self._owner = remaining[0]
+            self._events = frozenset()  # force a restart on the new client
+        self._restart_if_needed()
+        return False
+
+    def _restart_if_needed(self) -> None:
+        wanted = self._union()
+        if self._task is not None and not self._task.done() and wanted == self._events:
+            return
+        self._events = wanted
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        if wanted and self._owner is not None:
+            self._task = asyncio.create_task(self._async_run())
+
+    async def async_stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        self._by_channel.clear()
+        self._owner = None
+        self._events = frozenset()
+
+    async def _async_run(self) -> None:
+        """Hold the stream open, recycling it the way a single channel used to."""
+        while True:
+            start_time = time.monotonic()
+            try:
+                await asyncio.wait_for(
+                    self._owner.client.stream_events(
+                        self.on_receive, sorted(self._events), 0
+                    ),
+                    timeout=jittered(EVENT_STREAM_MAX_LIFETIME_SECONDS),
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                _LOGGER.debug("Recycling event stream for %s", self._address)
+            except Exception as ex:  # pylint: disable=broad-except
+                _LOGGER.warning(
+                    "Event stream for %s ended unexpectedly: %s", self._address, ex
+                )
+
+            if time.monotonic() - start_time < 10:
+                retry_in = jittered(EVENT_STREAM_RETRY_SECONDS)
+                _LOGGER.debug(
+                    "Event stream for %s failed quickly, retrying in %.0fs",
+                    self._address,
+                    retry_in,
+                )
+                await asyncio.sleep(retry_in)
+            else:
+                _LOGGER.debug("Reconnecting to event stream for %s", self._address)
+
+    def on_receive(self, data_bytes: bytes, _channel: int) -> None:
+        """Parse once, then hand each event only to the channels that want it."""
+        events = parse_event(data_bytes.decode("utf-8", errors="ignore"))
+        if not events:
+            return
+
+        for event in events:
+            index = 0
+            if "index" in event:
+                try:
+                    index = int(event["index"])
+                except ValueError:
+                    index = 0
+
+            # A channel nobody has configured stays silent, exactly as it did
+            # when every coordinator discarded it.
+            for coordinator in self._by_channel.get(index, ()):
+                coordinator.handle_event(dict(event))
+
+
+# address -> DahuaHostEventStream
+_HOST_STREAMS: Dict[str, DahuaHostEventStream] = {}
+
+
+def _host_stream(hass: HomeAssistant, address: str) -> DahuaHostEventStream:
+    address = normalize_address(address)
+    stream = _HOST_STREAMS.get(address)
+    if stream is None:
+        stream = _HOST_STREAMS[address] = DahuaHostEventStream(hass, address)
+    return stream
+
+
+async def _release_host_stream(coordinator) -> None:
+    address = normalize_address(coordinator.get_address())
+    stream = _HOST_STREAMS.get(address)
+    if stream is None:
+        return
+    if await stream.unregister(coordinator):
+        _HOST_STREAMS.pop(address, None)
+
+
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
@@ -424,39 +576,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def async_start_event_listener(self):
         """ Starts the event listeners for IP cameras (this does not work for doorbells (VTO)) """
         if self.events is not None:
-            self._event_task = asyncio.create_task(self._async_stream_events())
+            # Join this host's stream rather than opening another one. The
+            # device sends every channel's events down any stream, so one is
+            # enough no matter how many channels are configured.
+            _host_stream(self.hass, self._address).register(self)
 
     async def async_start_vto_event_listener(self):
         """ Starts the event listeners for doorbells (VTO). This will not work for IP cameras"""
         self._vto_task = asyncio.create_task(self._async_stream_vto_events())
-
-    async def _async_stream_events(self):
-        """Continuously stream events from the camera, reconnecting on failure."""
-        while True:
-            start_time = time.monotonic()
-            try:
-                await asyncio.wait_for(
-                    self.client.stream_events(self.on_receive, self.events, self._channel),
-                    timeout=jittered(EVENT_STREAM_MAX_LIFETIME_SECONDS),
-                )
-            except asyncio.CancelledError:
-                raise
-            except asyncio.TimeoutError:
-                _LOGGER.debug("Recycling event stream for %s", self._address)
-            except Exception as ex:
-                _LOGGER.warning("Event stream for %s ended unexpectedly: %s", self._address, ex)
-
-            elapsed = time.monotonic() - start_time
-            if elapsed < 10:
-                retry_in = jittered(EVENT_STREAM_RETRY_SECONDS)
-                _LOGGER.debug(
-                    "Event stream for %s failed quickly, retrying in %.0fs",
-                    self._address,
-                    retry_in,
-                )
-                await asyncio.sleep(retry_in)
-            else:
-                _LOGGER.debug("Reconnecting to event stream for %s", self._address)
 
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
@@ -483,6 +610,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def async_stop(self, event: Any = None):
         """ Stop anything we need to stop """
+        await _release_host_stream(self)
         if self._event_task is not None:
             self._event_task.cancel()
             self._event_task = None
@@ -832,50 +960,46 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             'name': 'Cam8', 'Code': 'CrossLineDetection', 'action': 'Start', 'index': '0', 'data': {'Class': 'Normal', 'DetectLine': [[18, 4098], [8155, 5549]], 'Direction':      'RightToLeft', 'EventSeq': 40, 'FrameSequence': 549073, 'GroupID': 40, 'Mark': 0, 'Name': 'Rule1', 'Object': {'Action': 'Appear', 'BoundingBox': [4816, 4552, 5248, 5272], 'Center': [5032, 4912], 'Confidence': 0, 'FrameSequence': 0, 'ObjectID': 542, 'ObjectType': 'Unknown', 'RelativeID': 0, 'Source': 0.0, 'Speed': 0, 'SpeedTypeInternal': 0}, 'PTS': 42986015370.0, 'RuleId': 1, 'Source': 51190936.0, 'Track': None, 'UTC': 1620477656, 'UTCMS': 180}
         }
         """
-        data = data_bytes.decode("utf-8", errors="ignore")
-        events = parse_event(data)
-
-        if len(events) == 0:
-            return
-
-        _LOGGER.debug(f"Events received from {self.get_address()} on channel {channel}: {events}")
-
-        for event in events:
+        for event in parse_event(data_bytes.decode("utf-8", errors="ignore")):
             index = 0
             if "index" in event:
                 try:
                     index = int(event["index"])
                 except ValueError:
                     index = 0
+            if index == self._channel:
+                self.handle_event(event)
 
-            # This is a short term fix. Right now for NVRs this integration creates a thread per channel to listen to events. Every thread gets the same response. We need to
-            # discard events not for this channel. Longer term work should create only a single thread per channel.
-            if index != self._channel:
-                continue
+    def handle_event(self, event: dict):
+        """Handle one event the host stream has decided belongs to this channel."""
+        _LOGGER.debug(
+            "Event received from %s on channel %s: %s",
+            self.get_address(),
+            self._channel,
+            event,
+        )
 
-            # Put the vent on the HA event bus
-            event["name"] = self.get_device_name()
-            event["DeviceName"] = self.get_device_name()
-            self.hass.bus.fire("dahua_event_received", event)
+        # Put the event on the HA event bus
+        event["name"] = self.get_device_name()
+        event["DeviceName"] = self.get_device_name()
+        self.hass.bus.fire("dahua_event_received", event)
 
-            # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
-            # We'll reset it to 0 when the event stops.
-            # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
+        # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
+        # We'll reset it to 0 when the event stops.
+        # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
 
-            # This is the event code, example: VideoMotion, CrossLineDetection, etc
-            event_names = self.translate_event_code(event)
-
-            for event_name in event_names:
-                event_key = self.get_event_key(event_name)
-                listener = self._dahua_event_listeners.get(event_key)
-                if listener is not None:
-                    action = event["action"]
-                    if action == "Start":
-                        self._dahua_event_timestamp[event_key] = int(time.time())
-                        listener()
-                    elif action == "Stop":
-                        self._dahua_event_timestamp[event_key] = 0
-                        listener()
+        # This is the event code, example: VideoMotion, CrossLineDetection, etc
+        for event_name in self.translate_event_code(event):
+            event_key = self.get_event_key(event_name)
+            listener = self._dahua_event_listeners.get(event_key)
+            if listener is not None:
+                action = event.get("action")
+                if action == "Start":
+                    self._dahua_event_timestamp[event_key] = int(time.time())
+                    listener()
+                elif action == "Stop":
+                    self._dahua_event_timestamp[event_key] = 0
+                    listener()
 
     def translate_event_code(self, event: dict):
         """
