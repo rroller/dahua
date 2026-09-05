@@ -71,8 +71,38 @@ def _digest_state(address: str, username: str) -> dict:
 # carry a channel has a different URL per channel and is never shared. Only
 # reads are cached; anything else drops the host's entries, because a write is
 # how these values change.
+
+# How long a shared read answers for. Two lifetimes, because the reads fall
+# into two kinds.
+#
+# Status reads change on their own: where a PTZ camera is pointing, whether the
+# siren is sounding, which day/night profile the device has switched itself to.
+# Those have to be polled, so they get a lifetime short enough to only cover
+# one poll's fan-out.
+#
+# Config reads change only when something writes them -- and a write drops this
+# host's entries, so a change made through Home Assistant is reflected at once.
+# Re-asking the device every poll buys nothing except load. On hardware
+# measured for this, each of those calls costs two TCP connections, two HTTP
+# requests and one refused login in the device's own log, because the device
+# answers Connection: close and reissues its digest nonce every time. A camera
+# with no dashboard open was spending most of its request budget re-reading
+# settings nobody had touched.
+#
+# The cost is that a change made in the Dahua app or web UI, rather than
+# through Home Assistant, can take up to this long to appear.
 HOST_CACHE_TTL_SECONDS = 5
+CONFIG_CACHE_TTL_SECONDS = 300
+
+# getConfig is a settings read. getStatus and the rest report live state.
+CONFIG_READ_MARKER = "action=getConfig"
 _HOST_CACHE: dict = {}
+
+
+def _cache_lifetime(url: str) -> int:
+    """How long this URL's answer stays good for."""
+    return CONFIG_CACHE_TTL_SECONDS if CONFIG_READ_MARKER in url else HOST_CACHE_TTL_SECONDS
+
 
 # CGI reads are "action=getSomething". Everything else -- setConfig, reboot,
 # ptz control, door open -- is a write. Unrecognised is treated as a write,
@@ -1100,7 +1130,7 @@ class DahuaClient:
         # that dropped this entry while it was in flight has already replaced
         # it, so it settles for whoever is waiting without going back in.
         if _HOST_CACHE.get(key) is entry and entry.expires_at is None:
-            entry.expires_at = time.monotonic() + HOST_CACHE_TTL_SECONDS
+            entry.expires_at = time.monotonic() + _cache_lifetime(url)
 
         return dict(result)
 
