@@ -30,11 +30,16 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     if coordinator.is_flood_light():
         entities.append(FloodLight(coordinator, entry, "Flood Light"))
 
-    if (
-        coordinator.supports_security_light() or coordinator.is_nvr_channel()
-    ) and not coordinator.is_amcrest_doorbell():
+    has_security_light = (
+        coordinator.supports_nvr_active_deterrence()
+        if coordinator.is_nvr_channel()
+        else coordinator.supports_security_light()
+    )
+    if has_security_light and not coordinator.is_amcrest_doorbell():
         #  The Amcrest doorbell works a little different and is added in select.py
-        security_light_name = "Warning Light" if coordinator.is_nvr_channel() else "Security Light"
+        security_light_name = (
+            "Warning Light" if coordinator.is_nvr_channel() else "Security Light"
+        )
         entities.append(DahuaSecurityLight(coordinator, entry, security_light_name))
 
     if coordinator.is_amcrest_doorbell():

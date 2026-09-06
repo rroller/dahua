@@ -26,6 +26,7 @@ from .const import (
     CONF_AUTO_DETECT_CHANNEL,
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
+    CONF_NVR_ACTIVE_DETERRENCE,
     DEFAULT_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
@@ -324,6 +325,12 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
                 default=self.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
             )
         ] = vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL))
+        schema[
+            vol.Required(
+                CONF_NVR_ACTIVE_DETERRENCE,
+                default=self.options.get(CONF_NVR_ACTIVE_DETERRENCE, False),
+            )
+        ] = bool
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(schema),

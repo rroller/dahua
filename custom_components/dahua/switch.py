@@ -19,7 +19,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     ]
 
     # But only some cams have a siren, very few do actually
-    if coordinator.supports_siren() or coordinator.is_nvr_channel():
+    has_siren = (
+        coordinator.supports_nvr_active_deterrence()
+        if coordinator.is_nvr_channel()
+        else coordinator.supports_siren()
+    )
+    if has_siren:
         devices.append(
             DahuaSirenBinarySwitch(
                 coordinator,
@@ -229,6 +234,8 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
 class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua siren switch class. Used to enable or disable camera built in sirens"""
+
+    _name = "Siren"
 
     def __init__(self, coordinator, entry, name="Siren"):
         super().__init__(coordinator, entry)
