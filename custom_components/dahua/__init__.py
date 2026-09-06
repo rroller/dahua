@@ -68,14 +68,54 @@ EVENT_STREAM_RETRY_SECONDS = 60
 EVENT_STREAM_HEALTHY_SECONDS = 60
 EVENT_STREAM_SHORT_RETRY_SECONDS = 10
 
+# A stream that dies on contact will keep dying on contact: the device is
+# refusing us, not hiccuping. Asking again every sixty seconds forever is how a
+# device that ran out of connections stays out of connections, because each
+# attempt costs it another one. Back off instead, to this ceiling.
+EVENT_STREAM_MAX_RETRY_SECONDS = 600
 
-def event_stream_retry_delay(lived_seconds: float) -> float:
+
+def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0) -> float:
     """How long to wait before re-attaching, given how long the stream lasted."""
     if lived_seconds < 10:
-        return jittered(EVENT_STREAM_RETRY_SECONDS)
+        # Double per successive instant death, so a device that is refusing
+        # attach gets asked less often the longer it keeps refusing.
+        doublings = max(0, consecutive_failures - 1)
+        backoff = EVENT_STREAM_RETRY_SECONDS * (2 ** min(doublings, MAX_BACKOFF_DOUBLINGS))
+        return jittered(min(backoff, EVENT_STREAM_MAX_RETRY_SECONDS))
     if lived_seconds < EVENT_STREAM_HEALTHY_SECONDS:
         return jittered(EVENT_STREAM_SHORT_RETRY_SECONDS)
     return 0.0
+
+
+# A single missed poll is a blip -- a snapshot timing out, a device busy writing
+# to disk -- and backing off on one would make the integration feel sluggish for
+# no reason. Past that, the device is not answering and polling it on the
+# configured cadence only adds to whatever is wrong.
+FAILURES_BEFORE_BACKOFF = 2
+
+# Guard on the exponent so the arithmetic stays sane for a device that has been
+# failing for a week. The time ceilings below are what actually bind.
+MAX_BACKOFF_DOUBLINGS = 6
+
+# However long the poll interval is, never leave a failing device unpolled for
+# longer than this, or a device that recovers stays missing for an afternoon.
+POLL_BACKOFF_CAP = timedelta(minutes=15)
+
+
+def failure_backoff(base: timedelta, consecutive: int) -> timedelta:
+    """The interval to poll at, given this many consecutive failures.
+
+    Returns the configured interval until the failures stop looking incidental,
+    then doubles per failure up to a ceiling.
+    """
+    if consecutive <= FAILURES_BEFORE_BACKOFF:
+        return base
+    doublings = min(consecutive - FAILURES_BEFORE_BACKOFF, MAX_BACKOFF_DOUBLINGS)
+    # Never shorter than the interval the user asked for: someone already
+    # polling every half hour is not the problem this is here to solve, and
+    # backing "off" to something faster would be worse than doing nothing.
+    return min(base * (2 ** doublings), max(POLL_BACKOFF_CAP, base))
 
 
 def jittered(seconds: float, fraction: float = EVENT_STREAM_JITTER) -> float:
@@ -310,8 +350,13 @@ async def _async_evaluate_host(hass: HomeAssistant, address: str) -> None:
 
 
 @callback
-def async_record_host_failure(hass: HomeAssistant, address: str, entry_id: str) -> None:
-    """Note a failed refresh, raising a card once it stops looking like a blip."""
+def async_record_host_failure(hass: HomeAssistant, address: str, entry_id: str) -> int:
+    """Note a failed refresh, raising a card once it stops looking like a blip.
+
+    Returns how many consecutive failures this host has now had, which is what
+    the caller backs off on. Keyed by host rather than by entry: eleven channels
+    of one NVR are eleven witnesses to a single outage, not eleven outages.
+    """
     address = normalize_address(address)
     state = _HOST_FAILURES.setdefault(
         address,
@@ -321,13 +366,14 @@ def async_record_host_failure(hass: HomeAssistant, address: str, entry_id: str) 
     state["entry_ids"].add(entry_id)
 
     if state["consecutive"] < UNREACHABLE_AFTER_FAILURES:
-        return
+        return state["consecutive"]
     # Re-evaluate on the threshold, then only as often as the probe interval
     # allows, so a wedged host does not get probed on every poll.
     if state["consecutive"] == UNREACHABLE_AFTER_FAILURES or (
         time.time() - state.get("last_probe", 0) >= HTTPS_PROBE_MIN_INTERVAL
     ):
         hass.async_create_task(_async_evaluate_host(hass, address))
+    return state["consecutive"]
 
 
 @callback
@@ -390,6 +436,9 @@ class DahuaHostEventStream:
         self._task: asyncio.Task | None = None
         # Whether the last attach failed, so an outage is reported once.
         self._failing = False
+        # How many times running the stream has died on contact, which is what
+        # the retry delay backs off on.
+        self._consecutive_failures = 0
 
     @property
     def coordinators(self) -> list:
@@ -467,11 +516,13 @@ class DahuaHostEventStream:
                 raise
             except asyncio.TimeoutError:
                 self._failing = False
+                self._consecutive_failures = 0
                 _LOGGER.debug("Recycling event stream for %s", self._address)
             except Exception as ex:  # pylint: disable=broad-except
                 # Say it once per outage, not once per retry. Silence was the
                 # old behaviour and it is why these failures went unreported;
                 # a warning every sixty seconds forever is the other extreme.
+                self._consecutive_failures += 1
                 if not self._failing:
                     self._failing = True
                     _LOGGER.warning(
@@ -483,8 +534,11 @@ class DahuaHostEventStream:
                     )
             else:
                 self._failing = False
+                self._consecutive_failures = 0
 
-            retry_in = event_stream_retry_delay(time.monotonic() - start_time)
+            retry_in = event_stream_retry_delay(
+                time.monotonic() - start_time, self._consecutive_failures
+            )
             if retry_in:
                 _LOGGER.debug(
                     "Reconnecting to event stream for %s in %.0fs",
@@ -676,6 +730,34 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             finally:
                 await _release_connector(self._address)
 
+    def _restore_poll_interval(self) -> None:
+        """Put the configured interval back after a device starts answering."""
+        # Read it back from the entry rather than remembering it: the user may
+        # have changed the option while we were backed off, and their new value
+        # should win over whatever we were doubling from.
+        configured = get_configured_scan_interval(self.config_entry)
+        if self.update_interval != configured:
+            _LOGGER.debug(
+                "%s is answering again, polling every %ss", self._address, configured.total_seconds()
+            )
+            self.update_interval = configured
+
+    def _back_off_poll_interval(self, consecutive: int) -> None:
+        """Poll a device that is not answering less often, not just as often.
+
+        Every request costs the device a connection and a login it has to
+        refuse. Keeping the configured cadence against a device that is already
+        refusing is what turns a device that ran out of connections into one
+        that stays out of them until it is power cycled.
+        """
+        interval = failure_backoff(get_configured_scan_interval(self.config_entry), consecutive)
+        if self.update_interval != interval:
+            _LOGGER.debug(
+                "%s has failed %s times, backing off to %ss",
+                self._address, consecutive, interval.total_seconds(),
+            )
+            self.update_interval = interval
+
     async def _async_update_data(self):
         """Reload the camera information"""
         data = {}
@@ -820,11 +902,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self.config_entry.async_start_reauth(self.hass)
                     raise UpdateFailed("Authentication failed") from exception
                 _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
-                async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+                self._back_off_poll_interval(
+                    async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+                )
                 raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
             except Exception as exception:
                 _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
-                async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+                self._back_off_poll_interval(
+                    async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+                )
                 raise UpdateFailed("Dahua device at " + self._address + " isn't fully initialized yet")
 
         # This is the event loop code that's called every n seconds
@@ -894,12 +980,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     data.update(light_v2)
 
             async_record_host_success(self.hass, self._address)
+            self._restore_poll_interval()
             return data
         except Exception as exception:
             _LOGGER.warning("Failed to sync device state for %s. See README to enable debug logs to get full exception",
                             self._address)
             _LOGGER.debug("Failed to sync device state for %s", self._address, exc_info=exception)
-            async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+            consecutive = async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+            self._back_off_poll_interval(consecutive)
             raise UpdateFailed() from exception
 
     def on_receive_vto_event(self, event: dict):
