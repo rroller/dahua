@@ -203,10 +203,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.data[DOMAIN][entry.entry_id] = coordinator
 
     # https://developers.home-assistant.io/docs/config_entries_index/
-    for platform in PLATFORMS:
-        if entry.options.get(platform, True):
-            coordinator.platforms.append(platform)
-            await hass.config_entries.async_forward_entry_setups(entry, [platform])
+    # Forward every platform in one call. Home Assistant gathers them into
+    # concurrent tasks, so one call sets all of them up at once; calling it once
+    # per platform instead serialised them, and an entry's setup budget then had
+    # to cover the sum of six platforms rather than the slowest one. A device
+    # answering slowly could exhaust it and take the whole entry down with a
+    # CancelledError -- see #513.
+    coordinator.platforms.extend(p for p in PLATFORMS if entry.options.get(p, True))
+    if coordinator.platforms:
+        await hass.config_entries.async_forward_entry_setups(entry, coordinator.platforms)
 
     # Wrapped, because unloading does not clear an entry's update listeners.
     # A plain add_update_listener leaves one behind on every reload, and then a
@@ -1199,6 +1204,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         This callback will be called when the event fire """
         event_key = self.get_event_key(event_name)
         self._dahua_event_listeners[event_key] = listener
+
+    def supports_disarming_linkage(self) -> bool:
+        """Whether the device answered the disarming linkage read during setup."""
+        return self._supports_disarming_linkage
 
     def supports_siren(self) -> bool:
         """

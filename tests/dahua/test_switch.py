@@ -175,3 +175,73 @@ def test_is_on_reflects_the_coordinator(cls, key):
     assert s.is_on is False
     c.states[key] = True
     assert s.is_on is True
+
+
+# --- platform setup must not talk to the device -----------------------------
+
+async def test_setup_asks_the_device_nothing():
+    """A network call here spends the entry's setup budget.
+
+    The coordinator already read the disarming linkage during its own setup and
+    kept the answer; asking again put a round trip inside platform setup, where
+    a slow device could take the whole entry down (issue #513).
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from custom_components.dahua import switch as switch_module
+    from custom_components.dahua.const import DOMAIN
+
+    coordinator = _Coordinator()
+    coordinator.supports_siren = lambda: False
+    coordinator.supports_smart_motion_detection = lambda: False
+    coordinator.supports_disarming_linkage = lambda: True
+
+    hass = SimpleNamespace(data={DOMAIN: {"e1": coordinator}})
+    entry = SimpleNamespace(entry_id="e1", options={})
+    added = []
+
+    # The decision is what changed here, not how the entities are built.
+    with patch.multiple(
+        switch_module,
+        DahuaMotionDetectionBinarySwitch=lambda *a, **k: "motion",
+        DahuaDisarmingLinkageBinarySwitch=lambda *a, **k: "disarming",
+        DahuaDisarmingEventNotificationsLinkageBinarySwitch=lambda *a, **k: "notifications",
+    ):
+        await switch_module.async_setup_entry(hass, entry, added.extend)
+
+    assert coordinator.client.calls == [], (
+        "platform setup made a network call: %s" % coordinator.client.calls
+    )
+    assert "disarming" in added and "notifications" in added
+
+
+async def test_the_disarming_switches_follow_what_the_device_answered():
+    """A device that refused the read must not get switches it cannot serve."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from custom_components.dahua import switch as switch_module
+    from custom_components.dahua.const import DOMAIN
+
+    coordinator = _Coordinator()
+    coordinator.supports_siren = lambda: False
+    coordinator.supports_smart_motion_detection = lambda: False
+    coordinator.supports_disarming_linkage = lambda: False
+
+    hass = SimpleNamespace(data={DOMAIN: {"e1": coordinator}})
+    added = []
+
+    with patch.multiple(
+        switch_module,
+        DahuaMotionDetectionBinarySwitch=lambda *a, **k: "motion",
+        DahuaDisarmingLinkageBinarySwitch=lambda *a, **k: "disarming",
+        DahuaDisarmingEventNotificationsLinkageBinarySwitch=lambda *a, **k: "notifications",
+    ):
+        await switch_module.async_setup_entry(
+            hass, SimpleNamespace(entry_id="e1", options={}), added.extend
+        )
+
+    assert "disarming" not in added
+    assert "notifications" not in added
+    assert coordinator.client.calls == []
