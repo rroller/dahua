@@ -1286,22 +1286,30 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Returns true if event notifications is enable """
         return self.data.get("table.DisableEventNotify.Enable", "").lower() == "false"
 
-    def is_smart_motion_detection_enabled(self) -> bool:
-        """ Returns true if smart motion detection is enabled
+    def _smart_motion_row(self):
+        """This channel's row in the SmartMotionDetect table, or None.
 
         SmartMotionDetect is a host-wide read that returns a row per channel,
-        and the rows are sparse: a device only reports the channels the option
-        is configured on. Reading row 0 for every channel reported one camera's
-        setting for all of them, and reported false for the whole NVR when
-        there is no row 0 at all.
+        and the rows are sparse: a device only reports the channels that can
+        actually do it. The row is therefore the per-channel capability signal
+        as well as the state -- measured on an NVR, disabling it leaves the row
+        in place reading false, and writing a row that does not exist is
+        accepted with 200 and silently discarded.
+
+        Both the capability check and the state read go through here so they
+        cannot disagree about which row belongs to this channel.
         """
-        if self.supports_smart_motion_detection_amcrest():
-            return self.data.get("table.VideoAnalyseRule[0][0].Enable", "").lower() == "true"
         value = self.data.get("table.SmartMotionDetect[{0}].Enable".format(self._channel))
         if value is None:
             # A single camera reports one row, and that row is row 0.
-            value = self.data.get("table.SmartMotionDetect[0].Enable", "")
-        return value.lower() == "true"
+            value = self.data.get("table.SmartMotionDetect[0].Enable")
+        return value
+
+    def is_smart_motion_detection_enabled(self) -> bool:
+        """ Returns true if smart motion detection is enabled """
+        if self.supports_smart_motion_detection_amcrest():
+            return self.data.get("table.VideoAnalyseRule[0][0].Enable", "").lower() == "true"
+        return (self._smart_motion_row() or "").lower() == "true"
 
     def is_siren_on(self) -> bool:
         """ Returns true if the camera siren is on """
@@ -1443,8 +1451,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._max_streams
 
     def supports_smart_motion_detection(self) -> bool:
-        """ True if smart motion detection is supported"""
-        return self._supports_smart_motion_detection
+        """True if *this channel* can do smart motion detection.
+
+        The probe behind _supports_smart_motion_detection fetches the whole
+        host-wide table with no channel argument, so it succeeds for every
+        channel of an NVR whether or not that channel has the feature. On a
+        sixteen channel recorder measured for this, ten channels had cameras
+        and two had rows -- the other eight carried a switch that was
+        permanently off and whose writes the device accepted and ignored.
+
+        The row is the real signal, and it is already in data we fetch.
+        """
+        if not self._supports_smart_motion_detection:
+            return False
+        return self._smart_motion_row() is not None
 
     def supports_smart_motion_detection_amcrest(self) -> bool:
         """ True if smart motion detection is supported for an amcrest device"""
