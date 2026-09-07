@@ -30,21 +30,26 @@ CONFIGURATION_SWITCHES = [
 ]
 
 
-def _declared_category(cls):
-    """What the class itself declares, not what it inherits."""
-    return cls.__dict__.get("_attr_entity_category")
+def _category(cls):
+    """The category an instance of this class actually reports.
+
+    Read from an instance rather than the class dict: Home Assistant's
+    CachedProperties metaclass turns an `_attr_` class attribute into a property
+    object, so the class dict holds the descriptor and not the value.
+    """
+    return object.__new__(cls).entity_category
 
 
 # --- switches ---------------------------------------------------------------
 
 def test_the_configuration_switches_say_they_are_configuration():
     for cls in CONFIGURATION_SWITCHES:
-        assert _declared_category(cls) is EntityCategory.CONFIG, cls.__name__
+        assert _category(cls) is EntityCategory.CONFIG, cls.__name__
 
 
 def test_the_siren_is_left_as_a_control():
     """Sounding a siren is an action someone wants on a dashboard."""
-    assert _declared_category(DahuaSirenBinarySwitch) is None
+    assert _category(DahuaSirenBinarySwitch) is None
 
 
 # --- diagnostic sensors -----------------------------------------------------
@@ -68,7 +73,7 @@ def _sensor(cls, coordinator):
 
 def test_both_sensors_are_diagnostics():
     for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor):
-        assert _declared_category(cls) is EntityCategory.DIAGNOSTIC, cls.__name__
+        assert _category(cls) is EntityCategory.DIAGNOSTIC, cls.__name__
 
 
 def test_the_firmware_sensor_reports_the_firmware():
