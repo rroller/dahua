@@ -35,6 +35,10 @@ from .const import (
     CONF_NAME,
     DOMAIN,
     PLATFORMS,
+    CAMERA,
+    LIGHT,
+    SELECT,
+    SWITCH,
     CONF_RTSP_PORT,
     STARTUP_MESSAGE,
     CONF_CHANNEL,
@@ -758,6 +762,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             self.update_interval = interval
 
+    def _wanted_by(self, *platforms: str) -> bool:
+        """Whether anything that reads this answer is actually loaded.
+
+        The poll used to fetch purely on what the device reported supporting,
+        so an entry with `select` switched off still paid for a PTZ position
+        read on every cycle to feed an entity that was never created. Each of
+        those costs the device a connection and a login it has to refuse.
+
+        Read from the entry options rather than `coordinator.platforms`: the
+        first refresh runs before the platforms are forwarded, so that list is
+        still empty then and everything would be skipped on the first poll.
+        """
+        return any(self.config_entry.options.get(platform, True) for platform in platforms)
+
     async def _async_update_data(self):
         """Reload the camera information"""
         data = {}
@@ -938,27 +956,32 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     return None
 
             # Figure out which APIs we need to call and then fan out and gather the results
-            coros = [
-                asyncio.ensure_future(self.client.async_get_config_motion_detection()),
-            ]
-            if self._supports_ptz_position:
+            # Motion detection state is read by the camera entity as well as
+            # the switch, so it survives either one being enabled.
+            coros = []
+            if self._wanted_by(CAMERA, SWITCH):
+                coros.append(asyncio.ensure_future(self.client.async_get_config_motion_detection()))
+            # Only the preset position select reads this, and it is one of the
+            # two per-poll calls the config cache does not cover.
+            if self._supports_ptz_position and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(_ptz_position()))
-            if self.supports_infrared_light():
+            if self.supports_infrared_light() and self._wanted_by(LIGHT):
                 coros.append(
                     asyncio.ensure_future(self.client.async_get_config_lighting(self._channel, self._profile_mode)))
-            if self._supports_disarming_linkage:
+            if self._supports_disarming_linkage and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
-            if self._supports_event_notifications:
+            if self._supports_event_notifications and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
-            if self._supports_coaxial_control:
+            # The siren switch and the security light both read this one.
+            if self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
-            if self._supports_smart_motion_detection:
+            if self._supports_smart_motion_detection and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_smart_motion_detection()))
-            if self.supports_smart_motion_detection_amcrest():
+            if self.supports_smart_motion_detection_amcrest() and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_video_analyse_rules_for_amcrest()))
-            if self.is_amcrest_doorbell():
+            if self.is_amcrest_doorbell() and self._wanted_by(LIGHT):
                 coros.append(asyncio.ensure_future(self.client.async_get_light_global_enabled()))
-            if self._supports_lighting_v2:   #add lighing_v2 API if it is supported
+            if self._supports_lighting_v2 and self._wanted_by(LIGHT):   #add lighing_v2 API if it is supported
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
 
 
@@ -974,7 +997,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Only if it was not already fetched above: on a camera that both
             # supports the v2 API and reports a security light, this was being
             # requested twice on every poll.
-            if (self.supports_security_light() or self.is_flood_light()) and not self._supports_lighting_v2:
+            if ((self.supports_security_light() or self.is_flood_light())
+                    and not self._supports_lighting_v2 and self._wanted_by(LIGHT)):
                 light_v2 = await self.client.async_get_lighting_v2()
                 if light_v2 is not None:
                     data.update(light_v2)
