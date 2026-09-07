@@ -1323,6 +1323,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ returns the device firmware e.g. """
         return self.data.get("version")
 
+    def get_device_serial_number(self) -> str:
+        """The serial the device reports, without the channel suffix.
+
+        get_serial_number below appends the channel so that every entry on an
+        NVR gets its own entity keys. That composite is not a serial number and
+        should not be shown to anyone as one.
+        """
+        return self._serial_number
+
     def get_serial_number(self) -> str:
         """ returns the device serial number. This is unique per device """
         if self._channel > 0:
