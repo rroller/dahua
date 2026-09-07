@@ -1,5 +1,4 @@
 """Switch platform for dahua."""
-from aiohttp import ClientError
 from homeassistant.core import HomeAssistant
 from homeassistant.components.switch import SwitchEntity
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -24,12 +23,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
         devices.append(DahuaSmartMotionDetectionBinarySwitch(coordinator, entry))
 
-    try:
-        await coordinator.client.async_get_disarming_linkage()
+    # The coordinator already asked the device this during setup and kept the
+    # answer. Asking again here put a network round trip inside platform setup,
+    # where a device that is slow to answer eats the entry's setup budget.
+    if coordinator.supports_disarming_linkage():
         devices.append(DahuaDisarmingLinkageBinarySwitch(coordinator, entry))
         devices.append(DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry))
-    except ClientError as exception:
-        pass
 
     async_add_devices(devices)
 

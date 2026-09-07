@@ -17,7 +17,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import dahua as dahua_module
-from custom_components.dahua.const import DOMAIN
+from custom_components.dahua.const import DOMAIN, PLATFORMS
 
 ADDRESS = "10.9.9.9"
 DATA = {
@@ -246,3 +246,43 @@ async def test_a_failed_setup_registers_no_listener_at_all(hass):
         await _try_setup(hass, entry)
 
     assert entry.update_listeners == []
+
+
+# --- how the platforms get forwarded ----------------------------------------
+
+async def test_every_platform_is_forwarded_in_a_single_call(hass):
+    """One call per platform serialises setup.
+
+    Home Assistant gathers the platforms it is handed into concurrent tasks, so
+    handing them over one at a time makes an entry's setup budget cover the sum
+    of every platform instead of the slowest one. A device answering slowly then
+    takes the whole entry down with a CancelledError -- issue #513.
+    """
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    with _working(), starts, forward as forwarded, unload:
+        assert await _try_setup(hass, entry)
+
+    assert forwarded.await_count == 1, (
+        "platforms are still being forwarded one at a time (%s calls)"
+        % forwarded.await_count
+    )
+    assert set(forwarded.await_args.args[1]) == set(PLATFORMS)
+
+
+async def test_a_platform_switched_off_is_not_forwarded(hass):
+    """The single call must still respect the per-entry platform options."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=DATA, options={"select": False, "light": False}
+    )
+    entry.add_to_hass(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    with _working(), starts, forward as forwarded, unload:
+        assert await _try_setup(hass, entry)
+
+    forwarded_platforms = set(forwarded.await_args.args[1])
+    assert "select" not in forwarded_platforms
+    assert "light" not in forwarded_platforms
+    assert "camera" in forwarded_platforms, "the others must still load"
