@@ -16,7 +16,16 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import ClientError
 
+from custom_components import dahua as dahua_module
 from custom_components.dahua import DahuaDataUpdateCoordinator
+
+
+@pytest.fixture(autouse=True)
+def _clean_host_failures():
+    """Failures are tracked per host in module state, not per coordinator."""
+    dahua_module._HOST_FAILURES.clear()
+    yield
+    dahua_module._HOST_FAILURES.clear()
 
 PROBES = [
     ("async_probe_snapshot", None),
@@ -57,10 +66,18 @@ class _Client:
         return call
 
 
+async def _noop(*args, **kwargs):
+    return None
+
+
 def _coordinator(client):
     c = object.__new__(DahuaDataUpdateCoordinator)
     c.client = client
-    c.hass = SimpleNamespace()
+    c.hass = SimpleNamespace(async_create_task=lambda *a, **k: None)
+    # Starting the event stream is not what these pin, and it needs a great
+    # deal of unrelated state to reach.
+    c.async_start_event_listener = _noop
+    c.async_start_vto_event_listener = _noop
     c._address = "10.0.0.7"
     c._channel = 0
     c._channel_number = 1
