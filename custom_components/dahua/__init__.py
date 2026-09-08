@@ -1398,18 +1398,47 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def read_profile_mode(self, mode_data: dict) -> str:
         """Picks this channel's day/night profile out of the VideoInMode table.
 
-        The read is host-wide -- getConfig&name=VideoInMode returns a row per
-        channel -- so an NVR channel has to take its own row. Reading row 0 for
-        every channel gave the whole device channel 1's day/night profile, and
-        that profile is then what selects which Lighting[channel][profile] the
-        IR light is read from and written to.
+        The profile chooses which Lighting[channel][profile] the light is read
+        from and written to, so getting it wrong means commands are accepted and
+        nothing lights up.
 
-        Falls back to row 0, which is all a single-channel camera returns.
+        Three device behaviours have to coexist here, and two of them disagree
+        about which field is authoritative:
+
+        - **General profile management** (`Config[0]` = 2). One profile covers
+          all conditions and it is profile 2. `ConfigEx` is still present and
+          still echoes day/night, but it selects nothing -- preferring it sent
+          every write to the day profile while the camera rendered from 2 (#605).
+        - **IL series dual smart light.** The profile is chosen by the `ConfigEx`
+          string; `Config[0]` stays a static 0 whichever profile is live, so
+          reading it left the illuminator permanently tracking day (#582).
+        - **Everything else.** `Config[0]` is the profile.
+
+        The read is host-wide -- getConfig&name=VideoInMode returns a row per
+        channel -- so an NVR channel has to take its own row, falling back to
+        row 0, which is all a single-channel camera returns.
         """
-        mode = mode_data.get("table.VideoInMode[{0}].Config[0]".format(self._channel))
-        if mode is None:
-            mode = mode_data.get("table.VideoInMode[0].Config[0]", "0")
-        return mode or "0"
+        def field(name):
+            value = mode_data.get("table.VideoInMode[{0}].{1}".format(self._channel, name))
+            if value is None:
+                value = mode_data.get("table.VideoInMode[0].{0}".format(name))
+            return value
+
+        config = field("Config[0]")
+        config_ex = field("ConfigEx")
+
+        if config == "2":
+            return "2"
+        if config_ex is not None:
+            # Only act on a value we recognise. Treating anything else as day
+            # would override a Config[0] that is very likely right, for a
+            # string we do not understand.
+            named = str(config_ex).strip().lower()
+            if named == "night":
+                return "1"
+            if named == "day":
+                return "0"
+        return config or "0"
 
     async def async_detect_lighting_support(self) -> bool:
         """Does this channel have an infrared light?
