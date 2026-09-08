@@ -14,7 +14,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from aiohttp import ClientError
+from aiohttp import ClientError, ClientResponseError
 
 from custom_components import dahua as dahua_module
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -27,9 +27,12 @@ def _clean_host_failures():
     yield
     dahua_module._HOST_FAILURES.clear()
 
+COAXIAL = ("async_get_coaxial_control_io_status", "_supports_coaxial_control")
+
+# Every probe, for the timeout behaviour, which is uniform.
 PROBES = [
     ("async_probe_snapshot", None),
-    ("async_get_coaxial_control_io_status", "_supports_coaxial_control"),
+    COAXIAL,
     ("async_get_disarming_linkage", "_supports_disarming_linkage"),
     ("async_get_event_notifications", "_supports_event_notifications"),
     ("async_get_ptz_position", "_supports_ptz_position"),
@@ -114,7 +117,10 @@ async def test_a_probe_that_times_out_does_not_fail_setup(method, flag):
         assert getattr(coordinator, flag) is False, f"{flag} should be off after a timeout"
 
 
-@pytest.mark.parametrize("method,flag", PROBES)
+# The coaxial probe is deliberately narrower than the rest: only an HTTP error
+# response means "unsupported" there, so a bare connection failure still fails
+# setup. It is excluded from the ClientError sweep for that reason.
+@pytest.mark.parametrize("method,flag", [p for p in PROBES if p != COAXIAL])
 async def test_a_probe_that_errors_still_marks_it_unsupported(method, flag):
     """The existing behaviour must not change."""
     coordinator = _coordinator(_Client(failing=[method], error=ClientError))
@@ -124,6 +130,27 @@ async def test_a_probe_that_errors_still_marks_it_unsupported(method, flag):
     assert coordinator.initialized
     if flag:
         assert getattr(coordinator, flag) is False
+
+
+def _refused():
+    return ClientResponseError(None, None, status=400)
+
+
+async def test_the_coaxial_probe_treats_a_refusal_as_unsupported():
+    coordinator = _coordinator(_Client(failing=[COAXIAL[0]], error=_refused))
+
+    await coordinator._async_update_data()
+
+    assert coordinator.initialized
+    assert coordinator._supports_coaxial_control is False
+
+
+async def test_the_coaxial_probe_still_fails_setup_on_a_connection_error():
+    """Narrower on purpose: only a refusal means the device lacks the feature."""
+    coordinator = _coordinator(_Client(failing=[COAXIAL[0]], error=ClientError))
+
+    with pytest.raises(Exception):
+        await coordinator._async_update_data()
 
 
 async def test_every_probe_timing_out_at_once_still_sets_up():
