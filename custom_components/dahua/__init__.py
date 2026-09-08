@@ -79,6 +79,20 @@ EVENT_STREAM_SHORT_RETRY_SECONDS = 10
 EVENT_STREAM_MAX_RETRY_SECONDS = 600
 
 
+# A capability probe that times out has told us what an errored probe tells us:
+# this device will not serve that call, so do not offer the entity. Timeouts are
+# not aiohttp.ClientError -- asyncio.TimeoutError is the builtin -- so before
+# this they escaped the probe, hit the outer handler, and failed the whole
+# config entry with ConfigEntryNotReady. One slow capability check took the
+# device down and Home Assistant retried it forever. See #594 and #631.
+PROBE_FAILED = (ClientError, TimeoutError)
+
+# The coaxial probe deliberately only treats an HTTP error response as "not
+# supported"; a connection failure there should still fail setup. Timeouts join
+# it for the reason above, without widening the rest.
+PROBE_REFUSED = (ClientResponseError, TimeoutError)
+
+
 def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0) -> float:
     """How long to wait before re-attaching, given how long the stream lasted."""
     if lived_seconds < 10:
@@ -831,28 +845,28 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # but check if unit is not a doorbell first as channel 0 doesnt exist for VTOs
                         if not self.is_doorbell():
                             self._channel_number = self._channel
-                    except ClientError:
+                    except PROBE_FAILED:
                         pass
                 _LOGGER.debug("Using channel number %s (auto_detect=%s)", self._channel_number, auto_detect)
 
                 try:
                     await self.client.async_get_coaxial_control_io_status()
                     self._supports_coaxial_control = True
-                except ClientResponseError:
+                except PROBE_REFUSED:
                     self._supports_coaxial_control = False
                 _LOGGER.debug("Device supports Coaxial Control=%s", self._supports_coaxial_control)
 
                 try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
-                except ClientError:
+                except PROBE_FAILED:
                     self._supports_disarming_linkage = False
                 _LOGGER.debug("Device supports disarming linkage=%s", self._supports_disarming_linkage)
 
                 try:
                     await self.client.async_get_event_notifications()
                     self._supports_event_notifications = True
-                except ClientError:
+                except PROBE_FAILED:
                     self._supports_event_notifications = False
                 _LOGGER.debug("Device supports event notifications=%s", self._supports_event_notifications)
 
@@ -865,7 +879,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     try:
                         await self.client.async_get_ptz_position()
                         self._supports_ptz_position = True
-                    except ClientError:
+                    except PROBE_FAILED:
                         self._supports_ptz_position = False
                 _LOGGER.debug("Device supports PTZ position=%s", self._supports_ptz_position)
 
@@ -874,7 +888,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     await self.client.async_get_smart_motion_detection()
                     self._supports_smart_motion_detection = True
-                except ClientError:
+                except PROBE_FAILED:
                     self._supports_smart_motion_detection = False
                 _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
@@ -893,7 +907,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     await self.client.async_get_lighting_v2()
                     self._supports_lighting_v2 = True
-                except ClientError:
+                except PROBE_FAILED:
                     self._supports_lighting_v2 = False
                     pass
                 _LOGGER.debug("Device supports Lighting_V2=%s", self._supports_lighting_v2)
@@ -910,7 +924,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # Error: Error -1 getting param in name=Lighting[0][1]
                         # Otherwise we'll get multiple lines of config back
                         self._supports_profile_mode = len(conf) > 1
-                    except ClientError:
+                    except PROBE_FAILED:
                         _LOGGER.debug("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
                     _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
@@ -1422,7 +1436,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         try:
             conf = await self.client.async_get_config_lighting(self._channel, self._profile_mode)
-        except ClientError:
+        except PROBE_FAILED:
             return False
         return len(conf) > 0
 
