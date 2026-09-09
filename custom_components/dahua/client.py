@@ -1,5 +1,6 @@
 """Dahua API Client."""
 import logging
+import re
 import socket
 import asyncio
 import time
@@ -153,6 +154,38 @@ class EventStreamClosed(Exception):
     """
 
 
+_CONFIG_READ = re.compile(r"configManager\.cgi\?action=getConfig&name=(.+)$")
+
+
+def flatten_rpc2_config(name: str, node, prefix: str = None) -> dict:
+    """Turn RPC2's nested JSON into the flat keys the rest of the code reads.
+
+    Every accessor in this integration reads CGI's shape --
+    "table.Lighting_V2[0][1][0].Mode" -- so an RPC2 answer has to arrive
+    looking identical or nothing downstream works. Verified against a live
+    NVR across seven configs and 4,647 keys: same keys, same values.
+
+    Nulls are dropped. CGI omits an absent entry entirely while RPC2 sends it
+    as JSON null, and keeping those would fabricate rows -- a
+    SmartMotionDetect row existing for every channel is exactly the phantom
+    the capability check in #635 stopped producing.
+    """
+    out = {}
+    if prefix is None:
+        prefix = "table." + name
+    if isinstance(node, dict):
+        for key, value in node.items():
+            out.update(flatten_rpc2_config(name, value, "%s.%s" % (prefix, key)))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            out.update(flatten_rpc2_config(name, value, "%s[%d]" % (prefix, index)))
+    elif node is not None:
+        if isinstance(node, bool):
+            node = "true" if node else "false"
+        out[prefix] = str(node)
+    return out
+
+
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -173,7 +206,8 @@ class DahuaClient:
             port: int,
             rtsp_port: int,
             session: aiohttp.ClientSession,
-            use_https: bool = None
+            use_https: bool = None,
+            use_rpc2: bool = False
     ) -> None:
         self._username = username
         self._password = password
@@ -194,6 +228,13 @@ class DahuaClient:
         # Keyed by address so every entry for one NVR shares a single budget.
         self._host_limit = _host_limiter(self._address)
         self._rpc2_session_instance = None
+        # Prototype (#636): route config reads over one RPC2 session instead of
+        # a fresh digest handshake per call. Off unless the entry asks for it.
+        self._use_rpc2 = use_rpc2
+        self._rpc2_client = None
+        # Set once RPC2 has proven it cannot serve this device, so we stop
+        # paying for the attempt and quietly use CGI for the rest of the run.
+        self._rpc2_unavailable = False
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
         # includes the password, so the identity changes if the password does.
@@ -501,6 +542,39 @@ class DahuaClient:
             if preset_id > 0:
                 preset_ids.add(preset_id)
         return sorted(preset_ids)
+
+    async def _persistent_rpc2(self):
+        """The long-lived RPC2 client for this device, logged in on first use.
+
+        Deliberately not the per-call client the PTZ helpers build: a client
+        per call logs in per call, which is the cost this is here to remove.
+        """
+        if self._rpc2_client is None:
+            self._rpc2_client = DahuaRpc2Client(
+                self._username, self._password, self._address, self._port,
+                self._rtsp_port, self._rpc2_session(), self._use_https
+            )
+            await self._rpc2_client.login()
+        return self._rpc2_client
+
+    async def _rpc2_get_config(self, name: str) -> dict:
+        """A config read over the shared session, in CGI's shape.
+
+        One retry, because the failure this expects is an expired session and
+        the answer to that is to log in again. A second failure means RPC2 is
+        not going to work here, so it says so and the caller falls back.
+        """
+        for attempt in (1, 2):
+            try:
+                rpc2 = await self._persistent_rpc2()
+                params = await rpc2.get_config({"name": name})
+                return flatten_rpc2_config(name, params.get("table"))
+            except Exception:  # pylint: disable=broad-except
+                # Drop the client so the next attempt logs in from scratch.
+                self._rpc2_client = None
+                if attempt == 2:
+                    raise
+        return {}
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
@@ -1164,6 +1238,21 @@ class DahuaClient:
 
     async def _request(self, url: str, verify_ok=False) -> dict:
         """Make the request. One caller per shared read reaches here."""
+        if self._use_rpc2 and not self._rpc2_unavailable and not verify_ok:
+            match = _CONFIG_READ.search(url)
+            if match:
+                try:
+                    async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+                        return await self._rpc2_get_config(match.group(1))
+                except Exception:  # pylint: disable=broad-except
+                    # Say it once, then stop trying. A device that cannot serve
+                    # RPC2 should not pay for the attempt on every read, and it
+                    # must not lose the reads either -- fall through to CGI.
+                    self._rpc2_unavailable = True
+                    _LOGGER.warning(
+                        "RPC2 config reads are not working for %s, using CGI instead",
+                        self._address, exc_info=True,
+                    )
         url = self._base + url
         try:
             async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:

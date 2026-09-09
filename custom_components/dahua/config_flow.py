@@ -24,6 +24,7 @@ from .const import (
     PLATFORMS,
     CONF_CHANNEL,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_USE_RPC2,
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
     CONF_NVR_ACTIVE_DETERRENCE,
@@ -309,6 +310,12 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Required(
                 CONF_AUTO_DETECT_CHANNEL,
                 default=self.options.get(CONF_AUTO_DETECT_CHANNEL, True),
+            )
+        ] = bool
+        schema[
+            vol.Required(
+                CONF_USE_RPC2,
+                default=self.options.get(CONF_USE_RPC2, False),
             )
         ] = bool
         schema[
