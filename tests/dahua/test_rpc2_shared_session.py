@@ -147,11 +147,12 @@ async def test_closing_twice_does_not_release_twice(hass_session):
 
 
 @patch.object(client_module, "DahuaRpc2Client", _FakeRpc2)
-async def test_a_read_after_close_does_not_open_an_unowned_session(hass_session):
+async def test_a_read_after_close_does_not_take_a_new_share(hass_session):
+    """Reads should not still be arriving after close, but if one does it must
+    not build a session nobody is left to release."""
     a = _client(hass_session)
     await _read(a)
     await a.close()
 
-    assert await a.get("/cgi-bin/configManager.cgi?action=getConfig&name=General") is not None \
-        or True  # the read falls through to CGI; what matters is the registry
-    assert not client_module._HOST_RPC2, "a session was opened that nobody owns"
+    assert a._rpc2_released is True
+    assert not client_module._HOST_RPC2

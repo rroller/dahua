@@ -29,8 +29,19 @@ def _clear_shared_rpc2():
     """
     from custom_components.dahua import client as client_module
 
-    client_module._HOST_RPC2.clear()
-    client_module._HOST_RPC2_UNAVAILABLE.clear()
+    def _drain():
+        for holder in list(client_module._HOST_RPC2.values()):
+            if holder.keepalive is not None:
+                holder.keepalive.cancel()
+            session = getattr(holder, "session", None)
+            if session is not None and not session.closed:
+                # Not awaited: the fixture is synchronous and the loop is going
+                # away anyway. This silences "Unclosed client session" without
+                # pretending the teardown is orderly.
+                session.connector.close()
+        client_module._HOST_RPC2.clear()
+        client_module._HOST_RPC2_UNAVAILABLE.clear()
+
+    _drain()
     yield
-    client_module._HOST_RPC2.clear()
-    client_module._HOST_RPC2_UNAVAILABLE.clear()
+    _drain()
