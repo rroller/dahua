@@ -36,6 +36,15 @@ class _Coordinator:
     def get_channel(self):
         return self._channel
 
+    def get_channel_number(self):
+        return self._channel + 1
+
+    def is_nvr_channel(self):
+        return False
+
+    def supports_nvr_active_deterrence(self):
+        return False
+
     def get_serial_number(self):
         return "SERIAL1"
 

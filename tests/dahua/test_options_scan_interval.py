@@ -96,3 +96,17 @@ async def test_platform_toggles_are_still_offered(hass):
     for field in ("camera", "light", "switch", "binary_sensor", "select"):
         assert field in defaults, f"lost the {field} toggle"
     assert "auto_detect_channel" in defaults
+
+
+async def test_nvr_active_deterrence_defaults_to_disabled(hass):
+    defaults = _schema_defaults(await _shown_options_form(hass, _entry()))
+
+    assert defaults["nvr_active_deterrence"] is False
+
+
+async def test_nvr_active_deterrence_preserves_the_configured_value(hass):
+    defaults = _schema_defaults(
+        await _shown_options_form(hass, _entry(nvr_active_deterrence=True))
+    )
+
+    assert defaults["nvr_active_deterrence"] is True

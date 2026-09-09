@@ -45,6 +45,7 @@ from .const import (
     CONF_AUTO_DETECT_CHANNEL,
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
+    CONF_NVR_ACTIVE_DETERRENCE,
     DEFAULT_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
@@ -623,6 +624,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
+        self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._supports_smart_motion_detection = False
@@ -836,7 +838,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Using channel number %s (auto_detect=%s)", self._channel_number, auto_detect)
 
                 try:
-                    await self.client.async_get_coaxial_control_io_status()
+                    coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
+                    await self.client.async_get_coaxial_control_io_status(coaxial_channel)
                     self._supports_coaxial_control = True
                 except ClientResponseError:
                     self._supports_coaxial_control = False
@@ -979,7 +982,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
             # The siren switch and the security light both read this one.
             if self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
-                coros.append(asyncio.ensure_future(self.client.async_get_coaxial_control_io_status()))
+                coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
+                coros.append(
+                    asyncio.ensure_future(
+                        self.client.async_get_coaxial_control_io_status(coaxial_channel)
+                    )
+                )
             if self._supports_smart_motion_detection and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_smart_motion_detection()))
             if self.supports_smart_motion_detection_amcrest() and self._wanted_by(SWITCH):
@@ -1216,6 +1224,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         m = self.model.upper()
         return "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
+
+    def supports_nvr_active_deterrence(self) -> bool:
+        """Return whether NVR active-deterrence entities were explicitly enabled."""
+        return self._nvr_active_deterrence
 
     def supports_security_light(self) -> bool:
         """
@@ -1463,6 +1475,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
 
+    def is_nvr_channel(self) -> bool:
+        """Return whether this entry represents a camera channel on an NVR."""
+        return self._channel > 0 or "NVR" in self.model.upper()
+
     def get_channel_number(self) -> int:
         """returns the channel number of this camera"""
         return self._channel_number
@@ -1514,7 +1530,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Handle removal of an entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coordinator is None:
+        # Setup may have failed before the coordinator was registered, or a
+        # previous unload may already have removed it. Treat that as unloaded
+        # so an options-triggered reload can continue cleanly.
+        return True
+
     await coordinator.async_stop()
     unloaded = all(
         await asyncio.gather(
@@ -1543,5 +1565,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    await hass.config_entries.async_reload(entry.entry_id)

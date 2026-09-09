@@ -48,6 +48,7 @@ CONF_CHANNEL = "channel"
 CONF_AUTO_DETECT_CHANNEL = "auto_detect_channel"
 CONF_USE_HTTPS = "use_https"
 CONF_SCAN_INTERVAL = "scan_interval"
+CONF_NVR_ACTIVE_DETERRENCE = "nvr_active_deterrence"
 
 # Defaults
 DEFAULT_NAME = "Dahua"
