@@ -232,8 +232,9 @@ need to walk in front of your cam to make motion events fire, or press a button,
 | 11    | Device rebooted |
 
 # Services and Entities
-Note for ease of use, the integration tries to determine if your device supports certain services, entities and will conditionally add them. But that's sometimes a little hard so it'll just add the entity even if your devices doesn't support.
-I'd rather opt into extra entities than to create a complicated flow to determine what's supported and what isn't. You can simply disable the entities you don't want. An example of this is the "door open state" for doorbells. Not all doorbells support this.
+Note for ease of use, the integration tries to determine if your device supports certain services and entities and will conditionally add them. That is sometimes hard to determine, so where it is unclear the entity is added anyway — an extra entity you can disable is friendlier than a flow complicated enough to be wrong. The "door open state" on doorbells is an example: not every doorbell has one.
+
+Where the device reports the answer plainly, the entity is only created if it is real. Smart Motion Detection is the clearest case: the device lists the channels that support it, so channels that are absent from that list get no switch rather than one that reads `off` forever and silently discards anything written to it.
 
 ## Services
 Service | Parameters | Description
@@ -269,6 +270,8 @@ Switch |  Description |
 :------------ | :------------ |
 Motion | Enables or disables motion detection on the camera
 Siren | If the camera has a siren, will turn on the siren. Note, it seems sirens only stay on for 10 to 15 seconds before switching off
+Event Notifications | Enables or disables the device's event notifications
+Smart Motion Detection | If the device supports it, enables or disables smart motion detection (human and vehicle filtering rather than plain pixel motion). Only created on channels the device reports as supporting it
 Disarming Linkage | Newer firmwares introduce a "disarming" feature, accessible from the camera web UI under Event → One-click disarm / Disarming. When enabled, the disarm toggle suppresses the linkage actions configured in the Disarming section specifically, while leaving all other alarm linkage actions untouched. Detection remains fully active throughout. This allows one to turn it on/off.
 
 ## Lights
@@ -284,6 +287,39 @@ Sensor |  Description |
 Motion | A sensor that turns on when the camera detects motion
 Button Pressed | A sensor that turns on when a doorbell button is pressed
 Others | A binary senor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
+
+## Sensors
+Diagnostic sensors. Both report values already read during setup, so they cost no extra requests.
+
+Sensor |  Description |
+:------------ | :------------ |
+Firmware Version | The firmware the device reports. Also shown on the device page, but as a sensor it can be templated and compared — which is what makes "tell me when a camera is behind" possible
+Serial Number | The serial the device reports. On an NVR every channel reports the recorder's serial, because every channel is the same physical box
+
+## Buttons
+Button |  Description |
+:------------ | :------------ |
+Reboot | Reboots the device
+Open Door | On a VTO (doorbell), opens the door
+
+# Options
+Open the integration, find the device and choose **Configure**. Options apply to that entry only, so on an NVR each channel is configured separately.
+
+Option | Default | Description
+:------------ | :------------ | :------------
+Poll interval | 30 seconds | How often the device is asked for the state of its settings. Events do not use this — they arrive on a separate stream and are unaffected by a longer interval
+Camera, Switch, Light, Select, Binary sensor, Button, Sensor | on | Which platforms this entry creates. These also stop the requests that exist only to feed a platform, so turning one off reduces how much the device is asked, not just how many entities you see
+Auto-detect channel | on | Some firmwares number channels from 0 and others from 1. Turn this off if the detection gets it wrong on your camera
+Enable NVR active deterrence controls | off | Adds Warning Light and Alarm entities for a camera behind an NVR. Off by default because whether the NVR relays these commands varies by model — on some it accepts them and does nothing
+
+## Reducing entries in your device's log
+Dahua devices write a line to their own log for every login, and each request the integration makes is a separate HTTP call with its own authentication. Fewer calls therefore means fewer log entries. Three things help, in order of effect:
+
+1. **Turn off platforms you do not use.** If you only want the camera and motion events, switching off `switch`, `light` and `select` removes most of what a poll asks for. The two reads that happen on *every* poll — PTZ position and coaxial (siren/white light) status — belong to `select` and to `light`/`switch` respectively.
+2. **Raise the poll interval** to 120–180 seconds. Settings you change from the Dahua app will take that long to appear in Home Assistant; motion and other events are unaffected.
+3. **Keep the integration up to date.** Config reads are cached, channels of one NVR share a single read, and a device that stops answering is backed off rather than retried at the same rate.
+
+This reduces the entries; it does not eliminate them. A device that is polled will log logins.
 
 # Local development
 If you wish to work on this component, the easiest way is to follow [HACS Dev Container README](https://github.com/custom-components/integration_blueprint/blob/master/.devcontainer/README.md). In short:
