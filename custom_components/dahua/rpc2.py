@@ -234,3 +234,33 @@ class DahuaRpc2Client:
         """ async_get_coaxial_control_io_status returns the the current state of the speaker and white light. """
         response = await self.request(method="CoaxialControlIO.getStatus", params={"channel": channel})
         return CoaxialControlIOStatus(response)
+
+    async def _async_get_privacy_mode_table(self) -> list:
+        """Read the LeLensMask config table, logging in first if needed."""
+        if not self._session_id:
+            await self.login()
+        params = await self.get_config({"name": "LeLensMask"})
+        table = params.get("table")
+        if not isinstance(table, list) or not table or not isinstance(table[0], dict):
+            raise ValueError("Dahua RPC2 response is missing table for LeLensMask")
+        return table
+
+    async def async_get_privacy_mode(self) -> bool:
+        """Return True if the lens privacy mask (LeLensMask) is enabled."""
+        table = await self._async_get_privacy_mode_table()
+        return bool(table[0].get("Enable", False))
+
+    async def async_set_privacy_mode(self, enabled: bool) -> None:
+        """Enable or disable the lens privacy mask (LeLensMask).
+
+        The entry is read back and written with only Enable changed so the
+        camera keeps its own TimeSection schedule.
+        """
+        table = await self._async_get_privacy_mode_table()
+        entry = dict(table[0])
+        entry["Enable"] = enabled
+        await self.request(
+            method="configManager.setConfig",
+            params={"name": "LeLensMask", "table": [entry], "options": []},
+        )
+        _LOGGER.debug("RPC2 LeLensMask set to Enable=%s", enabled)

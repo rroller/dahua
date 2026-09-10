@@ -644,6 +644,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_smart_motion_detection = False
         self._supports_ptz_position = False
         self._supports_lighting = False
+        self._supports_privacy_mode = False
         self._supports_floodlightmode = False
         self._serial_number: str
         self._profile_mode = "0"
@@ -915,6 +916,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     pass
                 _LOGGER.debug("Device supports Lighting_V2=%s", self._supports_lighting_v2)
 
+                # Checking privacy mode (LeLensMask) support. This is RPC2 only and many models lack it.
+                # Deliberately broader than PROBE_FAILED: a camera without LeLensMask answers with an
+                # RPC2 result=false, which surfaces as ConnectionError, and a malformed table raises
+                # ValueError. Neither is a ClientError, so narrowing this would fail the whole entry.
+                try:
+                    await self.client.async_get_privacy_mode()
+                    self._supports_privacy_mode = True
+                except Exception as exception:
+                    self._supports_privacy_mode = False
+                    _LOGGER.debug("Privacy mode not available", exc_info=exception)
+                _LOGGER.debug("Device supports privacy mode=%s", self._supports_privacy_mode)
+
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -1010,6 +1023,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_light_global_enabled()))
             if self._supports_lighting_v2 and self._wanted_by(LIGHT):   #add lighing_v2 API if it is supported
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
+            # Only the privacy mode switch reads this one.
+            if self._supports_privacy_mode and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self._async_fetch_privacy_mode()))
 
 
             # Gather results and update the data map
@@ -1528,6 +1544,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def supports_smart_motion_detection_amcrest(self) -> bool:
         """ True if smart motion detection is supported for an amcrest device"""
         return self.model == "AD410" or self.model == "DB61i"
+
+    def supports_privacy_mode(self) -> bool:
+        """ True if the camera exposes the lens privacy mask over RPC2 """
+        return self._supports_privacy_mode
+
+    def is_privacy_mode_enabled(self) -> bool:
+        """ True if the lens privacy mask is currently enabled """
+        return self.data.get("privacy_mode_enabled", False)
+
+    async def _async_fetch_privacy_mode(self) -> dict:
+        """ Poll the privacy mode state, keeping the last known value on failure """
+        try:
+            return {"privacy_mode_enabled": await self.client.async_get_privacy_mode()}
+        except Exception as exception:
+            _LOGGER.debug("Failed to fetch privacy mode state", exc_info=exception)
+            previous = self.data.get("privacy_mode_enabled", False) if self.data else False
+            return {"privacy_mode_enabled": previous}
 
     def get_vto_client(self) -> DahuaVTOClient:
         """
