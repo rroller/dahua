@@ -144,6 +144,11 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 
 # Known Issues
 * IPC-D2B20-ZS doesn't work. Needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201), [7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237)
+* **Versions between 0.9.84 and 0.9.92 could leave the illuminator switched on in a profile you are not using.** In that window the illuminator wrote to the wrong day/night profile on some cameras ([#605](https://github.com/rroller/dahua/issues/605), [#582](https://github.com/rroller/dahua/issues/582)); which versions affected you depends on the camera, and 0.9.93 fixed the write for both kinds. It does not undo what the earlier versions wrote. If you turned the illuminator on during that window, `Lighting_V2[<channel>][0][0].Mode` may still be `Manual` on the Day profile.
+
+  While the camera is in General mode this does nothing at all. But if the camera is ever switched to Day/Night profile management, the light comes on when that profile becomes active, looking as though it did so by itself. Home Assistant will report it as on and can turn it off — but only once you notice it.
+
+  The integration deliberately does not correct this for you, because doing so would mean writing to a profile you are not currently using, on every camera, unprompted. To check for it and clear it by hand, see [Curl/HTTP commands](#curlhttp-commands).
 
 # Events
 Events are streamed from the device and fired on the Home Assistant event bus.
@@ -355,6 +360,14 @@ http://192.168.1.203/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule
 
 # Enable/disable Audio Linkage for an IVS rule
 http://192.168.1.203/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[0][3].EventHandler.VoiceEnable=false
+
+# Read the lighting profiles, to check for an illuminator left on by 0.9.84-0.9.92 (see Known Issues).
+# In Lighting_V2[a][b][c], a is the channel, b the profile (0 Day, 1 Night, 2 the one General mode uses)
+# and c the light: 0 is the illuminator, 1 the flood/security light.
+http://192.168.1.203/cgi-bin/configManager.cgi?action=getConfig&name=Lighting_V2
+
+# Clear it. Only run this if the Mode above is Manual on a profile the camera is not using
+http://192.168.1.203/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][0][0].Mode=Off
 ```
 
 # References and thanks
