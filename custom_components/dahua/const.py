@@ -48,6 +48,9 @@ CONF_CHANNEL = "channel"
 CONF_AUTO_DETECT_CHANNEL = "auto_detect_channel"
 CONF_USE_HTTPS = "use_https"
 CONF_SCAN_INTERVAL = "scan_interval"
+# Prototype: route config reads over RPC2's session instead of a fresh digest
+# handshake per call. Off by default -- see #636.
+CONF_USE_RPC2 = "use_rpc2"
 CONF_NVR_ACTIVE_DETERRENCE = "nvr_active_deterrence"
 
 # Defaults

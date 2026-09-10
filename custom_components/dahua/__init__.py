@@ -45,6 +45,7 @@ from .const import (
     CONF_AUTO_DETECT_CHANNEL,
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
+    CONF_USE_RPC2,
     CONF_NVR_ACTIVE_DETERRENCE,
     DEFAULT_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
@@ -629,7 +630,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session,
-                                               use_https)
+                                               use_https,
+                                               use_rpc2=entry.options.get(CONF_USE_RPC2, False))
 
         # self.config_entry = entry
         self.platforms = []
