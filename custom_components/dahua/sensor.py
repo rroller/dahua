@@ -26,11 +26,20 @@ PROFILE_NAMES = {
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
     coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_devices([
+
+    sensors = [
         DahuaFirmwareVersionSensor(coordinator, entry),
         DahuaSerialNumberSensor(coordinator, entry),
-        DahuaProfileSensor(coordinator, entry),
-    ])
+    ]
+
+    # The profile is only ever read for devices that answered the Lighting
+    # probe. Adding the sensor unconditionally would show "Day" forever on a
+    # doorbell or a camera without selectable profiles, which is worse than
+    # no sensor at all (see #641 review).
+    if coordinator.supports_profile_mode():
+        sensors.append(DahuaProfileSensor(coordinator, entry))
+
+    async_add_devices(sensors)
 
 
 class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
@@ -89,13 +98,15 @@ class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
     """Sensor for the day/night lighting profile the camera is using right now."""
 
     _attr_icon = "mdi:theme-light-dark"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
-        DahuaBaseEntity.__init__(self, coordinator, config_entry)
-        SensorEntity.__init__(self)
-        self._coordinator = coordinator
-        self._attr_name = "Profile"
-        self._attr_unique_id = f"{coordinator.get_serial_number()}_profile"
+    @property
+    def name(self):
+        return self._coordinator.get_device_name() + " Profile"
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_profile"
 
     @property
     def native_value(self) -> str:

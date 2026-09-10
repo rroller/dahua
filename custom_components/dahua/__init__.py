@@ -1231,6 +1231,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether the device answered the disarming linkage read during setup."""
         return self._supports_disarming_linkage
 
+    def supports_profile_mode(self) -> bool:
+        """Whether this device has selectable day/night/general profiles.
+
+        Only set for non-doorbell devices that answered the Lighting profile
+        probe; for doorbells and unsupported cameras this stays False, so the
+        profile sensor exists only where the profile is ever updated.
+        """
+        return self._supports_profile_mode
+
     def supports_siren(self) -> bool:
         """
         Returns true if this camera has a siren. For example, the IPC-HDW3849HP-AS-PV does
