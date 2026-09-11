@@ -64,6 +64,11 @@ def test_the_backoff_is_still_capped():
 
 
 def test_a_healthy_stream_still_reconnects_at_once():
-    """Received data changes nothing once the stream lived a healthy while."""
+    """A stream that delivered and lived a healthy while reconnects immediately.
+
+    The `received_data=False` half of this originally asserted 0.0 too, on the
+    reasoning that duration alone settles a long-lived stream. It does not: a
+    stream that ran an hour and delivered nothing never worked, and treating it
+    as healthy is the silent failure test_stream_silent.py covers.
+    """
     assert event_stream_retry_delay(3600, 0, received_data=True) == 0.0
-    assert event_stream_retry_delay(3600, 0, received_data=False) == 0.0

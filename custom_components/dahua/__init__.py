@@ -106,9 +106,17 @@ def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0
     first should be backed off: the second is working, and backing it off to ten
     minutes is how a camera that still detects motion stops reporting any.
     """
-    if lived_seconds < 10 and not received_data:
-        # Double per successive instant death, so a device that is refusing
-        # attach gets asked less often the longer it keeps refusing.
+    if not received_data:
+        # Nothing arrived at all -- not an event, not even the heartbeat the
+        # subscription asks for every EVENT_STREAM_HEARTBEAT_SECONDS. Whether it
+        # died on contact or sat open and silent until the read timeout, it is
+        # not working. Duration cannot rescue it: a stream is only ever started
+        # when some event is wanted, so silence is never the quiet of a camera
+        # with nothing to report.
+        #
+        # Double per successive failure, so a device that is refusing to deliver
+        # gets asked less often the longer it refuses. Without this a dead
+        # subscription costs a login a minute for as long as Home Assistant runs.
         doublings = max(0, consecutive_failures - 1)
         backoff = EVENT_STREAM_RETRY_SECONDS * (2 ** min(doublings, MAX_BACKOFF_DOUBLINGS))
         return jittered(min(backoff, EVENT_STREAM_MAX_RETRY_SECONDS))
@@ -553,9 +561,33 @@ class DahuaHostEventStream:
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
-                self._failing = False
-                self._consecutive_failures = 0
-                _LOGGER.debug("Recycling event stream for %s", self._address)
+                # Two opposite things raise this. The wait_for above fires at
+                # EVENT_STREAM_MAX_LIFETIME_SECONDS, which is the deliberate
+                # recycle of a stream that has been working. aiohttp's sock_read
+                # timeout fires when the socket has delivered nothing for
+                # EVENT_STREAM_READ_TIMEOUT_SECONDS -- and ServerTimeoutError is
+                # a TimeoutError, so it lands in the same place. Whether anything
+                # arrived is what tells them apart.
+                if self._received_data:
+                    self._failing = False
+                    self._consecutive_failures = 0
+                    _LOGGER.debug("Recycling event stream for %s", self._address)
+                else:
+                    self._consecutive_failures += 1
+                    if not self._failing:
+                        self._failing = True
+                        _LOGGER.warning(
+                            "Event stream for %s attached but delivered nothing, not "
+                            "even the heartbeat it asks for, so no events will arrive "
+                            "from it. Some firmware stops matching anything when too "
+                            "many event types are subscribed at once: selecting fewer "
+                            "event types for this device is the first thing to try.",
+                            self._address,
+                        )
+                    else:
+                        _LOGGER.debug(
+                            "Event stream for %s still silent", self._address
+                        )
             except Exception as ex:  # pylint: disable=broad-except
                 # Say it once per outage, not once per retry. Silence was the
                 # old behaviour and it is why these failures went unreported;
