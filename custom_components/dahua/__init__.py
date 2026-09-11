@@ -138,6 +138,18 @@ def failure_backoff(base: timedelta, consecutive: int) -> timedelta:
     return min(base * (2 ** doublings), max(POLL_BACKOFF_CAP, base))
 
 
+def describe_update_failure(exception: BaseException) -> str:
+    """A short phrase naming why a poll failed, for a log line and the UI.
+
+    `str()` on the exceptions this actually raises is very often empty --
+    `asyncio.TimeoutError` and most `aiohttp.ClientError` subclasses carry no
+    message -- so formatting one straight into a log gives the reader a blank
+    where the cause should be. Falling back to the class name is the difference
+    between "TimeoutError" and nothing at all.
+    """
+    return str(exception).strip() or type(exception).__name__
+
+
 def jittered(seconds: float, fraction: float = EVENT_STREAM_JITTER) -> float:
     """Spread a shared interval so simultaneous callers stop being simultaneous."""
     if seconds <= 0 or fraction <= 0:
@@ -1036,12 +1048,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._restore_poll_interval()
             return data
         except Exception as exception:
-            _LOGGER.warning("Failed to sync device state for %s. See README to enable debug logs to get full exception",
-                            self._address)
+            detail = describe_update_failure(exception)
+            _LOGGER.warning("Failed to sync device state for %s: %s. See README to enable debug logs to get full exception",
+                            self._address, detail)
             _LOGGER.debug("Failed to sync device state for %s", self._address, exc_info=exception)
             consecutive = async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
             self._back_off_poll_interval(consecutive)
-            raise UpdateFailed() from exception
+            # Carried into UpdateFailed so the coordinator's own "Error fetching
+            # dahua data" line names the fault too. Raised bare, it prints that
+            # sentence and then nothing, which is what sends people to the
+            # debug-logging instructions for what is often a one-word answer.
+            raise UpdateFailed(detail) from exception
 
     def on_receive_vto_event(self, event: dict):
         event["DeviceName"] = self.get_device_name()
