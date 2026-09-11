@@ -95,6 +95,27 @@ PROBE_FAILED = (ClientError, TimeoutError)
 PROBE_REFUSED = (ClientResponseError, TimeoutError)
 
 
+def stream_lifetime(lived_seconds: float, received_data: bool) -> float:
+    """How long the stream really lasted, for the purpose of retrying it.
+
+    A socket that stayed open an hour and delivered nothing -- not one event, not
+    even the heartbeat the subscription asks for every
+    EVENT_STREAM_HEARTBEAT_SECONDS -- did not last an hour in any sense that
+    should earn an immediate reconnect. It never worked at all.
+
+    This matters because aiohttp's `sock_read` timeout and the deliberate recycle
+    raise the *same* exception: `ServerTimeoutError` is a `TimeoutError`. Duration
+    alone therefore cannot tell a stream that worked for an hour from one that sat
+    mute until the read timeout fired, and reading the second as the first is how
+    a device that reports nothing looks healthy forever.
+
+    Silence is safe to judge on because a stream is only ever started when some
+    event is wanted, so there is no correctly-subscribed device with nothing to
+    say.
+    """
+    return lived_seconds if received_data else 0.0
+
+
 def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0,
                             received_data: bool = False) -> float:
     """How long to wait before re-attaching, given how long the stream lasted.
@@ -106,17 +127,9 @@ def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0
     first should be backed off: the second is working, and backing it off to ten
     minutes is how a camera that still detects motion stops reporting any.
     """
-    if not received_data:
-        # Nothing arrived at all -- not an event, not even the heartbeat the
-        # subscription asks for every EVENT_STREAM_HEARTBEAT_SECONDS. Whether it
-        # died on contact or sat open and silent until the read timeout, it is
-        # not working. Duration cannot rescue it: a stream is only ever started
-        # when some event is wanted, so silence is never the quiet of a camera
-        # with nothing to report.
-        #
-        # Double per successive failure, so a device that is refusing to deliver
-        # gets asked less often the longer it refuses. Without this a dead
-        # subscription costs a login a minute for as long as Home Assistant runs.
+    if lived_seconds < 10 and not received_data:
+        # Double per successive instant death, so a device that is refusing
+        # attach gets asked less often the longer it keeps refusing.
         doublings = max(0, consecutive_failures - 1)
         backoff = EVENT_STREAM_RETRY_SECONDS * (2 ** min(doublings, MAX_BACKOFF_DOUBLINGS))
         return jittered(min(backoff, EVENT_STREAM_MAX_RETRY_SECONDS))
@@ -613,7 +626,8 @@ class DahuaHostEventStream:
                 self._consecutive_failures = 0
 
             retry_in = event_stream_retry_delay(
-                time.monotonic() - start_time, self._consecutive_failures,
+                stream_lifetime(time.monotonic() - start_time, self._received_data),
+                self._consecutive_failures,
                 self._received_data,
             )
             if retry_in:
