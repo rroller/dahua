@@ -12,6 +12,7 @@ Duration alone cannot tell those apart. Whether the device sent anything can.
 from custom_components.dahua import (
     EVENT_STREAM_MAX_RETRY_SECONDS,
     EVENT_STREAM_RETRY_SECONDS,
+    EVENT_STREAM_SHORT_RETRY_SECONDS,
     event_stream_retry_delay,
 )
 
@@ -49,9 +50,12 @@ def test_a_stream_that_said_nothing_still_backs_off():
 
 
 def test_silence_is_still_the_default():
-    """Callers that do not say are treated as before, not as if they delivered."""
-    assert event_stream_retry_delay(0.5, 3) == event_stream_retry_delay(
-        0.5, 3, received_data=False)
+    """Callers that do not say are treated as before, not as if they delivered.
+
+    Not an equality check against the explicit call: the delay is jittered, so
+    two calls with the same arguments differ by design.
+    """
+    assert event_stream_retry_delay(0.5, 3) > EVENT_STREAM_SHORT_RETRY_SECONDS * 2
 
 
 def test_the_backoff_is_still_capped():
