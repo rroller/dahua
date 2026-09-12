@@ -1,6 +1,8 @@
 """Dahua API Client."""
 import logging
+import re
 import socket
+from contextlib import suppress
 import asyncio
 import time
 import aiohttp
@@ -46,6 +48,102 @@ def _host_limiter(address: str) -> asyncio.Semaphore:
 # strictly increasing nc for a given nonce; eleven clients each counting from
 # one against the same nonce is what replay protection exists to reject.
 _HOST_DIGEST_STATE: dict = {}
+
+
+# One RPC2 login, shared by every config entry for a host, because a Dahua box
+# keeps a finite session table and writes a line to its own log for every login.
+# That log line is the cost this transport exists to remove, so eleven channels
+# of one NVR opening eleven sessions would hand most of the saving straight
+# back -- the same arithmetic that made the digest challenge worth sharing.
+#
+# Keyed by user as well as host: a session id is obtained with the password and
+# scoped to that user's rights, so it is even less shareable than a challenge.
+_HOST_RPC2: dict = {}
+
+# Whether RPC2 has already proven it cannot serve a host. A per-client verdict
+# meant eleven channels each rediscovering it, which is eleven failed logins
+# against a device that has just said it cannot do this.
+_HOST_RPC2_UNAVAILABLE: set = set()
+
+# The device states its own keepalive interval in the login reply. Ask slightly
+# inside it, the way the VTO keepalive already does.
+RPC2_KEEPALIVE_MARGIN_SECONDS = 5
+RPC2_KEEPALIVE_FALLBACK_SECONDS = 60
+
+
+class _SharedRpc2Session:
+    """One login, and the keepalive holding it open, for one host and user.
+
+    The login is registered as a task before it is awaited, so eleven channels
+    waking together share the one in flight rather than each starting another.
+    That is the same move _SharedRead makes, for the same reason.
+    """
+
+    __slots__ = ("task", "client", "session", "refs", "keepalive")
+
+    def __init__(self, session: aiohttp.ClientSession, client, task) -> None:
+        self.session = session
+        self.client = client
+        self.task = task
+        self.refs = 0
+        self.keepalive = None
+
+
+async def _rpc2_keepalive(holder: "_SharedRpc2Session", interval: float) -> None:
+    """Hold one login open, so a quiet poll interval does not cost a new one.
+
+    Measured on a DHI-NVR5464-16P-EI: the session survives 90 seconds idle and
+    is gone by 150. A device polled every 150-180s -- which is what users are
+    told to set to quieten their NVR log -- would therefore log in on every
+    poll, which is most of the saving gone.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await holder.client.request(
+                method="global.keepAlive",
+                params={"timeout": interval, "active": False},
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pylint: disable=broad-except
+            # Drop the login rather than the holder: the next read logs in
+            # again, and the entries still hold their references.
+            holder.task = None
+            _LOGGER.debug("RPC2 keepalive failed, will log in again on the next read")
+            return
+
+
+async def _release_rpc2(key) -> None:
+    """Give back one entry's share of a host's session.
+
+    At zero: stop the keepalive before logging out, so it cannot fire one more
+    request against a session that is being closed. Cancellation is awaited
+    here, unlike elsewhere in this integration, because what follows it depends
+    on the task having actually stopped.
+    """
+    holder = _HOST_RPC2.get(key)
+    if holder is None:
+        return
+    holder.refs -= 1
+    if holder.refs > 0:
+        return
+    del _HOST_RPC2[key]
+
+    if holder.keepalive is not None:
+        holder.keepalive.cancel()
+        with suppress(asyncio.CancelledError):
+            await holder.keepalive
+        holder.keepalive = None
+    try:
+        if holder.task is not None:
+            await holder.client.logout()
+    except Exception:  # pylint: disable=broad-except
+        # A device that will not take the logout will time the session out on
+        # its own. Losing the socket matters more than losing the courtesy.
+        _LOGGER.debug("RPC2 logout failed for %s", key[0], exc_info=True)
+    if not holder.session.closed:
+        await holder.session.close()
 
 
 def _digest_state(address: str, username: str) -> dict:
@@ -153,6 +251,38 @@ class EventStreamClosed(Exception):
     """
 
 
+_CONFIG_READ = re.compile(r"configManager\.cgi\?action=getConfig&name=(.+)$")
+
+
+def flatten_rpc2_config(name: str, node, prefix: str = None) -> dict:
+    """Turn RPC2's nested JSON into the flat keys the rest of the code reads.
+
+    Every accessor in this integration reads CGI's shape --
+    "table.Lighting_V2[0][1][0].Mode" -- so an RPC2 answer has to arrive
+    looking identical or nothing downstream works. Verified against a live
+    NVR across seven configs and 4,647 keys: same keys, same values.
+
+    Nulls are dropped. CGI omits an absent entry entirely while RPC2 sends it
+    as JSON null, and keeping those would fabricate rows -- a
+    SmartMotionDetect row existing for every channel is exactly the phantom
+    the capability check in #635 stopped producing.
+    """
+    out = {}
+    if prefix is None:
+        prefix = "table." + name
+    if isinstance(node, dict):
+        for key, value in node.items():
+            out.update(flatten_rpc2_config(name, value, "%s.%s" % (prefix, key)))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            out.update(flatten_rpc2_config(name, value, "%s[%d]" % (prefix, index)))
+    elif node is not None:
+        if isinstance(node, bool):
+            node = "true" if node else "false"
+        out[prefix] = str(node)
+    return out
+
+
 SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
@@ -173,7 +303,8 @@ class DahuaClient:
             port: int,
             rtsp_port: int,
             session: aiohttp.ClientSession,
-            use_https: bool = None
+            use_https: bool = None,
+            use_rpc2: bool = False
     ) -> None:
         self._username = username
         self._password = password
@@ -194,6 +325,15 @@ class DahuaClient:
         # Keyed by address so every entry for one NVR shares a single budget.
         self._host_limit = _host_limiter(self._address)
         self._rpc2_session_instance = None
+        # Prototype (#636): route config reads over one RPC2 session instead of
+        # a fresh digest handshake per call. Off unless the entry asks for it.
+        self._use_rpc2 = use_rpc2
+        # Whether this client holds a share of the host's session, and whether
+        # it has given it back. Two flags rather than one because async_stop is
+        # reachable three ways and a second release would close the session out
+        # from under the other entries.
+        self._rpc2_acquired = False
+        self._rpc2_released = False
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
         # includes the password, so the identity changes if the password does.
@@ -502,11 +642,85 @@ class DahuaClient:
                 preset_ids.add(preset_id)
         return sorted(preset_ids)
 
+    def _rpc2_key(self):
+        return (self._address, self._username)
+
+    async def _shared_rpc2(self) -> "_SharedRpc2Session":
+        """This host's RPC2 session, logged in on first use.
+
+        The login future is registered before it is awaited, so eleven channels
+        of one NVR waking together share the one in flight instead of each
+        starting another -- the same move _SharedRead makes for reads.
+
+        The reference is taken here rather than in the constructor. A refcount
+        can survive a failed setup; a task started in a synchronous constructor
+        cannot, and that is the leak #620 was about.
+        """
+        key = self._rpc2_key()
+        holder = _HOST_RPC2.get(key)
+        if holder is None:
+            session = self._new_rpc2_session()
+            client = DahuaRpc2Client(
+                self._username, self._password, self._address, self._port,
+                self._rtsp_port, session, self._use_https
+            )
+            holder = _SharedRpc2Session(session, client, None)
+            _HOST_RPC2[key] = holder
+        if not self._rpc2_acquired:
+            holder.refs += 1
+            self._rpc2_acquired = True
+
+        if holder.task is None:
+            holder.task = asyncio.ensure_future(holder.client.login())
+        try:
+            response = await asyncio.shield(holder.task)
+        except Exception:
+            # Clear the login, not the holder: the entries still hold
+            # references to it, and the next read should try again.
+            if _HOST_RPC2.get(key) is holder and holder.task is not None and holder.task.done():
+                holder.task = None
+            raise
+
+        if holder.keepalive is None:
+            interval = (response.get("params") or {}).get(
+                "keepAliveInterval", RPC2_KEEPALIVE_FALLBACK_SECONDS)
+            try:
+                interval = max(float(interval) - RPC2_KEEPALIVE_MARGIN_SECONDS, 5.0)
+            except (TypeError, ValueError):
+                interval = RPC2_KEEPALIVE_FALLBACK_SECONDS - RPC2_KEEPALIVE_MARGIN_SECONDS
+            holder.keepalive = asyncio.ensure_future(_rpc2_keepalive(holder, interval))
+        return holder
+
+    async def _rpc2_get_config(self, name: str) -> dict:
+        """A config read over the shared session, in CGI's shape.
+
+        One retry, because the failure this expects is an expired session and
+        the answer to that is to log in again. A second failure means RPC2 is
+        not going to work here, so it says so and the caller falls back.
+        """
+        for attempt in (1, 2):
+            try:
+                holder = await self._shared_rpc2()
+                params = await holder.client.get_config({"name": name})
+                return flatten_rpc2_config(name, params.get("table"))
+            except Exception:  # pylint: disable=broad-except
+                holder = _HOST_RPC2.get(self._rpc2_key())
+                if holder is not None:
+                    holder.task = None
+                if attempt == 2:
+                    raise
+        return {}
+
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
         """Use an isolated RPC2 session whose cookie jar accepts IP hosts."""
+        # The unsafe cookie jar is load bearing: RPC2 sets a cookie against a
+        # bare IP, which the default jar drops. enable_cleanup_closed is not --
+        # aiohttp ignores it on every Python Home Assistant now runs on and
+        # warns once per connector for the trouble, which is why the shared
+        # connector dropped it too.
         return aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(enable_cleanup_closed=True, ssl=False),
+            connector=aiohttp.TCPConnector(ssl=False),
             cookie_jar=aiohttp.CookieJar(unsafe=True),
         )
 
@@ -521,7 +735,15 @@ class DahuaClient:
         return self._rpc2_session_instance
 
     async def close(self) -> None:
-        """Releases anything this client owns. Safe to call more than once."""
+        """Releases anything this client owns. Safe to call more than once.
+
+        The release is guarded by its own flag rather than by whether a socket
+        closed cleanly: a failed close must not leave a second call able to
+        decrement the host's refcount again.
+        """
+        if self._rpc2_acquired and not self._rpc2_released:
+            self._rpc2_released = True
+            await _release_rpc2(self._rpc2_key())
         session = self._rpc2_session_instance
         self._rpc2_session_instance = None
         if session is not None and not session.closed:
@@ -1164,6 +1386,24 @@ class DahuaClient:
 
     async def _request(self, url: str, verify_ok=False) -> dict:
         """Make the request. One caller per shared read reaches here."""
+        # Not after close(): this client has given its share back, and taking
+        # a new one would build a session nobody is left to release.
+        if (self._use_rpc2 and not self._rpc2_released
+                and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE and not verify_ok):
+            match = _CONFIG_READ.search(url)
+            if match:
+                try:
+                    async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+                        return await self._rpc2_get_config(match.group(1))
+                except Exception:  # pylint: disable=broad-except
+                    # Say it once, then stop trying. A device that cannot serve
+                    # RPC2 should not pay for the attempt on every read, and it
+                    # must not lose the reads either -- fall through to CGI.
+                    _HOST_RPC2_UNAVAILABLE.add(self._rpc2_key())
+                    _LOGGER.warning(
+                        "RPC2 config reads are not working for %s, using CGI instead",
+                        self._address, exc_info=True,
+                    )
         url = self._base + url
         try:
             async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:

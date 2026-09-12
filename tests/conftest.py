@@ -17,3 +17,31 @@ def _clear_shared_host_reads():
     client_module._HOST_CACHE.clear()
     yield
     client_module._HOST_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_shared_rpc2():
+    """The RPC2 registry holds a login task and a keepalive task.
+
+    Both belong to the event loop of the test that made them, so leaving one
+    behind hands the next test a task it cannot await -- the same reason the
+    shared read cache is cleared above.
+    """
+    from custom_components.dahua import client as client_module
+
+    def _drain():
+        for holder in list(client_module._HOST_RPC2.values()):
+            if holder.keepalive is not None:
+                holder.keepalive.cancel()
+            session = getattr(holder, "session", None)
+            if session is not None and not session.closed:
+                # Not awaited: the fixture is synchronous and the loop is going
+                # away anyway. This silences "Unclosed client session" without
+                # pretending the teardown is orderly.
+                session.connector.close()
+        client_module._HOST_RPC2.clear()
+        client_module._HOST_RPC2_UNAVAILABLE.clear()
+
+    _drain()
+    yield
+    _drain()

@@ -221,7 +221,8 @@ def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> 
     keeps dropping out" is often the sixth of eleven entries against one host.
     """
     from . import _HOST_CONNECTORS
-    from .client import _HOST_LIMITS, MAX_CONCURRENT_REQUESTS_PER_HOST
+    from .client import (_HOST_LIMITS, _HOST_RPC2, _HOST_RPC2_UNAVAILABLE,
+                         MAX_CONCURRENT_REQUESTS_PER_HOST)
 
     address = config_entry.data.get(CONF_ADDRESS)
     client_address = getattr(coordinator.client, "_address", address)
@@ -234,7 +235,18 @@ def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> 
         if entry.data.get(CONF_ADDRESS) == address
     ]
 
+    rpc2_key = (client_address, getattr(coordinator.client, "_username", None))
+    rpc2 = _HOST_RPC2.get(rpc2_key)
+
     return {
+        # Presence only, never the session id -- the same rule the digest state
+        # is reported under.
+        "rpc2_session_open": rpc2 is not None,
+        "rpc2_session_refcount": rpc2.refs if rpc2 is not None else 0,
+        "rpc2_keepalive_running": bool(
+            rpc2 is not None and rpc2.keepalive is not None and not rpc2.keepalive.done()
+        ),
+        "rpc2_ruled_out_for_host": rpc2_key in _HOST_RPC2_UNAVAILABLE,
         "address": address,
         "connector_refcount": holder[1] if holder else None,
         "connector_closed": holder[0].closed if holder else None,
