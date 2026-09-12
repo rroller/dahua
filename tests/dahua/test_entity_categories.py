@@ -8,10 +8,14 @@ actually wanted to look at.
 
 from types import SimpleNamespace
 
+import pytest
+
 from homeassistant.const import EntityCategory
 
+from custom_components.dahua import sensor as sensor_module
 from custom_components.dahua.sensor import (
     DahuaFirmwareVersionSensor,
+    DahuaProfileSensor,
     DahuaSerialNumberSensor,
 )
 from custom_components.dahua.switch import (
@@ -60,8 +64,14 @@ def _coordinator():
         get_serial_number=lambda: "SERIAL1_4",   # channel-suffixed entity key
         get_device_serial_number=lambda: "SERIAL1",  # what the device reports
         get_firmware_version=lambda: "2.800.0",
+        get_profile_mode=lambda: "1",
     )
     return c
+
+
+@pytest.fixture(autouse=True)
+def _skip_ha_plumbing(monkeypatch):
+    monkeypatch.setattr(sensor_module.DahuaBaseEntity, "__init__", lambda self, c, e: None)
 
 
 def _sensor(cls, coordinator):
@@ -72,12 +82,16 @@ def _sensor(cls, coordinator):
 
 
 def test_both_sensors_are_diagnostics():
-    for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor):
+    for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor, DahuaProfileSensor):
         assert _category(cls) is EntityCategory.DIAGNOSTIC, cls.__name__
 
 
 def test_the_firmware_sensor_reports_the_firmware():
     assert _sensor(DahuaFirmwareVersionSensor, _coordinator()).native_value == "2.800.0"
+
+
+def test_the_profile_sensor_reports_the_named_profile():
+    assert _sensor(DahuaProfileSensor, _coordinator()).native_value == "Night"
 
 
 def test_the_serial_sensor_reports_the_device_serial_not_the_entity_key():
@@ -92,7 +106,7 @@ def test_the_sensors_do_not_collide():
     c = _coordinator()
     ids = [
         _sensor(cls, c).unique_id
-        for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor)
+        for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor, DahuaProfileSensor)
     ]
 
     assert len(set(ids)) == len(ids)
@@ -101,5 +115,42 @@ def test_the_sensors_do_not_collide():
 
 def test_the_sensors_are_named_after_the_device():
     c = _coordinator()
-    for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor):
+    for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor, DahuaProfileSensor):
         assert _sensor(cls, c).name.startswith("Garage "), cls.__name__
+
+
+# --- the profile sensor is gated on the capability -------------------------------
+
+def _setup_coordinator(profile_support):
+    c = _coordinator()
+    c.supports_profile_mode = lambda: profile_support
+    return c
+
+
+def _setup(coordinator):
+    hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
+    entry = type("E", (), {"entry_id": "e1"})()
+    added = []
+    return hass, entry, added
+
+
+async def test_the_profile_sensor_is_only_added_when_profile_mode_is_supported():
+    hass, entry, added = _setup(_setup_coordinator(profile_support=True))
+    await sensor_module.async_setup_entry(hass, entry, added.extend)
+    assert any(isinstance(s, DahuaProfileSensor) for s in added)
+
+
+async def test_no_profile_sensor_without_profile_support():
+    """The profile stays "0" (Day) forever on such a device; a wrong value
+    looks like a working one, so no sensor is better."""
+    hass, entry, added = _setup(_setup_coordinator(profile_support=False))
+    await sensor_module.async_setup_entry(hass, entry, added.extend)
+    assert not any(isinstance(s, DahuaProfileSensor) for s in added)
+
+
+async def test_the_diagnostic_sensors_are_always_added():
+    hass, entry, added = _setup(_setup_coordinator(profile_support=False))
+    await sensor_module.async_setup_entry(hass, entry, added.extend)
+    names = [type(s).__name__ for s in added]
+    assert "DahuaFirmwareVersionSensor" in names
+    assert "DahuaSerialNumberSensor" in names

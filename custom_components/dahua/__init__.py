@@ -1233,6 +1233,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether the device answered the disarming linkage read during setup."""
         return self._supports_disarming_linkage
 
+    def supports_profile_mode(self) -> bool:
+        """Whether this device has selectable day/night/general profiles.
+
+        Only set for non-doorbell devices that answered the Lighting profile
+        probe; for doorbells and unsupported cameras this stays False, so the
+        profile sensor exists only where the profile is ever updated.
+        """
+        return self._supports_profile_mode
+
     def supports_siren(self) -> bool:
         """
         Returns true if this camera has a siren. For example, the IPC-HDW3849HP-AS-PV does
@@ -1358,6 +1367,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_firmware_version(self) -> str:
         """ returns the device firmware e.g. """
         return self.data.get("version")
+
+    def get_build_date(self) -> str:
+        """Return the firmware build date, e.g. 2020-06-05, if known.
+
+        The CGI endpoint returns strings like
+        ``2.800.0000016.0.R,build:2020-06-05``; peel the date off.
+        """
+        version = self.data.get("version") or ""
+        if "build:" in version:
+            return version.rsplit("build:", 1)[-1].strip()
+        return ""
 
     def get_device_serial_number(self) -> str:
         """The serial the device reports, without the channel suffix.
