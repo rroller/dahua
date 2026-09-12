@@ -109,12 +109,15 @@ def extract_plate_data(event: dict) -> dict | None:
     vehicle_type = None
     vehicle_color = None
 
+    ignored_plates = {"unlicensed", "unknown", "none", "null", "--", ""}
+
     # 1. Check Object (WizMind / ITC standard: Object: { ObjectType: "Plate", Text: "..." })
     obj = data.get("Object") or data.get("object")
     if isinstance(obj, dict):
-        if obj.get("ObjectType") == "Plate" or "Text" in obj:
+        obj_type = str(obj.get("ObjectType", "")).strip().lower()
+        if obj_type in ("plate", "") or "plate" in obj:
             txt = str(obj.get("Text", "")).strip()
-            if txt and txt != "--" and txt.lower() != "unlicensed":
+            if txt and txt.lower() not in ignored_plates:
                 plate_text = txt
                 confidence = obj.get("Confidence")
 
@@ -123,12 +126,12 @@ def extract_plate_data(event: dict) -> dict | None:
         plate_obj = data.get("Plate") or data.get("plate")
         if isinstance(plate_obj, dict):
             txt = str(plate_obj.get("Text", "")).strip()
-            if txt and txt != "--" and txt.lower() != "unlicensed":
+            if txt and txt.lower() not in ignored_plates:
                 plate_text = txt
                 confidence = plate_obj.get("Confidence")
         elif isinstance(plate_obj, str):
             txt = plate_obj.strip()
-            if txt and txt != "--" and txt.lower() != "unlicensed":
+            if txt and txt.lower() not in ignored_plates:
                 plate_text = txt
 
     # 3. Check TrafficCar
@@ -136,7 +139,7 @@ def extract_plate_data(event: dict) -> dict | None:
     if isinstance(tc, dict):
         if not plate_text:
             txt = str(tc.get("PlateNumber", "")).strip()
-            if txt and txt != "--" and txt.lower() != "unlicensed":
+            if txt and txt.lower() not in ignored_plates:
                 plate_text = txt
         vehicle_type = tc.get("VehicleType")
         vehicle_color = tc.get("VehicleColor")
@@ -147,7 +150,7 @@ def extract_plate_data(event: dict) -> dict | None:
             val = data.get(k)
             if isinstance(val, str):
                 txt = val.strip()
-                if txt and txt != "--" and txt.lower() != "unlicensed":
+                if txt and txt.lower() not in ignored_plates:
                     plate_text = txt
                     break
 

@@ -145,10 +145,14 @@ class TestExtractPlateData:
         assert res["plate"] == "XZO3314"
 
     def test_unlicensed_and_empty_ignored(self):
-        """Placeholder values like 'unlicensed' or '--' return None."""
+        """Placeholder values like 'unlicensed', 'unknown', or non-plate objects return None."""
         assert extract_plate_data({"data": {"PlateNumber": "unlicensed"}}) is None
+        assert extract_plate_data({"data": {"PlateNumber": "unknown"}}) is None
+        assert extract_plate_data({"data": {"PlateNumber": "null"}}) is None
         assert extract_plate_data({"data": {"PlateNumber": "--"}}) is None
         assert extract_plate_data({"data": {"PlateNumber": ""}}) is None
+        assert extract_plate_data({"data": {"Object": {"ObjectType": "Human", "Text": "Unknown"}}}) is None
+        assert extract_plate_data({"data": {"Object": {"ObjectType": "Vehicle", "Text": "Unknown"}}}) is None
         assert extract_plate_data({"data": {}}) is None
         assert extract_plate_data("not a dict") is None
 
