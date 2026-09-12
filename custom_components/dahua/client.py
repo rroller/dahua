@@ -1256,7 +1256,10 @@ class DahuaClient:
         Note: Heartbeat message must be sent before heartbeat timeout
         """
         # Use codes=[All] for all codes
-        codes = ",".join(events)
+        if "All" in events:
+            codes = "All"
+        else:
+            codes = ",".join(events)
         url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat={2}".format(
             self._base, codes, EVENT_STREAM_HEARTBEAT_SECONDS)
         if self._username is None or self._password is None:

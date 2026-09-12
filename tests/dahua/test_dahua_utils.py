@@ -1,5 +1,4 @@
-"""Tests for custom_components.dahua.dahua_utils."""
-from custom_components.dahua.dahua_utils import parse_event
+from custom_components.dahua.dahua_utils import parse_event, extract_plate_data
 
 
 def _wrap_event(event_body: str) -> str:
@@ -77,3 +76,102 @@ class TestParseEvent:
 
         assert len(events) == 1
         assert events[0]["data"] == "key=value"
+
+
+class TestExtractPlateData:
+    """Tests for extract_plate_data."""
+
+    def test_extract_plate_wizmind_object(self):
+        """Extract plate from WizMind Object schema with confidence and attributes."""
+        event = {
+            "Code": "TrafficSnapshot",
+            "data": {
+                "Object": {
+                    "ObjectType": "Plate",
+                    "Text": "AB123CD",
+                    "Confidence": 98,
+                },
+                "Vehicle": {
+                    "Category": "SaloonCar",
+                    "MainColor": "Blue",
+                    "Brand": "BMW",
+                    "SubBrand": "3-Series",
+                },
+                "Direction": "Approach",
+            },
+        }
+        res = extract_plate_data(event)
+        assert res is not None
+        assert res["plate"] == "AB123CD"
+        assert res["confidence"] == 98
+        assert res["vehicle_type"] == "SaloonCar"
+        assert res["vehicle_color"] == "Blue"
+        assert res["vehicle_brand"] == "BMW"
+        assert res["vehicle_series"] == "3-Series"
+        assert res["direction"] == "Approach"
+
+    def test_extract_plate_traffic_car_schema(self):
+        """Extract plate from TrafficCar schema."""
+        event = {
+            "Code": "TrafficParkingSpaceParking",
+            "data": {
+                "TrafficCar": {
+                    "PlateNumber": "XYZ-9988",
+                    "VehicleType": "SUV",
+                    "VehicleColor": "Black",
+                    "Brand": "Volkswagen",
+                    "Direction": "Approach",
+                }
+            },
+        }
+        res = extract_plate_data(event)
+        assert res is not None
+        assert res["plate"] == "XYZ9988"
+        assert res["vehicle_type"] == "SUV"
+        assert res["vehicle_color"] == "Black"
+        assert res["vehicle_brand"] == "Volkswagen"
+
+    def test_homoglyph_conversion(self):
+        """Greek/Cyrillic characters visually matching Latin are normalized."""
+        # Greek letters: Chi (Χ), Zeta (Ζ), Omicron (Ο)
+        event = {
+            "Code": "Traffic",
+            "data": {
+                "PlateNumber": "ΧΖΟ3314",
+            },
+        }
+        res = extract_plate_data(event)
+        assert res is not None
+        assert res["plate"] == "XZO3314"
+
+    def test_unlicensed_and_empty_ignored(self):
+        """Placeholder values like 'unlicensed' or '--' return None."""
+        assert extract_plate_data({"data": {"PlateNumber": "unlicensed"}}) is None
+        assert extract_plate_data({"data": {"PlateNumber": "--"}}) is None
+        assert extract_plate_data({"data": {"PlateNumber": ""}}) is None
+        assert extract_plate_data({"data": {}}) is None
+        assert extract_plate_data("not a dict") is None
+
+    def test_traffic_junction_schema_issue_215(self):
+        """Schema from community issue #215 parses correctly."""
+        event = {
+            "Code": "TrafficJunction",
+            "action": "Stop",
+            "data": {
+                "Object": {
+                    "ObjectType": "Plate",
+                    "Text": "TOY1234",
+                },
+                "Vehicle": {
+                    "Category": "SaloonCar",
+                    "Text": "Toyota",
+                    "MainColor": [128, 128, 128, 0],
+                },
+            },
+        }
+        res = extract_plate_data(event)
+        assert res is not None
+        assert res["plate"] == "TOY1234"
+        assert res["vehicle_type"] == "SaloonCar"
+        assert res["vehicle_brand"] == "Toyota"
+
