@@ -300,6 +300,7 @@ Sensor |  Description |
 :------------ | :------------ |
 Firmware Version | The firmware the device reports. Also shown on the device page, but as a sensor it can be templated and compared — which is what makes "tell me when a camera is behind" possible
 Serial Number | The serial the device reports. On an NVR every channel reports the recorder's serial, because every channel is the same physical box
+License Plate | The last recognized license plate reported by the camera's ANPR/Traffic AI, including attributes for confidence, vehicle type, vehicle color, brand/logo, model/series, and direction
 
 ## Buttons
 Button |  Description |

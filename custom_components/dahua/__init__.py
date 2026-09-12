@@ -688,6 +688,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         self._floodlight_mode = 2
 
+        self._last_plate_data: dict = {}
+        self._last_plate_timestamp: int = 0
+        self._plate_listeners: list = []
+
         super().__init__(
             hass,
             _LOGGER,
@@ -1160,6 +1164,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         event["DeviceName"] = self.get_device_name()
         self.hass.bus.fire("dahua_event_received", event)
 
+        # Check for license plate data in the event
+        plate_info = dahua_utils.extract_plate_data(event)
+        if plate_info and plate_info.get("plate"):
+            plate_info["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            self._last_plate_data = plate_info
+            self._last_plate_timestamp = int(time.time())
+            event["PlateNumber"] = plate_info["plate"]
+            event["PlateData"] = plate_info
+            _LOGGER.info(
+                "Dahua ANPR Plate detected on %s: %s (event %s)",
+                self.get_device_name(),
+                plate_info["plate"],
+                event.get("Code"),
+            )
+            for listener in self._plate_listeners:
+                try:
+                    listener()
+                except Exception as ex:
+                    _LOGGER.warning("Error calling plate listener: %s", ex)
+
         # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
         # We'll reset it to 0 when the event stops.
         # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
@@ -1374,6 +1398,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # We need a unique identifier. For NVRs we get back the same serial, so add the channel to the end of the sn
             return "{0}_{1}".format(self._serial_number, self._channel)
         return self._serial_number
+
+    def get_last_plate(self) -> str:
+        """Return the last recognized license plate string, or 'unknown'."""
+        if self._last_plate_data:
+            return self._last_plate_data.get("plate", "unknown")
+        return "unknown"
+
+    def get_last_plate_data(self) -> dict:
+        """Return the full metadata dict for the last recognized plate."""
+        return self._last_plate_data or {}
+
+    def get_last_plate_timestamp(self) -> int:
+        """Return the unix epoch timestamp when the last plate was recognized."""
+        return self._last_plate_timestamp
+
+    def add_plate_listener(self, listener):
+        """Add a callback listener invoked when a new license plate event is parsed."""
+        self._plate_listeners.append(listener)
 
     def get_event_list(self) -> list:
         """
