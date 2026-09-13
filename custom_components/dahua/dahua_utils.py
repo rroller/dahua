@@ -85,6 +85,42 @@ def parse_event(data: str) -> list[dict[str, any]]:
     return events
 
 
+HOMOGLYPHS = {
+    'Α': 'A', 'Β': 'B', 'Ε': 'E', 'Ζ': 'Z', 'Η': 'H', 'Ι': 'I',
+    'Κ': 'K', 'Μ': 'M', 'Ν': 'N', 'Ο': 'O', 'Ρ': 'P', 'Τ': 'T',
+    'Υ': 'Y', 'Χ': 'X'
+}
+
+
+def normalize_plate(plate_text: str | None) -> str:
+    """Clean and standardize plate: uppercase, remove non-alphanumeric, convert common Greek/Cyrillic homoglyphs to Latin."""
+    if not plate_text:
+        return ""
+    clean = str(plate_text).upper()
+    for gr, lat in HOMOGLYPHS.items():
+        clean = clean.replace(gr, lat)
+    return re.sub(r'[^A-Z0-9]', '', clean)
+
+
+def parse_authorized_plates(raw_str: str | list | None) -> list[str]:
+    """Parse a comma-separated string or list of authorized plates into a normalized, deduplicated list."""
+    if not raw_str:
+        return []
+    if isinstance(raw_str, list):
+        items = raw_str
+    elif isinstance(raw_str, str):
+        items = raw_str.split(",")
+    else:
+        return []
+
+    plates = []
+    for item in items:
+        norm = normalize_plate(item.strip())
+        if norm and norm not in plates:
+            plates.append(norm)
+    return plates
+
+
 def extract_plate_data(event: dict) -> dict | None:
     """Extract license plate and vehicle information from a Dahua ANPR/Traffic event dict.
 
@@ -157,16 +193,9 @@ def extract_plate_data(event: dict) -> dict | None:
     if not plate_text:
         return None
 
-    # Clean and standardize plate: uppercase, remove non-alphanumeric, convert common Greek/Cyrillic homoglyphs to Latin
-    homoglyphs = {
-        'Α': 'A', 'Β': 'B', 'Ε': 'E', 'Ζ': 'Z', 'Η': 'H', 'Ι': 'I',
-        'Κ': 'K', 'Μ': 'M', 'Ν': 'N', 'Ο': 'O', 'Ρ': 'P', 'Τ': 'T',
-        'Υ': 'Y', 'Χ': 'X'
-    }
-    clean_plate = plate_text.upper()
-    for gr, lat in homoglyphs.items():
-        clean_plate = clean_plate.replace(gr, lat)
-    clean_plate = re.sub(r'[^A-Z0-9]', '', clean_plate)
+    clean_plate = normalize_plate(plate_text)
+    if not clean_plate:
+        return None
 
     # Extract vehicle attributes
     vehicle_brand = None

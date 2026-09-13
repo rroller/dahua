@@ -28,7 +28,10 @@ from .const import (
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
     CONF_NVR_ACTIVE_DETERRENCE,
+    CONF_AUTHORIZED_PLATES,
+    CONF_AUTHORIZED_HOLD_TIME,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_AUTHORIZED_HOLD_TIME,
     MIN_SCAN_INTERVAL,
 )
 
@@ -342,6 +345,26 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
                 default=self.options.get(CONF_NVR_ACTIVE_DETERRENCE, False),
             )
         ] = bool
+        schema[
+            vol.Optional(
+                CONF_AUTHORIZED_PLATES,
+                default=self.options.get(
+                    CONF_AUTHORIZED_PLATES,
+                    self.config_entry.data.get(CONF_AUTHORIZED_PLATES, ""),
+                ),
+            )
+        ] = str
+        schema[
+            vol.Optional(
+                CONF_AUTHORIZED_HOLD_TIME,
+                default=self.options.get(
+                    CONF_AUTHORIZED_HOLD_TIME,
+                    self.config_entry.data.get(
+                        CONF_AUTHORIZED_HOLD_TIME, DEFAULT_AUTHORIZED_HOLD_TIME
+                    ),
+                ),
+            )
+        ] = vol.All(vol.Coerce(int), vol.Range(min=1, max=3600))
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(schema),
