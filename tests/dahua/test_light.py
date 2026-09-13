@@ -16,8 +16,9 @@ class _Client:
     async def async_set_lighting_v1(self, channel, enabled, brightness):
         self.v1.append((channel, enabled, brightness))
 
-    async def async_set_lighting_v2(self, channel, enabled, brightness, profile_mode):
-        self.v2.append((channel, enabled, brightness, profile_mode))
+    async def async_set_lighting_v2(self, channel, enabled, brightness, profile_mode,
+                                    light_index=0):
+        self.v2.append((channel, enabled, brightness, profile_mode, light_index))
 
 
 class _Coordinator:
@@ -30,6 +31,8 @@ class _Coordinator:
         self.infrared_brightness = 128
         self.illuminator_on = False
         self.illuminator_brightness = 64
+        # Which light this device calls the white one; 0 on most models.
+        self.illuminator_index = 0
 
     def get_channel(self):
         return self._channel
@@ -54,6 +57,9 @@ class _Coordinator:
 
     def get_illuminator_brightness(self):
         return self.illuminator_brightness
+
+    def get_illuminator_index(self):
+        return self.illuminator_index
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -157,7 +163,7 @@ async def test_illuminator_passes_the_profile_mode_through():
 
     await _light(DahuaIlluminator, c, "Illuminator").async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
-    assert c.client.v2 == [(2, True, 100, "1")]
+    assert c.client.v2 == [(2, True, 100, "1", 0)]
     assert c.client.v1 == [], "the illuminator must not use the v1 API"
 
 
@@ -166,8 +172,19 @@ async def test_illuminator_turn_off_keeps_the_profile_mode():
 
     await _light(DahuaIlluminator, c, "Illuminator").async_turn_off()
 
-    channel, enabled, _, profile_mode = c.client.v2[0]
+    channel, enabled, _, profile_mode, _index = c.client.v2[0]
     assert (channel, enabled, profile_mode) == (2, False, "0")
+
+
+async def test_illuminator_writes_to_the_light_the_device_calls_white():
+    """On a camera that reports index 0 as infrared, writing to 0 changes a
+    light nobody can see. The resolved index has to reach the client."""
+    c = _Coordinator(channel=2, profile_mode="0")
+    c.illuminator_index = 1
+
+    await _light(DahuaIlluminator, c, "Illuminator").async_turn_on()
+
+    assert c.client.v2[0][4] == 1, "the illuminator wrote to the wrong light"
 
 
 async def test_illuminator_uses_whatever_profile_mode_is_current():
