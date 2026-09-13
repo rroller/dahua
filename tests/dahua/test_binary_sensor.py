@@ -1,9 +1,11 @@
-"""binary_sensor.py had no tests. Its naming and IDs are derived, not declared."""
-
+import time
 import pytest
 
 from custom_components.dahua import binary_sensor as bs
-from custom_components.dahua.binary_sensor import DahuaEventSensor
+from custom_components.dahua.binary_sensor import (
+    DahuaEventSensor,
+    DahuaAuthorizedVehicleBinarySensor,
+)
 from custom_components.dahua.const import (
     DOOR_DEVICE_CLASS,
     MOTION_SENSOR_DEVICE_CLASS,
@@ -17,6 +19,12 @@ class _Coordinator:
     def __init__(self):
         self.timestamps = {}
         self.listeners = []
+        self._plate_listeners = []
+        self._last_plate = "unknown"
+        self._last_plate_data = {}
+        self._last_plate_timestamp = 0
+        self._authorized_plates = ["ABC1234", "XYZ5678"]
+        self._authorized_hold_time = 60
 
     def get_serial_number(self):
         return "SERIAL1"
@@ -29,6 +37,27 @@ class _Coordinator:
 
     def add_dahua_event_listener(self, event_name, callback):
         self.listeners.append((event_name, callback))
+
+    def get_last_plate(self):
+        return self._last_plate
+
+    def get_last_plate_data(self):
+        return self._last_plate_data
+
+    def get_last_plate_timestamp(self):
+        return self._last_plate_timestamp
+
+    def get_authorized_plates(self):
+        return self._authorized_plates
+
+    def get_authorized_hold_time(self):
+        return self._authorized_hold_time
+
+    def is_plate_authorized(self, plate):
+        return plate in self._authorized_plates
+
+    def add_plate_listener(self, callback):
+        self._plate_listeners.append(callback)
 
 
 @pytest.fixture
@@ -143,3 +172,55 @@ async def test_it_subscribes_to_its_event_when_added(sensor):
 
 def test_these_sensors_are_pushed_not_polled(sensor):
     assert sensor("VideoMotion").should_poll is False
+
+
+# --- authorized vehicle sensor tests ---------------------------------------
+
+def test_authorized_vehicle_sensor_properties():
+    c = _Coordinator()
+    s = DahuaAuthorizedVehicleBinarySensor(c, object())
+
+    assert s.name == "Front Door Authorized Vehicle"
+    assert s.unique_id == "SERIAL1_authorized_vehicle"
+    assert s.device_class == "presence"
+    assert s.icon == "mdi:car-check"
+    assert s.should_poll is False
+
+
+def test_authorized_vehicle_sensor_state_and_attributes():
+    c = _Coordinator()
+    s = DahuaAuthorizedVehicleBinarySensor(c, object())
+
+    # Initially off
+    assert s.is_on is False
+
+    # Unauthorized vehicle detected
+    c._last_plate = "UNKNOWN99"
+    c._last_plate_timestamp = int(time.time())
+    assert s.is_on is False
+
+    # Authorized vehicle detected within hold time
+    c._last_plate = "ABC1234"
+    c._last_plate_data = {
+        "plate": "ABC1234",
+        "vehicle_brand": "Volkswagen",
+        "vehicle_color": "Black",
+        "vehicle_type": "SUV",
+        "direction": "Approach",
+    }
+    c._last_plate_timestamp = int(time.time())
+    assert s.is_on is True
+
+    # Check attributes
+    attrs = s.extra_state_attributes
+    assert attrs["authorized_plates"] == ["ABC1234", "XYZ5678"]
+    assert attrs["hold_time_seconds"] == 60
+    assert attrs["last_matched_brand"] == "Volkswagen"
+    assert attrs["last_matched_color"] == "Black"
+    assert attrs["last_matched_type"] == "SUV"
+    assert attrs["direction"] == "Approach"
+
+    # Expired hold time
+    c._last_plate_timestamp = int(time.time()) - 120
+    assert s.is_on is False
+

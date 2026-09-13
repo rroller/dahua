@@ -1,4 +1,9 @@
-from custom_components.dahua.dahua_utils import parse_event, extract_plate_data
+from custom_components.dahua.dahua_utils import (
+    parse_event,
+    extract_plate_data,
+    normalize_plate,
+    parse_authorized_plates,
+)
 
 
 def _wrap_event(event_body: str) -> str:
@@ -178,4 +183,48 @@ class TestExtractPlateData:
         assert res["plate"] == "TOY1234"
         assert res["vehicle_type"] == "SaloonCar"
         assert res["vehicle_brand"] == "Toyota"
+
+
+class TestNormalizePlate:
+    """Tests for normalize_plate."""
+
+    def test_basic_normalization(self):
+        assert normalize_plate("abc-1234") == "ABC1234"
+        assert normalize_plate("  ABC 1234  ") == "ABC1234"
+        assert normalize_plate("XYZ_5678") == "XYZ5678"
+
+    def test_homoglyph_replacement(self):
+        # Greek letters: Alpha, Beta, Epsilon, Zeta, Eta, Iota, Kappa, Mu, Nu, Omicron, Rho (looks like P), Tau, Upsilon, Chi
+        assert normalize_plate("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧ") == "ABEZHIKMNOPTYX"
+        assert normalize_plate("ΧΖΟ-3314") == "XZO3314"
+        assert normalize_plate("ΧΖΖ 6820") == "XZZ6820"
+
+    def test_empty_and_none(self):
+        assert normalize_plate("") == ""
+        assert normalize_plate(None) == ""
+        assert normalize_plate("---") == ""
+
+
+class TestParseAuthorizedPlates:
+    """Tests for parse_authorized_plates."""
+
+    def test_comma_separated_string(self):
+        raw = "ABC1234, XYZ-5678, MNO9999"
+        result = parse_authorized_plates(raw)
+        assert result == ["ABC1234", "XYZ5678", "MNO9999"]
+
+    def test_deduplication_and_normalization(self):
+        raw = "ABC-1234, abc1234,   ABC 1234, ΧΖΟ3314 "
+        result = parse_authorized_plates(raw)
+        assert result == ["ABC1234", "XZO3314"]
+
+    def test_list_input(self):
+        plates = ["ABC-1234", "xyz-5678"]
+        result = parse_authorized_plates(plates)
+        assert result == ["ABC1234", "XYZ5678"]
+
+    def test_empty_input(self):
+        assert parse_authorized_plates("") == []
+        assert parse_authorized_plates(None) == []
+        assert parse_authorized_plates("  ,  ,  ") == []
 

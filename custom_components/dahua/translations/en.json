@@ -66,7 +66,9 @@
                     "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
                     "events": "Events to subscribe to",
                     "scan_interval": "Seconds between device polls (events are not affected)",
-                    "nvr_active_deterrence": "Enable NVR active deterrence controls"
+                    "nvr_active_deterrence": "Enable NVR active deterrence controls",
+                    "authorized_plates": "Authorized license plates (comma-separated, e.g. ABC1234, XYZ5678)",
+                    "authorized_hold_time": "Authorized vehicle hold time (seconds to remain ON)"
                 }
             }
         }
