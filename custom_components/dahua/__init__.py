@@ -95,9 +95,39 @@ PROBE_FAILED = (ClientError, TimeoutError)
 PROBE_REFUSED = (ClientResponseError, TimeoutError)
 
 
-def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0) -> float:
-    """How long to wait before re-attaching, given how long the stream lasted."""
-    if lived_seconds < 10:
+def stream_lifetime(lived_seconds: float, received_data: bool) -> float:
+    """How long the stream really lasted, for the purpose of retrying it.
+
+    A socket that stayed open an hour and delivered nothing -- not one event, not
+    even the heartbeat the subscription asks for every
+    EVENT_STREAM_HEARTBEAT_SECONDS -- did not last an hour in any sense that
+    should earn an immediate reconnect. It never worked at all.
+
+    This matters because aiohttp's `sock_read` timeout and the deliberate recycle
+    raise the *same* exception: `ServerTimeoutError` is a `TimeoutError`. Duration
+    alone therefore cannot tell a stream that worked for an hour from one that sat
+    mute until the read timeout fired, and reading the second as the first is how
+    a device that reports nothing looks healthy forever.
+
+    Silence is safe to judge on because a stream is only ever started when some
+    event is wanted, so there is no correctly-subscribed device with nothing to
+    say.
+    """
+    return lived_seconds if received_data else 0.0
+
+
+def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0,
+                            received_data: bool = False) -> float:
+    """How long to wait before re-attaching, given how long the stream lasted.
+
+    `received_data` is whether the device sent anything at all on this attach --
+    an event or a heartbeat. It separates the two things a short stream can mean.
+    A device that refuses attach and one whose firmware hangs up after eight
+    seconds of perfectly good events look identical by duration, and only the
+    first should be backed off: the second is working, and backing it off to ten
+    minutes is how a camera that still detects motion stops reporting any.
+    """
+    if lived_seconds < 10 and not received_data:
         # Double per successive instant death, so a device that is refusing
         # attach gets asked less often the longer it keeps refusing.
         doublings = max(0, consecutive_failures - 1)
@@ -136,6 +166,18 @@ def failure_backoff(base: timedelta, consecutive: int) -> timedelta:
     # polling every half hour is not the problem this is here to solve, and
     # backing "off" to something faster would be worse than doing nothing.
     return min(base * (2 ** doublings), max(POLL_BACKOFF_CAP, base))
+
+
+def describe_update_failure(exception: BaseException) -> str:
+    """A short phrase naming why a poll failed, for a log line and the UI.
+
+    `str()` on the exceptions this actually raises is very often empty --
+    `asyncio.TimeoutError` and most `aiohttp.ClientError` subclasses carry no
+    message -- so formatting one straight into a log gives the reader a blank
+    where the cause should be. Falling back to the class name is the difference
+    between "TimeoutError" and nothing at all.
+    """
+    return str(exception).strip() or type(exception).__name__
 
 
 def jittered(seconds: float, fraction: float = EVENT_STREAM_JITTER) -> float:
@@ -464,6 +506,9 @@ class DahuaHostEventStream:
         # How many times running the stream has died on contact, which is what
         # the retry delay backs off on.
         self._consecutive_failures = 0
+        # Whether the device sent anything on the current attach. Reset per
+        # attempt, so it describes this stream and not the one before it.
+        self._received_data = False
 
     @property
     def coordinators(self) -> list:
@@ -530,6 +575,7 @@ class DahuaHostEventStream:
         """Hold the stream open, recycling it the way a single channel used to."""
         while True:
             start_time = time.monotonic()
+            self._received_data = False
             try:
                 await asyncio.wait_for(
                     self._owner.client.stream_events(
@@ -540,14 +586,44 @@ class DahuaHostEventStream:
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
-                self._failing = False
-                self._consecutive_failures = 0
-                _LOGGER.debug("Recycling event stream for %s", self._address)
+                # Two opposite things raise this. The wait_for above fires at
+                # EVENT_STREAM_MAX_LIFETIME_SECONDS, which is the deliberate
+                # recycle of a stream that has been working. aiohttp's sock_read
+                # timeout fires when the socket has delivered nothing for
+                # EVENT_STREAM_READ_TIMEOUT_SECONDS -- and ServerTimeoutError is
+                # a TimeoutError, so it lands in the same place. Whether anything
+                # arrived is what tells them apart.
+                if self._received_data:
+                    self._failing = False
+                    self._consecutive_failures = 0
+                    _LOGGER.debug("Recycling event stream for %s", self._address)
+                else:
+                    self._consecutive_failures += 1
+                    if not self._failing:
+                        self._failing = True
+                        _LOGGER.warning(
+                            "Event stream for %s attached but delivered nothing, not "
+                            "even the heartbeat it asks for, so no events will arrive "
+                            "from it. Some firmware stops matching anything when too "
+                            "many event types are subscribed at once: selecting fewer "
+                            "event types for this device is the first thing to try.",
+                            self._address,
+                        )
+                    else:
+                        _LOGGER.debug(
+                            "Event stream for %s still silent", self._address
+                        )
             except Exception as ex:  # pylint: disable=broad-except
                 # Say it once per outage, not once per retry. Silence was the
                 # old behaviour and it is why these failures went unreported;
                 # a warning every sixty seconds forever is the other extreme.
-                self._consecutive_failures += 1
+                if self._received_data:
+                    # It attached and it talked; the socket ending is not this
+                    # device refusing contact, so the instant-death counter must
+                    # not climb on it.
+                    self._consecutive_failures = 0
+                else:
+                    self._consecutive_failures += 1
                 if not self._failing:
                     self._failing = True
                     _LOGGER.warning(
@@ -562,7 +638,9 @@ class DahuaHostEventStream:
                 self._consecutive_failures = 0
 
             retry_in = event_stream_retry_delay(
-                time.monotonic() - start_time, self._consecutive_failures
+                stream_lifetime(time.monotonic() - start_time, self._received_data),
+                self._consecutive_failures,
+                self._received_data,
             )
             if retry_in:
                 _LOGGER.debug(
@@ -576,6 +654,12 @@ class DahuaHostEventStream:
 
     def on_receive(self, data_bytes: bytes, _channel: int) -> None:
         """Parse once, then hand each event only to the channels that want it."""
+        # Before the parse, deliberately: a heartbeat carries no event but is
+        # still the device talking, and that is what the retry delay needs to
+        # know. A camera sitting quietly with nothing to report is not a camera
+        # refusing to attach.
+        self._received_data = True
+
         events = parse_event(data_bytes.decode("utf-8", errors="ignore"))
         if not events:
             return
@@ -687,6 +771,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._dahua_event_timestamp: Dict[str, int] = dict()
 
         self._floodlight_mode = 2
+
+        self._last_plate_data: dict = {}
+        self._last_plate_timestamp: int = 0
+        self._plate_listeners: list = []
 
         super().__init__(
             hass,
@@ -1036,12 +1124,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._restore_poll_interval()
             return data
         except Exception as exception:
-            _LOGGER.warning("Failed to sync device state for %s. See README to enable debug logs to get full exception",
-                            self._address)
+            detail = describe_update_failure(exception)
+            _LOGGER.warning("Failed to sync device state for %s: %s. See README to enable debug logs to get full exception",
+                            self._address, detail)
             _LOGGER.debug("Failed to sync device state for %s", self._address, exc_info=exception)
             consecutive = async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
             self._back_off_poll_interval(consecutive)
-            raise UpdateFailed() from exception
+            # Carried into UpdateFailed so the coordinator's own "Error fetching
+            # dahua data" line names the fault too. Raised bare, it prints that
+            # sentence and then nothing, which is what sends people to the
+            # debug-logging instructions for what is often a one-word answer.
+            raise UpdateFailed(detail) from exception
 
     def on_receive_vto_event(self, event: dict):
         event["DeviceName"] = self.get_device_name()
@@ -1159,6 +1252,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         event["name"] = self.get_device_name()
         event["DeviceName"] = self.get_device_name()
         self.hass.bus.fire("dahua_event_received", event)
+
+        # Check for license plate data in the event
+        plate_info = dahua_utils.extract_plate_data(event)
+        if plate_info and plate_info.get("plate"):
+            plate_info["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            self._last_plate_data = plate_info
+            self._last_plate_timestamp = int(time.time())
+            event["PlateNumber"] = plate_info["plate"]
+            event["PlateData"] = plate_info
+            _LOGGER.info(
+                "Dahua ANPR Plate detected on %s: %s (event %s)",
+                self.get_device_name(),
+                plate_info["plate"],
+                event.get("Code"),
+            )
+            for listener in self._plate_listeners:
+                try:
+                    listener()
+                except Exception as ex:
+                    _LOGGER.warning("Error calling plate listener: %s", ex)
 
         # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
         # We'll reset it to 0 when the event stops.
@@ -1394,6 +1507,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # We need a unique identifier. For NVRs we get back the same serial, so add the channel to the end of the sn
             return "{0}_{1}".format(self._serial_number, self._channel)
         return self._serial_number
+
+    def get_last_plate(self) -> str:
+        """Return the last recognized license plate string, or 'unknown'."""
+        if self._last_plate_data:
+            return self._last_plate_data.get("plate", "unknown")
+        return "unknown"
+
+    def get_last_plate_data(self) -> dict:
+        """Return the full metadata dict for the last recognized plate."""
+        return self._last_plate_data or {}
+
+    def get_last_plate_timestamp(self) -> int:
+        """Return the unix epoch timestamp when the last plate was recognized."""
+        return self._last_plate_timestamp
+
+    def add_plate_listener(self, listener):
+        """Add a callback listener invoked when a new license plate event is parsed."""
+        self._plate_listeners.append(listener)
 
     def get_event_list(self) -> list:
         """
