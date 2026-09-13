@@ -128,6 +128,7 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         "machine_name": getattr(coordinator, "machine_name", None),
         "name": _safe(coordinator.get_device_name),
         "firmware": _safe(coordinator.get_firmware_version),
+        "build_date": _safe(coordinator.get_build_date),
         "serial_fingerprint": _serial_fingerprint(coordinator),
         "serial_is_derived_from_credentials": getattr(
             coordinator.client, "identity_derived_from_credentials", None
