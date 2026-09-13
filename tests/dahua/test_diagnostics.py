@@ -83,6 +83,9 @@ class _Coordinator:
     def get_firmware_version(self):
         return "2.800.0000016.0.R"
 
+    def get_build_date(self):
+        return "2020-06-05"
+
     def get_serial_number(self):
         return SERIAL
 
