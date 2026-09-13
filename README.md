@@ -364,10 +364,14 @@ http://192.168.1.203/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule
 
 # Read the lighting profiles, to check for an illuminator left on by 0.9.84-0.9.92 (see Known Issues).
 # In Lighting_V2[a][b][c], a is the channel, b the profile (0 Day, 1 Night, 2 the one General mode uses)
-# and c the light: 0 is the illuminator, 1 the flood/security light.
+# and c the light. The light order is NOT the same on every model, so read the
+# LightType lines in the output before writing anything: on many cameras light 0
+# is the white illuminator, but some report 0 as InfraredLight and the white
+# light at 1. Use whichever index says LightType=WhiteLight.
 http://192.168.1.203/cgi-bin/configManager.cgi?action=getConfig&name=Lighting_V2
 
-# Clear it. Only run this if the Mode above is Manual on a profile the camera is not using
+# Clear it. Only run this if the Mode above is Manual on a profile the camera is
+# not using, and change the last index to whichever one is the WhiteLight above.
 http://192.168.1.203/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][0][0].Mode=Off
 ```
 
