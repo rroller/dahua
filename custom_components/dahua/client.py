@@ -1316,6 +1316,7 @@ class DahuaClient:
         TakenAwayDetection: missing object detection
         VideoAbnormalDetection: scene change event
         FaceDetection: face detect event
+        HumanTrait: human attributes/appearance metadata event
         AudioMutation: intensity change
         AudioAnomaly: input abnormal
         VideoUnFocus: defocus detect event

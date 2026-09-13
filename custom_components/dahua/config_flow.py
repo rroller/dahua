@@ -76,6 +76,7 @@ ALL_EVENTS = [
     "TakenAwayDetection",
     "VideoAbnormalDetection",
     "FaceDetection",
+    "HumanTrait",
     "VideoUnFocus",
     "WanderDetection",
     "RioterDetection",
