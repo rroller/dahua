@@ -1,4 +1,5 @@
 homeassistant~=2026.4.1
+aiodahua==0.2.0
 ha-ffmpeg==3.2.2
 colorlog==6.10.1
 pip>=24.3.1
