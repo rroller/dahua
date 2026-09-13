@@ -22,6 +22,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     async_add_devices([
         DahuaFirmwareVersionSensor(coordinator, entry),
         DahuaSerialNumberSensor(coordinator, entry),
+        DahuaLicensePlateSensor(coordinator, entry),
     ])
 
 
@@ -66,3 +67,38 @@ class DahuaSerialNumberSensor(DahuaBaseEntity, SensorEntity):
         # The device's own serial, not the channel-suffixed entity key: every
         # channel of one NVR is the same physical box and should say so.
         return self._coordinator.get_device_serial_number()
+
+
+class DahuaLicensePlateSensor(DahuaBaseEntity, SensorEntity):
+    """The last recognized license plate reported by the camera."""
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_icon = "mdi:car-back"
+        self._unique_id = f"{coordinator.get_serial_number()}_license_plate"
+
+    @property
+    def name(self):
+        return f"{self._coordinator.get_device_name()} License Plate"
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def native_value(self):
+        val = self._coordinator.get_last_plate()
+        return val if val != "unknown" else None
+
+    @property
+    def extra_state_attributes(self):
+        return self._coordinator.get_last_plate_data()
+
+    async def async_added_to_hass(self):
+        """Connect to dispatcher listening for entity data notifications."""
+        self._coordinator.add_plate_listener(self.schedule_update_ha_state)
+
+    @property
+    def should_poll(self) -> bool:
+        return False
+
