@@ -509,6 +509,16 @@ class DahuaClient:
         url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel={channel}".format(channel=channel)
         return await self.get(url)
 
+    async def async_get_lighting_scheme(self) -> dict:
+        """Which emitter the camera is willing to use, on Smart Dual Light models.
+
+        Deliberately not part of the poll. This is read when a light command is
+        given -- rare, and user initiated -- rather than on every poll for the
+        sake of a warning most devices never need.
+        """
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=LightingScheme"
+        return await self.get(url)
+
     async def async_get_lighting_v2(self) -> dict:
         """
         async_get_lighting_v2 will fetch the status of the camera light (also known as the illuminator)
