@@ -114,6 +114,22 @@ async def _rpc2_keepalive(holder: "_SharedRpc2Session", interval: float) -> None
             return
 
 
+def keepalive_needs_starting(task) -> bool:
+    """Whether this session still needs a keepalive started for it.
+
+    A finished keepalive is not a running one. The guard here used to be
+    `task is None`, which is true exactly once -- so when the keepalive loop
+    returned, and it returns on any failed keepalive by design, the slot kept a
+    completed task forever and no later read ever started another.
+
+    That failure path is meant to be recoverable: it drops the login so the next
+    read logs in again. Without this, the session comes back but the keepalive
+    never does, and every subsequent idle gap longer than the device's timeout
+    costs a fresh login -- quietly, because nothing is broken enough to log.
+    """
+    return task is None or task.done()
+
+
 async def _release_rpc2(key) -> None:
     """Give back one entry's share of a host's session.
 
@@ -681,7 +697,7 @@ class DahuaClient:
                 holder.task = None
             raise
 
-        if holder.keepalive is None:
+        if keepalive_needs_starting(holder.keepalive):
             interval = (response.get("params") or {}).get(
                 "keepAliveInterval", RPC2_KEEPALIVE_FALLBACK_SECONDS)
             try:
