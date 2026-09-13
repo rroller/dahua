@@ -64,6 +64,7 @@
                     "camera": "Camera enabled",
                     "button": "Button enabled",
                     "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
+                    "use_rpc2": "Read configuration over one RPC2 session per device (fewer logins in the device's log; leave off if unsure)",
                     "events": "Events to subscribe to",
                     "scan_interval": "Seconds between device polls (events are not affected)",
                     "nvr_active_deterrence": "Enable NVR active deterrence controls"
