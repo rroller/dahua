@@ -176,7 +176,8 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         profile_mode = self._coordinator.get_profile_mode()
         await self._coordinator.client.async_set_lighting_v2(
             channel, True, dahua_brightness, profile_mode,
-            self._coordinator.get_illuminator_index())
+            self._coordinator.get_illuminator_index(),
+            self._coordinator.get_illuminator_bank())
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
@@ -187,7 +188,8 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         profile_mode = self._coordinator.get_profile_mode()
         await self._coordinator.client.async_set_lighting_v2(
             channel, False, dahua_brightness, profile_mode,
-            self._coordinator.get_illuminator_index())
+            self._coordinator.get_illuminator_index(),
+            self._coordinator.get_illuminator_bank())
         await self._coordinator.async_refresh()
 
 

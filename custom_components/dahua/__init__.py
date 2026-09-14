@@ -179,6 +179,35 @@ WHITE_LIGHT = "WhiteLight"
 MAX_LIGHTING_V2_LIGHTS = 4
 
 
+# A light's brightness lives in one of several named banks, and which one is not
+# the same for every light or every model. MiddleLight first, so a device that
+# exposes more than one keeps the bank this integration has always used.
+LIGHT_BRIGHTNESS_BANKS = ("MiddleLight", "NearLight", "FarLight")
+
+
+def illuminator_brightness_bank(data: dict, channel: int, profile_mode, light_index: int) -> str:
+    """Which brightness bank this light actually uses on this device.
+
+    The bank was hardcoded to MiddleLight, which is right for the infrared
+    emitter on most models and frequently wrong for the white one. Measured:
+    an IPC-HFW2449T-AS-IL reports `[0] InfraredLight -> MiddleLight` but
+    `[1] WhiteLight -> NearLight`, and a DHI-NVR5464-16P-EI channel reports a
+    WhiteLight row with no brightness bank at all.
+
+    Since #652 the illuminator writes to the row the device calls white, so a
+    hardcoded MiddleLight now aims brightness at a bank that row may not have.
+
+    Falls back to MiddleLight when the device names none, which is what every
+    caller did before this existed.
+    """
+    for bank in LIGHT_BRIGHTNESS_BANKS:
+        key = "table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
+            channel, profile_mode, light_index, bank)
+        if key in data:
+            return bank
+    return LIGHT_BRIGHTNESS_BANKS[0]
+
+
 def illuminator_light_index(data: dict, channel: int, profile_mode) -> int:
     """Which Lighting_V2 light index is the white illuminator on this device.
 
@@ -1628,6 +1657,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """The Lighting_V2 light index this device puts its white light on."""
         return illuminator_light_index(self.data, self._channel, self.get_profile_mode())
 
+    def get_illuminator_bank(self) -> str:
+        """The brightness bank this device's white light actually uses."""
+        return illuminator_brightness_bank(
+            self.data, self._channel, self.get_profile_mode(), self.get_illuminator_index())
+
     def is_illuminator_on(self) -> bool:
         """Return true if the illuminator light is on"""
         # profile_mode 0=day, 1=night, 2=scene
@@ -1655,9 +1689,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
 
+        # The profile was hardcoded to 0 here while is_illuminator_on reads the
+        # live one, so on a camera running Night this reported the Day
+        # brightness. The bank was hardcoded too; see illuminator_brightness_bank.
         bri = self.data.get(
-            "table.Lighting_V2[{0}][0][{1}].MiddleLight[0].Light".format(
-                self._channel, self.get_illuminator_index()
+            "table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
+                self._channel, self.get_profile_mode(),
+                self.get_illuminator_index(), self.get_illuminator_bank()
             )
         )
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)

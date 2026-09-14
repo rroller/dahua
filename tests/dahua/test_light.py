@@ -17,8 +17,8 @@ class _Client:
         self.v1.append((channel, enabled, brightness))
 
     async def async_set_lighting_v2(self, channel, enabled, brightness, profile_mode,
-                                    light_index=0):
-        self.v2.append((channel, enabled, brightness, profile_mode, light_index))
+                                    light_index=0, bank="MiddleLight"):
+        self.v2.append((channel, enabled, brightness, profile_mode, light_index, bank))
 
 
 class _Coordinator:
@@ -33,6 +33,8 @@ class _Coordinator:
         self.illuminator_brightness = 64
         # Which light this device calls the white one; 0 on most models.
         self.illuminator_index = 0
+        # Which brightness bank the white light uses; MiddleLight on most models.
+        self.illuminator_bank = "MiddleLight"
 
     def get_channel(self):
         return self._channel
@@ -60,6 +62,9 @@ class _Coordinator:
 
     def get_illuminator_index(self):
         return self.illuminator_index
+
+    def get_illuminator_bank(self):
+        return self.illuminator_bank
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -163,7 +168,7 @@ async def test_illuminator_passes_the_profile_mode_through():
 
     await _light(DahuaIlluminator, c, "Illuminator").async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
-    assert c.client.v2 == [(2, True, 100, "1", 0)]
+    assert c.client.v2 == [(2, True, 100, "1", 0, "MiddleLight")]
     assert c.client.v1 == [], "the illuminator must not use the v1 API"
 
 
@@ -172,7 +177,7 @@ async def test_illuminator_turn_off_keeps_the_profile_mode():
 
     await _light(DahuaIlluminator, c, "Illuminator").async_turn_off()
 
-    channel, enabled, _, profile_mode, _index = c.client.v2[0]
+    channel, enabled, _, profile_mode, _index, _bank = c.client.v2[0]
     assert (channel, enabled, profile_mode) == (2, False, "0")
 
 
