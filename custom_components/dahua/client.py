@@ -378,6 +378,39 @@ class DahuaClient:
 
         return url
 
+# Some Dahua devices append a short proprietary block after the JPEG's end-of-image
+# marker. It is not part of the image and strict decoders are entitled to refuse it.
+DAHUA_TRAILER_SIGNATURE = b"dhav"
+JPEG_SOI = bytes((0xFF, 0xD8))
+JPEG_EOI = bytes((0xFF, 0xD9))
+
+
+def strip_dahua_snapshot_trailer(data: bytes) -> bytes:
+    """Drop a trailing `dhav` block that some devices add after the JPEG.
+
+    Measured on a VTO doorbell: every snapshot ends eight bytes past the
+    end-of-image marker, with `dhav` and four varying bytes. The NVR channels on
+    the same network end exactly at the marker, so this is per device rather than
+    per request, and it is stable across fetches.
+
+    Lenient decoders skip it, which is why this goes unnoticed. Strict ones do
+    not, and a JPEG with bytes after EOI is genuinely malformed.
+
+    Deliberately narrow: the data must look like a JPEG, must not already end at
+    the marker, and what follows the marker must carry the signature. Anything
+    else is returned untouched, because truncating an image on a guess is worse
+    than passing on a trailer.
+    """
+    if not data.startswith(JPEG_SOI) or data.endswith(JPEG_EOI):
+        return data
+    end = data.rfind(JPEG_EOI)
+    if end == -1:
+        return data
+    if not data[end + 2:].startswith(DAHUA_TRAILER_SIGNATURE):
+        return data
+    return data[:end + 2]
+
+
     async def async_get_snapshot(self, channel_number: int) -> bytes:
         """
         Takes a snapshot of the camera and returns the binary jpeg data
@@ -386,7 +419,7 @@ class DahuaClient:
         and channel number are the same!
         """
         url = "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
-        return await self.get_bytes(url)
+        return strip_dahua_snapshot_trailer(await self.get_bytes(url))
 
     async def async_get_system_info(self) -> dict:
         """
