@@ -2,6 +2,7 @@
 import logging
 import re
 import socket
+from copy import deepcopy
 from contextlib import suppress
 import asyncio
 import time
@@ -334,6 +335,44 @@ def strip_dahua_snapshot_trailer(data: bytes) -> bytes:
     if not data[end + 2:].startswith(DAHUA_TRAILER_SIGNATURE):
         return data
     return data[:end + 2]
+
+
+def lighting_scheme_illuminator_tables(
+        lighting_scheme: list, lighting_v2: list, channel: int,
+        profile_mode: int, light_index: int, enabled: bool,
+        brightness: int) -> tuple[list, list]:
+    """Build the two complete tables used by dual-light Web5 cameras.
+
+    On IPC-Color4M-TZ, selecting WhiteMode without configuring the white
+    emitter does not light it, and configuring the emitter without selecting
+    WhiteMode does not light it either. Turning it off returns ownership to the
+    camera's AI mode while retaining the user's white-emitter settings.
+    """
+    scheme = deepcopy(lighting_scheme)
+    lighting = deepcopy(lighting_v2)
+    try:
+        scheme_row = scheme[channel][profile_mode]
+        light_row = lighting[channel][profile_mode][light_index]
+    except (IndexError, KeyError, TypeError):
+        raise ValueError("Dahua lighting tables do not contain the selected light") from None
+    if not isinstance(scheme_row, dict) or not isinstance(light_row, dict):
+        raise ValueError("Dahua lighting tables contain malformed rows")
+    if light_row.get("LightType") != "WhiteLight":
+        raise ValueError("Selected Dahua light is not the white emitter")
+
+    scheme_row["LightingMode"] = "WhiteMode" if enabled else "AIMode"
+    if enabled:
+        light_row["Mode"] = "Manual"
+        light_row["PercentOfMaxBrightness"] = brightness
+        for bank_name in ("NearLight", "MiddleLight", "FarLight"):
+            bank = light_row.get(bank_name, [])
+            if not isinstance(bank, list):
+                raise ValueError("Dahua white-emitter bank is malformed")
+            for emitter in bank:
+                if not isinstance(emitter, dict):
+                    raise ValueError("Dahua white-emitter entry is malformed")
+                emitter["Light"] = brightness
+    return scheme, lighting
 
 
 class DahuaClient:
@@ -759,6 +798,34 @@ class DahuaClient:
                 if attempt == 2:
                     raise
         return {}
+
+    async def async_get_lighting_scheme(self) -> dict:
+        """Read LightingScheme over the shared RPC2 session in CGI's shape."""
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            return await self._rpc2_get_config("LightingScheme")
+
+    async def async_set_lighting_scheme_illuminator(
+            self, channel: int, enabled: bool, brightness: int,
+            profile_mode: int, light_index: int) -> dict:
+        """Control a white emitter that needs LightingScheme and Lighting_V2.
+
+        The IPC-Color4M-TZ physically requires both complete tables in one
+        Web5/RPC2 transaction. Partial CGI writes are accepted but do not light
+        the emitter.
+        """
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            holder = await self._shared_rpc2()
+            scheme_params = await holder.client.get_config({"name": "LightingScheme"})
+            lighting_params = await holder.client.get_config({"name": "Lighting_V2"})
+            scheme, lighting = lighting_scheme_illuminator_tables(
+                scheme_params.get("table"), lighting_params.get("table"), channel,
+                int(profile_mode), light_index, enabled, brightness,
+            )
+            clear_host_cache(self._address)
+            return await holder.client.set_configs([
+                ("LightingScheme", scheme),
+                ("Lighting_V2", lighting),
+            ])
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
