@@ -52,9 +52,15 @@ CONF_SCAN_INTERVAL = "scan_interval"
 # handshake per call. Off by default -- see #636.
 CONF_USE_RPC2 = "use_rpc2"
 CONF_NVR_ACTIVE_DETERRENCE = "nvr_active_deterrence"
+CONF_AUTHORIZED_PLATES = "authorized_plates"
+CONF_AUTHORIZED_HOLD_TIME = "authorized_hold_time"
+
+# Events
+EVENT_DAHUA_ANPR_RECOGNIZED = "dahua_anpr_recognized"
 
 # Defaults
 DEFAULT_NAME = "Dahua"
+DEFAULT_AUTHORIZED_HOLD_TIME = 60
 # How often the coordinator polls each device for its settings. Events do not
 # come from polling - they arrive on the event stream - so this only paces the
 # configuration read-back.

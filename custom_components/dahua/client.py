@@ -115,6 +115,22 @@ async def _rpc2_keepalive(holder: "_SharedRpc2Session", interval: float) -> None
             return
 
 
+def keepalive_needs_starting(task) -> bool:
+    """Whether this session still needs a keepalive started for it.
+
+    A finished keepalive is not a running one. The guard here used to be
+    `task is None`, which is true exactly once -- so when the keepalive loop
+    returned, and it returns on any failed keepalive by design, the slot kept a
+    completed task forever and no later read ever started another.
+
+    That failure path is meant to be recoverable: it drops the login so the next
+    read logs in again. Without this, the session comes back but the keepalive
+    never does, and every subsequent idle gap longer than the device's timeout
+    costs a fresh login -- quietly, because nothing is broken enough to log.
+    """
+    return task is None or task.done()
+
+
 async def _release_rpc2(key) -> None:
     """Give back one entry's share of a host's session.
 
@@ -714,7 +730,7 @@ class DahuaClient:
                 holder.task = None
             raise
 
-        if holder.keepalive is None:
+        if keepalive_needs_starting(holder.keepalive):
             interval = (response.get("params") or {}).get(
                 "keepAliveInterval", RPC2_KEEPALIVE_FALLBACK_SECONDS
             )
@@ -1040,7 +1056,12 @@ class DahuaClient:
             raise Exception("Could not set text")
 
     async def async_set_lighting_v2(
-        self, channel: int, enabled: bool, brightness: int, profile_mode: str
+        self,
+        channel: int,
+        enabled: bool,
+        brightness: int,
+        profile_mode: str,
+        light_index: int = 0,
     ) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
@@ -1054,8 +1075,12 @@ class DahuaClient:
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][0].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][0].MiddleLight[0].Light={brightness}".format(
-            channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness
+        # light_index is which light this device calls the white one. It is 0 on
+        # most models; some report 0 as the infrared emitter, and writing there
+        # changes a light nobody can see. See illuminator_light_index.
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{light_index}].MiddleLight[0].Light={brightness}".format(
+            channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness,
+            light_index=light_index
         )
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
@@ -1349,7 +1374,10 @@ class DahuaClient:
         Note: Heartbeat message must be sent before heartbeat timeout
         """
         # Use codes=[All] for all codes
-        codes = ",".join(events)
+        if "All" in events:
+            codes = "All"
+        else:
+            codes = ",".join(events)
         url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat={2}".format(
             self._base, codes, EVENT_STREAM_HEARTBEAT_SECONDS
         )

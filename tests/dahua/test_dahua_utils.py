@@ -1,5 +1,9 @@
-"""Tests for custom_components.dahua.dahua_utils."""
-from custom_components.dahua.dahua_utils import parse_event
+from custom_components.dahua.dahua_utils import (
+    parse_event,
+    extract_plate_data,
+    normalize_plate,
+    parse_authorized_plates,
+)
 
 
 def _wrap_event(event_body: str) -> str:
@@ -77,3 +81,150 @@ class TestParseEvent:
 
         assert len(events) == 1
         assert events[0]["data"] == "key=value"
+
+
+class TestExtractPlateData:
+    """Tests for extract_plate_data."""
+
+    def test_extract_plate_wizmind_object(self):
+        """Extract plate from WizMind Object schema with confidence and attributes."""
+        event = {
+            "Code": "TrafficSnapshot",
+            "data": {
+                "Object": {
+                    "ObjectType": "Plate",
+                    "Text": "AB123CD",
+                    "Confidence": 98,
+                },
+                "Vehicle": {
+                    "Category": "SaloonCar",
+                    "MainColor": "Blue",
+                    "Brand": "BMW",
+                    "SubBrand": "3-Series",
+                },
+                "Direction": "Approach",
+            },
+        }
+        res = extract_plate_data(event)
+        assert res is not None
+        assert res["plate"] == "AB123CD"
+        assert res["confidence"] == 98
+        assert res["vehicle_type"] == "SaloonCar"
+        assert res["vehicle_color"] == "Blue"
+        assert res["vehicle_brand"] == "BMW"
+        assert res["vehicle_series"] == "3-Series"
+        assert res["direction"] == "Approach"
+
+    def test_extract_plate_traffic_car_schema(self):
+        """Extract plate from TrafficCar schema."""
+        event = {
+            "Code": "TrafficParkingSpaceParking",
+            "data": {
+                "TrafficCar": {
+                    "PlateNumber": "XYZ-9988",
+                    "VehicleType": "SUV",
+                    "VehicleColor": "Black",
+                    "Brand": "Volkswagen",
+                    "Direction": "Approach",
+                }
+            },
+        }
+        res = extract_plate_data(event)
+        assert res is not None
+        assert res["plate"] == "XYZ9988"
+        assert res["vehicle_type"] == "SUV"
+        assert res["vehicle_color"] == "Black"
+        assert res["vehicle_brand"] == "Volkswagen"
+
+    def test_homoglyph_conversion(self):
+        """Greek/Cyrillic characters visually matching Latin are normalized."""
+        # Greek letters: Chi (Χ), Zeta (Ζ), Omicron (Ο)
+        event = {
+            "Code": "Traffic",
+            "data": {
+                "PlateNumber": "ΧΖΟ3314",
+            },
+        }
+        res = extract_plate_data(event)
+        assert res is not None
+        assert res["plate"] == "XZO3314"
+
+    def test_unlicensed_and_empty_ignored(self):
+        """Placeholder values like 'unlicensed', 'unknown', or non-plate objects return None."""
+        assert extract_plate_data({"data": {"PlateNumber": "unlicensed"}}) is None
+        assert extract_plate_data({"data": {"PlateNumber": "unknown"}}) is None
+        assert extract_plate_data({"data": {"PlateNumber": "null"}}) is None
+        assert extract_plate_data({"data": {"PlateNumber": "--"}}) is None
+        assert extract_plate_data({"data": {"PlateNumber": ""}}) is None
+        assert extract_plate_data({"data": {"Object": {"ObjectType": "Human", "Text": "Unknown"}}}) is None
+        assert extract_plate_data({"data": {"Object": {"ObjectType": "Vehicle", "Text": "Unknown"}}}) is None
+        assert extract_plate_data({"data": {}}) is None
+        assert extract_plate_data("not a dict") is None
+
+    def test_traffic_junction_schema_issue_215(self):
+        """Schema from community issue #215 parses correctly."""
+        event = {
+            "Code": "TrafficJunction",
+            "action": "Stop",
+            "data": {
+                "Object": {
+                    "ObjectType": "Plate",
+                    "Text": "TOY1234",
+                },
+                "Vehicle": {
+                    "Category": "SaloonCar",
+                    "Text": "Toyota",
+                    "MainColor": [128, 128, 128, 0],
+                },
+            },
+        }
+        res = extract_plate_data(event)
+        assert res is not None
+        assert res["plate"] == "TOY1234"
+        assert res["vehicle_type"] == "SaloonCar"
+        assert res["vehicle_brand"] == "Toyota"
+
+
+class TestNormalizePlate:
+    """Tests for normalize_plate."""
+
+    def test_basic_normalization(self):
+        assert normalize_plate("abc-1234") == "ABC1234"
+        assert normalize_plate("  ABC 1234  ") == "ABC1234"
+        assert normalize_plate("XYZ_5678") == "XYZ5678"
+
+    def test_homoglyph_replacement(self):
+        # Greek letters: Alpha, Beta, Epsilon, Zeta, Eta, Iota, Kappa, Mu, Nu, Omicron, Rho (looks like P), Tau, Upsilon, Chi
+        assert normalize_plate("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧ") == "ABEZHIKMNOPTYX"
+        assert normalize_plate("ΧΖΟ-3314") == "XZO3314"
+        assert normalize_plate("ΧΖΖ 6820") == "XZZ6820"
+
+    def test_empty_and_none(self):
+        assert normalize_plate("") == ""
+        assert normalize_plate(None) == ""
+        assert normalize_plate("---") == ""
+
+
+class TestParseAuthorizedPlates:
+    """Tests for parse_authorized_plates."""
+
+    def test_comma_separated_string(self):
+        raw = "ABC1234, XYZ-5678, MNO9999"
+        result = parse_authorized_plates(raw)
+        assert result == ["ABC1234", "XYZ5678", "MNO9999"]
+
+    def test_deduplication_and_normalization(self):
+        raw = "ABC-1234, abc1234,   ABC 1234, ΧΖΟ3314 "
+        result = parse_authorized_plates(raw)
+        assert result == ["ABC1234", "XZO3314"]
+
+    def test_list_input(self):
+        plates = ["ABC-1234", "xyz-5678"]
+        result = parse_authorized_plates(plates)
+        assert result == ["ABC1234", "XYZ5678"]
+
+    def test_empty_input(self):
+        assert parse_authorized_plates("") == []
+        assert parse_authorized_plates(None) == []
+        assert parse_authorized_plates("  ,  ,  ") == []
+

@@ -49,8 +49,12 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_USE_RPC2,
     CONF_NVR_ACTIVE_DETERRENCE,
+    CONF_AUTHORIZED_PLATES,
+    CONF_AUTHORIZED_HOLD_TIME,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_AUTHORIZED_HOLD_TIME,
     MIN_SCAN_INTERVAL,
+    EVENT_DAHUA_ANPR_RECOGNIZED,
 )
 from .dahua_utils import parse_event
 from .vto import DahuaVTOClient
@@ -97,11 +101,39 @@ PROBE_FAILED = (ClientError, TimeoutError)
 PROBE_REFUSED = (ClientResponseError, TimeoutError)
 
 
-def event_stream_retry_delay(
-    lived_seconds: float, consecutive_failures: int = 0
-) -> float:
-    """How long to wait before re-attaching, given how long the stream lasted."""
-    if lived_seconds < 10:
+def stream_lifetime(lived_seconds: float, received_data: bool) -> float:
+    """How long the stream really lasted, for the purpose of retrying it.
+
+    A socket that stayed open an hour and delivered nothing -- not one event, not
+    even the heartbeat the subscription asks for every
+    EVENT_STREAM_HEARTBEAT_SECONDS -- did not last an hour in any sense that
+    should earn an immediate reconnect. It never worked at all.
+
+    This matters because aiohttp's `sock_read` timeout and the deliberate recycle
+    raise the *same* exception: `ServerTimeoutError` is a `TimeoutError`. Duration
+    alone therefore cannot tell a stream that worked for an hour from one that sat
+    mute until the read timeout fired, and reading the second as the first is how
+    a device that reports nothing looks healthy forever.
+
+    Silence is safe to judge on because a stream is only ever started when some
+    event is wanted, so there is no correctly-subscribed device with nothing to
+    say.
+    """
+    return lived_seconds if received_data else 0.0
+
+
+def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0,
+                            received_data: bool = False) -> float:
+    """How long to wait before re-attaching, given how long the stream lasted.
+
+    `received_data` is whether the device sent anything at all on this attach --
+    an event or a heartbeat. It separates the two things a short stream can mean.
+    A device that refuses attach and one whose firmware hangs up after eight
+    seconds of perfectly good events look identical by duration, and only the
+    first should be backed off: the second is working, and backing it off to ten
+    minutes is how a camera that still detects motion stops reporting any.
+    """
+    if lived_seconds < 10 and not received_data:
         # Double per successive instant death, so a device that is refusing
         # attach gets asked less often the longer it keeps refusing.
         doublings = max(0, consecutive_failures - 1)
@@ -142,6 +174,50 @@ def failure_backoff(base: timedelta, consecutive: int) -> timedelta:
     # polling every half hour is not the problem this is here to solve, and
     # backing "off" to something faster would be worse than doing nothing.
     return min(base * (2**doublings), max(POLL_BACKOFF_CAP, base))
+
+
+# Lighting_V2 lists a device's lights by index, and the index order is not the
+# same on every model. The device names each one in LightType, so it does not
+# have to be guessed.
+WHITE_LIGHT = "WhiteLight"
+MAX_LIGHTING_V2_LIGHTS = 4
+
+
+def illuminator_light_index(data: dict, channel: int, profile_mode) -> int:
+    """Which Lighting_V2 light index is the white illuminator on this device.
+
+    This was hardcoded to 0, and on most cameras 0 is the white light. On some
+    it is not: the HFW3449E-S-IL in #647 reports index 0 as `InfraredLight` and
+    the white light at 1. Driving 0 there turns the *infrared* emitter up and
+    down -- the write is accepted, the config changes, and the user sees nothing
+    happen, because infrared is invisible. The white light is never touched.
+
+    Only moves off 0 when the device positively says 0 is something other than
+    the white light, so a device that reports no LightType keeps exactly the
+    behaviour it has always had.
+    """
+    key = "table.Lighting_V2[{0}][{1}][{2}].LightType"
+    declared = data.get(key.format(channel, profile_mode, 0))
+    if declared is None or declared == WHITE_LIGHT:
+        return 0
+    for index in range(1, MAX_LIGHTING_V2_LIGHTS):
+        if data.get(key.format(channel, profile_mode, index)) == WHITE_LIGHT:
+            return index
+    # It says 0 is not the white light and names no other. Changing the index on
+    # that basis would be a guess, and the old behaviour is the better guess.
+    return 0
+
+
+def describe_update_failure(exception: BaseException) -> str:
+    """A short phrase naming why a poll failed, for a log line and the UI.
+
+    `str()` on the exceptions this actually raises is very often empty --
+    `asyncio.TimeoutError` and most `aiohttp.ClientError` subclasses carry no
+    message -- so formatting one straight into a log gives the reader a blank
+    where the cause should be. Falling back to the class name is the difference
+    between "TimeoutError" and nothing at all.
+    """
+    return str(exception).strip() or type(exception).__name__
 
 
 def jittered(seconds: float, fraction: float = EVENT_STREAM_JITTER) -> float:
@@ -484,9 +560,12 @@ class DahuaHostEventStream:
         # How many times running the stream has died on contact, which is what
         # the retry delay backs off on.
         self._consecutive_failures = 0
-        # EventManager is multipart and aiohttp yields arbitrary chunk sizes.
-        # Large event payloads (metadata) are often split across chunks.
-        self._stream_buffer = ""
+        # Whether the device sent anything on the current attach. Reset per
+        # attempt, so it describes this stream and not the one before it.
+        self._received_data = False
+    # EventManager is multipart and aiohttp yields arbitrary chunk sizes.
+    # Large event payloads (metadata) are often split across chunks.
+    self._stream_buffer = ""
 
     @property
     def coordinators(self) -> list:
@@ -554,6 +633,7 @@ class DahuaHostEventStream:
         """Hold the stream open, recycling it the way a single channel used to."""
         while True:
             start_time = time.monotonic()
+            self._received_data = False
             try:
                 await asyncio.wait_for(
                     self._owner.client.stream_events(
@@ -564,14 +644,44 @@ class DahuaHostEventStream:
             except asyncio.CancelledError:
                 raise
             except asyncio.TimeoutError:
-                self._failing = False
-                self._consecutive_failures = 0
-                _LOGGER.debug("Recycling event stream for %s", self._address)
+                # Two opposite things raise this. The wait_for above fires at
+                # EVENT_STREAM_MAX_LIFETIME_SECONDS, which is the deliberate
+                # recycle of a stream that has been working. aiohttp's sock_read
+                # timeout fires when the socket has delivered nothing for
+                # EVENT_STREAM_READ_TIMEOUT_SECONDS -- and ServerTimeoutError is
+                # a TimeoutError, so it lands in the same place. Whether anything
+                # arrived is what tells them apart.
+                if self._received_data:
+                    self._failing = False
+                    self._consecutive_failures = 0
+                    _LOGGER.debug("Recycling event stream for %s", self._address)
+                else:
+                    self._consecutive_failures += 1
+                    if not self._failing:
+                        self._failing = True
+                        _LOGGER.warning(
+                            "Event stream for %s attached but delivered nothing, not "
+                            "even the heartbeat it asks for, so no events will arrive "
+                            "from it. Some firmware stops matching anything when too "
+                            "many event types are subscribed at once: selecting fewer "
+                            "event types for this device is the first thing to try.",
+                            self._address,
+                        )
+                    else:
+                        _LOGGER.debug(
+                            "Event stream for %s still silent", self._address
+                        )
             except Exception as ex:  # pylint: disable=broad-except
                 # Say it once per outage, not once per retry. Silence was the
                 # old behaviour and it is why these failures went unreported;
                 # a warning every sixty seconds forever is the other extreme.
-                self._consecutive_failures += 1
+                if self._received_data:
+                    # It attached and it talked; the socket ending is not this
+                    # device refusing contact, so the instant-death counter must
+                    # not climb on it.
+                    self._consecutive_failures = 0
+                else:
+                    self._consecutive_failures += 1
                 if not self._failing:
                     self._failing = True
                     _LOGGER.warning(
@@ -586,7 +696,9 @@ class DahuaHostEventStream:
                 self._consecutive_failures = 0
 
             retry_in = event_stream_retry_delay(
-                time.monotonic() - start_time, self._consecutive_failures
+                stream_lifetime(time.monotonic() - start_time, self._received_data),
+                self._consecutive_failures,
+                self._received_data,
             )
             if retry_in:
                 _LOGGER.debug(
@@ -600,6 +712,12 @@ class DahuaHostEventStream:
 
     def on_receive(self, data_bytes: bytes, _channel: int) -> None:
         """Parse multipart blocks, then hand each event to the channels that want it."""
+        # Before the parse, deliberately: a heartbeat carries no event but is
+        # still the device talking, and that is what the retry delay needs to
+        # know. A camera sitting quietly with nothing to report is not a camera
+        # refusing to attach.
+        self._received_data = True
+
         self._stream_buffer += data_bytes.decode("utf-8", errors="ignore")
 
         boundaries = [
@@ -741,6 +859,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._dahua_event_timestamp: Dict[str, int] = dict()
 
         self._floodlight_mode = 2
+
+        self._last_plate_data: dict = {}
+        self._last_plate_timestamp: int = 0
+        self._plate_listeners: list = []
 
         super().__init__(
             hass,
@@ -1182,18 +1304,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._restore_poll_interval()
             return data
         except Exception as exception:
-            _LOGGER.warning(
-                "Failed to sync device state for %s. See README to enable debug logs to get full exception",
-                self._address,
-            )
-            _LOGGER.debug(
-                "Failed to sync device state for %s", self._address, exc_info=exception
-            )
-            consecutive = async_record_host_failure(
-                self.hass, self._address, self.config_entry.entry_id
-            )
+            detail = describe_update_failure(exception)
+            _LOGGER.warning("Failed to sync device state for %s: %s. See README to enable debug logs to get full exception",
+                            self._address, detail)
+            _LOGGER.debug("Failed to sync device state for %s", self._address, exc_info=exception)
+            consecutive = async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
             self._back_off_poll_interval(consecutive)
-            raise UpdateFailed() from exception
+            # Carried into UpdateFailed so the coordinator's own "Error fetching
+            # dahua data" line names the fault too. Raised bare, it prints that
+            # sentence and then nothing, which is what sends people to the
+            # debug-logging instructions for what is often a one-word answer.
+            raise UpdateFailed(detail) from exception
 
     def on_receive_vto_event(self, event: dict):
         event["DeviceName"] = self.get_device_name()
@@ -1307,6 +1428,44 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             event,
         )
 
+        # Check for license plate data in the event
+        plate_info = dahua_utils.extract_plate_data(event)
+        if plate_info and plate_info.get("plate"):
+            plate_info["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            self._last_plate_data = plate_info
+            self._last_plate_timestamp = int(time.time())
+            event["PlateNumber"] = plate_info["plate"]
+            event["PlateData"] = plate_info
+            _LOGGER.info(
+                "Dahua ANPR Plate detected on %s: %s (event %s)",
+                self.get_device_name(),
+                plate_info["plate"],
+                event.get("Code"),
+            )
+            # Dedicated event on Home Assistant event bus
+            anpr_event_data = {
+                "device_name": self.get_device_name(),
+                "channel": self._channel,
+                "plate": plate_info["plate"],
+                "raw_plate": plate_info.get("raw_plate"),
+                "confidence": plate_info.get("confidence"),
+                "vehicle_type": plate_info.get("vehicle_type"),
+                "vehicle_color": plate_info.get("vehicle_color"),
+                "vehicle_brand": plate_info.get("vehicle_brand"),
+                "vehicle_series": plate_info.get("vehicle_series"),
+                "direction": plate_info.get("direction"),
+                "is_authorized": self.is_plate_authorized(plate_info["plate"]),
+                "raw_event_code": event.get("Code"),
+                "timestamp": self._last_plate_timestamp,
+            }
+            self.hass.bus.fire(EVENT_DAHUA_ANPR_RECOGNIZED, anpr_event_data)
+
+            for listener in self._plate_listeners:
+                try:
+                    listener()
+                except Exception as ex:
+                    _LOGGER.warning("Error calling plate listener: %s", ex)
+
         # Put the event on the HA event bus
         event["name"] = self.get_device_name()
         event["DeviceName"] = self.get_device_name()
@@ -1394,6 +1553,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def supports_disarming_linkage(self) -> bool:
         """Whether the device answered the disarming linkage read during setup."""
         return self._supports_disarming_linkage
+
+    def supports_profile_mode(self) -> bool:
+        """Whether this device has selectable day/night/general profiles.
+
+        Only set for non-doorbell devices that answered the Lighting profile
+        probe; for doorbells and unsupported cameras this stays False, so the
+        profile sensor exists only where the profile is ever updated.
+        """
+        return self._supports_profile_mode
 
     def supports_siren(self) -> bool:
         """
@@ -1560,6 +1728,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """returns the device firmware e.g."""
         return self.data.get("version")
 
+    def get_build_date(self) -> str:
+        """Return the firmware build date, e.g. 2020-06-05, if known.
+
+        The CGI endpoint returns strings like
+        ``2.800.0000016.0.R,build:2020-06-05``; peel the date off.
+        """
+        version = self.data.get("version") or ""
+        if "build:" in version:
+            return version.rsplit("build:", 1)[-1].strip()
+        return ""
+
     def get_device_serial_number(self) -> str:
         """The serial the device reports, without the channel suffix.
 
@@ -1575,6 +1754,51 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # We need a unique identifier. For NVRs we get back the same serial, so add the channel to the end of the sn
             return "{0}_{1}".format(self._serial_number, self._channel)
         return self._serial_number
+
+    def get_last_plate(self) -> str:
+        """Return the last recognized license plate string, or 'unknown'."""
+        if self._last_plate_data:
+            return self._last_plate_data.get("plate", "unknown")
+        return "unknown"
+
+    def get_last_plate_data(self) -> dict:
+        """Return the full metadata dict for the last recognized plate."""
+        return self._last_plate_data or {}
+
+    def get_last_plate_timestamp(self) -> int:
+        """Return the unix epoch timestamp when the last plate was recognized."""
+        return self._last_plate_timestamp
+
+    def add_plate_listener(self, listener):
+        """Add a callback listener invoked when a new license plate event is parsed."""
+        self._plate_listeners.append(listener)
+
+    def get_authorized_plates(self) -> list[str]:
+        """Return the list of configured authorized license plates (uppercase & normalized)."""
+        raw = self.config_entry.options.get(
+            CONF_AUTHORIZED_PLATES,
+            self.config_entry.data.get(CONF_AUTHORIZED_PLATES, ""),
+        )
+        return dahua_utils.parse_authorized_plates(raw)
+
+    def get_authorized_hold_time(self) -> int:
+        """Return the duration in seconds an authorized vehicle binary sensor stays active."""
+        try:
+            return int(self.config_entry.options.get(
+                CONF_AUTHORIZED_HOLD_TIME,
+                self.config_entry.data.get(
+                    CONF_AUTHORIZED_HOLD_TIME, DEFAULT_AUTHORIZED_HOLD_TIME
+                ),
+            ))
+        except (ValueError, TypeError):
+            return DEFAULT_AUTHORIZED_HOLD_TIME
+
+    def is_plate_authorized(self, plate: str | None) -> bool:
+        """Return True if the given plate matches any configured authorized plate."""
+        if not plate or plate == "unknown":
+            return False
+        norm = dahua_utils.normalize_plate(plate)
+        return norm in self.get_authorized_plates()
 
     def get_event_list(self) -> list:
         """
@@ -1598,19 +1822,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
+    def get_illuminator_index(self) -> int:
+        """The Lighting_V2 light index this device puts its white light on."""
+        return illuminator_light_index(self.data, self._channel, self.get_profile_mode())
+
     def is_illuminator_on(self) -> bool:
         """Return true if the illuminator light is on"""
         # profile_mode 0=day, 1=night, 2=scene
         profile_mode = self.get_profile_mode()
-        return (
-            self.data.get(
-                "table.Lighting_V2[{0}][{1}][0].Mode".format(
-                    self._channel, profile_mode
-                ),
-                "",
-            )
-            == "Manual"
-        )
+        index = self.get_illuminator_index()
+        return self.data.get(
+            "table.Lighting_V2[{0}][{1}][{2}].Mode".format(self._channel, profile_mode, index), ""
+        ) == "Manual"
 
     def is_flood_light_on(self) -> bool:
 
@@ -1636,7 +1859,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
 
         bri = self.data.get(
-            "table.Lighting_V2[{0}][0][0].MiddleLight[0].Light".format(self._channel)
+            "table.Lighting_V2[{0}][0][{1}].MiddleLight[0].Light".format(
+                self._channel, self.get_illuminator_index()
+            )
         )
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
