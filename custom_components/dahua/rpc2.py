@@ -225,6 +225,25 @@ class DahuaRpc2Client:
         response = await self.request(method="configManager.getConfig", params=params)
         return response['params']
 
+    async def set_configs(self, configs: list[tuple[str, list]]) -> dict:
+        """Commit complete config tables together through system.multicall."""
+        calls = []
+        for name, table in configs:
+            self._id += 1
+            calls.append({
+                "method": "configManager.setConfig",
+                "params": {"name": name, "table": table, "options": []},
+                "id": self._id,
+                "session": self._session_id,
+            })
+        response = await self.request(method="system.multicall", params=calls)
+        results = response.get("params")
+        if isinstance(results, list) and any(
+                isinstance(result, dict) and result.get("result") is False
+                for result in results):
+            raise ConnectionError("Dahua RPC2 system.multicall contained a failed config write")
+        return response
+
     async def get_device_name(self) -> str:
         """Get the device name"""
         data = await self.get_config({"name": "General"})
