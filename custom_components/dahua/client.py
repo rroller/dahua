@@ -843,6 +843,33 @@ class DahuaClient:
             mode = "Off"
         return await self.async_set_lighting_v1_mode(channel, mode, brightness)
 
+    async def async_set_lighting_v2_mode(self, channel: int, mode: str, brightness: int,
+                                         profile_mode: str, light_index: int = 0,
+                                         bank: str = "MiddleLight") -> dict:
+        """Set the illuminator's mode and brightness, including back to Auto.
+
+        The light entity can only say on or off, which writes Manual or Off. Off
+        is not the same as automatic: it leaves the camera's own illumination
+        disabled until someone puts it back, and nothing in Home Assistant could
+        do that. This is the illuminator's equivalent of
+        async_set_lighting_v1_mode, which infrared has had all along.
+
+        Mode should be one of Auto, Manual or Off; On is accepted as Manual, as
+        the infrared service does.
+        """
+        if mode.lower() == "on":
+            mode = "Manual"
+        # The Dahua API expects the first character capitalised.
+        mode = mode.capitalize()
+
+        url = ("/cgi-bin/configManager.cgi?action=setConfig"
+               "&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}"
+               "&Lighting_V2[{channel}][{profile_mode}][{light_index}].{bank}[0].Light={brightness}").format(
+            channel=channel, profile_mode=profile_mode, light_index=light_index,
+            mode=mode, bank=bank, brightness=brightness,
+        )
+        return await self.get(url)
+
     async def async_set_lighting_v1_mode(self, channel: int, mode: str, brightness: int) -> dict:
         """
         async_set_lighting_v1_mode will set IR light (InfraRed light) mode and brightness
