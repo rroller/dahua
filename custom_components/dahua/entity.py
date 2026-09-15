@@ -1,5 +1,5 @@
 """DahuaBaseEntity class"""
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, async_host_is_unreachable
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, ATTRIBUTION
 
@@ -41,3 +41,29 @@ class DahuaBaseEntity(CoordinatorEntity):
             "id": str(self.coordinator.data.get("id")),
             "integration": DOMAIN,
         }
+
+
+class DahuaEventDrivenEntity(DahuaBaseEntity):
+    """An entity whose state is written when the device sends an event.
+
+    These do not read the poll at all. They are pushed to, from the event
+    stream, and they never subscribe to the coordinator -- their
+    `async_added_to_hass` registers an event listener instead of calling
+    `CoordinatorEntity`'s.
+
+    They did still inherit `available` from it, which reports the result of the
+    last poll. Home Assistant writes `unavailable` in place of whatever state an
+    entity reports whenever that property is False, so a config read that timed
+    out could turn the doorbell press that arrived a moment later into
+    `unavailable` rather than `on`. The press was not missed -- it reached the
+    bus and the listener ran -- but the state that automations trigger on never
+    said so.
+
+    The two transports are independent: the event stream can be connected and
+    delivering while a `configManager.cgi` read is slow enough to time out. So
+    judge these on whether the device has stopped answering altogether.
+    """
+
+    @property
+    def available(self) -> bool:
+        return not async_host_is_unreachable(self._coordinator.get_address())
