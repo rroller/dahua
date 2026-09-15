@@ -13,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
 from .const import DOMAIN
-from .entity import DahuaBaseEntity
+from .entity import DahuaBaseEntity, DahuaEventDrivenEntity
 
 # Maps the camera's lighting profile id to a readable label.
 PROFILE_NAMES = {
@@ -122,7 +122,7 @@ class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
         return attrs
 
 
-class DahuaLicensePlateSensor(DahuaBaseEntity, SensorEntity):
+class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
     """The last recognized license plate reported by the camera."""
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
