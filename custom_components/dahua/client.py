@@ -336,6 +336,27 @@ def strip_dahua_snapshot_trailer(data: bytes) -> bytes:
     return data[:end + 2]
 
 
+# A device that answers and refuses has told us something about itself. One that
+# never answers has told us about this moment.
+TRANSIENT_RPC2_FAILURES = (TimeoutError, aiohttp.ClientConnectionError)
+
+
+def rpc2_failure_is_permanent(exception: BaseException) -> bool:
+    """Whether an RPC2 failure should rule the transport out for this host.
+
+    The verdict is permanent for the life of the process, so it has to mean
+    "this device does not speak RPC2" rather than "this read did not come back".
+    Every exception used to count, which made a single timeout during one busy
+    moment switch a working device back to a login per call until Home Assistant
+    was restarted -- silently, since the fallback works.
+
+    Observed on a DHI-NVR5464-16P-EI: nine reads timed out within the same
+    second, two hours after startup, on a host that had been serving RPC2
+    perfectly well and went on being able to.
+    """
+    return not isinstance(exception, TRANSIENT_RPC2_FAILURES)
+
+
 class DahuaClient:
     """
     DahuaClient is the client for accessing Dahua IP Cameras. The APIs were discovered from the "API of HTTP Protocol Specification" V2.76 2019-07-25 document
@@ -1479,15 +1500,25 @@ class DahuaClient:
                 try:
                     async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
                         return await self._rpc2_get_config(match.group(1))
-                except Exception:  # pylint: disable=broad-except
-                    # Say it once, then stop trying. A device that cannot serve
-                    # RPC2 should not pay for the attempt on every read, and it
-                    # must not lose the reads either -- fall through to CGI.
-                    _HOST_RPC2_UNAVAILABLE.add(self._rpc2_key())
-                    _LOGGER.warning(
-                        "RPC2 config reads are not working for %s, using CGI instead",
-                        self._address, exc_info=True,
-                    )
+                except Exception as rpc2_exception:  # pylint: disable=broad-except
+                    # Either way this read falls through to CGI rather than
+                    # being lost. What differs is whether the host is written
+                    # off: a device that cannot serve RPC2 should not pay for
+                    # the attempt on every read, but one that merely did not
+                    # answer in time should not lose the transport for good.
+                    if not rpc2_failure_is_permanent(rpc2_exception):
+                        # Falls through to the CGI path below, like any other
+                        # failure here, but without writing the host off.
+                        _LOGGER.debug(
+                            "RPC2 read timed out for %s, using CGI for this one",
+                            self._address, exc_info=True,
+                        )
+                    else:
+                        _HOST_RPC2_UNAVAILABLE.add(self._rpc2_key())
+                        _LOGGER.warning(
+                            "RPC2 config reads are not working for %s, using CGI instead",
+                            self._address, exc_info=True,
+                        )
         url = self._base + url
         try:
             async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
