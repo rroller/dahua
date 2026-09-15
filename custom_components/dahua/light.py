@@ -4,16 +4,20 @@ Illuminator for for Dahua cameras that have white light illuminators.
 See https://developers.home-assistant.io/docs/core/entity/light
 """
 
+import logging
+
 from homeassistant.core import HomeAssistant
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     LightEntity, LightEntityFeature, ColorMode,
 )
 
-from . import DahuaDataUpdateCoordinator, dahua_utils
+from . import DahuaDataUpdateCoordinator, dahua_utils, scheme_blocking_white_light
 from .const import DOMAIN, SECURITY_LIGHT_ICON, INFRARED_ICON
 from .entity import DahuaBaseEntity
 from .client import SECURITY_LIGHT_TYPE
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
@@ -178,7 +182,33 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             channel, True, dahua_brightness, profile_mode,
             self._coordinator.get_illuminator_index(),
             self._coordinator.get_illuminator_bank())
+        await self._warn_if_the_scheme_blocks_it(channel, profile_mode)
         await self._coordinator.async_refresh()
+
+    async def _warn_if_the_scheme_blocks_it(self, channel, profile_mode):
+        """Say so when the write will not reach the light.
+
+        Smart Dual Light cameras decide separately which emitter they are
+        willing to use. While that says AIMode or InfraredMode the white light
+        stays off however correct the write was, and the only symptom is an
+        entity that reports on next to a light that is not. Read at command
+        time, because the user can change it on the camera whenever they like.
+        """
+        try:
+            data = await self._coordinator.client.async_get_lighting_scheme()
+        except Exception:  # pylint: disable=broad-except
+            # Plenty of cameras have no such table. Not being able to check is
+            # not a reason to fail the command the user actually asked for.
+            _LOGGER.debug("Could not read LightingScheme", exc_info=True)
+            return
+        blocking = scheme_blocking_white_light(data, channel, profile_mode)
+        if blocking is not None:
+            _LOGGER.warning(
+                "The white light on %s was set, but the camera's lighting scheme is "
+                "%s, so the light will not physically come on. Switch that camera to "
+                "white light in its own web interface to use this entity.",
+                self._coordinator.get_device_name(), blocking,
+            )
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""

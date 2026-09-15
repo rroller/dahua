@@ -12,6 +12,8 @@ class _Client:
     def __init__(self):
         self.v1 = []
         self.v2 = []
+        self.scheme = {}
+        self.scheme_reads = 0
 
     async def async_set_lighting_v1(self, channel, enabled, brightness):
         self.v1.append((channel, enabled, brightness))
@@ -19,6 +21,14 @@ class _Client:
     async def async_set_lighting_v2(self, channel, enabled, brightness, profile_mode,
                                     light_index=0, bank="MiddleLight"):
         self.v2.append((channel, enabled, brightness, profile_mode, light_index, bank))
+
+    async def async_get_lighting_scheme(self):
+        """Defined so the scheme check runs for real rather than erroring out.
+
+        Returning no scheme is the common camera: nothing blocks, nothing warns.
+        """
+        self.scheme_reads += 1
+        return self.scheme
 
 
 class _Coordinator:
@@ -179,6 +189,16 @@ async def test_illuminator_turn_off_keeps_the_profile_mode():
 
     channel, enabled, _, profile_mode, _index, _bank = c.client.v2[0]
     assert (channel, enabled, profile_mode) == (2, False, "0")
+
+
+async def test_a_camera_with_no_lighting_scheme_still_switches_on_cleanly():
+    """The scheme check must not get in the way of the command itself."""
+    c = _Coordinator(channel=2, profile_mode="0")
+
+    await _light(DahuaIlluminator, c, "Illuminator").async_turn_on()
+
+    assert c.client.v2, "the light command did not reach the client"
+    assert c.client.scheme_reads == 1, "the scheme was not consulted"
 
 
 async def test_illuminator_writes_to_the_light_the_device_calls_white():
