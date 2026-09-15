@@ -1456,7 +1456,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         IPC-HDW3849HP-AS-PV does https://dahuawiki.com/Template:NameConvention
         Addressed issue https://github.com/rroller/dahua/pull/405
         """
-        return "-AS-PV" in self.model or self.model == "AD410" or self.model == "DB61i" or self.model.startswith("IP8M-2796E")
+        m = self.model.upper()
+        return (
+            "-AS-PV" in m
+            or m == "AD410"
+            or m == "DB61I"
+            or m.startswith("IP8M-2796E")
+            # Verified on two IPC-Color4M-TZ cameras: Type=1 drives the
+            # alternating red/blue active-deterrence LEDs, despite the CGI
+            # status field calling the output WhiteLight.
+            or m.startswith("IPC-COLOR4M-TZ")
+        )
 
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
