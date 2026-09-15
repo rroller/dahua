@@ -12,6 +12,7 @@ class _Client:
     def __init__(self):
         self.v1 = []
         self.v2 = []
+        self.scheme = []
 
     async def async_set_lighting_v1(self, channel, enabled, brightness):
         self.v1.append((channel, enabled, brightness))
@@ -20,9 +21,13 @@ class _Client:
                                     light_index=0, bank="MiddleLight"):
         self.v2.append((channel, enabled, brightness, profile_mode, light_index, bank))
 
+    async def async_set_lighting_scheme_illuminator(
+            self, channel, enabled, brightness, profile_mode, light_index):
+        self.scheme.append((channel, enabled, brightness, profile_mode, light_index))
+
 
 class _Coordinator:
-    def __init__(self, channel=3, profile_mode="1"):
+    def __init__(self, channel=3, profile_mode="1", uses_scheme=False):
         self.client = _Client()
         self._channel = channel
         self._profile_mode = profile_mode
@@ -35,6 +40,7 @@ class _Coordinator:
         self.illuminator_index = 0
         # Which brightness bank the white light uses; MiddleLight on most models.
         self.illuminator_bank = "MiddleLight"
+        self.uses_scheme = uses_scheme
 
     def get_channel(self):
         return self._channel
@@ -65,6 +71,9 @@ class _Coordinator:
 
     def get_illuminator_bank(self):
         return self.illuminator_bank
+
+    def uses_lighting_scheme_illuminator(self):
+        return self.uses_scheme
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -196,6 +205,21 @@ async def test_illuminator_uses_whatever_profile_mode_is_current():
     c = _Coordinator(profile_mode="2")
     await _light(DahuaIlluminator, c, "Illuminator").async_turn_on()
     assert c.client.v2[0][3] == "2"
+
+
+async def test_scheme_illuminator_uses_the_two_table_client_path():
+    c = _Coordinator(channel=0, profile_mode="1", uses_scheme=True)
+    c.illuminator_index = 1
+
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on(**{ATTR_BRIGHTNESS: 255})
+    await light.async_turn_off()
+
+    assert c.client.scheme == [
+        (0, True, 100, "1", 1),
+        (0, False, 100, "1", 1),
+    ]
+    assert c.client.v2 == []
 
 
 # --- identity --------------------------------------------------------------
