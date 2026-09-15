@@ -1,6 +1,39 @@
 # Describes the format for available Dahua services
 # https://developers.home-assistant.io/docs/dev_101_services/
 
+set_illuminator_mode:
+  name: Set Illuminator Mode on Dahua Camera
+  description: >-
+    Set the illuminator (white light) mode and brightness on a Dahua camera.
+    The light entity can only switch the illuminator on or off, and off is not
+    the same as automatic - it leaves the camera's own illumination disabled.
+    Use this to hand control back to the camera with Auto.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    mode:
+      name: Mode
+      description: "The illuminator mode: Auto, On, Off"
+      example: "Auto"
+      default: "Auto"
+      selector:
+        select:
+          options:
+            - "Auto"
+            - "On"
+            - "Off"
+    brightness:
+      name: Brightness
+      description: The illuminator brightness, from 0 to 100 inclusive. 100 is the brightest
+      example: 100
+      default: 100
+      selector:
+        number:
+          min: 0
+          max: 100
+
 set_infrared_mode:
   name: Set Infrared Mode on Dahua Camera
   description: Set the infrared light settings on a Dahua camera

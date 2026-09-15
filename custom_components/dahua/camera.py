@@ -20,6 +20,7 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 # This service handled setting the infrared mode on the camera to Off, Auto, or Manual... along with the brightness
 SERVICE_SET_INFRARED_MODE = "set_infrared_mode"
+SERVICE_SET_ILLUMINATOR_MODE = "set_illuminator_mode"
 # This service handles setting the video profile mode to day or night
 SERVICE_SET_VIDEO_PROFILE_MODE = "set_video_profile_mode"
 SERVICE_SET_FOCUS_ZOOM = "set_focus_zoom"
@@ -255,6 +256,18 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             "async_set_infrared_mode"
         )
 
+    # The light entity can only say on or off. Off is not the same as automatic,
+    # and without this there is no way back to the camera's own behaviour.
+    if coordinator.supports_illuminator():
+        platform.async_register_entity_service(
+            SERVICE_SET_ILLUMINATOR_MODE,
+            {
+                vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto"]),
+                vol.Optional('brightness', default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+            },
+            "async_set_illuminator_mode"
+        )
+
     platform.async_register_entity_service(
         SERVICE_GOTO_PRESET_POSITION,
         {
@@ -345,6 +358,20 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
         channel = self._logical_channel
         await self._coordinator.client.async_set_lighting_v1_mode(channel, mode, brightness)
+        await self._coordinator.async_refresh()
+
+    async def async_set_illuminator_mode(self, mode: str, brightness: int):
+        """Handles SERVICE_SET_ILLUMINATOR_MODE: illuminator mode and brightness.
+
+        Uses the same resolved light index and brightness bank as the light
+        entity, so the service and the toggle address the same physical light.
+        """
+        channel = self._logical_channel
+        await self._coordinator.client.async_set_lighting_v2_mode(
+            channel, mode, brightness, self._coordinator.get_profile_mode(),
+            self._coordinator.get_illuminator_index(),
+            self._coordinator.get_illuminator_bank(),
+        )
         await self._coordinator.async_refresh()
 
     async def async_goto_preset_position(self, position: int):
