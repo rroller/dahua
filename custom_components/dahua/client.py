@@ -308,6 +308,39 @@ SECURITY_LIGHT_TYPE = 1
 SIREN_TYPE = 2
 
 
+# Some Dahua devices append a short proprietary block after the JPEG's end-of-image
+# marker. It is not part of the image and strict decoders are entitled to refuse it.
+DAHUA_TRAILER_SIGNATURE = b"dhav"
+JPEG_SOI = bytes((0xFF, 0xD8))
+JPEG_EOI = bytes((0xFF, 0xD9))
+
+
+def strip_dahua_snapshot_trailer(data: bytes) -> bytes:
+    """Drop a trailing `dhav` block that some devices add after the JPEG.
+
+    Measured on a VTO doorbell: every snapshot ends eight bytes past the
+    end-of-image marker, with `dhav` and four varying bytes. The NVR channels on
+    the same network end exactly at the marker, so this is per device rather than
+    per request, and it is stable across fetches.
+
+    Lenient decoders skip it, which is why this goes unnoticed. Strict ones do
+    not, and a JPEG with bytes after EOI is genuinely malformed.
+
+    Deliberately narrow: the data must look like a JPEG, must not already end at
+    the marker, and what follows the marker must carry the signature. Anything
+    else is returned untouched, because truncating an image on a guess is worse
+    than passing on a trailer.
+    """
+    if not data.startswith(JPEG_SOI) or data.endswith(JPEG_EOI):
+        return data
+    end = data.rfind(JPEG_EOI)
+    if end == -1:
+        return data
+    if not data[end + 2:].startswith(DAHUA_TRAILER_SIGNATURE):
+        return data
+    return data[:end + 2]
+
+
 class DahuaClient:
     """
     DahuaClient is the client for accessing Dahua IP Cameras. The APIs were discovered from the "API of HTTP Protocol Specification" V2.76 2019-07-25 document
@@ -391,7 +424,7 @@ class DahuaClient:
         and channel number are the same!
         """
         url = "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
-        return await self.get_bytes(url)
+        return strip_dahua_snapshot_trailer(await self.get_bytes(url))
 
     async def async_get_system_info(self) -> dict:
         """
@@ -893,9 +926,34 @@ class DahuaClient:
             mode = "Off"
         return await self.async_set_lighting_v1_mode(channel, mode, brightness)
 
-    async def async_set_lighting_v1_mode(
-        self, channel: int, mode: str, brightness: int
-    ) -> dict:
+    async def async_set_lighting_v2_mode(self, channel: int, mode: str, brightness: int,
+                                         profile_mode: str, light_index: int = 0,
+                                         bank: str = "MiddleLight") -> dict:
+        """Set the illuminator's mode and brightness, including back to Auto.
+
+        The light entity can only say on or off, which writes Manual or Off. Off
+        is not the same as automatic: it leaves the camera's own illumination
+        disabled until someone puts it back, and nothing in Home Assistant could
+        do that. This is the illuminator's equivalent of
+        async_set_lighting_v1_mode, which infrared has had all along.
+
+        Mode should be one of Auto, Manual or Off; On is accepted as Manual, as
+        the infrared service does.
+        """
+        if mode.lower() == "on":
+            mode = "Manual"
+        # The Dahua API expects the first character capitalised.
+        mode = mode.capitalize()
+
+        url = ("/cgi-bin/configManager.cgi?action=setConfig"
+               "&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}"
+               "&Lighting_V2[{channel}][{profile_mode}][{light_index}].{bank}[0].Light={brightness}").format(
+            channel=channel, profile_mode=profile_mode, light_index=light_index,
+            mode=mode, bank=bank, brightness=brightness,
+        )
+        return await self.get(url)
+
+    async def async_set_lighting_v1_mode(self, channel: int, mode: str, brightness: int) -> dict:
         """
         async_set_lighting_v1_mode will set IR light (InfraRed light) mode and brightness
         Mode should be one of: Manual, Off, or Auto
@@ -1055,14 +1113,8 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_lighting_v2(
-        self,
-        channel: int,
-        enabled: bool,
-        brightness: int,
-        profile_mode: str,
-        light_index: int = 0,
-    ) -> dict:
+    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str,
+                                    light_index: int = 0, bank: str = "MiddleLight") -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
@@ -1078,9 +1130,9 @@ class DahuaClient:
         # light_index is which light this device calls the white one. It is 0 on
         # most models; some report 0 as the infrared emitter, and writing there
         # changes a light nobody can see. See illuminator_light_index.
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{light_index}].MiddleLight[0].Light={brightness}".format(
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{light_index}].{bank}[0].Light={brightness}".format(
             channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness,
-            light_index=light_index
+            light_index=light_index, bank=bank
         )
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
