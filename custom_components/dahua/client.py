@@ -340,13 +340,13 @@ def strip_dahua_snapshot_trailer(data: bytes) -> bytes:
 def lighting_scheme_illuminator_tables(
         lighting_scheme: list, lighting_v2: list, channel: int,
         profile_mode: int, light_index: int, enabled: bool,
-        brightness: int) -> tuple[list, list]:
+        brightness: int, restore_mode: str | None = None) -> tuple[list, list]:
     """Build the two complete tables used by dual-light Web5 cameras.
 
     On IPC-Color4M-TZ, selecting WhiteMode without configuring the white
     emitter does not light it, and configuring the emitter without selecting
-    WhiteMode does not light it either. Turning it off returns ownership to the
-    camera's AI mode while retaining the user's white-emitter settings.
+    WhiteMode does not light it either. Turning it off restores a captured mode.
+    Without one, do not guess: only stop a still-selected white emitter.
     """
     scheme = deepcopy(lighting_scheme)
     lighting = deepcopy(lighting_v2)
@@ -357,11 +357,14 @@ def lighting_scheme_illuminator_tables(
         raise ValueError("Dahua lighting tables do not contain the selected light") from None
     if not isinstance(scheme_row, dict) or not isinstance(light_row, dict):
         raise ValueError("Dahua lighting tables contain malformed rows")
+    current_mode = scheme_row.get("LightingMode")
+    if not isinstance(current_mode, str) or not current_mode:
+        raise ValueError("Dahua lighting scheme is missing LightingMode")
     if light_row.get("LightType") != "WhiteLight":
         raise ValueError("Selected Dahua light is not the white emitter")
 
-    scheme_row["LightingMode"] = "WhiteMode" if enabled else "AIMode"
     if enabled:
+        scheme_row["LightingMode"] = "WhiteMode"
         light_row["Mode"] = "Manual"
         light_row["PercentOfMaxBrightness"] = brightness
         for bank_name in ("NearLight", "MiddleLight", "FarLight"):
@@ -372,6 +375,10 @@ def lighting_scheme_illuminator_tables(
                 if not isinstance(emitter, dict):
                     raise ValueError("Dahua white-emitter entry is malformed")
                 emitter["Light"] = brightness
+    elif restore_mode is not None:
+        scheme_row["LightingMode"] = restore_mode
+    elif current_mode == "WhiteMode":
+        light_row["Mode"] = "Off"
     return scheme, lighting
 
 
@@ -422,6 +429,9 @@ class DahuaClient:
         # from under the other entries.
         self._rpc2_acquired = False
         self._rpc2_released = False
+        # Preserve the camera's policy while the illuminator temporarily owns
+        # a channel/profile. The entry is removed only after a successful off.
+        self._lighting_scheme_restore_modes: dict[tuple[int, int], str] = {}
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
         # includes the password, so the identity changes if the password does.
@@ -800,9 +810,11 @@ class DahuaClient:
         return {}
 
     async def async_get_lighting_scheme(self) -> dict:
-        """Read LightingScheme over the shared RPC2 session in CGI's shape."""
-        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
-            return await self._rpc2_get_config("LightingScheme")
+        """Read LightingScheme through CGI regardless of RPC2 polling mode."""
+        return await self._request(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=LightingScheme",
+            allow_rpc2=False,
+        )
 
     async def async_set_lighting_scheme_illuminator(
             self, channel: int, enabled: bool, brightness: int,
@@ -810,22 +822,47 @@ class DahuaClient:
         """Control a white emitter that needs LightingScheme and Lighting_V2.
 
         The IPC-Color4M-TZ physically requires both complete tables in one
-        Web5/RPC2 transaction. Partial CGI writes are accepted but do not light
-        the emitter.
+        Web5/RPC2 transaction. This user command opens the shared RPC2 session
+        even when RPC2 polling is disabled. Partial CGI writes are accepted but
+        do not light the emitter.
         """
         async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
             holder = await self._shared_rpc2()
             scheme_params = await holder.client.get_config({"name": "LightingScheme"})
             lighting_params = await holder.client.get_config({"name": "Lighting_V2"})
+            profile = int(profile_mode)
+            try:
+                current_mode = scheme_params["table"][channel][profile]["LightingMode"]
+            except (IndexError, KeyError, TypeError):
+                raise ValueError("Dahua lighting tables do not contain the selected scheme") from None
+            if not isinstance(current_mode, str) or not current_mode:
+                raise ValueError("Dahua lighting scheme is missing LightingMode")
+
+            key = (channel, profile)
+            restore_modes = getattr(self, "_lighting_scheme_restore_modes", None)
+            if restore_modes is None:
+                restore_modes = {}
+                self._lighting_scheme_restore_modes = restore_modes
+            restore_mode = None
+            if not enabled and current_mode == "WhiteMode":
+                restore_mode = restore_modes.get(key)
+            elif enabled and current_mode != "WhiteMode":
+                # Keep the recovery value even if the multicall reports a
+                # failure: an earlier nested write may already have selected
+                # WhiteMode, and a later off still needs a safe way back.
+                restore_modes[key] = current_mode
             scheme, lighting = lighting_scheme_illuminator_tables(
                 scheme_params.get("table"), lighting_params.get("table"), channel,
-                int(profile_mode), light_index, enabled, brightness,
+                profile, light_index, enabled, brightness, restore_mode,
             )
             clear_host_cache(self._address)
-            return await holder.client.set_configs([
+            response = await holder.client.set_configs([
                 ("LightingScheme", scheme),
                 ("Lighting_V2", lighting),
             ])
+            if not enabled:
+                restore_modes.pop(key, None)
+            return response
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
@@ -1535,11 +1572,11 @@ class DahuaClient:
 
         return dict(result)
 
-    async def _request(self, url: str, verify_ok=False) -> dict:
+    async def _request(self, url: str, verify_ok=False, allow_rpc2=True) -> dict:
         """Make the request. One caller per shared read reaches here."""
         # Not after close(): this client has given its share back, and taking
         # a new one would build a session nobody is left to release.
-        if (self._use_rpc2 and not self._rpc2_released
+        if (allow_rpc2 and self._use_rpc2 and not self._rpc2_released
                 and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE and not verify_ok):
             match = _CONFIG_READ.search(url)
             if match:

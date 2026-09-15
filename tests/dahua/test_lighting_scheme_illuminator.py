@@ -61,18 +61,40 @@ def test_turn_on_selects_white_mode_and_configures_every_white_emitter():
     assert original_lighting[0][1][1]["Mode"] == "ZoomPrio"
 
 
-def test_turn_off_returns_to_ai_without_overwriting_white_light_preferences():
+@pytest.mark.parametrize("restore_mode", ["AIMode", "InfraredMode"])
+def test_turn_off_restores_previous_scheme_without_overwriting_preferences(restore_mode):
     scheme, lighting = _tables()
     scheme[0][1]["LightingMode"] = "WhiteMode"
     lighting[0][1][1]["Mode"] = "Manual"
     before = _tables()[1]
 
     updated_scheme, updated_lighting = lighting_scheme_illuminator_tables(
-        scheme, lighting, 0, 1, 1, False, 100)
+        scheme, lighting, 0, 1, 1, False, 100, restore_mode)
 
-    assert updated_scheme[0][1]["LightingMode"] == "AIMode"
+    assert updated_scheme[0][1]["LightingMode"] == restore_mode
     assert updated_lighting == lighting
     assert before[0][1][1]["Mode"] == "ZoomPrio"
+
+
+def test_turn_off_without_saved_mode_does_not_guess_a_scheme():
+    scheme, lighting = _tables()
+    scheme[0][1]["LightingMode"] = "WhiteMode"
+    lighting[0][1][1]["Mode"] = "Manual"
+
+    updated_scheme, updated_lighting = lighting_scheme_illuminator_tables(
+        scheme, lighting, 0, 1, 1, False, 100)
+
+    assert updated_scheme[0][1]["LightingMode"] == "WhiteMode"
+    assert updated_lighting[0][1][1]["Mode"] == "Off"
+
+
+def test_turn_off_does_not_touch_an_inactive_scheme_without_saved_mode():
+    scheme, lighting = _tables()
+    updated_scheme, updated_lighting = lighting_scheme_illuminator_tables(
+        scheme, lighting, 0, 1, 1, False, 100)
+
+    assert updated_scheme == scheme
+    assert updated_lighting == lighting
 
 
 @pytest.mark.parametrize("light_index", [0, 3])
@@ -95,6 +117,7 @@ async def test_client_commits_both_complete_tables_in_one_rpc2_call(monkeypatch)
     client = object.__new__(DahuaClient)
     client._address = "192.0.2.1"
     client._host_limit = asyncio.Semaphore(1)
+    client._lighting_scheme_restore_modes = {}
     client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
     monkeypatch.setattr("custom_components.dahua.client.clear_host_cache", lambda _: None)
 
@@ -106,6 +129,109 @@ async def test_client_commits_both_complete_tables_in_one_rpc2_call(monkeypatch)
     assert [name for name, _table in calls] == ["LightingScheme", "Lighting_V2"]
     assert calls[0][1][0][1]["LightingMode"] == "WhiteMode"
     assert calls[1][1][0][1][1]["PercentOfMaxBrightness"] == 66
+    assert client._lighting_scheme_restore_modes == {(0, 1): "AIMode"}
+
+
+async def test_client_preserves_first_mode_across_brightness_changes(monkeypatch):
+    scheme, lighting = _tables()
+    scheme[0][1]["LightingMode"] = "InfraredMode"
+    rpc2 = SimpleNamespace(
+        get_config=AsyncMock(side_effect=[{"table": scheme}, {"table": lighting}]),
+        set_configs=AsyncMock(return_value={"result": True}),
+    )
+    client = object.__new__(DahuaClient)
+    client._address = "192.0.2.1"
+    client._host_limit = asyncio.Semaphore(1)
+    client._lighting_scheme_restore_modes = {}
+    client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
+    monkeypatch.setattr("custom_components.dahua.client.clear_host_cache", lambda _: None)
+
+    await client.async_set_lighting_scheme_illuminator(0, True, 40, 1, 1)
+    assert client._lighting_scheme_restore_modes == {(0, 1): "InfraredMode"}
+
+    scheme[0][1]["LightingMode"] = "WhiteMode"
+    rpc2.get_config.side_effect = [{"table": scheme}, {"table": lighting}]
+    await client.async_set_lighting_scheme_illuminator(0, True, 70, 1, 1)
+
+    assert client._lighting_scheme_restore_modes == {(0, 1): "InfraredMode"}
+
+
+async def test_client_restores_saved_mode_on_successful_turn_off(monkeypatch):
+    scheme, lighting = _tables()
+    scheme[0][1]["LightingMode"] = "WhiteMode"
+    lighting[0][1][1]["Mode"] = "Manual"
+    rpc2 = SimpleNamespace(
+        get_config=AsyncMock(side_effect=[{"table": scheme}, {"table": lighting}]),
+        set_configs=AsyncMock(return_value={"result": True}),
+    )
+    client = object.__new__(DahuaClient)
+    client._address = "192.0.2.1"
+    client._host_limit = asyncio.Semaphore(1)
+    client._lighting_scheme_restore_modes = {(0, 1): "InfraredMode"}
+    client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
+    monkeypatch.setattr("custom_components.dahua.client.clear_host_cache", lambda _: None)
+
+    await client.async_set_lighting_scheme_illuminator(0, False, 70, 1, 1)
+
+    configs = rpc2.set_configs.await_args.args[0]
+    assert configs[0][1][0][1]["LightingMode"] == "InfraredMode"
+    assert configs[1][1] == lighting
+    assert client._lighting_scheme_restore_modes == {}
+
+
+async def test_failed_turn_off_keeps_saved_mode(monkeypatch):
+    scheme, lighting = _tables()
+    scheme[0][1]["LightingMode"] = "WhiteMode"
+    rpc2 = SimpleNamespace(
+        get_config=AsyncMock(side_effect=[{"table": scheme}, {"table": lighting}]),
+        set_configs=AsyncMock(side_effect=ConnectionError("write failed")),
+    )
+    client = object.__new__(DahuaClient)
+    client._address = "192.0.2.1"
+    client._host_limit = asyncio.Semaphore(1)
+    client._lighting_scheme_restore_modes = {(0, 1): "AIMode"}
+    client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
+    monkeypatch.setattr("custom_components.dahua.client.clear_host_cache", lambda _: None)
+
+    with pytest.raises(ConnectionError):
+        await client.async_set_lighting_scheme_illuminator(0, False, 70, 1, 1)
+
+    assert client._lighting_scheme_restore_modes == {(0, 1): "AIMode"}
+
+
+async def test_failed_turn_on_keeps_mode_for_partial_write_recovery(monkeypatch):
+    scheme, lighting = _tables()
+    scheme[0][1]["LightingMode"] = "InfraredMode"
+    rpc2 = SimpleNamespace(
+        get_config=AsyncMock(side_effect=[{"table": scheme}, {"table": lighting}]),
+        set_configs=AsyncMock(side_effect=ConnectionError("nested write failed")),
+    )
+    client = object.__new__(DahuaClient)
+    client._address = "192.0.2.1"
+    client._host_limit = asyncio.Semaphore(1)
+    client._lighting_scheme_restore_modes = {}
+    client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
+    monkeypatch.setattr("custom_components.dahua.client.clear_host_cache", lambda _: None)
+
+    with pytest.raises(ConnectionError):
+        await client.async_set_lighting_scheme_illuminator(0, True, 70, 1, 1)
+
+    assert client._lighting_scheme_restore_modes == {(0, 1): "InfraredMode"}
+
+
+async def test_lighting_scheme_reads_force_cgi():
+    client = object.__new__(DahuaClient)
+    client._request = AsyncMock(return_value={
+        "table.LightingScheme[0][0].LightingMode": "AIMode"
+    })
+
+    result = await client.async_get_lighting_scheme()
+
+    assert result["table.LightingScheme[0][0].LightingMode"] == "AIMode"
+    client._request.assert_awaited_once_with(
+        "/cgi-bin/configManager.cgi?action=getConfig&name=LightingScheme",
+        allow_rpc2=False,
+    )
 
 
 async def test_rpc2_multicall_carries_complete_tables_and_session():
