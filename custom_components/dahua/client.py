@@ -249,20 +249,17 @@ def _is_read(url: str) -> bool:
     return READ_ACTION_PREFIX in url
 
 
-def clear_host_cache(address: str, port=None) -> None:
-    """Drop the shared reads for a device, or for every device at an address.
+def clear_host_cache(scope: str) -> None:
+    """Drop the shared reads for one device, or for every device at an address.
 
-    Called on every write, since a write is the reason a value the device
-    reports would change, and when the last entry for the address goes away.
-    A write is only a reason to distrust what *that* device said, so the write
-    path names its port; the teardown has only the address, and dropping
-    everything behind it is right because the connector is going with it.
+    `scope` is either a device key ("10.0.0.1:80") or a bare address
+    ("10.0.0.1"), which matches every device behind it. A write is only a reason
+    to distrust what *that* device said, so the write path passes its own key;
+    the connector teardown has only the address, and dropping everything behind
+    it is right there because the connector is going too.
     """
-    if port is None:
-        stale = [k for k in _HOST_CACHE if k[0].startswith(address + ":")]
-    else:
-        device = _device_key(address, port)
-        stale = [k for k in _HOST_CACHE if k[0] == device]
+    stale = [k for k in _HOST_CACHE
+             if k[0] == scope or k[0].startswith(scope + ":")]
     for key in stale:
         del _HOST_CACHE[key]
 
@@ -916,7 +913,7 @@ class DahuaClient:
                 scheme_params.get("table"), lighting_params.get("table"), channel,
                 profile, light_index, enabled, brightness, restore_mode,
             )
-            clear_host_cache(self._address, self._port)
+            clear_host_cache(self._device)
             response = await holder.client.set_configs([
                 ("LightingScheme", scheme),
                 ("Lighting_V2", lighting),
@@ -1606,7 +1603,7 @@ class DahuaClient:
         how their identities got swapped (#664).
         """
         if not _is_read(url):
-            clear_host_cache(self._address, self._port)
+            clear_host_cache(self._device)
             return await self._request(url, verify_ok)
 
         # Credentials are part of the key: entries for one device may be
