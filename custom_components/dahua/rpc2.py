@@ -238,10 +238,16 @@ class DahuaRpc2Client:
             })
         response = await self.request(method="system.multicall", params=calls)
         results = response.get("params")
-        if isinstance(results, list) and any(
-                isinstance(result, dict) and result.get("result") is False
-                for result in results):
-            raise ConnectionError("Dahua RPC2 system.multicall contained a failed config write")
+        if (
+                not isinstance(results, list)
+                or len(results) != len(calls)
+                or any(
+                    not isinstance(result, dict) or result.get("result") is not True
+                    for result in results
+                )):
+            raise ConnectionError(
+                "Dahua RPC2 system.multicall did not confirm every config write"
+            )
         return response
 
     async def get_device_name(self) -> str:

@@ -276,6 +276,27 @@ async def test_rpc2_multicall_rejects_a_nested_failure():
         ])
 
 
+@pytest.mark.parametrize("params", [
+    None,
+    [],
+    [{"result": True}],
+    [{"result": True}, {}],
+    [{"result": True}, "OK"],
+])
+async def test_rpc2_multicall_requires_confirmation_for_every_write(params):
+    rpc2 = object.__new__(DahuaRpc2Client)
+    rpc2._id = 0
+    rpc2._session_id = "session-1"
+    rpc2.request = AsyncMock(return_value={"result": True, "params": params})
+    scheme, lighting = _tables()
+
+    with pytest.raises(ConnectionError):
+        await rpc2.set_configs([
+            ("LightingScheme", scheme),
+            ("Lighting_V2", lighting),
+        ])
+
+
 def _coordinator(scheme_mode="AIMode", light_mode="ZoomPrio"):
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator.model = "IPC-Color4M-TZ"
