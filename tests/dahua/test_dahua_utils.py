@@ -73,6 +73,7 @@ class TestParseEvent:
 
         assert len(events) == 1
         assert events[0]["Code"] == "CrossRegionDetection"
+        assert events[0]["data"]["Encoded"] == "dGVzdA=="
 
     def test_equals_in_non_json_data_preserved(self):
         """Bug #477: non-JSON data containing '=' is preserved intact."""
