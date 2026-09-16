@@ -532,6 +532,18 @@ def async_record_host_failure(hass: HomeAssistant, address: str, entry_id: str) 
 
 
 @callback
+def async_host_is_unreachable(address: str) -> bool:
+    """Whether this host has failed enough polls to be called unreachable.
+
+    The same count and threshold the unreachable repair card is raised on, so
+    what an entity says about a device and what the card says about it cannot
+    disagree. One dropped poll is not an answer to this question.
+    """
+    state = _HOST_FAILURES.get(normalize_address(address))
+    return bool(state and state["consecutive"] >= UNREACHABLE_AFTER_FAILURES)
+
+
+@callback
 def async_record_host_success(hass: HomeAssistant, address: str) -> None:
     """The device answered, so withdraw anything we said about it.
 
