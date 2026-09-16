@@ -355,7 +355,7 @@ async def test_status_is_still_polled_every_cycle():
     c = _client(probe)
 
     await c.get(PTZ_STATUS)
-    client_module._HOST_CACHE[(c._address, "u", PTZ_STATUS)].expires_at = 0
+    client_module._HOST_CACHE[(c._device, "u", PTZ_STATUS)].expires_at = 0
     await c.get(PTZ_STATUS)
 
     assert probe.calls == 2, "a status read was served stale"

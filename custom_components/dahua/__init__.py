@@ -146,6 +146,27 @@ def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0
     return 0.0
 
 
+def vto_retry_state(lived_seconds: float, consecutive_failures: int,
+                    received_data: bool) -> tuple:
+    """How long to wait before re-attaching to a doorbell, and the new count.
+
+    The doorbell's event connection had two fixed delays -- five seconds after a
+    disconnect, thirty after a failure -- and no notion of a device that is
+    simply refusing. A doorbell that has been unplugged was therefore contacted
+    2,880 times a day, forever, where the same device as an IP camera would have
+    been backed off to one attempt every ten minutes.
+
+    The rule is the one the camera stream already uses, and it judges on whether
+    the device spoke rather than on how long the socket lasted: `received_data`
+    resets the count and makes the lifetime count for something, and its absence
+    means this attach achieved nothing however long it sat there.
+    """
+    failures = 0 if received_data else consecutive_failures + 1
+    delay = event_stream_retry_delay(
+        stream_lifetime(lived_seconds, received_data), failures, received_data)
+    return delay, failures
+
+
 # A single missed poll is a blip -- a snapshot timing out, a device busy writing
 # to disk -- and backing off on one would make the integration feel sluggish for
 # no reason. Past that, the device is not answering and polling it on the
@@ -952,7 +973,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
+        consecutive_failures = 0
         while True:
+            protocol = None
+            started = time.monotonic()
             try:
                 _LOGGER.debug("Connecting to VTO event stream at %s", self._address)
                 loop = asyncio.get_event_loop()
@@ -969,19 +993,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
                 self._vto_client = protocol
                 await protocol.disconnected
-                _LOGGER.warning(
-                    "Disconnected from VTO at %s, reconnecting in 5s", self._address
-                )
-                await asyncio.sleep(5)
             except asyncio.CancelledError:
                 raise
             except Exception as ex:
-                _LOGGER.error(
-                    "VTO connection to %s failed, retrying in 30s: %s",
-                    self._address,
-                    ex,
-                )
-                await asyncio.sleep(30)
+                delay, consecutive_failures = vto_retry_state(
+                    time.monotonic() - started, consecutive_failures,
+                    getattr(protocol, "received_data", False))
+                _LOGGER.error("VTO connection to %s failed, retrying in %ss: %s",
+                              self._address, round(delay), ex)
+                await asyncio.sleep(delay)
+                continue
+
+            delay, consecutive_failures = vto_retry_state(
+                time.monotonic() - started, consecutive_failures, protocol.received_data)
+            if delay:
+                _LOGGER.warning("Disconnected from VTO at %s, reconnecting in %ss",
+                                self._address, round(delay))
+                await asyncio.sleep(delay)
+            else:
+                # It was connected and talking, so the socket ending is not the
+                # device refusing us. Go straight back.
+                _LOGGER.warning("Disconnected from VTO at %s, reconnecting", self._address)
 
     async def async_stop(self, event: Any = None):
         """Stop anything we need to stop"""
@@ -1402,9 +1434,49 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # debug-logging instructions for what is often a one-word answer.
             raise UpdateFailed(detail) from exception
 
+    def _handle_anpr_plate(self, event: dict):
+        """Extract license plate data from event, fire ANPR events, and notify plate listeners."""
+        plate_info = dahua_utils.extract_plate_data(event)
+        if plate_info and plate_info.get("plate"):
+            plate_info["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            self._last_plate_data = plate_info
+            self._last_plate_timestamp = int(time.time())
+            event["PlateNumber"] = plate_info["plate"]
+            event["PlateData"] = plate_info
+            _LOGGER.info(
+                "Dahua ANPR Plate detected on %s: %s (event %s)",
+                self.get_device_name(),
+                plate_info["plate"],
+                event.get("Code"),
+            )
+            # Dedicated event on Home Assistant event bus
+            anpr_event_data = {
+                "device_name": self.get_device_name(),
+                "channel": self._channel,
+                "plate": plate_info["plate"],
+                "raw_plate": plate_info.get("raw_plate"),
+                "confidence": plate_info.get("confidence"),
+                "vehicle_type": plate_info.get("vehicle_type"),
+                "vehicle_color": plate_info.get("vehicle_color"),
+                "vehicle_brand": plate_info.get("vehicle_brand"),
+                "vehicle_series": plate_info.get("vehicle_series"),
+                "direction": plate_info.get("direction"),
+                "is_authorized": self.is_plate_authorized(plate_info["plate"]),
+                "raw_event_code": event.get("Code"),
+                "timestamp": self._last_plate_timestamp,
+            }
+            self.hass.bus.fire(EVENT_DAHUA_ANPR_RECOGNIZED, anpr_event_data)
+
+            for listener in self._plate_listeners:
+                try:
+                    listener()
+                except Exception as ex:
+                    _LOGGER.warning("Error calling plate listener: %s", ex)
+
     def on_receive_vto_event(self, event: dict):
         event["DeviceName"] = self.get_device_name()
         _LOGGER.debug(f"VTO Data received: {event}")
+        self._handle_anpr_plate(event)
         self.hass.bus.fire("dahua_event_received", event)
 
         # Example events:
@@ -1515,42 +1587,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
         # Check for license plate data in the event
-        plate_info = dahua_utils.extract_plate_data(event)
-        if plate_info and plate_info.get("plate"):
-            plate_info["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-            self._last_plate_data = plate_info
-            self._last_plate_timestamp = int(time.time())
-            event["PlateNumber"] = plate_info["plate"]
-            event["PlateData"] = plate_info
-            _LOGGER.info(
-                "Dahua ANPR Plate detected on %s: %s (event %s)",
-                self.get_device_name(),
-                plate_info["plate"],
-                event.get("Code"),
-            )
-            # Dedicated event on Home Assistant event bus
-            anpr_event_data = {
-                "device_name": self.get_device_name(),
-                "channel": self._channel,
-                "plate": plate_info["plate"],
-                "raw_plate": plate_info.get("raw_plate"),
-                "confidence": plate_info.get("confidence"),
-                "vehicle_type": plate_info.get("vehicle_type"),
-                "vehicle_color": plate_info.get("vehicle_color"),
-                "vehicle_brand": plate_info.get("vehicle_brand"),
-                "vehicle_series": plate_info.get("vehicle_series"),
-                "direction": plate_info.get("direction"),
-                "is_authorized": self.is_plate_authorized(plate_info["plate"]),
-                "raw_event_code": event.get("Code"),
-                "timestamp": self._last_plate_timestamp,
-            }
-            self.hass.bus.fire(EVENT_DAHUA_ANPR_RECOGNIZED, anpr_event_data)
-
-            for listener in self._plate_listeners:
-                try:
-                    listener()
-                except Exception as ex:
-                    _LOGGER.warning("Error calling plate listener: %s", ex)
+        self._handle_anpr_plate(event)
 
         # Put the event on the HA event bus
         event["name"] = self.get_device_name()
@@ -1683,9 +1720,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Returns true if this is a doorbell (VTO)"""
         m = self.model.upper()
         return (
-            m.startswith("VTO")
-            or m.startswith("DH-VTO")
-            or ("NVR" not in m and m.startswith("DHI"))
+            m.startswith(("VTO", "DH-VTO", "DHI-VTO", "DH_VTO", "DHI_VTO"))
+            or "-VTO" in m
+            or "_VTO" in m
             or self.is_amcrest_doorbell()
             or self.is_empiretech_doorbell()
             or self.is_avaloidgoliath_doorbell()
