@@ -650,7 +650,7 @@ class DahuaHostEventStream:
         self._received_data = False
         # EventManager is multipart and aiohttp yields arbitrary chunk sizes.
         # Large event payloads (metadata) are often split across chunks.
-        self._stream_buffer = ""
+        self._stream_buffer = b""
 
     @property
     def coordinators(self) -> list:
@@ -712,7 +712,7 @@ class DahuaHostEventStream:
         self._by_channel.clear()
         self._owner = None
         self._events = frozenset()
-        self._stream_buffer = ""
+        self._stream_buffer = b""
 
     async def _async_run(self) -> None:
         """Hold the stream open, recycling it the way a single channel used to."""
@@ -803,18 +803,47 @@ class DahuaHostEventStream:
         # refusing to attach.
         self._received_data = True
 
-        self._stream_buffer += data_bytes.decode("utf-8", errors="ignore")
+        self._stream_buffer += data_bytes
 
-        boundaries = [
-            match.start()
-            for match in re.finditer(r"--myboundary\r?\n", self._stream_buffer)
-        ]
-        if len(boundaries) < 2:
-            return
+        while True:
+            boundary = re.search(rb"--myboundary\r?\n", self._stream_buffer)
+            if boundary is None:
+                return
+            if boundary.start():
+                self._stream_buffer = self._stream_buffer[boundary.start():]
+                boundary = re.match(rb"--myboundary\r?\n", self._stream_buffer)
 
-        for idx in range(len(boundaries) - 1):
-            block = self._stream_buffer[boundaries[idx]:boundaries[idx + 1]]
-            events = parse_event(block)
+            headers_start = boundary.end()
+            header_end = re.search(rb"\r?\n\r?\n", self._stream_buffer[headers_start:])
+            if header_end is None:
+                return
+            body_start = headers_start + header_end.end()
+            headers = self._stream_buffer[headers_start:headers_start + header_end.start()]
+            content_length = None
+            for line in headers.splitlines():
+                if line.lower().startswith(b"content-length:"):
+                    value = line.split(b":", 1)[1].strip()
+                    if value.isdigit():
+                        content_length = int(value)
+                    break
+
+            if content_length is not None:
+                block_end = body_start + content_length
+                if len(self._stream_buffer) < block_end:
+                    return
+            else:
+                next_boundary = re.search(
+                    rb"--myboundary\r?\n", self._stream_buffer[body_start:]
+                )
+                if next_boundary is None:
+                    return
+                block_end = body_start + next_boundary.start()
+
+            block = self._stream_buffer[:block_end]
+            self._stream_buffer = self._stream_buffer[block_end:]
+            events = parse_event(
+                block.decode("utf-8", errors="ignore").replace("\r\n", "\n")
+            )
             for event in events:
                 event_index = 0
                 if "index" in event:
@@ -827,8 +856,6 @@ class DahuaHostEventStream:
                 # when every coordinator discarded it.
                 for coordinator in self._by_channel.get(event_index, ()):
                     coordinator.handle_event(dict(event))
-
-        self._stream_buffer = self._stream_buffer[boundaries[-1]:]
 
 
 # address -> DahuaHostEventStream

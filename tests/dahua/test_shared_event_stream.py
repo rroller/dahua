@@ -16,7 +16,7 @@ ADDRESS = "10.0.0.1"
 MOTION_CH2 = (
     b"--myboundary\n"
     b"Content-Type: text/plain\n"
-    b"Content-Length: 40\n"
+    b"Content-Length: 38\n"
     b"\n"
     b"Code=VideoMotion;action=Start;index=2\n"
 )
@@ -161,6 +161,20 @@ async def test_an_event_reaches_only_its_own_channel(hass):
     assert channels[2].handled[0]["Code"] == "VideoMotion"
     for i in (0, 1, 3):
         assert channels[i].handled == [], f"channel {i} received another channel's event"
+
+
+async def test_event_split_across_chunks_waits_for_complete_body(hass):
+    stream = _host_stream(hass, ADDRESS)
+    coordinator = _Coordinator(2, ["VideoMotion"])
+    stream.register(coordinator)
+    await _settle()
+
+    stream.on_receive(MOTION_CH2[:-5], 0)
+    assert coordinator.handled == []
+
+    stream.on_receive(MOTION_CH2[-5:], 0)
+    assert len(coordinator.handled) == 1
+    assert coordinator.handled[0]["Code"] == "VideoMotion"
 
 
 async def test_an_unconfigured_channel_stays_silent(hass):
