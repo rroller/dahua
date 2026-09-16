@@ -1916,12 +1916,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ True if smart motion detection is supported for an amcrest device"""
         return self.model == "AD410" or self.model == "DB61i"
 
-    def get_vto_client(self) -> DahuaVTOClient:
+    def get_vto_client(self) -> DahuaVTOClient | None:
+        """The doorbell's client, or None when there is not a live one.
+
+        Returns an instance of the connected VTO client if this is a VTO device.
+        We need this because there's different ways to call a VTO device and the
+        VTO client will handle that. For example, to hang up a call.
+
+        `_vto_client` is only ever assigned, never cleared, so after a drop it
+        goes on naming a protocol whose socket has gone -- and a doorbell
+        reconnects often enough for that to be reachable. `disconnected` is the
+        future the protocol resolves when its connection ends, so a client
+        holding a finished one is a client there is no point handing out.
         """
-        Returns an instance of the connected VTO client if this is a VTO device. We need this because there's different
-        ways to call a VTO device and the VTO client will handle that. For example, to hang up a call
-        """
-        return self._vto_client
+        client = self._vto_client
+        if client is None or client.disconnected.done():
+            return None
+        return client
 
     def get_status_value(self, key):
         v = self.data.get(f"status.status.{key}")
