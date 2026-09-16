@@ -809,6 +809,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.platforms = []
         self.initialized = False
         self.model = ""
+        self._firmware_version = ""
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
@@ -1011,6 +1012,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.model = device_type
                 self.machine_name = data.get("table.General.MachineName")
                 self._serial_number = data.get("serialNumber")
+                self._firmware_version = data.get("version") or ""
 
                 # Some Dahua firmwares index channels from 0, others from 1. The default
                 # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
@@ -1594,8 +1596,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self.model
 
     def get_firmware_version(self) -> str:
-        """ returns the device firmware e.g. """
-        return self.data.get("version")
+        """The firmware the device reported, e.g. 2.800.0000016.0.R.
+
+        Kept on the coordinator rather than read back out of ``data``.
+        The poll rebuilds that dict from scratch every cycle and only the
+        one-time initialization ever puts a version in it, so anything
+        reading it there got an answer on the first refresh and nothing
+        at all from the second one onwards.
+        """
+        return self._firmware_version
 
     def get_build_date(self) -> str:
         """Return the firmware build date, e.g. 2020-06-05, if known.
@@ -1603,7 +1612,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         The CGI endpoint returns strings like
         ``2.800.0000016.0.R,build:2020-06-05``; peel the date off.
         """
-        version = self.data.get("version") or ""
+        version = self._firmware_version
         if "build:" in version:
             return version.rsplit("build:", 1)[-1].strip()
         return ""
