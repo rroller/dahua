@@ -837,7 +837,7 @@ class DahuaClient:
                 continue
             try:
                 preset_id = int(value)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 continue
             if preset_id > 0:
                 preset_ids.add(preset_id)
@@ -897,7 +897,7 @@ class DahuaClient:
             )
             try:
                 interval = max(float(interval) - RPC2_KEEPALIVE_MARGIN_SECONDS, 5.0)
-            except TypeError, ValueError:
+            except (TypeError, ValueError):
                 interval = (
                     RPC2_KEEPALIVE_FALLBACK_SECONDS - RPC2_KEEPALIVE_MARGIN_SECONDS
                 )
