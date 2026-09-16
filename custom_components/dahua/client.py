@@ -1545,9 +1545,40 @@ class DahuaClient:
             response = await auth.request("GET", url, timeout=timeout)
             response.raise_for_status()
 
-            # https://docs.aiohttp.org/en/stable/streams.html
+            # Buffer chunks until boundary delimiters so large event payloads (e.g. ANPR JSON)
+            # are never split across TCP chunk boundaries.
+            boundary = b"--myboundary"
+            content_type = response.headers.get("Content-Type", "")
+            if "boundary=" in content_type:
+                b_val = content_type.split("boundary=")[1].split(";")[0].strip().strip('"\'')
+                if b_val:
+                    boundary = b"--" + b_val.encode()
+
+            buffer = b""
             async for data, _ in response.content.iter_chunks():
-                on_receive(data, channel)
+                # If stream contains multipart boundaries, buffer chunks until boundary delimiters
+                # so large event payloads (e.g. ANPR JSON) are never split across TCP chunk boundaries.
+                if boundary in data or boundary in buffer:
+                    buffer += data
+                    while True:
+                        idx1 = buffer.find(boundary)
+                        if idx1 == -1:
+                            if len(buffer) > 131072:
+                                buffer = buffer[-4096:]
+                            break
+                        idx2 = buffer.find(boundary, idx1 + len(boundary))
+                        if idx2 == -1:
+                            if idx1 > 0:
+                                buffer = buffer[idx1:]
+                            break
+                        complete_part = buffer[idx1:idx2]
+                        buffer = buffer[idx2:]
+                        on_receive(complete_part, channel)
+                else:
+                    on_receive(data, channel)
+
+            if buffer and buffer.startswith(boundary) and len(buffer.strip()) > len(boundary):
+                on_receive(buffer, channel)
         finally:
             if response is not None:
                 response.close()

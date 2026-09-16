@@ -170,3 +170,21 @@ async def test_chunks_still_reach_the_handler_before_the_close():
         await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
 
     assert got == [b"a", b"b", b"c"]
+
+
+async def test_multipart_chunks_are_buffered_until_boundary():
+    """Verify that split TCP chunks of a multipart event are buffered and delivered as a complete block."""
+    got = []
+    # Event split across two chunks, followed by a third chunk with next boundary
+    chunks = [
+        b"--myboundary\r\nContent-Type: text/plain\r\n\r\nCode=TrafficParking;data={\"part\": 1,",
+        b" \"part\": 2}\r\n--myboundary\r\nContent-Type: text/plain\r\n\r\nHeartbeat\r\n--myboundary\r\n"
+    ]
+    client = DahuaClient("u", "p", "d", 80, 554, _EndingSession(chunks=chunks))
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
+
+    assert len(got) == 2
+    assert b"\"part\": 1, \"part\": 2" in got[0]
+    assert b"Heartbeat" in got[1]
