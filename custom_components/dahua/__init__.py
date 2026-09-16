@@ -208,6 +208,29 @@ def illuminator_brightness_bank(data: dict, channel: int, profile_mode, light_in
     return LIGHT_BRIGHTNESS_BANKS[0]
 
 
+WHITE_LIGHT_SCHEME = "WhiteMode"
+
+
+def scheme_blocking_white_light(data: dict, channel: int, profile_mode):
+    """The LightingScheme mode stopping the white light, or None if nothing is.
+
+    Writing the right Lighting_V2 row is not always enough. On Smart Dual Light
+    cameras a separate setting decides which emitter the camera is willing to
+    use, and while it reads AIMode or InfraredMode the white light stays off
+    whatever is written -- the value is stored, Home Assistant reports the light
+    on, and nothing lights up. Measured on a DH-IPC-HFW3449E-S-IL in #647.
+
+    Returns None when the device reports no scheme at all, which is every camera
+    that predates this: absent is not blocking.
+    """
+    mode = data.get(
+        "table.LightingScheme[{0}][{1}].LightingMode".format(channel, profile_mode)
+    )
+    if mode is None or mode == WHITE_LIGHT_SCHEME:
+        return None
+    return mode
+
+
 def illuminator_light_index(data: dict, channel: int, profile_mode) -> int:
     """Which Lighting_V2 light index is the white illuminator on this device.
 
