@@ -176,6 +176,27 @@ def _digest_state(address: str, username: str) -> dict:
     return state
 
 
+def _overlay_text(*parts: str) -> str:
+    """Join the lines of a title or overlay, each one safe to put in a URL.
+
+    The pipe is Dahua's line separator and has to arrive as a pipe, so the parts
+    are escaped and the separator is not.
+
+    Escaping them matters more than it looks. The text went into the URL raw,
+    and yarl then encodes the query on the way out -- a space becomes "+", which
+    this firmware stores literally. Measured on a DHI-NVR5464-16P-EI:
+
+        ChannelTitle[14].Name=Channel+1    -> stored as "Channel+1"
+        ChannelTitle[14].Name=Channel%201  -> stored as "Channel 1"
+
+    So every camera name with a space in it was being written back wrong, and
+    the device answers OK either way. A "#" is quieter still: yarl reads the
+    rest of the value as a URL fragment and the request line never carries it,
+    so "Gate#2" arrives as "Gate".
+    """
+    return "|".join(quote(part, safe="") for part in parts if part)
+
+
 # Most of what a coordinator reads every poll carries no channel argument:
 # MotionDetect, DisableLinkage, DisableEventNotify, SmartMotionDetect,
 # Lighting_V2, VideoInMode, coaxialControlIO and ptz.cgi are all host-wide. An
@@ -1154,7 +1175,7 @@ class DahuaClient:
 
     async def async_set_service_set_channel_title(self, channel: int, text1: str, text2: str):
         """ async_set_service_set_channel_title sets the channel title """
-        text = '|'.join(filter(None, [text1, text2]))
+        text = _overlay_text(text1, text2)
         url = "/cgi-bin/configManager.cgi?action=setConfig&ChannelTitle[{0}].Name={1}".format(
             channel, text
         )
@@ -1165,7 +1186,7 @@ class DahuaClient:
     async def async_set_service_set_text_overlay(self, channel: int, group: int, text1: str, text2: str, text3: str,
                                                  text4: str):
         """ async_set_service_set_text_overlay sets the video text overlay """
-        text = '|'.join(filter(None, [text1, text2, text3, text4]))
+        text = _overlay_text(text1, text2, text3, text4)
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].CustomTitle[{1}].Text={2}".format(
             channel, group, text
         )
@@ -1175,7 +1196,7 @@ class DahuaClient:
 
     async def async_set_service_set_custom_overlay(self, channel: int, group: int, text1: str, text2: str):
         """ async_set_service_set_custom_overlay sets the customer overlay on the video"""
-        text = '|'.join(filter(None, [text1, text2]))
+        text = _overlay_text(text1, text2)
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].UserDefinedTitle[{1}].Text={2}".format(
             channel, group, text
         )
