@@ -79,6 +79,7 @@ class DahuaVTOClient(asyncio.Protocol):
         self.on_receive_vto_event = on_receive_vto_event
         self._loop = asyncio.get_event_loop()
         self.disconnected = self._loop.create_future()
+        self.received_data = False
 
     def connection_made(self, transport):
         _LOGGER.debug("VTO connection established")
@@ -94,6 +95,12 @@ class DahuaVTOClient(asyncio.Protocol):
 
     def data_received(self, data):
         _LOGGER.debug(f"Event data {self.host}: '{data}'")
+
+        # Whether this device has said anything at all on this connection --
+        # a login reply, a keepAlive answer, an event. The reconnect decision
+        # needs it to tell a doorbell that is refusing us from one that is
+        # simply quiet, which most front doors are for hours at a time.
+        self.received_data = True
 
         self.buffer += data
 
