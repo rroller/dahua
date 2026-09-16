@@ -3,6 +3,7 @@
 import logging
 import re
 import socket
+from copy import deepcopy
 from contextlib import suppress
 import asyncio
 import time
@@ -341,6 +342,72 @@ def strip_dahua_snapshot_trailer(data: bytes) -> bytes:
     return data[:end + 2]
 
 
+# A device that answers and refuses has told us something about itself. One that
+# never answers has told us about this moment.
+TRANSIENT_RPC2_FAILURES = (TimeoutError, aiohttp.ClientConnectionError)
+
+
+def rpc2_failure_is_permanent(exception: BaseException) -> bool:
+    """Whether an RPC2 failure should rule the transport out for this host.
+
+    The verdict is permanent for the life of the process, so it has to mean
+    "this device does not speak RPC2" rather than "this read did not come back".
+    Every exception used to count, which made a single timeout during one busy
+    moment switch a working device back to a login per call until Home Assistant
+    was restarted -- silently, since the fallback works.
+
+    Observed on a DHI-NVR5464-16P-EI: nine reads timed out within the same
+    second, two hours after startup, on a host that had been serving RPC2
+    perfectly well and went on being able to.
+    """
+    return not isinstance(exception, TRANSIENT_RPC2_FAILURES)
+
+
+def lighting_scheme_illuminator_tables(
+        lighting_scheme: list, lighting_v2: list, channel: int,
+        profile_mode: int, light_index: int, enabled: bool,
+        brightness: int, restore_mode: str | None = None) -> tuple[list, list]:
+    """Build the two complete tables used by dual-light Web5 cameras.
+
+    On IPC-Color4M-TZ, selecting WhiteMode without configuring the white
+    emitter does not light it, and configuring the emitter without selecting
+    WhiteMode does not light it either. Turning it off restores a captured mode.
+    Without one, do not guess: only stop a still-selected white emitter.
+    """
+    scheme = deepcopy(lighting_scheme)
+    lighting = deepcopy(lighting_v2)
+    try:
+        scheme_row = scheme[channel][profile_mode]
+        light_row = lighting[channel][profile_mode][light_index]
+    except (IndexError, KeyError, TypeError):
+        raise ValueError("Dahua lighting tables do not contain the selected light") from None
+    if not isinstance(scheme_row, dict) or not isinstance(light_row, dict):
+        raise ValueError("Dahua lighting tables contain malformed rows")
+    current_mode = scheme_row.get("LightingMode")
+    if not isinstance(current_mode, str) or not current_mode:
+        raise ValueError("Dahua lighting scheme is missing LightingMode")
+    if light_row.get("LightType") != "WhiteLight":
+        raise ValueError("Selected Dahua light is not the white emitter")
+
+    if enabled:
+        scheme_row["LightingMode"] = "WhiteMode"
+        light_row["Mode"] = "Manual"
+        light_row["PercentOfMaxBrightness"] = brightness
+        for bank_name in ("NearLight", "MiddleLight", "FarLight"):
+            bank = light_row.get(bank_name, [])
+            if not isinstance(bank, list):
+                raise ValueError("Dahua white-emitter bank is malformed")
+            for emitter in bank:
+                if not isinstance(emitter, dict):
+                    raise ValueError("Dahua white-emitter entry is malformed")
+                emitter["Light"] = brightness
+    elif restore_mode is not None:
+        scheme_row["LightingMode"] = restore_mode
+    elif current_mode == "WhiteMode":
+        light_row["Mode"] = "Off"
+    return scheme, lighting
+
+
 class DahuaClient:
     """
     DahuaClient is the client for accessing Dahua IP Cameras. The APIs were discovered from the "API of HTTP Protocol Specification" V2.76 2019-07-25 document
@@ -388,6 +455,9 @@ class DahuaClient:
         # from under the other entries.
         self._rpc2_acquired = False
         self._rpc2_released = False
+        # Preserve the camera's policy while the illuminator temporarily owns
+        # a channel/profile. The entry is removed only after a successful off.
+        self._lighting_scheme_restore_modes: dict[tuple[int, int], str] = {}
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
         # includes the password, so the identity changes if the password does.
@@ -520,6 +590,16 @@ class DahuaClient:
         url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel={channel}".format(
             channel=channel
         )
+        return await self.get(url)
+
+    async def async_get_lighting_scheme(self) -> dict:
+        """Which emitter the camera is willing to use, on Smart Dual Light models.
+
+        Deliberately not part of the poll. This is read when a light command is
+        given -- rare, and user initiated -- rather than on every poll for the
+        sake of a warning most devices never need.
+        """
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=LightingScheme"
         return await self.get(url)
 
     async def async_get_lighting_v2(self) -> dict:
@@ -795,6 +875,61 @@ class DahuaClient:
                 if attempt == 2:
                     raise
         return {}
+
+    async def async_get_lighting_scheme(self) -> dict:
+        """Read LightingScheme through CGI regardless of RPC2 polling mode."""
+        return await self._request(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=LightingScheme",
+            allow_rpc2=False,
+        )
+
+    async def async_set_lighting_scheme_illuminator(
+            self, channel: int, enabled: bool, brightness: int,
+            profile_mode: int, light_index: int) -> dict:
+        """Control a white emitter that needs LightingScheme and Lighting_V2.
+
+        The IPC-Color4M-TZ physically requires both complete tables in one
+        Web5/RPC2 transaction. This user command opens the shared RPC2 session
+        even when RPC2 polling is disabled. Partial CGI writes are accepted but
+        do not light the emitter.
+        """
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            holder = await self._shared_rpc2()
+            scheme_params = await holder.client.get_config({"name": "LightingScheme"})
+            lighting_params = await holder.client.get_config({"name": "Lighting_V2"})
+            profile = int(profile_mode)
+            try:
+                current_mode = scheme_params["table"][channel][profile]["LightingMode"]
+            except (IndexError, KeyError, TypeError):
+                raise ValueError("Dahua lighting tables do not contain the selected scheme") from None
+            if not isinstance(current_mode, str) or not current_mode:
+                raise ValueError("Dahua lighting scheme is missing LightingMode")
+
+            key = (channel, profile)
+            restore_modes = getattr(self, "_lighting_scheme_restore_modes", None)
+            if restore_modes is None:
+                restore_modes = {}
+                self._lighting_scheme_restore_modes = restore_modes
+            restore_mode = None
+            if not enabled and current_mode == "WhiteMode":
+                restore_mode = restore_modes.get(key)
+            elif enabled and current_mode != "WhiteMode":
+                # Keep the recovery value even if the multicall reports a
+                # failure: an earlier nested write may already have selected
+                # WhiteMode, and a later off still needs a safe way back.
+                restore_modes[key] = current_mode
+            scheme, lighting = lighting_scheme_illuminator_tables(
+                scheme_params.get("table"), lighting_params.get("table"), channel,
+                profile, light_index, enabled, brightness, restore_mode,
+            )
+            clear_host_cache(self._address)
+            response = await holder.client.set_configs([
+                ("LightingScheme", scheme),
+                ("Lighting_V2", lighting),
+            ])
+            if not enabled:
+                restore_modes.pop(key, None)
+            return response
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
@@ -1568,31 +1703,36 @@ class DahuaClient:
 
         return dict(result)
 
-    async def _request(self, url: str, verify_ok=False) -> dict:
+    async def _request(self, url: str, verify_ok=False, allow_rpc2=True) -> dict:
         """Make the request. One caller per shared read reaches here."""
         # Not after close(): this client has given its share back, and taking
         # a new one would build a session nobody is left to release.
-        if (
-            self._use_rpc2
-            and not self._rpc2_released
-            and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE
-            and not verify_ok
-        ):
+        if (allow_rpc2 and self._use_rpc2 and not self._rpc2_released
+                and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE and not verify_ok):
             match = _CONFIG_READ.search(url)
             if match:
                 try:
                     async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
                         return await self._rpc2_get_config(match.group(1))
-                except Exception:  # pylint: disable=broad-except
-                    # Say it once, then stop trying. A device that cannot serve
-                    # RPC2 should not pay for the attempt on every read, and it
-                    # must not lose the reads either -- fall through to CGI.
-                    _HOST_RPC2_UNAVAILABLE.add(self._rpc2_key())
-                    _LOGGER.warning(
-                        "RPC2 config reads are not working for %s, using CGI instead",
-                        self._address,
-                        exc_info=True,
-                    )
+                except Exception as rpc2_exception:  # pylint: disable=broad-except
+                    # Either way this read falls through to CGI rather than
+                    # being lost. What differs is whether the host is written
+                    # off: a device that cannot serve RPC2 should not pay for
+                    # the attempt on every read, but one that merely did not
+                    # answer in time should not lose the transport for good.
+                    if not rpc2_failure_is_permanent(rpc2_exception):
+                        # Falls through to the CGI path below, like any other
+                        # failure here, but without writing the host off.
+                        _LOGGER.debug(
+                            "RPC2 read timed out for %s, using CGI for this one",
+                            self._address, exc_info=True,
+                        )
+                    else:
+                        _HOST_RPC2_UNAVAILABLE.add(self._rpc2_key())
+                        _LOGGER.warning(
+                            "RPC2 config reads are not working for %s, using CGI instead",
+                            self._address, exc_info=True,
+                        )
         url = self._base + url
         try:
             async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
