@@ -316,7 +316,7 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
     seconds = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
     try:
         seconds = int(seconds)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         seconds = DEFAULT_SCAN_INTERVAL
     return timedelta(seconds=max(seconds, MIN_SCAN_INTERVAL))
 
