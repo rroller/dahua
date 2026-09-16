@@ -772,6 +772,25 @@ class DahuaHostEventStream:
                 except ValueError:
                     index = 0
 
+            # AlarmLocal numbers its `index` from the physical alarm input
+            # terminal, not the video channel -- so on a host with a single
+            # configured channel it can legitimately be nonzero (e.g. index=1)
+            # while that channel is 0. There is no channel to disambiguate
+            # when only one is configured, so the index there means something
+            # else and must not be used to drop the event. See #231.
+            #
+            # Guarded on the number of *channels*, not the number of
+            # coordinators: two config entries can share one channel (see
+            # test_two_entries_on_one_channel_both_get_it), and both must
+            # still get the event. Every other event code, and every host
+            # with more than one channel configured, keeps the existing
+            # per-index filtering below untouched: a channel nobody
+            # configured must stay silent.
+            if event.get("Code") == "AlarmLocal" and len(self._by_channel) == 1:
+                for coordinator in next(iter(self._by_channel.values())):
+                    coordinator.handle_event(dict(event))
+                continue
+
             # A channel nobody has configured stays silent, exactly as it did
             # when every coordinator discarded it.
             for coordinator in self._by_channel.get(index, ()):

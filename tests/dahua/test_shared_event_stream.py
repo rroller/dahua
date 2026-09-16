@@ -187,6 +187,75 @@ async def test_two_entries_on_one_channel_both_get_it(hass):
     assert len(a.handled) == 1 and len(b.handled) == 1
 
 
+# --- AlarmLocal: index is a terminal, not a channel (#231) ------------------
+
+ALARM_CH1 = (
+    b"--myboundary\n"
+    b"Content-Type: text/plain\n"
+    b"Content-Length: 39\n"
+    b"\n"
+    b"Code=AlarmLocal;action=Start;index=1\n"
+)
+
+
+async def test_alarmlocal_reaches_the_lone_channel_regardless_of_index(hass):
+    """The original #231 bug: an alarm on terminal 1 with only channel 0 set up."""
+    stream = _host_stream(hass, ADDRESS)
+    only = _Coordinator(0, ["AlarmLocal"])
+    stream.register(only)
+    await _settle()
+
+    stream.on_receive(ALARM_CH1, 0)
+
+    assert len(only.handled) == 1
+    assert only.handled[0]["Code"] == "AlarmLocal"
+
+
+async def test_alarmlocal_reaches_both_entries_sharing_the_lone_channel(hass):
+    """Two entries on the same single channel must both still get it (see
+    test_two_entries_on_one_channel_both_get_it) -- guarding on coordinator
+    count instead of channel count would silently drop this case."""
+    stream = _host_stream(hass, ADDRESS)
+    a, b = _Coordinator(0, ["AlarmLocal"]), _Coordinator(0, ["AlarmLocal"])
+    stream.register(a)
+    stream.register(b)
+    await _settle()
+
+    stream.on_receive(ALARM_CH1, 0)
+
+    assert len(a.handled) == 1 and len(b.handled) == 1
+
+
+async def test_a_non_alarmlocal_event_still_respects_the_lone_channel(hass):
+    """The AlarmLocal early return must not widen what any other code does,
+    even on a host with only one channel configured."""
+    stream = _host_stream(hass, ADDRESS)
+    only = _Coordinator(0, ["VideoMotion"])
+    stream.register(only)
+    await _settle()
+
+    stream.on_receive(MOTION_CH2, 0)  # index 2, and nobody is on channel 2
+
+    assert only.handled == []
+
+
+async def test_alarmlocal_still_filtered_by_channel_on_a_multi_channel_host(hass):
+    """With more than one channel configured, AlarmLocal is not exempt: this
+    is what pins the len(self._by_channel) == 1 guard against a later
+    refactor loosening it."""
+    stream = _host_stream(hass, ADDRESS)
+    ch0 = _Coordinator(0, ["AlarmLocal"])
+    ch1 = _Coordinator(1, ["AlarmLocal"])
+    stream.register(ch0)
+    stream.register(ch1)
+    await _settle()
+
+    stream.on_receive(ALARM_CH1, 0)  # index=1
+
+    assert len(ch1.handled) == 1
+    assert ch0.handled == [], "AlarmLocal leaked to a channel that isn't the terminal's index"
+
+
 async def test_each_channel_gets_its_own_copy(hass):
     """handle_event mutates the event, so channels must not share one dict."""
     stream = _host_stream(hass, ADDRESS)
