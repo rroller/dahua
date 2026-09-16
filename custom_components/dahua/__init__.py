@@ -648,9 +648,9 @@ class DahuaHostEventStream:
         # Whether the device sent anything on the current attach. Reset per
         # attempt, so it describes this stream and not the one before it.
         self._received_data = False
-    # EventManager is multipart and aiohttp yields arbitrary chunk sizes.
-    # Large event payloads (metadata) are often split across chunks.
-    self._stream_buffer = ""
+        # EventManager is multipart and aiohttp yields arbitrary chunk sizes.
+        # Large event payloads (metadata) are often split across chunks.
+        self._stream_buffer = ""
 
     @property
     def coordinators(self) -> list:
