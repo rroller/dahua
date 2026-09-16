@@ -116,6 +116,7 @@ async def test_client_commits_both_complete_tables_in_one_rpc2_call(monkeypatch)
     )
     client = object.__new__(DahuaClient)
     client._address = "192.0.2.1"
+    client._device = "192.0.2.1:80"
     client._host_limit = asyncio.Semaphore(1)
     client._lighting_scheme_restore_modes = {}
     client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
@@ -141,6 +142,7 @@ async def test_client_preserves_first_mode_across_brightness_changes(monkeypatch
     )
     client = object.__new__(DahuaClient)
     client._address = "192.0.2.1"
+    client._device = "192.0.2.1:80"
     client._host_limit = asyncio.Semaphore(1)
     client._lighting_scheme_restore_modes = {}
     client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
@@ -166,6 +168,7 @@ async def test_client_restores_saved_mode_on_successful_turn_off(monkeypatch):
     )
     client = object.__new__(DahuaClient)
     client._address = "192.0.2.1"
+    client._device = "192.0.2.1:80"
     client._host_limit = asyncio.Semaphore(1)
     client._lighting_scheme_restore_modes = {(0, 1): "InfraredMode"}
     client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
@@ -188,6 +191,7 @@ async def test_failed_turn_off_keeps_saved_mode(monkeypatch):
     )
     client = object.__new__(DahuaClient)
     client._address = "192.0.2.1"
+    client._device = "192.0.2.1:80"
     client._host_limit = asyncio.Semaphore(1)
     client._lighting_scheme_restore_modes = {(0, 1): "AIMode"}
     client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
@@ -208,6 +212,7 @@ async def test_failed_turn_on_keeps_mode_for_partial_write_recovery(monkeypatch)
     )
     client = object.__new__(DahuaClient)
     client._address = "192.0.2.1"
+    client._device = "192.0.2.1:80"
     client._host_limit = asyncio.Semaphore(1)
     client._lighting_scheme_restore_modes = {}
     client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc2))
