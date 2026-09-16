@@ -142,6 +142,27 @@ def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0
     return 0.0
 
 
+def vto_retry_state(lived_seconds: float, consecutive_failures: int,
+                    received_data: bool) -> tuple:
+    """How long to wait before re-attaching to a doorbell, and the new count.
+
+    The doorbell's event connection had two fixed delays -- five seconds after a
+    disconnect, thirty after a failure -- and no notion of a device that is
+    simply refusing. A doorbell that has been unplugged was therefore contacted
+    2,880 times a day, forever, where the same device as an IP camera would have
+    been backed off to one attempt every ten minutes.
+
+    The rule is the one the camera stream already uses, and it judges on whether
+    the device spoke rather than on how long the socket lasted: `received_data`
+    resets the count and makes the lifetime count for something, and its absence
+    means this attach achieved nothing however long it sat there.
+    """
+    failures = 0 if received_data else consecutive_failures + 1
+    delay = event_stream_retry_delay(
+        stream_lifetime(lived_seconds, received_data), failures, received_data)
+    return delay, failures
+
+
 # A single missed poll is a blip -- a snapshot timing out, a device busy writing
 # to disk -- and backing off on one would make the integration feel sluggish for
 # no reason. Past that, the device is not answering and polling it on the
@@ -900,7 +921,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
+        consecutive_failures = 0
         while True:
+            protocol = None
+            started = time.monotonic()
             try:
                 _LOGGER.debug("Connecting to VTO event stream at %s", self._address)
                 loop = asyncio.get_event_loop()
@@ -913,13 +937,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
                 self._vto_client = protocol
                 await protocol.disconnected
-                _LOGGER.warning("Disconnected from VTO at %s, reconnecting in 5s", self._address)
-                await asyncio.sleep(5)
             except asyncio.CancelledError:
                 raise
             except Exception as ex:
-                _LOGGER.error("VTO connection to %s failed, retrying in 30s: %s", self._address, ex)
-                await asyncio.sleep(30)
+                delay, consecutive_failures = vto_retry_state(
+                    time.monotonic() - started, consecutive_failures,
+                    getattr(protocol, "received_data", False))
+                _LOGGER.error("VTO connection to %s failed, retrying in %ss: %s",
+                              self._address, round(delay), ex)
+                await asyncio.sleep(delay)
+                continue
+
+            delay, consecutive_failures = vto_retry_state(
+                time.monotonic() - started, consecutive_failures, protocol.received_data)
+            if delay:
+                _LOGGER.warning("Disconnected from VTO at %s, reconnecting in %ss",
+                                self._address, round(delay))
+                await asyncio.sleep(delay)
+            else:
+                # It was connected and talking, so the socket ending is not the
+                # device refusing us. Go straight back.
+                _LOGGER.warning("Disconnected from VTO at %s, reconnecting", self._address)
 
     async def async_stop(self, event: Any = None):
         """ Stop anything we need to stop """
