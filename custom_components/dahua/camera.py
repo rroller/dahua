@@ -5,6 +5,7 @@ import logging
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature
 
@@ -454,7 +455,20 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
     async def async_vto_cancel_call(self):
         """ Handles the service call from SERVICE_VTO_CANCEL_CALL to cancel VTO calls """
-        await self._coordinator.get_vto_client().cancel_call()
+        # The service is offered on every camera entity, and only a doorbell
+        # ever has a VTO client: on anything else this is None, and so was the
+        # error -- AttributeError on NoneType, with a traceback and no clue that
+        # the wrong entity had been picked. A doorbell between reconnects lands
+        # here too.
+        vto_client = self._coordinator.get_vto_client()
+        if vto_client is None:
+            raise HomeAssistantError(
+                "{0} has no doorbell connection to cancel a call on. This service "
+                "works on a VTO doorbell, once its event connection is up.".format(
+                    self._coordinator.get_device_name()
+                )
+            )
+        await vto_client.cancel_call()
 
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """
