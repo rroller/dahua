@@ -841,6 +841,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._max_streams = 3  # 1 main stream + 2 sub-streams by default
 
         self._supports_lighting_v2 = False
+        self._supports_lighting_scheme_illuminator = False
 
         # channel_number is not the channel_index. channel_number is the index + 1.
         # So channel index 0 is channel number 1. Except for some older firmwares where channel
@@ -1107,6 +1108,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     pass
                 _LOGGER.debug("Device supports Lighting_V2=%s", self._supports_lighting_v2)
 
+                # IPC-Color4M-TZ accepts ordinary Lighting_V2 writes but its
+                # physical white emitter also requires LightingScheme. Probe
+                # that second capability before exposing the entity.
+                if self.model.upper().startswith("IPC-COLOR4M-TZ"):
+                    try:
+                        scheme = await self.client.async_get_lighting_scheme()
+                        self._supports_lighting_scheme_illuminator = any(
+                            key.endswith(".LightingMode") for key in scheme
+                        )
+                    except (ClientError, TimeoutError, ConnectionError,
+                            ValueError, KeyError, TypeError):
+                        self._supports_lighting_scheme_illuminator = False
+                    _LOGGER.debug(
+                        "Device supports LightingScheme illuminator=%s",
+                        self._supports_lighting_scheme_illuminator,
+                    )
+
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -1202,6 +1220,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_light_global_enabled()))
             if self._supports_lighting_v2 and self._wanted_by(LIGHT):   #add lighing_v2 API if it is supported
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
+            if (getattr(self, "_supports_lighting_scheme_illuminator", False)
+                    and self._wanted_by(LIGHT)):
+                coros.append(asyncio.ensure_future(self.client.async_get_lighting_scheme()))
 
 
             # Gather results and update the data map
@@ -1546,7 +1567,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has an illuminator (white light for color cameras).  For example, the
         IPC-HDW3849HP-AS-PV does
         """
-        return  not (self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data   
+        if self.model.upper().startswith("IPC-COLOR4M-TZ"):
+            return self._supports_lighting_scheme_illuminator and any(
+                self.data.get(
+                    "table.Lighting_V2[{0}][{1}][{2}].LightType".format(
+                        self._channel, profile, index
+                    )
+                ) == WHITE_LIGHT
+                for profile in range(9)
+                for index in range(MAX_LIGHTING_V2_LIGHTS)
+            )
+        return not (self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data
+
+    def uses_lighting_scheme_illuminator(self) -> bool:
+        """Whether this device needs the two-table white-light contract."""
+        return getattr(self, "_supports_lighting_scheme_illuminator", False)
     
     def supports_ptz_position(self) -> bool:
         """
@@ -1721,9 +1756,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # profile_mode 0=day, 1=night, 2=scene
         profile_mode = self.get_profile_mode()
         index = self.get_illuminator_index()
-        return self.data.get(
+        manually_on = self.data.get(
             "table.Lighting_V2[{0}][{1}][{2}].Mode".format(self._channel, profile_mode, index), ""
         ) == "Manual"
+        if self.uses_lighting_scheme_illuminator():
+            scheme_mode = self.data.get(
+                "table.LightingScheme[{0}][{1}].LightingMode".format(
+                    self._channel, profile_mode
+                ), ""
+            )
+            return scheme_mode == "WhiteMode" and manually_on
+        return manually_on
 
     def is_flood_light_on(self) -> bool:
 
@@ -1743,6 +1786,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
 
+        if self.uses_lighting_scheme_illuminator():
+            bri = self.data.get(
+                "table.Lighting_V2[{0}][{1}][{2}].PercentOfMaxBrightness".format(
+                    self._channel, self.get_profile_mode(), self.get_illuminator_index()
+                )
+            )
+            return dahua_utils.dahua_brightness_to_hass_brightness(bri)
         # The profile was hardcoded to 0 here while is_illuminator_on reads the
         # live one, so on a camera running Night this reported the Day
         # brightness. The bank was hardcoded too; see illuminator_brightness_bank.

@@ -178,11 +178,15 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2(
-            channel, True, dahua_brightness, profile_mode,
-            self._coordinator.get_illuminator_index(),
-            self._coordinator.get_illuminator_bank())
-        await self._warn_if_the_scheme_blocks_it(channel, profile_mode)
+        light_index = self._coordinator.get_illuminator_index()
+        if self._coordinator.uses_lighting_scheme_illuminator():
+            await self._coordinator.client.async_set_lighting_scheme_illuminator(
+                channel, True, dahua_brightness, profile_mode, light_index)
+        else:
+            await self._coordinator.client.async_set_lighting_v2(
+                channel, True, dahua_brightness, profile_mode, light_index,
+                self._coordinator.get_illuminator_bank())
+            await self._warn_if_the_scheme_blocks_it(channel, profile_mode)
         await self._coordinator.async_refresh()
 
     async def _warn_if_the_scheme_blocks_it(self, channel, profile_mode):
@@ -216,10 +220,14 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        await self._coordinator.client.async_set_lighting_v2(
-            channel, False, dahua_brightness, profile_mode,
-            self._coordinator.get_illuminator_index(),
-            self._coordinator.get_illuminator_bank())
+        light_index = self._coordinator.get_illuminator_index()
+        if self._coordinator.uses_lighting_scheme_illuminator():
+            await self._coordinator.client.async_set_lighting_scheme_illuminator(
+                channel, False, dahua_brightness, profile_mode, light_index)
+        else:
+            await self._coordinator.client.async_set_lighting_v2(
+                channel, False, dahua_brightness, profile_mode, light_index,
+                self._coordinator.get_illuminator_bank())
         await self._coordinator.async_refresh()
 
 
