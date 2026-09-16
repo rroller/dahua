@@ -995,6 +995,43 @@ class DahuaHostEventStream:
                 except ValueError:
                     index = 0
 
+            # AlarmLocal numbers its `index` from the physical alarm input
+            # terminal, not the video channel -- so on a host with a single
+            # configured channel it can legitimately be nonzero (e.g. index=1)
+            # while that channel is 0. There is no channel to disambiguate
+            # when only one is configured, so the index there means something
+            # else and must not be used to drop the event. See #231.
+            #
+            # Guarded on the number of *channels*, not the number of
+            # coordinators: two config entries can share one channel (see
+            # test_two_entries_on_one_channel_both_get_it), and both must
+            # still get the event. Every other event code, and every host
+            # with more than one channel configured, keeps the existing
+            # per-index filtering below untouched: a channel nobody
+            # configured must stay silent.
+            if event.get("Code") == "AlarmLocal" and len(self._by_channel) == 1:
+                for coordinator in next(iter(self._by_channel.values())):
+                    try:
+                        coordinator.handle_event(dict(event))
+                    except Exception:  # pylint: disable=broad-except
+                        # Same reach as the guard below (#706): this stream is
+                        # shared by every channel on the host, and
+                        # stream_events wraps its call to on_receive in
+                        # try/finally with no handler, so an unguarded
+                        # exception here would take every camera on the
+                        # device down until the retry reconnects, not just
+                        # drop this one event.
+                        #
+                        # The index is deliberately not logged as a channel:
+                        # for AlarmLocal it is the alarm input, which is the
+                        # whole reason this branch exists.
+                        _LOGGER.warning(
+                            "Unhandled error while handling a %s event from %s; "
+                            "the event is dropped and the stream continues",
+                            event.get("Code", "?"), self._address, exc_info=True,
+                        )
+                continue
+
             # A channel nobody has configured stays silent, exactly as it did
             # when every coordinator discarded it.
             for coordinator in self._by_channel.get(index, ()):
