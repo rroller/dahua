@@ -123,7 +123,7 @@ def stream_lifetime(lived_seconds: float, received_data: bool) -> float:
 
 
 def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0,
-                            received_data: bool = False) -> float:
+                             received_data: bool = False) -> float:
     """How long to wait before re-attaching, given how long the stream lasted.
 
     `received_data` is whether the device sent anything at all on this attach --
@@ -648,9 +648,9 @@ class DahuaHostEventStream:
         # Whether the device sent anything on the current attach. Reset per
         # attempt, so it describes this stream and not the one before it.
         self._received_data = False
-    # EventManager is multipart and aiohttp yields arbitrary chunk sizes.
-    # Large event payloads (metadata) are often split across chunks.
-    self._stream_buffer = ""
+        # EventManager is multipart and aiohttp yields arbitrary chunk sizes.
+        # Large event payloads (metadata) are often split across chunks.
+        self._stream_buffer = ""
 
     @property
     def coordinators(self) -> list:
@@ -810,25 +810,49 @@ class DahuaHostEventStream:
             for match in re.finditer(r"--myboundary\r?\n", self._stream_buffer)
         ]
         if len(boundaries) < 2:
+            # Most devices put one complete event in an HTTP chunk and then
+            # wait for the next event.  Do not make that event wait forever
+            # for a following multipart boundary.  Content-Length lets us
+            # distinguish it from a payload split across arbitrary chunks.
+            if len(boundaries) == 1:
+                block = self._stream_buffer[boundaries[0] :]
+                header, separator, body = block.partition("\r\n\r\n")
+                if not separator:
+                    header, separator, body = block.partition("\n\n")
+                length = re.search(
+                    r"^Content-Length:\s*(\d+)\s*$", header, re.MULTILINE
+                )
+                # Some cameras count a final CRLF which aiohttp has already
+                # normalized away; accept that two-byte difference.
+                if (
+                    separator
+                    and length
+                    and len(body.encode("utf-8")) >= int(length.group(1)) - 2
+                ):
+                    self._dispatch_events(parse_event(block))
+                    self._stream_buffer = ""
             return
 
         for idx in range(len(boundaries) - 1):
-            block = self._stream_buffer[boundaries[idx]:boundaries[idx + 1]]
-            events = parse_event(block)
-            for event in events:
-                event_index = 0
-                if "index" in event:
-                    try:
-                        event_index = int(event["index"])
-                    except ValueError:
-                        event_index = 0
+            block = self._stream_buffer[boundaries[idx] : boundaries[idx + 1]]
+            self._dispatch_events(parse_event(block))
 
-                # A channel nobody has configured stays silent, exactly as it did
-                # when every coordinator discarded it.
-                for coordinator in self._by_channel.get(event_index, ()):
-                    coordinator.handle_event(dict(event))
+        self._stream_buffer = self._stream_buffer[boundaries[-1] :]
 
-        self._stream_buffer = self._stream_buffer[boundaries[-1]:]
+    def _dispatch_events(self, events: list[dict]) -> None:
+        """Hand parsed events to every configured coordinator on their channel."""
+        for event in events:
+            event_index = 0
+            if "index" in event:
+                try:
+                    event_index = int(event["index"])
+                except ValueError:
+                    event_index = 0
+
+            # A channel nobody has configured stays silent, exactly as it did
+            # when every coordinator discarded it.
+            for coordinator in self._by_channel.get(event_index, ()):
+                coordinator.handle_event(dict(event))
 
 
 # address -> DahuaHostEventStream
@@ -1252,7 +1276,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         "Device supports LightingScheme illuminator=%s",
                         self._supports_lighting_scheme_illuminator,
                     )
-
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -1790,7 +1813,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def uses_lighting_scheme_illuminator(self) -> bool:
         """Whether this device needs the two-table white-light contract."""
         return getattr(self, "_supports_lighting_scheme_illuminator", False)
-    
+
     def supports_ptz_position(self) -> bool:
         """
         Returns true if this camera supports PTZ preset position
