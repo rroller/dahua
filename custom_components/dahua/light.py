@@ -233,9 +233,10 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
     @callback
     def _handle_coordinator_update(self):
-        """React to host reboot detection from the shared coordinator poll."""
+        """React to camera reboot and external illuminator changes."""
 
         generation = self._coordinator.get_camera_reboot_generation()
+        reboot_pending = False
 
         if generation > self._seen_reboot_generation:
             previous_generation = self._seen_reboot_generation
@@ -250,16 +251,36 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             if not self._manual_on:
                 # No HA override is active, so there is nothing to recover.
                 self._seen_reboot_generation = generation
-            elif (
-                self._reboot_recovery_task is None
-                or self._reboot_recovery_task.done()
-            ):
-                self._reboot_recovery_task = (
-                    self.hass.async_create_background_task(
-                        self._async_handle_camera_reboot(generation),
-                        f"dahua_illuminator_reboot_recovery_{self.unique_id}",
+            else:
+                # A reboot can temporarily make the camera state differ from
+                # our expected override. Do not mistake that for an external
+                # configuration change; reboot recovery owns this update.
+                reboot_pending = True
+
+                if (
+                    self._reboot_recovery_task is None
+                    or self._reboot_recovery_task.done()
+                ):
+                    self._reboot_recovery_task = (
+                        self.hass.async_create_background_task(
+                            self._async_handle_camera_reboot(generation),
+                            f"dahua_illuminator_reboot_recovery_{self.unique_id}",
+                        )
                     )
-                )
+
+        if self._manual_on and not reboot_pending:
+            matches = self._current_override_matches_coordinator_data()
+
+            if matches is False:
+                task = getattr(self, "_external_change_task", None)
+
+                if task is None or task.done():
+                    self._external_change_task = (
+                        self.hass.async_create_background_task(
+                            self._async_release_externally_changed_override(),
+                            f"dahua_illuminator_external_change_{self.unique_id}",
+                        )
+                    )
 
         super()._handle_coordinator_update()
 
@@ -291,9 +312,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
             # Reboot ends the HA manual override only after recovery has
             # completed or the saved snapshot was confirmed stale.
-            self._manual_on = False
-            self._scheme_restore = None
-            self._light_restore = None
+            self._reset_override_state()
 
             self.async_write_ha_state()
 
@@ -341,6 +360,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
         data = {
             "active": True,
+            "phase": "override",
             "scheme_channel": scheme_channel,
             "scheme_profile": scheme_profile,
             "previous_scheme": previous_scheme,
@@ -351,6 +371,11 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             "old_mode": old_mode,
             "old_brightness": old_brightness,
             "ha_brightness": self._last_brightness,
+            "override_brightness": (
+                dahua_utils.hass_brightness_to_dahua_brightness(
+                    self._last_brightness
+                )
+            ),
         }
 
         # IMPORTANT:
@@ -371,12 +396,118 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         if self._restore_store is not None:
             await self._restore_store.async_remove()
 
+        self._reset_override_state()
+
+    def _reset_override_state(self):
+        """Release in-memory ownership only after persistent cleanup succeeds."""
+        self._manual_on = False
+        self._scheme_restore = None
+        self._light_restore = None
+
+    async def _mark_persisted_restore_phase(self, data=None):
+        """Mark that HA has started restoring its saved camera state."""
+
+        if self._restore_store is None:
+            raise RuntimeError(
+                "Illuminator restore Store is not initialized"
+            )
+
+        if data is None:
+            data = await self._restore_store.async_load()
+
+        if not isinstance(data, dict) or not data.get("active"):
+            raise RuntimeError(
+                "Illuminator restore snapshot is missing"
+            )
+
+        data["phase"] = "restoring"
+        await self._restore_store.async_save(data)
+
+    def _override_matches(self, mode, brightness):
+        """Compare a known WhiteLight mode with HA's last manual override."""
+        if mode != "Manual":
+            return False
+
+        # Missing or unusable brightness is not evidence of external takeover.
+        try:
+            expected = dahua_utils.hass_brightness_to_dahua_brightness(
+                self._last_brightness
+            )
+            return int(brightness) == expected
+        except (TypeError, ValueError):
+            return True
+
+    def _current_override_matches_coordinator_data(self):
+        """Return None when the coordinator has no usable WhiteLight mode."""
+        if self._light_restore is None:
+            return None
+
+        channel, profile, index, field, *_ = self._light_restore
+        base = f"table.Lighting_V2[{channel}][{profile}][{index}]"
+        mode = self._coordinator.data.get(f"{base}.Mode")
+        if mode is None:
+            return None
+
+        return self._override_matches(
+            mode, self._coordinator.data.get(f"{base}.{field}[0].Light")
+        )
+
+    async def _live_override_matches_camera(self):
+        """Check fresh camera state before OFF; never use a cached snapshot."""
+        if self._light_restore is None:
+            return None
+
+        channel, profile, index, *_ = self._light_restore
+        mode, _field, brightness = (
+            await self._coordinator.client.async_get_lighting_v2_live_state(
+                channel, profile, index
+            )
+        )
+        return self._override_matches(mode, brightness)
+
+    async def _async_release_externally_changed_override(self):
+        """Release HA ownership after another control path changes the light."""
+
+        try:
+            if not self._manual_on:
+                return
+
+            # Re-check after the task gets CPU time. The camera may already
+            # have changed again.
+            if self._current_override_matches_coordinator_data() is not False:
+                return
+
+            _LOGGER.info(
+                "Dahua Illuminator: camera WhiteLight configuration changed "
+                "outside the HA light entity; releasing the saved override "
+                "without restoring the old camera state"
+            )
+
+            # Respect the new external configuration exactly as it is.
+            # In particular, do not restore the state saved before HA ON.
+            await self._clear_persisted_restore_snapshot()
+
+            self.async_write_ha_state()
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # If Store cleanup fails, retain ownership state so a future
+            # coordinator update can retry rather than losing recovery data.
+            _LOGGER.warning(
+                "Dahua Illuminator: failed to release externally changed "
+                "override",
+                exc_info=True,
+            )
+        finally:
+            self._external_change_task = None
+
     async def _recover_persisted_override(self) -> bool:
         """Recover an unfinished CGI override.
 
-        Return True only when the override was restored or the persisted
-        snapshot was confirmed stale. Return False when recovery cannot be
-        performed safely.
+        Return True when recovery is complete, when the original state was
+        already restored, or when an external change has superseded HA's
+        override. Return False when recovery cannot be performed safely.
         """
 
         if self._restore_store is None:
@@ -388,6 +519,11 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             return False
 
         try:
+            phase = str(data.get("phase", "override"))
+
+            if phase not in ("override", "restoring"):
+                raise ValueError(f"unknown restore phase: {phase}")
+
             scheme_channel = int(data["scheme_channel"])
             scheme_profile = str(data["scheme_profile"])
             previous_scheme = str(data["previous_scheme"])
@@ -402,6 +538,20 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             saved_ha_brightness = data.get("ha_brightness")
             if isinstance(saved_ha_brightness, int):
                 self._last_brightness = saved_ha_brightness
+
+            override_brightness = data.get("override_brightness")
+
+            if override_brightness is None and isinstance(
+                saved_ha_brightness, int
+            ):
+                override_brightness = (
+                    dahua_utils.hass_brightness_to_dahua_brightness(
+                        saved_ha_brightness
+                    )
+                )
+
+            if override_brightness is not None:
+                override_brightness = int(override_brightness)
 
         except (KeyError, TypeError, ValueError):
             _LOGGER.warning(
@@ -418,54 +568,80 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             )
         )
 
-        # The original scheme may already have been restored while the
-        # WhiteLight row is still partially overridden. Only discard the
-        # snapshot when both pieces match the saved original state.
-        if (
-            previous_scheme != "WhiteMode"
-            and current_scheme == previous_scheme
-        ):
-            (
-                current_mode,
-                _current_field,
-                current_brightness,
-            ) = (
-                await self._coordinator.client
-                .async_get_lighting_v2_live_state(
-                    channel,
-                    profile_mode,
-                    index,
-                )
+        (
+            current_mode,
+            _current_field,
+            current_brightness,
+        ) = (
+            await self._coordinator.client
+            .async_get_lighting_v2_live_state(
+                channel,
+                profile_mode,
+                index,
             )
+        )
 
-            light_restored = (
-                current_mode == old_mode
-                and (
-                    old_brightness is None
-                    or current_brightness == old_brightness
-                )
+        light_restored = (
+            current_mode == old_mode
+            and (
+                old_brightness is None
+                or current_brightness == old_brightness
             )
+        )
 
-            if light_restored:
-                await self._clear_persisted_restore_snapshot()
-
-                _LOGGER.info(
-                    "Dahua Illuminator: persisted override already restored "
-                    "(LightingScheme=%s)",
-                    previous_scheme,
-                )
-                return True
+        # Both parts are already back to the saved original state.
+        if current_scheme == previous_scheme and light_restored:
+            await self._clear_persisted_restore_snapshot()
 
             _LOGGER.info(
-                "Dahua Illuminator: LightingScheme is already %s, but "
-                "WhiteLight still differs from the saved state; restoring it",
+                "Dahua Illuminator: persisted override already restored "
+                "(LightingScheme=%s)",
                 previous_scheme,
             )
+            return True
 
-        # WhiteMode is the state our HA override deliberately writes.
-        # The original scheme with a mismatched WhiteLight row is also safe
-        # to repair. Any other scheme may represent an external change.
-        elif current_scheme != "WhiteMode":
+        # While phase=override, HA only owns the camera state if the
+        # WhiteLight row still looks like the Manual override HA wrote.
+        #
+        # If a service, Web UI, or another client changed it to Auto/Off or
+        # changed Manual brightness, that newer configuration wins. Do not
+        # restore the older snapshot over it.
+        if phase == "override":
+            brightness_still_owned = (
+                override_brightness is None
+                or current_brightness is None
+                or current_brightness == override_brightness
+            )
+
+            override_still_owned = (
+                current_mode == "Manual"
+                and brightness_still_owned
+            )
+
+            if not override_still_owned:
+                _LOGGER.info(
+                    "Dahua Illuminator: persisted override was superseded "
+                    "by an external camera change "
+                    "(mode=%s brightness=%s); preserving the current camera "
+                    "configuration",
+                    current_mode,
+                    current_brightness,
+                )
+
+                await self._clear_persisted_restore_snapshot()
+
+                return True
+
+        # WhiteMode is the state HA deliberately writes. Some tested cameras
+        # may later report the saved scheme again while the Manual WhiteLight
+        # override remains active, so that state is also safe to restore.
+        # During restore, InfraredMode is also our own intermediate write.
+        # Any other scheme may represent an unrelated external change.
+        if (
+            current_scheme != "WhiteMode"
+            and current_scheme != previous_scheme
+            and not (phase == "restoring" and current_scheme == "InfraredMode")
+        ):
             _LOGGER.warning(
                 "Dahua Illuminator: saved override exists, but current "
                 "LightingScheme=%s is neither WhiteMode nor the saved "
@@ -481,6 +657,11 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             "restoring LightingScheme=%s",
             previous_scheme,
         )
+
+        # Once restore writes begin, a crash/restart must continue recovery
+        # rather than mistaking our own intermediate Off/InfraredMode state
+        # for an external camera change.
+        await self._mark_persisted_restore_phase(data)
 
         await self._restore_camera_lighting(
             (
@@ -500,10 +681,6 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
         # Only clear persistent state after every camera write succeeded.
         await self._clear_persisted_restore_snapshot()
-
-        self._manual_on = False
-        self._scheme_restore = None
-        self._light_restore = None
 
         _LOGGER.info(
             "Dahua Illuminator: persisted override recovery complete; "
@@ -725,8 +902,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         #
         # CGI setConfig survives an HA restart, so the restore snapshot
         # must already be on disk before WhiteMode is written.
-        if not self._manual_on:
-            await self._persist_current_restore_snapshot()
+        await self._persist_current_restore_snapshot()
 
         # First set WhiteLight parameters.
         await self._coordinator.client.async_set_lighting_v2(
@@ -820,23 +996,30 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             )
             return
 
-        if self._light_restore is not None:
-            (
-                channel,
-                profile_mode,
-                index,
-                field,
-                old_mode,
-                old_brightness,
-            ) = self._light_restore
-        else:
-            channel = self._coordinator.get_channel()
-            profile_mode = self._coordinator.get_profile_mode()
-            index = self._coordinator.get_illuminator_index()
-            field = self._coordinator.get_illuminator_bank()
+        # Do not rely only on coordinator.data here. Another HA service,
+        # camera Web UI, or external client may have changed the WhiteLight
+        # row after the last coordinator refresh.
+        #
+        # Re-read the camera immediately before restoring the saved baseline.
+        # If our Manual override has already been superseded, respect the
+        # newer camera configuration and only release HA ownership.
+        if self._manual_on and self._light_restore is not None:
+            live_matches = await self._live_override_matches_camera()
 
-            old_mode = None
-            old_brightness = None
+            if live_matches is False:
+                _LOGGER.info(
+                    "Dahua Illuminator: OFF found that the HA override "
+                    "was already superseded externally; preserving the "
+                    "current camera configuration"
+                )
+
+                await self._clear_persisted_restore_snapshot()
+
+                await self._coordinator.async_refresh()
+                self.async_write_ha_state()
+                return
+
+        await self._mark_persisted_restore_phase()
 
         await self._restore_camera_lighting(
             self._scheme_restore,
@@ -846,10 +1029,6 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         # Camera restore completed successfully. It is now safe to
         # discard the persistent recovery snapshot.
         await self._clear_persisted_restore_snapshot()
-
-        self._scheme_restore = None
-        self._light_restore = None
-        self._manual_on = False
 
         await self._coordinator.async_refresh()
         self.async_write_ha_state()
@@ -1062,4 +1241,3 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     def supported_color_modes(self) -> set[str]:
         """Flag supported color modes."""
         return {self.color_mode}
-
