@@ -1662,12 +1662,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         Both the capability check and the state read go through here so they
         cannot disagree about which row belongs to this channel.
+
+        There is no fallback to row 0. A single camera sits on channel 0, so the
+        lookup below already reads row 0 for it -- a fallback can only ever fire
+        on a channel that is not row 0's owner, and handing it that row reports
+        another camera's state and creates a switch whose writes the device
+        accepts and discards.
         """
-        value = self.data.get("table.SmartMotionDetect[{0}].Enable".format(self._channel))
-        if value is None:
-            # A single camera reports one row, and that row is row 0.
-            value = self.data.get("table.SmartMotionDetect[0].Enable")
-        return value
+        return self.data.get("table.SmartMotionDetect[{0}].Enable".format(self._channel))
 
     def is_smart_motion_detection_enabled(self) -> bool:
         """ Returns true if smart motion detection is enabled """
