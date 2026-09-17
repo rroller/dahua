@@ -383,6 +383,111 @@ def strip_dahua_snapshot_trailer(data: bytes) -> bytes:
     return data[:end + 2]
 
 
+JPEG_SOS = 0xDA
+JPEG_COM = 0xFE
+JPEG_APP0 = 0xE0
+JPEG_APP15 = 0xEF
+
+# Markers that carry a two-byte length and can appear in a JPEG header. Used to
+# find where a segment really ended when it lied about where that was.
+JPEG_LENGTH_BEARING_MARKERS = frozenset(
+    {0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
+     0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+     0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xFE}
+    | set(range(JPEG_APP0, JPEG_APP15 + 1))
+)
+
+
+def _jpeg_header_is_consistent(data: bytes) -> bool:
+    """Whether every header segment's declared length lands on the next marker.
+
+    Walks from SOI to SOS only. Entropy-coded scan data is not marker-structured
+    and is never examined.
+    """
+    i = 2
+    while i + 3 < len(data):
+        if data[i] != 0xFF:
+            return False
+        marker = data[i + 1]
+        if marker == 0xFF:                      # fill byte
+            i += 1
+            continue
+        if marker == JPEG_SOS:
+            return True
+        if marker not in JPEG_LENGTH_BEARING_MARKERS:
+            return False
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        if length < 2:
+            return False
+        i += 2 + length
+    return False
+
+
+def _next_length_bearing_marker(data: bytes, start: int) -> int:
+    """Offset of the next plausible header marker at or after start, or -1."""
+    i = start
+    while i + 1 < len(data):
+        if data[i] == 0xFF and data[i + 1] in JPEG_LENGTH_BEARING_MARKERS:
+            return i
+        i += 1
+    return -1
+
+
+def repair_dahua_snapshot_header(data: bytes) -> bytes:
+    """Drop an ignorable header segment that declares the wrong length.
+
+    Measured on a DH-IPC-HFW2449TL-S-PRO snapshot supplied on #575. The file
+    starts and ends correctly and carries no trailer, but the first COM segment
+    declares 4094 bytes and actually occupies 4702 -- 608 short. A decoder that
+    trusts the length lands mid-padding on a 0x00 where a marker should be and
+    loses the rest of the file:
+
+        009e  COM  declares 4094  ->  109e  0x00, not 0xFF
+             the next real marker is at 12fe
+
+    The reporter's own tests isolate it exactly: removing that segment makes the
+    file acceptable, while zeroing its payload and leaving the length alone does
+    not. So the defect is the length, not the contents.
+
+    Only COM and APPn segments are dropped. Both are ignorable by definition --
+    a comment and application metadata -- so losing one costs nothing, whereas a
+    quantisation table or a frame header is the image. The result is re-walked
+    and the original returned unless the repair actually produced a consistent
+    header, so a guess that does not pay off changes nothing.
+    """
+    if not data.startswith(JPEG_SOI) or _jpeg_header_is_consistent(data):
+        return data
+
+    i = 2
+    while i + 3 < len(data):
+        if data[i] != 0xFF:
+            return data
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker == JPEG_SOS or marker not in JPEG_LENGTH_BEARING_MARKERS:
+            return data
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        if length < 2:
+            return data
+        end = i + 2 + length
+        if end + 1 < len(data) and data[end] == 0xFF:
+            i = end
+            continue
+
+        # This segment does not end where it says it does.
+        if marker != JPEG_COM and not (JPEG_APP0 <= marker <= JPEG_APP15):
+            return data
+        resume = _next_length_bearing_marker(data, i + 4)
+        if resume == -1:
+            return data
+        repaired = data[:i] + data[resume:]
+        return repaired if _jpeg_header_is_consistent(repaired) else data
+
+    return data
+
+
 # A device that answers and refuses has told us something about itself. One that
 # never answers has told us about this moment.
 TRANSIENT_RPC2_FAILURES = (TimeoutError, aiohttp.ClientConnectionError)
@@ -537,7 +642,8 @@ class DahuaClient:
         and channel number are the same!
         """
         url = "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
-        return strip_dahua_snapshot_trailer(await self.get_bytes(url))
+        return repair_dahua_snapshot_header(
+            strip_dahua_snapshot_trailer(await self.get_bytes(url)))
 
     async def async_get_system_info(self) -> dict:
         """
