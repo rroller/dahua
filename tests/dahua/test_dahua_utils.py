@@ -83,6 +83,54 @@ class TestParseEvent:
         assert len(events) == 1
         assert events[0]["data"] == "key=value"
 
+    # --- a block the stream cut short --------------------------------------
+    #
+    # stream_events passes on whatever response.content.iter_chunks() hands it,
+    # so a chunk boundary can fall anywhere -- including immediately after a
+    # part's headers. Such a block has three newline-separated pieces, and the
+    # guard that admitted it asked for three before reading the fourth.
+
+    def test_a_block_that_ends_after_its_headers_is_skipped(self):
+        """It used to raise IndexError, which ended the event stream."""
+        raw = "--myboundary\nContent-Type: text/plain\nContent-Length: 999\n"
+
+        assert parse_event(raw) == []
+
+    def test_a_truncated_block_does_not_discard_the_events_before_it(self):
+        """One bad block must cost one block, not the whole batch."""
+        raw = (_wrap_event("Code=VideoMotion;action=Start;index=0")
+               + "--myboundary\nContent-Type: text/plain\nContent-Length: 999\n")
+
+        events = parse_event(raw)
+
+        assert len(events) == 1
+        assert events[0]["Code"] == "VideoMotion"
+
+    # --- a fragment that is not key=value -----------------------------------
+
+    def test_a_semicolon_inside_the_json_does_not_end_the_stream(self):
+        """Users name rules and regions freely, and the payload is split on ';'."""
+        event_body = (
+            'Code=CrossRegionDetection;action=Start;index=0;data={\n'
+            '   "Name" : "Drive; Gate"\n'
+            '}'
+        )
+
+        events = parse_event(_wrap_event(event_body))
+
+        assert len(events) == 1
+        assert events[0]["Code"] == "CrossRegionDetection"
+        assert events[0]["action"] == "Start"
+        assert events[0]["index"] == "0"
+
+    def test_a_fragment_that_is_not_a_pair_is_skipped(self):
+        raw = _wrap_event("Code=VideoMotion;action=Start;garbage;index=0")
+
+        events = parse_event(raw)
+
+        assert len(events) == 1
+        assert events[0] == {"Code": "VideoMotion", "action": "Start", "index": "0"}
+
 
 class TestExtractPlateData:
     """Tests for extract_plate_data."""

@@ -55,7 +55,12 @@ def parse_event(data: str) -> list[dict[str, any]]:
     for event_block in event_blocks:
         # Skip the first 3 lines... the first line looks like: Content-Type: text/plain
         s = event_block.split("\n", 3)
-        if len(s) < 3:
+        # Four parts are needed to have a fourth, and a chunk can end
+        # anywhere: stream_events hands on whatever iter_chunks gives it, so a
+        # block that stops after its headers is ordinary, not exceptional. The
+        # guard read "< 3" and then indexed [3], so such a block raised
+        # IndexError out of on_receive and took the whole stream down with it.
+        if len(s) < 4:
             continue
         event_block = s[3].strip()
         if not event_block.startswith("Code="):
@@ -70,6 +75,13 @@ def parse_event(data: str) -> list[dict[str, any]]:
         # And we want to put each key/value pair into a dictionary...
         event = dict()
         for key_value in event_block.split(';'):
+            if '=' not in key_value:
+                # Not a key=value pair. Either the device cut the block short,
+                # or the JSON payload carries a semicolon of its own -- a rule
+                # or region the user named "Drive; Gate" is enough. Unpacking
+                # it raised ValueError, which lost every event in the batch and
+                # ended the stream; skipping it loses only this fragment.
+                continue
             key, value = key_value.split('=', 1)
             event[key] = value
 
