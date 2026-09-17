@@ -43,6 +43,7 @@ from custom_components.dahua.switch import (
     DahuaDisarmingEventNotificationsLinkageBinarySwitch,
     DahuaDisarmingLinkageBinarySwitch,
     DahuaMotionDetectionBinarySwitch,
+    DahuaPrivacyModeBinarySwitch,
     DahuaSirenBinarySwitch,
     DahuaSmartMotionDetectionBinarySwitch,
 )
@@ -161,6 +162,7 @@ GOLDEN_SUFFIXES = [
      lambda c: _bare(DahuaDisarmingEventNotificationsLinkageBinarySwitch, c)),
     ("_smart_motion_detection", lambda c: _bare(DahuaSmartMotionDetectionBinarySwitch, c)),
     ("_siren", lambda c: _bare(DahuaSirenBinarySwitch, c)),
+    ("_privacy_mode", lambda c: _bare(DahuaPrivacyModeBinarySwitch, c)),
     # light.py
     ("_infrared", lambda c: DahuaInfraredLight(c, _Entry(), "Infrared")),
     ("_illuminator", lambda c: DahuaIlluminator(c, _Entry(), "Illuminator")),
@@ -209,6 +211,7 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_event_notifications",
         "4L03CB4PAZC9E8F_2_smart_motion_detection",
         "4L03CB4PAZC9E8F_2_siren",
+        "4L03CB4PAZC9E8F_2_privacy_mode",
         "4L03CB4PAZC9E8F_2_infrared",
         "4L03CB4PAZC9E8F_2_illuminator",
         "4L03CB4PAZC9E8F_2_ring_light",
