@@ -1895,14 +1895,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         - **Everything else.** `Config[0]` is the profile.
 
         The read is host-wide -- getConfig&name=VideoInMode returns a row per
-        channel -- so an NVR channel has to take its own row, falling back to
-        row 0, which is all a single-channel camera returns.
+        channel -- so an NVR channel takes its own row and no other. There is no
+        fallback to row 0: a single camera sits on channel 0, so the lookup
+        below already reads row 0 for it, and a fallback could therefore only
+        ever fire on a channel that is not row 0's owner. On a recorder that row
+        is camera 1, and adopting its profile decides which
+        Lighting_V2[channel][profile] every light command for this camera is
+        written to. Camera 1 on day and this one on night sends every write to a
+        profile the camera is not using, where it is accepted and ignored.
+
+        Worse, the fallback was per field, so Config[0] could come from this
+        channel while ConfigEx came from another -- one answer assembled from
+        two cameras.
         """
         def field(name):
-            value = mode_data.get("table.VideoInMode[{0}].{1}".format(self._channel, name))
-            if value is None:
-                value = mode_data.get("table.VideoInMode[0].{0}".format(name))
-            return value
+            return mode_data.get(
+                "table.VideoInMode[{0}].{1}".format(self._channel, name))
 
         config = field("Config[0]")
         config_ex = field("ConfigEx")
