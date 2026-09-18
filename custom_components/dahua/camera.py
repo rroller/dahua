@@ -367,7 +367,8 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_set_infrared_mode(self, mode: str, brightness: int):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
         channel = self._logical_channel
-        await self._coordinator.client.async_set_lighting_v1_mode(channel, mode, brightness)
+        await self._coordinator.client.async_set_lighting_v1_mode(
+            channel, mode, brightness, self._coordinator.get_infrared_profile())
         await self._coordinator.async_refresh()
 
     async def async_set_illuminator_mode(self, mode: str, brightness: int):

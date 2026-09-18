@@ -1233,13 +1233,14 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=setConfig&FloodLightMode.Mode={mode}".format(mode=mode)
         return await self.get(url)
 
-    async def async_set_lighting_v1(self, channel: int, enabled: bool, brightness: int) -> dict:
+    async def async_set_lighting_v1(self, channel: int, enabled: bool, brightness: int,
+                                    profile_mode="0") -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
         # on = Manual, off = Off
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        return await self.async_set_lighting_v1_mode(channel, mode, brightness)
+        return await self.async_set_lighting_v1_mode(channel, mode, brightness, profile_mode)
 
     async def async_set_lighting_v2_mode(self, channel: int, mode: str, brightness: int,
                                          profile_mode: str, light_index: int = 0,
@@ -1268,7 +1269,8 @@ class DahuaClient:
         )
         return await self.get(url)
 
-    async def async_set_lighting_v1_mode(self, channel: int, mode: str, brightness: int) -> dict:
+    async def async_set_lighting_v1_mode(self, channel: int, mode: str, brightness: int,
+                                         profile_mode="0") -> dict:
         """
         async_set_lighting_v1_mode will set IR light (InfraRed light) mode and brightness
         Mode should be one of: Manual, Off, or Auto
@@ -1280,8 +1282,14 @@ class DahuaClient:
         # Dahua api expects the first char to be capital
         mode = mode.capitalize()
 
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting[{channel}][0].Mode={mode}&Lighting[{channel}][0].MiddleLight[0].Light={brightness}".format(
-            channel=channel, mode=mode, brightness=brightness
+        # The profile is the caller's, not a hardcoded 0. The poll reads this
+        # channel's live profile, so writing to 0 wrote somewhere the state is
+        # not read back from, and on a camera running night the camera is not
+        # rendering from it either.
+        url = ("/cgi-bin/configManager.cgi?action=setConfig"
+               "&Lighting[{channel}][{profile}].Mode={mode}"
+               "&Lighting[{channel}][{profile}].MiddleLight[0].Light={brightness}").format(
+            channel=channel, profile=profile_mode, mode=mode, brightness=brightness
         )
         return await self.get(url)
 
