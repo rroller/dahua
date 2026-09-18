@@ -1150,14 +1150,59 @@ class DahuaClient:
             except Exception:
                 _LOGGER.debug("RPC2 logout failed after %s", description, exc_info=True)
 
+    async def async_privacy_mode_over_cgi(self):
+        """This camera's LeLensMask row read over plain CGI, or None.
+
+        Judged by what comes back rather than by an exception, for the reason
+        async_detect_lighting_support gives: async_get_config swallows a
+        ClientResponseError and returns {}, and a device can also answer 200
+        with an empty body for a table it does not have -- a recorder on #669
+        does exactly that for VideoAnalyseRule. Neither of those is "privacy
+        mode is off", so only a response actually carrying the key counts.
+        """
+        data = await self.async_get_config("LeLensMask")
+        if not data:
+            return None
+        for key, value in data.items():
+            if key.startswith("table.LeLensMask[") and key.endswith("].Enable"):
+                return str(value).strip().lower() == "true"
+        return None
+
     async def async_get_privacy_mode(self) -> bool:
-        """Return True if the camera's lens privacy mask is enabled."""
+        """Return True if the camera's lens privacy mask is enabled.
+
+        CGI first. The RPC2 route came first historically, but #379 has a camera
+        -- an IP4M-1041W -- whose LeLensMask is readable and writable over CGI
+        while RPC2 answers `Authority:check failure`, which looks like a
+        permissions problem and is not one. Plain CGI is also what the Amcrest
+        integration uses for this, and it costs no login of its own, where the
+        RPC2 path logs in and out around every call.
+
+        RPC2 stays as the fallback: it is the route the feature was built and
+        verified on, and a camera that answers only there must keep working.
+        """
+        over_cgi = await self.async_privacy_mode_over_cgi()
+        if over_cgi is not None:
+            return over_cgi
         return await self._async_privacy_mode_rpc2(
             lambda rpc2: rpc2.async_get_privacy_mode(), "privacy mode read"
         )
 
     async def async_set_privacy_mode(self, enabled: bool) -> None:
-        """Enable or disable the camera's lens privacy mask."""
+        """Enable or disable the camera's lens privacy mask.
+
+        Written over whichever transport can read it, so the write never goes
+        somewhere the state is not read back from.
+
+        The CGI write names only Enable. setConfig merges, so the camera keeps
+        its own TimeSection schedule -- which is what the RPC2 path takes the
+        trouble to read back and rewrite by hand.
+        """
+        if await self.async_privacy_mode_over_cgi() is not None:
+            url = "/cgi-bin/configManager.cgi?action=setConfig&LeLensMask[0].Enable={0}".format(
+                str(bool(enabled)).lower())
+            await self.get(url, True)
+            return
         await self._async_privacy_mode_rpc2(
             lambda rpc2: rpc2.async_set_privacy_mode(enabled), "privacy mode write"
         )
