@@ -256,6 +256,38 @@ def smart_motion_row_indices(table) -> tuple:
     return tuple(sorted(found))
 
 
+def infrared_profile(data: dict, channel: int, profile_mode) -> str:
+    """Which Lighting profile this channel's infrared light is really using.
+
+    The v1 Lighting table is indexed [channel][profile], exactly as Lighting_V2
+    is, and the profiles genuinely differ. Measured on a DHI-NVR5464-16P-EI,
+    where five of fifteen channels report four profiles apiece and their modes
+    disagree:
+
+        table.Lighting[3][0].Mode=Auto
+        table.Lighting[3][1].Mode=ZoomPrio
+        table.Lighting[3][2].Mode=ZoomPrio
+        table.Lighting[3][3].Mode=ZoomPrio
+
+    The poll already fetches the *live* profile --
+    async_get_config_lighting(channel, self._profile_mode) -- while the reader
+    and the writer both hardcoded profile 0. On a camera running anything but
+    day that means the data holds one profile and the entity reads another, so
+    the light reports off whatever it is doing, and every write lands on a
+    profile the camera is not rendering from.
+
+    Falls back to profile 0 when the live one is not in what the device
+    returned, which is the single-profile case and also what keeps a channel
+    working if VideoInMode names a profile the Lighting table does not have.
+    Unlike the row 0 fallbacks removed in #679 and #683, this one stays inside
+    the same channel -- it can only ever return this camera's own row.
+    """
+    live = str(profile_mode)
+    if "table.Lighting[{0}][{1}].Mode".format(channel, live) in data:
+        return live
+    return "0"
+
+
 WHITE_LIGHT_SCHEME = "WhiteMode"
 
 
@@ -1840,14 +1872,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return self.events
 
+    def get_infrared_profile(self) -> str:
+        """The Lighting profile this channel's infrared light is really using."""
+        return infrared_profile(self.data, self._channel, self.get_profile_mode())
+
     def is_infrared_light_on(self) -> bool:
         """ returns true if the infrared light is on """
-        return self.data.get("table.Lighting[{0}][0].Mode".format(self._channel),"") == "Manual"
+        return self.data.get(
+            "table.Lighting[{0}][{1}].Mode".format(
+                self._channel, self.get_infrared_profile()), "") == "Manual"
 
     def get_infrared_brightness(self) -> int:
         """Return the brightness of this light, as reported by the camera itself, between 0..255 inclusive"""
 
-        bri = self.data.get("table.Lighting[{0}][0].MiddleLight[0].Light".format(self._channel))
+        bri = self.data.get(
+            "table.Lighting[{0}][{1}].MiddleLight[0].Light".format(
+                self._channel, self.get_infrared_profile()))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
     def get_illuminator_index(self) -> int:
