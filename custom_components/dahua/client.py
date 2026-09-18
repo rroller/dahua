@@ -347,6 +347,11 @@ def flatten_rpc2_config(name: str, node, prefix: str = None) -> dict:
 
 
 SECURITY_LIGHT_TYPE = 1
+
+# VideoInOptions[channel].DayNightColor, the portable spelling of the Day/Night
+# setting. Verified present on a DHI-NVR5464-16P-EI, a VTO, and the
+# DHI-VTO2311R-WP on #687, none of which carry VideoInDayNight at all.
+DAY_NIGHT_COLOR = {"Color": 0, "Brightness": 1, "BlackWhite": 2}
 SIREN_TYPE = 2
 
 
@@ -1504,6 +1509,27 @@ class DahuaClient:
 
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInDayNight[{0}][{1}].Mode={2}".format(
             channel, str(config_no), mode
+        )
+        try:
+            value = await self.get(url)
+            if "OK" in value or "ok" in value:
+                return
+        except aiohttp.ClientResponseError:
+            pass
+
+        # Plenty of devices do not have VideoInDayNight at all. Measured:
+        # a DHI-NVR5464-16P-EI answers 400 Bad Request, a VTO answers "Unknown
+        # error", and the DHI-VTO2311R-WP on #687 answers 400 -- while all three
+        # carry VideoInOptions[channel].DayNightColor, which is what their own
+        # web UI writes.
+        #
+        # Note this key is not profile scoped: VideoInOptions also carries
+        # NightOptions.DayNightColor and NormalOptions.DayNightColor, and the
+        # bare one is the setting the web UI exposes and the one verified to
+        # work. So config_type has no effect on this path, and saying so is
+        # better than picking a profile on a guess.
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInOptions[{0}].DayNightColor={1}".format(
+            channel, DAY_NIGHT_COLOR[mode]
         )
         value = await self.get(url)
         if "OK" not in value and "ok" not in value:
