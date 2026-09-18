@@ -5,6 +5,7 @@ import asyncio
 from typing import Any, Dict
 import logging
 import random
+import re
 import ssl
 import time
 
@@ -227,6 +228,32 @@ def illuminator_brightness_bank(data: dict, channel: int, profile_mode, light_in
         if key in data:
             return bank
     return LIGHT_BRIGHTNESS_BANKS[0]
+
+
+SMART_MOTION_ROW = re.compile(r"^table\.SmartMotionDetect\[(\d+)\]")
+
+
+def smart_motion_row_indices(table) -> tuple:
+    """Which channel rows a device reports in its SmartMotionDetect table.
+
+    The presence of this channel's row is what decides whether it gets a smart
+    motion switch (#635), so when the answer surprises someone this is the fact
+    they need. Nothing logged it: the integration never logs a response body, so
+    #669 spent two rounds inferring the shape of a table that could simply have
+    been printed.
+
+    Returns a sorted tuple of the indices found, empty when the table is empty
+    or not a dict -- never raising, because a diagnostic that can take setup
+    down is worse than no diagnostic.
+    """
+    if not isinstance(table, dict):
+        return ()
+    found = set()
+    for key in table:
+        match = SMART_MOTION_ROW.match(str(key))
+        if match:
+            found.add(int(match.group(1)))
+    return tuple(sorted(found))
 
 
 WHITE_LIGHT_SCHEME = "WhiteMode"
@@ -1120,12 +1147,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
                 # The following lines are for Dahua devices
+                smart_motion_rows = None
                 try:
-                    await self.client.async_get_smart_motion_detection()
+                    table = await self.client.async_get_smart_motion_detection()
                     self._supports_smart_motion_detection = True
+                    smart_motion_rows = smart_motion_row_indices(table)
                 except PROBE_FAILED:
                     self._supports_smart_motion_detection = False
                 _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
+                if self._supports_smart_motion_detection:
+                    # Which rows the device reports is the whole capability
+                    # decision for this channel (#635), and nothing logged it.
+                    # #669 spent two rounds of guessing for want of this line,
+                    # because a response body is never logged at debug.
+                    _LOGGER.debug(
+                        "SmartMotionDetect rows reported: %s; this channel is %s, so its "
+                        "switch is %s",
+                        smart_motion_rows if smart_motion_rows else "none",
+                        self._channel,
+                        "created" if self._channel in (smart_motion_rows or ()) else "not created",
+                    )
 
                 is_doorbell = self.is_doorbell()
                 _LOGGER.debug("Device is a doorbell=%s", is_doorbell)
