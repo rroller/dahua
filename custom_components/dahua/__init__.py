@@ -2226,8 +2226,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._smart_motion_row() is not None
 
     def supports_smart_motion_detection_amcrest(self) -> bool:
-        """ True if smart motion detection is supported for an amcrest device"""
-        return self.model == "AD410" or self.model == "DB61i"
+        """ True if smart motion detection is supported for an amcrest device
+
+        Matched the way is_amcrest_doorbell matches, which is the point: these
+        two questions are about the same devices and disagreed. That one folds
+        case and takes a prefix; this one compared the raw string exactly, so a
+        doorbell reporting `DB61I` rather than `DB61i` was a doorbell to one
+        check and not to the other.
+
+        A device that falls through here is not merely missing its switch. The
+        smart motion state and the write both take the non-Amcrest branch, which
+        reads SmartMotionDetect -- a table an Amcrest doorbell does not have --
+        so it reports nothing and its IVS rule is never touched.
+        """
+        model = self.model.upper()
+        return model.startswith("AD410") or model.startswith("DB61")
 
     def supports_privacy_mode(self) -> bool:
         """ True if the camera exposes the lens privacy mask over RPC2 """
