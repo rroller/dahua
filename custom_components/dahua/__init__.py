@@ -963,6 +963,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
+        self._alarm_output_slots = 0
         self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
@@ -1211,6 +1212,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Device supports Coaxial Control=%s", self._supports_coaxial_control)
 
                 try:
+                    alarm_output_data = await self.client.async_get_alarm_output_slots()
+                    try:
+                        self._alarm_output_slots = max(0, int(alarm_output_data.get("result", "0")))
+                    except (ValueError, TypeError):
+                        self._alarm_output_slots = 0
+                except PROBE_FAILED:
+                    self._alarm_output_slots = 0
+                _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
+                if self._alarm_output_slots > 1:
+                    _LOGGER.warning(
+                        "Device reports %s alarm outputs; entities are not created because "
+                        "the multi-output getOutState encoding is not yet verified",
+                        self._alarm_output_slots,
+                    )
+
+                try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
                 except PROBE_FAILED:
@@ -1418,6 +1435,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
             if self._supports_event_notifications and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
+            if self.supports_alarm_output() and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self.client.async_get_alarm_output_state()))
             # The siren switch and the security light both read this one.
             if self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
                 coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
@@ -1708,6 +1727,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def supports_disarming_linkage(self) -> bool:
         """Whether the device answered the disarming linkage read during setup."""
         return self._supports_disarming_linkage
+
+    def supports_alarm_output(self) -> bool:
+        """Whether a safely decodable single alarm output is available."""
+        return self._alarm_output_slots == 1
+
+    def is_alarm_output_on(self) -> bool:
+        """Return the physical state reported by getOutState."""
+        return self.data.get("status.AlarmOut[0]") == "1"
 
     def supports_profile_mode(self) -> bool:
         """Whether this device has selectable day/night/general profiles.
@@ -2258,3 +2285,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
     await hass.config_entries.async_reload(entry.entry_id)
+
