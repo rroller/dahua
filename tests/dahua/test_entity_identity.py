@@ -128,7 +128,10 @@ def _skip_ha_plumbing(monkeypatch):
     """Build the real entities, skipping only Home Assistant's own __init__."""
     for module in (bs_module, button_module, camera_module, light_module,
                    select_module, switch_module):
-        monkeypatch.setattr(module.DahuaBaseEntity, "__init__", lambda self, c, e: None)
+        monkeypatch.setattr(
+            module.DahuaBaseEntity, "__init__",
+            lambda self, c, e: setattr(self, "_coordinator", c),
+        )
     monkeypatch.setattr(bs_module.BinarySensorEntity, "__init__", lambda self: None)
     monkeypatch.setattr(select_module.SelectEntity, "__init__", lambda self: None)
     monkeypatch.setattr(camera_module.Camera, "__init__", lambda self: None)
