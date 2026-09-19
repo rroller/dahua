@@ -1221,7 +1221,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._alarm_output_slots = 0
                 _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
                 if self._alarm_output_slots > 1:
-                    _LOGGER.warning(
+                    _LOGGER.debug(
                         "Device reports %s alarm outputs; entities are not created because "
                         "the multi-output getOutState encoding is not yet verified",
                         self._alarm_output_slots,

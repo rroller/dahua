@@ -57,6 +57,9 @@ class _Coordinator:
     def supports_privacy_mode(self):
         return False
 
+    def supports_alarm_output(self):
+        return False
+
     def is_motion_detection_enabled(self):
         return self.states.get("motion", False)
 
