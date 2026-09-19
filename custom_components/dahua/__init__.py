@@ -346,6 +346,24 @@ def remote_device_model(data: dict, channel: int):
     return None
 
 
+def door_index(event: dict) -> int:
+    """Which door a VTO DoorStatus event is about.
+
+    The door number arrives in the event's `Index`, 0-based. A VTO paired with
+    an access control extension module has a second door and reports it as 1
+    (#488).
+
+    Anything missing, negative or unreadable is the first door. That is what a
+    single-door VTO sends -- and `Index: -1` is what the same device puts on a
+    BackKeyLight event, so a negative is "not a door number" rather than a door.
+    """
+    try:
+        index = int(event.get("Index"))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, index)
+
+
 WHITE_LIGHT_SCHEME = "WhiteMode"
 
 
@@ -1577,6 +1595,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     listener()
                 elif action == "Pulse":
                     if code == "DoorStatus":
+                        # The door number is in Index, and it was being thrown
+                        # away. A VTO with an access control extension module
+                        # has a second door whose events carry Index 1 (#488),
+                        # and every one of them landed on the single Door Status
+                        # sensor -- so door 2 closing reported door 1 as closed
+                        # while it stood open. One sensor exists, it is door 1's,
+                        # and only door 1 may write to it.
+                        if door_index(event) != 0:
+                            continue
                         if event.get("Data", {}).get("Status", "") == "Open":
                             self._dahua_event_timestamp[event_key] = int(time.time())
                         else:
