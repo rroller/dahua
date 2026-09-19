@@ -307,6 +307,45 @@ def day_night_color_name(data: dict, channel: int):
     return DAY_NIGHT_NAMES.get(str(value).strip())
 
 
+# DeviceType values that name a class of device rather than a model. Measured on
+# a DHI-NVR5464-16P-EI, which answers "IP Camera" and "IPC" for most channels and
+# a real model for one; the Lorex N843A8 on #669 answers a model for every
+# populated channel. Treating these as a model would be worse than having none.
+GENERIC_DEVICE_TYPES = {"", "ip camera", "ipc", "camera", "ip dome", "unknown"}
+
+
+def remote_device_model(data: dict, channel: int):
+    """The model of the camera on this NVR channel, or None if it did not say.
+
+    Every channel of a recorder reports the *recorder's* model, because that is
+    what magicBox.cgi getSystemInfo answers. The camera's own model is in
+    RemoteDevice, indexed by channel:
+
+        table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_6.DeviceType=B451AJ
+
+    Both spellings are accepted: this uuid-keyed form, measured on a
+    DHI-NVR5464-16P-EI and on the Lorex N843A8 of #669, and the plain bracket
+    form in case firmware elsewhere uses it.
+
+    Returns None rather than a guess when the value names a class of device
+    instead of a model -- see GENERIC_DEVICE_TYPES. A caller that cannot tell
+    "no answer" from "IP Camera" would confidently misidentify every channel of
+    a recorder like mine.
+    """
+    if not isinstance(data, dict):
+        return None
+    for key in ("table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_{0}.DeviceType",
+                "table.RemoteDevice[{0}].DeviceType"):
+        value = data.get(key.format(channel))
+        if value is None:
+            continue
+        value = str(value).strip()
+        if value.lower() in GENERIC_DEVICE_TYPES:
+            return None
+        return value
+    return None
+
+
 WHITE_LIGHT_SCHEME = "WhiteMode"
 
 
@@ -931,6 +970,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_ptz_position = False
         self._supports_lighting = False
         self._supports_day_night_color = False
+        self._channel_model = None
         self._supports_privacy_mode = False
         self._supports_floodlightmode = False
         self._serial_number: str
@@ -1219,6 +1259,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except PROBE_FAILED:
                     self._supports_day_night_color = False
                 _LOGGER.debug("Device supports day/night mode=%s", self._supports_day_night_color)
+
+                # Which camera is actually on this channel. Every channel of a
+                # recorder reports the recorder's model, so a doorbell behind an
+                # NVR is invisible as one and every model-string capability
+                # check sees the wrong device. Read once at setup: RemoteDevice
+                # is large and never changes between reboots, and the shared read
+                # cache answers it once for all of a recorder's channels.
+                try:
+                    remote = await self.client.async_get_config("RemoteDevice")
+                    self._channel_model = remote_device_model(remote, self._channel)
+                except PROBE_FAILED:
+                    self._channel_model = None
+                if self._channel_model:
+                    _LOGGER.debug(
+                        "Channel %s carries a %s; the device itself reports %s",
+                        self._channel, self._channel_model, self.model)
                 if self._supports_smart_motion_detection:
                     # Which rows the device reports is the whole capability
                     # decision for this channel (#635), and nothing logged it.
@@ -1815,6 +1871,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_model(self) -> str:
         """ returns the device model, e.g. IPC-HDW3849HP-AS-PV """
         return self.model
+
+    def get_channel_model(self):
+        """The model of the camera on this channel, or None if unknown.
+
+        Deliberately separate from get_model(), which still answers what the
+        device itself reports. Nothing is gated on this yet -- see #690.
+        """
+        return self._channel_model
 
     def get_firmware_version(self) -> str:
         """The firmware the device reported, e.g. 2.800.0000016.0.R.
