@@ -724,6 +724,33 @@ class DahuaClient:
         # If we can't fetch, just assume 2 since that's pretty standard
         return 3
 
+    async def async_get_alarm_output_slots(self) -> dict:
+        """Return the number of physical alarm-output slots reported by the device."""
+        return await self.get("/cgi-bin/alarm.cgi?action=getOutSlots")
+
+    async def async_get_alarm_output_state(self) -> dict:
+        """Return the physical alarm-output state.
+
+        The response is deliberately left unmodified. Single-output devices
+        return ``result=0`` or ``result=1``; the encoding for devices with
+        multiple outputs has not yet been verified.
+        """
+        data = await self.get("/cgi-bin/alarm.cgi?action=getOutState")
+        return {"status.AlarmOut[0]": data.get("result")}
+
+    async def async_set_alarm_output_state(self, output: int, enabled: bool) -> dict:
+        """Force one alarm output on or off.
+
+        AlarmOut.Mode is a three-state control mode, not a boolean: 0 is Auto,
+        1 is Manual/Force ON, and 2 is Close/Force OFF.
+        """
+        mode = 1 if enabled else 2
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig&"
+            "AlarmOut[{output}].Mode={mode}"
+        ).format(output=output, mode=mode)
+        return await self.get(url)
+
     async def async_get_coaxial_control_io_status(self, channel: int = 1) -> dict:
         """
         async_get_coaxial_control_io_status returns the the current state of the speaker and white light.
@@ -1983,3 +2010,4 @@ class DahuaClient:
             return "Sub"
         else:
             return "Sub_{0}".format(subtype)
+
