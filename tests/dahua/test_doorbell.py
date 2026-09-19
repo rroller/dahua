@@ -1,4 +1,4 @@
-﻿"""Tests for doorbell detection and ANPR stream event handling."""
+"""Tests for doorbell detection and ANPR stream event handling."""
 from unittest.mock import MagicMock
 import pytest
 
@@ -58,7 +58,7 @@ class TestIsDoorbell:
 class TestAnprPlateHandlingAcrossStreams:
     """Tests for ANPR plate extraction across event streams."""
 
-    def _setup_coordinator(self, authorized_plates="ABC1234, XZO3314") -> DahuaDataUpdateCoordinator:
+    def _setup_coordinator(self, authorized_plates="ABC1234, XYZ5678") -> DahuaDataUpdateCoordinator:
         coordinator = object.__new__(DahuaDataUpdateCoordinator)
         coordinator._name = "LPR Camera"
         coordinator._address = "10.0.0.1"
@@ -146,14 +146,14 @@ class TestAnprPlateHandlingAcrossStreams:
             "index": "0",
             "data": {
                 "TrafficCar": {
-                    "PlateNumber": "XZO-3314",
+                    "PlateNumber": "XYZ-5678",
                 }
             },
         }
 
         coordinator.on_receive_vto_event(event)
 
-        assert coordinator._last_plate_data["plate"] == "XZO3314"
+        assert coordinator._last_plate_data["plate"] == "XYZ5678"
         fired_events = [call[0][0] for call in coordinator.hass.bus.fire.call_args_list]
         assert EVENT_DAHUA_ANPR_RECOGNIZED in fired_events
         assert "dahua_event_received" in fired_events

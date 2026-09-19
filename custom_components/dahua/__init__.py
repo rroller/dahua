@@ -1961,7 +1961,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if not plate or plate == "unknown":
             return False
         norm = dahua_utils.normalize_plate(plate)
-        return norm in self.get_authorized_plates()
+        auth_plates = self.get_authorized_plates()
+        if norm in auth_plates:
+            return True
+        # Equate 0 and O OCR confusions as fallback
+        norm_fuzzy = norm.replace("0", "O")
+        return any(norm_fuzzy == p.replace("0", "O") for p in auth_plates)
 
     def get_event_list(self) -> list:
         """
