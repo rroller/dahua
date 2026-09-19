@@ -1543,6 +1543,21 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set Day/Night mode")
 
+    async def async_get_video_in_options(self) -> dict:
+        """The VideoInOptions table, which carries this device's Day/Night mode.
+
+        Read whole, because neither narrower spelling works: measured on a
+        DHI-NVR5464-16P-EI and a VTO, both `name=VideoInOptions[0]` and
+        `name=VideoInOptions[0].DayNightColor` return an empty 200.
+
+        It is a host-wide getConfig, so the shared read cache answers it for
+        every channel of a recorder and holds it for CONFIG_CACHE_TTL_SECONDS --
+        one fetch per five minutes per host rather than one per poll. A write
+        clears that cache for the device, so setting the mode is reflected on
+        the next read rather than up to five minutes later.
+        """
+        return await self.async_get_config("VideoInOptions")
+
     async def async_get_video_in_mode(self) -> dict:
         """
         async_get_video_in_mode will return the profile mode (day/night)

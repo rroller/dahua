@@ -288,6 +288,25 @@ def infrared_profile(data: dict, channel: int, profile_mode) -> str:
     return "0"
 
 
+# VideoInOptions[channel].DayNightColor, as the device spells the Day/Night
+# setting. The names are the ones the existing set_video_in_day_night_mode
+# service already accepts, so the select and the service speak the same words.
+DAY_NIGHT_NAMES = {"0": "Color", "1": "Auto", "2": "BlackWhite"}
+
+
+def day_night_color_name(data: dict, channel: int):
+    """This channel's Day/Night mode by name, or None if it did not report one.
+
+    None rather than a default: a device that does not carry this setting must
+    not be shown as though it were in Color, and an unrecognised value is a
+    device telling us something this mapping does not cover.
+    """
+    value = data.get("table.VideoInOptions[{0}].DayNightColor".format(channel))
+    if value is None:
+        return None
+    return DAY_NIGHT_NAMES.get(str(value).strip())
+
+
 WHITE_LIGHT_SCHEME = "WhiteMode"
 
 
@@ -911,6 +930,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_smart_motion_detection = False
         self._supports_ptz_position = False
         self._supports_lighting = False
+        self._supports_day_night_color = False
         self._supports_privacy_mode = False
         self._supports_floodlightmode = False
         self._serial_number: str
@@ -1187,6 +1207,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except PROBE_FAILED:
                     self._supports_smart_motion_detection = False
                 _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
+
+                # Day/Night mode. Judged by whether this channel's row came
+                # back, not by whether the request raised: async_get_config
+                # swallows a ClientResponseError and returns {}, and a device
+                # can answer 200 with an empty body for a table it lacks.
+                try:
+                    options = await self.client.async_get_video_in_options()
+                    self._supports_day_night_color = (
+                        day_night_color_name(options, self._channel) is not None)
+                except PROBE_FAILED:
+                    self._supports_day_night_color = False
+                _LOGGER.debug("Device supports day/night mode=%s", self._supports_day_night_color)
                 if self._supports_smart_motion_detection:
                     # Which rows the device reports is the whole capability
                     # decision for this channel (#635), and nothing logged it.
@@ -1319,6 +1351,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_config_motion_detection()))
             # Only the preset position select reads this, and it is one of the
             # two per-poll calls the config cache does not cover.
+            if self._supports_day_night_color and self._wanted_by(SELECT):
+                coros.append(asyncio.ensure_future(self.client.async_get_video_in_options()))
             if self._supports_ptz_position and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(_ptz_position()))
             if self.supports_infrared_light() and self._wanted_by(LIGHT):
@@ -1875,6 +1909,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_infrared_profile(self) -> str:
         """The Lighting profile this channel's infrared light is really using."""
         return infrared_profile(self.data, self._channel, self.get_profile_mode())
+
+
+    def supports_day_night_color(self) -> bool:
+        """True if this channel reported a Day/Night mode we understand."""
+        return self._supports_day_night_color
+
+    def get_day_night_color(self):
+        """This channel's Day/Night mode by name, or None."""
+        return day_night_color_name(self.data, self._channel)
 
     def is_infrared_light_on(self) -> bool:
         """ returns true if the infrared light is on """

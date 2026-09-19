@@ -43,6 +43,7 @@ def _coordinator(**options):
     c._supports_smart_motion_detection = True
     c._supports_lighting_v2 = True
     c._supports_privacy_mode = True
+    c._supports_day_night_color = True
     c._supports_lighting = True          # gates supports_infrared_light()
     c._supports_floodlightmode = False
     c._channel_number = 1
@@ -70,6 +71,7 @@ DISARMING = "async_get_disarming_linkage"
 NOTIFICATIONS = "async_get_event_notifications"
 SMART_MOTION = "async_get_smart_motion_detection"
 PRIVACY = "async_get_privacy_mode"
+DAY_NIGHT = "async_get_video_in_options"
 
 
 async def test_everything_is_fetched_when_every_platform_is_on():
@@ -77,7 +79,7 @@ async def test_everything_is_fetched_when_every_platform_is_on():
     calls = await _poll()
 
     for api in (PTZ, COAXIAL, MOTION, LIGHTING_V2, INFRARED, DISARMING,
-                NOTIFICATIONS, SMART_MOTION, PRIVACY):
+                NOTIFICATIONS, SMART_MOTION, PRIVACY, DAY_NIGHT):
         assert api in calls, f"{api} stopped being fetched by default"
 
 
@@ -86,6 +88,24 @@ async def test_everything_is_fetched_when_every_platform_is_on():
 async def test_ptz_position_is_skipped_without_the_select_platform():
     """Only the preset position select reads it, and it is uncached."""
     assert PTZ not in await _poll(select=False)
+
+
+async def test_the_day_night_read_is_skipped_without_the_select_platform():
+    """VideoInOptions is 1998 lines on a recorder, so it is worth not asking.
+
+    Only the Day/Night select reads it.
+    """
+    assert DAY_NIGHT not in await _poll(select=False)
+
+
+async def test_the_day_night_read_is_skipped_when_the_device_has_no_mode():
+    """A device that reported no DayNightColor must not be polled for one."""
+    c = _coordinator()
+    c._supports_day_night_color = False
+
+    await c._async_update_data()
+
+    assert DAY_NIGHT not in c.client.calls
 
 
 async def test_switch_reads_are_skipped_without_the_switch_platform():
