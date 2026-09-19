@@ -5,6 +5,7 @@ import asyncio
 from typing import Any, Dict
 import logging
 import random
+import re
 import ssl
 import time
 
@@ -142,6 +143,27 @@ def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0
     return 0.0
 
 
+def vto_retry_state(lived_seconds: float, consecutive_failures: int,
+                    received_data: bool) -> tuple:
+    """How long to wait before re-attaching to a doorbell, and the new count.
+
+    The doorbell's event connection had two fixed delays -- five seconds after a
+    disconnect, thirty after a failure -- and no notion of a device that is
+    simply refusing. A doorbell that has been unplugged was therefore contacted
+    2,880 times a day, forever, where the same device as an IP camera would have
+    been backed off to one attempt every ten minutes.
+
+    The rule is the one the camera stream already uses, and it judges on whether
+    the device spoke rather than on how long the socket lasted: `received_data`
+    resets the count and makes the lifetime count for something, and its absence
+    means this attach achieved nothing however long it sat there.
+    """
+    failures = 0 if received_data else consecutive_failures + 1
+    delay = event_stream_retry_delay(
+        stream_lifetime(lived_seconds, received_data), failures, received_data)
+    return delay, failures
+
+
 # A single missed poll is a blip -- a snapshot timing out, a device busy writing
 # to disk -- and backing off on one would make the integration feel sluggish for
 # no reason. Past that, the device is not answering and polling it on the
@@ -206,6 +228,163 @@ def illuminator_brightness_bank(data: dict, channel: int, profile_mode, light_in
         if key in data:
             return bank
     return LIGHT_BRIGHTNESS_BANKS[0]
+
+
+SMART_MOTION_ROW = re.compile(r"^table\.SmartMotionDetect\[(\d+)\]")
+
+
+def smart_motion_row_indices(table) -> tuple:
+    """Which channel rows a device reports in its SmartMotionDetect table.
+
+    The presence of this channel's row is what decides whether it gets a smart
+    motion switch (#635), so when the answer surprises someone this is the fact
+    they need. Nothing logged it: the integration never logs a response body, so
+    #669 spent two rounds inferring the shape of a table that could simply have
+    been printed.
+
+    Returns a sorted tuple of the indices found, empty when the table is empty
+    or not a dict -- never raising, because a diagnostic that can take setup
+    down is worse than no diagnostic.
+    """
+    if not isinstance(table, dict):
+        return ()
+    found = set()
+    for key in table:
+        match = SMART_MOTION_ROW.match(str(key))
+        if match:
+            found.add(int(match.group(1)))
+    return tuple(sorted(found))
+
+
+def infrared_profile(data: dict, channel: int, profile_mode) -> str:
+    """Which Lighting profile this channel's infrared light is really using.
+
+    The v1 Lighting table is indexed [channel][profile], exactly as Lighting_V2
+    is, and the profiles genuinely differ. Measured on a DHI-NVR5464-16P-EI,
+    where five of fifteen channels report four profiles apiece and their modes
+    disagree:
+
+        table.Lighting[3][0].Mode=Auto
+        table.Lighting[3][1].Mode=ZoomPrio
+        table.Lighting[3][2].Mode=ZoomPrio
+        table.Lighting[3][3].Mode=ZoomPrio
+
+    The poll already fetches the *live* profile --
+    async_get_config_lighting(channel, self._profile_mode) -- while the reader
+    and the writer both hardcoded profile 0. On a camera running anything but
+    day that means the data holds one profile and the entity reads another, so
+    the light reports off whatever it is doing, and every write lands on a
+    profile the camera is not rendering from.
+
+    Falls back to profile 0 when the live one is not in what the device
+    returned, which is the single-profile case and also what keeps a channel
+    working if VideoInMode names a profile the Lighting table does not have.
+    Unlike the row 0 fallbacks removed in #679 and #683, this one stays inside
+    the same channel -- it can only ever return this camera's own row.
+    """
+    live = str(profile_mode)
+    if "table.Lighting[{0}][{1}].Mode".format(channel, live) in data:
+        return live
+    return "0"
+
+
+# VideoInOptions[channel].DayNightColor, as the device spells the Day/Night
+# setting. The names are the ones the existing set_video_in_day_night_mode
+# service already accepts, so the select and the service speak the same words.
+DAY_NIGHT_NAMES = {"0": "Color", "1": "Auto", "2": "BlackWhite"}
+
+
+def day_night_color_name(data: dict, channel: int):
+    """This channel's Day/Night mode by name, or None if it did not report one.
+
+    None rather than a default: a device that does not carry this setting must
+    not be shown as though it were in Color, and an unrecognised value is a
+    device telling us something this mapping does not cover.
+    """
+    value = data.get("table.VideoInOptions[{0}].DayNightColor".format(channel))
+    if value is None:
+        return None
+    return DAY_NIGHT_NAMES.get(str(value).strip())
+
+
+# DeviceType values that name a class of device rather than a model. Measured on
+# a DHI-NVR5464-16P-EI, which answers "IP Camera" and "IPC" for most channels and
+# a real model for one; the Lorex N843A8 on #669 answers a model for every
+# populated channel. Treating these as a model would be worse than having none.
+GENERIC_DEVICE_TYPES = {"", "ip camera", "ipc", "camera", "ip dome", "unknown"}
+
+
+def remote_device_model(data: dict, channel: int):
+    """The model of the camera on this NVR channel, or None if it did not say.
+
+    Every channel of a recorder reports the *recorder's* model, because that is
+    what magicBox.cgi getSystemInfo answers. The camera's own model is in
+    RemoteDevice, indexed by channel:
+
+        table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_6.DeviceType=B451AJ
+
+    Both spellings are accepted: this uuid-keyed form, measured on a
+    DHI-NVR5464-16P-EI and on the Lorex N843A8 of #669, and the plain bracket
+    form in case firmware elsewhere uses it.
+
+    Returns None rather than a guess when the value names a class of device
+    instead of a model -- see GENERIC_DEVICE_TYPES. A caller that cannot tell
+    "no answer" from "IP Camera" would confidently misidentify every channel of
+    a recorder like mine.
+    """
+    if not isinstance(data, dict):
+        return None
+    for key in ("table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_{0}.DeviceType",
+                "table.RemoteDevice[{0}].DeviceType"):
+        value = data.get(key.format(channel))
+        if value is None:
+            continue
+        value = str(value).strip()
+        if value.lower() in GENERIC_DEVICE_TYPES:
+            return None
+        return value
+    return None
+
+
+def door_index(event: dict) -> int:
+    """Which door a VTO DoorStatus event is about.
+
+    The door number arrives in the event's `Index`, 0-based. A VTO paired with
+    an access control extension module has a second door and reports it as 1
+    (#488).
+
+    Anything missing, negative or unreadable is the first door. That is what a
+    single-door VTO sends -- and `Index: -1` is what the same device puts on a
+    BackKeyLight event, so a negative is "not a door number" rather than a door.
+    """
+    try:
+        index = int(event.get("Index"))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, index)
+
+
+WHITE_LIGHT_SCHEME = "WhiteMode"
+
+
+def scheme_blocking_white_light(data: dict, channel: int, profile_mode):
+    """The LightingScheme mode stopping the white light, or None if nothing is.
+
+    Writing the right Lighting_V2 row is not always enough. On Smart Dual Light
+    cameras a separate setting decides which emitter the camera is willing to
+    use, and while it reads AIMode or InfraredMode the white light stays off
+    whatever is written -- the value is stored, Home Assistant reports the light
+    on, and nothing lights up. Measured on a DH-IPC-HFW3449E-S-IL in #647.
+
+    Returns None when the device reports no scheme at all, which is every camera
+    that predates this: absent is not blocking.
+    """
+    mode = data.get(
+        "table.LightingScheme[{0}][{1}].LightingMode".format(channel, profile_mode)
+    )
+    if mode is None or mode == WHITE_LIGHT_SCHEME:
+        return None
+    return mode
 
 
 def illuminator_light_index(data: dict, channel: int, profile_mode) -> int:
@@ -509,6 +688,18 @@ def async_record_host_failure(hass: HomeAssistant, address: str, entry_id: str) 
 
 
 @callback
+def async_host_is_unreachable(address: str) -> bool:
+    """Whether this host has failed enough polls to be called unreachable.
+
+    The same count and threshold the unreachable repair card is raised on, so
+    what an entity says about a device and what the card says about it cannot
+    disagree. One dropped poll is not an answer to this question.
+    """
+    state = _HOST_FAILURES.get(normalize_address(address))
+    return bool(state and state["consecutive"] >= UNREACHABLE_AFTER_FAILURES)
+
+
+@callback
 def async_record_host_success(hass: HomeAssistant, address: str) -> None:
     """The device answered, so withdraw anything we said about it.
 
@@ -786,15 +977,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.platforms = []
         self.initialized = False
         self.model = ""
+        self._firmware_version = ""
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
+        self._alarm_output_slots = 0
         self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._supports_smart_motion_detection = False
         self._supports_ptz_position = False
         self._supports_lighting = False
+        self._supports_day_night_color = False
+        self._channel_model = None
+        self._supports_privacy_mode = False
         self._supports_floodlightmode = False
         self._serial_number: str
         self._profile_mode = "0"
@@ -805,6 +1001,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._max_streams = 3  # 1 main stream + 2 sub-streams by default
 
         self._supports_lighting_v2 = False
+        self._supports_lighting_scheme_illuminator = False
 
         # channel_number is not the channel_index. channel_number is the index + 1.
         # So channel index 0 is channel number 1. Except for some older firmwares where channel
@@ -863,7 +1060,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
+        consecutive_failures = 0
         while True:
+            protocol = None
+            started = time.monotonic()
             try:
                 _LOGGER.debug("Connecting to VTO event stream at %s", self._address)
                 loop = asyncio.get_event_loop()
@@ -876,13 +1076,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
                 self._vto_client = protocol
                 await protocol.disconnected
-                _LOGGER.warning("Disconnected from VTO at %s, reconnecting in 5s", self._address)
-                await asyncio.sleep(5)
             except asyncio.CancelledError:
                 raise
             except Exception as ex:
-                _LOGGER.error("VTO connection to %s failed, retrying in 30s: %s", self._address, ex)
-                await asyncio.sleep(30)
+                delay, consecutive_failures = vto_retry_state(
+                    time.monotonic() - started, consecutive_failures,
+                    getattr(protocol, "received_data", False))
+                _LOGGER.error("VTO connection to %s failed, retrying in %ss: %s",
+                              self._address, round(delay), ex)
+                await asyncio.sleep(delay)
+                continue
+
+            delay, consecutive_failures = vto_retry_state(
+                time.monotonic() - started, consecutive_failures, protocol.received_data)
+            if delay:
+                _LOGGER.warning("Disconnected from VTO at %s, reconnecting in %ss",
+                                self._address, round(delay))
+                await asyncio.sleep(delay)
+            else:
+                # It was connected and talking, so the socket ending is not the
+                # device refusing us. Go straight back.
+                _LOGGER.warning("Disconnected from VTO at %s, reconnecting", self._address)
 
     async def async_stop(self, event: Any = None):
         """ Stop anything we need to stop """
@@ -988,6 +1202,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.model = device_type
                 self.machine_name = data.get("table.General.MachineName")
                 self._serial_number = data.get("serialNumber")
+                self._firmware_version = data.get("version") or ""
 
                 # Some Dahua firmwares index channels from 0, others from 1. The default
                 # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
@@ -1013,6 +1228,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except PROBE_REFUSED:
                     self._supports_coaxial_control = False
                 _LOGGER.debug("Device supports Coaxial Control=%s", self._supports_coaxial_control)
+
+                try:
+                    alarm_output_data = await self.client.async_get_alarm_output_slots()
+                    try:
+                        self._alarm_output_slots = max(0, int(alarm_output_data.get("result", "0")))
+                    except (ValueError, TypeError):
+                        self._alarm_output_slots = 0
+                except PROBE_FAILED:
+                    self._alarm_output_slots = 0
+                _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
+                if self._alarm_output_slots > 1:
+                    _LOGGER.debug(
+                        "Device reports %s alarm outputs; entities are not created because "
+                        "the multi-output getOutState encoding is not yet verified",
+                        self._alarm_output_slots,
+                    )
 
                 try:
                     await self.client.async_get_disarming_linkage()
@@ -1043,12 +1274,54 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
                 # The following lines are for Dahua devices
+                smart_motion_rows = None
                 try:
-                    await self.client.async_get_smart_motion_detection()
+                    table = await self.client.async_get_smart_motion_detection()
                     self._supports_smart_motion_detection = True
+                    smart_motion_rows = smart_motion_row_indices(table)
                 except PROBE_FAILED:
                     self._supports_smart_motion_detection = False
                 _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
+
+                # Day/Night mode. Judged by whether this channel's row came
+                # back, not by whether the request raised: async_get_config
+                # swallows a ClientResponseError and returns {}, and a device
+                # can answer 200 with an empty body for a table it lacks.
+                try:
+                    options = await self.client.async_get_video_in_options()
+                    self._supports_day_night_color = (
+                        day_night_color_name(options, self._channel) is not None)
+                except PROBE_FAILED:
+                    self._supports_day_night_color = False
+                _LOGGER.debug("Device supports day/night mode=%s", self._supports_day_night_color)
+
+                # Which camera is actually on this channel. Every channel of a
+                # recorder reports the recorder's model, so a doorbell behind an
+                # NVR is invisible as one and every model-string capability
+                # check sees the wrong device. Read once at setup: RemoteDevice
+                # is large and never changes between reboots, and the shared read
+                # cache answers it once for all of a recorder's channels.
+                try:
+                    remote = await self.client.async_get_config("RemoteDevice")
+                    self._channel_model = remote_device_model(remote, self._channel)
+                except PROBE_FAILED:
+                    self._channel_model = None
+                if self._channel_model:
+                    _LOGGER.debug(
+                        "Channel %s carries a %s; the device itself reports %s",
+                        self._channel, self._channel_model, self.model)
+                if self._supports_smart_motion_detection:
+                    # Which rows the device reports is the whole capability
+                    # decision for this channel (#635), and nothing logged it.
+                    # #669 spent two rounds of guessing for want of this line,
+                    # because a response body is never logged at debug.
+                    _LOGGER.debug(
+                        "SmartMotionDetect rows reported: %s; this channel is %s, so its "
+                        "switch is %s",
+                        smart_motion_rows if smart_motion_rows else "none",
+                        self._channel,
+                        "created" if self._channel in (smart_motion_rows or ()) else "not created",
+                    )
 
                 is_doorbell = self.is_doorbell()
                 _LOGGER.debug("Device is a doorbell=%s", is_doorbell)
@@ -1069,6 +1342,35 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_lighting_v2 = False
                     pass
                 _LOGGER.debug("Device supports Lighting_V2=%s", self._supports_lighting_v2)
+
+                # IPC-Color4M-TZ accepts ordinary Lighting_V2 writes but its
+                # physical white emitter also requires LightingScheme. Probe
+                # that second capability before exposing the entity.
+                if self.model.upper().startswith("IPC-COLOR4M-TZ"):
+                    try:
+                        scheme = await self.client.async_get_lighting_scheme()
+                        self._supports_lighting_scheme_illuminator = any(
+                            key.endswith(".LightingMode") for key in scheme
+                        )
+                    except (ClientError, TimeoutError, ConnectionError,
+                            ValueError, KeyError, TypeError):
+                        self._supports_lighting_scheme_illuminator = False
+                    _LOGGER.debug(
+                        "Device supports LightingScheme illuminator=%s",
+                        self._supports_lighting_scheme_illuminator,
+                    )
+
+                # Checking privacy mode (LeLensMask) support. This is RPC2 only and many models lack it.
+                # Deliberately broader than PROBE_FAILED: a camera without LeLensMask answers with an
+                # RPC2 result=false, which surfaces as ConnectionError, and a malformed table raises
+                # ValueError. Neither is a ClientError, so narrowing this would fail the whole entry.
+                try:
+                    await self.client.async_get_privacy_mode()
+                    self._supports_privacy_mode = True
+                except Exception as exception:
+                    self._supports_privacy_mode = False
+                    _LOGGER.debug("Privacy mode not available", exc_info=exception)
+                _LOGGER.debug("Device supports privacy mode=%s", self._supports_privacy_mode)
 
 
                 if not is_doorbell:
@@ -1140,6 +1442,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_config_motion_detection()))
             # Only the preset position select reads this, and it is one of the
             # two per-poll calls the config cache does not cover.
+            if self._supports_day_night_color and self._wanted_by(SELECT):
+                coros.append(asyncio.ensure_future(self.client.async_get_video_in_options()))
             if self._supports_ptz_position and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(_ptz_position()))
             if self.supports_infrared_light() and self._wanted_by(LIGHT):
@@ -1149,6 +1453,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_disarming_linkage()))
             if self._supports_event_notifications and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
+            if self.supports_alarm_output() and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self.client.async_get_alarm_output_state()))
             # The siren switch and the security light both read this one.
             if self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
                 coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
@@ -1165,6 +1471,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_light_global_enabled()))
             if self._supports_lighting_v2 and self._wanted_by(LIGHT):   #add lighing_v2 API if it is supported
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
+            if (getattr(self, "_supports_lighting_scheme_illuminator", False)
+                    and self._wanted_by(LIGHT)):
+                coros.append(asyncio.ensure_future(self.client.async_get_lighting_scheme()))
+            # Only the privacy mode switch reads this one.
+            if self._supports_privacy_mode and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self._async_fetch_privacy_mode()))
 
 
             # Gather results and update the data map
@@ -1201,9 +1513,49 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # debug-logging instructions for what is often a one-word answer.
             raise UpdateFailed(detail) from exception
 
+    def _handle_anpr_plate(self, event: dict):
+        """Extract license plate data from event, fire ANPR events, and notify plate listeners."""
+        plate_info = dahua_utils.extract_plate_data(event)
+        if plate_info and plate_info.get("plate"):
+            plate_info["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            self._last_plate_data = plate_info
+            self._last_plate_timestamp = int(time.time())
+            event["PlateNumber"] = plate_info["plate"]
+            event["PlateData"] = plate_info
+            _LOGGER.info(
+                "Dahua ANPR Plate detected on %s: %s (event %s)",
+                self.get_device_name(),
+                plate_info["plate"],
+                event.get("Code"),
+            )
+            # Dedicated event on Home Assistant event bus
+            anpr_event_data = {
+                "device_name": self.get_device_name(),
+                "channel": self._channel,
+                "plate": plate_info["plate"],
+                "raw_plate": plate_info.get("raw_plate"),
+                "confidence": plate_info.get("confidence"),
+                "vehicle_type": plate_info.get("vehicle_type"),
+                "vehicle_color": plate_info.get("vehicle_color"),
+                "vehicle_brand": plate_info.get("vehicle_brand"),
+                "vehicle_series": plate_info.get("vehicle_series"),
+                "direction": plate_info.get("direction"),
+                "is_authorized": self.is_plate_authorized(plate_info["plate"]),
+                "raw_event_code": event.get("Code"),
+                "timestamp": self._last_plate_timestamp,
+            }
+            self.hass.bus.fire(EVENT_DAHUA_ANPR_RECOGNIZED, anpr_event_data)
+
+            for listener in self._plate_listeners:
+                try:
+                    listener()
+                except Exception as ex:
+                    _LOGGER.warning("Error calling plate listener: %s", ex)
+
     def on_receive_vto_event(self, event: dict):
         event["DeviceName"] = self.get_device_name()
         _LOGGER.debug(f"VTO Data received: {event}")
+        self._handle_anpr_plate(event)
         self.hass.bus.fire("dahua_event_received", event)
 
         # Example events:
@@ -1262,6 +1614,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     listener()
                 elif action == "Pulse":
                     if code == "DoorStatus":
+                        # The door number is in Index, and it was being thrown
+                        # away. A VTO with an access control extension module
+                        # has a second door whose events carry Index 1 (#488),
+                        # and every one of them landed on the single Door Status
+                        # sensor -- so door 2 closing reported door 1 as closed
+                        # while it stood open. One sensor exists, it is door 1's,
+                        # and only door 1 may write to it.
+                        if door_index(event) != 0:
+                            continue
                         if event.get("Data", {}).get("Status", "") == "Open":
                             self._dahua_event_timestamp[event_key] = int(time.time())
                         else:
@@ -1314,42 +1675,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
         # Check for license plate data in the event
-        plate_info = dahua_utils.extract_plate_data(event)
-        if plate_info and plate_info.get("plate"):
-            plate_info["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-            self._last_plate_data = plate_info
-            self._last_plate_timestamp = int(time.time())
-            event["PlateNumber"] = plate_info["plate"]
-            event["PlateData"] = plate_info
-            _LOGGER.info(
-                "Dahua ANPR Plate detected on %s: %s (event %s)",
-                self.get_device_name(),
-                plate_info["plate"],
-                event.get("Code"),
-            )
-            # Dedicated event on Home Assistant event bus
-            anpr_event_data = {
-                "device_name": self.get_device_name(),
-                "channel": self._channel,
-                "plate": plate_info["plate"],
-                "raw_plate": plate_info.get("raw_plate"),
-                "confidence": plate_info.get("confidence"),
-                "vehicle_type": plate_info.get("vehicle_type"),
-                "vehicle_color": plate_info.get("vehicle_color"),
-                "vehicle_brand": plate_info.get("vehicle_brand"),
-                "vehicle_series": plate_info.get("vehicle_series"),
-                "direction": plate_info.get("direction"),
-                "is_authorized": self.is_plate_authorized(plate_info["plate"]),
-                "raw_event_code": event.get("Code"),
-                "timestamp": self._last_plate_timestamp,
-            }
-            self.hass.bus.fire(EVENT_DAHUA_ANPR_RECOGNIZED, anpr_event_data)
-
-            for listener in self._plate_listeners:
-                try:
-                    listener()
-                except Exception as ex:
-                    _LOGGER.warning("Error calling plate listener: %s", ex)
+        self._handle_anpr_plate(event)
 
         # Put the event on the HA event bus
         event["name"] = self.get_device_name()
@@ -1429,6 +1755,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether the device answered the disarming linkage read during setup."""
         return self._supports_disarming_linkage
 
+    def supports_alarm_output(self) -> bool:
+        """Whether a safely decodable single alarm output is available."""
+        return self._alarm_output_slots == 1
+
+    def is_alarm_output_on(self) -> bool:
+        """Return the physical state reported by getOutState."""
+        return self.data.get("status.AlarmOut[0]") == "1"
+
     def supports_profile_mode(self) -> bool:
         """Whether this device has selectable day/night/general profiles.
 
@@ -1471,8 +1805,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_doorbell(self) -> bool:
         """ Returns true if this is a doorbell (VTO) """
         m = self.model.upper()
-        return m.startswith("VTO") or m.startswith("DH-VTO") or (
-            "NVR" not in m and m.startswith("DHI")) or self.is_amcrest_doorbell() or self.is_empiretech_doorbell() or self.is_avaloidgoliath_doorbell()
+        return (
+            m.startswith(("VTO", "DH-VTO", "DHI-VTO", "DH_VTO", "DHI_VTO"))
+            or "-VTO" in m
+            or "_VTO" in m
+            or self.is_amcrest_doorbell()
+            or self.is_empiretech_doorbell()
+            or self.is_avaloidgoliath_doorbell()
+        )
 
     def is_amcrest_doorbell(self) -> bool:
         """ Returns true if this is an Amcrest doorbell - IMOU DB61i is identical """
@@ -1509,7 +1849,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Returns true if this camera has an illuminator (white light for color cameras).  For example, the
         IPC-HDW3849HP-AS-PV does
         """
-        return  not (self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data   
+        if self.model.upper().startswith("IPC-COLOR4M-TZ"):
+            return self._supports_lighting_scheme_illuminator and any(
+                self.data.get(
+                    "table.Lighting_V2[{0}][{1}][{2}].LightType".format(
+                        self._channel, profile, index
+                    )
+                ) == WHITE_LIGHT
+                for profile in range(9)
+                for index in range(MAX_LIGHTING_V2_LIGHTS)
+            )
+        return not (self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data
+
+    def uses_lighting_scheme_illuminator(self) -> bool:
+        """Whether this device needs the two-table white-light contract."""
+        return getattr(self, "_supports_lighting_scheme_illuminator", False)
     
     def supports_ptz_position(self) -> bool:
         """
@@ -1541,12 +1895,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         Both the capability check and the state read go through here so they
         cannot disagree about which row belongs to this channel.
+
+        There is no fallback to row 0. A single camera sits on channel 0, so the
+        lookup below already reads row 0 for it -- a fallback can only ever fire
+        on a channel that is not row 0's owner, and handing it that row reports
+        another camera's state and creates a switch whose writes the device
+        accepts and discards.
         """
-        value = self.data.get("table.SmartMotionDetect[{0}].Enable".format(self._channel))
-        if value is None:
-            # A single camera reports one row, and that row is row 0.
-            value = self.data.get("table.SmartMotionDetect[0].Enable")
-        return value
+        return self.data.get("table.SmartMotionDetect[{0}].Enable".format(self._channel))
 
     def is_smart_motion_detection_enabled(self) -> bool:
         """ Returns true if smart motion detection is enabled """
@@ -1570,9 +1926,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ returns the device model, e.g. IPC-HDW3849HP-AS-PV """
         return self.model
 
+    def get_channel_model(self):
+        """The model of the camera on this channel, or None if unknown.
+
+        Deliberately separate from get_model(), which still answers what the
+        device itself reports. Nothing is gated on this yet -- see #690.
+        """
+        return self._channel_model
+
     def get_firmware_version(self) -> str:
-        """ returns the device firmware e.g. """
-        return self.data.get("version")
+        """The firmware the device reported, e.g. 2.800.0000016.0.R.
+
+        Kept on the coordinator rather than read back out of ``data``.
+        The poll rebuilds that dict from scratch every cycle and only the
+        one-time initialization ever puts a version in it, so anything
+        reading it there got an answer on the first refresh and nothing
+        at all from the second one onwards.
+        """
+        return self._firmware_version
 
     def get_build_date(self) -> str:
         """Return the firmware build date, e.g. 2020-06-05, if known.
@@ -1580,7 +1951,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         The CGI endpoint returns strings like
         ``2.800.0000016.0.R,build:2020-06-05``; peel the date off.
         """
-        version = self.data.get("version") or ""
+        version = self._firmware_version
         if "build:" in version:
             return version.rsplit("build:", 1)[-1].strip()
         return ""
@@ -1653,14 +2024,31 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return self.events
 
+    def get_infrared_profile(self) -> str:
+        """The Lighting profile this channel's infrared light is really using."""
+        return infrared_profile(self.data, self._channel, self.get_profile_mode())
+
+
+    def supports_day_night_color(self) -> bool:
+        """True if this channel reported a Day/Night mode we understand."""
+        return self._supports_day_night_color
+
+    def get_day_night_color(self):
+        """This channel's Day/Night mode by name, or None."""
+        return day_night_color_name(self.data, self._channel)
+
     def is_infrared_light_on(self) -> bool:
         """ returns true if the infrared light is on """
-        return self.data.get("table.Lighting[{0}][0].Mode".format(self._channel),"") == "Manual"
+        return self.data.get(
+            "table.Lighting[{0}][{1}].Mode".format(
+                self._channel, self.get_infrared_profile()), "") == "Manual"
 
     def get_infrared_brightness(self) -> int:
         """Return the brightness of this light, as reported by the camera itself, between 0..255 inclusive"""
 
-        bri = self.data.get("table.Lighting[{0}][0].MiddleLight[0].Light".format(self._channel))
+        bri = self.data.get(
+            "table.Lighting[{0}][{1}].MiddleLight[0].Light".format(
+                self._channel, self.get_infrared_profile()))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
     def get_illuminator_index(self) -> int:
@@ -1677,9 +2065,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # profile_mode 0=day, 1=night, 2=scene
         profile_mode = self.get_profile_mode()
         index = self.get_illuminator_index()
-        return self.data.get(
+        manually_on = self.data.get(
             "table.Lighting_V2[{0}][{1}][{2}].Mode".format(self._channel, profile_mode, index), ""
         ) == "Manual"
+        if self.uses_lighting_scheme_illuminator():
+            scheme_mode = self.data.get(
+                "table.LightingScheme[{0}][{1}].LightingMode".format(
+                    self._channel, profile_mode
+                ), ""
+            )
+            return scheme_mode == "WhiteMode" and manually_on
+        return manually_on
 
     def is_flood_light_on(self) -> bool:
 
@@ -1699,6 +2095,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
 
+        if self.uses_lighting_scheme_illuminator():
+            bri = self.data.get(
+                "table.Lighting_V2[{0}][{1}][{2}].PercentOfMaxBrightness".format(
+                    self._channel, self.get_profile_mode(), self.get_illuminator_index()
+                )
+            )
+            return dahua_utils.dahua_brightness_to_hass_brightness(bri)
         # The profile was hardcoded to 0 here while is_illuminator_on reads the
         # live one, so on a camera running Night this reported the Day
         # brightness. The bank was hardcoded too; see illuminator_brightness_bank.
@@ -1734,14 +2137,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         - **Everything else.** `Config[0]` is the profile.
 
         The read is host-wide -- getConfig&name=VideoInMode returns a row per
-        channel -- so an NVR channel has to take its own row, falling back to
-        row 0, which is all a single-channel camera returns.
+        channel -- so an NVR channel takes its own row and no other. There is no
+        fallback to row 0: a single camera sits on channel 0, so the lookup
+        below already reads row 0 for it, and a fallback could therefore only
+        ever fire on a channel that is not row 0's owner. On a recorder that row
+        is camera 1, and adopting its profile decides which
+        Lighting_V2[channel][profile] every light command for this camera is
+        written to. Camera 1 on day and this one on night sends every write to a
+        profile the camera is not using, where it is accepted and ignored.
+
+        Worse, the fallback was per field, so Config[0] could come from this
+        channel while ConfigEx came from another -- one answer assembled from
+        two cameras.
         """
         def field(name):
-            value = mode_data.get("table.VideoInMode[{0}].{1}".format(self._channel, name))
-            if value is None:
-                value = mode_data.get("table.VideoInMode[0].{0}".format(name))
-            return value
+            return mode_data.get(
+                "table.VideoInMode[{0}].{1}".format(self._channel, name))
 
         config = field("Config[0]")
         config_ex = field("ConfigEx")
@@ -1783,8 +2194,31 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._channel
 
     def is_nvr_channel(self) -> bool:
-        """Return whether this entry represents a camera channel on an NVR."""
-        return self._channel > 0 or "NVR" in self.model.upper()
+        """Return whether this entry represents a camera channel on an NVR.
+
+        Channel 0 is the awkward one. It is both the only channel a standalone
+        camera has and the first channel of every recorder, so the model string
+        is all that separates them -- and plenty of recorders do not say "NVR"
+        in theirs. A Lorex N843A8 does not, nor do most OEM rebrands.
+
+        The consequence was silent and lopsided: a user who switched on NVR
+        active deterrence got the entity on channels 1 upwards and nothing at
+        all on channel 0, because that channel took the standalone-camera branch
+        and was tested against a model whitelist the recorder can never match.
+
+        So the option counts as an answer. It is offered for recorders, it
+        defaults off, and a user who turns it on has said what this entry is
+        more directly than any model string does.
+
+        This decides the control path as well as whether the entity exists --
+        an NVR channel drives deterrence through coaxialControlIO on its own
+        channel number, a camera through its channel index -- so the two have to
+        be decided by the same question or the entity would appear and then
+        write to the wrong place.
+        """
+        return (self._channel > 0
+                or "NVR" in self.model.upper()
+                or self._nvr_active_deterrence)
 
     def get_channel_number(self) -> int:
         """returns the channel number of this camera"""
@@ -1819,15 +2253,56 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._smart_motion_row() is not None
 
     def supports_smart_motion_detection_amcrest(self) -> bool:
-        """ True if smart motion detection is supported for an amcrest device"""
-        return self.model == "AD410" or self.model == "DB61i"
+        """ True if smart motion detection is supported for an amcrest device
 
-    def get_vto_client(self) -> DahuaVTOClient:
+        Matched the way is_amcrest_doorbell matches, which is the point: these
+        two questions are about the same devices and disagreed. That one folds
+        case and takes a prefix; this one compared the raw string exactly, so a
+        doorbell reporting `DB61I` rather than `DB61i` was a doorbell to one
+        check and not to the other.
+
+        A device that falls through here is not merely missing its switch. The
+        smart motion state and the write both take the non-Amcrest branch, which
+        reads SmartMotionDetect -- a table an Amcrest doorbell does not have --
+        so it reports nothing and its IVS rule is never touched.
         """
-        Returns an instance of the connected VTO client if this is a VTO device. We need this because there's different
-        ways to call a VTO device and the VTO client will handle that. For example, to hang up a call
+        model = self.model.upper()
+        return model.startswith("AD410") or model.startswith("DB61")
+
+    def supports_privacy_mode(self) -> bool:
+        """ True if the camera exposes the lens privacy mask over RPC2 """
+        return self._supports_privacy_mode
+
+    def is_privacy_mode_enabled(self) -> bool:
+        """ True if the lens privacy mask is currently enabled """
+        return self.data.get("privacy_mode_enabled", False)
+
+    async def _async_fetch_privacy_mode(self) -> dict:
+        """ Poll the privacy mode state, keeping the last known value on failure """
+        try:
+            return {"privacy_mode_enabled": await self.client.async_get_privacy_mode()}
+        except Exception as exception:
+            _LOGGER.debug("Failed to fetch privacy mode state", exc_info=exception)
+            previous = self.data.get("privacy_mode_enabled", False) if self.data else False
+            return {"privacy_mode_enabled": previous}
+
+    def get_vto_client(self) -> DahuaVTOClient | None:
+        """The doorbell's client, or None when there is not a live one.
+
+        Returns an instance of the connected VTO client if this is a VTO device.
+        We need this because there's different ways to call a VTO device and the
+        VTO client will handle that. For example, to hang up a call.
+
+        `_vto_client` is only ever assigned, never cleared, so after a drop it
+        goes on naming a protocol whose socket has gone -- and a doorbell
+        reconnects often enough for that to be reachable. `disconnected` is the
+        future the protocol resolves when its connection ends, so a client
+        holding a finished one is a client there is no point handing out.
         """
-        return self._vto_client
+        client = self._vto_client
+        if client is None or client.disconnected.done():
+            return None
+        return client
 
     def get_status_value(self, key):
         v = self.data.get(f"status.status.{key}")
@@ -1873,3 +2348,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
     await hass.config_entries.async_reload(entry.entry_id)
+

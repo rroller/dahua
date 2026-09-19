@@ -8,6 +8,7 @@ import pytest
 from custom_components.dahua import client as client_module
 from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.digest import DigestAuth
+from yarl import URL
 
 REALM = "DahuaRpc"
 USER = "admin"
@@ -70,13 +71,18 @@ class FakeSession:
     rather than each running to completion in one scheduler step.
     """
 
-    def __init__(self, password=PASSWORD, nonce="nonce-1", strict_nc=False, body="ok=1"):
+    def __init__(self, password=PASSWORD, nonce="nonce-1", strict_nc=False, body="ok=1",
+                 strict_uri=False):
         self.requests = []
         self.password = password
         self.nonce = nonce
         self.strict_nc = strict_nc
         self.body = body
         self.seen_nc = set()
+        # Some firmware checks that the uri in the header is the request-URI it
+        # actually received, as RFC 7616 requires. aiohttp percent-encodes that
+        # URI, so the fake has to do the same before judging what it was sent.
+        self.strict_uri = strict_uri
 
     def _challenge(self, stale=False):
         header = 'Digest realm="%s", nonce="%s", qop="auth"' % (REALM, self.nonce)
@@ -98,6 +104,9 @@ class FakeSession:
             return FakeResponse(401, self._challenge(stale=True))
         if params.get("response") != _expected_response(method.upper(), params, self.password):
             return FakeResponse(401, self._challenge())
+        if self.strict_uri and params.get("uri") != URL(url).raw_path_qs:
+            # Credentials were fine; the signature does not cover this request.
+            return FakeResponse(403, body="Forbidden")
         if self.strict_nc:
             nc = params.get("nc")
             if nc in self.seen_nc:
@@ -229,3 +238,45 @@ async def test_unusable_cached_challenge_is_discarded():
 
     assert response.status == 200
     assert state["challenge"]["nonce"] == session.nonce
+
+
+# --- the uri the header signs -------------------------------------------------
+
+INDEXED_WRITE = ("http://d/cgi-bin/configManager.cgi?action=setConfig"
+                 "&Lighting_V2[3][0][1].Mode=Manual&Lighting_V2[3][0][1].NearLight[0].Light=100")
+
+
+async def test_the_header_signs_the_uri_that_is_actually_sent():
+    """Every indexed write carries square brackets, and aiohttp encodes them.
+
+    The header used to be built from the decoded path, so it said "[3]" while
+    "%5B3%5D" went on the wire. A device that checks is entitled to refuse.
+    """
+    session = FakeSession(strict_uri=True)
+
+    response = await DigestAuth(USER, PASSWORD, session, {}).request("GET", INDEXED_WRITE)
+
+    assert response.status == 200, "the device refused a signature it could not verify"
+
+
+async def test_the_signed_uri_is_the_encoded_form():
+    session = FakeSession()
+
+    await DigestAuth(USER, PASSWORD, session, {}).request("GET", INDEXED_WRITE)
+
+    uri = _params(session.requests[-1]["headers"]["AUTHORIZATION"])["uri"]
+    assert "%5B3%5D" in uri
+    assert "[3]" not in uri, "the header still names the decoded path"
+
+
+async def test_a_url_without_brackets_is_unaffected():
+    """Nothing changes for the URLs that have no character needing encoding."""
+    session = FakeSession(strict_uri=True)
+    plain = "http://d/cgi-bin/magicBox.cgi?action=getMachineName"
+
+    response = await DigestAuth(USER, PASSWORD, session, {}).request("GET", plain)
+
+    assert response.status == 200
+    uri = _params(session.requests[-1]["headers"]["AUTHORIZATION"])["uri"]
+    assert uri == "/cgi-bin/magicBox.cgi?action=getMachineName"
+

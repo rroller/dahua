@@ -77,6 +77,16 @@ class _Coordinator:
     def get_model(self):
         return "IPC-HDW5831R-ZE"
 
+    def get_channel_model(self):
+        """The camera on this channel, where the device is a recorder.
+
+        None here: this fake is a standalone camera, which is the case that must
+        keep working. _safe cannot rescue a missing attribute -- it is evaluated
+        as an argument, before _safe is ever called -- so every coordinator the
+        dump touches has to carry it.
+        """
+        return None
+
     def get_device_name(self):
         return "Front Door"
 

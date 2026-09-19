@@ -10,7 +10,7 @@ from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
     DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS, VOLUME_HIGH_ICON,
 )
-from .entity import DahuaBaseEntity
+from .entity import DahuaBaseEntity, DahuaEventDrivenEntity
 
 # Override event names. Otherwise we'll generate the name from the event name for example SmartMotionHuman will
 # become "Smart Motion Human"
@@ -63,7 +63,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         async_add_devices(sensors)
 
 
-class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
+class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
     """
     dahua binary_sensor class to record events. Many of these events are configured in the camera UI by going to:
     Setting -> Event -> IVS -> and adding a tripwire rule, etc. See the DahuaEventThread in thread.py on how we connect
@@ -136,7 +136,7 @@ class DahuaEventSensor(DahuaBaseEntity, BinarySensorEntity):
         return False
 
 
-class DahuaAuthorizedVehicleBinarySensor(DahuaBaseEntity, BinarySensorEntity):
+class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEntity):
     """Binary sensor that turns on when an authorized vehicle license plate is recognized."""
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):

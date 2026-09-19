@@ -56,9 +56,32 @@ def test_a_single_camera_reporting_only_row_zero_still_supports_it():
     assert _coordinator(0, {0: "true"}).supports_smart_motion_detection()
 
 
-def test_a_camera_whose_channel_does_not_match_row_zero_still_supports_it():
-    """The pre-existing fallback: entry channel and table row need not agree."""
-    assert _coordinator(3, {0: "true"}).supports_smart_motion_detection()
+def test_a_channel_whose_row_is_missing_does_not_borrow_row_zero():
+    """This assertion used to read the other way round.
+
+    It was written in #621, when the fallback to row 0 decided only what state
+    to display. #635 made the row the capability signal as well, and from then
+    on the same fallback also decided whether the entity exists -- which handed
+    a switch back to every channel #635 takes it away from.
+    """
+    assert not _coordinator(3, {0: "true"}).supports_smart_motion_detection()
+
+
+def test_a_recorder_with_a_row_zero_does_not_give_every_channel_a_switch():
+    """The field case: camera 1 is configured, so row 0 exists.
+
+    Every other channel used to find row 0 through the fallback and get a switch
+    reporting camera 1's state, while its own writes went to a row the device
+    accepts and discards.
+    """
+    rows = {0: "true", 5: "true"}
+    supported = [ch for ch in range(10) if _coordinator(ch, rows).supports_smart_motion_detection()]
+
+    assert supported == [0, 5]
+
+
+def test_a_channel_without_a_row_does_not_report_row_zeros_state():
+    assert not _coordinator(3, {0: "true"}).is_smart_motion_detection_enabled()
 
 
 # --- the probe still has a veto ---------------------------------------------

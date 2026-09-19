@@ -145,7 +145,14 @@ class DigestAuth:
         def KD(s, d):
             return H("%s:%s" % (s, d))
 
-        path = URL(url).path_qs
+        # raw_path_qs, not path_qs: the request-URI that goes on the wire is
+        # percent-encoded by yarl, and RFC 7616 wants the uri in the header to
+        # be that same string. path_qs hands back the decoded form, so every URL
+        # carrying a square bracket -- which is every indexed write, from
+        # MotionDetect[0].Enable to Lighting_V2[3][0][1] -- was signed as
+        # "[0]" while "%5B0%5D" was sent. A device that checks is entitled to
+        # refuse that, and 403 is what refusing it looks like.
+        path = URL(url).raw_path_qs
         A1 = "%s:%s:%s" % (self.username, realm, self.password)
         A2 = "%s:%s" % (method, path)
 

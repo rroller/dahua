@@ -66,8 +66,23 @@ def test_a_single_camera_still_reads_row_zero():
     assert _coordinator(0, SINGLE_CAMERA_TABLE).is_smart_motion_detection_enabled() is True
 
 
-def test_a_channel_with_no_row_of_its_own_falls_back_to_row_zero():
-    assert _coordinator(3, SINGLE_CAMERA_TABLE).is_smart_motion_detection_enabled() is True
+def test_a_channel_with_no_row_of_its_own_reads_nothing():
+    """Flipped deliberately -- see test_smart_motion_capability.py.
+
+    Row 0 belongs to whichever camera reported it. A channel that has no row of
+    its own must not read this one.
+    """
+    assert _coordinator(3, SINGLE_CAMERA_TABLE).is_smart_motion_detection_enabled() is False
+
+
+def test_channels_do_not_all_report_camera_ones_state():
+    """A recorder that does have a row 0, which neither table above covers."""
+    table = dict(NVR_TABLE)
+    table["table.SmartMotionDetect[0].Enable"] = "true"
+
+    assert _coordinator(0, table).is_smart_motion_detection_enabled() is True
+    assert _coordinator(2, table).is_smart_motion_detection_enabled() is False
+    assert _coordinator(9, table).is_smart_motion_detection_enabled() is False
 
 
 def test_an_empty_table_is_off():
