@@ -1156,7 +1156,7 @@ class DahuaClient:
                 _LOGGER.debug("RPC2 logout failed after %s", description, exc_info=True)
 
     async def async_privacy_mode_over_cgi(self):
-        """This camera's LeLensMask row read over plain CGI, or None.
+        """(row index, enabled) for this camera's LeLensMask, or None.
 
         Judged by what comes back rather than by an exception, for the reason
         async_detect_lighting_support gives: async_get_config swallows a
@@ -1164,13 +1164,23 @@ class DahuaClient:
         with an empty body for a table it does not have -- a recorder on #669
         does exactly that for VideoAnalyseRule. Neither of those is "privacy
         mode is off", so only a response actually carrying the key counts.
+
+        The index is returned, and not assumed, because the write has to reach
+        the row the state was read from. Accepting any row while always writing
+        row 0 would be a control that reports one thing and changes another on
+        any device that reports more than one -- the shape of #679, #683 and
+        #689. Which row a device uses is not something I can check: neither of
+        mine carries this table at all.
+
+        Lowest index first, so the answer does not depend on dict ordering.
         """
         data = await self.async_get_config("LeLensMask")
         if not data:
             return None
-        for key, value in data.items():
-            if key.startswith("table.LeLensMask[") and key.endswith("].Enable"):
-                return str(value).strip().lower() == "true"
+        for key in sorted(data):
+            match = re.match(r"table\.LeLensMask\[(\d+)\]\.Enable$", key)
+            if match:
+                return int(match.group(1)), str(data[key]).strip().lower() == "true"
         return None
 
     async def async_get_privacy_mode(self) -> bool:
@@ -1188,7 +1198,7 @@ class DahuaClient:
         """
         over_cgi = await self.async_privacy_mode_over_cgi()
         if over_cgi is not None:
-            return over_cgi
+            return over_cgi[1]
         return await self._async_privacy_mode_rpc2(
             lambda rpc2: rpc2.async_get_privacy_mode(), "privacy mode read"
         )
@@ -1203,9 +1213,10 @@ class DahuaClient:
         its own TimeSection schedule -- which is what the RPC2 path takes the
         trouble to read back and rewrite by hand.
         """
-        if await self.async_privacy_mode_over_cgi() is not None:
-            url = "/cgi-bin/configManager.cgi?action=setConfig&LeLensMask[0].Enable={0}".format(
-                str(bool(enabled)).lower())
+        row = await self.async_privacy_mode_over_cgi()
+        if row is not None:
+            url = ("/cgi-bin/configManager.cgi?action=setConfig"
+                   "&LeLensMask[{0}].Enable={1}").format(row[0], str(bool(enabled)).lower())
             await self.get(url, True)
             return
         await self._async_privacy_mode_rpc2(
