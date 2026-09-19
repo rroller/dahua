@@ -738,16 +738,6 @@ class DahuaClient:
         url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel={channel}".format(channel=channel)
         return await self.get(url)
 
-    async def async_get_lighting_scheme(self) -> dict:
-        """Which emitter the camera is willing to use, on Smart Dual Light models.
-
-        Deliberately not part of the poll. This is read when a light command is
-        given -- rare, and user initiated -- rather than on every poll for the
-        sake of a warning most devices never need.
-        """
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=LightingScheme"
-        return await self.get(url)
-
     async def async_get_lighting_v2(self) -> dict:
         """
         async_get_lighting_v2 will fetch the status of the camera light (also known as the illuminator)
@@ -1000,11 +990,38 @@ class DahuaClient:
         return {}
 
     async def async_get_lighting_scheme(self) -> dict:
-        """Read LightingScheme through CGI regardless of RPC2 polling mode."""
-        return await self._request(
-            "/cgi-bin/configManager.cgi?action=getConfig&name=LightingScheme",
-            allow_rpc2=False,
-        )
+        """Which emitter the camera is willing to use, on Smart Dual Light models.
+
+        Deliberately not part of the poll. This is read when a light command is
+        given -- rare, and user initiated -- rather than on every poll for the
+        sake of a warning most devices never need.
+
+        CGI first, because that is what a camera answers and it costs no login.
+        RPC2 when CGI will not answer: a recorder refuses
+        getConfig&name=LightingScheme with 400 -- measured on a
+        DHI-NVR5464-16P-EI and on the recorder in #647 -- while the same table
+        reads perfectly over RPC2 on that second device.
+
+        That gap is the whole reason the warning exists. #647's white light was
+        held off by LightingMode=AIMode for weeks, the camera accepted every
+        write and lit nothing, and the check that would have said so could not
+        run because the only transport it tried was the one that recorder
+        refuses.
+
+        Judged by what comes back, not by whether something was raised:
+        _request returns {} for a table a device does not have, and that is not
+        a scheme.
+        """
+        try:
+            over_cgi = await self._request(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=LightingScheme",
+                allow_rpc2=False,
+            )
+            if over_cgi:
+                return over_cgi
+        except aiohttp.ClientResponseError:
+            pass
+        return await self._rpc2_get_config("LightingScheme")
 
     async def async_set_lighting_scheme_illuminator(
             self, channel: int, enabled: bool, brightness: int,
