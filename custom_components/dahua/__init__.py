@@ -2140,8 +2140,31 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._channel
 
     def is_nvr_channel(self) -> bool:
-        """Return whether this entry represents a camera channel on an NVR."""
-        return self._channel > 0 or "NVR" in self.model.upper()
+        """Return whether this entry represents a camera channel on an NVR.
+
+        Channel 0 is the awkward one. It is both the only channel a standalone
+        camera has and the first channel of every recorder, so the model string
+        is all that separates them -- and plenty of recorders do not say "NVR"
+        in theirs. A Lorex N843A8 does not, nor do most OEM rebrands.
+
+        The consequence was silent and lopsided: a user who switched on NVR
+        active deterrence got the entity on channels 1 upwards and nothing at
+        all on channel 0, because that channel took the standalone-camera branch
+        and was tested against a model whitelist the recorder can never match.
+
+        So the option counts as an answer. It is offered for recorders, it
+        defaults off, and a user who turns it on has said what this entry is
+        more directly than any model string does.
+
+        This decides the control path as well as whether the entity exists --
+        an NVR channel drives deterrence through coaxialControlIO on its own
+        channel number, a camera through its channel index -- so the two have to
+        be decided by the same question or the entity would appear and then
+        write to the wrong place.
+        """
+        return (self._channel > 0
+                or "NVR" in self.model.upper()
+                or self._nvr_active_deterrence)
 
     def get_channel_number(self) -> int:
         """returns the channel number of this camera"""

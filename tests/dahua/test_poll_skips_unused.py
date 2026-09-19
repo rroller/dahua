@@ -40,6 +40,10 @@ def _coordinator(**options):
     c._supports_disarming_linkage = True
     c._supports_event_notifications = True
     c._supports_coaxial_control = True
+    # is_nvr_channel reads this, and the poll asks it when choosing the
+    # coaxial channel. object.__new__ means an attribute the class sets in
+    # __init__ does not exist here unless it is named.
+    c._nvr_active_deterrence = False
     c._supports_smart_motion_detection = True
     c._supports_lighting_v2 = True
     c._supports_privacy_mode = True
