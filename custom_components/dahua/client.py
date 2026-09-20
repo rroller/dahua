@@ -9,7 +9,7 @@ import time
 import aiohttp
 
 from .digest import DigestAuth
-from .rpc2 import DahuaRpc2Client
+from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
 from hashlib import md5
 from urllib.parse import quote
 
@@ -83,6 +83,12 @@ _HOST_RPC2: dict = {}
 # meant eleven channels each rediscovering it, which is eleven failed logins
 # against a device that has just said it cannot do this.
 _HOST_RPC2_UNAVAILABLE: set = set()
+
+# (rpc2 key, config table) pairs the device answered but declined. Kept apart
+# from _HOST_RPC2_UNAVAILABLE on purpose: one table it will not serve says
+# nothing about the rest, and writing the host off for it costs a login on
+# every later read.
+_RPC2_TABLE_UNAVAILABLE: set = set()
 
 # The device states its own keepalive interval in the login reply. Ask slightly
 # inside it, the way the VTO keepalive already does.
@@ -1064,6 +1070,11 @@ class DahuaClient:
                 holder = await self._shared_rpc2()
                 params = await holder.client.get_config({"name": name})
                 return flatten_rpc2_config(name, params.get("table"))
+            except Rpc2MethodRefused:
+                # The device answered. Logging in again cannot change its mind
+                # about a table it does not serve, and dropping the shared
+                # session to retry costs a login for nothing.
+                raise
             except Exception:  # pylint: disable=broad-except
                 holder = _HOST_RPC2.get(self._rpc2_key())
                 if holder is not None:
@@ -2034,6 +2045,8 @@ class DahuaClient:
         if (allow_rpc2 and self._use_rpc2 and not self._rpc2_released
                 and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE and not verify_ok):
             match = _CONFIG_READ.search(url)
+            if match and (self._rpc2_key(), match.group(1)) in _RPC2_TABLE_UNAVAILABLE:
+                match = None    # this table only; the transport is still good
             if match:
                 try:
                     async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
@@ -2044,7 +2057,19 @@ class DahuaClient:
                     # off: a device that cannot serve RPC2 should not pay for
                     # the attempt on every read, but one that merely did not
                     # answer in time should not lose the transport for good.
-                    if not rpc2_failure_is_permanent(rpc2_exception):
+                    if isinstance(rpc2_exception, Rpc2MethodRefused):
+                        # The device spoke RPC2 and declined this table. Ask
+                        # CGI for it from now on, and keep the transport for
+                        # everything else -- writing the host off here is what
+                        # put a working device back on a login per call.
+                        _RPC2_TABLE_UNAVAILABLE.add(
+                            (self._rpc2_key(), match.group(1)))
+                        _LOGGER.debug(
+                            "%s does not serve %s over RPC2, using CGI for that "
+                            "table; RPC2 is still in use for the rest",
+                            self._address, match.group(1),
+                        )
+                    elif not rpc2_failure_is_permanent(rpc2_exception):
                         # Falls through to the CGI path below, like any other
                         # failure here, but without writing the host off.
                         _LOGGER.debug(
