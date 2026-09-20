@@ -373,6 +373,46 @@ def model_name(resolved, reported) -> str:
     return (resolved or reported or "").strip()
 
 
+def remote_device_protocol(data: dict, channel: int):
+    """How the recorder reaches the camera on this channel, lowercased.
+
+    Sits beside the ProtocolType that remote_device_model reads DeviceType
+    from, and accepts the same two spellings:
+
+        table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_10.ProtocolType=Onvif
+
+    Measured on a DHI-NVR5464-16P-EI, fifteen populated channels: fourteen
+    report `Private` and one reports `Onvif`. That one is the reason this
+    exists -- see is_onvif_channel.
+    """
+    if not isinstance(data, dict):
+        return None
+    for key in ("table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_{0}.ProtocolType",
+                "table.RemoteDevice[{0}].ProtocolType"):
+        value = data.get(key.format(channel))
+        if value is None:
+            continue
+        value = str(value).strip().lower()
+        return value or None
+    return None
+
+
+def is_onvif_channel(data: dict, channel: int) -> bool:
+    """True when the recorder reaches this camera over ONVIF rather than Dahua.
+
+    Such a channel is not served on the recorder's own Dahua paths. Measured on
+    a DHI-NVR5464-16P-EI, same recorder, same request, same minute:
+
+        index 10  ch=11  Onvif    snapshot.cgi -> 400 Bad Request, no image
+        index  1  ch=2   Private  snapshot.cgi -> 200, 1,420,074 bytes
+        index 11  ch=12  Private  snapshot.cgi -> 200,   175,172 bytes
+
+    Its RTSP path times out as well. So the camera exists, streams, and is
+    visible to the recorder -- and nothing this integration asks for reaches it.
+    """
+    return remote_device_protocol(data, channel) == "onvif"
+
+
 def door_index(event: dict) -> int:
     """Which door a VTO DoorStatus event is about.
 
@@ -1335,6 +1375,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     remote = await self.client.async_get_config("RemoteDevice")
                     self._channel_model = remote_device_model(remote, self._channel)
+                    if is_onvif_channel(remote, self._channel):
+                        # Say it once, plainly, instead of leaving a camera
+                        # entity that answers 400 for the life of the entry.
+                        _LOGGER.warning(
+                            "Channel %s of %s is attached to the recorder over ONVIF, "
+                            "not Dahua's own protocol. A recorder does not serve such a "
+                            "channel on its Dahua paths -- measured on a "
+                            "DHI-NVR5464-16P-EI, snapshot.cgi answers 400 for the ONVIF "
+                            "channel while every Dahua-protocol channel on the same "
+                            "recorder returns an image -- so video for this camera will "
+                            "not work here whatever channel number is used. Home "
+                            "Assistant's own ONVIF integration, pointed at the recorder "
+                            "rather than at the camera, does serve it (#646).",
+                            self._channel, self._address)
                 except PROBE_FAILED:
                     self._channel_model = None
                 if self._channel_model:
