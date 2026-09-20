@@ -11,8 +11,8 @@ Adding a camera ran one check and reported one error:
 and `_test_credentials` caught every exception. So a device that refuses the
 connection, one on the wrong port, one that wants HTTPS, and one that is simply
 switched off all produced the same sentence about credentials. A person told
-their password is wrong checks their password -- #690, #527, #497 and #496 are
-all somebody doing that while the log quietly said `ConnectionRefusedError`.
+their password is wrong checks their password -- #690 is somebody doing that
+while the log quietly said `ConnectionRefusedError`.
 
 Only 401 and 403 are credentials. Everything else is the device not being where,
 or not being what, we were told.

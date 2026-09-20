@@ -313,8 +313,13 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         "Username, Password, or Address is wrong". A device that refuses the
         connection, one on the wrong port, one that wants HTTPS and one that is
         simply switched off all produced that same sentence, so people checked
-        their password repeatedly while the log quietly said
-        ConnectionRefusedError -- #690, #527, #497 and #496 are all that.
+        their password repeatedly while the log quietly said something else --
+        #690 is that, with the ConnectionRefusedError traceback attached.
+
+        Note what this cannot be: get_machine_name and async_get_system_info
+        both swallow ClientResponseError and synthesise an id, so a device that
+        answers 401 to both is *added*, not refused. Whatever reaches here, it
+        is not the camera rejecting the password.
         """
         # Self signed certs are used over HTTPS so we'll disable SSL verification
         connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
