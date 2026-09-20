@@ -699,4 +699,3 @@ async def test_reboot_recovery_failure_leaves_generation_for_retry(monkeypatch):
     assert light._manual_on is False
     assert light._scheme_restore is None
     assert light._light_restore is None
-
