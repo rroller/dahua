@@ -111,12 +111,10 @@ def describe_setup_failure(exception: BaseException) -> str:
     """
     if isinstance(exception, ClientResponseError):
         if exception.status in (401, 403):
-            # Correct, but not currently reachable from setup: get_machine_name
-            # and async_get_system_info both swallow ClientResponseError and
-            # synthesise an id, so a wrong password adds a broken camera rather
-            # than being refused here. Left in because it is what the key means
-            # and because that swallowing should be fixed; do not read a passing
-            # test of this line as proof that a 401 ever arrives.
+            # Reachable only because get_machine_name and async_get_system_info
+            # re-raise a 401 rather than synthesising an id from the refused
+            # credentials. If either goes back to swallowing it, a wrong
+            # password silently adds a camera again and this line goes dead.
             return "auth"
         return "unexpected_reply"
     if isinstance(exception, ClientConnectorError):
@@ -322,10 +320,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         their password repeatedly while the log quietly said something else --
         #690 is that, with the ConnectionRefusedError traceback attached.
 
-        Note what this cannot be: get_machine_name and async_get_system_info
-        both swallow ClientResponseError and synthesise an id, so a device that
-        answers 401 to both is *added*, not refused. Whatever reaches here, it
-        is not the camera rejecting the password.
+        A 401 reaches here only because the identity calls re-raise it; every
+        other status still falls back to a synthesised id, so devices with no
+        magicBox.cgi are added exactly as before.
         """
         # Self signed certs are used over HTTPS so we'll disable SSL verification
         connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)

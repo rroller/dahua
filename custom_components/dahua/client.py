@@ -559,6 +559,24 @@ def lighting_scheme_illuminator_tables(
     return scheme, lighting
 
 
+def _is_login_refused(exception: aiohttp.ClientResponseError) -> bool:
+    """True when the device refused the credentials, not the endpoint.
+
+    The identity calls below fall back to an id built from the credentials when
+    magicBox.cgi answers with an error, which is how cameras that do not
+    implement it at all are still supported. That fallback is right for a 404 or
+    a 501 -- the device has no such endpoint -- and wrong for a 401, where the
+    device understood the request perfectly and rejected the login. Synthesising
+    an identity from a password the camera has just refused is how a wrong
+    password came to produce a working-looking camera that never polls.
+
+    403 deliberately keeps the fallback. It means the login was accepted and
+    this account is not allowed that endpoint, which a restricted Dahua user
+    really can hit, and their credentials are not wrong.
+    """
+    return exception.status == 401
+
+
 class DahuaClient:
     """
     DahuaClient is the client for accessing Dahua IP Cameras. The APIs were discovered from the "API of HTTP Protocol Specification" V2.76 2019-07-25 document
@@ -665,6 +683,8 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
         except aiohttp.ClientResponseError as e:
+            if _is_login_refused(e):
+                raise
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
@@ -698,6 +718,8 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getMachineName")
         except aiohttp.ClientResponseError as e:
+            if _is_login_refused(e):
+                raise
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
