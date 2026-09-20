@@ -13,7 +13,7 @@
                     "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)",
                     "streams": "RTSP Streams",
                     "events": "Events",
-                    "channel": "Channel (single cameras are 0, NVRs are the 0 based index)"
+                    "channel": "Channel (a single camera is 0. On an NVR this is the 0-based index, which is one less than the number the recorder shows: its channel 4 is 3 here)"
                 }
             },
             "name": {
@@ -37,7 +37,7 @@
                     "address": "Address",
                     "port": "Port",
                     "rtsp_port": "RTSP Port",
-                    "channel": "Channel (single cameras are 0, NVRs are the 0 based index)",
+                    "channel": "Channel (a single camera is 0. On an NVR this is the 0-based index, which is one less than the number the recorder shows: its channel 4 is 3 here)",
                     "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)"
                 }
             }
