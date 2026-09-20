@@ -346,6 +346,33 @@ def remote_device_model(data: dict, channel: int):
     return None
 
 
+def model_name(resolved, reported) -> str:
+    """The model string to gate capabilities on, never None.
+
+    getSystemInfo answers `deviceType` for cameras, but recorders answer a
+    number (Lorex sends 31) or omit it entirely, with the real model in
+    `updateSerial`. #59 was a DVR that omitted it, and setup died on
+    `'NoneType' object has no attribute 'upper'`. That was fixed by falling
+    back to `updateSerial`, and then to getDeviceType.
+
+    Both fallbacks can still come back empty -- getDeviceType answering an
+    empty body, or an error string with no "=" in it, leaves `.get("type")`
+    None again -- so the crash is still reachable by a different road. Two
+    things keep it shut:
+
+    `reported` is the generic value the fallback chain set out to improve on.
+    Preferring it to nothing means a device calling itself "IP Camera" stays
+    "IP Camera" instead of becoming None the moment the more specific lookups
+    come back empty.
+
+    And the result is always a string, so a device that answers nothing useful
+    ends up with "" -- which every capability check reads as a model matching
+    no prefix, leaving its feature off. That is the right outcome for an
+    unknown device, and it is what the attribute is initialised to.
+    """
+    return (resolved or reported or "").strip()
+
+
 def door_index(event: dict) -> int:
     """Which door a VTO DoorStatus event is about.
 
@@ -1185,6 +1212,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 data.update(version)
 
                 device_type = data.get("deviceType", None)
+                # Kept so the chain below can fall back to it: it is generic,
+                # but it beats the None a failed lookup would otherwise leave.
+                reported_type = device_type
                 # Lorex NVRs return deviceType=31, but the model is in the updateSerial
                 # /cgi-bin/magicBox.cgi?action=getSystemInfo"
                 # deviceType=31
@@ -1198,6 +1228,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # If it's still none, then call the device type API
                         dt = await self.client.get_device_type()
                         device_type = dt.get("type")
+                device_type = model_name(device_type, reported_type)
                 data["model"] = device_type
                 self.model = device_type
                 self.machine_name = data.get("table.General.MachineName")
