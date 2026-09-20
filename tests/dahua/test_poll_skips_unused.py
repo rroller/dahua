@@ -144,6 +144,41 @@ async def test_motion_detection_survives_either_reader():
     assert MOTION not in await _poll(camera=False, switch=False)
 
 
+async def test_lighting_v2_survives_losing_the_light_platform_on_a_doorbell():
+    """The Amcrest doorbell's "Security Light" is a *select*, not a light.
+
+    Its current_option reads table.Lighting_V2[0][0][1].Mode and .State, so
+    gating that table on the light platform alone left the entity reading an
+    absent table and reporting "Off" forever.
+    """
+    c = _coordinator(light=False)
+    c.model = "AD410"
+
+    await c._async_update_data()
+
+    assert LIGHTING_V2 in c.client.calls, "the Security Light select still reads it"
+
+
+async def test_the_doorbell_keeps_it_only_while_something_reads_it():
+    c = _coordinator(light=False, select=False)
+    c.model = "AD410"
+
+    await c._async_update_data()
+
+    assert LIGHTING_V2 not in c.client.calls
+
+
+async def test_a_doorbell_with_no_security_light_does_not_start_fetching_it():
+    """The gate mirrors the condition select.py creates that entity under, so
+    nothing that never had the select begins paying for the read."""
+    c = _coordinator(light=False)
+    c.model = "DB600"       # an Amcrest doorbell, but no security light
+
+    await c._async_update_data()
+
+    assert LIGHTING_V2 not in c.client.calls
+
+
 # --- turning one platform off must not take another's reads with it ----------
 
 @pytest.mark.parametrize("disabled,still_wanted", [

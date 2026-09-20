@@ -1500,7 +1500,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_video_analyse_rules_for_amcrest()))
             if self.is_amcrest_doorbell() and self._wanted_by(LIGHT):
                 coros.append(asyncio.ensure_future(self.client.async_get_light_global_enabled()))
-            if self._supports_lighting_v2 and self._wanted_by(LIGHT):   #add lighing_v2 API if it is supported
+            # Lighting_V2 is the light platform's table -- except that the
+            # Amcrest doorbell's "Security Light" is a *select*, and its
+            # current_option reads table.Lighting_V2[0][0][1].Mode/.State. A
+            # select is not a light, so gating this on LIGHT alone left that
+            # entity reading an absent table and reporting "Off" forever for
+            # anyone who turned the light platform off. The condition mirrors
+            # the one select.py creates it under, so nothing else over-fetches.
+            if self._supports_lighting_v2 and (
+                    self._wanted_by(LIGHT)
+                    or (self.is_amcrest_doorbell()
+                        and self.supports_security_light()
+                        and self._wanted_by(SELECT))):
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
             if (getattr(self, "_supports_lighting_scheme_illuminator", False)
                     and self._wanted_by(LIGHT)):
