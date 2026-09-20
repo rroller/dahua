@@ -111,6 +111,12 @@ def describe_setup_failure(exception: BaseException) -> str:
     """
     if isinstance(exception, ClientResponseError):
         if exception.status in (401, 403):
+            # Correct, but not currently reachable from setup: get_machine_name
+            # and async_get_system_info both swallow ClientResponseError and
+            # synthesise an id, so a wrong password adds a broken camera rather
+            # than being refused here. Left in because it is what the key means
+            # and because that swallowing should be fixed; do not read a passing
+            # test of this line as proof that a 401 ever arrives.
             return "auth"
         return "unexpected_reply"
     if isinstance(exception, ClientConnectorError):
