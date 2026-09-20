@@ -1740,6 +1740,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         if code == "CrossLineDetection" or code == "CrossRegionDetection":
             data = event.get("data", event.get("Data", {}))
+            # parse_event turns the payload into a dict, but only when it is
+            # valid JSON. A device whose payload arrives truncated leaves the
+            # raw string here, and .get() on a string raises AttributeError --
+            # out of this call, out of handle_event, out of on_receive, and out
+            # of the stream loop, which wraps it in try/finally with no handler.
+            # One malformed CrossLine event therefore took the event stream for
+            # every channel on the host down with it (#475). A payload we could
+            # not read is a payload with no ObjectType, not a reason to stop
+            # listening.
+            if not isinstance(data, dict):
+                data = {}
             object_type = data.get("Object", {}).get("ObjectType", "").lower()
             codes = []
 

@@ -2,6 +2,7 @@
 Various utilities for Dahua cameras
 """
 import json
+import logging
 import re
 
 
@@ -30,6 +31,9 @@ def hass_brightness_to_dahua_brightness(hass_brightness: int) -> int:
 
 
 # https://github.com/rroller/dahua/issues/166
+_LOGGER = logging.getLogger(__name__)
+
+
 def parse_event(data: str) -> list[dict[str, any]]:
     # This will turn the event stream data into a list of events, where each item in the list is a dictionary and where
     # the key of the dictionary is the key is for example "Code" and the value is "VideoMotion", etc
@@ -91,7 +95,14 @@ def parse_event(data: str) -> list[dict[str, any]]:
                 data = json.loads(event["data"])
                 event["data"] = data
             except Exception:  # pylint: disable=broad-except
-                pass
+                # Left as the raw string on purpose: it is what the device sent
+                # and throwing it away helps nobody. But say so, because a
+                # silent pass here is indistinguishable from a device that
+                # sends no payload, and the usual cause is a truncated one.
+                _LOGGER.debug(
+                    "Could not parse the JSON payload of a %s event; leaving it as text",
+                    event.get("Code", "?"), exc_info=True,
+                )
         events.append(event)
 
     return events
