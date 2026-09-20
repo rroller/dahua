@@ -958,7 +958,24 @@ class DahuaHostEventStream:
             # A channel nobody has configured stays silent, exactly as it did
             # when every coordinator discarded it.
             for coordinator in self._by_channel.get(index, ()):
-                coordinator.handle_event(dict(event))
+                try:
+                    coordinator.handle_event(dict(event))
+                except Exception:  # pylint: disable=broad-except
+                    # This stream is shared by every channel on the host, and
+                    # stream_events wraps its call to on_receive in try/finally
+                    # with no handler -- so an exception here does not just lose
+                    # this event, it leaves the read loop and takes events for
+                    # every camera on the device down until the retry
+                    # reconnects. One malformed payload did exactly that (#475).
+                    #
+                    # Per coordinator rather than per event, so a channel whose
+                    # handler fails does not rob the other channels of an event
+                    # they could have handled.
+                    _LOGGER.warning(
+                        "Unhandled error while handling a %s event from %s on channel %s; "
+                        "the event is dropped and the stream continues",
+                        event.get("Code", "?"), self._address, index, exc_info=True,
+                    )
 
 
 # address -> DahuaHostEventStream
