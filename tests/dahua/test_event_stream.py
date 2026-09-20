@@ -259,3 +259,36 @@ async def test_declared_boundary_delivers_by_content_length_too():
         await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
 
     assert got == [part]
+
+
+async def test_oversized_content_length_falls_back_to_next_boundary():
+    """A wrong Content-Length must not stall later events behind it."""
+    got = []
+    first_payload = b"Code=TrafficParking;data={\"truncated\": true"
+    second_payload = b"Code=DoorbellPressed;action=Pulse;index=0"
+
+    first_part = (
+        b"--myboundary\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length: " + str(len(first_payload) + 100).encode() + b"\r\n\r\n"
+        + first_payload
+        + b"\r\n"
+    )
+    second_part = (
+        b"--myboundary\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length: " + str(len(second_payload)).encode() + b"\r\n\r\n"
+        + second_payload
+    )
+
+    client = DahuaClient(
+        "u", "p", "d", 80, 554,
+        _EndingSession(chunks=[first_part + second_part]),
+    )
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
+
+    assert len(got) == 2
+    assert first_payload in got[0]
+    assert second_payload in got[1]
