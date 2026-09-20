@@ -18,6 +18,16 @@ if sys.version_info > (3, 0):
     unicode = str
 
 
+class Rpc2MethodRefused(ConnectionError):
+    """The device answered an RPC2 call with result=false.
+
+    A ConnectionError subclass so existing handlers keep working, but a
+    distinct type because it means something quite different: the transport
+    reached the device and the device declined this particular method or
+    config table. That is evidence RPC2 *works* here, not that it does not.
+    """
+
+
 class DahuaRpc2Client:
     def __init__(
             self,
@@ -70,7 +80,7 @@ class DahuaRpc2Client:
                     message = error["message"].replace("\r", " ").replace("\n", " ")
                     details.append("message={0}".format(message[:200]))
             suffix = " ({0})".format(", ".join(details)) if details else ""
-            raise ConnectionError(
+            raise Rpc2MethodRefused(
                 "Dahua RPC2 method {0} returned result=false{1}".format(
                     method, suffix
                 )
