@@ -559,6 +559,40 @@ def lighting_scheme_illuminator_tables(
     return scheme, lighting
 
 
+# 1 main stream + 2 sub-streams, which is what the coordinator starts with and
+# what the comment in get_max_extra_streams has always described.
+DEFAULT_EXTRA_STREAMS = 2
+
+
+def parse_extra_streams(value) -> int:
+    """How many sub-streams the device says it has, as a usable number.
+
+    Measured, because the shape of this answer decides how many camera
+    entities get created:
+
+        DHI-NVR5464-16P-EI (G61_NVR16PRO16P-I3)   table.MaxExtraStream=2
+        VTO2000A doorbell                         table.MaxExtraStream=1
+
+    A doorbell really does answer 1, and #237 is an AD410 owner whose log fills
+    with `Error opening stream ... subtype=2` for a sub-stream that does not
+    exist. So over-guessing this is not harmless -- it is a camera entity that
+    404s on every attempt, for as long as the entry exists.
+
+    Anything unreadable falls back to the common case rather than raising. The
+    caller is inside the one-time init block, whose handler turns any exception
+    into UpdateFailed, so a device answering a non-numeric value here would
+    never finish initialising and would retry for as long as it kept saying it.
+    """
+    try:
+        count = int(str(value).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_EXTRA_STREAMS
+    # A negative count is not a smaller camera, it is a device talking nonsense.
+    if count < 0:
+        return DEFAULT_EXTRA_STREAMS
+    return count
+
+
 def _is_login_refused(exception: aiohttp.ClientResponseError) -> bool:
     """True when the device refused the credentials, not the endpoint.
 
@@ -740,11 +774,11 @@ class DahuaClient:
         """ get_max_extra_streams returns the max number of sub streams supported by the camera """
         try:
             result = await self.get("/cgi-bin/magicBox.cgi?action=getProductDefinition&name=MaxExtraStream")
-            return int(result.get("table.MaxExtraStream", "2"))
-        except aiohttp.ClientResponseError as e:
-            pass
-        # If we can't fetch, just assume 2 since that's pretty standard
-        return 3
+        except aiohttp.ClientResponseError:
+            # No such endpoint on this device. Assume the standard 2, which is
+            # what this comment has always said -- the code returned 3.
+            return DEFAULT_EXTRA_STREAMS
+        return parse_extra_streams(result.get("table.MaxExtraStream"))
 
     async def async_get_alarm_output_slots(self) -> dict:
         """Return the number of physical alarm-output slots reported by the device."""
