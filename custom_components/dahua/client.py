@@ -352,23 +352,25 @@ def _pop_complete_multipart_part(buffer: bytes, boundary: bytes):
 
     if content_length is not None:
         part_end = payload_start + content_length
-        if len(buffer) >= part_end:
-            part = buffer[:part_end]
-            remainder = buffer[part_end:]
-            # Content-Length excludes the CRLF framing before the next boundary.
-            if remainder.startswith(b"\r\n"):
-                remainder = remainder[2:]
-            elif remainder.startswith(b"\n"):
-                remainder = remainder[1:]
-            return part, remainder
-
-        # If the next part has already started, the declared length was wrong
-        # or the payload was truncated. Prefer the framing we actually received
-        # instead of waiting forever for bytes that are not coming.
         next_boundary = buffer.find(boundary, payload_start)
-        if next_boundary == -1:
+
+        # If the next part starts before the declared payload end, the length
+        # was wrong or the payload was truncated. The multipart framing is
+        # stronger evidence than a length that would consume into the next part.
+        if next_boundary != -1 and next_boundary < part_end:
+            return buffer[:next_boundary], buffer[next_boundary:]
+
+        if len(buffer) < part_end:
             return None, buffer
-        return buffer[:next_boundary], buffer[next_boundary:]
+
+        part = buffer[:part_end]
+        remainder = buffer[part_end:]
+        # Content-Length excludes the CRLF framing before the next boundary.
+        if remainder.startswith(b"\r\n"):
+            remainder = remainder[2:]
+        elif remainder.startswith(b"\n"):
+            remainder = remainder[1:]
+        return part, remainder
 
     next_boundary = buffer.find(boundary, payload_start)
     if next_boundary == -1:
