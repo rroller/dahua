@@ -111,7 +111,8 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(channel, True, dahua_brightness)
+        await self._coordinator.client.async_set_lighting_v1(
+            channel, True, dahua_brightness, self._coordinator.get_infrared_profile())
         await self.coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
@@ -119,7 +120,8 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(channel, False, dahua_brightness)
+        await self._coordinator.client.async_set_lighting_v1(
+            channel, False, dahua_brightness, self._coordinator.get_infrared_profile())
         await self.coordinator.async_refresh()
 
     @property

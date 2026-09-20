@@ -37,9 +37,11 @@ from custom_components.dahua.light import (
 )
 from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
+    DahuaDayNightModeSelect,
     DahuaDoorbellLightSelect,
 )
 from custom_components.dahua.switch import (
+    DahuaAlarmOutputSwitch,
     DahuaDisarmingEventNotificationsLinkageBinarySwitch,
     DahuaDisarmingLinkageBinarySwitch,
     DahuaMotionDetectionBinarySwitch,
@@ -126,7 +128,10 @@ def _skip_ha_plumbing(monkeypatch):
     """Build the real entities, skipping only Home Assistant's own __init__."""
     for module in (bs_module, button_module, camera_module, light_module,
                    select_module, switch_module):
-        monkeypatch.setattr(module.DahuaBaseEntity, "__init__", lambda self, c, e: None)
+        monkeypatch.setattr(
+            module.DahuaBaseEntity, "__init__",
+            lambda self, c, e: setattr(self, "_coordinator", c),
+        )
     monkeypatch.setattr(bs_module.BinarySensorEntity, "__init__", lambda self: None)
     monkeypatch.setattr(select_module.SelectEntity, "__init__", lambda self: None)
     monkeypatch.setattr(camera_module.Camera, "__init__", lambda self: None)
@@ -163,6 +168,7 @@ GOLDEN_SUFFIXES = [
     ("_smart_motion_detection", lambda c: _bare(DahuaSmartMotionDetectionBinarySwitch, c)),
     ("_siren", lambda c: _bare(DahuaSirenBinarySwitch, c)),
     ("_privacy_mode", lambda c: _bare(DahuaPrivacyModeBinarySwitch, c)),
+    ("_alarm_output_0", lambda c: DahuaAlarmOutputSwitch(c, _Entry(), output=0)),
     # light.py
     ("_infrared", lambda c: DahuaInfraredLight(c, _Entry(), "Infrared")),
     ("_illuminator", lambda c: DahuaIlluminator(c, _Entry(), "Illuminator")),
@@ -177,6 +183,7 @@ GOLDEN_SUFFIXES = [
     ("_preset_position", lambda c: DahuaCameraPresetPositionSelect(c, _Entry())),
     ("_1_preset_position",
      lambda c: DahuaCameraPresetPositionSelect(c, _Entry(), rpc2_channel=1)),
+    ("_day_night_mode", lambda c: DahuaDayNightModeSelect(c, _Entry())),
 ]
 
 
@@ -212,6 +219,7 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_smart_motion_detection",
         "4L03CB4PAZC9E8F_2_siren",
         "4L03CB4PAZC9E8F_2_privacy_mode",
+        "4L03CB4PAZC9E8F_2_alarm_output_0",
         "4L03CB4PAZC9E8F_2_infrared",
         "4L03CB4PAZC9E8F_2_illuminator",
         "4L03CB4PAZC9E8F_2_ring_light",
@@ -222,6 +230,7 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_security_light",
         "4L03CB4PAZC9E8F_2_preset_position",
         "4L03CB4PAZC9E8F_2_1_preset_position",
+        "4L03CB4PAZC9E8F_2_day_night_mode",
     }
 
 

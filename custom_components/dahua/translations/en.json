@@ -43,7 +43,12 @@
             }
         },
         "error": {
-            "auth": "Username, Password, or Address is wrong."
+            "auth": "The camera rejected that username and password.",
+            "cannot_connect": "Nothing answered at that address and port. Check the camera is on, that the IP and port are right, and that Home Assistant can reach it.",
+            "timeout": "The camera did not answer in time. It may be busy, or reachable but very slow — try again, and check the port is the one it serves HTTP on.",
+            "ssl_error": "The secure connection failed. If the camera does not serve HTTPS, clear the HTTPS option; if it does, it is usually on port 443.",
+            "unexpected_reply": "Something answered, but not a Dahua camera. Check the port — the web interface and the API are not always the same one.",
+            "unknown": "Could not add the camera. The Home Assistant log has the reason."
         },
         "abort": {
             "single_instance_allowed": "Only a single instance is allowed.",

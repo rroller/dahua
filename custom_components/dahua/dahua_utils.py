@@ -48,7 +48,7 @@ def parse_event(data: str) -> list[dict[str, any]]:
     # }]
 
     # We will split on "--myboundary" and then skip the first 3 lines so we end up with a string that starts with Code=
-    event_blocks = re.split(r'--myboundary\n', data)
+    event_blocks = re.split(r'--myboundary\r?\n', data)
 
     events = []
 
@@ -111,7 +111,81 @@ def normalize_plate(plate_text: str | None) -> str:
     clean = str(plate_text).upper()
     for gr, lat in HOMOGLYPHS.items():
         clean = clean.replace(gr, lat)
-    return re.sub(r'[^A-Z0-9]', '', clean)
+    clean = re.sub(r'[^A-Z0-9]', '', clean)
+    # Standard 7-character plate format: 3 letters + 4 digits (e.g. ABO1234, XYZ5670)
+    # Correct common OCR confusions between letter O and digit 0 based on position:
+    if len(clean) == 7:
+        letters_part = clean[:3].replace('0', 'O')
+        digits_part = clean[3:].replace('O', '0')
+        if letters_part.isalpha() and digits_part.isdigit():
+            clean = letters_part + digits_part
+    return clean
+
+
+def _extract_plate_from_raw_string(text: str, event: dict) -> dict | None:
+    """Extract plate and metadata from a raw (possibly truncated) JSON string using regex."""
+    plate_text = None
+    confidence = None
+
+    # Check for PlateNumber in TrafficCar
+    m_tc = re.search(r'"(?:PlateNumber|plateNumber)"\s*:\s*"([A-Za-z0-9]+)"', text)
+    if m_tc:
+        plate_text = m_tc.group(1)
+
+    if not plate_text:
+        # Collect all "Text" candidates
+        candidates = re.findall(r'"Text"\s*:\s*"([A-Za-z0-9]+)"', text)
+        best_plate = None
+        for cand in candidates:
+            norm_c = normalize_plate(cand)
+            # 1. Exact Greek plate format: 3 letters + 4 digits
+            if len(norm_c) == 7 and norm_c[:3].isalpha() and norm_c[3:].isdigit():
+                best_plate = norm_c
+                plate_text = cand
+                break
+            # 2. Check if Dahua flipped RTL: 4 digits + 3 letters
+            if len(norm_c) == 7 and norm_c[:4].isdigit() and norm_c[4:].isalpha():
+                flipped = norm_c[4:] + norm_c[:4]
+                if flipped[:3].isalpha() and flipped[3:].isdigit():
+                    best_plate = flipped
+                    plate_text = flipped
+                    break
+            if best_plate is None and any(c.isdigit() for c in norm_c) and any(c.isalpha() for c in norm_c):
+                best_plate = norm_c
+                plate_text = cand
+
+    if not plate_text:
+        return None
+
+    clean_plate = normalize_plate(plate_text)
+    if not clean_plate:
+        return None
+
+    m_conf = re.search(r'"Confidence"\s*:\s*([0-9]+)', text)
+    if m_conf:
+        try:
+            confidence = int(m_conf.group(1))
+        except ValueError:
+            pass
+
+    m_brand = re.search(r'"(?:VehicleSign|Brand|VehicleLogo)"\s*:\s*"([^"]+)"', text)
+    vehicle_brand = m_brand.group(1) if m_brand else None
+
+    m_color = re.search(r'"VehicleColor"\s*:\s*"([^"]+)"', text)
+    vehicle_color = m_color.group(1) if m_color else None
+
+    return {
+        "plate": clean_plate,
+        "raw_plate": plate_text,
+        "confidence": confidence,
+        "vehicle_type": None,
+        "vehicle_color": vehicle_color,
+        "vehicle_brand": vehicle_brand,
+        "vehicle_series": None,
+        "direction": None,
+        "event_code": event.get("Code"),
+        "timestamp": None,
+    }
 
 
 def parse_authorized_plates(raw_str: str | list | None) -> list[str]:
@@ -150,7 +224,13 @@ def extract_plate_data(event: dict) -> dict | None:
 
     data = event.get("data", event.get("Data", {}))
     if not isinstance(data, dict):
-        return None
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                return _extract_plate_from_raw_string(data, event)
+        else:
+            return None
 
     plate_text = None
     confidence = None

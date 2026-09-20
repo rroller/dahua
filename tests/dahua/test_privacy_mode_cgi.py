@@ -124,6 +124,44 @@ async def test_the_write_names_only_enable():
     assert "TimeSection" not in client.urls[-1]
 
 
+async def test_the_write_reaches_the_row_the_read_found():
+    """A device need not put its lens mask on row 0.
+
+    Reading any row while always writing row 0 would be a control that reports
+    one thing and changes another -- the shape of #679, #683 and #689. Neither
+    of my devices carries this table, so the row cannot be assumed.
+    """
+    client = _Client({"table.LeLensMask[2].Enable": "true"})
+
+    assert await client.async_get_privacy_mode() is True
+
+    await client.async_set_privacy_mode(False)
+
+    assert client.urls == [
+        "/cgi-bin/configManager.cgi?action=setConfig&LeLensMask[2].Enable=false"]
+
+
+async def test_the_lowest_row_is_used_when_a_device_reports_several():
+    """Not whichever key the dict happens to yield first."""
+    client = _Client({"table.LeLensMask[3].Enable": "false",
+                      "table.LeLensMask[1].Enable": "true"})
+
+    assert await client.async_get_privacy_mode() is True
+
+    await client.async_set_privacy_mode(True)
+
+    assert "LeLensMask[1].Enable=true" in client.urls[-1]
+
+
+async def test_a_table_without_an_enable_row_is_not_an_answer():
+    """The device has the table but not the field, so nothing can be written."""
+    client = _Client({"table.LeLensMask[0].TimeSection[0][0]": "0 00:00:00-24:00:00"},
+                     rpc2_value=True)
+
+    assert await client.async_get_privacy_mode() is True
+    assert client.rpc2_calls == ["privacy mode read"]
+
+
 async def test_the_write_falls_back_to_rpc2_when_cgi_cannot_read_it():
     client = _Client({}, rpc2_value=None)
     client._rpc2_value = "written"

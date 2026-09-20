@@ -40,9 +40,15 @@ def _coordinator(**options):
     c._supports_disarming_linkage = True
     c._supports_event_notifications = True
     c._supports_coaxial_control = True
+    # is_nvr_channel reads this, and the poll asks it when choosing the
+    # coaxial channel. object.__new__ means an attribute the class sets in
+    # __init__ does not exist here unless it is named.
+    c._nvr_active_deterrence = False
     c._supports_smart_motion_detection = True
+    c._alarm_output_slots = 1
     c._supports_lighting_v2 = True
     c._supports_privacy_mode = True
+    c._supports_day_night_color = True
     c._supports_lighting = True          # gates supports_infrared_light()
     c._supports_floodlightmode = False
     c._channel_number = 1
@@ -70,6 +76,8 @@ DISARMING = "async_get_disarming_linkage"
 NOTIFICATIONS = "async_get_event_notifications"
 SMART_MOTION = "async_get_smart_motion_detection"
 PRIVACY = "async_get_privacy_mode"
+DAY_NIGHT = "async_get_video_in_options"
+ALARM_OUT = "async_get_alarm_output_state"
 
 
 async def test_everything_is_fetched_when_every_platform_is_on():
@@ -77,7 +85,7 @@ async def test_everything_is_fetched_when_every_platform_is_on():
     calls = await _poll()
 
     for api in (PTZ, COAXIAL, MOTION, LIGHTING_V2, INFRARED, DISARMING,
-                NOTIFICATIONS, SMART_MOTION, PRIVACY):
+                NOTIFICATIONS, SMART_MOTION, PRIVACY, DAY_NIGHT):
         assert api in calls, f"{api} stopped being fetched by default"
 
 
@@ -88,10 +96,28 @@ async def test_ptz_position_is_skipped_without_the_select_platform():
     assert PTZ not in await _poll(select=False)
 
 
+async def test_the_day_night_read_is_skipped_without_the_select_platform():
+    """VideoInOptions is 1998 lines on a recorder, so it is worth not asking.
+
+    Only the Day/Night select reads it.
+    """
+    assert DAY_NIGHT not in await _poll(select=False)
+
+
+async def test_the_day_night_read_is_skipped_when_the_device_has_no_mode():
+    """A device that reported no DayNightColor must not be polled for one."""
+    c = _coordinator()
+    c._supports_day_night_color = False
+
+    await c._async_update_data()
+
+    assert DAY_NIGHT not in c.client.calls
+
+
 async def test_switch_reads_are_skipped_without_the_switch_platform():
     calls = await _poll(switch=False)
 
-    for api in (DISARMING, NOTIFICATIONS, SMART_MOTION, PRIVACY):
+    for api in (DISARMING, NOTIFICATIONS, SMART_MOTION, PRIVACY, ALARM_OUT):
         assert api not in calls, f"{api} is only read by a switch"
 
 
