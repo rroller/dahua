@@ -92,21 +92,25 @@ async def test_stalled_stream_ends_so_the_caller_can_reconnect(monkeypatch, sock
 class _EndingSession:
     """A device that accepts the subscription and then closes it."""
 
-    def __init__(self, status=200, chunks=()):
+    def __init__(self, status=200, chunks=(), after_chunk=None, response_headers=None):
         self.status = status
         self.chunks = chunks
+        self.after_chunk = after_chunk
+        self.response_headers = response_headers or {}
         self.requested = False
 
     async def request(self, method, url, headers=None, **kwargs):
         self.requested = True
-        return _EndingResponse(self.status, self.chunks)
+        return _EndingResponse(
+            self.status, self.chunks, self.after_chunk, self.response_headers
+        )
 
 
 class _EndingResponse:
-    def __init__(self, status, chunks):
+    def __init__(self, status, chunks, after_chunk=None, response_headers=None):
         self.status = status
-        self.headers = {}
-        self.content = _Content(chunks)
+        self.headers = response_headers or {}
+        self.content = _Content(chunks, after_chunk)
 
     def raise_for_status(self):
         if self.status >= 400:
@@ -117,12 +121,15 @@ class _EndingResponse:
 
 
 class _Content:
-    def __init__(self, chunks):
+    def __init__(self, chunks, after_chunk=None):
         self._chunks = chunks
+        self._after_chunk = after_chunk
 
     async def iter_chunks(self):
-        for c in self._chunks:
+        for index, c in enumerate(self._chunks):
             yield c, True
+            if self._after_chunk is not None:
+                self._after_chunk(index)
 
 
 async def test_a_device_that_closes_the_stream_raises():
@@ -188,3 +195,100 @@ async def test_multipart_chunks_are_buffered_until_boundary():
     assert len(got) == 2
     assert b"\"part\": 1, \"part\": 2" in got[0]
     assert b"Heartbeat" in got[1]
+
+
+async def test_content_length_delivers_split_part_before_next_boundary():
+    """A complete part must not wait for the next heartbeat boundary."""
+    got = []
+    payload = b"Code=DoorbellPressed;action=Pulse;index=0"
+    part = (
+        b"--myboundary\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n"
+        + payload
+    )
+    chunks = [part[:-12], part[-12:]]
+
+    def after_chunk(index):
+        if index == 0:
+            assert got == []
+        elif index == 1:
+            # This assertion runs before the iterator can end. The old #678
+            # loop failed here because it waited for boundary N+1.
+            assert got == [part]
+
+    client = DahuaClient(
+        "u", "p", "d", 80, 554,
+        _EndingSession(chunks=chunks, after_chunk=after_chunk),
+    )
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
+
+    assert got == [part]
+
+
+async def test_declared_boundary_delivers_by_content_length_too():
+    """A device-declared multipart boundary must keep the immediate path."""
+    got = []
+    boundary = b"--abc123"
+    payload = b"Code=VideoMotion;action=Start;index=0"
+    part = (
+        boundary + b"\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n"
+        + payload
+    )
+
+    def after_chunk(index):
+        assert index == 0
+        assert got == [part]
+
+    client = DahuaClient(
+        "u", "p", "d", 80, 554,
+        _EndingSession(
+            chunks=[part],
+            after_chunk=after_chunk,
+            response_headers={
+                "Content-Type": "multipart/x-mixed-replace; boundary=abc123"
+            },
+        ),
+    )
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
+
+    assert got == [part]
+
+
+async def test_oversized_content_length_falls_back_to_next_boundary():
+    """A wrong Content-Length must not stall later events behind it."""
+    got = []
+    first_payload = b"Code=TrafficParking;data={\"truncated\": true"
+    second_payload = b"Code=DoorbellPressed;action=Pulse;index=0"
+
+    first_part = (
+        b"--myboundary\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length: " + str(len(first_payload) + 100).encode() + b"\r\n\r\n"
+        + first_payload
+        + b"\r\n"
+    )
+    second_part = (
+        b"--myboundary\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length: " + str(len(second_payload)).encode() + b"\r\n\r\n"
+        + second_payload
+    )
+
+    client = DahuaClient(
+        "u", "p", "d", 80, 554,
+        _EndingSession(chunks=[first_part + second_part]),
+    )
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
+
+    assert len(got) == 2
+    assert first_payload in got[0]
+    assert second_payload in got[1]
