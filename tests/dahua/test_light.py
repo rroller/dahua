@@ -1,5 +1,7 @@
 """light.py had no tests at all, and day/night handling has regressed before."""
 
+from unittest.mock import Mock
+
 import pytest
 
 from custom_components.dahua import dahua_utils
@@ -223,6 +225,9 @@ def _light(cls, coordinator, name="Infrared"):
     entity._coordinator = coordinator
     entity.coordinator = coordinator
     entity._name = name
+    # These unit tests bypass entity registration; observe state writes without
+    # asking Home Assistant to publish an unregistered entity.
+    entity.async_write_ha_state = Mock()
 
     if cls is DahuaIlluminator:
         entity._manual_on = False
@@ -335,11 +340,18 @@ async def test_illuminator_passes_the_profile_mode_through():
 
 async def test_illuminator_turn_off_keeps_the_profile_mode():
     c = _Coordinator(channel=2, profile_mode="0")
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c._profile_mode = "1"
+    await light.async_turn_off()
 
-    await _light(DahuaIlluminator, c, "Illuminator").async_turn_off()
-
-    channel, enabled, _, profile_mode, _index, _bank = c.client.v2[0]
-    assert (channel, enabled, profile_mode) == (2, False, "0")
+    assert c.client.v2_raw == [
+        (2, "0", 0, "Off", "NearLight", None),
+        (2, "0", 0, "Manual", "NearLight", 64),
+    ]
+    assert c.client.scheme == "AIMode"
+    assert light._restore_store.data is None
+    light.async_write_ha_state.assert_called()
 
 
 async def test_illuminator_writes_to_the_light_the_device_calls_white():
@@ -394,6 +406,87 @@ def test_name_is_prefixed_with_the_device_name():
 
 # --- Smart Dual Light restore regressions -----------------------------------
 
+async def test_duplicate_off_preserves_restored_camera_configuration():
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_off()
+    assert c.client.operations == []
+
+    await light.async_turn_on()
+    await light.async_turn_off()
+    operations = list(c.client.operations)
+    await light.async_turn_off()
+
+    assert c.client.operations == operations
+    assert (c.client.scheme, c.client.light_mode, c.client.light_brightness) == (
+        "AIMode", "Manual", 64
+    )
+
+
+async def test_brightness_update_keeps_original_profile_and_restore_snapshot():
+    c = _Coordinator(channel=2, profile_mode="0")
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c._profile_mode = "1"
+    c.illuminator_index = 1
+    await light.async_turn_on(**{ATTR_BRIGHTNESS: 128})
+
+    assert c.client.v2[-1] == (2, True, 50, "0", 0, "NearLight")
+    assert light._restore_store.data["old_brightness"] == 64
+    assert light._restore_store.data["previous_scheme"] == "AIMode"
+    await light.async_turn_off()
+    assert c.client.v2_raw[-1] == (2, "0", 0, "Manual", "NearLight", 64)
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("mode,brightness", [("Auto", 100), ("Off", 100), ("Manual", 42)])
+async def test_external_change_is_preserved_on_off_and_restart(restart, mode, brightness):
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c.client.light_mode = mode
+    c.client.light_brightness = brightness
+    c.client.operations.clear()
+
+    if restart:
+        recovered_light = _light(DahuaIlluminator, c, "Illuminator")
+        recovered_light._restore_store = light._restore_store
+        assert await recovered_light._recover_persisted_override() is True
+    else:
+        await light.async_turn_off()
+
+    assert c.client.operations == []
+    assert light._restore_store.data is None
+    assert (c.client.light_mode, c.client.light_brightness) == (mode, brightness)
+
+
+async def test_interrupted_restore_resumes_after_restart(monkeypatch):
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    original_set = c.client.async_set_lighting_v2_raw
+
+    async def fail_restoring_row(channel, profile, index, mode, bank, brightness=None):
+        if mode == "Manual":
+            raise RuntimeError("Camera disconnected during restore")
+        return await original_set(channel, profile, index, mode, bank, brightness)
+
+    monkeypatch.setattr(c.client, "async_set_lighting_v2_raw", fail_restoring_row)
+    with pytest.raises(RuntimeError, match="disconnected"):
+        await light.async_turn_off()
+    assert light._restore_store.data["phase"] == "restoring"
+    assert c.client.scheme == "InfraredMode"
+
+    monkeypatch.setattr(c.client, "async_set_lighting_v2_raw", original_set)
+    recovered_light = _light(DahuaIlluminator, c, "Illuminator")
+    recovered_light._restore_store = light._restore_store
+    assert await recovered_light._recover_persisted_override() is True
+    assert light._restore_store.data is None
+    assert (c.client.scheme, c.client.light_mode, c.client.light_brightness) == (
+        "AIMode", "Manual", 64
+    )
+
+
 async def test_illuminator_safe_restore_order():
     """WhiteLight must stay physically off while its original state is restored."""
     c = _Coordinator(channel=2, profile_mode="0")
@@ -416,6 +509,7 @@ async def test_persisted_recovery_restores_whitemode_baseline():
     """WhiteMode cannot be treated as stale only because the scheme matches."""
     c = _Coordinator(channel=2, profile_mode="0")
     c.client.scheme = "WhiteMode"
+    c.client.light_brightness = dahua_utils.hass_brightness_to_dahua_brightness(180)
 
     light = _light(DahuaIlluminator, c, "Illuminator")
     light._restore_store.data = {
@@ -450,6 +544,7 @@ async def test_persisted_recovery_refuses_unknown_scheme():
     """Do not overwrite a camera state that may have been changed externally."""
     c = _Coordinator(channel=2, profile_mode="0")
     c.client.scheme = "SomethingElse"
+    c.client.light_brightness = dahua_utils.hass_brightness_to_dahua_brightness(200)
 
     light = _light(DahuaIlluminator, c, "Illuminator")
     snapshot = {
@@ -604,3 +699,4 @@ async def test_reboot_recovery_failure_leaves_generation_for_retry(monkeypatch):
     assert light._manual_on is False
     assert light._scheme_restore is None
     assert light._light_restore is None
+

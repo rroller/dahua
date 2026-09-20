@@ -170,7 +170,7 @@ async def test_set_lighting_v2_uses_nearlight_when_requested():
         91,
         "2",
         light_index=1,
-        brightness_field="NearLight",
+        bank="NearLight",
     )
 
     c.get.assert_awaited_once_with(
@@ -190,7 +190,7 @@ async def test_set_lighting_v2_off_does_not_write_brightness():
         91,
         "2",
         light_index=1,
-        brightness_field="NearLight",
+        bank="NearLight",
     )
 
     c.get.assert_awaited_once_with(
@@ -267,3 +267,4 @@ async def test_raw_off_can_restore_original_brightness():
         "&Lighting_V2[0][2][1].Mode=Off"
         "&Lighting_V2[0][2][1].NearLight[0].Light=30"
     )
+
