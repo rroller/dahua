@@ -18,18 +18,17 @@ magicBox.cgi at all. The bug is applying it to a device that understood the
 request and refused the login.
 """
 
-import asyncio
 from hashlib import md5
 
-import aiohttp
 import pytest
+from aiohttp import ClientResponseError
 
 from custom_components.dahua.client import DahuaClient, _is_login_refused
 from custom_components.dahua.config_flow import describe_setup_failure
 
 
 def _status(status):
-    return aiohttp.ClientResponseError(None, None, status=status, message="x")
+    return ClientResponseError(None, None, status=status, message="x")
 
 
 def _client(exception):
@@ -46,54 +45,55 @@ def _client(exception):
 # --- the fallback is for a missing endpoint, not a refused login -------------
 
 @pytest.mark.parametrize("status", [404, 501, 400])
-def test_a_device_without_magicbox_still_gets_an_id(status):
+async def test_a_device_without_magicbox_still_gets_an_id(status):
     """The reason the fallback exists. It must keep working."""
     client = _client(_status(status))
 
-    name = asyncio.run(client.get_machine_name())
-    info = asyncio.run(client.async_get_system_info())
+    name = await client.get_machine_name()
+    info = await client.async_get_system_info()
 
     assert name["name"]
     assert info["serialNumber"]
     assert client.identity_derived_from_credentials is True
 
 
-def test_a_restricted_account_still_gets_an_id():
-    """403 is "you are logged in but not allowed this", which is not a bad password."""
+async def test_a_restricted_account_still_gets_an_id():
+    """403 is "logged in but not allowed this", which is not a bad password."""
     client = _client(_status(403))
 
-    assert asyncio.run(client.get_machine_name())["name"]
+    assert (await client.get_machine_name())["name"]
 
 
 # --- a refused login must not be turned into an identity --------------------
 
-def test_a_refused_login_is_not_turned_into_an_id():
+async def test_a_refused_login_is_not_turned_into_an_id():
     client = _client(_status(401))
 
-    with pytest.raises(aiohttp.ClientResponseError) as caught:
-        asyncio.run(client.get_machine_name())
+    with pytest.raises(ClientResponseError) as caught:
+        await client.get_machine_name()
     assert caught.value.status == 401
 
 
-def test_the_serial_call_refuses_too():
+async def test_the_serial_call_refuses_too():
     client = _client(_status(401))
 
-    with pytest.raises(aiohttp.ClientResponseError):
-        asyncio.run(client.async_get_system_info())
+    with pytest.raises(ClientResponseError):
+        await client.async_get_system_info()
 
 
-def test_the_id_is_never_built_from_a_refused_password():
+async def test_the_id_is_never_built_from_a_refused_password():
     """The specific harm: an id derived from a password the camera rejected."""
     client = _client(_status(401))
     would_have_been = md5("10.0.0.5_554_admin_pw".encode("UTF-8")).hexdigest()
 
     try:
-        result = asyncio.run(client.get_machine_name())
-    except aiohttp.ClientResponseError:
+        result = await client.get_machine_name()
+    except ClientResponseError:
         return  # refused, which is the point
 
-    pytest.fail("added a camera with id %s built from the wrong password" % (
-        result.get("name") == would_have_been and would_have_been or result))
+    assert result.get("name") != would_have_been, (
+        "added a camera with an id built from the password the device rejected")
+    pytest.fail("a refused login was turned into %r" % result)
 
 
 # --- and the whole way out to what the user is told -------------------------
