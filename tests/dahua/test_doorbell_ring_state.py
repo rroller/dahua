@@ -42,8 +42,15 @@ def _vto():
 
 
 def _listening(c):
+    """Register the way the integration does, because listeners are a list.
+
+    #726 added a second entity for DoorbellPressed, so registering appends
+    rather than assigns. A fixture that assigns puts a bare callable where
+    dispatch expects a list, and every test here dies with
+    "TypeError: 'function' object is not iterable".
+    """
     key = c.get_event_key("DoorbellPressed")
-    c._dahua_event_listeners[key] = lambda: c.fired.append(key)
+    c.add_dahua_event_listener("DoorbellPressed", lambda: c.fired.append(key))
     return key
 
 
