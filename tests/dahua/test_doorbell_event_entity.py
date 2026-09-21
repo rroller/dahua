@@ -106,8 +106,18 @@ async def test_it_does_not_fire_on_the_release():
 
 
 def test_it_declares_itself_a_doorbell():
-    assert DahuaDoorbellEvent._attr_device_class == "doorbell"
-    assert DahuaDoorbellEvent._attr_event_types == ["pressed"]
+    """Read these off an instance, never off the class.
+
+    Home Assistant builds entity classes through a metaclass that rewrites
+    every `_attr_x` in the class body into a property descriptor, so
+    `DahuaDoorbellEvent._attr_device_class` is that descriptor rather than the
+    value. The device class and the event types are what a dashboard card
+    reads, so assert those.
+    """
+    entity = _entity(_Coordinator())
+
+    assert entity.device_class == "doorbell"
+    assert entity.event_types == ["pressed"]
 
 
 def test_its_unique_id_does_not_collide_with_the_binary_sensor():
