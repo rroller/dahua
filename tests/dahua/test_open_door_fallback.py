@@ -17,9 +17,12 @@ feature:
                must not fall back. This is the most important test here.
   * 401/403 -- credentials, wrong on any transport
   * both fail -- raise, naming both, because a lock must never fail silently
-"""
 
-import asyncio
+
+The suite runs async tests as bare `async def` (asyncio_mode is auto), and the
+Home Assistant plugin installs an autouse fixture that needs a running loop --
+so `asyncio.run` inside a test errors at setup before reaching the code.
+"""
 
 import aiohttp
 import pytest
@@ -80,11 +83,11 @@ def _client(cgi_status=None, rpc2=None):
 
 # --- the ordinary case ------------------------------------------------------
 
-def test_a_working_cgi_endpoint_is_used_and_nothing_else_is():
+async def test_a_working_cgi_endpoint_is_used_and_nothing_else_is():
     rpc2 = _Rpc2()
     c = _client(cgi_status=None, rpc2=rpc2)
 
-    asyncio.run(c.async_access_control_open_door(1))
+    await c.async_access_control_open_door(1)
 
     assert len(c.cgi_calls) == 1
     assert rpc2.calls == [], "RPC2 was contacted although CGI worked"
@@ -93,50 +96,50 @@ def test_a_working_cgi_endpoint_is_used_and_nothing_else_is():
 # --- the case this exists for -----------------------------------------------
 
 @pytest.mark.parametrize("status", [404, 501])
-def test_an_absent_endpoint_falls_back(status):
+async def test_an_absent_endpoint_falls_back(status):
     rpc2 = _Rpc2()
     c = _client(cgi_status=status, rpc2=rpc2)
 
-    asyncio.run(c.async_access_control_open_door(1))
+    await c.async_access_control_open_door(1)
 
     assert rpc2.calls == ["accessControl.factory.instance",
                           "accessControl.openDoor",
                           "accessControl.destroy"]
 
 
-def test_the_object_is_destroyed_even_when_opening_fails():
+async def test_the_object_is_destroyed_even_when_opening_fails():
     """The object belongs to the device, not to us."""
     rpc2 = _Rpc2(fail_on="accessControl.openDoor")
     c = _client(cgi_status=404, rpc2=rpc2)
 
     with pytest.raises(Exception):
-        asyncio.run(c.async_access_control_open_door(1))
+        await c.async_access_control_open_door(1)
 
     assert "accessControl.destroy" in rpc2.calls
 
 
-def test_door_one_is_channel_zero():
+async def test_door_one_is_channel_zero():
     """The CGI path counts doors from 1; the factory counts from 0."""
     rpc2 = _Rpc2()
     c = _client(cgi_status=404, rpc2=rpc2)
 
-    asyncio.run(c.async_access_control_open_door(1))
+    await c.async_access_control_open_door(1)
 
     assert rpc2.channel == 0
 
 
-def test_door_two_is_channel_one():
+async def test_door_two_is_channel_one():
     rpc2 = _Rpc2()
     c = _client(cgi_status=404, rpc2=rpc2)
 
-    asyncio.run(c.async_access_control_open_door(2))
+    await c.async_access_control_open_door(2)
 
     assert rpc2.channel == 1
 
 
 # --- and the ones that must NOT fall back -----------------------------------
 
-def test_a_400_never_falls_back():
+async def test_a_400_never_falls_back():
     """#154: a VTO answered 400 while the door opened anyway.
 
     Retrying that on another transport is how a door gets opened twice, which
@@ -146,30 +149,30 @@ def test_a_400_never_falls_back():
     c = _client(cgi_status=400, rpc2=rpc2)
 
     with pytest.raises(aiohttp.ClientResponseError):
-        asyncio.run(c.async_access_control_open_door(1))
+        await c.async_access_control_open_door(1)
 
     assert rpc2.calls == [], "a 400 was retried on another transport"
 
 
 @pytest.mark.parametrize("status", [401, 403, 500])
-def test_other_failures_do_not_fall_back(status):
+async def test_other_failures_do_not_fall_back(status):
     """Credentials and server errors are not 'this path does not exist'."""
     rpc2 = _Rpc2()
     c = _client(cgi_status=status, rpc2=rpc2)
 
     with pytest.raises(aiohttp.ClientResponseError):
-        asyncio.run(c.async_access_control_open_door(1))
+        await c.async_access_control_open_door(1)
 
     assert rpc2.calls == []
 
 
-def test_when_both_routes_fail_the_error_names_both():
+async def test_when_both_routes_fail_the_error_names_both():
     """The line a user pastes has to say what was tried."""
     rpc2 = _Rpc2(fail_on="accessControl.factory.instance")
     c = _client(cgi_status=404, rpc2=rpc2)
 
     with pytest.raises(ConnectionError) as caught:
-        asyncio.run(c.async_access_control_open_door(1))
+        await c.async_access_control_open_door(1)
 
     message = str(caught.value)
     assert "404" in message
