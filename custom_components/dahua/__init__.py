@@ -413,6 +413,13 @@ def is_onvif_channel(data: dict, channel: int) -> bool:
     return remote_device_protocol(data, channel) == "onvif"
 
 
+# BackKeyLight State values that mean the doorbell is ringing. See
+# myhomeiot/DahuaVTO, which documents the wider set: 4 voice message,
+# 5 answered from the VTH, 6 not answered, 7 VTH calling the VTO, 8 unlock,
+# 9 unlock failed, 11 rebooted. Only a ring should raise the button sensor.
+DOORBELL_RINGING_STATES = frozenset({1, 2})
+
+
 def door_index(event: dict) -> int:
     """Which door a VTO DoorStatus event is about.
 
@@ -1780,9 +1787,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     else:
                         self._dahua_event_timestamp[event_key] = 0
                 else:
+                    # BackKeyLight carries the VTO's call state, and more than
+                    # one value means ringing. myhomeiot/DahuaVTO documents
+                    # 1 and 2 as Call/Ring (4 voice message, 5 answered,
+                    # 6 not answered, 8 unlock, 11 rebooted), and its reference
+                    # automation treats `State | int in [1, 2]` as the ring.
+                    # Only 1 was accepted here, so a device that reports 2
+                    # never raised the sensor at all.
+                    #
+                    # That project also warns the values vary by model, so this
+                    # widens what counts as a ring rather than claiming a
+                    # complete mapping.
                     state = event.get("Data", {}).get("State", 0)
-                    if state == 1:
-                        # button pressed
+                    try:
+                        pressed = int(state) in DOORBELL_RINGING_STATES
+                    except (TypeError, ValueError):
+                        pressed = False
+                    if pressed:
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
                         self._dahua_event_timestamp[event_key] = 0
