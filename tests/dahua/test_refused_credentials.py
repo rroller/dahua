@@ -16,6 +16,7 @@ The fix must not re-create #714, where one 401 was treated as proof of a wrong
 password. Channels of one NVR share a digest challenge and a raced nonce is
 refused exactly like a bad credential, so a single refusal stays non-fatal.
 """
+import pytest
 from aiohttp import ClientResponseError
 
 import custom_components.dahua as dahua
@@ -28,6 +29,16 @@ from custom_components.dahua import (
 )
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
+
+
+@pytest.fixture(autouse=True)
+def _no_issue_registry(monkeypatch):
+    """Clearing the count also withdraws this host's repair issues.
+
+    That goes through the issue registry, which wants a real hass. The count is
+    what these tests are about, so stub the registry rather than build one.
+    """
+    monkeypatch.setattr(dahua.ir, "async_delete_issue", lambda *a, **k: None)
 
 
 class _Hass:
