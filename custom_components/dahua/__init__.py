@@ -1702,52 +1702,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         #    "Index":-1
         # }
 
-        # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, PhoneCallDetect, DoorStatus, etc
-        codes = self.translate_event_code(event)
-
-        for code in codes:
-            event_key = self.get_event_key(code)
-
-            if code == "AccessControl":
-                card_id = event.get("Data", {}).get("CardNo", "")
-                if card_id:
-                    card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
-                    self.hass.async_create_task(
-                        async_scan_tag(self.hass, card_id_md5, self.get_device_name())
-                    )
-
-            listener = self._dahua_event_listeners.get(event_key)
-            if listener is not None:
-                action = event.get("Action", "")
-                if action == "Start":
-                    self._dahua_event_timestamp[event_key] = int(time.time())
-                    listener()
-                elif action == "Stop":
-                    self._dahua_event_timestamp[event_key] = 0
-                    listener()
-                elif action == "Pulse":
-                    if code == "DoorStatus":
-                        # The door number is in Index, and it was being thrown
-                        # away. A VTO with an access control extension module
-                        # has a second door whose events carry Index 1 (#488),
-                        # and every one of them landed on the single Door Status
-                        # sensor -- so door 2 closing reported door 1 as closed
-                        # while it stood open. One sensor exists, it is door 1's,
-                        # and only door 1 may write to it.
-                        if door_index(event) != 0:
-                            continue
-                        if event.get("Data", {}).get("Status", "") == "Open":
-                            self._dahua_event_timestamp[event_key] = int(time.time())
-                        else:
-                            self._dahua_event_timestamp[event_key] = 0
-                    else:
-                        state = event.get("Data", {}).get("State", 0)
-                        if state == 1:
-                            # button pressed
-                            self._dahua_event_timestamp[event_key] = int(time.time())
-                        else:
-                            self._dahua_event_timestamp[event_key] = 0
-                    listener()
+        # DHIP capitalises it; the CGI stream does not.
+        self._dispatch_event(event, event.get("Action", ""))
 
     def on_receive(self, data_bytes: bytes, channel: int):
         """
@@ -1778,6 +1734,63 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if index == self._channel:
                 self.handle_event(event)
 
+    def _dispatch_event(self, event: dict, action: str) -> None:
+        """Apply one event to this channel's sensors, whichever stream it came from.
+
+        The two streams spell the action differently -- DHIP sends "Action",
+        the CGI wire format parses to "action" -- and everything after that is
+        the same. It is shared because it did not used to be: the CGI path had
+        no Pulse branch and no NFC tag scan, so on that transport every Pulse
+        event reached the event bus and then updated nothing, and an
+        AccessControl card was never handed to async_scan_tag. Both behaviours
+        existed on the doorbell path the whole time.
+        """
+        for code in self.translate_event_code(event):
+            event_key = self.get_event_key(code)
+
+            if code == "AccessControl":
+                card_id = event.get("Data", {}).get("CardNo", "")
+                if card_id:
+                    card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
+                    self.hass.async_create_task(
+                        async_scan_tag(self.hass, card_id_md5, self.get_device_name())
+                    )
+
+            listener = self._dahua_event_listeners.get(event_key)
+            if listener is None:
+                continue
+
+            if action == "Start":
+                self._dahua_event_timestamp[event_key] = int(time.time())
+            elif action == "Stop":
+                self._dahua_event_timestamp[event_key] = 0
+            elif action == "Pulse":
+                if code == "DoorStatus":
+                    # The door number is in Index, and it was being thrown
+                    # away. A VTO with an access control extension module
+                    # has a second door whose events carry Index 1 (#488),
+                    # and every one of them landed on the single Door Status
+                    # sensor -- so door 2 closing reported door 1 as closed
+                    # while it stood open. One sensor exists, it is door 1's,
+                    # and only door 1 may write to it.
+                    if door_index(event) != 0:
+                        continue
+                    if event.get("Data", {}).get("Status", "") == "Open":
+                        self._dahua_event_timestamp[event_key] = int(time.time())
+                    else:
+                        self._dahua_event_timestamp[event_key] = 0
+                else:
+                    state = event.get("Data", {}).get("State", 0)
+                    if state == 1:
+                        # button pressed
+                        self._dahua_event_timestamp[event_key] = int(time.time())
+                    else:
+                        self._dahua_event_timestamp[event_key] = 0
+            else:
+                continue
+
+            listener()
+
     def handle_event(self, event: dict):
         """Handle one event the host stream has decided belongs to this channel."""
         _LOGGER.debug(
@@ -1799,18 +1812,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # We'll reset it to 0 when the event stops.
         # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
 
-        # This is the event code, example: VideoMotion, CrossLineDetection, etc
-        for event_name in self.translate_event_code(event):
-            event_key = self.get_event_key(event_name)
-            listener = self._dahua_event_listeners.get(event_key)
-            if listener is not None:
-                action = event.get("action")
-                if action == "Start":
-                    self._dahua_event_timestamp[event_key] = int(time.time())
-                    listener()
-                elif action == "Stop":
-                    self._dahua_event_timestamp[event_key] = 0
-                    listener()
+        # The wire format is "Code=VideoMotion;action=Start;index=0", so the
+        # action arrives lowercased here and capitalised on the DHIP path.
+        self._dispatch_event(event, event.get("action", ""))
 
     def translate_event_code(self, event: dict):
         """
