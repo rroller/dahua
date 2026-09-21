@@ -2066,6 +2066,13 @@ class DahuaClient:
         how their identities got swapped (#664).
         """
         if not _is_read(url):
+            # Every write passes through here, so this is the one place that
+            # can say what was sent. Most write methods logged nothing at all,
+            # and a few logged their own URL, so "I clicked the entity and the
+            # debug log shows no request" was indistinguishable from "the
+            # request was never made" -- which is exactly the question #647
+            # needed answered about the infrared control.
+            _LOGGER.debug("Writing to %s: %s", self._address, url)
             clear_host_cache(self._device)
             return await self._request(url, verify_ok)
 
