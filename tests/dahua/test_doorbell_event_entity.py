@@ -92,7 +92,7 @@ async def test_it_fires_on_the_press():
 
     entity._async_doorbell_pressed()
 
-    assert entity.fired == ["pressed"]
+    assert entity.fired == ["ring"]
 
 
 async def test_it_does_not_fire_on_the_release():
@@ -117,7 +117,31 @@ def test_it_declares_itself_a_doorbell():
     entity = _entity(_Coordinator())
 
     assert entity.device_class == "doorbell"
-    assert entity.event_types == ["pressed"]
+    assert entity.event_types == ["ring"], (
+        "Home Assistant refuses to accept a doorbell that cannot ring"
+    )
+
+
+def test_a_doorbell_must_be_able_to_ring():
+    """Home Assistant checks this itself, and only warns.
+
+    On a real install the entity was created and then:
+
+        Entity event.front_yard_cctv_front_door_bell_doorbell is a doorbell
+        event entity but does not support the 'ring' event type. This will stop
+        working in Home Assistant 2027.4
+
+    The check in homeassistant/components/event is exactly:
+
+        if (self.device_class == EventDeviceClass.DOORBELL
+                and DoorbellEventType.RING not in self.event_types):
+
+    A warning rather than an error, so nothing failed and the entity worked.
+    It would simply have stopped in 2027.4.
+    """
+    entity = _entity(_Coordinator())
+
+    assert "ring" in entity.event_types
 
 
 def test_its_unique_id_does_not_collide_with_the_binary_sensor():
