@@ -330,7 +330,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             client = DahuaClient(username, password, address, port, rtsp_port, session, use_https)
             data = await client.get_machine_name()
-            serial = await client.async_get_system_info()
+            serial = await client.async_get_system_info(strict_auth=True)
             data.update(serial)
             if "name" in data:
                 return data, None
