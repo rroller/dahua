@@ -17,6 +17,7 @@ import hashlib
 from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -173,6 +174,20 @@ FAILURES_BEFORE_BACKOFF = 2
 # Guard on the exponent so the arithmetic stays sane for a device that has been
 # failing for a week. The time ceilings below are what actually bind.
 MAX_BACKOFF_DOUBLINGS = 6
+
+# How many times a host may refuse these credentials before the integration
+# stops offering them.
+#
+# Not one, because a single 401 is not proof of a wrong password: channels of
+# one NVR share a digest challenge, and a nonce that races between them is
+# refused exactly like a bad credential. Treating the first one as fatal is
+# what #714 was.
+#
+# Not many either, because a 401 only reaches here after DigestAuth has
+# already spent its own MAX_AUTH_ATTEMPTS on it, including two passes through
+# the same-nonce refusal path. A 401 that survives all of that is much more
+# likely to be real than a raw one, so the budget here can be small.
+MAX_AUTH_REFUSALS = 3
 
 # However long the poll interval is, never leave a failing device unpolled for
 # longer than this, or a device that recovers stays missing for an afternoon.
@@ -794,6 +809,28 @@ def async_host_is_unreachable(address: str) -> bool:
 
 
 @callback
+def async_record_host_auth_refusal(address: str) -> int:
+    """Note that this host refused the credentials, and say how often it has.
+
+    Keyed by host rather than by entry because the consequence is host-wide:
+    a Dahua box locks the source IP after repeated failed logins, so ten
+    channels of one NVR are ten entries renewing one lock. A per-entry count
+    would let the first entry to notice give up while the other nine kept the
+    lock alive, which is the bug one level up.
+
+    Cleared by async_record_host_success, so this only ever counts refusals
+    with nothing succeeding in between.
+    """
+    address = normalize_address(address)
+    state = _HOST_FAILURES.setdefault(
+        address,
+        {"consecutive": 0, "since": time.time(), "entry_ids": set(), "last_probe": 0},
+    )
+    state["auth_refusals"] = state.get("auth_refusals", 0) + 1
+    return state["auth_refusals"]
+
+
+@callback
 def async_record_host_success(hass: HomeAssistant, address: str) -> None:
     """The device answered, so withdraw anything we said about it.
 
@@ -964,6 +1001,24 @@ class DahuaHostEventStream:
                             "Event stream for %s still silent", self._address
                         )
             except Exception as ex:  # pylint: disable=broad-except
+                # Credentials the device is refusing must stop being offered
+                # here too, not just on the poll. This stream backs off to at
+                # most EVENT_STREAM_MAX_RETRY_SECONDS, which is well inside
+                # the half hour a Dahua box locks a source IP for -- so on its
+                # own it would keep renewing the lock that #729 is about, and
+                # the reauth the coordinator asked for would still be refused.
+                #
+                # The count is shared with the polls and cleared by any
+                # success on this host, so a stream cannot reach the budget
+                # while anything here is still authenticating.
+                if isinstance(ex, ClientResponseError) and ex.status == 401:
+                    refusals = async_record_host_auth_refusal(self._address)
+                    if refusals >= MAX_AUTH_REFUSALS:
+                        _LOGGER.warning(
+                            "Event stream for %s stopped: the device refused these credentials %d times. It will start again once the credentials are re-entered",
+                            self._address, refusals,
+                        )
+                        return
                 # Say it once per outage, not once per retry. Silence was the
                 # old behaviour and it is why these failures went unreported;
                 # a warning every sixty seconds forever is the other extreme.
@@ -1282,6 +1337,42 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return any(self.config_entry.options.get(platform, True) for platform in platforms)
 
+    def _auth_refused(self, exception) -> Exception:
+        """What to raise when the device refuses these credentials.
+
+        Below the budget this is an ordinary failed poll, because one 401 is
+        not proof of a wrong password (#714).
+
+        At the budget it is ConfigEntryAuthFailed, rather than calling
+        async_start_reauth by hand and raising UpdateFailed. Home Assistant
+        does two things for that exception and only the first was happening:
+        it opens the reauth flow, and it stops scheduling refreshes --
+
+            if not auth_failed and self._listeners and not self.hass.is_stopping:
+                self._schedule_refresh()
+
+        Stopping the polls is the part that matters. A Dahua box locks the
+        source IP for thirty minutes after repeated failed logins, so an entry
+        that keeps polling keeps renewing the lock, and the correct password
+        typed into the reauth dialog is refused along with everything else.
+        That is the loop in #729: reauth asked for, reauth impossible.
+        """
+        refusals = async_record_host_auth_refusal(self._address)
+        if refusals < MAX_AUTH_REFUSALS:
+            _LOGGER.debug(
+                "Authentication refused by %s (%d of %d). Not treating it as a wrong password yet",
+                self._address, refusals, MAX_AUTH_REFUSALS,
+            )
+            self._back_off_poll_interval(
+                async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+            )
+            return UpdateFailed("Authentication refused by " + self._address)
+        _LOGGER.warning(
+            "%s has refused these credentials %d times, so Home Assistant will stop trying them and ask for new ones. Repeated failed logins can lock a Dahua device out for around thirty minutes, so polling stops until the credentials are re-entered",
+            self._address, refusals,
+        )
+        return ConfigEntryAuthFailed("Authentication failed for " + self._address)
+
     async def _async_update_data(self):
         """Reload the camera information"""
         data = {}
@@ -1529,9 +1620,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.initialized = True
             except ClientResponseError as exception:
                 if exception.status == 401:
-                    _LOGGER.warning("Authentication failed for %s, starting reauth", self._address)
-                    self.config_entry.async_start_reauth(self.hass)
-                    raise UpdateFailed("Authentication failed") from exception
+                    raise self._auth_refused(exception) from exception
                 _LOGGER.warning("Failed to initialize device at %s: %s", self._address, exception)
                 self._back_off_poll_interval(
                     async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
@@ -1646,6 +1735,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._restore_poll_interval()
             return data
         except Exception as exception:
+            # A 401 out here never started a reauth at all: the entry just went
+            # unavailable and kept polling, which is the other half of #729.
+            if isinstance(exception, ClientResponseError) and exception.status == 401:
+                raise self._auth_refused(exception) from exception
             detail = describe_update_failure(exception)
             _LOGGER.warning("Failed to sync device state for %s: %s. See README to enable debug logs to get full exception",
                             self._address, detail)
