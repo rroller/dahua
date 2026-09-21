@@ -12,6 +12,7 @@ from homeassistant.components.camera import Camera, CameraEntityFeature
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.model_profiles import is_sdt4e425
+from custom_components.dahua.vto import CancelCallRefused
 
 from .const import (
     DOMAIN,
@@ -483,7 +484,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
                     self._coordinator.get_device_name()
                 )
             )
-        await vto_client.cancel_call()
+        try:
+            await vto_client.cancel_call()
+        except CancelCallRefused as refused:
+            raise HomeAssistantError(str(refused)) from refused
 
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """
