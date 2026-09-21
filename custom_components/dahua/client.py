@@ -772,7 +772,7 @@ class DahuaClient:
         return repair_dahua_snapshot_header(
             strip_dahua_snapshot_trailer(await self.get_bytes(url)))
 
-    async def async_get_system_info(self) -> dict:
+    async def async_get_system_info(self, strict_auth: bool = False) -> dict:
         """
         Get system info data from the getSystemInfo API. Example response:
 
@@ -787,7 +787,14 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
         except aiohttp.ClientResponseError as e:
-            if _is_login_refused(e):
+            # strict_auth only for the config flow, which is deciding whether a
+            # password is right. The coordinator shares this method, and there a
+            # 401 is not proof of a wrong password: eight channels of one NVR
+            # share a digest challenge, and a nonce that races between them is
+            # refused exactly like a bad credential. Raising here made every
+            # channel start a reauth flow at startup (#714), where before the
+            # identity simply fell back and the entry carried on.
+            if strict_auth and _is_login_refused(e):
                 raise
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)

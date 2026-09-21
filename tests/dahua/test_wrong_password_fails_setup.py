@@ -75,10 +75,25 @@ async def test_a_refused_login_is_not_turned_into_an_id():
 
 
 async def test_the_serial_call_refuses_too():
+    """Only when the caller asks, which is the config flow and not the poll.
+
+    This method is shared with the coordinator's one-time init, where a 401 is
+    not proof of a wrong password -- channels of one NVR share a digest
+    challenge and a raced nonce is refused identically. Raising there made
+    every channel start a reauth flow at startup (#714), so the strictness is
+    now the caller's to request.
+    """
     client = _client(_status(401))
 
     with pytest.raises(ClientResponseError):
-        await client.async_get_system_info()
+        await client.async_get_system_info(strict_auth=True)
+
+
+async def test_the_serial_call_does_not_refuse_the_poll():
+    """The coordinator's call, and what 0.10.7 did (#714)."""
+    client = _client(_status(401))
+
+    assert (await client.async_get_system_info())["serialNumber"]
 
 
 async def test_the_id_is_never_built_from_a_refused_password():
