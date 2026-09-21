@@ -15,7 +15,17 @@ from .entity import DahuaEventDrivenEntity
 _LOGGER = logging.getLogger(__package__)
 
 DOORBELL_PRESSED = "DoorbellPressed"
-EVENT_PRESSED = "pressed"
+
+# Home Assistant requires a doorbell event entity to offer "ring", and warns
+# that anything else stops working in 2027.4:
+#
+#     if (self.device_class == EventDeviceClass.DOORBELL
+#             and DoorbellEventType.RING not in self.event_types):
+#
+# Spelled out rather than imported as DoorbellEventType.RING, because that
+# enum is newer than the 2025.1.2 this integration supports. It is a StrEnum
+# with "ring" as its only member, so the literal is the same value.
+EVENT_RING = "ring"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
@@ -43,7 +53,7 @@ class DahuaDoorbellEvent(DahuaEventDrivenEntity, EventEntity):
     """
 
     _attr_device_class = EventDeviceClass.DOORBELL
-    _attr_event_types = [EVENT_PRESSED]
+    _attr_event_types = [EVENT_RING]
 
     @property
     def name(self):
@@ -63,7 +73,7 @@ class DahuaDoorbellEvent(DahuaEventDrivenEntity, EventEntity):
         of an ending, so firing on both would report two presses for one.
         """
         if self._coordinator.get_event_timestamp(DOORBELL_PRESSED) > 0:
-            self._trigger_event(EVENT_PRESSED)
+            self._trigger_event(EVENT_RING)
             self.async_write_ha_state()
 
     async def async_added_to_hass(self):
