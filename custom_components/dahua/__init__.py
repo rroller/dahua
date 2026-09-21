@@ -1110,7 +1110,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
         # The key will be formed from self.get_event_key(event_name) and includes the channel
-        self._dahua_event_listeners: Dict[str, CALLBACK_TYPE] = dict()
+        # A list, not one listener: two entities can want the same event, and
+        # assignment meant the second silently replaced the first. Only the
+        # binary sensor subscribed until now, one per code, so nothing had
+        # collided yet -- but a doorbell press is wanted by a binary sensor and
+        # an event entity at once (#715).
+        self._dahua_event_listeners: Dict[str, list] = dict()
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to the time the event fire or was cleared.
         # If cleared the time will be 0. The time unit is seconds epoch
@@ -1756,8 +1761,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         async_scan_tag(self.hass, card_id_md5, self.get_device_name())
                     )
 
-            listener = self._dahua_event_listeners.get(event_key)
-            if listener is None:
+            listeners = self._dahua_event_listeners.get(event_key)
+            if not listeners:
                 continue
 
             if action == "Start":
@@ -1789,7 +1794,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             else:
                 continue
 
-            listener()
+            for listener in listeners:
+                listener()
 
     def handle_event(self, event: dict):
         """Handle one event the host stream has decided belongs to this channel."""
@@ -1841,17 +1847,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             codes = []
 
             # Always include the original CrossLine/CrossRegion if a listener exists
-            if self._dahua_event_listeners.get(self.get_event_key(code)) is not None:
+            if self._dahua_event_listeners.get(self.get_event_key(code)):
                 codes.append(code)
 
             # Also include SmartMotion translation if applicable
             if object_type == "human":
-                if self._dahua_event_listeners.get(self.get_event_key("SmartMotionHuman")) is not None:
+                if self._dahua_event_listeners.get(self.get_event_key("SmartMotionHuman")):
                     codes.append("SmartMotionHuman")
                 elif not codes:
                     codes.append("SmartMotionHuman")
             elif object_type == "vehicle":
-                if self._dahua_event_listeners.get(self.get_event_key("SmartMotionVehicle")) is not None:
+                if self._dahua_event_listeners.get(self.get_event_key("SmartMotionVehicle")):
                     codes.append("SmartMotionVehicle")
                 elif not codes:
                     codes.append("SmartMotionVehicle")
@@ -1877,7 +1883,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Adds an event listener for the given event (CrossLineDetection, etc).
         This callback will be called when the event fire """
         event_key = self.get_event_key(event_name)
-        self._dahua_event_listeners[event_key] = listener
+        self._dahua_event_listeners.setdefault(event_key, []).append(listener)
 
     def supports_disarming_linkage(self) -> bool:
         """Whether the device answered the disarming linkage read during setup."""
