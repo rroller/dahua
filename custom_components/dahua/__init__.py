@@ -420,6 +420,26 @@ def is_onvif_channel(data: dict, channel: int) -> bool:
 DOORBELL_RINGING_STATES = frozenset({1, 2})
 
 
+# BackKeyLight State values that are not about ringing at all, and the event
+# each one deserves. Measured on a VTO2000A: opening the door through the
+# integration produces State 8 within a second, and no AccessControl event.
+# 9 is documented by myhomeiot/DahuaVTO as the failed counterpart.
+DOORBELL_STATE_EVENTS = {8: "DoorUnlocked", 9: "DoorUnlockFailed"}
+
+
+def doorbell_state(event: dict):
+    """The BackKeyLight State as an int, or None if it did not say.
+
+    The payload is JSON over DHIP, so this is normally already an int, but
+    nothing guarantees it and a string must not read as a different state.
+    """
+    value = event.get("Data", {}).get("State") if isinstance(event.get("Data"), dict) else None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def door_index(event: dict) -> int:
     """Which door a VTO DoorStatus event is about.
 
@@ -1888,6 +1908,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # Convert doorbell pressed related events to common event name, DoorbellPressed.
         # VTO devices will use the event BackKeyLight and the Amcrest devices seem to use PhoneCallDetect
         if code == "BackKeyLight" or code == "PhoneCallDetect":
+            # BackKeyLight is the VTO's call state, and ringing is only part of
+            # what it reports. Collapsing every one of them to DoorbellPressed
+            # threw the rest away on arrival -- an unlock arrives as State 8
+            # and was read only as "not a ring", so it silently cleared the
+            # button sensor and nothing could ever see the unlock itself.
+            #
+            # Measured on a VTO2000A, pressing the integration's own Open Door
+            # button: 0.7s later the device sent
+            #   Code=BackKeyLight Action=Pulse Data={"State": 8}
+            # and no AccessControl event at all, so this is the only signal a
+            # door-lock entity could confirm an unlock from.
+            extra = DOORBELL_STATE_EVENTS.get(doorbell_state(event))
+            if extra:
+                return ["DoorbellPressed", extra]
             return ["DoorbellPressed"]
 
         return [code]
