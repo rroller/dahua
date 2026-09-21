@@ -100,7 +100,9 @@ def _door_event(status, index):
 def _listening(coordinator):
     """Register a listener for DoorStatus, as binary_sensor.py does."""
     key = coordinator.get_event_key("DoorStatus")
-    coordinator._dahua_event_listeners[key] = lambda: coordinator.fired.append(key)
+    # Through the public API: the dict holds a list of listeners per event
+    # since #715, because two entities can want the same one.
+    coordinator.add_dahua_event_listener("DoorStatus", lambda: coordinator.fired.append(key))
     return key
 
 

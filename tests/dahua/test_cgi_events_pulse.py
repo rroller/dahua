@@ -45,7 +45,9 @@ def _coordinator(channel=0):
 
 def _listening(c, code):
     key = c.get_event_key(code)
-    c._dahua_event_listeners[key] = lambda: c.fired.append(key)
+    # Through the public API: the dict holds a list of listeners per event
+    # since #715, because two entities can want the same one.
+    c.add_dahua_event_listener(code, lambda: c.fired.append(key))
     return key
 
 
