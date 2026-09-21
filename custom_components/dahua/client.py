@@ -1122,6 +1122,9 @@ class DahuaClient:
             holder.keepalive = asyncio.ensure_future(_rpc2_keepalive(holder, interval))
         return holder
 
+    # Direct-camera CoaxialControlIO RPC2 calls use channel 0, matching the
+    # camera WebUI requests. Legacy CGI uses 1-based channel 1 for standalone
+    # cameras; this protocol difference is intentional, not an off-by-one error.
     async def async_get_coaxial_control_io_caps_rpc2(self) -> dict[str, bool]:
         """Probe a direct camera on channel zero, independently of config transport."""
         holder = await self._shared_rpc2()

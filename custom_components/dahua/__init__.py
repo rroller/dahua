@@ -1934,8 +1934,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         m = self.model.upper()
         return (self.uses_rpc2_deterrence(2)
                 or "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
-                # Verified thermal exception: getCaps reports Speaker=0.
-                or m == "TPC-BF1241-TB3F4-DW-S8-HW")
+                # TPC-BF1241-TB3F4-DW-S8-HW reports SupportControlSpeaker=0
+                # via getCaps, but its built-in siren is present and controllable.
+                # Apply the fallback to the family; other TPC-BF1241 variants
+                # have not yet been verified to behave the same way.
+                or m.startswith("TPC-BF1241"))
 
     def supports_nvr_active_deterrence(self) -> bool:
         """Return whether NVR active-deterrence entities were explicitly enabled."""
@@ -2511,4 +2514,3 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
     await hass.config_entries.async_reload(entry.entry_id)
-

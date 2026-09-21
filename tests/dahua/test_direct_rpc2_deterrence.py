@@ -59,8 +59,9 @@ async def test_probe_failure_keeps_model_fallback(error, model, expected):
     assert not c.uses_rpc2_deterrence()
 
 
-async def test_thermal_zero_speaker_keeps_verified_model_fallback():
-    c = coordinator("TPC-BF1241-TB3F4-DW-S8-HW")
+@pytest.mark.parametrize("model", ["TPC-BF1241-TB3F4-DW-S8-HW", "TPC-BF1241", "TPC-BF1241-OTHER"])
+async def test_thermal_zero_speaker_keeps_family_fallback(model):
+    c = coordinator(model)
     c.client.async_get_coaxial_control_io_caps_rpc2.return_value = {
         "SupportControlSpeaker": False, "SupportControlLight": True,
     }
@@ -165,6 +166,31 @@ async def test_setup_caches_caps_and_poll_uses_selected_status(speaker, light):
         client.async_get_coaxial_control_io_status_rpc2.assert_not_awaited()
         assert not c.supports_siren()
         assert not c.supports_security_light()
+
+
+async def test_rpc2_security_light_skips_lighting_v2_fallback():
+    client = _Client()
+    client.use_rpc2 = False
+    client.async_get_coaxial_control_io_caps_rpc2 = AsyncMock(return_value={
+        "SupportControlSpeaker": False, "SupportControlLight": True,
+    })
+    client.async_get_coaxial_control_io_status_rpc2 = AsyncMock(return_value={
+        "status.Speaker": "Off", "status.WhiteLight": "On",
+    })
+    client.async_get_lighting_v2 = AsyncMock(side_effect=TimeoutError)
+    c = _coordinator(client)
+
+    for poll_count in (1, 2):
+        data = await c._async_update_data()
+        assert c.initialized
+        assert c.supports_security_light()
+        assert c.uses_rpc2_deterrence(1)
+        assert c._supports_lighting_v2 is False
+        assert data["status.WhiteLight"] == "On"
+        assert client.async_get_coaxial_control_io_status_rpc2.await_count == poll_count
+        # The failed initial capability probe must be the only Lighting_V2 read.
+        client.async_get_lighting_v2.assert_awaited_once_with()
+    client.async_get_coaxial_control_io_caps_rpc2.assert_awaited_once_with()
 
 
 async def test_client_caps_and_control_fix_channel_zero():
