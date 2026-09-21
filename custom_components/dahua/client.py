@@ -1921,12 +1921,79 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=DisableEventNotify"
         return await self.get(url)
 
+    # A device answering these has no such CGI path at all, so there is
+    # nothing to retry and a second transport is worth trying. Deliberately
+    # NOT 400: #154 reports an intermittent 400 on a VTO whose door opened
+    # anyway, and retrying that over another route could open it twice.
+    # Nor 401/403, where the credentials are the problem on any transport.
+    DOOR_CGI_ABSENT = (404, 501)
+
     async def async_access_control_open_door(self, door_id: int = 1) -> dict:
-        """
-        async_access_control_open_door opens a door via a VTO
+        """Open a door, over CGI, falling back to RPC2 if the CGI path is absent.
+
+        #465's VTO answers 404 to the CGI endpoint on every channel, so on that
+        firmware this has never been able to work. myhomeiot/DahuaVTO opens the
+        same door over Dahua's JSON protocol instead, which that device may
+        implement -- a second route is the only thing that could help.
+
+        The fallback is not cached and not probed at setup. A remembered
+        "use RPC2" would be state that can be wrong after a firmware update,
+        and setup cannot probe openDoor without opening the door. One wasted
+        round trip per press is nothing next to a stale decision about a lock.
         """
         url = "/cgi-bin/accessControl.cgi?action=openDoor&UserID=101&Type=Remote&channel={0}".format(door_id)
-        return await self.get(url)
+        try:
+            return await self.get(url)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.DOOR_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "accessControl.cgi answered %s on %s; trying RPC2",
+                cgi_error.status, self._address)
+            try:
+                result = await self._async_open_door_rpc2(door_id)
+            except Exception as rpc2_error:  # pylint: disable=broad-except
+                # Both routes are gone. Name both, because "open door failed"
+                # is not a bug report and this is the line a user will paste.
+                raise ConnectionError(
+                    "Could not open door {0} on {1}: the CGI endpoint answered "
+                    "{2}, and RPC2 answered {3}".format(
+                        door_id, self._address, cgi_error.status, rpc2_error)
+                ) from rpc2_error
+            _LOGGER.info(
+                "Opened door %s on %s over RPC2; this device has no "
+                "accessControl CGI endpoint (it answered %s)",
+                door_id, self._address, cgi_error.status)
+            return result
+
+    async def _async_open_door_rpc2(self, door_id: int) -> dict:
+        """One door, one session, logged out afterwards.
+
+        A private client rather than the shared one on purpose: this is a
+        one-shot user action, so it must not leave a cached session with a
+        keepalive behind for someone who never enabled RPC2. Same shape as
+        async_goto_preset_rpc2.
+
+        The CGI path sends door_id as its channel and the factory counts from
+        zero, so door 1 is channel 0. That mapping is inferred from
+        myhomeiot/DahuaVTO, whose service defaults to channel 1 and sends 0 on
+        the wire, and is consistent with #488 finding door 2 at Index 1. It is
+        not verified on hardware.
+        """
+        session = self._rpc2_session()
+        rpc2 = DahuaRpc2Client(
+            self._username, self._password, self._address, self._port,
+            self._rtsp_port, session, self._use_https
+        )
+        try:
+            async with asyncio.timeout(TIMEOUT_SECONDS):
+                return await rpc2.async_open_door(max(0, door_id - 1))
+        finally:
+            try:
+                async with asyncio.timeout(5):
+                    await rpc2.logout()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("RPC2 logout failed after openDoor", exc_info=True)
 
     async def enable_motion_detection(self, channel: int, enabled: bool) -> dict:
         """
