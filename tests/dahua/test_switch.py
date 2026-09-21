@@ -45,6 +45,9 @@ class _Coordinator:
     def supports_nvr_active_deterrence(self):
         return False
 
+    def uses_rpc2_deterrence(self, dahua_type=None):
+        return False
+
     def get_serial_number(self):
         return "SERIAL1"
 

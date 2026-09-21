@@ -252,6 +252,8 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SIREN_TYPE, True
             )
+        elif self._coordinator.uses_rpc2_deterrence(SIREN_TYPE):
+            await self._coordinator.client.async_set_coaxial_control_state_rpc2(SIREN_TYPE, True)
         else:
             await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, True)
         await self._coordinator.async_refresh()
@@ -263,6 +265,8 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SIREN_TYPE, False
             )
+        elif self._coordinator.uses_rpc2_deterrence(SIREN_TYPE):
+            await self._coordinator.client.async_set_coaxial_control_state_rpc2(SIREN_TYPE, False)
         else:
             await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, False)
         await self._coordinator.async_refresh()
