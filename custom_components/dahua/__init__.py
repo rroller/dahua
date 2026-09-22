@@ -2245,7 +2245,42 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 for profile in range(9)
                 for index in range(MAX_LIGHTING_V2_LIGHTS)
             )
-        return not (self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data
+        if self.is_amcrest_doorbell() or self.is_flood_light():
+            return False
+        if "table.Lighting_V2[{0}][0][0].Mode".format(
+                self._channel) not in self.data:
+            return False
+        return self._declares_a_white_light()
+
+    def _declares_a_white_light(self) -> bool:
+        """Whether this channel reports a white emitter, if it says at all.
+
+        Having a Lighting_V2 row only says the camera has *a* light. #540 is
+        an IPC-HDW2831T-AS-S2, which has no white light at all: its single
+        emitter is infrared, so the Illuminator entity drove the night vision
+        LED and the camera's own UI calls that control Illuminator too, which
+        is how it went unnoticed.
+
+        The same check already existed for one model, behind a name prefix.
+        This is it applied to whatever the device says, which is the fourth
+        time a capability here turns out to be gated on a model string when
+        the device was willing to answer the question (#570, #676, #690).
+
+        A device that names no LightType keeps exactly the behaviour it has
+        always had. Older firmware does not report them, and withdrawing an
+        entity on silence would take the light away from everyone who has one
+        working. Only a device that lists its emitters and names no white one
+        loses it, which is the only case where we know it was wrong.
+        """
+        key = "table.Lighting_V2[{0}][0][{1}].LightType"
+        declared = [
+            self.data.get(key.format(self._channel, index))
+            for index in range(MAX_LIGHTING_V2_LIGHTS)
+        ]
+        named = [light for light in declared if light is not None]
+        if not named:
+            return True
+        return WHITE_LIGHT in named
 
     def uses_lighting_scheme_illuminator(self) -> bool:
         """Whether this device needs the two-table white-light contract."""
