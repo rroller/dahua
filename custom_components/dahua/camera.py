@@ -43,6 +43,22 @@ SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 SERVICE_REBOOT = "reboot"
 SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
+SERVICE_PTZ_MOVE = "ptz_move"
+
+# What ptz.cgi calls each direction. The eight compass moves plus the two
+# zoom directions, which are the same mechanism with a different code.
+PTZ_MOVE_CODES = {
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+    "up_left": "LeftUp",
+    "up_right": "RightUp",
+    "down_left": "LeftDown",
+    "down_right": "RightDown",
+    "zoom_in": "ZoomTele",
+    "zoom_out": "ZoomWide",
+}
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
@@ -280,6 +296,18 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         )
 
     platform.async_register_entity_service(
+        SERVICE_PTZ_MOVE,
+        {
+            vol.Required('direction'): vol.In(sorted(PTZ_MOVE_CODES)),
+            vol.Optional('speed', default=4):
+                vol.All(vol.Coerce(int), vol.Range(min=1, max=8)),
+            vol.Optional('duration', default=0.5):
+                vol.All(vol.Coerce(float), vol.Range(min=0.1, max=10)),
+        },
+        "async_ptz_move"
+    )
+
+    platform.async_register_entity_service(
         SERVICE_GOTO_PRESET_POSITION,
         {
             vol.Required('position', default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
@@ -384,6 +412,19 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             self._coordinator.get_illuminator_index(),
             self._coordinator.get_illuminator_bank(),
         )
+        await self._coordinator.async_refresh()
+
+    async def async_ptz_move(self, direction: str, speed: int, duration: float):
+        """Move the camera in a direction for a moment.
+
+        #534 and #720 both asked for this. Everything here drove ptz.cgi
+        already, but only ever with GotoPreset, so a camera that can pan
+        and tilt could only be sent to positions somebody had saved on it
+        first.
+        """
+        code = PTZ_MOVE_CODES[direction]
+        await self._coordinator.client.async_ptz_move(
+            self._channel_number, code, speed, duration)
         await self._coordinator.async_refresh()
 
     async def async_goto_preset_position(self, position: int):
