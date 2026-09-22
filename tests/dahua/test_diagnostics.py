@@ -40,6 +40,10 @@ class _Client:
         self._rtsp_port = 554
         self._use_https = None
         self._digest_state = {}
+        # The real client exposes this as a property; anything shared per
+        # device keys on it rather than on the address, because one address
+        # can answer for two devices on different ports.
+        self.device_key = "%s:80" % ADDRESS
         self._rpc2_session_instance = None
         self._host_limit = client_module._host_limiter(ADDRESS)
         self.identity_derived_from_credentials = False
@@ -460,3 +464,73 @@ async def test_the_new_fields_carry_nothing_secret(hass):
     assert PASSWORD not in dumped
     assert USERNAME not in dumped
     assert SERIAL not in dumped
+
+
+# --- what the channel numbering probe concluded -----------------------------
+
+async def test_a_device_found_to_be_zero_indexed_says_so(hass):
+    from custom_components.dahua import _HOST_CHANNEL_BASE
+
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    _HOST_CHANNEL_BASE[coordinator.client.device_key] = True
+    try:
+        device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+    finally:
+        _HOST_CHANNEL_BASE.clear()
+
+    assert device["device_is_zero_indexed"] is True
+
+
+async def test_a_device_that_answered_no_says_so(hass):
+    from custom_components.dahua import _HOST_CHANNEL_BASE
+
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    _HOST_CHANNEL_BASE[coordinator.client.device_key] = False
+    try:
+        device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+    finally:
+        _HOST_CHANNEL_BASE.clear()
+
+    assert device["device_is_zero_indexed"] is False
+
+
+async def test_a_device_that_never_answered_reports_nothing_decided(hass):
+    """The #724 case, and the reason this field exists.
+
+    A timeout used to count as a no, so entries that timed out renumbered
+    themselves one channel high while their neighbours did not. channel_number
+    on its own can never show that; beside this it can.
+    """
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["device_is_zero_indexed"] is None
+
+
+async def test_another_devices_answer_is_not_borrowed(hass):
+    from custom_components.dahua import _HOST_CHANNEL_BASE
+
+    entry = _entry(hass)
+    _install(hass, entry)
+    _HOST_CHANNEL_BASE["10.9.9.9:80"] = True
+    try:
+        device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+    finally:
+        _HOST_CHANNEL_BASE.clear()
+
+    assert device["device_is_zero_indexed"] is None
+
+
+async def test_a_client_without_a_device_key_does_not_break_diagnostics(hass):
+    """Diagnostics that raises is served as a 500 with no explanation."""
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    del coordinator.client.device_key
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["device_is_zero_indexed"] is None
