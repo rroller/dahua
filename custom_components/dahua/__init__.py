@@ -664,6 +664,27 @@ ISSUE_HTTP_DEAD_HTTPS_AVAILABLE = "http_dead_https_available_{0}"
 # count must be shared or eight channels of one box raise eight separate cards.
 _HOST_FAILURES: dict = {}
 
+# Whether a device numbers its channels from zero, decided once for the whole
+# device rather than once per config entry.
+#
+# Every entry used to probe this for itself, and the probe is the same URL for
+# all of them -- snapshot.cgi?channel=0. Six entries on one recorder therefore
+# fired six identical requests at setup, through a semaphore two wide, with the
+# timeout covering the wait for a slot as well as the request. On a busy XVR
+# some won and some timed out, and a timeout was read as a definite no:
+#
+#     PROBE_FAILED = (ClientError, TimeoutError)
+#
+# so those entries kept channel + 1 and pointed at the next channel's video
+# while their neighbours pointed at their own. That is #724: channels
+# duplicating, cameras vanishing, and a different arrangement on every
+# restart, because which entry won the race changed each time.
+#
+# Keyed by device rather than address because one address can answer for more
+# than one device, the same reason the digest state is keyed that way.
+_HOST_CHANNEL_BASE: dict = {}
+_HOST_CHANNEL_BASE_LOCKS: dict = {}
+
 
 def normalize_address(address: str) -> str:
     """One device, one key.
@@ -806,6 +827,47 @@ def async_host_is_unreachable(address: str) -> bool:
     """
     state = _HOST_FAILURES.get(normalize_address(address))
     return bool(state and state["consecutive"] >= UNREACHABLE_AFTER_FAILURES)
+
+
+async def async_device_is_zero_indexed(client, device: str):
+    """Whether this device numbers its channels from zero.
+
+    Asked once per device and shared, so the entries do not race each other
+    to the same answer and do not spend six requests arriving at it.
+
+    Returns True, False, or None when the device did not say. None is the
+    point of this function: a timeout or a dropped connection is not the
+    device telling us it is one-indexed, it is the device not answering, and
+    treating those alike is what renumbered a working channel.
+
+    Only an HTTP status counts as a no. That is the device answering.
+    """
+    if device in _HOST_CHANNEL_BASE:
+        return _HOST_CHANNEL_BASE[device]
+
+    lock = _HOST_CHANNEL_BASE_LOCKS.get(device)
+    if lock is None:
+        lock = _HOST_CHANNEL_BASE_LOCKS[device] = asyncio.Lock()
+
+    async with lock:
+        # Another entry may have settled it while this one waited.
+        if device in _HOST_CHANNEL_BASE:
+            return _HOST_CHANNEL_BASE[device]
+        try:
+            await client.async_probe_snapshot(0)
+            _HOST_CHANNEL_BASE[device] = True
+        except ClientResponseError:
+            # The device answered, and the answer was no.
+            _HOST_CHANNEL_BASE[device] = False
+        except (ClientError, TimeoutError, asyncio.TimeoutError):
+            # It did not answer. Decide nothing and leave it for the next
+            # entry or the next restart, rather than caching a guess that
+            # every other channel would then inherit.
+            _LOGGER.debug(
+                "%s did not answer the channel numbering probe; leaving it undecided",
+                device, exc_info=True)
+            return None
+    return _HOST_CHANNEL_BASE[device]
 
 
 @callback
@@ -1422,14 +1484,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # on channel=1) can disable it via the integration options.
                 auto_detect = self.config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True)
                 if auto_detect:
-                    try:
-                        await self.client.async_probe_snapshot(0)
-                        # If able to take a snapshot with index 0 then most likely this cams channel needs to be reset
-                        # but check if unit is not a doorbell first as channel 0 doesnt exist for VTOs
-                        if not self.is_doorbell():
-                            self._channel_number = self._channel
-                    except PROBE_FAILED:
-                        pass
+                    # Asked once for the device and shared, and a device that does
+                    # not answer leaves this alone rather than renumbering the
+                    # channel behind the user's back (#724).
+                    zero_indexed = await async_device_is_zero_indexed(
+                        self.client, self.client.device_key)
+                    # A doorbell is excluded because channel 0 does not exist on a VTO.
+                    if zero_indexed and not self.is_doorbell():
+                        self._channel_number = self._channel
                 _LOGGER.debug("Using channel number %s (auto_detect=%s)", self._channel_number, auto_detect)
 
                 try:
