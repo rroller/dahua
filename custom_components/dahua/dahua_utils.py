@@ -34,6 +34,21 @@ def hass_brightness_to_dahua_brightness(hass_brightness: int) -> int:
 _LOGGER = logging.getLogger(__name__)
 
 
+def parse_overlay_lines(value) -> list:
+    """Split a stored overlay value into the lines it was written from.
+
+    Dahua separates the lines of a title with a pipe, which is why the
+    writer escapes the parts and leaves the separator alone. Reading is
+    the same rule backwards.
+
+    An empty value is no lines rather than one empty line, so a camera
+    with nothing set reads back as nothing set.
+    """
+    if not value:
+        return []
+    return str(value).split("|")
+
+
 def parse_event(data: str) -> list[dict[str, any]]:
     # This will turn the event stream data into a list of events, where each item in the list is a dictionary and where
     # the key of the dictionary is the key is for example "Code" and the value is "VideoMotion", etc

@@ -178,6 +178,28 @@ enable_custom_overlay:
       selector:
         boolean:
 
+get_overlay_text:
+  name: Read the text overlay
+  description: >-
+    Returns the overlay text the camera is currently showing. Useful when
+    the text may have been changed on the camera itself rather than from
+    Home Assistant.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    group:
+      name: Group
+      description: "Which overlay group to read. The default 0 matches the services that set them."
+      example: 0
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
+
 set_custom_overlay:
   name: Set Custom Text Overlay
   description: Sets a custom text overlay on the video
