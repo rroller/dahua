@@ -141,6 +141,13 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
         "max_streams": _safe(coordinator.get_max_streams),
         "profile_mode": _safe(coordinator.get_profile_mode),
+        # Both were assumed once and are resolved from the device now. Index 0
+        # is the infrared emitter on dual light models, and some of those put
+        # the white light's brightness on NearLight rather than MiddleLight,
+        # so a wrong answer here is a control that moves nothing visible
+        # (#570, #647).
+        "illuminator_light_index": _safe(coordinator.get_illuminator_index),
+        "illuminator_brightness_bank": _safe(coordinator.get_illuminator_bank),
     }
 
 
@@ -185,6 +192,12 @@ def _client_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         # Boolean only. The digest state holds the challenge nonce and the
         # response, which is derived from the password.
         "digest_challenge_cached": bool(getattr(client, "_digest_state", None)),
+        # Which scheme the device asked for, not what it was given. Firmware
+        # old enough to predate digest on the CGI interface answers with a
+        # Basic challenge, and until #733 that read as a wrong password (#583).
+        # A name, never a credential.
+        "auth_scheme": (getattr(client, "_digest_state", None) or {}).get(
+            "scheme", "digest"),
         "rpc2_session_active": getattr(client, "_rpc2_session_instance", None)
         is not None,
         "rtsp_url_shape": (
@@ -225,6 +238,7 @@ def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> 
     """
     from . import _HOST_CONNECTORS
     from .client import (_HOST_LIMITS, _HOST_RPC2, _HOST_RPC2_UNAVAILABLE,
+                         _RPC2_TABLE_UNAVAILABLE,
                          MAX_CONCURRENT_REQUESTS_PER_HOST)
 
     address = config_entry.data.get(CONF_ADDRESS)
@@ -250,6 +264,13 @@ def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> 
             rpc2 is not None and rpc2.keepalive is not None and not rpc2.keepalive.done()
         ),
         "rpc2_ruled_out_for_host": rpc2_key in _HOST_RPC2_UNAVAILABLE,
+        # Which config tables this device answered and declined. Recorded
+        # already, never reported, and it is the more useful half: a refusal
+        # names a thing this model will not do, and that is what the
+        # model-name guessing in #570, #676 and #690 exists to work around.
+        "rpc2_tables_refused": sorted(
+            table for key, table in _RPC2_TABLE_UNAVAILABLE if key == rpc2_key
+        ),
         "address": address,
         "connector_refcount": holder[1] if holder else None,
         "connector_closed": holder[0].closed if holder else None,
