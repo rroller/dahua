@@ -1155,6 +1155,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_ptz_position = False
         self._supports_lighting = False
         self._supports_day_night_color = False
+        # What the device said when a probe failed, keyed by probe name.
+        self._probe_refusals: Dict[str, dict] = {}
         self._channel_model = None
         self._supports_privacy_mode = False
         self._supports_floodlightmode = False
@@ -1337,6 +1339,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return any(self.config_entry.options.get(platform, True) for platform in platforms)
 
+    def _note_probe_refusal(self, name: str, exception) -> None:
+        """Remember what the device said when a capability probe failed.
+
+        An HTTP status is the device answering, and a 400 for a config table
+        is it saying it does not serve that table. That is a fact about the
+        model and it generalises. A timeout or a dropped connection is the
+        device not answering, which is a fact about that moment and
+        generalises to nothing.
+
+        Both used to end at `self._supports_x = False`, which records that
+        the feature is off and throws away which of the two it was. Every
+        capability is remembered and every refusal is discarded, and the
+        refusal is the half that says what a model will not do. Not having
+        that, per model, is what the model-name matching in #570, #676 and
+        #690 exists to work around.
+        """
+        status = getattr(exception, "status", None)
+        self._probe_refusals[name] = {
+            "answered": status is not None,
+            "status": status,
+            "error": type(exception).__name__,
+        }
+
     def _auth_refused(self, exception) -> Exception:
         """What to raise when the device refuses these credentials.
 
@@ -1436,7 +1461,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
                     await self.client.async_get_coaxial_control_io_status(coaxial_channel)
                     self._supports_coaxial_control = True
-                except PROBE_REFUSED:
+                except PROBE_REFUSED as probe_error:
+                    self._note_probe_refusal("coaxial_control", probe_error)
                     self._supports_coaxial_control = False
                 _LOGGER.debug("Device supports Coaxial Control=%s", self._supports_coaxial_control)
 
@@ -1446,7 +1472,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._alarm_output_slots = max(0, int(alarm_output_data.get("result", "0")))
                     except (ValueError, TypeError):
                         self._alarm_output_slots = 0
-                except PROBE_FAILED:
+                except PROBE_FAILED as probe_error:
+                    self._note_probe_refusal("alarm_output", probe_error)
                     self._alarm_output_slots = 0
                 _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
                 if self._alarm_output_slots > 1:
@@ -1459,14 +1486,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
-                except PROBE_FAILED:
+                except PROBE_FAILED as probe_error:
+                    self._note_probe_refusal("disarming_linkage", probe_error)
                     self._supports_disarming_linkage = False
                 _LOGGER.debug("Device supports disarming linkage=%s", self._supports_disarming_linkage)
 
                 try:
                     await self.client.async_get_event_notifications()
                     self._supports_event_notifications = True
-                except PROBE_FAILED:
+                except PROBE_FAILED as probe_error:
+                    self._note_probe_refusal("event_notifications", probe_error)
                     self._supports_event_notifications = False
                 _LOGGER.debug("Device supports event notifications=%s", self._supports_event_notifications)
 
@@ -1479,7 +1508,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     try:
                         await self.client.async_get_ptz_position()
                         self._supports_ptz_position = True
-                    except PROBE_FAILED:
+                    except PROBE_FAILED as probe_error:
+                        self._note_probe_refusal("ptz_position", probe_error)
                         self._supports_ptz_position = False
                 _LOGGER.debug("Device supports PTZ position=%s", self._supports_ptz_position)
 
@@ -1490,7 +1520,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     table = await self.client.async_get_smart_motion_detection()
                     self._supports_smart_motion_detection = True
                     smart_motion_rows = smart_motion_row_indices(table)
-                except PROBE_FAILED:
+                except PROBE_FAILED as probe_error:
+                    self._note_probe_refusal("smart_motion_detect", probe_error)
                     self._supports_smart_motion_detection = False
                 _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
@@ -1502,7 +1533,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     options = await self.client.async_get_video_in_options()
                     self._supports_day_night_color = (
                         day_night_color_name(options, self._channel) is not None)
-                except PROBE_FAILED:
+                except PROBE_FAILED as probe_error:
+                    self._note_probe_refusal("day_night_color", probe_error)
                     self._supports_day_night_color = False
                 _LOGGER.debug("Device supports day/night mode=%s", self._supports_day_night_color)
 
@@ -1529,7 +1561,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                             "Assistant's own ONVIF integration, pointed at the recorder "
                             "rather than at the camera, does serve it (#646).",
                             self._channel, self._address)
-                except PROBE_FAILED:
+                except PROBE_FAILED as probe_error:
+                    self._note_probe_refusal("channel_model", probe_error)
                     self._channel_model = None
                 if self._channel_model:
                     _LOGGER.debug(
@@ -1563,7 +1596,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     await self.client.async_get_lighting_v2()
                     self._supports_lighting_v2 = True
-                except PROBE_FAILED:
+                except PROBE_FAILED as probe_error:
+                    self._note_probe_refusal("lighting_v2", probe_error)
                     self._supports_lighting_v2 = False
                     pass
                 _LOGGER.debug("Device supports Lighting_V2=%s", self._supports_lighting_v2)
@@ -1609,7 +1643,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # Error: Error -1 getting param in name=Lighting[0][1]
                         # Otherwise we'll get multiple lines of config back
                         self._supports_profile_mode = len(conf) > 1
-                    except PROBE_FAILED:
+                    except PROBE_FAILED as probe_error:
+                        self._note_probe_refusal("profile_mode", probe_error)
                         _LOGGER.debug("Cam does not support profile mode. Will use mode 0")
                         self._supports_profile_mode = False
                     _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
@@ -2468,7 +2503,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         try:
             conf = await self.client.async_get_config_lighting(self._channel, self._profile_mode)
-        except PROBE_FAILED:
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("lighting", probe_error)
             return False
         return len(conf) > 0
 

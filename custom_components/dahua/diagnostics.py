@@ -167,7 +167,16 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
             coordinator.supports_smart_motion_detection_amcrest
         ),
     }
-    return {"probed": probed, "derived_from_model": derived}
+    return {
+        "probed": probed,
+        "derived_from_model": derived,
+        # Why each probe that failed did. A status is the device
+        # answering, and a 400 for a config table is it saying it does
+        # not serve that table, which is a fact about the model. No
+        # status means it did not answer, which is a fact about that
+        # moment only. "supports x = False" cannot tell them apart.
+        "refusals": dict(getattr(coordinator, "_probe_refusals", {})),
+    }
 
 
 def _client_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
