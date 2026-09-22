@@ -2146,12 +2146,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def uses_lighting_scheme_illuminator(self) -> bool:
         """Whether this device needs the two-table white-light contract."""
         return getattr(self, "_supports_lighting_scheme_illuminator", False)
-    
-    def supports_ptz_position(self) -> bool:
-        """
-        Returns true if this camera supports PTZ preset position
-        """
-        return  not (self.is_amcrest_doorbell() or self.is_flood_light()) and "table.Lighting_V2[{0}][0][0].Mode".format(self._channel) in self.data   
 
     def is_motion_detection_enabled(self) -> bool:
         """ Returns true if motion detection is enabled for the camera """
