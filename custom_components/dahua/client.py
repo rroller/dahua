@@ -1606,6 +1606,16 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable customer overlay")
 
+    async def async_get_video_widget(self) -> dict:
+        """Read the overlay configuration.
+
+        One table for the whole device, indexed by channel, so the channels
+        of a recorder share this read. It is a getConfig, so the shared
+        cache answers it and a write from here drops that cache.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoWidget")
+
     async def async_set_service_set_channel_title(self, channel: int, text1: str, text2: str):
         """ async_set_service_set_channel_title sets the channel title """
         text = _overlay_text(text1, text2)

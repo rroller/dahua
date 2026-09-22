@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import voluptuous as vol
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature
@@ -43,6 +43,7 @@ SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 SERVICE_REBOOT = "reboot"
 SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
+SERVICE_GET_OVERLAY_TEXT = "get_overlay_text"
 SERVICE_PTZ_MOVE = "ptz_move"
 
 # What ptz.cgi calls each direction. The eight compass moves plus the two
@@ -308,6 +309,16 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     )
 
     platform.async_register_entity_service(
+        SERVICE_GET_OVERLAY_TEXT,
+        {
+            vol.Optional('group', default=0):
+                vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+        },
+        "async_get_overlay_text",
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    platform.async_register_entity_service(
         SERVICE_GOTO_PRESET_POSITION,
         {
             vol.Required('position', default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
@@ -534,6 +545,30 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """
         channel = self._logical_channel
         await self._coordinator.client.async_set_service_set_channel_title(channel, text1, text2)
+
+    async def async_get_overlay_text(self, group: int) -> dict:
+        """Read back the overlay text this camera is showing.
+
+        #461. Five services write overlays and none of them read one, so
+        the text could be set from here and never asked about again, and
+        it can be changed on the camera itself as well.
+
+        The two names mirror the services that write them, which is the
+        only thing that makes them guessable: set_text_overlay writes
+        CustomTitle and set_custom_overlay writes UserDefinedTitle.
+        Reading them back under the writer's name rather than the table's
+        keeps the pair usable together.
+        """
+        channel = self._logical_channel
+        data = await self._coordinator.client.async_get_video_widget()
+        return {
+            "text_overlay": dahua_utils.parse_overlay_lines(data.get(
+                "table.VideoWidget[{0}].CustomTitle[{1}].Text".format(
+                    channel, group))),
+            "custom_overlay": dahua_utils.parse_overlay_lines(data.get(
+                "table.VideoWidget[{0}].UserDefinedTitle[{1}].Text".format(
+                    channel, group))),
+        }
 
     async def async_set_service_set_text_overlay(self, group: int, text1: str, text2: str, text3: str,
                                                  text4: str):
