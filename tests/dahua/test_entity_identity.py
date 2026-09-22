@@ -25,7 +25,11 @@ from custom_components.dahua import light as light_module
 from custom_components.dahua import select as select_module
 from custom_components.dahua import switch as switch_module
 from custom_components.dahua.binary_sensor import DahuaEventSensor
-from custom_components.dahua.button import DahuaOpenDoorButton, DahuaRebootButton
+from custom_components.dahua.button import (
+    DahuaCancelCallButton,
+    DahuaOpenDoorButton,
+    DahuaRebootButton,
+)
 from custom_components.dahua.camera import DahuaCamera
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.light import (
@@ -178,6 +182,7 @@ GOLDEN_SUFFIXES = [
     # button.py
     ("_reboot", lambda c: _bare(DahuaRebootButton, c)),
     ("_open_door", lambda c: _bare(DahuaOpenDoorButton, c)),
+    ("_cancel_call", lambda c: _bare(DahuaCancelCallButton, c)),
     # select.py
     ("_security_light", lambda c: DahuaDoorbellLightSelect(c, _Entry())),
     ("_preset_position", lambda c: DahuaCameraPresetPositionSelect(c, _Entry())),
@@ -227,6 +232,7 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_security",
         "4L03CB4PAZC9E8F_2_reboot",
         "4L03CB4PAZC9E8F_2_open_door",
+        "4L03CB4PAZC9E8F_2_cancel_call",
         "4L03CB4PAZC9E8F_2_security_light",
         "4L03CB4PAZC9E8F_2_preset_position",
         "4L03CB4PAZC9E8F_2_1_preset_position",

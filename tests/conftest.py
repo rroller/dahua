@@ -20,6 +20,23 @@ def _clear_shared_host_reads():
 
 
 @pytest.fixture(autouse=True)
+def _clear_channel_numbering():
+    """Whether a device numbers from zero is decided once and cached per device.
+
+    That is the point of it, and it means one test's answer would otherwise be
+    inherited by the next. The locks go too, because a lock belongs to the loop
+    it was created on.
+    """
+    from custom_components import dahua as dahua_module
+
+    dahua_module._HOST_CHANNEL_BASE.clear()
+    dahua_module._HOST_CHANNEL_BASE_LOCKS.clear()
+    yield
+    dahua_module._HOST_CHANNEL_BASE.clear()
+    dahua_module._HOST_CHANNEL_BASE_LOCKS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _clear_shared_rpc2():
     """The RPC2 registry holds a login task and a keepalive task.
 

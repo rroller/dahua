@@ -51,24 +51,31 @@ def parse_event(data: str) -> list[dict[str, any]]:
     #   ...
     # }]
 
-    # We will split on "--myboundary" and then skip the first 3 lines so we end up with a string that starts with Code=
+    # We will split on "--myboundary" and then find the line the event starts on
     event_blocks = re.split(r'--myboundary\r?\n', data)
 
     events = []
 
     for event_block in event_blocks:
-        # Skip the first 3 lines... the first line looks like: Content-Type: text/plain
-        s = event_block.split("\n", 3)
-        # Four parts are needed to have a fourth, and a chunk can end
-        # anywhere: stream_events hands on whatever iter_chunks gives it, so a
-        # block that stops after its headers is ordinary, not exceptional. The
-        # guard read "< 3" and then indexed [3], so such a block raised
-        # IndexError out of on_receive and took the whole stream down with it.
-        if len(s) < 4:
+        # Find "Code=" wherever it falls, rather than counting header lines.
+        #
+        # This skipped exactly three lines and required the fourth to be the
+        # event. Most blocks do look like that -- Content-Type, Content-Length,
+        # blank, Code= -- but the header count is the device's choice and not a
+        # rule, and a block carrying one header line fewer was dropped without
+        # a word. @jaaneo reported it in #587 on a DHI-TPC-BF1241, whose thermal
+        # channel does not use the same header shape as its visual one, so those
+        # events never arrived and nothing said why.
+        #
+        # A block that stops inside its headers still carries no event and is
+        # still skipped, which is what a chunk ending mid-block looks like:
+        # stream_events hands on whatever iter_chunks gives it, so that is
+        # ordinary rather than exceptional. Indexing blindly there raised
+        # IndexError out of on_receive and took the whole stream down (#475).
+        start = re.search(r'^Code=', event_block, re.MULTILINE)
+        if start is None:
             continue
-        event_block = s[3].strip()
-        if not event_block.startswith("Code="):
-            continue
+        event_block = event_block[start.start():].strip()
 
         # At this point we'll have something that looks like this...
         # Code=VideoMotion;action=Start;index=0;data={

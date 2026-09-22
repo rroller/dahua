@@ -772,7 +772,7 @@ class DahuaClient:
         return repair_dahua_snapshot_header(
             strip_dahua_snapshot_trailer(await self.get_bytes(url)))
 
-    async def async_get_system_info(self) -> dict:
+    async def async_get_system_info(self, strict_auth: bool = False) -> dict:
         """
         Get system info data from the getSystemInfo API. Example response:
 
@@ -787,7 +787,14 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
         except aiohttp.ClientResponseError as e:
-            if _is_login_refused(e):
+            # strict_auth only for the config flow, which is deciding whether a
+            # password is right. The coordinator shares this method, and there a
+            # 401 is not proof of a wrong password: eight channels of one NVR
+            # share a digest challenge, and a nonce that races between them is
+            # refused exactly like a bad credential. Raising here made every
+            # channel start a reauth flow at startup (#714), where before the
+            # identity simply fell back and the entry carried on.
+            if strict_auth and _is_login_refused(e):
                 raise
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
@@ -1519,6 +1526,24 @@ class DahuaClient:
         )
         return await self.get(url)
 
+    async def async_ptz_move(self, channel: int, code: str, speed: int,
+                             duration: float) -> None:
+        """Move the camera, then stop it.
+
+        ptz.cgi has no notion of moving by an amount: a start begins the
+        motion and it continues until a matching stop, so the duration is
+        how far it goes. That is also why the stop is in a finally. A
+        request that fails after the start would otherwise leave the
+        camera turning until something else stopped it.
+        """
+        base = ("/cgi-bin/ptz.cgi?action={0}&channel={1}&code={2}"
+                "&arg1=0&arg2={3}&arg3=0")
+        await self.get(base.format("start", channel, code, speed))
+        try:
+            await asyncio.sleep(duration)
+        finally:
+            await self.get(base.format("stop", channel, code, speed))
+
     async def async_set_video_profile_mode(self, channel: int, mode: str):
         """
         async_set_video_profile_mode will set camera's profile mode to day or night
@@ -2044,6 +2069,15 @@ class DahuaClient:
                 data_dict[parts[0]] = line
         return data_dict
 
+    @property
+    def device_key(self) -> str:
+        """Which device this is, as opposed to which address answers for it.
+
+        Two devices can sit behind one address on different ports, so anything
+        shared per device keys on this rather than on the address.
+        """
+        return self._device
+
     async def async_probe_snapshot(self, channel_number: int) -> None:
         """Checks the snapshot endpoint answers for a channel, without fetching the image.
 
@@ -2090,6 +2124,13 @@ class DahuaClient:
         how their identities got swapped (#664).
         """
         if not _is_read(url):
+            # Every write passes through here, so this is the one place that
+            # can say what was sent. Most write methods logged nothing at all,
+            # and a few logged their own URL, so "I clicked the entity and the
+            # debug log shows no request" was indistinguishable from "the
+            # request was never made" -- which is exactly the question #647
+            # needed answered about the infrared control.
+            _LOGGER.debug("Writing to %s: %s", self._address, url)
             clear_host_cache(self._device)
             return await self._request(url, verify_ok)
 
