@@ -139,6 +139,17 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         "channel_index": _safe(coordinator.get_channel),
         "channel_number": _safe(coordinator.get_channel_number),
         "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
+        # What the auto-detect actually concluded, which is what decides
+        # channel_number above. True means the device answered a snapshot on
+        # channel 0, False means it answered with a status saying no, and
+        # None means it never answered and the numbering was left alone.
+        #
+        # The third case is the one worth being able to see. Before #735 a
+        # timeout counted as a no, and entries that timed out renumbered
+        # themselves one channel high while their neighbours did not (#724).
+        # Reading channel_number on its own could never show that; reading it
+        # beside this can.
+        "device_is_zero_indexed": _zero_indexed(coordinator),
         "max_streams": _safe(coordinator.get_max_streams),
         "profile_mode": _safe(coordinator.get_profile_mode),
         # Both were assumed once and are resolved from the device now. Index 0
@@ -149,6 +160,21 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         "illuminator_light_index": _safe(coordinator.get_illuminator_index),
         "illuminator_brightness_bank": _safe(coordinator.get_illuminator_bank),
     }
+
+
+def _zero_indexed(coordinator):
+    """Whether this device was found to number its channels from zero.
+
+    None when nothing was concluded, which is a real state and not a missing
+    value: a device that did not answer the probe leaves the numbering as it
+    was rather than guessing.
+    """
+    from . import _HOST_CHANNEL_BASE
+
+    device = _safe(lambda: coordinator.client.device_key)
+    if device is None:
+        return None
+    return _HOST_CHANNEL_BASE.get(device)
 
 
 def _capabilities_block(coordinator) -> dict[str, Any]:
