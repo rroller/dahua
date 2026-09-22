@@ -124,3 +124,16 @@ def test_a_device_that_refused_nothing_reports_nothing():
     c = _coordinator()
 
     assert _capabilities_block(c)["refusals"] == {}
+
+
+def test_it_works_on_a_coordinator_whose_init_never_ran():
+    """A dozen tests build coordinators with object.__new__.
+
+    A capability probe is the wrong place to start depending on __init__
+    having run, so the store initialises itself rather than assuming.
+    """
+    bare = object.__new__(DahuaDataUpdateCoordinator)
+
+    bare._note_probe_refusal("coaxial_control", TimeoutError())
+
+    assert bare._probe_refusals["coaxial_control"]["answered"] is False

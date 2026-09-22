@@ -1356,7 +1356,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         #690 exists to work around.
         """
         status = getattr(exception, "status", None)
-        self._probe_refusals[name] = {
+        # Self-initialising, because a probe must never be the thing that
+        # raises. Coordinators are built with object.__new__ in a dozen
+        # tests, which skips __init__, and a capability probe is exactly
+        # the wrong place to start depending on that having run.
+        refusals = getattr(self, "_probe_refusals", None)
+        if refusals is None:
+            refusals = self._probe_refusals = {}
+        refusals[name] = {
             "answered": status is not None,
             "status": status,
             "error": type(exception).__name__,
