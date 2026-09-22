@@ -12,6 +12,7 @@ from homeassistant.components.camera import Camera, CameraEntityFeature
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.model_profiles import is_sdt4e425
+from custom_components.dahua.vto import CancelCallRefused
 
 from .const import (
     DOMAIN,
@@ -26,6 +27,7 @@ SERVICE_SET_ILLUMINATOR_MODE = "set_illuminator_mode"
 SERVICE_SET_VIDEO_PROFILE_MODE = "set_video_profile_mode"
 SERVICE_SET_FOCUS_ZOOM = "set_focus_zoom"
 SERVICE_SET_PRIVACY_MASKING = "set_privacy_masking"
+SERVICE_SET_PRIVACY_MODE = "set_privacy_mode"
 SERVICE_SET_CHANNEL_TITLE = "set_channel_title"
 SERVICE_SET_TEXT_OVERLAY = "set_text_overlay"
 SERVICE_SET_CUSTOM_OVERLAY = "set_custom_overlay"
@@ -124,6 +126,14 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("enabled", default=False): bool,
         },
         "async_set_privacy_masking"
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SET_PRIVACY_MODE,
+        {
+            vol.Required("enabled", default=False): bool,
+        },
+        "async_set_privacy_mode"
     )
 
     platform.async_register_entity_service(
@@ -358,7 +368,8 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_set_infrared_mode(self, mode: str, brightness: int):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
         channel = self._logical_channel
-        await self._coordinator.client.async_set_lighting_v1_mode(channel, mode, brightness)
+        await self._coordinator.client.async_set_lighting_v1_mode(
+            channel, mode, brightness, self._coordinator.get_infrared_profile())
         await self._coordinator.async_refresh()
 
     async def async_set_illuminator_mode(self, mode: str, brightness: int):
@@ -419,6 +430,11 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """ Handles the service call from SERVICE_SET_PRIVACY_MASKING to control the privacy masking """
         await self._coordinator.client.async_setprivacymask(index, enabled)
 
+    async def async_set_privacy_mode(self, enabled: bool):
+        """ Handles the service call from SERVICE_SET_PRIVACY_MODE to control the lens privacy mask """
+        await self._coordinator.client.async_set_privacy_mode(enabled)
+        await self._coordinator.async_refresh()
+
     async def async_set_enable_channel_title(self, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE """
         channel = self._logical_channel
@@ -468,7 +484,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
                     self._coordinator.get_device_name()
                 )
             )
-        await vto_client.cancel_call()
+        try:
+            await vto_client.cancel_call()
+        except CancelCallRefused as refused:
+            raise HomeAssistantError(str(refused)) from refused
 
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """

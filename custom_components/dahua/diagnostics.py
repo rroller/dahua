@@ -125,6 +125,9 @@ def _coordinator_block(coordinator) -> dict[str, Any]:
 def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
     return {
         "model": _safe(coordinator.get_model),
+        # On an NVR channel the line above is the recorder. This is the
+        # camera actually on the channel, or None when it did not say.
+        "channel_model": _safe(coordinator.get_channel_model),
         "machine_name": getattr(coordinator, "machine_name", None),
         "name": _safe(coordinator.get_device_name),
         "firmware": _safe(coordinator.get_firmware_version),

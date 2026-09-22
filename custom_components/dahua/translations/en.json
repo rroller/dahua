@@ -13,7 +13,7 @@
                     "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)",
                     "streams": "RTSP Streams",
                     "events": "Events",
-                    "channel": "Channel (single cameras are 0, NVRs are the 0 based index)"
+                    "channel": "Channel (a single camera is 0. On an NVR this is the 0-based index, which is one less than the number the recorder shows: its channel 4 is 3 here)"
                 }
             },
             "name": {
@@ -37,13 +37,18 @@
                     "address": "Address",
                     "port": "Port",
                     "rtsp_port": "RTSP Port",
-                    "channel": "Channel (single cameras are 0, NVRs are the 0 based index)",
+                    "channel": "Channel (a single camera is 0. On an NVR this is the 0-based index, which is one less than the number the recorder shows: its channel 4 is 3 here)",
                     "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)"
                 }
             }
         },
         "error": {
-            "auth": "Username, Password, or Address is wrong."
+            "auth": "The camera rejected that username and password.",
+            "cannot_connect": "Nothing answered at that address and port. Check the camera is on, that the IP and port are right, and that Home Assistant can reach it.",
+            "timeout": "The camera did not answer in time. It may be busy, or reachable but very slow — try again, and check the port is the one it serves HTTP on.",
+            "ssl_error": "The secure connection failed. If the camera does not serve HTTPS, clear the HTTPS option; if it does, it is usually on port 443.",
+            "unexpected_reply": "Something answered, but not a Dahua camera. Check the port — the web interface and the API are not always the same one.",
+            "unknown": "Could not add the camera. The Home Assistant log has the reason."
         },
         "abort": {
             "single_instance_allowed": "Only a single instance is allowed.",
@@ -63,6 +68,7 @@
                     "select": "Select enabled",
                     "camera": "Camera enabled",
                     "button": "Button enabled",
+                    "event": "Event enabled",
                     "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
                     "use_rpc2": "Read configuration over one RPC2 session per device (fewer logins in the device's log; leave off if unsure)",
                     "events": "Events to subscribe to",

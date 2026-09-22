@@ -18,6 +18,7 @@ import hashlib
 from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -177,6 +178,20 @@ FAILURES_BEFORE_BACKOFF = 2
 # failing for a week. The time ceilings below are what actually bind.
 MAX_BACKOFF_DOUBLINGS = 6
 
+# How many times a host may refuse these credentials before the integration
+# stops offering them.
+#
+# Not one, because a single 401 is not proof of a wrong password: channels of
+# one NVR share a digest challenge, and a nonce that races between them is
+# refused exactly like a bad credential. Treating the first one as fatal is
+# what #714 was.
+#
+# Not many either, because a 401 only reaches here after DigestAuth has
+# already spent its own MAX_AUTH_ATTEMPTS on it, including two passes through
+# the same-nonce refusal path. A 401 that survives all of that is much more
+# likely to be real than a raw one, so the budget here can be small.
+MAX_AUTH_REFUSALS = 3
+
 # However long the poll interval is, never leave a failing device unpolled for
 # longer than this, or a device that recovers stays missing for an afternoon.
 POLL_BACKOFF_CAP = timedelta(minutes=15)
@@ -231,6 +246,234 @@ def illuminator_brightness_bank(data: dict, channel: int, profile_mode, light_in
         if key in data:
             return bank
     return LIGHT_BRIGHTNESS_BANKS[0]
+
+
+SMART_MOTION_ROW = re.compile(r"^table\.SmartMotionDetect\[(\d+)\]")
+
+
+def smart_motion_row_indices(table) -> tuple:
+    """Which channel rows a device reports in its SmartMotionDetect table.
+
+    The presence of this channel's row is what decides whether it gets a smart
+    motion switch (#635), so when the answer surprises someone this is the fact
+    they need. Nothing logged it: the integration never logs a response body, so
+    #669 spent two rounds inferring the shape of a table that could simply have
+    been printed.
+
+    Returns a sorted tuple of the indices found, empty when the table is empty
+    or not a dict -- never raising, because a diagnostic that can take setup
+    down is worse than no diagnostic.
+    """
+    if not isinstance(table, dict):
+        return ()
+    found = set()
+    for key in table:
+        match = SMART_MOTION_ROW.match(str(key))
+        if match:
+            found.add(int(match.group(1)))
+    return tuple(sorted(found))
+
+
+def infrared_profile(data: dict, channel: int, profile_mode) -> str:
+    """Which Lighting profile this channel's infrared light is really using.
+
+    The v1 Lighting table is indexed [channel][profile], exactly as Lighting_V2
+    is, and the profiles genuinely differ. Measured on a DHI-NVR5464-16P-EI,
+    where five of fifteen channels report four profiles apiece and their modes
+    disagree:
+
+        table.Lighting[3][0].Mode=Auto
+        table.Lighting[3][1].Mode=ZoomPrio
+        table.Lighting[3][2].Mode=ZoomPrio
+        table.Lighting[3][3].Mode=ZoomPrio
+
+    The poll already fetches the *live* profile --
+    async_get_config_lighting(channel, self._profile_mode) -- while the reader
+    and the writer both hardcoded profile 0. On a camera running anything but
+    day that means the data holds one profile and the entity reads another, so
+    the light reports off whatever it is doing, and every write lands on a
+    profile the camera is not rendering from.
+
+    Falls back to profile 0 when the live one is not in what the device
+    returned, which is the single-profile case and also what keeps a channel
+    working if VideoInMode names a profile the Lighting table does not have.
+    Unlike the row 0 fallbacks removed in #679 and #683, this one stays inside
+    the same channel -- it can only ever return this camera's own row.
+    """
+    live = str(profile_mode)
+    if "table.Lighting[{0}][{1}].Mode".format(channel, live) in data:
+        return live
+    return "0"
+
+
+# VideoInOptions[channel].DayNightColor, as the device spells the Day/Night
+# setting. The names are the ones the existing set_video_in_day_night_mode
+# service already accepts, so the select and the service speak the same words.
+DAY_NIGHT_NAMES = {"0": "Color", "1": "Auto", "2": "BlackWhite"}
+
+
+def day_night_color_name(data: dict, channel: int):
+    """This channel's Day/Night mode by name, or None if it did not report one.
+
+    None rather than a default: a device that does not carry this setting must
+    not be shown as though it were in Color, and an unrecognised value is a
+    device telling us something this mapping does not cover.
+    """
+    value = data.get("table.VideoInOptions[{0}].DayNightColor".format(channel))
+    if value is None:
+        return None
+    return DAY_NIGHT_NAMES.get(str(value).strip())
+
+
+# DeviceType values that name a class of device rather than a model. Measured on
+# a DHI-NVR5464-16P-EI, which answers "IP Camera" and "IPC" for most channels and
+# a real model for one; the Lorex N843A8 on #669 answers a model for every
+# populated channel. Treating these as a model would be worse than having none.
+GENERIC_DEVICE_TYPES = {"", "ip camera", "ipc", "camera", "ip dome", "unknown"}
+
+
+def remote_device_model(data: dict, channel: int):
+    """The model of the camera on this NVR channel, or None if it did not say.
+
+    Every channel of a recorder reports the *recorder's* model, because that is
+    what magicBox.cgi getSystemInfo answers. The camera's own model is in
+    RemoteDevice, indexed by channel:
+
+        table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_6.DeviceType=B451AJ
+
+    Both spellings are accepted: this uuid-keyed form, measured on a
+    DHI-NVR5464-16P-EI and on the Lorex N843A8 of #669, and the plain bracket
+    form in case firmware elsewhere uses it.
+
+    Returns None rather than a guess when the value names a class of device
+    instead of a model -- see GENERIC_DEVICE_TYPES. A caller that cannot tell
+    "no answer" from "IP Camera" would confidently misidentify every channel of
+    a recorder like mine.
+    """
+    if not isinstance(data, dict):
+        return None
+    for key in ("table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_{0}.DeviceType",
+                "table.RemoteDevice[{0}].DeviceType"):
+        value = data.get(key.format(channel))
+        if value is None:
+            continue
+        value = str(value).strip()
+        if value.lower() in GENERIC_DEVICE_TYPES:
+            return None
+        return value
+    return None
+
+
+def model_name(resolved, reported) -> str:
+    """The model string to gate capabilities on, never None.
+
+    getSystemInfo answers `deviceType` for cameras, but recorders answer a
+    number (Lorex sends 31) or omit it entirely, with the real model in
+    `updateSerial`. #59 was a DVR that omitted it, and setup died on
+    `'NoneType' object has no attribute 'upper'`. That was fixed by falling
+    back to `updateSerial`, and then to getDeviceType.
+
+    Both fallbacks can still come back empty -- getDeviceType answering an
+    empty body, or an error string with no "=" in it, leaves `.get("type")`
+    None again -- so the crash is still reachable by a different road. Two
+    things keep it shut:
+
+    `reported` is the generic value the fallback chain set out to improve on.
+    Preferring it to nothing means a device calling itself "IP Camera" stays
+    "IP Camera" instead of becoming None the moment the more specific lookups
+    come back empty.
+
+    And the result is always a string, so a device that answers nothing useful
+    ends up with "" -- which every capability check reads as a model matching
+    no prefix, leaving its feature off. That is the right outcome for an
+    unknown device, and it is what the attribute is initialised to.
+    """
+    return (resolved or reported or "").strip()
+
+
+def remote_device_protocol(data: dict, channel: int):
+    """How the recorder reaches the camera on this channel, lowercased.
+
+    Sits beside the ProtocolType that remote_device_model reads DeviceType
+    from, and accepts the same two spellings:
+
+        table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_10.ProtocolType=Onvif
+
+    Measured on a DHI-NVR5464-16P-EI, fifteen populated channels: fourteen
+    report `Private` and one reports `Onvif`. That one is the reason this
+    exists -- see is_onvif_channel.
+    """
+    if not isinstance(data, dict):
+        return None
+    for key in ("table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_{0}.ProtocolType",
+                "table.RemoteDevice[{0}].ProtocolType"):
+        value = data.get(key.format(channel))
+        if value is None:
+            continue
+        value = str(value).strip().lower()
+        return value or None
+    return None
+
+
+def is_onvif_channel(data: dict, channel: int) -> bool:
+    """True when the recorder reaches this camera over ONVIF rather than Dahua.
+
+    Such a channel is not served on the recorder's own Dahua paths. Measured on
+    a DHI-NVR5464-16P-EI, same recorder, same request, same minute:
+
+        index 10  ch=11  Onvif    snapshot.cgi -> 400 Bad Request, no image
+        index  1  ch=2   Private  snapshot.cgi -> 200, 1,420,074 bytes
+        index 11  ch=12  Private  snapshot.cgi -> 200,   175,172 bytes
+
+    Its RTSP path times out as well. So the camera exists, streams, and is
+    visible to the recorder -- and nothing this integration asks for reaches it.
+    """
+    return remote_device_protocol(data, channel) == "onvif"
+
+
+# BackKeyLight State values that mean the doorbell is ringing. See
+# myhomeiot/DahuaVTO, which documents the wider set: 4 voice message,
+# 5 answered from the VTH, 6 not answered, 7 VTH calling the VTO, 8 unlock,
+# 9 unlock failed, 11 rebooted. Only a ring should raise the button sensor.
+DOORBELL_RINGING_STATES = frozenset({1, 2})
+
+
+# BackKeyLight State values that are not about ringing at all, and the event
+# each one deserves. Measured on a VTO2000A: opening the door through the
+# integration produces State 8 within a second, and no AccessControl event.
+# 9 is documented by myhomeiot/DahuaVTO as the failed counterpart.
+DOORBELL_STATE_EVENTS = {8: "DoorUnlocked", 9: "DoorUnlockFailed"}
+
+
+def doorbell_state(event: dict):
+    """The BackKeyLight State as an int, or None if it did not say.
+
+    The payload is JSON over DHIP, so this is normally already an int, but
+    nothing guarantees it and a string must not read as a different state.
+    """
+    value = event.get("Data", {}).get("State") if isinstance(event.get("Data"), dict) else None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def door_index(event: dict) -> int:
+    """Which door a VTO DoorStatus event is about.
+
+    The door number arrives in the event's `Index`, 0-based. A VTO paired with
+    an access control extension module has a second door and reports it as 1
+    (#488).
+
+    Anything missing, negative or unreadable is the first door. That is what a
+    single-door VTO sends -- and `Index: -1` is what the same device puts on a
+    BackKeyLight event, so a negative is "not a door number" rather than a door.
+    """
+    try:
+        index = int(event.get("Index"))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, index)
 
 
 WHITE_LIGHT_SCHEME = "WhiteMode"
@@ -583,6 +826,28 @@ def async_host_is_unreachable(address: str) -> bool:
 
 
 @callback
+def async_record_host_auth_refusal(address: str) -> int:
+    """Note that this host refused the credentials, and say how often it has.
+
+    Keyed by host rather than by entry because the consequence is host-wide:
+    a Dahua box locks the source IP after repeated failed logins, so ten
+    channels of one NVR are ten entries renewing one lock. A per-entry count
+    would let the first entry to notice give up while the other nine kept the
+    lock alive, which is the bug one level up.
+
+    Cleared by async_record_host_success, so this only ever counts refusals
+    with nothing succeeding in between.
+    """
+    address = normalize_address(address)
+    state = _HOST_FAILURES.setdefault(
+        address,
+        {"consecutive": 0, "since": time.time(), "entry_ids": set(), "last_probe": 0},
+    )
+    state["auth_refusals"] = state.get("auth_refusals", 0) + 1
+    return state["auth_refusals"]
+
+
+@callback
 def async_record_host_success(hass: HomeAssistant, address: str) -> None:
     """The device answered, so withdraw anything we said about it.
 
@@ -757,6 +1022,24 @@ class DahuaHostEventStream:
                             "Event stream for %s still silent", self._address
                         )
             except Exception as ex:  # pylint: disable=broad-except
+                # Credentials the device is refusing must stop being offered
+                # here too, not just on the poll. This stream backs off to at
+                # most EVENT_STREAM_MAX_RETRY_SECONDS, which is well inside
+                # the half hour a Dahua box locks a source IP for -- so on its
+                # own it would keep renewing the lock that #729 is about, and
+                # the reauth the coordinator asked for would still be refused.
+                #
+                # The count is shared with the polls and cleared by any
+                # success on this host, so a stream cannot reach the budget
+                # while anything here is still authenticating.
+                if isinstance(ex, ClientResponseError) and ex.status == 401:
+                    refusals = async_record_host_auth_refusal(self._address)
+                    if refusals >= MAX_AUTH_REFUSALS:
+                        _LOGGER.warning(
+                            "Event stream for %s stopped: the device refused these credentials %d times. It will start again once the credentials are re-entered",
+                            self._address, refusals,
+                        )
+                        return
                 # Say it once per outage, not once per retry. Silence was the
                 # old behaviour and it is why these failures went unreported;
                 # a warning every sixty seconds forever is the other extreme.
@@ -851,8 +1134,25 @@ class DahuaHostEventStream:
 
             # A channel nobody has configured stays silent, exactly as it did
             # when every coordinator discarded it.
-            for coordinator in self._by_channel.get(event_index, ()):
-                coordinator.handle_event(dict(event))
+            for coordinator in self._by_channel.get(index, ()):
+                try:
+                    coordinator.handle_event(dict(event))
+                except Exception:  # pylint: disable=broad-except
+                    # This stream is shared by every channel on the host, and
+                    # stream_events wraps its call to on_receive in try/finally
+                    # with no handler -- so an exception here does not just lose
+                    # this event, it leaves the read loop and takes events for
+                    # every camera on the device down until the retry
+                    # reconnects. One malformed payload did exactly that (#475).
+                    #
+                    # Per coordinator rather than per event, so a channel whose
+                    # handler fails does not rob the other channels of an event
+                    # they could have handled.
+                    _LOGGER.warning(
+                        "Unhandled error while handling a %s event from %s on channel %s; "
+                        "the event is dropped and the stream continues",
+                        event.get("Code", "?"), self._address, index, exc_info=True,
+                    )
 
 
 # address -> DahuaHostEventStream
@@ -920,14 +1220,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
-        self._nvr_active_deterrence = entry.options.get(
-            CONF_NVR_ACTIVE_DETERRENCE, False
-        )
+        self._alarm_output_slots = 0
+        self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._supports_smart_motion_detection = False
         self._supports_ptz_position = False
         self._supports_lighting = False
+        self._supports_day_night_color = False
+        self._channel_model = None
+        self._supports_privacy_mode = False
         self._supports_floodlightmode = False
         self._serial_number: str
         self._profile_mode = "0"
@@ -963,7 +1265,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to a listener for that event
         # The key will be formed from self.get_event_key(event_name) and includes the channel
-        self._dahua_event_listeners: Dict[str, CALLBACK_TYPE] = dict()
+        # A list, not one listener: two entities can want the same event, and
+        # assignment meant the second silently replaced the first. Only the
+        # binary sensor subscribed until now, one per code, so nothing had
+        # collided yet -- but a doorbell press is wanted by a binary sensor and
+        # an event entity at once (#715).
+        self._dahua_event_listeners: Dict[str, list] = dict()
 
         # A dictionary of event name (CrossLineDetection, VideoMotion, etc) to the time the event fire or was cleared.
         # If cleared the time will be 0. The time unit is seconds epoch
@@ -1115,6 +1422,42 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self.config_entry.options.get(platform, True) for platform in platforms
         )
 
+    def _auth_refused(self, exception) -> Exception:
+        """What to raise when the device refuses these credentials.
+
+        Below the budget this is an ordinary failed poll, because one 401 is
+        not proof of a wrong password (#714).
+
+        At the budget it is ConfigEntryAuthFailed, rather than calling
+        async_start_reauth by hand and raising UpdateFailed. Home Assistant
+        does two things for that exception and only the first was happening:
+        it opens the reauth flow, and it stops scheduling refreshes --
+
+            if not auth_failed and self._listeners and not self.hass.is_stopping:
+                self._schedule_refresh()
+
+        Stopping the polls is the part that matters. A Dahua box locks the
+        source IP for thirty minutes after repeated failed logins, so an entry
+        that keeps polling keeps renewing the lock, and the correct password
+        typed into the reauth dialog is refused along with everything else.
+        That is the loop in #729: reauth asked for, reauth impossible.
+        """
+        refusals = async_record_host_auth_refusal(self._address)
+        if refusals < MAX_AUTH_REFUSALS:
+            _LOGGER.debug(
+                "Authentication refused by %s (%d of %d). Not treating it as a wrong password yet",
+                self._address, refusals, MAX_AUTH_REFUSALS,
+            )
+            self._back_off_poll_interval(
+                async_record_host_failure(self.hass, self._address, self.config_entry.entry_id)
+            )
+            return UpdateFailed("Authentication refused by " + self._address)
+        _LOGGER.warning(
+            "%s has refused these credentials %d times, so Home Assistant will stop trying them and ask for new ones. Repeated failed logins can lock a Dahua device out for around thirty minutes, so polling stops until the credentials are re-entered",
+            self._address, refusals,
+        )
+        return ConfigEntryAuthFailed("Authentication failed for " + self._address)
+
     async def _async_update_data(self):
         """Reload the camera information"""
         data = {}
@@ -1134,6 +1477,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 data.update(version)
 
                 device_type = data.get("deviceType", None)
+                # Kept so the chain below can fall back to it: it is generic,
+                # but it beats the None a failed lookup would otherwise leave.
+                reported_type = device_type
                 # Lorex NVRs return deviceType=31, but the model is in the updateSerial
                 # /cgi-bin/magicBox.cgi?action=getSystemInfo"
                 # deviceType=31
@@ -1147,6 +1493,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # If it's still none, then call the device type API
                         dt = await self.client.get_device_type()
                         device_type = dt.get("type")
+                device_type = model_name(device_type, reported_type)
                 data["model"] = device_type
                 self.model = device_type
                 self.machine_name = data.get("table.General.MachineName")
@@ -1191,6 +1538,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
 
                 try:
+                    alarm_output_data = await self.client.async_get_alarm_output_slots()
+                    try:
+                        self._alarm_output_slots = max(0, int(alarm_output_data.get("result", "0")))
+                    except (ValueError, TypeError):
+                        self._alarm_output_slots = 0
+                except PROBE_FAILED:
+                    self._alarm_output_slots = 0
+                _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
+                if self._alarm_output_slots > 1:
+                    _LOGGER.debug(
+                        "Device reports %s alarm outputs; entities are not created because "
+                        "the multi-output getOutState encoding is not yet verified",
+                        self._alarm_output_slots,
+                    )
+
+                try:
                     await self.client.async_get_disarming_linkage()
                     self._supports_disarming_linkage = True
                 except PROBE_FAILED:
@@ -1227,15 +1590,71 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
                 # The following lines are for Dahua devices
+                smart_motion_rows = None
                 try:
-                    await self.client.async_get_smart_motion_detection()
+                    table = await self.client.async_get_smart_motion_detection()
                     self._supports_smart_motion_detection = True
+                    smart_motion_rows = smart_motion_row_indices(table)
                 except PROBE_FAILED:
                     self._supports_smart_motion_detection = False
                 _LOGGER.debug(
                     "Device supports smart motion detection=%s",
                     self._supports_smart_motion_detection,
                 )
+
+                # Day/Night mode. Judged by whether this channel's row came
+                # back, not by whether the request raised: async_get_config
+                # swallows a ClientResponseError and returns {}, and a device
+                # can answer 200 with an empty body for a table it lacks.
+                try:
+                    options = await self.client.async_get_video_in_options()
+                    self._supports_day_night_color = (
+                        day_night_color_name(options, self._channel) is not None)
+                except PROBE_FAILED:
+                    self._supports_day_night_color = False
+                _LOGGER.debug("Device supports day/night mode=%s", self._supports_day_night_color)
+
+                # Which camera is actually on this channel. Every channel of a
+                # recorder reports the recorder's model, so a doorbell behind an
+                # NVR is invisible as one and every model-string capability
+                # check sees the wrong device. Read once at setup: RemoteDevice
+                # is large and never changes between reboots, and the shared read
+                # cache answers it once for all of a recorder's channels.
+                try:
+                    remote = await self.client.async_get_config("RemoteDevice")
+                    self._channel_model = remote_device_model(remote, self._channel)
+                    if is_onvif_channel(remote, self._channel):
+                        # Say it once, plainly, instead of leaving a camera
+                        # entity that answers 400 for the life of the entry.
+                        _LOGGER.warning(
+                            "Channel %s of %s is attached to the recorder over ONVIF, "
+                            "not Dahua's own protocol. A recorder does not serve such a "
+                            "channel on its Dahua paths -- measured on a "
+                            "DHI-NVR5464-16P-EI, snapshot.cgi answers 400 for the ONVIF "
+                            "channel while every Dahua-protocol channel on the same "
+                            "recorder returns an image -- so video for this camera will "
+                            "not work here whatever channel number is used. Home "
+                            "Assistant's own ONVIF integration, pointed at the recorder "
+                            "rather than at the camera, does serve it (#646).",
+                            self._channel, self._address)
+                except PROBE_FAILED:
+                    self._channel_model = None
+                if self._channel_model:
+                    _LOGGER.debug(
+                        "Channel %s carries a %s; the device itself reports %s",
+                        self._channel, self._channel_model, self.model)
+                if self._supports_smart_motion_detection:
+                    # Which rows the device reports is the whole capability
+                    # decision for this channel (#635), and nothing logged it.
+                    # #669 spent two rounds of guessing for want of this line,
+                    # because a response body is never logged at debug.
+                    _LOGGER.debug(
+                        "SmartMotionDetect rows reported: %s; this channel is %s, so its "
+                        "switch is %s",
+                        smart_motion_rows if smart_motion_rows else "none",
+                        self._channel,
+                        "created" if self._channel in (smart_motion_rows or ()) else "not created",
+                    )
 
                 is_doorbell = self.is_doorbell()
                 _LOGGER.debug("Device is a doorbell=%s", is_doorbell)
@@ -1276,6 +1695,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         "Device supports LightingScheme illuminator=%s",
                         self._supports_lighting_scheme_illuminator,
                     )
+
+                # Checking privacy mode (LeLensMask) support. This is RPC2 only and many models lack it.
+                # Deliberately broader than PROBE_FAILED: a camera without LeLensMask answers with an
+                # RPC2 result=false, which surfaces as ConnectionError, and a malformed table raises
+                # ValueError. Neither is a ClientError, so narrowing this would fail the whole entry.
+                try:
+                    await self.client.async_get_privacy_mode()
+                    self._supports_privacy_mode = True
+                except Exception as exception:
+                    self._supports_privacy_mode = False
+                    _LOGGER.debug("Privacy mode not available", exc_info=exception)
+                _LOGGER.debug("Device supports privacy mode=%s", self._supports_privacy_mode)
+
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -1368,6 +1800,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
             # Only the preset position select reads this, and it is one of the
             # two per-poll calls the config cache does not cover.
+            if self._supports_day_night_color and self._wanted_by(SELECT):
+                coros.append(asyncio.ensure_future(self.client.async_get_video_in_options()))
             if self._supports_ptz_position and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(_ptz_position()))
             if self.supports_infrared_light() and self._wanted_by(LIGHT):
@@ -1383,9 +1817,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     asyncio.ensure_future(self.client.async_get_disarming_linkage())
                 )
             if self._supports_event_notifications and self._wanted_by(SWITCH):
-                coros.append(
-                    asyncio.ensure_future(self.client.async_get_event_notifications())
-                )
+                coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
+            if self.supports_alarm_output() and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self.client.async_get_alarm_output_state()))
             # The siren switch and the security light both read this one.
             if self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
                 coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
@@ -1409,16 +1843,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     )
                 )
             if self.is_amcrest_doorbell() and self._wanted_by(LIGHT):
-                coros.append(
-                    asyncio.ensure_future(self.client.async_get_light_global_enabled())
-                )
-            if self._supports_lighting_v2 and self._wanted_by(
-                LIGHT
-            ):  # add lighing_v2 API if it is supported
+                coros.append(asyncio.ensure_future(self.client.async_get_light_global_enabled()))
+            # Lighting_V2 is the light platform's table -- except that the
+            # Amcrest doorbell's "Security Light" is a *select*, and its
+            # current_option reads table.Lighting_V2[0][0][1].Mode/.State. A
+            # select is not a light, so gating this on LIGHT alone left that
+            # entity reading an absent table and reporting "Off" forever for
+            # anyone who turned the light platform off. The condition mirrors
+            # the one select.py creates it under, so nothing else over-fetches.
+            if self._supports_lighting_v2 and (
+                    self._wanted_by(LIGHT)
+                    or (self.is_amcrest_doorbell()
+                        and self.supports_security_light()
+                        and self._wanted_by(SELECT))):
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
             if (getattr(self, "_supports_lighting_scheme_illuminator", False)
                     and self._wanted_by(LIGHT)):
                 coros.append(asyncio.ensure_future(self.client.async_get_lighting_scheme()))
+            # Only the privacy mode switch reads this one.
+            if self._supports_privacy_mode and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self._async_fetch_privacy_mode()))
 
             # Gather results and update the data map
             results = await asyncio.gather(*coros)
@@ -1445,6 +1889,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._restore_poll_interval()
             return data
         except Exception as exception:
+            # A 401 out here never started a reauth at all: the entry just went
+            # unavailable and kept polling, which is the other half of #729.
+            if isinstance(exception, ClientResponseError) and exception.status == 401:
+                raise self._auth_refused(exception) from exception
             detail = describe_update_failure(exception)
             _LOGGER.warning("Failed to sync device state for %s: %s. See README to enable debug logs to get full exception",
                             self._address, detail)
@@ -1533,43 +1981,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         #    "Index":-1
         # }
 
-        # This is the event code, example: VideoMotion, CrossLineDetection, BackKeyLight, PhoneCallDetect, DoorStatus, etc
-        codes = self.translate_event_code(event)
-
-        for code in codes:
-            event_key = self.get_event_key(code)
-
-            if code == "AccessControl":
-                card_id = event.get("Data", {}).get("CardNo", "")
-                if card_id:
-                    card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
-                    self.hass.async_create_task(
-                        async_scan_tag(self.hass, card_id_md5, self.get_device_name())
-                    )
-
-            listener = self._dahua_event_listeners.get(event_key)
-            if listener is not None:
-                action = event.get("Action", "")
-                if action == "Start":
-                    self._dahua_event_timestamp[event_key] = int(time.time())
-                    listener()
-                elif action == "Stop":
-                    self._dahua_event_timestamp[event_key] = 0
-                    listener()
-                elif action == "Pulse":
-                    if code == "DoorStatus":
-                        if event.get("Data", {}).get("Status", "") == "Open":
-                            self._dahua_event_timestamp[event_key] = int(time.time())
-                        else:
-                            self._dahua_event_timestamp[event_key] = 0
-                    else:
-                        state = event.get("Data", {}).get("State", 0)
-                        if state == 1:
-                            # button pressed
-                            self._dahua_event_timestamp[event_key] = int(time.time())
-                        else:
-                            self._dahua_event_timestamp[event_key] = 0
-                    listener()
+        # DHIP capitalises it; the CGI stream does not.
+        self._dispatch_event(event, event.get("Action", ""))
 
     def on_receive(self, data_bytes: bytes, channel: int):
         """
@@ -1600,6 +2013,78 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if index == self._channel:
                 self.handle_event(event)
 
+    def _dispatch_event(self, event: dict, action: str) -> None:
+        """Apply one event to this channel's sensors, whichever stream it came from.
+
+        The two streams spell the action differently -- DHIP sends "Action",
+        the CGI wire format parses to "action" -- and everything after that is
+        the same. It is shared because it did not used to be: the CGI path had
+        no Pulse branch and no NFC tag scan, so on that transport every Pulse
+        event reached the event bus and then updated nothing, and an
+        AccessControl card was never handed to async_scan_tag. Both behaviours
+        existed on the doorbell path the whole time.
+        """
+        for code in self.translate_event_code(event):
+            event_key = self.get_event_key(code)
+
+            if code == "AccessControl":
+                card_id = event.get("Data", {}).get("CardNo", "")
+                if card_id:
+                    card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
+                    self.hass.async_create_task(
+                        async_scan_tag(self.hass, card_id_md5, self.get_device_name())
+                    )
+
+            listeners = self._dahua_event_listeners.get(event_key)
+            if not listeners:
+                continue
+
+            if action == "Start":
+                self._dahua_event_timestamp[event_key] = int(time.time())
+            elif action == "Stop":
+                self._dahua_event_timestamp[event_key] = 0
+            elif action == "Pulse":
+                if code == "DoorStatus":
+                    # The door number is in Index, and it was being thrown
+                    # away. A VTO with an access control extension module
+                    # has a second door whose events carry Index 1 (#488),
+                    # and every one of them landed on the single Door Status
+                    # sensor -- so door 2 closing reported door 1 as closed
+                    # while it stood open. One sensor exists, it is door 1's,
+                    # and only door 1 may write to it.
+                    if door_index(event) != 0:
+                        continue
+                    if event.get("Data", {}).get("Status", "") == "Open":
+                        self._dahua_event_timestamp[event_key] = int(time.time())
+                    else:
+                        self._dahua_event_timestamp[event_key] = 0
+                else:
+                    # BackKeyLight carries the VTO's call state, and more than
+                    # one value means ringing. myhomeiot/DahuaVTO documents
+                    # 1 and 2 as Call/Ring (4 voice message, 5 answered,
+                    # 6 not answered, 8 unlock, 11 rebooted), and its reference
+                    # automation treats `State | int in [1, 2]` as the ring.
+                    # Only 1 was accepted here, so a device that reports 2
+                    # never raised the sensor at all.
+                    #
+                    # That project also warns the values vary by model, so this
+                    # widens what counts as a ring rather than claiming a
+                    # complete mapping.
+                    state = event.get("Data", {}).get("State", 0)
+                    try:
+                        pressed = int(state) in DOORBELL_RINGING_STATES
+                    except (TypeError, ValueError):
+                        pressed = False
+                    if pressed:
+                        self._dahua_event_timestamp[event_key] = int(time.time())
+                    else:
+                        self._dahua_event_timestamp[event_key] = 0
+            else:
+                continue
+
+            for listener in listeners:
+                listener()
+
     def handle_event(self, event: dict):
         """Handle one event the host stream has decided belongs to this channel."""
         _LOGGER.debug(
@@ -1621,18 +2106,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # We'll reset it to 0 when the event stops.
         # We'll use these timestamps in binary_sensor to know how long to trigger the sensor
 
-        # This is the event code, example: VideoMotion, CrossLineDetection, etc
-        for event_name in self.translate_event_code(event):
-            event_key = self.get_event_key(event_name)
-            listener = self._dahua_event_listeners.get(event_key)
-            if listener is not None:
-                action = event.get("action")
-                if action == "Start":
-                    self._dahua_event_timestamp[event_key] = int(time.time())
-                    listener()
-                elif action == "Stop":
-                    self._dahua_event_timestamp[event_key] = 0
-                    listener()
+        # The wire format is "Code=VideoMotion;action=Start;index=0", so the
+        # action arrives lowercased here and capitalised on the DHIP path.
+        self._dispatch_event(event, event.get("action", ""))
 
     def translate_event_code(self, event: dict):
         """
@@ -1644,11 +2120,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         if code == "CrossLineDetection" or code == "CrossRegionDetection":
             data = event.get("data", event.get("Data", {}))
+            # parse_event turns the payload into a dict, but only when it is
+            # valid JSON. A device whose payload arrives truncated leaves the
+            # raw string here, and .get() on a string raises AttributeError --
+            # out of this call, out of handle_event, out of on_receive, and out
+            # of the stream loop, which wraps it in try/finally with no handler.
+            # One malformed CrossLine event therefore took the event stream for
+            # every channel on the host down with it (#475). A payload we could
+            # not read is a payload with no ObjectType, not a reason to stop
+            # listening.
+            if not isinstance(data, dict):
+                data = {}
             object_type = data.get("Object", {}).get("ObjectType", "").lower()
             codes = []
 
             # Always include the original CrossLine/CrossRegion if a listener exists
-            if self._dahua_event_listeners.get(self.get_event_key(code)) is not None:
+            if self._dahua_event_listeners.get(self.get_event_key(code)):
                 codes.append(code)
 
             # Also include SmartMotion translation if applicable
@@ -1678,6 +2165,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # Convert doorbell pressed related events to common event name, DoorbellPressed.
         # VTO devices will use the event BackKeyLight and the Amcrest devices seem to use PhoneCallDetect
         if code == "BackKeyLight" or code == "PhoneCallDetect":
+            # BackKeyLight is the VTO's call state, and ringing is only part of
+            # what it reports. Collapsing every one of them to DoorbellPressed
+            # threw the rest away on arrival -- an unlock arrives as State 8
+            # and was read only as "not a ring", so it silently cleared the
+            # button sensor and nothing could ever see the unlock itself.
+            #
+            # Measured on a VTO2000A, pressing the integration's own Open Door
+            # button: 0.7s later the device sent
+            #   Code=BackKeyLight Action=Pulse Data={"State": 8}
+            # and no AccessControl event at all, so this is the only signal a
+            # door-lock entity could confirm an unlock from.
+            extra = DOORBELL_STATE_EVENTS.get(doorbell_state(event))
+            if extra:
+                return ["DoorbellPressed", extra]
             return ["DoorbellPressed"]
 
         return [code]
@@ -1694,11 +2195,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Adds an event listener for the given event (CrossLineDetection, etc).
         This callback will be called when the event fire"""
         event_key = self.get_event_key(event_name)
-        self._dahua_event_listeners[event_key] = listener
+        self._dahua_event_listeners.setdefault(event_key, []).append(listener)
 
     def supports_disarming_linkage(self) -> bool:
         """Whether the device answered the disarming linkage read during setup."""
         return self._supports_disarming_linkage
+
+    def supports_alarm_output(self) -> bool:
+        """Whether a safely decodable single alarm output is available."""
+        return self._alarm_output_slots == 1
+
+    def is_alarm_output_on(self) -> bool:
+        """Return the physical state reported by getOutState."""
+        return self.data.get("status.AlarmOut[0]") == "1"
 
     def supports_profile_mode(self) -> bool:
         """Whether this device has selectable day/night/general profiles.
@@ -1852,6 +2361,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         Both the capability check and the state read go through here so they
         cannot disagree about which row belongs to this channel.
+
+        There is no fallback to row 0. A single camera sits on channel 0, so the
+        lookup below already reads row 0 for it -- a fallback can only ever fire
+        on a channel that is not row 0's owner, and handing it that row reports
+        another camera's state and creates a switch whose writes the device
+        accepts and discards.
         """
         value = self.data.get(
             "table.SmartMotionDetect[{0}].Enable".format(self._channel)
@@ -1885,6 +2400,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_model(self) -> str:
         """returns the device model, e.g. IPC-HDW3849HP-AS-PV"""
         return self.model
+
+    def get_channel_model(self):
+        """The model of the camera on this channel, or None if unknown.
+
+        Deliberately separate from get_model(), which still answers what the
+        device itself reports. Nothing is gated on this yet -- see #690.
+        """
+        return self._channel_model
 
     def get_firmware_version(self) -> str:
         """The firmware the device reported, e.g. 2.800.0000016.0.R.
@@ -1967,7 +2490,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if not plate or plate == "unknown":
             return False
         norm = dahua_utils.normalize_plate(plate)
-        return norm in self.get_authorized_plates()
+        auth_plates = self.get_authorized_plates()
+        if norm in auth_plates:
+            return True
+        # Equate 0 and O OCR confusions as fallback
+        norm_fuzzy = norm.replace("0", "O")
+        return any(norm_fuzzy == p.replace("0", "O") for p in auth_plates)
 
     def get_event_list(self) -> list:
         """
@@ -1975,6 +2503,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         [VideoMotion, VideoLoss, CrossLineDetection]
         """
         return self.events
+
+    def get_infrared_profile(self) -> str:
+        """The Lighting profile this channel's infrared light is really using."""
+        return infrared_profile(self.data, self._channel, self.get_profile_mode())
+
+
+    def supports_day_night_color(self) -> bool:
+        """True if this channel reported a Day/Night mode we understand."""
+        return self._supports_day_night_color
+
+    def get_day_night_color(self):
+        """This channel's Day/Night mode by name, or None."""
+        return day_night_color_name(self.data, self._channel)
 
     def is_infrared_light_on(self) -> bool:
         """returns true if the infrared light is on"""
@@ -1987,8 +2528,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return the brightness of this light, as reported by the camera itself, between 0..255 inclusive"""
 
         bri = self.data.get(
-            "table.Lighting[{0}][0].MiddleLight[0].Light".format(self._channel)
-        )
+            "table.Lighting[{0}][{1}].MiddleLight[0].Light".format(
+                self._channel, self.get_infrared_profile()))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
     def get_illuminator_index(self) -> int:
@@ -2082,8 +2623,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         - **Everything else.** `Config[0]` is the profile.
 
         The read is host-wide -- getConfig&name=VideoInMode returns a row per
-        channel -- so an NVR channel has to take its own row, falling back to
-        row 0, which is all a single-channel camera returns.
+        channel -- so an NVR channel takes its own row and no other. There is no
+        fallback to row 0: a single camera sits on channel 0, so the lookup
+        below already reads row 0 for it, and a fallback could therefore only
+        ever fire on a channel that is not row 0's owner. On a recorder that row
+        is camera 1, and adopting its profile decides which
+        Lighting_V2[channel][profile] every light command for this camera is
+        written to. Camera 1 on day and this one on night sends every write to a
+        profile the camera is not using, where it is accepted and ignored.
+
+        Worse, the fallback was per field, so Config[0] could come from this
+        channel while ConfigEx came from another -- one answer assembled from
+        two cameras.
         """
 
         def field(name):
@@ -2136,8 +2687,31 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._channel
 
     def is_nvr_channel(self) -> bool:
-        """Return whether this entry represents a camera channel on an NVR."""
-        return self._channel > 0 or "NVR" in self.model.upper()
+        """Return whether this entry represents a camera channel on an NVR.
+
+        Channel 0 is the awkward one. It is both the only channel a standalone
+        camera has and the first channel of every recorder, so the model string
+        is all that separates them -- and plenty of recorders do not say "NVR"
+        in theirs. A Lorex N843A8 does not, nor do most OEM rebrands.
+
+        The consequence was silent and lopsided: a user who switched on NVR
+        active deterrence got the entity on channels 1 upwards and nothing at
+        all on channel 0, because that channel took the standalone-camera branch
+        and was tested against a model whitelist the recorder can never match.
+
+        So the option counts as an answer. It is offered for recorders, it
+        defaults off, and a user who turns it on has said what this entry is
+        more directly than any model string does.
+
+        This decides the control path as well as whether the entity exists --
+        an NVR channel drives deterrence through coaxialControlIO on its own
+        channel number, a camera through its channel index -- so the two have to
+        be decided by the same question or the entity would appear and then
+        write to the wrong place.
+        """
+        return (self._channel > 0
+                or "NVR" in self.model.upper()
+                or self._nvr_active_deterrence)
 
     def get_channel_number(self) -> int:
         """returns the channel number of this camera"""
@@ -2172,8 +2746,38 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._smart_motion_row() is not None
 
     def supports_smart_motion_detection_amcrest(self) -> bool:
-        """True if smart motion detection is supported for an amcrest device"""
-        return self.model == "AD410" or self.model == "DB61i"
+        """ True if smart motion detection is supported for an amcrest device
+
+        Matched the way is_amcrest_doorbell matches, which is the point: these
+        two questions are about the same devices and disagreed. That one folds
+        case and takes a prefix; this one compared the raw string exactly, so a
+        doorbell reporting `DB61I` rather than `DB61i` was a doorbell to one
+        check and not to the other.
+
+        A device that falls through here is not merely missing its switch. The
+        smart motion state and the write both take the non-Amcrest branch, which
+        reads SmartMotionDetect -- a table an Amcrest doorbell does not have --
+        so it reports nothing and its IVS rule is never touched.
+        """
+        model = self.model.upper()
+        return model.startswith("AD410") or model.startswith("DB61")
+
+    def supports_privacy_mode(self) -> bool:
+        """ True if the camera exposes the lens privacy mask over RPC2 """
+        return self._supports_privacy_mode
+
+    def is_privacy_mode_enabled(self) -> bool:
+        """ True if the lens privacy mask is currently enabled """
+        return self.data.get("privacy_mode_enabled", False)
+
+    async def _async_fetch_privacy_mode(self) -> dict:
+        """ Poll the privacy mode state, keeping the last known value on failure """
+        try:
+            return {"privacy_mode_enabled": await self.client.async_get_privacy_mode()}
+        except Exception as exception:
+            _LOGGER.debug("Failed to fetch privacy mode state", exc_info=exception)
+            previous = self.data.get("privacy_mode_enabled", False) if self.data else False
+            return {"privacy_mode_enabled": previous}
 
     def get_vto_client(self) -> DahuaVTOClient | None:
         """The doorbell's client, or None when there is not a live one.
@@ -2238,3 +2842,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
     await hass.config_entries.async_reload(entry.entry_id)
+

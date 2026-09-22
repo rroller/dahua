@@ -108,7 +108,8 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(channel, True, dahua_brightness)
+        await self._coordinator.client.async_set_lighting_v1(
+            channel, True, dahua_brightness, self._coordinator.get_infrared_profile())
         await self.coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
@@ -116,7 +117,8 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(channel, False, dahua_brightness)
+        await self._coordinator.client.async_set_lighting_v1(
+            channel, False, dahua_brightness, self._coordinator.get_infrared_profile())
         await self.coordinator.async_refresh()
 
     @property
@@ -132,6 +134,10 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         super().__init__(coordinator, entry)
         self._name = name
         self._coordinator = coordinator
+        # Set once this device has refused the LightingScheme read. Recorders
+        # refuse it outright, so without this the check is retried on every
+        # light command, forever, and can never succeed.
+        self._scheme_unreadable = False
 
     @property
     def name(self):
@@ -197,13 +203,25 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         stays off however correct the write was, and the only symptom is an
         entity that reports on next to a light that is not. Read at command
         time, because the user can change it on the camera whenever they like.
+
+        Asked once per device, though. Measured on two recorders -- a
+        DHI-NVR5464-16P-EI and the one on #647 -- `getConfig&name=LightingScheme`
+        returns `400 Bad Request`, so on every NVR channel this read is a round
+        trip that cannot succeed and a traceback in the debug log for a check
+        that can never fire. One report has already been sent chasing it.
         """
+        if getattr(self, "_scheme_unreadable", False):
+            return
         try:
             data = await self._coordinator.client.async_get_lighting_scheme()
         except Exception:  # pylint: disable=broad-except
             # Plenty of cameras have no such table. Not being able to check is
-            # not a reason to fail the command the user actually asked for.
-            _LOGGER.debug("Could not read LightingScheme", exc_info=True)
+            # not a reason to fail the command the user actually asked for --
+            # but it is a reason not to ask this device again.
+            self._scheme_unreadable = True
+            _LOGGER.debug(
+                "LightingScheme is not readable on this device; the white light "
+                "scheme check is switched off for it", exc_info=True)
             return
         blocking = scheme_blocking_white_light(data, channel, profile_mode)
         if blocking is not None:

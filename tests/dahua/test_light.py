@@ -16,8 +16,8 @@ class _Client:
         self.scheme_calls = []
         self.scheme_reads = 0
 
-    async def async_set_lighting_v1(self, channel, enabled, brightness):
-        self.v1.append((channel, enabled, brightness))
+    async def async_set_lighting_v1(self, channel, enabled, brightness, profile_mode="0"):
+        self.v1.append((channel, enabled, brightness, profile_mode))
 
     async def async_set_lighting_v2(self, channel, enabled, brightness, profile_mode,
                                     light_index=0, bank="MiddleLight"):
@@ -58,6 +58,10 @@ class _Coordinator:
         return self._channel
 
     def get_profile_mode(self):
+        return self._profile_mode
+
+    def get_infrared_profile(self):
+        """The profile the infrared light really uses; the live one here."""
         return self._profile_mode
 
     def get_serial_number(self):
@@ -150,7 +154,8 @@ async def test_infrared_turn_on_sends_the_channel_and_brightness():
     c = _Coordinator(channel=3)
     await _light(DahuaInfraredLight, c).async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
-    assert c.client.v1 == [(3, True, 100)]
+    assert c.client.v1 == [(3, True, 100, "1")], (
+        "the write must name the profile the camera is using, not 0")
     assert c.client.v2 == [], "the infrared light must not use the v2 API"
     assert c.refreshed == 1
 
@@ -160,8 +165,9 @@ async def test_infrared_turn_off_sends_enabled_false():
     await _light(DahuaInfraredLight, c).async_turn_off()
 
     assert len(c.client.v1) == 1
-    channel, enabled, _ = c.client.v1[0]
+    channel, enabled, _, profile = c.client.v1[0]
     assert (channel, enabled) == (3, False)
+    assert profile == "1", "turning off must reach the same profile as turning on"
 
 
 async def test_infrared_turn_on_without_brightness_uses_full():

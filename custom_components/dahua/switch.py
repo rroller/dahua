@@ -4,7 +4,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
-from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON
+from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON, PRIVACY_MODE_ICON
 from .entity import DahuaBaseEntity
 from .client import SIREN_TYPE
 
@@ -34,6 +34,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         )
     if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
         devices.append(DahuaSmartMotionDetectionBinarySwitch(coordinator, entry))
+    if coordinator.supports_privacy_mode():
+        devices.append(DahuaPrivacyModeBinarySwitch(coordinator, entry))
+    if coordinator.supports_alarm_output():
+        devices.append(DahuaAlarmOutputSwitch(coordinator, entry, output=0))
 
     # The coordinator already asked the device this during setup and kept the
     # answer. Asking again here put a network round trip inside platform setup,
@@ -288,3 +292,79 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         Value is fetched from api.get_motion_detection_config
         """
         return self._coordinator.is_siren_on()
+
+
+class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
+    """Switch for a physical alarm/relay output."""
+
+    _attr_icon = "mdi:alarm-light"
+
+    def __init__(self, coordinator, entry, output: int):
+        super().__init__(coordinator, entry)
+        self._output = output
+
+    async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
+        """Force the alarm output on with AlarmOut.Mode=1."""
+        await self._coordinator.client.async_set_alarm_output_state(self._output, True)
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
+        """Force the alarm output off with AlarmOut.Mode=2."""
+        await self._coordinator.client.async_set_alarm_output_state(self._output, False)
+        await self._coordinator.async_refresh()
+
+    @property
+    def name(self):
+        """Return the name of the switch."""
+        return self._coordinator.get_device_name() + " Alarm Output"
+
+    @property
+    def unique_id(self):
+        """Return a stable unique ID for this alarm output."""
+        return self._coordinator.get_serial_number() + "_alarm_output_" + str(self._output)
+
+    @property
+    def is_on(self):
+        """Return the physical state from alarm.cgi?action=getOutState."""
+        return self._coordinator.is_alarm_output_on()
+
+
+class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
+    """dahua privacy mode switch class. Used to enable or disable the lens privacy mask"""
+
+    async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
+        """Turn on/enable privacy mode"""
+        await self._coordinator.client.async_set_privacy_mode(True)
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
+        """Turn off/disable privacy mode"""
+        await self._coordinator.client.async_set_privacy_mode(False)
+        await self._coordinator.async_refresh()
+
+    @property
+    def name(self):
+        """Return the name of the switch."""
+        return self._coordinator.get_device_name() + " Privacy Mode"
+
+    @property
+    def unique_id(self):
+        """
+        A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
+        see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
+        """
+        return self._coordinator.get_serial_number() + "_privacy_mode"
+
+    @property
+    def icon(self):
+        """Return the icon of this switch."""
+        return PRIVACY_MODE_ICON
+
+    @property
+    def is_on(self):
+        """
+        Return true if privacy mode is on.
+        Value is fetched from client.async_get_privacy_mode
+        """
+        return self._coordinator.is_privacy_mode_enabled()
+

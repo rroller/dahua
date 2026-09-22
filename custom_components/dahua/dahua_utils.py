@@ -2,6 +2,7 @@
 Various utilities for Dahua cameras
 """
 import json
+import logging
 import re
 
 
@@ -30,6 +31,9 @@ def hass_brightness_to_dahua_brightness(hass_brightness: int) -> int:
 
 
 # https://github.com/rroller/dahua/issues/166
+_LOGGER = logging.getLogger(__name__)
+
+
 def parse_event(data: str) -> list[dict[str, any]]:
     # This will turn the event stream data into a list of events, where each item in the list is a dictionary and where
     # the key of the dictionary is the key is for example "Code" and the value is "VideoMotion", etc
@@ -47,19 +51,31 @@ def parse_event(data: str) -> list[dict[str, any]]:
     #   ...
     # }]
 
-    # We will split on "--myboundary" and then skip the first 3 lines so we end up with a string that starts with Code=
-    event_blocks = re.split(r'--myboundary\n', data)
+    # We will split on "--myboundary" and then find the line the event starts on
+    event_blocks = re.split(r'--myboundary\r?\n', data)
 
     events = []
 
     for event_block in event_blocks:
-        # Skip the first 3 lines... the first line looks like: Content-Type: text/plain
-        s = event_block.split("\n", 3)
-        if len(s) < 3:
+        # Find "Code=" wherever it falls, rather than counting header lines.
+        #
+        # This skipped exactly three lines and required the fourth to be the
+        # event. Most blocks do look like that -- Content-Type, Content-Length,
+        # blank, Code= -- but the header count is the device's choice and not a
+        # rule, and a block carrying one header line fewer was dropped without
+        # a word. @jaaneo reported it in #587 on a DHI-TPC-BF1241, whose thermal
+        # channel does not use the same header shape as its visual one, so those
+        # events never arrived and nothing said why.
+        #
+        # A block that stops inside its headers still carries no event and is
+        # still skipped, which is what a chunk ending mid-block looks like:
+        # stream_events hands on whatever iter_chunks gives it, so that is
+        # ordinary rather than exceptional. Indexing blindly there raised
+        # IndexError out of on_receive and took the whole stream down (#475).
+        start = re.search(r'^Code=', event_block, re.MULTILINE)
+        if start is None:
             continue
-        event_block = s[3].strip()
-        if not event_block.startswith("Code="):
-            continue
+        event_block = event_block[start.start():].strip()
 
         # At this point we'll have something that looks like this...
         # Code=VideoMotion;action=Start;index=0;data={
@@ -70,6 +86,13 @@ def parse_event(data: str) -> list[dict[str, any]]:
         # And we want to put each key/value pair into a dictionary...
         event = dict()
         for key_value in event_block.split(';'):
+            if '=' not in key_value:
+                # Not a key=value pair. Either the device cut the block short,
+                # or the JSON payload carries a semicolon of its own -- a rule
+                # or region the user named "Drive; Gate" is enough. Unpacking
+                # it raised ValueError, which lost every event in the batch and
+                # ended the stream; skipping it loses only this fragment.
+                continue
             key, value = key_value.split('=', 1)
             event[key] = value
 
@@ -79,7 +102,14 @@ def parse_event(data: str) -> list[dict[str, any]]:
                 data = json.loads(event["data"])
                 event["data"] = data
             except Exception:  # pylint: disable=broad-except
-                pass
+                # Left as the raw string on purpose: it is what the device sent
+                # and throwing it away helps nobody. But say so, because a
+                # silent pass here is indistinguishable from a device that
+                # sends no payload, and the usual cause is a truncated one.
+                _LOGGER.debug(
+                    "Could not parse the JSON payload of a %s event; leaving it as text",
+                    event.get("Code", "?"), exc_info=True,
+                )
         events.append(event)
 
     return events
@@ -99,7 +129,81 @@ def normalize_plate(plate_text: str | None) -> str:
     clean = str(plate_text).upper()
     for gr, lat in HOMOGLYPHS.items():
         clean = clean.replace(gr, lat)
-    return re.sub(r'[^A-Z0-9]', '', clean)
+    clean = re.sub(r'[^A-Z0-9]', '', clean)
+    # Standard 7-character plate format: 3 letters + 4 digits (e.g. ABO1234, XYZ5670)
+    # Correct common OCR confusions between letter O and digit 0 based on position:
+    if len(clean) == 7:
+        letters_part = clean[:3].replace('0', 'O')
+        digits_part = clean[3:].replace('O', '0')
+        if letters_part.isalpha() and digits_part.isdigit():
+            clean = letters_part + digits_part
+    return clean
+
+
+def _extract_plate_from_raw_string(text: str, event: dict) -> dict | None:
+    """Extract plate and metadata from a raw (possibly truncated) JSON string using regex."""
+    plate_text = None
+    confidence = None
+
+    # Check for PlateNumber in TrafficCar
+    m_tc = re.search(r'"(?:PlateNumber|plateNumber)"\s*:\s*"([A-Za-z0-9]+)"', text)
+    if m_tc:
+        plate_text = m_tc.group(1)
+
+    if not plate_text:
+        # Collect all "Text" candidates
+        candidates = re.findall(r'"Text"\s*:\s*"([A-Za-z0-9]+)"', text)
+        best_plate = None
+        for cand in candidates:
+            norm_c = normalize_plate(cand)
+            # 1. Exact Greek plate format: 3 letters + 4 digits
+            if len(norm_c) == 7 and norm_c[:3].isalpha() and norm_c[3:].isdigit():
+                best_plate = norm_c
+                plate_text = cand
+                break
+            # 2. Check if Dahua flipped RTL: 4 digits + 3 letters
+            if len(norm_c) == 7 and norm_c[:4].isdigit() and norm_c[4:].isalpha():
+                flipped = norm_c[4:] + norm_c[:4]
+                if flipped[:3].isalpha() and flipped[3:].isdigit():
+                    best_plate = flipped
+                    plate_text = flipped
+                    break
+            if best_plate is None and any(c.isdigit() for c in norm_c) and any(c.isalpha() for c in norm_c):
+                best_plate = norm_c
+                plate_text = cand
+
+    if not plate_text:
+        return None
+
+    clean_plate = normalize_plate(plate_text)
+    if not clean_plate:
+        return None
+
+    m_conf = re.search(r'"Confidence"\s*:\s*([0-9]+)', text)
+    if m_conf:
+        try:
+            confidence = int(m_conf.group(1))
+        except ValueError:
+            pass
+
+    m_brand = re.search(r'"(?:VehicleSign|Brand|VehicleLogo)"\s*:\s*"([^"]+)"', text)
+    vehicle_brand = m_brand.group(1) if m_brand else None
+
+    m_color = re.search(r'"VehicleColor"\s*:\s*"([^"]+)"', text)
+    vehicle_color = m_color.group(1) if m_color else None
+
+    return {
+        "plate": clean_plate,
+        "raw_plate": plate_text,
+        "confidence": confidence,
+        "vehicle_type": None,
+        "vehicle_color": vehicle_color,
+        "vehicle_brand": vehicle_brand,
+        "vehicle_series": None,
+        "direction": None,
+        "event_code": event.get("Code"),
+        "timestamp": None,
+    }
 
 
 def parse_authorized_plates(raw_str: str | list | None) -> list[str]:
@@ -138,7 +242,13 @@ def extract_plate_data(event: dict) -> dict | None:
 
     data = event.get("data", event.get("Data", {}))
     if not isinstance(data, dict):
-        return None
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                return _extract_plate_from_raw_string(data, event)
+        else:
+            return None
 
     plate_text = None
     confidence = None
