@@ -2027,6 +2027,15 @@ class DahuaClient:
                 data_dict[parts[0]] = line
         return data_dict
 
+    @property
+    def device_key(self) -> str:
+        """Which device this is, as opposed to which address answers for it.
+
+        Two devices can sit behind one address on different ports, so anything
+        shared per device keys on this rather than on the address.
+        """
+        return self._device
+
     async def async_probe_snapshot(self, channel_number: int) -> None:
         """Checks the snapshot endpoint answers for a channel, without fetching the image.
 
