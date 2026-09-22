@@ -29,6 +29,34 @@ To install with [HACS](https://hacs.xyz/):
 6. Restart Home Assistant
 7. Configure the camera by going to `Configurations` -> `Integrations` -> `ADD INTERATIONS` button, search for `Dahua` and configure the camera.
 
+### Pre-release versions
+
+Fixes land in a pre-release first, usually within a day, and are gathered into
+a stable release afterwards. Pre-releases are hidden unless you ask for them,
+so if you do nothing, nothing changes: you keep being offered stable releases
+only.
+
+To opt in:
+
+1. `Settings` -> `Devices & services` -> `Integrations` tab
+2. Open `HACS`
+3. Find the `Dahua` integration
+4. Turn on the pre-release toggle
+
+You will then be offered pre-releases as updates, the same way as stable ones.
+Turn it back off at any time and the next stable release brings you back to the
+stable line.
+
+Worth knowing before you opt in:
+
+- Pre-releases get less testing than stable, by definition. Do not run one on a
+  camera you cannot afford to have misbehave for an afternoon.
+- **If you report a problem, say which version you are on.** This matters more
+  here than on stable.
+- Finding things before they reach everyone is the whole point, so a report
+  from a pre-release user is worth a great deal. If something breaks, please
+  open an issue rather than quietly rolling back.
+
 ### Manual install
 To manually install:
 

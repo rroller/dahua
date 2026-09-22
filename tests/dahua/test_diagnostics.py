@@ -111,6 +111,15 @@ class _Coordinator:
     def get_profile_mode(self):
         return "0"
 
+    # _safe(coordinator.get_x) reads the attribute before _safe can catch
+    # anything, so a fake missing one of these is an AttributeError out of
+    # the handler, which Home Assistant serves as a 500 with no explanation.
+    def get_illuminator_index(self):
+        return 1
+
+    def get_illuminator_bank(self):
+        return "NearLight"
+
     def get_event_list(self):
         return ["VideoMotion"]
 
@@ -372,3 +381,82 @@ async def test_device_diagnostics_does_not_publish_the_identifiers(hass):
     assert SERIAL not in json.dumps(result, cls=ExtendedJSONEncoder)
     assert result["device_registry"]["name"] == "Front Door"
     assert "coordinator" in result
+
+
+# --- the questions people keep being asked by hand --------------------------
+
+async def test_it_says_which_auth_scheme_the_device_asked_for(hass):
+    """#583: a camera that wants Basic looked exactly like a wrong password."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["client"]["auth_scheme"] == "digest"
+
+
+async def test_a_device_that_asked_for_basic_says_so(hass):
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    coordinator.client._digest_state["scheme"] = "basic"
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["client"]["auth_scheme"] == "basic"
+
+
+async def test_it_says_which_light_the_device_calls_white(hass):
+    """#570 and #647 both turned on knowing these two."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["illuminator_light_index"] == 1
+    assert device["illuminator_brightness_bank"] == "NearLight"
+
+
+async def test_it_reports_the_tables_this_device_refused(hass):
+    """A refusal names something the model will not do, which is the useful half."""
+    from custom_components.dahua import client as client_module
+
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    # The same key diagnostics builds, getattr and all: this fake client has
+    # no _username, and the real one may not either before login.
+    key = (coordinator.client._address,
+           getattr(coordinator.client, "_username", None))
+    client_module._RPC2_TABLE_UNAVAILABLE.add((key, "LightingScheme"))
+    try:
+        host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+    finally:
+        client_module._RPC2_TABLE_UNAVAILABLE.discard((key, "LightingScheme"))
+
+    assert host["rpc2_tables_refused"] == ["LightingScheme"]
+
+
+async def test_another_devices_refusals_are_not_reported_here(hass):
+    from custom_components.dahua import client as client_module
+
+    entry = _entry(hass)
+    _install(hass, entry)
+    client_module._RPC2_TABLE_UNAVAILABLE.add((("10.9.9.9", "admin"), "Lighting_V2"))
+    try:
+        host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+    finally:
+        client_module._RPC2_TABLE_UNAVAILABLE.discard(
+            (("10.9.9.9", "admin"), "Lighting_V2"))
+
+    assert host["rpc2_tables_refused"] == []
+
+
+async def test_the_new_fields_carry_nothing_secret(hass):
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+    dumped = json.dumps(result, cls=ExtendedJSONEncoder)
+
+    assert PASSWORD not in dumped
+    assert USERNAME not in dumped
+    assert SERIAL not in dumped

@@ -1502,6 +1502,24 @@ class DahuaClient:
         )
         return await self.get(url)
 
+    async def async_ptz_move(self, channel: int, code: str, speed: int,
+                             duration: float) -> None:
+        """Move the camera, then stop it.
+
+        ptz.cgi has no notion of moving by an amount: a start begins the
+        motion and it continues until a matching stop, so the duration is
+        how far it goes. That is also why the stop is in a finally. A
+        request that fails after the start would otherwise leave the
+        camera turning until something else stopped it.
+        """
+        base = ("/cgi-bin/ptz.cgi?action={0}&channel={1}&code={2}"
+                "&arg1=0&arg2={3}&arg3=0")
+        await self.get(base.format("start", channel, code, speed))
+        try:
+            await asyncio.sleep(duration)
+        finally:
+            await self.get(base.format("stop", channel, code, speed))
+
     async def async_set_video_profile_mode(self, channel: int, mode: str):
         """
         async_set_video_profile_mode will set camera's profile mode to day or night
@@ -2026,6 +2044,15 @@ class DahuaClient:
                 # We didn't get a key=value. We just got a key. Just stick it in the dictionary and move on
                 data_dict[parts[0]] = line
         return data_dict
+
+    @property
+    def device_key(self) -> str:
+        """Which device this is, as opposed to which address answers for it.
+
+        Two devices can sit behind one address on different ports, so anything
+        shared per device keys on this rather than on the address.
+        """
+        return self._device
 
     async def async_probe_snapshot(self, channel_number: int) -> None:
         """Checks the snapshot endpoint answers for a channel, without fetching the image.

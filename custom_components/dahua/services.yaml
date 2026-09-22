@@ -482,6 +482,57 @@ set_privacy_masking:
       selector:
         boolean:
 
+ptz_move:
+  name: Move the camera
+  description: >-
+    Pan, tilt or zoom a PTZ camera for a moment. The camera moves while the
+    command runs and is stopped afterwards, so the duration is how far it
+    travels.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    direction:
+      name: Direction
+      description: Which way to move.
+      required: true
+      example: left
+      selector:
+        select:
+          options:
+            - up
+            - down
+            - left
+            - right
+            - up_left
+            - up_right
+            - down_left
+            - down_right
+            - zoom_in
+            - zoom_out
+    speed:
+      name: Speed
+      description: How fast to move, from 1 to 8.
+      example: 4
+      default: 4
+      selector:
+        number:
+          min: 1
+          max: 8
+          mode: slider
+    duration:
+      name: Duration
+      description: How long to move for, in seconds.
+      example: 0.5
+      default: 0.5
+      selector:
+        number:
+          min: 0.1
+          max: 10
+          step: 0.1
+          mode: box
+
 goto_preset_position:
   name: Go to a preset position
   description: Go to a position already preset
