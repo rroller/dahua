@@ -210,6 +210,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             self._discovery_task = self.hass.async_create_task(
                 self._async_discover_channels(
                     self.init_info, int(self.init_info[CONF_CHANNEL])))
+
+        # Whether the search has finished, not whether it has been started.
+        # A step showing progress is re-entered for reasons other than the task
+        # completing: asking the flow for its current state does it, and so
+        # does reopening the dialog. Branching on the task merely existing gave
+        # up on the first of those, read the result of a task still running,
+        # and offered nothing at all.
+        if not self._discovery_task.done():
             return self.async_show_progress(
                 step_id="discover",
                 progress_action="discover",
@@ -224,6 +232,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # _async_discover_channels swallows its own failures, so this is
             # the flow being abandoned mid-search. Nothing to offer, and the
             # camera the user actually asked for is still added.
+            _LOGGER.debug("The channel search did not finish", exc_info=True)
             self._found_channels = {}
 
         return self.async_show_progress_done(
@@ -261,13 +270,23 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     await client.async_get_remote_devices())
             except Exception:  # pylint: disable=broad-except
                 # A standalone camera has no such table. Nothing to offer is an
-                # ordinary answer rather than a failure.
+                # ordinary answer rather than a failure, so this is not a
+                # warning. It is logged because the alternative is a feature
+                # that can do nothing at all and leave no trace of why.
+                _LOGGER.debug(
+                    "No RemoteDevice table on %s, so no channels to offer",
+                    user_input[CONF_ADDRESS], exc_info=True)
                 return {}
 
             candidates = [
                 index for index in dahua_utils.channels_worth_offering(devices)
                 if index != exclude
             ]
+            _LOGGER.debug(
+                "%s: %d slots, %s worth offering, %d after excluding channel %s",
+                user_input[CONF_ADDRESS], len(devices),
+                dahua_utils.channels_worth_offering(devices), len(candidates),
+                exclude)
             if not candidates:
                 return {}
 
@@ -295,10 +314,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             answered = await asyncio.wait_for(
                 asyncio.gather(*[live(i) for i in candidates]),
                 DISCOVERY_TIMEOUT_SECONDS)
-            return {
+            found = {
                 index: titles.get(index) or "Channel {0}".format(index + 1)
                 for index in answered if index is not None
             }
+            _LOGGER.debug("%s: %d of %d candidates answered a snapshot: %s",
+                          user_input[CONF_ADDRESS], len(found), len(candidates),
+                          sorted(found))
+            return found
         except Exception:  # pylint: disable=broad-except
             _LOGGER.debug("Could not look for other channels", exc_info=True)
             return {}

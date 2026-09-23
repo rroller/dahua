@@ -359,6 +359,30 @@ async def test_the_search_is_shown_as_a_wait():
     await flow._discovery_task
 
 
+async def test_being_asked_again_mid_search_keeps_waiting():
+    """Found by running the flow against a real recorder.
+
+    A progress step is re-entered for reasons other than its task finishing:
+    asking Home Assistant for the flow's current state re-enters it, and so
+    does reopening the dialog. Branching on whether the task exists rather
+    than whether it is done meant the first of those read the result of a task
+    still running, raised InvalidStateError into the handler that treats any
+    failure as nothing found, and offered the user no channels at all.
+
+    On the recorder this was measured against it lost all eleven, silently.
+    """
+    flow = _flow()
+    flow._discovery_task = asyncio.Future()  # started, still running
+
+    result = await flow.async_step_discover()
+
+    assert result["type"] == FlowResultType.SHOW_PROGRESS
+    assert result["step_id"] == "discover"
+    assert flow._found_channels == {}, "nothing may be concluded yet"
+
+    flow._discovery_task.cancel()
+
+
 async def test_finding_channels_leads_to_the_channels_step():
     """Discovery and the step are tested apart; this is the join between them."""
     flow = _routable({1: "BACKYARD"})
