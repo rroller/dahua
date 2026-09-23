@@ -12,6 +12,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers import config_validation as cv
 
+from . import dahua_utils
 from .client import DahuaClient
 from .const import (
     CONF_PASSWORD,
@@ -25,6 +26,7 @@ from .const import (
     PLATFORMS,
     CONF_CHANNEL,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_EXTRA_CHANNELS,
     CONF_USE_RPC2,
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
@@ -42,10 +44,17 @@ https://developers.home-assistant.io/docs/data_entry_flow_index/
 """
 
 SSL_CONTEXT = ssl.create_default_context()
+
 #SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
 SSL_CONTEXT.set_ciphers("DEFAULT")
 SSL_CONTEXT.check_hostname = False
 SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+
+# How long the whole look for a recorder's other channels may take.
+# Bounds the probe fan-out, which is otherwise one request timeout per
+# channel, two at a time. Running out means nothing is offered, which is
+# the same outcome as a device that has no channels to offer.
+DISCOVERY_TIMEOUT_SECONDS = 30
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -143,6 +152,10 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self.dahua_config = {}
         self._errors = {}
         self.init_info = None
+        # index -> label, for the other channels of a recorder
+        self._found_channels = {}
+        self._extra_channels = []
+        self._discovery_task = None
 
     async def async_step_user(self, user_input=None):
         """Handle a flow initialized by the user to add a camera."""
@@ -174,11 +187,192 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
                 user_input[CONF_NAME] = data["name"]
                 self.init_info = user_input
-                return await self._show_config_form_name(user_input)
+                return await self.async_step_discover()
             else:
                 self._errors["base"] = error or "auth"
 
         return await self._show_config_form_user(user_input)
+
+    async def async_step_discover(self, user_input=None):
+        """Look for the recorder's other channels, with the wait on screen.
+
+        Probing fifteen channels two at a time is slow enough that holding it
+        inside the previous step gives a form that looks hung, with nothing
+        saying why. As a progress step the dialog says what is happening and
+        roughly how long it can take, and DISCOVERY_TIMEOUT_SECONDS still
+        bounds it.
+
+        A standalone camera has no such table and refuses the first read, so
+        the dialog is brief rather than absent. That is the honest thing to
+        show: the search did happen.
+        """
+        if self._discovery_task is None:
+            self._discovery_task = self.hass.async_create_task(
+                self._async_discover_channels(
+                    self.init_info, int(self.init_info[CONF_CHANNEL])))
+
+        # Whether the search has finished, not whether it has been started.
+        # A step showing progress is re-entered for reasons other than the task
+        # completing: asking the flow for its current state does it, and so
+        # does reopening the dialog. Branching on the task merely existing gave
+        # up on the first of those, read the result of a task still running,
+        # and offered nothing at all.
+        if not self._discovery_task.done():
+            return self.async_show_progress(
+                step_id="discover",
+                progress_action="discover",
+                description_placeholders={
+                    "seconds": str(DISCOVERY_TIMEOUT_SECONDS)},
+                progress_task=self._discovery_task,
+            )
+
+        try:
+            self._found_channels = self._discovery_task.result()
+        except (Exception, asyncio.CancelledError):  # pylint: disable=broad-except
+            # _async_discover_channels swallows its own failures, so this is
+            # the flow being abandoned mid-search. Nothing to offer, and the
+            # camera the user actually asked for is still added.
+            _LOGGER.debug("The channel search did not finish", exc_info=True)
+            self._found_channels = {}
+
+        return self.async_show_progress_done(
+            next_step_id="channels" if self._found_channels else "name")
+
+    async def _async_discover_channels(self, user_input, exclude) -> dict:
+        """Which other channels of this recorder have a live camera on them.
+
+        Three things have to agree, and the first two are not enough.
+
+        The slot has to be enabled, and it must not be reached over Onvif: such
+        a channel exists and this integration cannot drive it, because the
+        recorder does not serve it on its own Dahua paths (#710).
+
+        And it has to answer. A camera removed from the recorder leaves its slot
+        enabled with a stale serial. Measured on a DHI-NVR5464-16P-EI, two such
+        slots read exactly like live ones and returned 400 to a snapshot.
+        Offering those would create entries that can never work, which is the
+        failure this step exists to avoid. async_probe_snapshot asks without
+        fetching the image.
+
+        Any failure here means nothing is offered, never a failed setup. Adding
+        one camera must not start depending on a recorder-only table.
+        """
+        session = ClientSession(
+            connector=TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT))
+        try:
+            client = DahuaClient(
+                user_input[CONF_USERNAME], user_input[CONF_PASSWORD],
+                user_input[CONF_ADDRESS], user_input[CONF_PORT],
+                user_input[CONF_RTSP_PORT], session,
+                True if user_input.get(CONF_USE_HTTPS) else None)
+            try:
+                devices = dahua_utils.parse_remote_devices(
+                    await client.async_get_remote_devices())
+            except Exception:  # pylint: disable=broad-except
+                # A standalone camera has no such table. Nothing to offer is an
+                # ordinary answer rather than a failure, so this is not a
+                # warning. It is logged because the alternative is a feature
+                # that can do nothing at all and leave no trace of why.
+                _LOGGER.debug(
+                    "No RemoteDevice table on %s, so no channels to offer",
+                    user_input[CONF_ADDRESS], exc_info=True)
+                return {}
+
+            candidates = [
+                index for index in dahua_utils.channels_worth_offering(devices)
+                if index != exclude
+            ]
+            _LOGGER.debug(
+                "%s: %d slots, %s worth offering, %d after excluding channel %s",
+                user_input[CONF_ADDRESS], len(devices),
+                dahua_utils.channels_worth_offering(devices), len(candidates),
+                exclude)
+            if not candidates:
+                return {}
+
+            try:
+                titles = dahua_utils.parse_channel_titles(
+                    await client.async_get_config("ChannelTitle"))
+            except Exception:  # pylint: disable=broad-except
+                titles = {}
+
+            async def live(index):
+                try:
+                    await client.async_probe_snapshot(index + 1)
+                    return index
+                except Exception:  # pylint: disable=broad-except
+                    return None
+
+            # The client's own per-host limit holds this to two at a time, so
+            # gathering does not turn setup into a burst the recorder has to
+            # absorb. That limit is also why the whole thing needs a ceiling:
+            # sixteen channels, two at a time, each able to spend
+            # TIMEOUT_SECONDS before giving up, is long enough that a recorder
+            # which has stopped answering would leave the form looking frozen
+            # for minutes. Nothing here is worth that -- discovery is a
+            # convenience, and not offering anything is a fine outcome.
+            answered = await asyncio.wait_for(
+                asyncio.gather(*[live(i) for i in candidates]),
+                DISCOVERY_TIMEOUT_SECONDS)
+            found = {
+                index: titles.get(index) or "Channel {0}".format(index + 1)
+                for index in answered if index is not None
+            }
+            _LOGGER.debug("%s: %d of %d candidates answered a snapshot: %s",
+                          user_input[CONF_ADDRESS], len(found), len(candidates),
+                          sorted(found))
+            return found
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug("Could not look for other channels", exc_info=True)
+            return {}
+        finally:
+            await session.close()
+
+    async def async_step_channels(self, user_input=None):
+        """Offer the recorder's other live channels."""
+        if user_input is not None:
+            self._extra_channels = [
+                int(index) for index in user_input.get(CONF_EXTRA_CHANNELS, [])
+            ]
+            return await self._show_config_form_name(self.init_info)
+
+        return self.async_show_form(
+            step_id="channels",
+            data_schema=vol.Schema({
+                vol.Optional(CONF_EXTRA_CHANNELS, default=[]):
+                    cv.multi_select({
+                        str(index): "Channel {0}: {1}".format(index + 1, name)
+                        for index, name in sorted(self._found_channels.items())
+                    }),
+            }),
+            errors=self._errors,
+        )
+
+    async def async_step_import(self, import_data):
+        """Add one channel without asking anything.
+
+        Where the extra channels chosen on the channels step arrive. They
+        answered a probe a moment ago, so this validates and creates rather than
+        prompting. One that has since stopped answering aborts on its own and
+        the others are unaffected.
+        """
+        data, error = await self._test_credentials(
+            import_data[CONF_USERNAME], import_data[CONF_PASSWORD],
+            import_data[CONF_ADDRESS], import_data[CONF_PORT],
+            import_data[CONF_RTSP_PORT], import_data[CONF_CHANNEL],
+            True if import_data.get(CONF_USE_HTTPS) else None)
+        if data is None:
+            return self.async_abort(reason=error or "auth")
+
+        serial = data.get("serialNumber")
+        if serial:
+            channel = int(import_data[CONF_CHANNEL])
+            unique_id = serial if channel == 0 else "{0}_{1}".format(serial, channel)
+            await self.async_set_unique_id(unique_id)
+            self._abort_if_unique_id_configured()
+
+        return self.async_create_entry(
+            title=import_data[CONF_NAME], data=import_data)
 
     async def async_step_name(self, user_input=None):
         """Handle a flow to configure the camera name."""
@@ -187,12 +381,29 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if self.init_info is not None:
                 self.init_info.update(user_input)
+                self._queue_extra_channels()
                 return self.async_create_entry(
                     title=self.init_info["name"],
                     data=self.init_info,
                 )
 
-        return await self._show_config_form_name(user_input)
+        return await self._show_config_form_name(user_input or self.init_info)
+
+    def _queue_extra_channels(self) -> None:
+        """Start a flow for each additional channel the user ticked.
+
+        Creating this entry ends this flow, so the rest go through their own.
+        Each sets its own unique_id and aborts if that channel is already
+        configured, so this cannot add the same channel twice.
+        """
+        for index in self._extra_channels:
+            data = dict(self.init_info)
+            data[CONF_CHANNEL] = index
+            data[CONF_NAME] = self._found_channels.get(
+                index, "Channel {0}".format(index + 1))
+            self.hass.async_create_task(
+                self.hass.config_entries.flow.async_init(
+                    DOMAIN, context={"source": "import"}, data=data))
 
     async def async_step_reauth(self, entry_data):
         """Handle reauthentication when credentials become invalid."""
