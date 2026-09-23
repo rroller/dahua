@@ -56,6 +56,9 @@ CONF_SCAN_INTERVAL = "scan_interval"
 # handshake per call. Off by default -- see #636.
 CONF_USE_RPC2 = "use_rpc2"
 CONF_NVR_ACTIVE_DETERRENCE = "nvr_active_deterrence"
+# Ask go2rtc not to open the RTSP talk channel. It otherwise holds it for as
+# long as HA streams, which puts doorbells in a call state -- see #595.
+CONF_DISABLE_BACKCHANNEL = "disable_backchannel"
 CONF_AUTHORIZED_PLATES = "authorized_plates"
 CONF_AUTHORIZED_HOLD_TIME = "authorized_hold_time"
 

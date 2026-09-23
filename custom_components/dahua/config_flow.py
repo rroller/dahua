@@ -31,6 +31,7 @@ from .const import (
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
     CONF_NVR_ACTIVE_DETERRENCE,
+    CONF_DISABLE_BACKCHANNEL,
     CONF_AUTHORIZED_PLATES,
     CONF_AUTHORIZED_HOLD_TIME,
     DEFAULT_SCAN_INTERVAL,
@@ -603,6 +604,12 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Required(
                 CONF_NVR_ACTIVE_DETERRENCE,
                 default=self.options.get(CONF_NVR_ACTIVE_DETERRENCE, False),
+            )
+        ] = bool
+        schema[
+            vol.Required(
+                CONF_DISABLE_BACKCHANNEL,
+                default=self.options.get(CONF_DISABLE_BACKCHANNEL, False),
             )
         ] = bool
         schema[

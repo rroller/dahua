@@ -125,6 +125,7 @@ class _Coordinator:
 
 class _Entry:
     title = "Front Street"
+    options = {}
 
 
 @pytest.fixture(autouse=True)
