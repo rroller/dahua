@@ -388,3 +388,26 @@ async def test_a_recorder_that_probes_forever_gives_up(monkeypatch):
     found = await _discover(monkeypatch, client, exclude=0)
 
     assert found == {}, "a hung recorder must not hold the form open"
+
+
+async def test_creating_the_first_entry_starts_the_others():
+    """The join at the other end.
+
+    _queue_extra_channels is tested directly above and nothing tested that
+    anything calls it. Dropping the call leaves every other test here green
+    and the feature doing nothing at all.
+    """
+    flow = _flow()
+    flow._found_channels = {1: "BACKYARD"}
+    flow._extra_channels = [1]
+    started = []
+    flow.hass = SimpleNamespace(
+        async_create_task=lambda coro: None,
+        config_entries=SimpleNamespace(flow=SimpleNamespace(
+            async_init=lambda domain, context=None, data=None: started.append(data))),
+    )
+    flow.async_create_entry = lambda title, data: None
+
+    await flow.async_step_name({"name": "Front Door"})
+
+    assert [d[CONF_CHANNEL] for d in started] == [1]
