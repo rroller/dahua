@@ -265,10 +265,36 @@ class DahuaRpc2Client:
         data = await self.get_config({"name": "General"})
         return data["table"]["MachineName"]
 
+    async def get_coaxial_control_io_caps(self, channel: int = 0) -> dict[str, bool]:
+        """Read explicit deterrence capabilities; never infer them from status."""
+        response = await self.request(
+            method="CoaxialControlIO.getCaps", params={"channel": channel}
+        )
+        params = response.get("params")
+        caps = params.get("caps") if isinstance(params, dict) else None
+        if not isinstance(caps, dict):
+            raise ValueError("Dahua RPC2 response is missing params.caps")
+        return {
+            key: caps.get(key) in (1, "1")
+            for key in ("SupportControlSpeaker", "SupportControlLight")
+        }
+
+    async def set_coaxial_control_state(
+        self, channel: int, dahua_type: int, enabled: bool
+    ) -> dict:
+        """Control a directly connected camera's deterrence output."""
+        return await self.request(
+            method="CoaxialControlIO.control",
+            params={
+                "channel": channel,
+                "info": [{"Type": dahua_type, "IO": 1 if enabled else 2, "TriggerMode": 2}],
+            },
+        )
+
     async def get_coaxial_control_io_status(self, channel: int) -> CoaxialControlIOStatus:
         """ async_get_coaxial_control_io_status returns the the current state of the speaker and white light. """
         response = await self.request(method="CoaxialControlIO.getStatus", params={"channel": channel})
-        return CoaxialControlIOStatus(response)
+        return CoaxialControlIOStatus(api_response=response)
 
     async def _async_get_privacy_mode_table(self) -> list:
         """Read the LeLensMask config table, logging in first if needed."""

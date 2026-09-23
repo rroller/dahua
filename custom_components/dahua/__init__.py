@@ -1209,6 +1209,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
+        self._supports_rpc2_siren = False
+        self._supports_rpc2_security_light = False
         self._alarm_output_slots = 0
         self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
         self._supports_disarming_linkage = False
@@ -1526,13 +1528,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._channel_number = self._channel
                 _LOGGER.debug("Using channel number %s (auto_detect=%s)", self._channel_number, auto_detect)
 
-                try:
-                    coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
-                    await self.client.async_get_coaxial_control_io_status(coaxial_channel)
-                    self._supports_coaxial_control = True
-                except PROBE_REFUSED as probe_error:
-                    self._note_probe_refusal("coaxial_control", probe_error)
-                    self._supports_coaxial_control = False
+                await self._async_probe_direct_deterrence()
+                if not self.uses_rpc2_deterrence():
+                    try:
+                        coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
+                        await self.client.async_get_coaxial_control_io_status(coaxial_channel)
+                        self._supports_coaxial_control = True
+                    except PROBE_REFUSED as probe_error:
+                        self._note_probe_refusal("coaxial_control", probe_error)
+                        self._supports_coaxial_control = False
                 _LOGGER.debug("Device supports Coaxial Control=%s", self._supports_coaxial_control)
 
                 try:
@@ -1783,7 +1787,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if self.supports_alarm_output() and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_alarm_output_state()))
             # The siren switch and the security light both read this one.
-            if self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
+            if self.uses_rpc2_deterrence() and self._wanted_by(LIGHT, SWITCH):
+                coros.append(asyncio.ensure_future(
+                    self.client.async_get_coaxial_control_io_status_rpc2()
+                ))
+            elif self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
                 coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
                 coros.append(
                     asyncio.ensure_future(
@@ -1829,7 +1837,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Only if it was not already fetched above: on a camera that both
             # supports the v2 API and reports a security light, this was being
             # requested twice on every poll.
-            if ((self.supports_security_light() or self.is_flood_light())
+            if (((self.supports_security_light() and not self.uses_rpc2_deterrence(1))
+                    or self.is_flood_light())
                     and not self._supports_lighting_v2 and self._wanted_by(LIGHT)):
                 light_v2 = await self.client.async_get_lighting_v2()
                 if light_v2 is not None:
@@ -2158,13 +2167,40 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return self._supports_profile_mode
 
+    async def _async_probe_direct_deterrence(self) -> None:
+        """Cache explicit capabilities once during direct-camera setup."""
+        self._supports_rpc2_siren = False
+        self._supports_rpc2_security_light = False
+        if self.is_nvr_channel():
+            return
+        try:
+            caps = await self.client.async_get_coaxial_control_io_caps_rpc2()
+            self._supports_rpc2_siren = caps.get("SupportControlSpeaker") is True
+            self._supports_rpc2_security_light = caps.get("SupportControlLight") is True
+        except Exception:  # Optional RPC2 support must not prevent legacy setup.
+            _LOGGER.debug("Direct-camera RPC2 deterrence probe failed; using model fallback", exc_info=True)
+
+    def uses_rpc2_deterrence(self, dahua_type: int | None = None) -> bool:
+        """Select RPC2 independently for each explicitly supported output."""
+        speaker = getattr(self, "_supports_rpc2_siren", False)
+        light = getattr(self, "_supports_rpc2_security_light", False)
+        if not (speaker or light) or self.is_nvr_channel():
+            return False
+        return {1: light, 2: speaker}.get(dahua_type, speaker or light)
+
     def supports_siren(self) -> bool:
         """
         Returns true if this camera has a siren. For example, the IPC-HDW3849HP-AS-PV does
         https://dahuawiki.com/Template:NameConvention
         """
         m = self.model.upper()
-        return "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
+        return (self.uses_rpc2_deterrence(2)
+                or "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
+                # TPC-BF1241-TB3F4-DW-S8-HW reports SupportControlSpeaker=0
+                # via getCaps, but its built-in siren is present and controllable.
+                # Apply the fallback to the family; other TPC-BF1241 variants
+                # have not yet been verified to behave the same way.
+                or m.startswith("TPC-BF1241"))
 
     def supports_nvr_active_deterrence(self) -> bool:
         """Return whether NVR active-deterrence entities were explicitly enabled."""
@@ -2178,7 +2214,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         m = self.model.upper()
         return (
-            "-AS-PV" in m
+            self.uses_rpc2_deterrence(1)
+            or "-AS-PV" in m
             or m == "AD410"
             or m == "DB61I"
             or m.startswith("IP8M-2796E")
