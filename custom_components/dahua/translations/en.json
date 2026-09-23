@@ -49,6 +49,9 @@
                 }
             }
         },
+        "progress": {
+            "discover": "Looking for other channels on this device. This can take up to {seconds} seconds."
+        },
         "error": {
             "auth": "The camera rejected that username and password.",
             "cannot_connect": "Nothing answered at that address and port. Check the camera is on, that the IP and port are right, and that Home Assistant can reach it.",

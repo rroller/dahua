@@ -20,6 +20,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from homeassistant.data_entry_flow import FlowResultType
+
 from custom_components.dahua.config_flow import DahuaFlowHandler
 from custom_components.dahua.const import (
     CONF_ADDRESS,
@@ -312,41 +314,30 @@ async def test_an_imported_channel_that_no_longer_answers_aborts():
     assert aborted["reason"] == "cannot_connect"
 
 
-# --- the routing, which nothing above exercises ------------------------------
+# --- the routing, and the wait the user is shown --------------------------
 
-async def test_finding_channels_leads_to_the_channels_step(monkeypatch):
-    """Discovery and the step were tested apart; this is the join between them."""
+def _routable(found):
+    """A flow sitting at the point where the search has already finished."""
+    flow = _flow()
+    flow._discovery_task = _finished(found)
+    return flow
+
+
+def _finished(value):
+    task = asyncio.Future()
+    task.set_result(value)
+    return task
+
+
+async def test_the_search_is_shown_as_a_wait():
+    """Up to DISCOVERY_TIMEOUT_SECONDS of nothing on screen reads as a hung
+    setup. The dialog says what is happening, and quotes the same ceiling the
+    code enforces rather than a number written out by hand."""
+    import custom_components.dahua.config_flow as flow_module
+
     flow = DahuaFlowHandler()
-    went = {}
-
-    async def credentials(*args):
-        return {"name": "Front", "serialNumber": "SER1"}, None
-
-    async def discover(user_input, exclude):
-        return {1: "BACKYARD"}
-
-    async def channels_step():
-        went["step"] = "channels"
-
-    async def name_step(data):
-        went["step"] = "name"
-
-    flow._test_credentials = credentials
-    flow._async_discover_channels = discover
-    flow.async_step_channels = channels_step
-    flow._show_config_form_name = name_step
-    flow.async_set_unique_id = _noop
-    flow._abort_if_unique_id_configured = lambda: None
-
-    await flow.async_step_user(_entry_data())
-
-    assert went["step"] == "channels"
-
-
-async def test_finding_none_goes_straight_to_naming(monkeypatch):
-    """A standalone camera must not gain a step that offers nothing."""
-    flow = DahuaFlowHandler()
-    went = {}
+    flow.hass = SimpleNamespace(
+        async_create_task=lambda coro: asyncio.ensure_future(coro))
 
     async def credentials(*args):
         return {"name": "Front", "serialNumber": "SER1"}, None
@@ -354,22 +345,63 @@ async def test_finding_none_goes_straight_to_naming(monkeypatch):
     async def discover(user_input, exclude):
         return {}
 
-    async def channels_step():
-        went["step"] = "channels"
-
-    async def name_step(data):
-        went["step"] = "name"
-
     flow._test_credentials = credentials
     flow._async_discover_channels = discover
-    flow.async_step_channels = channels_step
-    flow._show_config_form_name = name_step
     flow.async_set_unique_id = _noop
     flow._abort_if_unique_id_configured = lambda: None
 
-    await flow.async_step_user(_entry_data())
+    result = await flow.async_step_user(_entry_data())
 
-    assert went["step"] == "name"
+    assert result["type"] == FlowResultType.SHOW_PROGRESS
+    assert result["step_id"] == "discover"
+    assert result["description_placeholders"]["seconds"] == str(
+        flow_module.DISCOVERY_TIMEOUT_SECONDS)
+    await flow._discovery_task
+
+
+async def test_finding_channels_leads_to_the_channels_step():
+    """Discovery and the step are tested apart; this is the join between them."""
+    flow = _routable({1: "BACKYARD"})
+
+    result = await flow.async_step_discover()
+
+    assert result["type"] == FlowResultType.SHOW_PROGRESS_DONE
+    assert result["step_id"] == "channels"
+    assert flow._found_channels == {1: "BACKYARD"}
+
+
+async def test_finding_none_goes_straight_to_naming():
+    """A standalone camera must not gain a step that offers it nothing."""
+    flow = _routable({})
+
+    result = await flow.async_step_discover()
+
+    assert result["step_id"] == "name"
+
+
+async def test_abandoning_the_search_does_not_break_the_flow():
+    """A cancelled progress task raises out of .result(), and CancelledError is
+    not an Exception. Adding the one camera asked for must still work."""
+    flow = _flow()
+    flow._discovery_task = asyncio.Future()
+    flow._discovery_task.cancel()
+
+    result = await flow.async_step_discover()
+
+    assert result["step_id"] == "name"
+    assert flow._found_channels == {}
+
+
+async def test_the_name_form_opens_after_a_search_that_found_nothing():
+    """async_step_name was only ever reached with input before this. Progress
+    hands it None, and _show_config_form_name reads user_input[CONF_NAME]."""
+    flow = _flow()
+    shown = {}
+    flow.async_show_form = lambda **kw: shown.update(kw) or shown
+
+    await flow.async_step_name()
+
+    assert shown["step_id"] == "name"
 
 
 async def test_a_recorder_that_probes_forever_gives_up(monkeypatch):

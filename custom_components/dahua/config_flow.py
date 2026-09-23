@@ -155,6 +155,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         # index -> label, for the other channels of a recorder
         self._found_channels = {}
         self._extra_channels = []
+        self._discovery_task = None
 
     async def async_step_user(self, user_input=None):
         """Handle a flow initialized by the user to add a camera."""
@@ -186,15 +187,47 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
                 user_input[CONF_NAME] = data["name"]
                 self.init_info = user_input
-                self._found_channels = await self._async_discover_channels(
-                    user_input, int(user_input[CONF_CHANNEL]))
-                if self._found_channels:
-                    return await self.async_step_channels()
-                return await self._show_config_form_name(user_input)
+                return await self.async_step_discover()
             else:
                 self._errors["base"] = error or "auth"
 
         return await self._show_config_form_user(user_input)
+
+    async def async_step_discover(self, user_input=None):
+        """Look for the recorder's other channels, with the wait on screen.
+
+        Probing fifteen channels two at a time is slow enough that holding it
+        inside the previous step gives a form that looks hung, with nothing
+        saying why. As a progress step the dialog says what is happening and
+        roughly how long it can take, and DISCOVERY_TIMEOUT_SECONDS still
+        bounds it.
+
+        A standalone camera has no such table and refuses the first read, so
+        the dialog is brief rather than absent. That is the honest thing to
+        show: the search did happen.
+        """
+        if self._discovery_task is None:
+            self._discovery_task = self.hass.async_create_task(
+                self._async_discover_channels(
+                    self.init_info, int(self.init_info[CONF_CHANNEL])))
+            return self.async_show_progress(
+                step_id="discover",
+                progress_action="discover",
+                description_placeholders={
+                    "seconds": str(DISCOVERY_TIMEOUT_SECONDS)},
+                progress_task=self._discovery_task,
+            )
+
+        try:
+            self._found_channels = self._discovery_task.result()
+        except (Exception, asyncio.CancelledError):  # pylint: disable=broad-except
+            # _async_discover_channels swallows its own failures, so this is
+            # the flow being abandoned mid-search. Nothing to offer, and the
+            # camera the user actually asked for is still added.
+            self._found_channels = {}
+
+        return self.async_show_progress_done(
+            next_step_id="channels" if self._found_channels else "name")
 
     async def _async_discover_channels(self, user_input, exclude) -> dict:
         """Which other channels of this recorder have a live camera on them.
@@ -331,7 +364,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     data=self.init_info,
                 )
 
-        return await self._show_config_form_name(user_input)
+        return await self._show_config_form_name(user_input or self.init_info)
 
     def _queue_extra_channels(self) -> None:
         """Start a flow for each additional channel the user ticked.
