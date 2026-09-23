@@ -34,6 +34,79 @@ def hass_brightness_to_dahua_brightness(hass_brightness: int) -> int:
 _LOGGER = logging.getLogger(__name__)
 
 
+def parse_remote_devices(data) -> dict:
+    """Which channels a recorder says it has a camera on.
+
+    RemoteDevice carries one block per slot, keyed by an index inside a
+    uuid-ish name:
+
+        table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_11.Enable=true
+        table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_11.ProtocolType=Private
+
+    Returns {index: {"enabled": bool, "protocol": str}}.
+
+    Measured on a DHI-NVR5464-16P-EI: sixteen slots, fifteen enabled, one
+    of those reached over Onvif. The channel number is the index plus one.
+    """
+    if not isinstance(data, dict):
+        return {}
+    found = {}
+    for key, value in data.items():
+        match = re.search(r"INFO_(\d+)\.(\w+)$", str(key))
+        if not match:
+            continue
+        slot = found.setdefault(int(match.group(1)), {})
+        field = match.group(2)
+        if field == "Enable":
+            slot["enabled"] = str(value).strip().lower() == "true"
+        elif field == "ProtocolType":
+            slot["protocol"] = str(value).strip().lower()
+    for slot in found.values():
+        slot.setdefault("enabled", False)
+        slot.setdefault("protocol", "")
+    return found
+
+
+def parse_channel_titles(data) -> dict:
+    """The name a recorder holds for each channel, by index.
+
+        table.ChannelTitle[0].Name=FRONT STREET
+
+    Only useful for labelling. Unconfigured slots carry defaults, and those
+    defaults are not consistent even within one recorder: `Channel11`,
+    `Channel 1`, `Channel16` and `IPC` all appeared on the same device. So a
+    name says nothing about whether a camera is there, and nothing here tries
+    to read anything into it.
+    """
+    if not isinstance(data, dict):
+        return {}
+    titles = {}
+    for key, value in data.items():
+        match = re.search(r"ChannelTitle\[(\d+)\]\.Name$", str(key))
+        if match:
+            titles[int(match.group(1))] = str(value).strip()
+    return titles
+
+
+def channels_worth_offering(devices: dict) -> list:
+    """The channel indexes worth probing, in order.
+
+    A slot that is switched off has no camera. A slot reached over Onvif
+    has one, and this integration cannot drive it: the recorder does not
+    serve such a channel on its own Dahua paths, so snapshot answers 400
+    and RTSP times out (#710). Offering it would add an entry that can
+    never work.
+
+    Being enabled is necessary and not sufficient. A camera removed from
+    the recorder leaves its slot enabled with a stale serial, and only a
+    probe tells the difference, which is why the caller probes.
+    """
+    return sorted(
+        index for index, slot in devices.items()
+        if slot.get("enabled") and slot.get("protocol") != "onvif"
+    )
+
+
 def parse_overlay_lines(value) -> list:
     """Split a stored overlay value into the lines it was written from.
 

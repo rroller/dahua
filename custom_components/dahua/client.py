@@ -1630,6 +1630,16 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable customer overlay")
 
+    async def async_get_remote_devices(self) -> dict:
+        """Read the recorder's camera slots.
+
+        Host wide, and only meaningful on a recorder. A standalone camera
+        either has no such table or reports nothing useful, and the caller
+        treats an empty answer as "nothing to offer".
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice")
+
     async def async_get_video_widget(self) -> dict:
         """Read the overlay configuration.
 

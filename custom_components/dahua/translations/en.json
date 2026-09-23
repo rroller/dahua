@@ -16,6 +16,13 @@
                     "channel": "Channel (a single camera is 0. On an NVR this is the 0-based index, which is one less than the number the recorder shows: its channel 4 is 3 here)"
                 }
             },
+            "channels": {
+                "title": "Add other channels",
+                "description": "This recorder has other channels with a camera on them. Tick any you want added now. Channels that are empty, switched off, or reached over ONVIF are not listed, because this integration cannot drive them.",
+                "data": {
+                    "extra_channels": "Channels to add"
+                }
+            },
             "name": {
                 "title": "Configure Device Name",
                 "data": {
