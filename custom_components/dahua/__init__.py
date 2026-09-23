@@ -221,6 +221,20 @@ MAX_LIGHTING_V2_LIGHTS = 4
 # exposes more than one keeps the bank this integration has always used.
 LIGHT_BRIGHTNESS_BANKS = ("MiddleLight", "NearLight", "FarLight")
 
+# Lorex E893DD has a verified RPC2 siren implementation even when
+# CoaxialControlIO.getCaps does not advertise the capability correctly.
+# Keep this intentionally narrow to avoid affecting unrelated cameras.
+DIRECT_RPC2_DETERRENCE_MODEL_FALLBACKS = {
+    "E893DD": frozenset({2}),
+}
+
+def direct_rpc2_deterrence_model_types(model: str) -> frozenset[int]:
+    """Return model-verified RPC2 deterrence output types."""
+    return DIRECT_RPC2_DETERRENCE_MODEL_FALLBACKS.get(
+        (model or "").strip().upper(),
+        frozenset(),
+    )
+
 
 def illuminator_brightness_bank(data: dict, channel: int, profile_mode, light_index: int) -> str:
     """Which brightness bank this light actually uses on this device.
@@ -2179,6 +2193,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._supports_rpc2_security_light = caps.get("SupportControlLight") is True
         except Exception:  # Optional RPC2 support must not prevent legacy setup.
             _LOGGER.debug("Direct-camera RPC2 deterrence probe failed; using model fallback", exc_info=True)
+            fallback_types = direct_rpc2_deterrence_model_types(self.model)
+
+        if fallback_types:
+            self._supports_rpc2_siren |= 2 in fallback_types
+            self._supports_rpc2_security_light |= 1 in fallback_types
+
+            _LOGGER.debug(
+                "Using model-verified RPC2 deterrence capabilities for %s: "
+                "speaker=%s light=%s",
+                self.model,
+                self._supports_rpc2_siren,
+                self._supports_rpc2_security_light,
+            )
 
     def uses_rpc2_deterrence(self, dahua_type: int | None = None) -> bool:
         """Select RPC2 independently for each explicitly supported output."""
