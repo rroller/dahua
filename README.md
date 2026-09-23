@@ -62,10 +62,10 @@ To manually install:
 
 ```bash
 # Download a copy of this repository
-$ wget https://github.com/rroller/dahua/archive/dahua-main.zip
+$ wget https://github.com/rroller/dahua/archive/refs/heads/main.zip
 
 # Unzip the archive
-$ unzip dahua-main.zip
+$ unzip main.zip
 
 # Move the dahua directory into your custom_components directory in your Home Assistant install
 $ mv dahua-main/custom_components/dahua <home-assistant-install-directory>/config/custom_components/
