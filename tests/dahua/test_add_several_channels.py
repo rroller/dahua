@@ -15,6 +15,7 @@ What matters here:
 - each extra channel becomes its own flow, carrying the same credentials and its
   own channel number
 """
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,10 @@ from custom_components.dahua.const import (
     CONF_RTSP_PORT,
     CONF_USERNAME,
 )
+
+async def _noop(*args, **kwargs):
+    return None
+
 
 INFO = "table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_{0}.{1}"
 
@@ -184,7 +189,11 @@ async def test_choosing_channels_records_them_and_moves_on():
     flow = _flow()
     flow._found_channels = {1: "BACKYARD", 2: "DRIVEWAY"}
     shown = {}
-    flow._show_config_form_name = lambda data: shown.setdefault("data", data)
+
+    async def show(data):
+        shown["data"] = data
+
+    flow._show_config_form_name = show
 
     await flow.async_step_channels({CONF_EXTRA_CHANNELS: ["1", "2"]})
 
@@ -195,7 +204,10 @@ async def test_choosing_channels_records_them_and_moves_on():
 async def test_choosing_none_queues_nothing():
     flow = _flow()
     flow._found_channels = {1: "BACKYARD"}
-    flow._show_config_form_name = lambda data: None
+    async def show(data):
+        return None
+
+    flow._show_config_form_name = show
 
     await flow.async_step_channels({CONF_EXTRA_CHANNELS: []})
 
@@ -298,3 +310,81 @@ async def test_an_imported_channel_that_no_longer_answers_aborts():
     await flow.async_step_import(_entry_data(channel=3))
 
     assert aborted["reason"] == "cannot_connect"
+
+
+# --- the routing, which nothing above exercises ------------------------------
+
+async def test_finding_channels_leads_to_the_channels_step(monkeypatch):
+    """Discovery and the step were tested apart; this is the join between them."""
+    flow = DahuaFlowHandler()
+    went = {}
+
+    async def credentials(*args):
+        return {"name": "Front", "serialNumber": "SER1"}, None
+
+    async def discover(user_input, exclude):
+        return {1: "BACKYARD"}
+
+    async def channels_step():
+        went["step"] = "channels"
+
+    async def name_step(data):
+        went["step"] = "name"
+
+    flow._test_credentials = credentials
+    flow._async_discover_channels = discover
+    flow.async_step_channels = channels_step
+    flow._show_config_form_name = name_step
+    flow.async_set_unique_id = _noop
+    flow._abort_if_unique_id_configured = lambda: None
+
+    await flow.async_step_user(_entry_data())
+
+    assert went["step"] == "channels"
+
+
+async def test_finding_none_goes_straight_to_naming(monkeypatch):
+    """A standalone camera must not gain a step that offers nothing."""
+    flow = DahuaFlowHandler()
+    went = {}
+
+    async def credentials(*args):
+        return {"name": "Front", "serialNumber": "SER1"}, None
+
+    async def discover(user_input, exclude):
+        return {}
+
+    async def channels_step():
+        went["step"] = "channels"
+
+    async def name_step(data):
+        went["step"] = "name"
+
+    flow._test_credentials = credentials
+    flow._async_discover_channels = discover
+    flow.async_step_channels = channels_step
+    flow._show_config_form_name = name_step
+    flow.async_set_unique_id = _noop
+    flow._abort_if_unique_id_configured = lambda: None
+
+    await flow.async_step_user(_entry_data())
+
+    assert went["step"] == "name"
+
+
+async def test_a_recorder_that_probes_forever_gives_up(monkeypatch):
+    """The ceiling. Sixteen channels at one request timeout each, two at a
+    time, is minutes of a form that looks frozen during setup."""
+    import custom_components.dahua.config_flow as flow_module
+
+    class _Slow(_Client):
+        async def async_probe_snapshot(self, channel_number):
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(flow_module, "DISCOVERY_TIMEOUT_SECONDS", 0.1)
+    client = _Slow(
+        slots={0: (True, "Private"), 1: (True, "Private")}, live=[0, 1])
+
+    found = await _discover(monkeypatch, client, exclude=0)
+
+    assert found == {}, "a hung recorder must not hold the form open"
