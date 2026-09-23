@@ -44,10 +44,17 @@ https://developers.home-assistant.io/docs/data_entry_flow_index/
 """
 
 SSL_CONTEXT = ssl.create_default_context()
+
 #SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
 SSL_CONTEXT.set_ciphers("DEFAULT")
 SSL_CONTEXT.check_hostname = False
 SSL_CONTEXT.verify_mode = ssl.CERT_NONE
+
+# How long the whole look for a recorder's other channels may take.
+# Bounds the probe fan-out, which is otherwise one request timeout per
+# channel, two at a time. Running out means nothing is offered, which is
+# the same outcome as a device that has no channels to offer.
+DISCOVERY_TIMEOUT_SECONDS = 30
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -246,8 +253,15 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
             # The client's own per-host limit holds this to two at a time, so
             # gathering does not turn setup into a burst the recorder has to
-            # absorb.
-            answered = await asyncio.gather(*[live(i) for i in candidates])
+            # absorb. That limit is also why the whole thing needs a ceiling:
+            # sixteen channels, two at a time, each able to spend
+            # TIMEOUT_SECONDS before giving up, is long enough that a recorder
+            # which has stopped answering would leave the form looking frozen
+            # for minutes. Nothing here is worth that -- discovery is a
+            # convenience, and not offering anything is a fine outcome.
+            answered = await asyncio.wait_for(
+                asyncio.gather(*[live(i) for i in candidates]),
+                DISCOVERY_TIMEOUT_SECONDS)
             return {
                 index: titles.get(index) or "Channel {0}".format(index + 1)
                 for index in answered if index is not None
