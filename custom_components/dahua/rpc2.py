@@ -392,14 +392,18 @@ class DahuaRpc2Client:
         }
 
     async def set_coaxial_control_state(
-        self, channel: int, dahua_type: int, enabled: bool
+        self, channel: int, dahua_type: int, enabled: bool, off_io: int = 2
     ) -> dict:
         """Control a directly connected camera's deterrence output."""
         return await self.request(
             method="CoaxialControlIO.control",
             params={
                 "channel": channel,
-                "info": [{"Type": dahua_type, "IO": 1 if enabled else 2, "TriggerMode": 2}],
+                "info": [{
+                    "Type": dahua_type,
+                    "IO": 1 if enabled else off_io,
+                    "TriggerMode": 2,
+                }],
             },
         )
 

@@ -1229,7 +1229,6 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
 
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
-        channel = self._coordinator.get_channel()
         if self._coordinator.uses_recorder_deterrence():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, True
@@ -1237,20 +1236,40 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         elif self._coordinator.uses_rpc2_deterrence(SECURITY_LIGHT_TYPE):
             await self._coordinator.client.async_set_coaxial_control_state_rpc2(SECURITY_LIGHT_TYPE, True)
         else:
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+            await self._coordinator.client.async_set_coaxial_control_state(
+                self._coordinator.get_security_light_control_channel(),
+                SECURITY_LIGHT_TYPE,
+                True,
+            )
         await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
-        channel = self._coordinator.get_channel()
         if self._coordinator.uses_recorder_deterrence():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, False
             )
         elif self._coordinator.uses_rpc2_deterrence(SECURITY_LIGHT_TYPE):
-            await self._coordinator.client.async_set_coaxial_control_state_rpc2(SECURITY_LIGHT_TYPE, False)
+            off_io = self._coordinator.get_security_light_off_io()
+            if off_io == 2:
+                await self._coordinator.client.async_set_coaxial_control_state_rpc2(
+                    SECURITY_LIGHT_TYPE, False
+                )
+            else:
+                await self._coordinator.client.async_set_coaxial_control_state_rpc2(
+                    SECURITY_LIGHT_TYPE, False, off_io
+                )
         else:
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
+            channel = self._coordinator.get_security_light_control_channel()
+            off_io = self._coordinator.get_security_light_off_io()
+            if off_io == 2:
+                await self._coordinator.client.async_set_coaxial_control_state(
+                    channel, SECURITY_LIGHT_TYPE, False
+                )
+            else:
+                await self._coordinator.client.async_set_coaxial_control_state(
+                    channel, SECURITY_LIGHT_TYPE, False, off_io
+                )
         await self._coordinator.async_refresh()
 
     @property
