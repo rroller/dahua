@@ -753,9 +753,14 @@ class DahuaClient:
             subtype,
         )
         if subtype == 3:
+            # Quoted for the same reason as above: a password containing @, :
+            # or / makes the URL parse as something else entirely, and the
+            # error surfaces from the stream worker as "Port could not be cast
+            # to integer value" rather than as anything about a password
+            # (#362). This branch was missed when the main path was fixed.
             url = "rtsp://{0}:{1}@{2}".format(
-                self._username,
-                self._password,
+                quote(self._username, safe=''),
+                quote(self._password, safe=''),
                 self._address,
             )
 
