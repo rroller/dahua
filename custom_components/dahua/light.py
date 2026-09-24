@@ -465,7 +465,22 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
                 channel, profile, index
             )
         )
-        return self._override_matches(mode, brightness)
+        if not self._override_matches(mode, brightness):
+            return False
+
+        if self._scheme_restore is not None:
+            scheme_channel, scheme_profile, previous_scheme = self._scheme_restore
+            current_scheme = (
+                await self._coordinator.client.async_get_lighting_scheme_mode(
+                    scheme_channel, scheme_profile
+                )
+            )
+            # Some cameras revert WhiteMode themselves while the HA Manual
+            # override remains active. A third mode is an external change.
+            if current_scheme not in ("WhiteMode", previous_scheme):
+                return False
+
+        return True
 
     async def _async_release_externally_changed_override(self):
         """Release HA ownership after another control path changes the light."""

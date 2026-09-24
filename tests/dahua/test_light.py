@@ -466,6 +466,39 @@ async def test_external_change_is_preserved_on_off_and_restart(restart, mode, br
     assert (c.client.light_mode, c.client.light_brightness) == (mode, brightness)
 
 
+async def test_external_scheme_change_is_preserved_on_off():
+    """A Web UI scheme change must not be replaced by HA's saved baseline."""
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c.client.scheme = "InfraredMode"
+    c.client.operations.clear()
+
+    await light.async_turn_off()
+
+    assert c.client.operations == []
+    assert c.client.scheme == "InfraredMode"
+    assert c.client.light_mode == "Manual"
+    assert light._restore_store.data is None
+    assert light.is_on is False
+
+
+async def test_camera_reverting_scheme_to_baseline_still_restores_light():
+    """A camera's own WhiteMode reversion must not block OFF cleanup."""
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c.client.scheme = "AIMode"
+    c.client.operations.clear()
+
+    await light.async_turn_off()
+
+    assert c.client.light_mode == "Manual"
+    assert c.client.light_brightness == 64
+    assert c.client.scheme == "AIMode"
+    assert light._restore_store.data is None
+
+
 async def test_interrupted_restore_resumes_after_restart(monkeypatch):
     c = _Coordinator()
     light = _light(DahuaIlluminator, c, "Illuminator")
