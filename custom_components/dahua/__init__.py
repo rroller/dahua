@@ -221,12 +221,18 @@ MAX_LIGHTING_V2_LIGHTS = 4
 # exposes more than one keeps the bank this integration has always used.
 LIGHT_BRIGHTNESS_BANKS = ("MiddleLight", "NearLight", "FarLight")
 
-# Lorex E893DD has a verified RPC2 siren implementation even when
-# CoaxialControlIO.getCaps does not advertise the capability correctly.
-# Keep this intentionally narrow to avoid affecting unrelated cameras.
+# Lorex E893DD has verified RPC2 deterrence outputs even when
+# CoaxialControlIO.getCaps does not advertise them correctly.
+#
+# Verified from the camera WebUI:
+#   Type=1 -> Warning Light
+#   Type=2 -> Siren
+#
+# Keep this intentionally narrow to avoid affecting unrelated models.
 DIRECT_RPC2_DETERRENCE_MODEL_FALLBACKS = {
-    "E893DD": frozenset({2}),
+    "E893DD": frozenset({1, 2}),
 }
+
 
 def direct_rpc2_deterrence_model_types(model: str) -> frozenset[int]:
     """Return model-verified RPC2 deterrence output types."""
@@ -234,7 +240,6 @@ def direct_rpc2_deterrence_model_types(model: str) -> frozenset[int]:
         (model or "").strip().upper(),
         frozenset(),
     )
-
 
 def illuminator_brightness_bank(data: dict, channel: int, profile_mode, light_index: int) -> str:
     """Which brightness bank this light actually uses on this device.
@@ -2180,7 +2185,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         profile sensor exists only where the profile is ever updated.
         """
         return self._supports_profile_mode
-
+    
     async def _async_probe_direct_deterrence(self) -> None:
         """Cache explicit capabilities once during direct-camera setup."""
         self._supports_rpc2_siren = False
@@ -2193,7 +2198,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._supports_rpc2_security_light = caps.get("SupportControlLight") is True
         except Exception:  # Optional RPC2 support must not prevent legacy setup.
             _LOGGER.debug("Direct-camera RPC2 deterrence probe failed; using model fallback", exc_info=True)
-            fallback_types = direct_rpc2_deterrence_model_types(self.model)
+        fallback_types = direct_rpc2_deterrence_model_types(self.model)
 
         if fallback_types:
             self._supports_rpc2_siren |= 2 in fallback_types
