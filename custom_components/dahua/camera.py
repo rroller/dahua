@@ -15,6 +15,7 @@ from custom_components.dahua.model_profiles import is_sdt4e425
 from custom_components.dahua.vto import CancelCallRefused
 
 from .const import (
+    CONF_DISABLE_BACKCHANNEL,
     DOMAIN,
 )
 
@@ -326,6 +327,19 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         "async_goto_preset_position"
     )
 
+def rtsp_stream_source(url: str, disable_backchannel: bool) -> str:
+    """The RTSP URL handed to Home Assistant's stream consumers.
+
+    go2rtc opens the RTSP backchannel (two-way audio) by default and holds it
+    for as long as it streams. Doorbells only have one, so while HA watches,
+    the doorbell shows a call in progress and the vendor app cannot talk.
+    go2rtc reads the #backchannel=0 fragment and leaves the channel alone.
+    """
+    if disable_backchannel:
+        return url + "#backchannel=0"
+    return url
+
+
 class DahuaCamera(DahuaBaseEntity, Camera):
     """An implementation of a Dahua IP camera."""
 
@@ -353,8 +367,9 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         self._unique_id = coordinator.get_serial_number() + "_" + suffix
         self._stream_index = stream_index
         self._motion_status = False
-        self._stream_source = coordinator.client.get_rtsp_stream_url(
-            self._channel_number, stream_index
+        self._stream_source = rtsp_stream_source(
+            coordinator.client.get_rtsp_stream_url(self._channel_number, stream_index),
+            config_entry.options.get(CONF_DISABLE_BACKCHANNEL, False),
         )
 
     @property

@@ -1985,7 +1985,9 @@ class DahuaClient:
         StorageFailure: storage failure event.
         StorageLowSpace: storage low space event.
         AlarmOutput: alarm output event.
-        InterVideoAccess: I don't know what this is
+        InterVideoAccess: access to the device's own interface, web logins and
+            logouts among them. The specific action is in Data.Type, for example
+            {"Type": "WebAllLogout"}. Arrives as a Pulse. Reported in #240.
         NTPAdjustTime: NTP time updates?
         TimeChange: Some event for time changes, related to NTPAdjustTime
         MDResult: motion detection data reporting event. The motion detect window contains 18 rows and 22 columns. The event info contains motion detect data with mask of every row.
