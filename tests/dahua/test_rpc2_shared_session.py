@@ -56,6 +56,27 @@ def _fresh():
     client_module._HOST_RPC2_UNAVAILABLE.clear()
 
 
+
+@pytest.fixture(autouse=True)
+async def _stop_rpc2_keepalives(hass):
+    """Cancel and await the keepalive tasks before Home Assistant looks.
+
+    conftest clears the registry, but clearing is not stopping: cancel() only
+    schedules the cancellation, and a task still pending at teardown fails the
+    test. Asking for `hass` puts this before Home Assistant's own teardown.
+    """
+    yield
+    from custom_components.dahua import client as client_module
+
+    pending = []
+    for holder in list(client_module._HOST_RPC2.values()):
+        if holder.keepalive is not None and not holder.keepalive.done():
+            holder.keepalive.cancel()
+            pending.append(holder.keepalive)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 def _client(session, address="10.0.0.1", username="u"):
     return DahuaClient(username, "p", address, 80, 554, session, use_rpc2=True)
 

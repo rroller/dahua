@@ -29,6 +29,31 @@ def _clean_streams():
     dahua_module._HOST_STREAMS.clear()
 
 
+
+@pytest.fixture(autouse=True)
+async def _stop_host_streams(hass):
+    """Cancel and await each host stream's task before Home Assistant looks.
+
+    Two things make this necessary. cancel() only schedules the cancellation,
+    so a merely-cancelled task is still pending, and Home Assistant fails a
+    test that leaves one behind. And asking for `hass` is what gets the timing
+    right: a fixture that requests another is torn down before it, so this runs
+    while there is still a loop to finish the task on.
+    """
+    yield
+    from custom_components import dahua as dahua_module
+
+    pending = []
+    for stream in list(dahua_module._HOST_STREAMS.values()):
+        task = getattr(stream, "_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            pending.append(task)
+    dahua_module._HOST_STREAMS.clear()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 class _Client:
     """Holds the stream open so the task stays alive, and records the attach."""
 

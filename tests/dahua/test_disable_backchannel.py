@@ -8,7 +8,10 @@ option adds go2rtc's #backchannel=0 to the stream source.
 from types import SimpleNamespace
 
 from custom_components.dahua.camera import DahuaCamera, rtsp_stream_source
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.dahua.config_flow import DahuaOptionsFlowHandler
+from custom_components.dahua.const import DOMAIN
 
 URL = "rtsp://host:554/cam/realmonitor?channel=1&subtype=0"
 
@@ -72,9 +75,17 @@ def _schema_defaults(result):
 
 
 async def _shown_options_form(hass, entry):
+    registered = MockConfigEntry(
+        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options))
+    registered.add_to_hass(hass)
+
     handler = DahuaOptionsFlowHandler()
     handler.hass = hass
-    handler._config_entry = entry
+    # Home Assistant resolves config_entry by looking the id up in hass, so the
+    # entry has to be registered there and the flow's handler has to carry that
+    # id. Assigning the entry onto the handler, by any attribute name, stopped
+    # working once the id became the only link.
+    handler.handler = registered.entry_id
     handler.options = dict(entry.options)
     return await handler.async_step_user()
 
