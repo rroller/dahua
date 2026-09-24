@@ -1,8 +1,10 @@
 """This component provides basic support for Dahua IP cameras."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import voluptuous as vol
+from aiohttp import ClientError
 
 from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
@@ -378,9 +380,27 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         return self._unique_id
 
     async def async_camera_image(self, width: int | None = None, height: int | None = None):
-        """Return a still image response from the camera."""
-        # Send the request to snap a picture and return raw jpg data
-        return await self._coordinator.client.async_get_snapshot(self._channel_number)
+        """Return a still image response from the camera, or None if it refused.
+
+        These devices refuse a snapshot under load, and a recorder refuses more
+        often because every channel is competing for the same box. Letting that
+        out of here turns an ordinary transient refusal into a failed
+        `camera.snapshot` service call, which is what #290 is: an automation
+        that saves a picture stops working for reasons that have nothing to do
+        with the automation.
+
+        Returning None is what Home Assistant expects from a camera that cannot
+        produce an image right now, and it leaves the previous one in place
+        rather than replacing it with an error.
+
+        Only transport failures are caught. Anything else still comes out,
+        because a bug in here should not be quietly turned into a blank frame.
+        """
+        try:
+            return await self._coordinator.client.async_get_snapshot(self._channel_number)
+        except (ClientError, TimeoutError, asyncio.TimeoutError) as error:
+            _LOGGER.debug("%s: could not fetch a snapshot: %s", self._name, error)
+            return None
 
     @property
     def supported_features(self):
