@@ -48,6 +48,10 @@ def _refcount(address=ADDRESS):
 def _entry(hass, address=ADDRESS):
     entry = MockConfigEntry(domain=DOMAIN, data={**DATA, "address": address})
     entry.add_to_hass(hass)
+    # Every test here is about to set this entry up, and Home Assistant insists
+    # the coordinator's first refresh happens during setup, so the entry has to
+    # be in the state real setup would have put it in.
+    entry._async_set_state(hass, ConfigEntryState.SETUP_IN_PROGRESS, None)
     return entry
 
 
@@ -79,15 +83,10 @@ def _no_platforms(hass):
 
 
 async def _try_setup(hass, entry):
-    # Home Assistant insists the coordinator's first refresh happens while the
-    # entry is being set up, so the entry has to be in the state real setup
-    # would have put it in before async_setup_entry is called.
-    #
     # Calling async_setup_entry directly rather than going through
     # hass.config_entries.async_setup is deliberate: these tests are about what
     # the function gives back when it fails, and the flow manager turns that
     # into an entry state instead of letting the exception out.
-    entry._async_set_state(hass, ConfigEntryState.SETUP_IN_PROGRESS, None)
     try:
         await dahua_module.async_setup_entry(hass, entry)
     except Exception:
