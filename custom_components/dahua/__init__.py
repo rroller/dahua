@@ -2208,11 +2208,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         Recorder deterrence stays the explicit opt-in it already is.
         """
-        if self.is_nvr_channel():
-            return False
         # getattr, like the RPC2 flags above: plenty of tests build a
         # coordinator with object.__new__ and set only what they are about.
-        return getattr(self, "_coaxial_outputs", {}).get(name, False)
+        # Asking what was reported first also means a device that reported
+        # nothing never has to work out whether it is a recorder channel,
+        # which is the same short-circuit uses_rpc2_deterrence relies on.
+        if not getattr(self, "_coaxial_outputs", {}).get(name, False):
+            return False
+        return not self.is_nvr_channel()
 
     def supports_siren(self) -> bool:
         """
