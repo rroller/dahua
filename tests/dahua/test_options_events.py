@@ -3,7 +3,10 @@
 from types import SimpleNamespace
 
 from custom_components.dahua import get_configured_events
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.dahua.config_flow import DahuaOptionsFlowHandler
+from custom_components.dahua.const import DOMAIN
 
 SETUP_EVENTS = ["VideoMotion", "CrossLineDetection", "AudioMutation"]
 CHOSEN_EVENTS = ["VideoMotion"]

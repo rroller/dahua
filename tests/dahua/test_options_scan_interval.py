@@ -4,8 +4,14 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 from custom_components.dahua import get_configured_scan_interval
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.dahua.config_flow import DahuaOptionsFlowHandler
-from custom_components.dahua.const import DEFAULT_SCAN_INTERVAL, MIN_SCAN_INTERVAL
+from custom_components.dahua.const import (
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    MIN_SCAN_INTERVAL,
+)
 
 
 def _entry(**options):

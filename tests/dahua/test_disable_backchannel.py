@@ -8,7 +8,10 @@ option adds go2rtc's #backchannel=0 to the stream source.
 from types import SimpleNamespace
 
 from custom_components.dahua.camera import DahuaCamera, rtsp_stream_source
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.dahua.config_flow import DahuaOptionsFlowHandler
+from custom_components.dahua.const import DOMAIN
 
 URL = "rtsp://host:554/cam/realmonitor?channel=1&subtype=0"
 
