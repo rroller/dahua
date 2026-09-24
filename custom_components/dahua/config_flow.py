@@ -259,7 +259,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         one camera must not start depending on a recorder-only table.
         """
         session = ClientSession(
-            connector=TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT))
+            connector=TCPConnector(ssl=SSL_CONTEXT))
         try:
             client = DahuaClient(
                 user_input[CONF_USERNAME], user_input[CONF_PASSWORD],
@@ -537,7 +537,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         magicBox.cgi are added exactly as before.
         """
         # Self signed certs are used over HTTPS so we'll disable SSL verification
-        connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
+        connector = TCPConnector(ssl=SSL_CONTEXT)
         session = ClientSession(connector=connector)
         try:
             client = DahuaClient(username, password, address, port, rtsp_port, session, use_https)
