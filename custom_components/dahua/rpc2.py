@@ -291,6 +291,38 @@ class DahuaRpc2Client:
             },
         )
 
+    async def async_open_door(self, channel: int, door_index: int = 0,
+                             short_number: str = "HA") -> dict:
+        """Open a door over RPC2, for VTOs with no accessControl CGI endpoint.
+
+        Three calls, the way myhomeiot/DahuaVTO does it: an object from the
+        factory, the action on that object, and destroy. The destroy is in a
+        finally because the object is the device's, not ours -- leaking one on
+        a doorbell is a real cost, and it must happen even when openDoor fails.
+
+        `channel` is 0-based here, matching the factory's own convention.
+        """
+        made = await self.request(
+            method="accessControl.factory.instance", params={"channel": channel})
+        object_id = made.get("result")
+        if isinstance(object_id, bool) or not isinstance(object_id, int) or object_id <= 0:
+            raise ConnectionError(
+                "Dahua RPC2 accessControl.factory.instance returned no object")
+        try:
+            return await self.request(
+                method="accessControl.openDoor",
+                object_id=object_id,
+                params={"DoorIndex": door_index, "ShortNumber": short_number},
+            )
+        finally:
+            try:
+                await self.request(method="accessControl.destroy",
+                                   object_id=object_id, verify_result=False)
+            except Exception:  # pylint: disable=broad-except
+                # Losing the door's result to a failed cleanup would be worse
+                # than leaking the object, so this never raises.
+                _LOGGER.debug("accessControl.destroy failed", exc_info=True)
+
     async def get_coaxial_control_io_status(self, channel: int) -> CoaxialControlIOStatus:
         """ async_get_coaxial_control_io_status returns the the current state of the speaker and white light. """
         response = await self.request(method="CoaxialControlIO.getStatus", params={"channel": channel})
