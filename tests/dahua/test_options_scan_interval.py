@@ -53,11 +53,17 @@ def _validators(result):
 
 
 async def _shown_options_form(hass, entry):
+    registered = MockConfigEntry(
+        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options))
+    registered.add_to_hass(hass)
+
     handler = DahuaOptionsFlowHandler()
     handler.hass = hass
-    # Assigning config_entry is deprecated and raises under the test harness;
-    # set the attribute Home Assistant's own flow manager populates.
-    handler._config_entry = entry
+    # Home Assistant resolves config_entry by looking the id up in hass, so the
+    # entry has to be registered there and the flow's handler has to carry that
+    # id. Assigning the entry onto the handler, by any attribute name, stopped
+    # working once the id became the only link.
+    handler.handler = registered.entry_id
     handler.options = dict(entry.options)
     return await handler.async_step_user()
 
