@@ -2195,7 +2195,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         m = self.model.upper()
         return (self.uses_rpc2_deterrence(2)
-                or "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
+                or "AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
                 # TPC-BF1241-TB3F4-DW-S8-HW reports SupportControlSpeaker=0
                 # via getCaps, but its built-in siren is present and controllable.
                 # Apply the fallback to the family; other TPC-BF1241 variants
@@ -2215,7 +2215,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         m = self.model.upper()
         return (
             self.uses_rpc2_deterrence(1)
-            or "-AS-PV" in m
+            or "AS-PV" in m
             or m == "AD410"
             or m == "DB61I"
             or m.startswith("IP8M-2796E")
