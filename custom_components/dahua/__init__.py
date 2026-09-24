@@ -2210,7 +2210,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         if self.is_nvr_channel():
             return False
-        return self._coaxial_outputs.get(name, False)
+        # getattr, like the RPC2 flags above: plenty of tests build a
+        # coordinator with object.__new__ and set only what they are about.
+        return getattr(self, "_coaxial_outputs", {}).get(name, False)
 
     def supports_siren(self) -> bool:
         """
