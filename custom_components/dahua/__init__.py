@@ -1209,6 +1209,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
+        # Which deterrence outputs the device named itself, if any.
+        self._coaxial_outputs = {"speaker": False, "light": False}
         self._supports_rpc2_siren = False
         self._supports_rpc2_security_light = False
         self._alarm_output_slots = 0
@@ -1532,8 +1534,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if not self.uses_rpc2_deterrence():
                     try:
                         coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
-                        await self.client.async_get_coaxial_control_io_status(coaxial_channel)
+                        status = await self.client.async_get_coaxial_control_io_status(coaxial_channel)
                         self._supports_coaxial_control = True
+                        # The reply names the outputs the device has, and it is
+                        # already being fetched, so reading it costs nothing.
+                        # What it means is decided in _reported_coaxial_output;
+                        # this only records what was said.
+                        self._coaxial_outputs = dahua_utils.coaxial_outputs_reported(status)
+                        _LOGGER.debug("Device reports coaxial outputs=%s", self._coaxial_outputs)
                     except PROBE_REFUSED as probe_error:
                         self._note_probe_refusal("coaxial_control", probe_error)
                         self._supports_coaxial_control = False
@@ -2188,6 +2196,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return False
         return {1: light, 2: speaker}.get(dahua_type, speaker or light)
 
+    def _reported_coaxial_output(self, name: str) -> bool:
+        """Whether the device named this output, where that means anything.
+
+        A recorder names both outputs for every channel that exists, whatever
+        is behind it. Measured on a DHI-NVR5464-16P-EI: ten channels with no
+        siren and no deterrence light between them all answered
+        `Speaker=Off` and `WhiteLight=Off`, and a slot with nothing in it
+        answered 400. So on a recorder the fields say the channel exists, and
+        reading them as capabilities would put a siren on all ten.
+
+        Recorder deterrence stays the explicit opt-in it already is.
+        """
+        if self.is_nvr_channel():
+            return False
+        return self._coaxial_outputs.get(name, False)
+
     def supports_siren(self) -> bool:
         """
         Returns true if this camera has a siren. For example, the IPC-HDW3849HP-AS-PV does
@@ -2195,6 +2219,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         m = self.model.upper()
         return (self.uses_rpc2_deterrence(2)
+                or self._reported_coaxial_output("speaker")
                 or "-AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
                 # TPC-BF1241-TB3F4-DW-S8-HW reports SupportControlSpeaker=0
                 # via getCaps, but its built-in siren is present and controllable.
@@ -2215,6 +2240,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         m = self.model.upper()
         return (
             self.uses_rpc2_deterrence(1)
+            or self._reported_coaxial_output("light")
             or "-AS-PV" in m
             or m == "AD410"
             or m == "DB61I"

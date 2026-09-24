@@ -439,3 +439,53 @@ def extract_plate_data(event: dict) -> dict | None:
         "timestamp": event.get("UTC") or data.get("UTC") or data.get("LocaleTime"),
     }
 
+
+
+def coaxial_outputs_reported(data) -> dict:
+    """Which deterrence outputs a device names in its coaxial status.
+
+    Returns `{"speaker": bool, "light": bool}`, each True only when the device
+    named that output itself.
+
+    This exists because deciding whether a camera has a siren by matching its
+    model string cannot work. The check asked for `-AS-PV` with a leading
+    hyphen, and `IPC-HDBW3549R1-ZAS-PV` contains `AS-PV` without one, so a
+    hyphen decided whether that camera's siren existed in Home Assistant
+    (#676). Every OEM rebrand is the same problem with a different name.
+
+    The device already answers the question. `coaxialControlIO.cgi` names the
+    outputs it has:
+
+        status.status.Speaker=Off
+        status.status.WhiteLight=Off
+
+    and the reply is already fetched during setup to find out whether coaxial
+    control works at all, so reading it costs nothing.
+
+    Presence of the field is the signal, not its value. `Off` means the output
+    is there and currently off, which is exactly the case a value check would
+    throw away. Some firmware nests the keys one level deeper than others, so
+    only the last segment is compared.
+
+    This is only a signal on a directly connected camera. Measured on a
+    DHI-NVR5464-16P-EI, the recorder answers for every channel that exists:
+
+        ch1  status.Speaker=Off  status.WhiteLight=Off
+        ch2  status.Speaker=Off  status.WhiteLight=Off
+        ch15 400
+
+    and none of those cameras has a siren or a deterrence light. On a recorder
+    the fields say the channel exists, not that it can do anything, so the
+    caller has to keep recorder channels out of this. Coaxial control does
+    nothing at all on that recorder.
+    """
+    found = {"speaker": False, "light": False}
+    if not isinstance(data, dict):
+        return found
+    for key in data:
+        leaf = str(key).rsplit(".", 1)[-1].strip().lower()
+        if leaf == "speaker":
+            found["speaker"] = True
+        elif leaf == "whitelight":
+            found["light"] = True
+    return found
