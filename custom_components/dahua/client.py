@@ -1065,6 +1065,16 @@ class DahuaClient:
         url = "/cgi-bin/ptz.cgi?action=getStatus"
         return await self.get(url)
 
+    async def async_get_ptz_presets(self, channel: int) -> dict:
+        """The preset positions this channel actually holds.
+
+        Returned raw so the caller can tell an empty answer from a refusal: a
+        camera that does not implement this answers exactly like one with no
+        presets, and those must not be treated the same.
+        """
+        url = "/cgi-bin/ptz.cgi?action=getPresets&channel={0}".format(channel)
+        return await self.get(url)
+
     @staticmethod
     def parse_ptz_preset_ids(data: list) -> list[int]:
         """Return sorted positive preset IDs from ptz.getPresets."""

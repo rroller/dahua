@@ -439,3 +439,41 @@ def extract_plate_data(event: dict) -> dict | None:
         "timestamp": event.get("UTC") or data.get("UTC") or data.get("LocaleTime"),
     }
 
+
+
+def parse_ptz_presets(data) -> list:
+    """Which preset positions a device reports over `ptz.cgi?action=getPresets`.
+
+    The preset dropdown offers `1` to `10` to every camera, whatever it
+    actually holds. So selecting a preset the camera does not have sends a
+    `GotoPreset` for it, the device answers 400, and Home Assistant reports a
+    failed action that looks like the integration being broken (#713).
+
+    The device will say. A camera with presets answers with a row each:
+
+        presets[0].Index=1
+        presets[0].Name=Gate
+        presets[1].Index=3
+
+    Only `Index` matters: the numbers need not be contiguous, because deleting
+    preset 2 leaves 1 and 3.
+
+    An empty result is deliberately **not** "this camera has no presets". A
+    camera that does not implement the query answers exactly the same way, and
+    the two cannot be told apart, so the caller keeps its existing list rather
+    than removing controls somebody is using. Measured on a
+    DHI-NVR5464-16P-EI: fixed cameras answer 200 with an empty body.
+    """
+    if not isinstance(data, dict):
+        return []
+    found = set()
+    for key, value in data.items():
+        if not re.search(r"\.Index$", str(key)):
+            continue
+        try:
+            number = int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            found.add(number)
+    return sorted(found)
