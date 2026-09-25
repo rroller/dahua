@@ -4,8 +4,14 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 from custom_components.dahua import get_configured_scan_interval
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.dahua.config_flow import DahuaOptionsFlowHandler
-from custom_components.dahua.const import DEFAULT_SCAN_INTERVAL, MIN_SCAN_INTERVAL
+from custom_components.dahua.const import (
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    MIN_SCAN_INTERVAL,
+)
 
 
 def _entry(**options):
@@ -53,11 +59,17 @@ def _validators(result):
 
 
 async def _shown_options_form(hass, entry):
+    registered = MockConfigEntry(
+        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options))
+    registered.add_to_hass(hass)
+
     handler = DahuaOptionsFlowHandler()
     handler.hass = hass
-    # Assigning config_entry is deprecated and raises under the test harness;
-    # set the attribute Home Assistant's own flow manager populates.
-    handler._config_entry = entry
+    # Home Assistant resolves config_entry by looking the id up in hass, so the
+    # entry has to be registered there and the flow's handler has to carry that
+    # id. Assigning the entry onto the handler, by any attribute name, stopped
+    # working once the id became the only link.
+    handler.handler = registered.entry_id
     handler.options = dict(entry.options)
     return await handler.async_step_user()
 

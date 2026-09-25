@@ -1,8 +1,13 @@
 """button.py shipped as an empty stub with a TODO about HomeAssistant 2021.12.
 
 Closes #552, which benchmarks this integration against the HA-certified Reolink
-one. Two buttons, not the three that issue asks for -- see the PR for why
-Cancel Call is deliberately left out.
+one. Two buttons at first, not the three that issue asks for, because
+cancel_call returned True without waiting for the doorbell and a button on it
+would have gone green every time.
+
+Cancel Call joined them in #716, once cancel_call waited for the answer. Its own
+tests are in test_cancel_call_button.py; what is pinned here is that a doorbell
+gets all three and a camera gets one.
 """
 
 import pytest
@@ -78,6 +83,8 @@ async def test_the_setup_adds_a_reboot_button_for_a_camera():
 
 
 async def test_a_doorbell_also_gets_an_open_door_button():
+    """The order matters as much as the membership: this is the list a user
+    sees on the device page."""
     added = []
     coordinator = _Coordinator(doorbell=True)
     hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
@@ -86,7 +93,7 @@ async def test_a_doorbell_also_gets_an_open_door_button():
     await button_module.async_setup_entry(hass, entry, added.extend)
 
     assert [type(b).__name__ for b in added] == [
-        "DahuaRebootButton", "DahuaOpenDoorButton",
+        "DahuaRebootButton", "DahuaOpenDoorButton", "DahuaCancelCallButton",
     ]
 
 

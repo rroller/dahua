@@ -2,6 +2,7 @@
 Various utilities for Dahua cameras
 """
 import json
+import logging
 import re
 
 
@@ -30,6 +31,97 @@ def hass_brightness_to_dahua_brightness(hass_brightness: int) -> int:
 
 
 # https://github.com/rroller/dahua/issues/166
+_LOGGER = logging.getLogger(__name__)
+
+
+def parse_remote_devices(data) -> dict:
+    """Which channels a recorder says it has a camera on.
+
+    RemoteDevice carries one block per slot, keyed by an index inside a
+    uuid-ish name:
+
+        table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_11.Enable=true
+        table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_11.ProtocolType=Private
+
+    Returns {index: {"enabled": bool, "protocol": str}}.
+
+    Measured on a DHI-NVR5464-16P-EI: sixteen slots, fifteen enabled, one
+    of those reached over Onvif. The channel number is the index plus one.
+    """
+    if not isinstance(data, dict):
+        return {}
+    found = {}
+    for key, value in data.items():
+        match = re.search(r"INFO_(\d+)\.(\w+)$", str(key))
+        if not match:
+            continue
+        slot = found.setdefault(int(match.group(1)), {})
+        field = match.group(2)
+        if field == "Enable":
+            slot["enabled"] = str(value).strip().lower() == "true"
+        elif field == "ProtocolType":
+            slot["protocol"] = str(value).strip().lower()
+    for slot in found.values():
+        slot.setdefault("enabled", False)
+        slot.setdefault("protocol", "")
+    return found
+
+
+def parse_channel_titles(data) -> dict:
+    """The name a recorder holds for each channel, by index.
+
+        table.ChannelTitle[0].Name=FRONT STREET
+
+    Only useful for labelling. Unconfigured slots carry defaults, and those
+    defaults are not consistent even within one recorder: `Channel11`,
+    `Channel 1`, `Channel16` and `IPC` all appeared on the same device. So a
+    name says nothing about whether a camera is there, and nothing here tries
+    to read anything into it.
+    """
+    if not isinstance(data, dict):
+        return {}
+    titles = {}
+    for key, value in data.items():
+        match = re.search(r"ChannelTitle\[(\d+)\]\.Name$", str(key))
+        if match:
+            titles[int(match.group(1))] = str(value).strip()
+    return titles
+
+
+def channels_worth_offering(devices: dict) -> list:
+    """The channel indexes worth probing, in order.
+
+    A slot that is switched off has no camera. A slot reached over Onvif
+    has one, and this integration cannot drive it: the recorder does not
+    serve such a channel on its own Dahua paths, so snapshot answers 400
+    and RTSP times out (#710). Offering it would add an entry that can
+    never work.
+
+    Being enabled is necessary and not sufficient. A camera removed from
+    the recorder leaves its slot enabled with a stale serial, and only a
+    probe tells the difference, which is why the caller probes.
+    """
+    return sorted(
+        index for index, slot in devices.items()
+        if slot.get("enabled") and slot.get("protocol") != "onvif"
+    )
+
+
+def parse_overlay_lines(value) -> list:
+    """Split a stored overlay value into the lines it was written from.
+
+    Dahua separates the lines of a title with a pipe, which is why the
+    writer escapes the parts and leaves the separator alone. Reading is
+    the same rule backwards.
+
+    An empty value is no lines rather than one empty line, so a camera
+    with nothing set reads back as nothing set.
+    """
+    if not value:
+        return []
+    return str(value).split("|")
+
+
 def parse_event(data: str) -> list[dict[str, any]]:
     # This will turn the event stream data into a list of events, where each item in the list is a dictionary and where
     # the key of the dictionary is the key is for example "Code" and the value is "VideoMotion", etc
@@ -47,19 +139,31 @@ def parse_event(data: str) -> list[dict[str, any]]:
     #   ...
     # }]
 
-    # We will split on "--myboundary" and then skip the first 3 lines so we end up with a string that starts with Code=
-    event_blocks = re.split(r'--myboundary\n', data)
+    # We will split on "--myboundary" and then find the line the event starts on
+    event_blocks = re.split(r'--myboundary\r?\n', data)
 
     events = []
 
     for event_block in event_blocks:
-        # Skip the first 3 lines... the first line looks like: Content-Type: text/plain
-        s = event_block.split("\n", 3)
-        if len(s) < 3:
+        # Find "Code=" wherever it falls, rather than counting header lines.
+        #
+        # This skipped exactly three lines and required the fourth to be the
+        # event. Most blocks do look like that -- Content-Type, Content-Length,
+        # blank, Code= -- but the header count is the device's choice and not a
+        # rule, and a block carrying one header line fewer was dropped without
+        # a word. @jaaneo reported it in #587 on a DHI-TPC-BF1241, whose thermal
+        # channel does not use the same header shape as its visual one, so those
+        # events never arrived and nothing said why.
+        #
+        # A block that stops inside its headers still carries no event and is
+        # still skipped, which is what a chunk ending mid-block looks like:
+        # stream_events hands on whatever iter_chunks gives it, so that is
+        # ordinary rather than exceptional. Indexing blindly there raised
+        # IndexError out of on_receive and took the whole stream down (#475).
+        start = re.search(r'^Code=', event_block, re.MULTILINE)
+        if start is None:
             continue
-        event_block = s[3].strip()
-        if not event_block.startswith("Code="):
-            continue
+        event_block = event_block[start.start():].strip()
 
         # At this point we'll have something that looks like this...
         # Code=VideoMotion;action=Start;index=0;data={
@@ -70,6 +174,13 @@ def parse_event(data: str) -> list[dict[str, any]]:
         # And we want to put each key/value pair into a dictionary...
         event = dict()
         for key_value in event_block.split(';'):
+            if '=' not in key_value:
+                # Not a key=value pair. Either the device cut the block short,
+                # or the JSON payload carries a semicolon of its own -- a rule
+                # or region the user named "Drive; Gate" is enough. Unpacking
+                # it raised ValueError, which lost every event in the batch and
+                # ended the stream; skipping it loses only this fragment.
+                continue
             key, value = key_value.split('=', 1)
             event[key] = value
 
@@ -79,7 +190,14 @@ def parse_event(data: str) -> list[dict[str, any]]:
                 data = json.loads(event["data"])
                 event["data"] = data
             except Exception:  # pylint: disable=broad-except
-                pass
+                # Left as the raw string on purpose: it is what the device sent
+                # and throwing it away helps nobody. But say so, because a
+                # silent pass here is indistinguishable from a device that
+                # sends no payload, and the usual cause is a truncated one.
+                _LOGGER.debug(
+                    "Could not parse the JSON payload of a %s event; leaving it as text",
+                    event.get("Code", "?"), exc_info=True,
+                )
         events.append(event)
 
     return events
@@ -99,7 +217,81 @@ def normalize_plate(plate_text: str | None) -> str:
     clean = str(plate_text).upper()
     for gr, lat in HOMOGLYPHS.items():
         clean = clean.replace(gr, lat)
-    return re.sub(r'[^A-Z0-9]', '', clean)
+    clean = re.sub(r'[^A-Z0-9]', '', clean)
+    # Standard 7-character plate format: 3 letters + 4 digits (e.g. ABO1234, XYZ5670)
+    # Correct common OCR confusions between letter O and digit 0 based on position:
+    if len(clean) == 7:
+        letters_part = clean[:3].replace('0', 'O')
+        digits_part = clean[3:].replace('O', '0')
+        if letters_part.isalpha() and digits_part.isdigit():
+            clean = letters_part + digits_part
+    return clean
+
+
+def _extract_plate_from_raw_string(text: str, event: dict) -> dict | None:
+    """Extract plate and metadata from a raw (possibly truncated) JSON string using regex."""
+    plate_text = None
+    confidence = None
+
+    # Check for PlateNumber in TrafficCar
+    m_tc = re.search(r'"(?:PlateNumber|plateNumber)"\s*:\s*"([A-Za-z0-9]+)"', text)
+    if m_tc:
+        plate_text = m_tc.group(1)
+
+    if not plate_text:
+        # Collect all "Text" candidates
+        candidates = re.findall(r'"Text"\s*:\s*"([A-Za-z0-9]+)"', text)
+        best_plate = None
+        for cand in candidates:
+            norm_c = normalize_plate(cand)
+            # 1. Exact Greek plate format: 3 letters + 4 digits
+            if len(norm_c) == 7 and norm_c[:3].isalpha() and norm_c[3:].isdigit():
+                best_plate = norm_c
+                plate_text = cand
+                break
+            # 2. Check if Dahua flipped RTL: 4 digits + 3 letters
+            if len(norm_c) == 7 and norm_c[:4].isdigit() and norm_c[4:].isalpha():
+                flipped = norm_c[4:] + norm_c[:4]
+                if flipped[:3].isalpha() and flipped[3:].isdigit():
+                    best_plate = flipped
+                    plate_text = flipped
+                    break
+            if best_plate is None and any(c.isdigit() for c in norm_c) and any(c.isalpha() for c in norm_c):
+                best_plate = norm_c
+                plate_text = cand
+
+    if not plate_text:
+        return None
+
+    clean_plate = normalize_plate(plate_text)
+    if not clean_plate:
+        return None
+
+    m_conf = re.search(r'"Confidence"\s*:\s*([0-9]+)', text)
+    if m_conf:
+        try:
+            confidence = int(m_conf.group(1))
+        except ValueError:
+            pass
+
+    m_brand = re.search(r'"(?:VehicleSign|Brand|VehicleLogo)"\s*:\s*"([^"]+)"', text)
+    vehicle_brand = m_brand.group(1) if m_brand else None
+
+    m_color = re.search(r'"VehicleColor"\s*:\s*"([^"]+)"', text)
+    vehicle_color = m_color.group(1) if m_color else None
+
+    return {
+        "plate": clean_plate,
+        "raw_plate": plate_text,
+        "confidence": confidence,
+        "vehicle_type": None,
+        "vehicle_color": vehicle_color,
+        "vehicle_brand": vehicle_brand,
+        "vehicle_series": None,
+        "direction": None,
+        "event_code": event.get("Code"),
+        "timestamp": None,
+    }
 
 
 def parse_authorized_plates(raw_str: str | list | None) -> list[str]:
@@ -121,6 +313,28 @@ def parse_authorized_plates(raw_str: str | list | None) -> list[str]:
     return plates
 
 
+def first_direction(value):
+    """The first usable direction out of whatever shape the camera used.
+
+    `DrivingDirection` arrives as a list whose later entries are blank:
+
+        DrivingDirection:
+          - Approach
+          - ''
+
+    so the first non-empty string is the answer. A plain string is returned as
+    it stands, and anything else, a number or a nested structure, is ignored
+    rather than guessed at.
+    """
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
 def extract_plate_data(event: dict) -> dict | None:
     """Extract license plate and vehicle information from a Dahua ANPR/Traffic event dict.
 
@@ -138,7 +352,13 @@ def extract_plate_data(event: dict) -> dict | None:
 
     data = event.get("data", event.get("Data", {}))
     if not isinstance(data, dict):
-        return None
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                return _extract_plate_from_raw_string(data, event)
+        else:
+            return None
 
     plate_text = None
     confidence = None
@@ -205,7 +425,27 @@ def extract_plate_data(event: dict) -> dict | None:
     if isinstance(tc, dict):
         vehicle_brand = tc.get("Brand") or tc.get("VehicleSign") or tc.get("VehicleLogo") or tc.get("Logo")
         vehicle_series = tc.get("SubBrand") or tc.get("Series")
-        direction = tc.get("Direction") or tc.get("DirectionName")
+        # Measured on a DHI-ITC413-PW4D-IZ1 (#757), driven each way past it.
+        # Four fields look like a direction and only three of them move:
+        #
+        #   DrivingDirection  ["Approach", ""] -> ["Leave", ""]
+        #   JunctionDirection "Obverse"        -> "Reverse"
+        #   VehicleDirection  "Head"           -> "Tail"
+        #   Direction         0                -> 0            (never changes)
+        #
+        # DrivingDirection first, because Approach and Leave say what happened,
+        # where Obverse and Head describe which end of the car was photographed
+        # and need Dahua's vocabulary to read. Direction and DirectionName stay
+        # ahead of all of it so a camera already reporting them is unaffected;
+        # here Direction is 0, which is falsy, so it falls through rather than
+        # reporting a meaningless zero.
+        direction = (
+            tc.get("Direction")
+            or tc.get("DirectionName")
+            or first_direction(tc.get("DrivingDirection"))
+            or first_direction(tc.get("JunctionDirection"))
+            or first_direction(tc.get("VehicleDirection"))
+        )
 
     veh = data.get("Vehicle") or data.get("vehicle")
     if isinstance(veh, dict):
@@ -226,7 +466,15 @@ def extract_plate_data(event: dict) -> dict | None:
     if not vehicle_brand:
         vehicle_brand = data.get("Brand") or data.get("VehicleSign") or data.get("VehicleLogo") or data.get("Logo")
     if not direction:
-        direction = data.get("Direction") or data.get("DirectionName")
+        # This camera reports JunctionDirection at the top level rather than
+        # inside TrafficCar, so the same list is checked in both places.
+        direction = (
+            data.get("Direction")
+            or data.get("DirectionName")
+            or first_direction(data.get("DrivingDirection"))
+            or first_direction(data.get("JunctionDirection"))
+            or first_direction(data.get("VehicleDirection"))
+        )
 
     return {
         "plate": clean_plate,
@@ -241,3 +489,103 @@ def extract_plate_data(event: dict) -> dict | None:
         "timestamp": event.get("UTC") or data.get("UTC") or data.get("LocaleTime"),
     }
 
+
+
+def parse_ptz_presets(data) -> list:
+    """Which preset positions a device reports over `ptz.cgi?action=getPresets`.
+
+    The preset dropdown offers `1` to `10` to every camera, whatever it
+    actually holds. So selecting a preset the camera does not have sends a
+    `GotoPreset` for it, the device answers 400, and Home Assistant reports a
+    failed action that looks like the integration being broken (#713).
+
+    The device will say. A camera with presets answers with a row each:
+
+        presets[0].Index=1
+        presets[0].Name=Gate
+        presets[1].Index=3
+
+    Only `Index` matters: the numbers need not be contiguous, because deleting
+    preset 2 leaves 1 and 3.
+
+    An empty result is deliberately **not** "this camera has no presets". A
+    camera that does not implement the query answers exactly the same way, and
+    the two cannot be told apart, so the caller keeps its existing list rather
+    than removing controls somebody is using. Measured on a
+    DHI-NVR5464-16P-EI: fixed cameras answer 200 with an empty body.
+    """
+    if not isinstance(data, dict):
+        return []
+    found = set()
+    for key, value in data.items():
+        if not re.search(r"\.Index$", str(key)):
+            continue
+        try:
+            number = int(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            found.add(number)
+    return sorted(found)
+
+
+# Field names whose *value* is somebody's business rather than ours. The names
+# are kept, because "which field carries this" is the usual question; only the
+# contents go.
+EVENT_PRIVATE_FIELDS = frozenset({
+    # Spelled without separators: the lookup strips underscores, so "raw_plate"
+    # and "rawplate" both land here and only one spelling is listed.
+    "plate", "platenumber", "rawplate", "platedata", "plates",
+    "card", "cardno", "cardnumber", "cardname",
+    "user", "userid", "username", "usertype",
+    "password", "token", "secret", "key", "uuid",
+    "serialnumber", "defendcode", "imei", "phonenumber", "tel",
+    "faceid", "personid", "facefeature", "similarity",
+})
+
+EVENT_VALUE_LIMIT = 80
+EVENT_LIST_LIMIT = 6
+EVENT_DEPTH_LIMIT = 6
+
+
+def summarise_event(value, _depth: int = 0):
+    """An event with its shape intact and its contents cut down to size.
+
+    Written for diagnostics, and worth explaining because it looks like it
+    throws away the interesting part.
+
+    What people are asked for, over and over, is a raw event: which `Code` the
+    device sent, what `action` it carried, which field holds the direction or
+    the state or the object type. That is all structure. The values are rarely
+    the question, and some of them are a number plate, a card number or a
+    person's name.
+
+    So field names survive in full, values do not:
+
+    - a field named in EVENT_PRIVATE_FIELDS becomes `<redacted>`
+    - any other long value is truncated, keeping its start
+    - long lists keep their first few entries and say how many were dropped
+
+    The result publishes strictly less than the raw event people currently
+    paste into public issues by hand, while answering the same questions.
+    """
+    if _depth > EVENT_DEPTH_LIMIT:
+        return "<too deep>"
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if str(key).strip().lower().replace("_", "") in EVENT_PRIVATE_FIELDS:
+                out[key] = "<redacted>"
+            else:
+                out[key] = summarise_event(item, _depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        kept = [summarise_event(item, _depth + 1)
+                for item in list(value)[:EVENT_LIST_LIMIT]]
+        dropped = len(value) - len(kept)
+        if dropped > 0:
+            kept.append("<%d more>" % dropped)
+        return kept
+    if isinstance(value, str) and len(value) > EVENT_VALUE_LIMIT:
+        return value[:EVENT_VALUE_LIMIT] + "<truncated>"
+    return value

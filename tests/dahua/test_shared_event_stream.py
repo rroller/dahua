@@ -29,6 +29,31 @@ def _clean_streams():
     dahua_module._HOST_STREAMS.clear()
 
 
+
+@pytest.fixture(autouse=True)
+async def _stop_host_streams(hass):
+    """Cancel and await each host stream's task before Home Assistant looks.
+
+    Two things make this necessary. cancel() only schedules the cancellation,
+    so a merely-cancelled task is still pending, and Home Assistant fails a
+    test that leaves one behind. And asking for `hass` is what gets the timing
+    right: a fixture that requests another is torn down before it, so this runs
+    while there is still a loop to finish the task on.
+    """
+    yield
+    from custom_components import dahua as dahua_module
+
+    pending = []
+    for stream in list(dahua_module._HOST_STREAMS.values()):
+        task = getattr(stream, "_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            pending.append(task)
+    dahua_module._HOST_STREAMS.clear()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 class _Client:
     """Holds the stream open so the task stays alive, and records the attach."""
 
@@ -185,6 +210,101 @@ async def test_two_entries_on_one_channel_both_get_it(hass):
     stream.on_receive(MOTION_CH2, 0)
 
     assert len(a.handled) == 1 and len(b.handled) == 1
+
+
+# --- AlarmLocal: index is a terminal, not a channel (#231) ------------------
+
+ALARM_CH1 = (
+    b"--myboundary\n"
+    b"Content-Type: text/plain\n"
+    b"Content-Length: 39\n"
+    b"\n"
+    b"Code=AlarmLocal;action=Start;index=1\n"
+)
+
+
+async def test_alarmlocal_reaches_the_lone_channel_regardless_of_index(hass):
+    """The original #231 bug: an alarm on terminal 1 with only channel 0 set up."""
+    stream = _host_stream(hass, ADDRESS)
+    only = _Coordinator(0, ["AlarmLocal"])
+    stream.register(only)
+    await _settle()
+
+    stream.on_receive(ALARM_CH1, 0)
+
+    assert len(only.handled) == 1
+    assert only.handled[0]["Code"] == "AlarmLocal"
+
+
+async def test_alarmlocal_reaches_both_entries_sharing_the_lone_channel(hass):
+    """Two entries on the same single channel must both still get it (see
+    test_two_entries_on_one_channel_both_get_it) -- guarding on coordinator
+    count instead of channel count would silently drop this case."""
+    stream = _host_stream(hass, ADDRESS)
+    a, b = _Coordinator(0, ["AlarmLocal"]), _Coordinator(0, ["AlarmLocal"])
+    stream.register(a)
+    stream.register(b)
+    await _settle()
+
+    stream.on_receive(ALARM_CH1, 0)
+
+    assert len(a.handled) == 1 and len(b.handled) == 1
+
+
+class _ExplodingCoordinator(_Coordinator):
+    """A handler that raises, as a malformed payload can make one do."""
+
+    def handle_event(self, event):
+        self.handled.append(event)
+        raise AttributeError("'str' object has no attribute 'get'")
+
+
+async def test_a_failing_alarmlocal_handler_does_not_end_the_stream(hass):
+    """stream_events wraps its on_receive call in try/finally with no handler.
+
+    So anything raised while handling an event leaves the read loop -- and the
+    stream is per host, so that silences every camera on the device until the
+    backoff reconnects. The dispatch below is guarded for that reason (#706);
+    this branch reaches handle_event through its own guard instead.
+    """
+    stream = _host_stream(hass, ADDRESS)
+    boom = _ExplodingCoordinator(0, ["AlarmLocal"])
+    stream.register(boom)
+    await _settle()
+
+    stream.on_receive(ALARM_CH1, 0)     # must not raise
+
+    assert len(boom.handled) == 1, "the event still reached the handler"
+
+
+async def test_a_non_alarmlocal_event_still_respects_the_lone_channel(hass):
+    """The AlarmLocal early return must not widen what any other code does,
+    even on a host with only one channel configured."""
+    stream = _host_stream(hass, ADDRESS)
+    only = _Coordinator(0, ["VideoMotion"])
+    stream.register(only)
+    await _settle()
+
+    stream.on_receive(MOTION_CH2, 0)  # index 2, and nobody is on channel 2
+
+    assert only.handled == []
+
+
+async def test_alarmlocal_still_filtered_by_channel_on_a_multi_channel_host(hass):
+    """With more than one channel configured, AlarmLocal is not exempt: this
+    is what pins the len(self._by_channel) == 1 guard against a later
+    refactor loosening it."""
+    stream = _host_stream(hass, ADDRESS)
+    ch0 = _Coordinator(0, ["AlarmLocal"])
+    ch1 = _Coordinator(1, ["AlarmLocal"])
+    stream.register(ch0)
+    stream.register(ch1)
+    await _settle()
+
+    stream.on_receive(ALARM_CH1, 0)  # index=1
+
+    assert len(ch1.handled) == 1
+    assert ch0.handled == [], "AlarmLocal leaked to a channel that isn't the terminal's index"
 
 
 async def test_each_channel_gets_its_own_copy(hass):

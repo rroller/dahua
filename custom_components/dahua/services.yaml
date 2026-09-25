@@ -1,6 +1,39 @@
 # Describes the format for available Dahua services
 # https://developers.home-assistant.io/docs/dev_101_services/
 
+set_illuminator_mode:
+  name: Set Illuminator Mode on Dahua Camera
+  description: >-
+    Set the illuminator (white light) mode and brightness on a Dahua camera.
+    The light entity can only switch the illuminator on or off, and off is not
+    the same as automatic - it leaves the camera's own illumination disabled.
+    Use this to hand control back to the camera with Auto.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    mode:
+      name: Mode
+      description: "The illuminator mode: Auto, On, Off"
+      example: "Auto"
+      default: "Auto"
+      selector:
+        select:
+          options:
+            - "Auto"
+            - "On"
+            - "Off"
+    brightness:
+      name: Brightness
+      description: The illuminator brightness, from 0 to 100 inclusive. 100 is the brightest
+      example: 100
+      default: 100
+      selector:
+        number:
+          min: 0
+          max: 100
+
 set_infrared_mode:
   name: Set Infrared Mode on Dahua Camera
   description: Set the infrared light settings on a Dahua camera
@@ -144,6 +177,28 @@ enable_custom_overlay:
       default: false
       selector:
         boolean:
+
+get_overlay_text:
+  name: Read the text overlay
+  description: >-
+    Returns the overlay text the camera is currently showing. Useful when
+    the text may have been changed on the camera itself rather than from
+    Home Assistant.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    group:
+      name: Group
+      description: "Which overlay group to read. The default 0 matches the services that set them."
+      example: 0
+      default: 0
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 100
 
 set_custom_overlay:
   name: Set Custom Text Overlay
@@ -418,8 +473,12 @@ set_focus_zoom:
         text:
 
 set_privacy_masking:
-  name: Set the Dahua Privacy Masking
-  description: Enables or disabled the cameras privacy masking
+  name: Blank out part of the picture (privacy masking)
+  description: >-
+    Hides a region of the image by blanking it, leaving the camera recording
+    everything else. This is the masking configured under Privacy Masking on the
+    camera, and it is not the same as Privacy Mode, which physically covers the
+    lens.
   target:
     entity:
       integration: dahua
@@ -445,6 +504,57 @@ set_privacy_masking:
       selector:
         boolean:
 
+ptz_move:
+  name: Move the camera
+  description: >-
+    Pan, tilt or zoom a PTZ camera for a moment. The camera moves while the
+    command runs and is stopped afterwards, so the duration is how far it
+    travels.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    direction:
+      name: Direction
+      description: Which way to move.
+      required: true
+      example: left
+      selector:
+        select:
+          options:
+            - up
+            - down
+            - left
+            - right
+            - up_left
+            - up_right
+            - down_left
+            - down_right
+            - zoom_in
+            - zoom_out
+    speed:
+      name: Speed
+      description: How fast to move, from 1 to 8.
+      example: 4
+      default: 4
+      selector:
+        number:
+          min: 1
+          max: 8
+          mode: slider
+    duration:
+      name: Duration
+      description: How long to move for, in seconds.
+      example: 0.5
+      default: 0.5
+      selector:
+        number:
+          min: 0.1
+          max: 10
+          step: 0.1
+          mode: box
+
 goto_preset_position:
   name: Go to a preset position
   description: Go to a position already preset
@@ -463,3 +573,24 @@ goto_preset_position:
           min: 1
           max: 10
           mode: box
+
+set_privacy_mode:
+  name: Cover the lens (privacy mode)
+  description: >-
+    Physically covers the lens on cameras that have a motorised cover, so the
+    camera sees nothing at all. Only cameras reporting a LeLensMask table have
+    this; on every other camera the call fails. To blank part of the picture
+    instead, use Blank out part of the picture.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    enabled:
+      name: Enabled
+      description: "If true enables privacy mode, otherwise disables it"
+      example: true
+      required: true
+      default: true
+      selector:
+        boolean:

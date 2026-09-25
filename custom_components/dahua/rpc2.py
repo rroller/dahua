@@ -18,6 +18,16 @@ if sys.version_info > (3, 0):
     unicode = str
 
 
+class Rpc2MethodRefused(ConnectionError):
+    """The device answered an RPC2 call with result=false.
+
+    A ConnectionError subclass so existing handlers keep working, but a
+    distinct type because it means something quite different: the transport
+    reached the device and the device declined this particular method or
+    config table. That is evidence RPC2 *works* here, not that it does not.
+    """
+
+
 class DahuaRpc2Client:
     def __init__(
             self,
@@ -70,7 +80,7 @@ class DahuaRpc2Client:
                     message = error["message"].replace("\r", " ").replace("\n", " ")
                     details.append("message={0}".format(message[:200]))
             suffix = " ({0})".format(", ".join(details)) if details else ""
-            raise ConnectionError(
+            raise Rpc2MethodRefused(
                 "Dahua RPC2 method {0} returned result=false{1}".format(
                     method, suffix
                 )
@@ -225,12 +235,125 @@ class DahuaRpc2Client:
         response = await self.request(method="configManager.getConfig", params=params)
         return response['params']
 
+    async def set_configs(self, configs: list[tuple[str, list]]) -> dict:
+        """Commit complete config tables together through system.multicall."""
+        calls = []
+        for name, table in configs:
+            self._id += 1
+            calls.append({
+                "method": "configManager.setConfig",
+                "params": {"name": name, "table": table, "options": []},
+                "id": self._id,
+                "session": self._session_id,
+            })
+        response = await self.request(method="system.multicall", params=calls)
+        results = response.get("params")
+        if (
+                not isinstance(results, list)
+                or len(results) != len(calls)
+                or any(
+                    not isinstance(result, dict) or result.get("result") is not True
+                    for result in results
+                )):
+            raise ConnectionError(
+                "Dahua RPC2 system.multicall did not confirm every config write"
+            )
+        return response
+
     async def get_device_name(self) -> str:
         """Get the device name"""
         data = await self.get_config({"name": "General"})
         return data["table"]["MachineName"]
 
+    async def get_coaxial_control_io_caps(self, channel: int = 0) -> dict[str, bool]:
+        """Read explicit deterrence capabilities; never infer them from status."""
+        response = await self.request(
+            method="CoaxialControlIO.getCaps", params={"channel": channel}
+        )
+        params = response.get("params")
+        caps = params.get("caps") if isinstance(params, dict) else None
+        if not isinstance(caps, dict):
+            raise ValueError("Dahua RPC2 response is missing params.caps")
+        return {
+            key: caps.get(key) in (1, "1")
+            for key in ("SupportControlSpeaker", "SupportControlLight")
+        }
+
+    async def set_coaxial_control_state(
+        self, channel: int, dahua_type: int, enabled: bool
+    ) -> dict:
+        """Control a directly connected camera's deterrence output."""
+        return await self.request(
+            method="CoaxialControlIO.control",
+            params={
+                "channel": channel,
+                "info": [{"Type": dahua_type, "IO": 1 if enabled else 2, "TriggerMode": 2}],
+            },
+        )
+
+    async def async_open_door(self, channel: int, door_index: int = 0,
+                             short_number: str = "HA") -> dict:
+        """Open a door over RPC2, for VTOs with no accessControl CGI endpoint.
+
+        Three calls, the way myhomeiot/DahuaVTO does it: an object from the
+        factory, the action on that object, and destroy. The destroy is in a
+        finally because the object is the device's, not ours -- leaking one on
+        a doorbell is a real cost, and it must happen even when openDoor fails.
+
+        `channel` is 0-based here, matching the factory's own convention.
+        """
+        made = await self.request(
+            method="accessControl.factory.instance", params={"channel": channel})
+        object_id = made.get("result")
+        if isinstance(object_id, bool) or not isinstance(object_id, int) or object_id <= 0:
+            raise ConnectionError(
+                "Dahua RPC2 accessControl.factory.instance returned no object")
+        try:
+            return await self.request(
+                method="accessControl.openDoor",
+                object_id=object_id,
+                params={"DoorIndex": door_index, "ShortNumber": short_number},
+            )
+        finally:
+            try:
+                await self.request(method="accessControl.destroy",
+                                   object_id=object_id, verify_result=False)
+            except Exception:  # pylint: disable=broad-except
+                # Losing the door's result to a failed cleanup would be worse
+                # than leaking the object, so this never raises.
+                _LOGGER.debug("accessControl.destroy failed", exc_info=True)
+
     async def get_coaxial_control_io_status(self, channel: int) -> CoaxialControlIOStatus:
         """ async_get_coaxial_control_io_status returns the the current state of the speaker and white light. """
         response = await self.request(method="CoaxialControlIO.getStatus", params={"channel": channel})
-        return CoaxialControlIOStatus(response)
+        return CoaxialControlIOStatus(api_response=response)
+
+    async def _async_get_privacy_mode_table(self) -> list:
+        """Read the LeLensMask config table, logging in first if needed."""
+        if not self._session_id:
+            await self.login()
+        params = await self.get_config({"name": "LeLensMask"})
+        table = params.get("table")
+        if not isinstance(table, list) or not table or not isinstance(table[0], dict):
+            raise ValueError("Dahua RPC2 response is missing table for LeLensMask")
+        return table
+
+    async def async_get_privacy_mode(self) -> bool:
+        """Return True if the lens privacy mask (LeLensMask) is enabled."""
+        table = await self._async_get_privacy_mode_table()
+        return bool(table[0].get("Enable", False))
+
+    async def async_set_privacy_mode(self, enabled: bool) -> None:
+        """Enable or disable the lens privacy mask (LeLensMask).
+
+        The entry is read back and written with only Enable changed so the
+        camera keeps its own TimeSection schedule.
+        """
+        table = await self._async_get_privacy_mode_table()
+        entry = dict(table[0])
+        entry["Enable"] = enabled
+        await self.request(
+            method="configManager.setConfig",
+            params={"name": "LeLensMask", "table": [entry], "options": []},
+        )
+        _LOGGER.debug("RPC2 LeLensMask set to Enable=%s", enabled)

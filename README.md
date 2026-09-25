@@ -29,15 +29,43 @@ To install with [HACS](https://hacs.xyz/):
 6. Restart Home Assistant
 7. Configure the camera by going to `Configurations` -> `Integrations` -> `ADD INTERATIONS` button, search for `Dahua` and configure the camera.
 
+### Pre-release versions
+
+Fixes land in a pre-release first, usually within a day, and are gathered into
+a stable release afterwards. Pre-releases are hidden unless you ask for them,
+so if you do nothing, nothing changes: you keep being offered stable releases
+only.
+
+To opt in:
+
+1. `Settings` -> `Devices & services` -> `Integrations` tab
+2. Open `HACS`
+3. Find the `Dahua` integration
+4. Turn on the pre-release toggle
+
+You will then be offered pre-releases as updates, the same way as stable ones.
+Turn it back off at any time and the next stable release brings you back to the
+stable line.
+
+Worth knowing before you opt in:
+
+- Pre-releases get less testing than stable, by definition. Do not run one on a
+  camera you cannot afford to have misbehave for an afternoon.
+- **If you report a problem, say which version you are on.** This matters more
+  here than on stable.
+- Finding things before they reach everyone is the whole point, so a report
+  from a pre-release user is worth a great deal. If something breaks, please
+  open an issue rather than quietly rolling back.
+
 ### Manual install
 To manually install:
 
 ```bash
 # Download a copy of this repository
-$ wget https://github.com/rroller/dahua/archive/dahua-main.zip
+$ wget https://github.com/rroller/dahua/archive/refs/heads/main.zip
 
 # Unzip the archive
-$ unzip dahua-main.zip
+$ unzip main.zip
 
 # Move the dahua directory into your custom_components directory in your Home Assistant install
 $ mv dahua-main/custom_components/dahua <home-assistant-install-directory>/config/custom_components/
@@ -143,6 +171,15 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | IMOU C26EP-V2 | IMOU IPC-K46 | IMOU DB61i
 
 # Known Issues
+
+* **A camera that shows a still image but never a moving stream is usually sending H.265.** Home Assistant handles H.264 reliably; an H.265 stream commonly gives a camera that is plainly online, with entities that populate and a picture that updates when you click it, and a live view that never plays. HomeKit will not play H.265 at all.
+
+  Fix it on the device, not in Home Assistant: in the camera or recorder's web UI, under **Video > Encode**, set the stream you use to **H.264**. If you want the low bandwidth path, set the *sub* stream to H.264 and point the card at the sub stream. Adding `ffmpeg:` to `configuration.yaml` does not change this, so having added it does not rule the codec out.
+
+  Reported as [#236](https://github.com/rroller/dahua/issues/236), [#244](https://github.com/rroller/dahua/issues/244), [#257](https://github.com/rroller/dahua/issues/257), [#262](https://github.com/rroller/dahua/issues/262) and [#272](https://github.com/rroller/dahua/issues/272), among others.
+
+  If the stream error is `Operation timed out` rather than a demuxing failure, that is a different problem: the device is not answering RTSP at all, which points at the RTSP port or at how many simultaneous streams it allows. Recorders in particular cap that quite low.
+
 * IPC-D2B20-ZS doesn't work. Needs a [wrapper](https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201), [7](https://github.com/bp2008/DahuaSunriseSunset/issues/7#issuecomment-829513144), [8](https://github.com/mcw0/Tools/issues/8#issuecomment-830669237)
 * **Versions between 0.9.84 and 0.9.92 could leave the illuminator switched on in a profile you are not using.** In that window the illuminator wrote to the wrong day/night profile on some cameras ([#605](https://github.com/rroller/dahua/issues/605), [#582](https://github.com/rroller/dahua/issues/582)); which versions affected you depends on the camera, and 0.9.93 fixed the write for both kinds. It does not undo what the earlier versions wrote. If you turned the illuminator on during that window, `Lighting_V2[<channel>][0][0].Mode` may still be `Manual` on the Day profile.
 

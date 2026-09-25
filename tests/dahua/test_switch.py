@@ -45,6 +45,9 @@ class _Coordinator:
     def supports_nvr_active_deterrence(self):
         return False
 
+    def uses_rpc2_deterrence(self, dahua_type=None):
+        return False
+
     def get_serial_number(self):
         return "SERIAL1"
 
@@ -53,6 +56,12 @@ class _Coordinator:
 
     def supports_smart_motion_detection_amcrest(self):
         return self._amcrest
+
+    def supports_privacy_mode(self):
+        return False
+
+    def supports_alarm_output(self):
+        return False
 
     def is_motion_detection_enabled(self):
         return self.states.get("motion", False)

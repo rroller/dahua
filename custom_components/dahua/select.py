@@ -5,6 +5,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.components.select import SelectEntity
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
+from . import dahua_utils
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .model_profiles import is_sdt4e425
@@ -34,9 +35,39 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             )
         )
     else:
-        devices.append(DahuaCameraPresetPositionSelect(coordinator, entry))
+        devices.append(
+            DahuaCameraPresetPositionSelect(
+                coordinator, entry,
+                preset_ids=await _async_preset_ids(coordinator) or None))
+
+    if coordinator.supports_day_night_color():
+        devices.append(DahuaDayNightModeSelect(coordinator, entry))
 
     async_add_devices(devices)
+
+
+
+async def _async_preset_ids(coordinator) -> list:
+    """The presets this camera reports, or an empty list if it will not say.
+
+    Offering `1` to `10` to every camera means picking one the camera does not
+    have, which it answers with a 400 that reads as the integration failing
+    (#713). Asking costs one request at setup.
+
+    Empty means keep the old list, not "no presets". A camera that does not
+    implement the query answers the same as one with none, and removing the
+    control from somebody using it is far worse than offering one preset too
+    many.
+    """
+    try:
+        data = await coordinator.client.async_get_ptz_presets(
+            coordinator.get_channel_number())
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.debug("Could not read the preset list", exc_info=True)
+        return []
+    presets = dahua_utils.parse_ptz_presets(data)
+    _LOGGER.debug("Camera reports presets %s", presets)
+    return presets
 
 
 class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
@@ -122,3 +153,48 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
     @property
     def unique_id(self):
         return self._attr_unique_id
+
+
+class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
+    """The camera's Day/Night mode: colour, automatic, or black and white.
+
+    #687 asked for this. The service to set it has existed for some time, but
+    nothing read it back, so there was no way to notice a device that had
+    changed mode by itself -- a VTO that reverts to Auto after a power cut, and
+    then renders black and white at night, being the reported case.
+    """
+
+    _attr_options = ["Color", "Auto", "BlackWhite"]
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+
+    @property
+    def name(self):
+        return self._coordinator.get_device_name() + " Day/Night Mode"
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_day_night_mode"
+
+    @property
+    def icon(self):
+        return "mdi:theme-light-dark"
+
+    @property
+    def current_option(self):
+        """The mode the device reports, or None when it has not reported one.
+
+        None shows as unknown rather than as a mode the camera is not in, which
+        is what a poll that has not landed yet, or a value outside the documented
+        0/1/2, actually means.
+        """
+        return self._coordinator.get_day_night_color()
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        await self._coordinator.client.async_set_video_in_day_night_mode(
+            self._coordinator.get_channel(), "general", option)
+        await self._coordinator.async_refresh()

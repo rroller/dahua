@@ -20,6 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntry
 
+from . import dahua_utils
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
@@ -125,6 +126,9 @@ def _coordinator_block(coordinator) -> dict[str, Any]:
 def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
     return {
         "model": _safe(coordinator.get_model),
+        # On an NVR channel the line above is the recorder. This is the
+        # camera actually on the channel, or None when it did not say.
+        "channel_model": _safe(coordinator.get_channel_model),
         "machine_name": getattr(coordinator, "machine_name", None),
         "name": _safe(coordinator.get_device_name),
         "firmware": _safe(coordinator.get_firmware_version),
@@ -136,9 +140,42 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         "channel_index": _safe(coordinator.get_channel),
         "channel_number": _safe(coordinator.get_channel_number),
         "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
+        # What the auto-detect actually concluded, which is what decides
+        # channel_number above. True means the device answered a snapshot on
+        # channel 0, False means it answered with a status saying no, and
+        # None means it never answered and the numbering was left alone.
+        #
+        # The third case is the one worth being able to see. Before #735 a
+        # timeout counted as a no, and entries that timed out renumbered
+        # themselves one channel high while their neighbours did not (#724).
+        # Reading channel_number on its own could never show that; reading it
+        # beside this can.
+        "device_is_zero_indexed": _zero_indexed(coordinator),
         "max_streams": _safe(coordinator.get_max_streams),
         "profile_mode": _safe(coordinator.get_profile_mode),
+        # Both were assumed once and are resolved from the device now. Index 0
+        # is the infrared emitter on dual light models, and some of those put
+        # the white light's brightness on NearLight rather than MiddleLight,
+        # so a wrong answer here is a control that moves nothing visible
+        # (#570, #647).
+        "illuminator_light_index": _safe(coordinator.get_illuminator_index),
+        "illuminator_brightness_bank": _safe(coordinator.get_illuminator_bank),
     }
+
+
+def _zero_indexed(coordinator):
+    """Whether this device was found to number its channels from zero.
+
+    None when nothing was concluded, which is a real state and not a missing
+    value: a device that did not answer the probe leaves the numbering as it
+    was rather than guessing.
+    """
+    from . import _HOST_CHANNEL_BASE
+
+    device = _safe(lambda: coordinator.client.device_key)
+    if device is None:
+        return None
+    return _HOST_CHANNEL_BASE.get(device)
 
 
 def _capabilities_block(coordinator) -> dict[str, Any]:
@@ -164,7 +201,16 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
             coordinator.supports_smart_motion_detection_amcrest
         ),
     }
-    return {"probed": probed, "derived_from_model": derived}
+    return {
+        "probed": probed,
+        "derived_from_model": derived,
+        # Why each probe that failed did. A status is the device
+        # answering, and a 400 for a config table is it saying it does
+        # not serve that table, which is a fact about the model. No
+        # status means it did not answer, which is a fact about that
+        # moment only. "supports x = False" cannot tell them apart.
+        "refusals": dict(getattr(coordinator, "_probe_refusals", {})),
+    }
 
 
 def _client_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
@@ -182,6 +228,12 @@ def _client_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         # Boolean only. The digest state holds the challenge nonce and the
         # response, which is derived from the password.
         "digest_challenge_cached": bool(getattr(client, "_digest_state", None)),
+        # Which scheme the device asked for, not what it was given. Firmware
+        # old enough to predate digest on the CGI interface answers with a
+        # Basic challenge, and until #733 that read as a wrong password (#583).
+        # A name, never a credential.
+        "auth_scheme": (getattr(client, "_digest_state", None) or {}).get(
+            "scheme", "digest"),
         "rpc2_session_active": getattr(client, "_rpc2_session_instance", None)
         is not None,
         "rtsp_url_shape": (
@@ -211,7 +263,30 @@ def _events_block(coordinator) -> dict[str, Any]:
             key: (now - value) if value else None for key, value in timestamps.items()
         },
         "active_count": sum(1 for value in timestamps.values() if value),
+        # The last few events as they arrived, with their shape intact and their
+        # contents cut down. This is the thing reporters are asked for over and
+        # over, by hand, with a curl command: which Code the device sent, and
+        # which field carries the state, the direction or the object type.
+        #
+        # It publishes strictly less than the raw events people currently paste
+        # into public issues themselves. Field names survive, because that is
+        # almost always the question; a number plate, a card number or a person's
+        # name does not.
+        "recent": _recent_events_block(coordinator, now),
     }
+
+
+def _recent_events_block(coordinator, now: int) -> list[dict[str, Any]]:
+    """The remembered events, redacted and aged."""
+    remembered = list(getattr(coordinator, "_recent_events", None) or ())
+    out = []
+    for row in remembered:
+        captured = row.get("seconds_ago_at_capture") or now
+        out.append({
+            "seconds_ago": max(0, now - captured),
+            "event": _safe(lambda: dahua_utils.summarise_event(row.get("event")), {}),
+        })
+    return out
 
 
 def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
@@ -222,6 +297,7 @@ def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> 
     """
     from . import _HOST_CONNECTORS
     from .client import (_HOST_LIMITS, _HOST_RPC2, _HOST_RPC2_UNAVAILABLE,
+                         _RPC2_TABLE_UNAVAILABLE,
                          MAX_CONCURRENT_REQUESTS_PER_HOST)
 
     address = config_entry.data.get(CONF_ADDRESS)
@@ -247,6 +323,13 @@ def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> 
             rpc2 is not None and rpc2.keepalive is not None and not rpc2.keepalive.done()
         ),
         "rpc2_ruled_out_for_host": rpc2_key in _HOST_RPC2_UNAVAILABLE,
+        # Which config tables this device answered and declined. Recorded
+        # already, never reported, and it is the more useful half: a refusal
+        # names a thing this model will not do, and that is what the
+        # model-name guessing in #570, #676 and #690 exists to work around.
+        "rpc2_tables_refused": sorted(
+            table for key, table in _RPC2_TABLE_UNAVAILABLE if key == rpc2_key
+        ),
         "address": address,
         "connector_refcount": holder[1] if holder else None,
         "connector_closed": holder[0].closed if holder else None,

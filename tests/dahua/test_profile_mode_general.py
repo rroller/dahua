@@ -82,11 +82,15 @@ def test_config_ex_is_also_read_from_this_channels_row():
     assert _coordinator(channel=3).read_profile_mode(data) == "1"
 
 
-def test_a_channel_with_no_row_falls_back_to_row_zero():
-    """A single camera reports only row 0."""
+def test_a_channel_with_no_row_does_not_take_row_zeros():
+    """Flipped deliberately -- see test_profile_mode.py.
+
+    Row 0 is camera 1's row on a recorder. A channel with no row of its own
+    falls through to the day default rather than adopting it.
+    """
     data = _row(0, **{"Config[0]": "1"})
 
-    assert _coordinator(channel=5).read_profile_mode(data) == "1"
+    assert _coordinator(channel=5).read_profile_mode(data) == "0"
 
 
 def test_general_mode_is_detected_from_this_channels_row():

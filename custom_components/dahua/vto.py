@@ -17,6 +17,20 @@ PROTOCOLS = {
     False: "http"
 }
 
+# How long to wait for the doorbell to answer a hang-up before giving up.
+# The command goes over the already-open socket on port 5000, so a reply is
+# either prompt or not coming.
+CANCEL_CALL_TIMEOUT_SECONDS = 5
+
+
+class CancelCallRefused(Exception):
+    """The doorbell did not agree to hang up.
+
+    Raised rather than returning False so a caller cannot report success by
+    forgetting to check. Translated to a HomeAssistantError at the edge,
+    because this module deliberately does not import Home Assistant.
+    """
+
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 DAHUA_DEVICE_TYPE = "deviceType"
@@ -79,6 +93,7 @@ class DahuaVTOClient(asyncio.Protocol):
         self.on_receive_vto_event = on_receive_vto_event
         self._loop = asyncio.get_event_loop()
         self.disconnected = self._loop.create_future()
+        self.received_data = False
 
     def connection_made(self, transport):
         _LOGGER.debug("VTO connection established")
@@ -94,6 +109,12 @@ class DahuaVTOClient(asyncio.Protocol):
 
     def data_received(self, data):
         _LOGGER.debug(f"Event data {self.host}: '{data}'")
+
+        # Whether this device has said anything at all on this connection --
+        # a login reply, a keepAlive answer, an event. The reconnect decision
+        # needs it to tell a doorbell that is refusing us from one that is
+        # simply quiet, which most front doors are for hours at a time.
+        self.received_data = True
 
         self.buffer += data
 
@@ -171,12 +192,17 @@ class DahuaVTOClient(asyncio.Protocol):
             "params": params
         }
 
-        self.data_handlers[self.request_id] = handler
+        request_id = self.request_id
+        self.data_handlers[request_id] = handler
 
         if not self.transport.is_closing():
             message = self.convert_message(message_data)
 
             self.transport.write(message)
+
+        # Returned so a caller that wants to wait for this particular reply
+        # can find its own handler again, and drop it afterwards.
+        return request_id
 
     @staticmethod
     def convert_message(data):
@@ -299,13 +325,46 @@ class DahuaVTOClient(asyncio.Protocol):
 
         self.send(DAHUA_CONFIG_MANAGER_GETCONFIG, handle_access_control, request_data)
 
-    async def cancel_call(self):
-        _LOGGER.info("Cancelling call on VTO")
+    async def cancel_call(self, timeout: float = CANCEL_CALL_TIMEOUT_SECONDS):
+        """Hang up, and wait to hear whether the doorbell agreed.
+
+        This used to push the command onto the socket and return True at
+        once. It is declared async and never awaits anything, so every
+        caller was told the call had been cancelled whatever the device
+        did -- and #526, cancel_call no longer working on the VTO2211G-WP,
+        is exactly that failure. The device's own answer arrived here the
+        whole time and was logged at info, where nothing read it.
+
+        Now the answer is waited for and acted on. Two things are
+        unambiguous and both raise: no reply at all, and a reply that says
+        result false. A reply that arrives without a result is taken as
+        agreement, because the doorbell did respond and this has no
+        captured console.runCmd reply to be stricter from.
+        """
+        _LOGGER.debug("Cancelling call on %s", self.host)
+        answered = self._loop.create_future()
 
         def cancel(message):
-            _LOGGER.info(f"Got cancel call response: {message}")
+            _LOGGER.debug("Got cancel call response: %s", message)
+            if not answered.done():
+                answered.set_result(message)
 
-        self.send("console.runCmd", cancel, {"command": "hc"})
+        request_id = self.send("console.runCmd", cancel, {"command": "hc"})
+        try:
+            message = await asyncio.wait_for(answered, timeout)
+        except asyncio.TimeoutError:
+            raise CancelCallRefused(
+                "{0} did not answer the hang-up within {1}s".format(
+                    self.host, timeout)) from None
+        finally:
+            # send() registers a handler for every request and only the
+            # keep-alive path ever removes one, so drop ours whichever way
+            # this ended rather than leaving it to accumulate.
+            self.data_handlers.pop(request_id, None)
+
+        if isinstance(message, dict) and message.get("result") is False:
+            raise CancelCallRefused(
+                "{0} refused the hang-up: {1}".format(self.host, message))
         return True
 
     def load_version(self):

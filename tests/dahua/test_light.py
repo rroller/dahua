@@ -12,17 +12,34 @@ class _Client:
     def __init__(self):
         self.v1 = []
         self.v2 = []
+        self.scheme = {}
+        self.scheme_calls = []
+        self.scheme_reads = 0
 
-    async def async_set_lighting_v1(self, channel, enabled, brightness):
-        self.v1.append((channel, enabled, brightness))
+    async def async_set_lighting_v1(self, channel, enabled, brightness, profile_mode="0"):
+        self.v1.append((channel, enabled, brightness, profile_mode))
 
     async def async_set_lighting_v2(self, channel, enabled, brightness, profile_mode,
-                                    light_index=0):
-        self.v2.append((channel, enabled, brightness, profile_mode, light_index))
+                                    light_index=0, bank="MiddleLight"):
+        self.v2.append((channel, enabled, brightness, profile_mode, light_index, bank))
+
+    async def async_get_lighting_scheme(self):
+        """Defined so the scheme check runs for real rather than erroring out.
+
+        Returning no scheme is the common camera: nothing blocks, nothing warns.
+        """
+        self.scheme_reads += 1
+        return self.scheme
+
+    async def async_set_lighting_scheme_illuminator(
+            self, channel, enabled, brightness, profile_mode, light_index):
+        self.scheme_calls.append(
+            (channel, enabled, brightness, profile_mode, light_index)
+        )
 
 
 class _Coordinator:
-    def __init__(self, channel=3, profile_mode="1"):
+    def __init__(self, channel=3, profile_mode="1", uses_scheme=False):
         self.client = _Client()
         self._channel = channel
         self._profile_mode = profile_mode
@@ -33,11 +50,18 @@ class _Coordinator:
         self.illuminator_brightness = 64
         # Which light this device calls the white one; 0 on most models.
         self.illuminator_index = 0
+        # Which brightness bank the white light uses; MiddleLight on most models.
+        self.illuminator_bank = "MiddleLight"
+        self.uses_scheme = uses_scheme
 
     def get_channel(self):
         return self._channel
 
     def get_profile_mode(self):
+        return self._profile_mode
+
+    def get_infrared_profile(self):
+        """The profile the infrared light really uses; the live one here."""
         return self._profile_mode
 
     def get_serial_number(self):
@@ -60,6 +84,12 @@ class _Coordinator:
 
     def get_illuminator_index(self):
         return self.illuminator_index
+
+    def get_illuminator_bank(self):
+        return self.illuminator_bank
+
+    def uses_lighting_scheme_illuminator(self):
+        return self.uses_scheme
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -124,7 +154,8 @@ async def test_infrared_turn_on_sends_the_channel_and_brightness():
     c = _Coordinator(channel=3)
     await _light(DahuaInfraredLight, c).async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
-    assert c.client.v1 == [(3, True, 100)]
+    assert c.client.v1 == [(3, True, 100, "1")], (
+        "the write must name the profile the camera is using, not 0")
     assert c.client.v2 == [], "the infrared light must not use the v2 API"
     assert c.refreshed == 1
 
@@ -134,8 +165,9 @@ async def test_infrared_turn_off_sends_enabled_false():
     await _light(DahuaInfraredLight, c).async_turn_off()
 
     assert len(c.client.v1) == 1
-    channel, enabled, _ = c.client.v1[0]
+    channel, enabled, _, profile = c.client.v1[0]
     assert (channel, enabled) == (3, False)
+    assert profile == "1", "turning off must reach the same profile as turning on"
 
 
 async def test_infrared_turn_on_without_brightness_uses_full():
@@ -163,7 +195,7 @@ async def test_illuminator_passes_the_profile_mode_through():
 
     await _light(DahuaIlluminator, c, "Illuminator").async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
-    assert c.client.v2 == [(2, True, 100, "1", 0)]
+    assert c.client.v2 == [(2, True, 100, "1", 0, "MiddleLight")]
     assert c.client.v1 == [], "the illuminator must not use the v1 API"
 
 
@@ -172,8 +204,18 @@ async def test_illuminator_turn_off_keeps_the_profile_mode():
 
     await _light(DahuaIlluminator, c, "Illuminator").async_turn_off()
 
-    channel, enabled, _, profile_mode, _index = c.client.v2[0]
+    channel, enabled, _, profile_mode, _index, _bank = c.client.v2[0]
     assert (channel, enabled, profile_mode) == (2, False, "0")
+
+
+async def test_a_camera_with_no_lighting_scheme_still_switches_on_cleanly():
+    """The scheme check must not get in the way of the command itself."""
+    c = _Coordinator(channel=2, profile_mode="0")
+
+    await _light(DahuaIlluminator, c, "Illuminator").async_turn_on()
+
+    assert c.client.v2, "the light command did not reach the client"
+    assert c.client.scheme_reads == 1, "the scheme was not consulted"
 
 
 async def test_illuminator_writes_to_the_light_the_device_calls_white():
@@ -191,6 +233,21 @@ async def test_illuminator_uses_whatever_profile_mode_is_current():
     c = _Coordinator(profile_mode="2")
     await _light(DahuaIlluminator, c, "Illuminator").async_turn_on()
     assert c.client.v2[0][3] == "2"
+
+
+async def test_scheme_illuminator_uses_the_two_table_client_path():
+    c = _Coordinator(channel=0, profile_mode="1", uses_scheme=True)
+    c.illuminator_index = 1
+
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on(**{ATTR_BRIGHTNESS: 255})
+    await light.async_turn_off()
+
+    assert c.client.scheme_calls == [
+        (0, True, 100, "1", 1),
+        (0, False, 100, "1", 1),
+    ]
+    assert c.client.v2 == []
 
 
 # --- identity --------------------------------------------------------------

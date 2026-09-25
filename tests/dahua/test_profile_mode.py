@@ -58,9 +58,43 @@ def test_a_single_camera_still_reads_row_zero():
     assert _coordinator(0).read_profile_mode(SINGLE_CAMERA_TABLE) == "1"
 
 
-def test_a_channel_with_no_row_of_its_own_falls_back_to_row_zero():
-    """Firmware that reports one row for a device configured on channel 3."""
-    assert _coordinator(3).read_profile_mode(SINGLE_CAMERA_TABLE) == "1"
+def test_a_channel_with_no_row_of_its_own_does_not_borrow_row_zero():
+    """This assertion used to read the other way round.
+
+    Row 0 belongs to whichever camera reported it. A channel that has no row of
+    its own must not adopt another camera's day/night profile -- the profile
+    decides which Lighting_V2[channel][profile] every light command for this
+    camera is written to, so borrowing one sends those writes to a profile the
+    camera is not using, where the device accepts and ignores them.
+
+    Falling through to the documented default instead makes the answer depend
+    on this channel alone.
+    """
+    assert _coordinator(3).read_profile_mode(SINGLE_CAMERA_TABLE) == "0"
+
+
+def test_a_recorder_does_not_give_every_channel_camera_ones_profile():
+    """The field case. Camera 1 is on day, channel 6 reports no row at all."""
+    table = {"table.VideoInMode[0].Config[0]": "1",
+             "table.VideoInMode[1].Config[0]": "1"}
+
+    assert _coordinator(0).read_profile_mode(table) == "1"
+    assert _coordinator(1).read_profile_mode(table) == "1"
+    assert _coordinator(6).read_profile_mode(table) == "0", (
+        "channel 6 has no row and took camera 1's night profile")
+
+
+def test_one_answer_is_never_assembled_from_two_cameras():
+    """The fallback was per field, so Config[0] and ConfigEx could disagree.
+
+    Channel 5 has a Config[0] of its own and no ConfigEx. Row 0's ConfigEx said
+    night, and taking it turned this channel's day into night.
+    """
+    table = {"table.VideoInMode[0].ConfigEx": "night",
+             "table.VideoInMode[0].Config[0]": "1",
+             "table.VideoInMode[5].Config[0]": "0"}
+
+    assert _coordinator(5).read_profile_mode(table) == "0"
 
 
 # --- the old defaults ------------------------------------------------------

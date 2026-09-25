@@ -15,6 +15,7 @@ INFRARED_ICON = "mdi:weather-night"
 DISARMING_ICON = "mdi:alarm-check"
 VOLUME_HIGH_ICON = "mdi:volume-high"
 BELL_ICON = "mdi:bell-ring"
+PRIVACY_MODE_ICON = "mdi:shield-lock"
 
 # Device classes - https://www.home-assistant.io/integrations/binary_sensor/#device-class
 MOTION_SENSOR_DEVICE_CLASS = "motion"
@@ -31,7 +32,8 @@ CAMERA = "camera"
 SELECT = "select"
 BUTTON = "button"
 SENSOR = "sensor"
-PLATFORMS = [BINARY_SENSOR, SWITCH, LIGHT, CAMERA, SELECT, BUTTON, SENSOR]
+EVENT = "event"
+PLATFORMS = [BINARY_SENSOR, SWITCH, LIGHT, CAMERA, SELECT, BUTTON, SENSOR, EVENT]
 
 
 # Configuration and options
@@ -46,12 +48,17 @@ CONF_EVENTS = "events"
 CONF_NAME = "name"
 CONF_CHANNEL = "channel"
 CONF_AUTO_DETECT_CHANNEL = "auto_detect_channel"
+# Which other channels of a recorder to add alongside the one being set up.
+CONF_EXTRA_CHANNELS = "extra_channels"
 CONF_USE_HTTPS = "use_https"
 CONF_SCAN_INTERVAL = "scan_interval"
 # Prototype: route config reads over RPC2's session instead of a fresh digest
 # handshake per call. Off by default -- see #636.
 CONF_USE_RPC2 = "use_rpc2"
 CONF_NVR_ACTIVE_DETERRENCE = "nvr_active_deterrence"
+# Ask go2rtc not to open the RTSP talk channel. It otherwise holds it for as
+# long as HA streams, which puts doorbells in a call state -- see #595.
+CONF_DISABLE_BACKCHANNEL = "disable_backchannel"
 CONF_AUTHORIZED_PLATES = "authorized_plates"
 CONF_AUTHORIZED_HOLD_TIME = "authorized_hold_time"
 
