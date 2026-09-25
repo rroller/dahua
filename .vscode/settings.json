@@ -12,5 +12,6 @@
     ],
     "python.formatting.autopep8Args": [
         "--max-line-length=180"
-    ]
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }

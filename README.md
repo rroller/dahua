@@ -151,7 +151,7 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | IMOU IPC-C26E-V2 <sup>*</sup> |
 | | IMOU IPC-K22A / Cube PoE-322A |
 | *Lorex* |
-| | | | | Lorex E891AB
+| | | | | Lorex E891AB / E893DD
 | | | | | Lorex LNB8005-C
 | | | | | Lorex LNE8964AB
 
