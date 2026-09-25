@@ -8,6 +8,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.dahua.config_flow import DahuaOptionsFlowHandler
 from custom_components.dahua.const import (
+    CONF_MANUAL_SECURITY_LIGHT,
+    CONF_MANUAL_SIREN,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     MIN_SCAN_INTERVAL,
@@ -122,3 +124,17 @@ async def test_nvr_active_deterrence_preserves_the_configured_value(hass):
     )
 
     assert defaults["nvr_active_deterrence"] is True
+
+
+async def test_manual_deterrence_options_default_off_and_preserve_choices(hass):
+    defaults = _schema_defaults(await _shown_options_form(hass, _entry()))
+    assert defaults[CONF_MANUAL_SIREN] is False
+    assert defaults[CONF_MANUAL_SECURITY_LIGHT] is False
+
+    defaults = _schema_defaults(
+        await _shown_options_form(
+            hass, _entry(manual_siren=True, manual_security_light=True)
+        )
+    )
+    assert defaults[CONF_MANUAL_SIREN] is True
+    assert defaults[CONF_MANUAL_SECURITY_LIGHT] is True

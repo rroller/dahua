@@ -84,9 +84,15 @@
                     "events": "Events to subscribe to",
                     "scan_interval": "Seconds between device polls (events are not affected)",
                     "nvr_active_deterrence": "Enable NVR active deterrence controls",
+                    "manual_siren": "Manually enable Siren entity",
+                    "manual_security_light": "Manually enable Security Light entity",
                     "disable_backchannel": "Don't open the two-way audio channel when streaming (fixes a doorbell stuck in a call, or talkback in the Dahua/Amcrest app; disables talking from Home Assistant)",
                     "authorized_plates": "Authorized license plates (comma-separated, e.g. ABC1234, XYZ5678)",
                     "authorized_hold_time": "Authorized vehicle hold time (seconds to remain ON)"
+                },
+                "data_description": {
+                    "manual_siren": "Enable this if your camera has a working siren, but the integration did not create the Siren entity.",
+                    "manual_security_light": "Enable this if your camera has a working security light, but the integration did not create the Security Light entity."
                 }
             }
         }
