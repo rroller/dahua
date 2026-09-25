@@ -5,6 +5,7 @@ import asyncio
 from typing import Any, Dict
 import logging
 import random
+import re
 import ssl
 import time
 
@@ -545,6 +546,9 @@ class DahuaHostEventStream:
         # Whether the device sent anything on the current attach. Reset per
         # attempt, so it describes this stream and not the one before it.
         self._received_data = False
+        # EventManager is multipart and aiohttp yields arbitrary chunk sizes.
+        # Large event payloads (metadata) are often split across chunks.
+        self._stream_buffer = ""
 
     @property
     def coordinators(self) -> list:
@@ -606,6 +610,7 @@ class DahuaHostEventStream:
         self._by_channel.clear()
         self._owner = None
         self._events = frozenset()
+        self._stream_buffer = ""
 
     async def _async_run(self) -> None:
         """Hold the stream open, recycling it the way a single channel used to."""
@@ -689,29 +694,38 @@ class DahuaHostEventStream:
                 _LOGGER.debug("Reconnecting to event stream for %s", self._address)
 
     def on_receive(self, data_bytes: bytes, _channel: int) -> None:
-        """Parse once, then hand each event only to the channels that want it."""
+        """Parse multipart blocks, then hand each event to the channels that want it."""
         # Before the parse, deliberately: a heartbeat carries no event but is
         # still the device talking, and that is what the retry delay needs to
         # know. A camera sitting quietly with nothing to report is not a camera
         # refusing to attach.
         self._received_data = True
+        self._stream_buffer += data_bytes.decode("utf-8", errors="ignore")
 
-        events = parse_event(data_bytes.decode("utf-8", errors="ignore"))
-        if not events:
+        boundaries = [
+            match.start()
+            for match in re.finditer(r"--myboundary\r?\n", self._stream_buffer)
+        ]
+        if len(boundaries) < 2:
             return
 
-        for event in events:
-            index = 0
-            if "index" in event:
-                try:
-                    index = int(event["index"])
-                except ValueError:
-                    index = 0
+        for idx in range(len(boundaries) - 1):
+            block = self._stream_buffer[boundaries[idx]:boundaries[idx + 1]]
+            events = parse_event(block)
+            for event in events:
+                index = 0
+                if "index" in event:
+                    try:
+                        index = int(event["index"])
+                    except ValueError:
+                        index = 0
 
-            # A channel nobody has configured stays silent, exactly as it did
-            # when every coordinator discarded it.
-            for coordinator in self._by_channel.get(index, ()):
-                coordinator.handle_event(dict(event))
+                # A channel nobody has configured stays silent, exactly as it did
+                # when every coordinator discarded it.
+                for coordinator in self._by_channel.get(index, ()):
+                    coordinator.handle_event(dict(event))
+
+        self._stream_buffer = self._stream_buffer[boundaries[-1]:]
 
 
 # address -> DahuaHostEventStream
