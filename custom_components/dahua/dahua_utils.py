@@ -508,11 +508,17 @@ def parse_ptz_presets(data) -> list:
     Only `Index` matters: the numbers need not be contiguous, because deleting
     preset 2 leaves 1 and 3.
 
-    An empty result is deliberately **not** "this camera has no presets". A
-    camera that does not implement the query answers exactly the same way, and
-    the two cannot be told apart, so the caller keeps its existing list rather
-    than removing controls somebody is using. Measured on a
-    DHI-NVR5464-16P-EI: fixed cameras answer 200 with an empty body.
+    An empty result means this device holds no presets. It is **not** the same
+    as the device declining to answer, which #762's version of this docstring
+    got wrong by claiming the two "cannot be told apart". They can, by status:
+
+        no PTZ motor, HFW3449E-S-IL and HFW3449T-ZS-IL   200, zero bytes
+        fixed cameras behind a DHI-NVR5464-16P-EI        200, empty body
+        does not implement getPresets, Intelbras IM7      400, "Bad Request"
+
+    A 400 raises before this is reached, so everything arriving here is a
+    device that answered. The caller is what decides; see `_async_preset_ids`
+    in select.py, which returns None for the refusal and this list otherwise.
     """
     if not isinstance(data, dict):
         return []

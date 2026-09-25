@@ -35,10 +35,22 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             )
         )
     else:
-        devices.append(
-            DahuaCameraPresetPositionSelect(
-                coordinator, entry,
-                preset_ids=await _async_preset_ids(coordinator) or None))
+        preset_ids = await _async_preset_ids(coordinator)
+        if preset_ids == []:
+            # The camera answered and holds no presets, so every option this
+            # control could offer would be a GotoPreset the device refuses.
+            # That is #525: four reporters, four cameras, one 400 from a
+            # dropdown that was never going to work. Two of those cameras have
+            # no PTZ motor at all.
+            #
+            # Not the same as None, which is the device declining to answer.
+            # Saving a preset and reloading the entry brings the control back.
+            _LOGGER.debug(
+                "Camera reports no presets, so no Preset Position control")
+        else:
+            devices.append(
+                DahuaCameraPresetPositionSelect(
+                    coordinator, entry, preset_ids=preset_ids))
 
     if coordinator.supports_day_night_color():
         devices.append(DahuaDayNightModeSelect(coordinator, entry))
@@ -47,24 +59,35 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 
 
 
-async def _async_preset_ids(coordinator) -> list:
-    """The presets this camera reports, or an empty list if it will not say.
+async def _async_preset_ids(coordinator):
+    """Which presets this camera has: a list, or None when it would not say.
 
     Offering `1` to `10` to every camera means picking one the camera does not
     have, which it answers with a 400 that reads as the integration failing
     (#713). Asking costs one request at setup.
 
-    Empty means keep the old list, not "no presets". A camera that does not
-    implement the query answers the same as one with none, and removing the
-    control from somebody using it is far worse than offering one preset too
-    many.
+    **An empty list and None are different answers, and #762 conflated them.**
+    That docstring claimed a camera with no presets and a camera that does not
+    implement the query "cannot be told apart". Measurement says otherwise:
+
+        no PTZ motor, HFW3449E-S-IL and HFW3449T-ZS-IL   200, zero bytes
+        does not implement getPresets, Intelbras IM7      400, "Bad Request"
+
+    Both measured by reporters on #525 and #713. So a device that answers at
+    all has told us what it holds, and an empty answer means it holds nothing.
+    Only an error is the device declining to say, and that stays unknown.
+
+    Returns None on an error, deliberately, so the caller keeps the ten-entry
+    list rather than taking a control away from somebody whose camera refuses
+    the query but accepts GotoPreset. The SDT4E425 is exactly that shape: its
+    CGI getStatus answers 400 while its PTZ works.
     """
     try:
         data = await coordinator.client.async_get_ptz_presets(
             coordinator.get_channel_number())
     except Exception:  # pylint: disable=broad-except
         _LOGGER.debug("Could not read the preset list", exc_info=True)
-        return []
+        return None
     presets = dahua_utils.parse_ptz_presets(data)
     _LOGGER.debug("Camera reports presets %s", presets)
     return presets
