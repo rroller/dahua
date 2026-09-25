@@ -819,6 +819,27 @@ class DahuaClient:
         except aiohttp.ClientResponseError as e:
             return {"type": "Generic RTSP"}
 
+    async def async_get_device_class(self) -> str:
+        """What the device calls itself, rather than what its model name looks like.
+
+        Measured 2026-09-25 on two devices on one network:
+
+            VTO2000A doorbell            class=VTO
+            DHI-NVR5464-16P-EI recorder  class=NVR
+
+        Every doorbell capability in this integration is currently decided by a
+        model-name prefix (`is_doorbell` matches VTO, AD, DB6, DB2X, AV-V), which
+        fails for every rebadge nobody has added yet. This is the device's own
+        answer to the same question.
+
+        Returns "" when the device does not answer, which is treated as no
+        information rather than as a denial: the caller keeps its model-name
+        match. A device that has not implemented getDeviceClass is not thereby
+        saying it is not a doorbell.
+        """
+        result = await self.get("/cgi-bin/magicBox.cgi?action=getDeviceClass")
+        return (result.get("class") or "").strip().upper()
+
     async def get_software_version(self) -> dict:
         """
         get_software_version returns the device software version (also known as the firmware version). Example response:
@@ -2056,6 +2077,7 @@ class DahuaClient:
         TakenAwayDetection: missing object detection
         VideoAbnormalDetection: scene change event
         FaceDetection: face detect event
+        HumanTrait: human attributes/appearance metadata event
         AudioMutation: intensity change
         AudioAnomaly: input abnormal
         VideoUnFocus: defocus detect event
