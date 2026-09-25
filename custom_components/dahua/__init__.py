@@ -105,6 +105,89 @@ PROBE_FAILED = (ClientError, TimeoutError)
 PROBE_REFUSED = (ClientResponseError, TimeoutError)
 
 
+# Camera uptime is host-wide. An NVR may have many config entries, one per
+# channel, but they all refer to the same physical recorder uptime.
+#
+# Keep one shared sample per host so coordinator polling does not multiply
+# uptime requests by channel count.
+_HOST_UPTIME_STATE: dict[str, dict[str, Any]] = {}
+_HOST_UPTIME_LOCKS: dict[str, asyncio.Lock] = {}
+
+# NVR channel coordinators normally poll within a moment of each other.
+# Reuse the first host uptime read for the others in that poll burst.
+HOST_UPTIME_DEDUPE_SECONDS = 5.0
+
+
+async def _async_get_host_uptime_generation(coordinator) -> int:
+    """Poll one host-wide uptime value and return its reboot generation."""
+
+    address = coordinator._address
+
+    state = _HOST_UPTIME_STATE.setdefault(
+        address,
+        {
+            "uptime": None,
+            "generation": 0,
+            "last_read": 0.0,
+        },
+    )
+
+    lock = _HOST_UPTIME_LOCKS.setdefault(
+        address,
+        asyncio.Lock(),
+    )
+
+    async with lock:
+        # Another channel may have completed the host read while this
+        # coordinator was waiting for the lock.
+        now = time.monotonic()
+
+        if (
+            now - state["last_read"] < HOST_UPTIME_DEDUPE_SECONDS
+        ):
+            return int(state["generation"])
+
+        try:
+            current = await coordinator.client.async_get_uptime_last()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Cache failed attempts too, otherwise every NVR channel may repeat
+            # the same failed uptime request during the same poll burst.
+            state["last_read"] = time.monotonic()
+
+            # Uptime is an optional enhancement. A device/transport that does
+            # not support it must not make the normal coordinator poll fail.
+            _LOGGER.debug(
+                "Could not read host uptime for %s",
+                address,
+                exc_info=True,
+            )
+            return int(state["generation"])
+
+        previous = state["uptime"]
+
+        if (
+            previous is not None
+            and current < previous
+        ):
+            state["generation"] += 1
+
+            _LOGGER.info(
+                "Dahua host %s reboot detected "
+                "(uptime %s -> %s, generation=%s)",
+                address,
+                previous,
+                current,
+                state["generation"],
+            )
+
+        state["uptime"] = current
+        state["last_read"] = time.monotonic()
+
+        return int(state["generation"])
+
+
 def stream_lifetime(lived_seconds: float, received_data: bool) -> float:
     """How long the stream really lasted, for the purpose of retrying it.
 
@@ -1292,6 +1375,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_lighting_v2 = False
         self._supports_lighting_scheme_illuminator = False
 
+        # Host-wide camera/NVR reboot generation.
+        # Multiple NVR channel coordinators share the host uptime read.
+        self._camera_reboot_generation = 0
+
         # channel_number is not the channel_index. channel_number is the index + 1.
         # So channel index 0 is channel number 1. Except for some older firmwares where channel
         # and channel number are the same! We check for this in _async_update_data and adjust the
@@ -1910,6 +1997,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 light_v2 = await self.client.async_get_lighting_v2()
                 if light_v2 is not None:
                     data.update(light_v2)
+
+            # Uptime is host-wide, so the shared helper collapses simultaneous
+            # NVR channel coordinator polls into one actual uptime request.
+            # Only use RPC2 when the user has explicitly enabled it.
+            if (
+                self._supports_lighting_v2
+                and self._wanted_by(LIGHT)
+                and self.client.use_rpc2
+            ):
+                self._camera_reboot_generation = (
+                    await _async_get_host_uptime_generation(self)
+                )
 
             async_record_host_success(self.hass, self._address)
             self._restore_poll_interval()
@@ -2700,6 +2799,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return true if ring light is on for an Amcrest Doorbell"""
         return self.data.get("table.LightGlobal[0].Enable") == "true"
 
+    def get_illuminator_brightness_field(self) -> str:
+        """Return the brightness field used by this WhiteLight."""
+        profile_mode = self.get_profile_mode()
+        index = self.get_illuminator_index()
+
+        base = (
+            f"table.Lighting_V2[{self._channel}]"
+            f"[{profile_mode}][{index}]"
+        )
+
+        if f"{base}.NearLight[0].Light" in self.data:
+            return "NearLight"
+
+        if f"{base}.MiddleLight[0].Light" in self.data:
+            return "MiddleLight"
+
+        return "MiddleLight"
+
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
 
@@ -2793,6 +2910,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._note_probe_refusal("lighting", probe_error)
             return False
         return len(conf) > 0
+
+    def get_camera_reboot_generation(self) -> int:
+        """Return the host reboot generation observed by this coordinator."""
+        return self._camera_reboot_generation
 
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
@@ -2946,6 +3067,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     address = normalize_address(entry.data.get(CONF_ADDRESS))
     if not _entries_for_address(hass, address):
         _HOST_FAILURES.pop(address, None)
+        _HOST_UPTIME_STATE.pop(address, None)
+        _HOST_UPTIME_LOCKS.pop(address, None)
         ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
         ir.async_delete_issue(
             hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)

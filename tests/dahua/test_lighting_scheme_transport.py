@@ -113,4 +113,5 @@ def test_the_method_is_defined_once():
 
     source = inspect.getsource(DahuaClient)
 
-    assert source.count("async def async_get_lighting_scheme") == 1
+    # Match the whole method name, not async_get_lighting_scheme_mode.
+    assert source.count("async def async_get_lighting_scheme(") == 1
