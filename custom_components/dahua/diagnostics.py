@@ -129,6 +129,11 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         # On an NVR channel the line above is the recorder. This is the
         # camera actually on the channel, or None when it did not say.
         "channel_model": _safe(coordinator.get_channel_model),
+        # What the device calls itself: VTO on a doorbell, NVR on a recorder,
+        # "" when it does not implement getDeviceClass. Doorbell capabilities
+        # are still decided mostly by the model name, so this is how we find
+        # out what the rebadges nobody has measured actually report.
+        "device_class": getattr(coordinator, "_device_class", None),
         "machine_name": getattr(coordinator, "machine_name", None),
         "name": _safe(coordinator.get_device_name),
         "firmware": _safe(coordinator.get_firmware_version),

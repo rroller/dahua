@@ -1253,6 +1253,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.initialized = False
         self.model = ""
         self._firmware_version = ""
+        # What the device calls itself, "" when it did not answer. See
+        # async_get_device_class.
+        self._device_class = ""
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
@@ -1560,6 +1563,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.machine_name = data.get("table.General.MachineName")
                 self._serial_number = data.get("serialNumber")
                 self._firmware_version = data.get("version") or ""
+
+                # Ask the device what it is, before anything asks the model name.
+                # Cached here rather than read from is_doorbell(), which is called
+                # on every poll and from ten other places.
+                try:
+                    self._device_class = await self.client.async_get_device_class()
+                except PROBE_FAILED as probe_error:
+                    self._note_probe_refusal("device_class", probe_error)
+                    self._device_class = ""
+                _LOGGER.debug("Device reports class=%s", self._device_class or "<no answer>")
 
                 # Some Dahua firmwares index channels from 0, others from 1. The default
                 # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
@@ -2339,7 +2352,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     def is_doorbell(self) -> bool:
-        """ Returns true if this is a doorbell (VTO) """
+        """ Returns true if this is a doorbell (VTO)
+
+        The device's own answer first, then the model-name list. Measured on a
+        VTO2000A, which reports `class=VTO`, and on a DHI-NVR5464-16P-EI, which
+        reports `class=NVR`.
+
+        Deliberately additive. A device that answers `VTO` is one, whatever its
+        model string says, which is what the list of prefixes below keeps
+        failing to cover for rebadges (#690). But a device that answers
+        something else, or does not answer at all, still gets the list: no
+        Amcrest or Imou doorbell has been measured here, and a wrong negative
+        would take every doorbell entity away from people who have them today.
+        """
+        if getattr(self, "_device_class", "") == "VTO":
+            return True
         m = self.model.upper()
         return (
             m.startswith(("VTO", "DH-VTO", "DHI-VTO", "DH_VTO", "DHI_VTO"))
