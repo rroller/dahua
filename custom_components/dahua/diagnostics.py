@@ -20,6 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntry
 
+from . import dahua_utils
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
@@ -262,7 +263,30 @@ def _events_block(coordinator) -> dict[str, Any]:
             key: (now - value) if value else None for key, value in timestamps.items()
         },
         "active_count": sum(1 for value in timestamps.values() if value),
+        # The last few events as they arrived, with their shape intact and their
+        # contents cut down. This is the thing reporters are asked for over and
+        # over, by hand, with a curl command: which Code the device sent, and
+        # which field carries the state, the direction or the object type.
+        #
+        # It publishes strictly less than the raw events people currently paste
+        # into public issues themselves. Field names survive, because that is
+        # almost always the question; a number plate, a card number or a person's
+        # name does not.
+        "recent": _recent_events_block(coordinator, now),
     }
+
+
+def _recent_events_block(coordinator, now: int) -> list[dict[str, Any]]:
+    """The remembered events, redacted and aged."""
+    remembered = list(getattr(coordinator, "_recent_events", None) or ())
+    out = []
+    for row in remembered:
+        captured = row.get("seconds_ago_at_capture") or now
+        out.append({
+            "seconds_ago": max(0, now - captured),
+            "event": _safe(lambda: dahua_utils.summarise_event(row.get("event")), {}),
+        })
+    return out
 
 
 def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
