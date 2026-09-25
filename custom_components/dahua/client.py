@@ -806,6 +806,43 @@ class DahuaClient:
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"serialNumber": unique_cam_id}
 
+    def _note_identity_fallback(self, what: str, exception) -> None:
+        """Say why this device's identity had to be invented.
+
+        `Generic RTSP` and firmware `1.0` are not device types. They are what
+        this client returns when magicBox.cgi answers with an HTTP error, and
+        they reach the user as a device page naming a camera nobody has, with
+        most entities unavailable and **nothing in the log saying why**. #583
+        is that, on a 2014 IPC-HFW4300S-V2, and the same unanswered question
+        sits under #728 and #767.
+
+        The status is the useful half. A 400 is the device saying it does not
+        serve that action, which is a fact about the firmware; a 401 is it
+        refusing the credentials, which is a different problem wearing the same
+        device page.
+
+        Once per client per question, because these are asked on every setup
+        and a warning per poll would be worse than the silence it replaces.
+        """
+        status = getattr(exception, "status", None)
+        # Self-initialising, like the coordinator's probe refusals: this runs
+        # inside an except branch whose whole purpose is to keep setup alive,
+        # so it must never be the thing that raises.
+        seen = getattr(self, "_identity_fallbacks", None)
+        if seen is None:
+            seen = self._identity_fallbacks = {}
+        if what in seen:
+            return
+        seen[what] = status
+        _LOGGER.warning(
+            "%s refused %s with HTTP %s, so this device is being reported as "
+            "an unidentified camera. Most entities depend on that answer and "
+            "will be unavailable. The credentials and the address are not "
+            "necessarily wrong: a device whose CGI interface refuses this "
+            "action answers the same way",
+            self._address, what, status,
+        )
+
     async def get_device_type(self) -> dict:
         """
         getDeviceType returns the device type. Example response:
@@ -817,6 +854,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getDeviceType")
         except aiohttp.ClientResponseError as e:
+            self._note_identity_fallback("getDeviceType", e)
             return {"type": "Generic RTSP"}
 
     async def get_software_version(self) -> dict:
@@ -827,6 +865,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSoftwareVersion")
         except aiohttp.ClientResponseError as e:
+            self._note_identity_fallback("getSoftwareVersion", e)
             return {"version": "1.0"}
 
     async def get_machine_name(self) -> dict:
@@ -846,6 +885,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getVendor")
         except aiohttp.ClientResponseError as e:
+            self._note_identity_fallback("getVendor", e)
             return {"vendor": "Generic RTSP"}
 
     async def reboot(self) -> dict:
