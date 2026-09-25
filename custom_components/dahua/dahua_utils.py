@@ -313,6 +313,28 @@ def parse_authorized_plates(raw_str: str | list | None) -> list[str]:
     return plates
 
 
+def first_direction(value):
+    """The first usable direction out of whatever shape the camera used.
+
+    `DrivingDirection` arrives as a list whose later entries are blank:
+
+        DrivingDirection:
+          - Approach
+          - ''
+
+    so the first non-empty string is the answer. A plain string is returned as
+    it stands, and anything else, a number or a nested structure, is ignored
+    rather than guessed at.
+    """
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
 def extract_plate_data(event: dict) -> dict | None:
     """Extract license plate and vehicle information from a Dahua ANPR/Traffic event dict.
 
@@ -403,7 +425,27 @@ def extract_plate_data(event: dict) -> dict | None:
     if isinstance(tc, dict):
         vehicle_brand = tc.get("Brand") or tc.get("VehicleSign") or tc.get("VehicleLogo") or tc.get("Logo")
         vehicle_series = tc.get("SubBrand") or tc.get("Series")
-        direction = tc.get("Direction") or tc.get("DirectionName")
+        # Measured on a DHI-ITC413-PW4D-IZ1 (#757), driven each way past it.
+        # Four fields look like a direction and only three of them move:
+        #
+        #   DrivingDirection  ["Approach", ""] -> ["Leave", ""]
+        #   JunctionDirection "Obverse"        -> "Reverse"
+        #   VehicleDirection  "Head"           -> "Tail"
+        #   Direction         0                -> 0            (never changes)
+        #
+        # DrivingDirection first, because Approach and Leave say what happened,
+        # where Obverse and Head describe which end of the car was photographed
+        # and need Dahua's vocabulary to read. Direction and DirectionName stay
+        # ahead of all of it so a camera already reporting them is unaffected;
+        # here Direction is 0, which is falsy, so it falls through rather than
+        # reporting a meaningless zero.
+        direction = (
+            tc.get("Direction")
+            or tc.get("DirectionName")
+            or first_direction(tc.get("DrivingDirection"))
+            or first_direction(tc.get("JunctionDirection"))
+            or first_direction(tc.get("VehicleDirection"))
+        )
 
     veh = data.get("Vehicle") or data.get("vehicle")
     if isinstance(veh, dict):
@@ -424,7 +466,15 @@ def extract_plate_data(event: dict) -> dict | None:
     if not vehicle_brand:
         vehicle_brand = data.get("Brand") or data.get("VehicleSign") or data.get("VehicleLogo") or data.get("Logo")
     if not direction:
-        direction = data.get("Direction") or data.get("DirectionName")
+        # This camera reports JunctionDirection at the top level rather than
+        # inside TrafficCar, so the same list is checked in both places.
+        direction = (
+            data.get("Direction")
+            or data.get("DirectionName")
+            or first_direction(data.get("DrivingDirection"))
+            or first_direction(data.get("JunctionDirection"))
+            or first_direction(data.get("VehicleDirection"))
+        )
 
     return {
         "plate": clean_plate,
