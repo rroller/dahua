@@ -20,6 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntry
 
+from . import dahua_utils
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
@@ -128,6 +129,11 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         # On an NVR channel the line above is the recorder. This is the
         # camera actually on the channel, or None when it did not say.
         "channel_model": _safe(coordinator.get_channel_model),
+        # What the device calls itself: VTO on a doorbell, NVR on a recorder,
+        # "" when it does not implement getDeviceClass. Doorbell capabilities
+        # are still decided mostly by the model name, so this is how we find
+        # out what the rebadges nobody has measured actually report.
+        "device_class": getattr(coordinator, "_device_class", None),
         "machine_name": getattr(coordinator, "machine_name", None),
         "name": _safe(coordinator.get_device_name),
         "firmware": _safe(coordinator.get_firmware_version),
@@ -136,6 +142,13 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         "serial_is_derived_from_credentials": getattr(
             coordinator.client, "identity_derived_from_credentials", None
         ),
+        # Which identity questions the device refused, and with what status.
+        # A model of "Generic RTSP" or a firmware of "1.0" is not a device, it
+        # is this integration inventing an answer because magicBox.cgi returned
+        # an HTTP error, and until now nothing recorded which call or why
+        # (#583, #728, #767).
+        "identity_fallbacks": dict(
+            getattr(coordinator.client, "_identity_fallbacks", {}) or {}),
         "channel_index": _safe(coordinator.get_channel),
         "channel_number": _safe(coordinator.get_channel_number),
         "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
@@ -262,7 +275,30 @@ def _events_block(coordinator) -> dict[str, Any]:
             key: (now - value) if value else None for key, value in timestamps.items()
         },
         "active_count": sum(1 for value in timestamps.values() if value),
+        # The last few events as they arrived, with their shape intact and their
+        # contents cut down. This is the thing reporters are asked for over and
+        # over, by hand, with a curl command: which Code the device sent, and
+        # which field carries the state, the direction or the object type.
+        #
+        # It publishes strictly less than the raw events people currently paste
+        # into public issues themselves. Field names survive, because that is
+        # almost always the question; a number plate, a card number or a person's
+        # name does not.
+        "recent": _recent_events_block(coordinator, now),
     }
+
+
+def _recent_events_block(coordinator, now: int) -> list[dict[str, Any]]:
+    """The remembered events, redacted and aged."""
+    remembered = list(getattr(coordinator, "_recent_events", None) or ())
+    out = []
+    for row in remembered:
+        captured = row.get("seconds_ago_at_capture") or now
+        out.append({
+            "seconds_ago": max(0, now - captured),
+            "event": _safe(lambda: dahua_utils.summarise_event(row.get("event")), {}),
+        })
+    return out
 
 
 def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> dict[str, Any]:

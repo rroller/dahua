@@ -31,6 +31,8 @@ from .const import (
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
     CONF_NVR_ACTIVE_DETERRENCE,
+    CONF_MANUAL_SIREN,
+    CONF_MANUAL_SECURITY_LIGHT,
     CONF_DISABLE_BACKCHANNEL,
     CONF_AUTHORIZED_PLATES,
     CONF_AUTHORIZED_HOLD_TIME,
@@ -79,6 +81,8 @@ ALL_EVENTS = ["VideoMotion",
               "TakenAwayDetection",
               "VideoAbnormalDetection",
               "FaceDetection",
+              "FaceRecognition",
+              "HumanTrait",
               "VideoUnFocus",
               "WanderDetection",
               "RioterDetection",
@@ -604,6 +608,18 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Required(
                 CONF_NVR_ACTIVE_DETERRENCE,
                 default=self.options.get(CONF_NVR_ACTIVE_DETERRENCE, False),
+            )
+        ] = bool
+        schema[
+            vol.Required(
+                CONF_MANUAL_SIREN,
+                default=self.options.get(CONF_MANUAL_SIREN, False),
+            )
+        ] = bool
+        schema[
+            vol.Required(
+                CONF_MANUAL_SECURITY_LIGHT,
+                default=self.options.get(CONF_MANUAL_SECURITY_LIGHT, False),
             )
         ] = bool
         schema[

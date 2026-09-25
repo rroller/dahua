@@ -808,6 +808,43 @@ class DahuaClient:
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"serialNumber": unique_cam_id}
 
+    def _note_identity_fallback(self, what: str, exception) -> None:
+        """Say why this device's identity had to be invented.
+
+        `Generic RTSP` and firmware `1.0` are not device types. They are what
+        this client returns when magicBox.cgi answers with an HTTP error, and
+        they reach the user as a device page naming a camera nobody has, with
+        most entities unavailable and **nothing in the log saying why**. #583
+        is that, on a 2014 IPC-HFW4300S-V2, and the same unanswered question
+        sits under #728 and #767.
+
+        The status is the useful half. A 400 is the device saying it does not
+        serve that action, which is a fact about the firmware; a 401 is it
+        refusing the credentials, which is a different problem wearing the same
+        device page.
+
+        Once per client per question, because these are asked on every setup
+        and a warning per poll would be worse than the silence it replaces.
+        """
+        status = getattr(exception, "status", None)
+        # Self-initialising, like the coordinator's probe refusals: this runs
+        # inside an except branch whose whole purpose is to keep setup alive,
+        # so it must never be the thing that raises.
+        seen = getattr(self, "_identity_fallbacks", None)
+        if seen is None:
+            seen = self._identity_fallbacks = {}
+        if what in seen:
+            return
+        seen[what] = status
+        _LOGGER.warning(
+            "%s refused %s with HTTP %s, so this device is being reported as "
+            "an unidentified camera. Most entities depend on that answer and "
+            "will be unavailable. The credentials and the address are not "
+            "necessarily wrong: a device whose CGI interface refuses this "
+            "action answers the same way",
+            self._address, what, status,
+        )
+
     async def get_device_type(self) -> dict:
         """
         getDeviceType returns the device type. Example response:
@@ -819,7 +856,29 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getDeviceType")
         except aiohttp.ClientResponseError as e:
+            self._note_identity_fallback("getDeviceType", e)
             return {"type": "Generic RTSP"}
+
+    async def async_get_device_class(self) -> str:
+        """What the device calls itself, rather than what its model name looks like.
+
+        Measured 2026-09-25 on two devices on one network:
+
+            VTO2000A doorbell            class=VTO
+            DHI-NVR5464-16P-EI recorder  class=NVR
+
+        Every doorbell capability in this integration is currently decided by a
+        model-name prefix (`is_doorbell` matches VTO, AD, DB6, DB2X, AV-V), which
+        fails for every rebadge nobody has added yet. This is the device's own
+        answer to the same question.
+
+        Returns "" when the device does not answer, which is treated as no
+        information rather than as a denial: the caller keeps its model-name
+        match. A device that has not implemented getDeviceClass is not thereby
+        saying it is not a doorbell.
+        """
+        result = await self.get("/cgi-bin/magicBox.cgi?action=getDeviceClass")
+        return (result.get("class") or "").strip().upper()
 
     async def get_software_version(self) -> dict:
         """
@@ -829,6 +888,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSoftwareVersion")
         except aiohttp.ClientResponseError as e:
+            self._note_identity_fallback("getSoftwareVersion", e)
             return {"version": "1.0"}
 
     async def get_machine_name(self) -> dict:
@@ -848,6 +908,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getVendor")
         except aiohttp.ClientResponseError as e:
+            self._note_identity_fallback("getVendor", e)
             return {"vendor": "Generic RTSP"}
 
     async def reboot(self) -> dict:
@@ -1096,6 +1157,11 @@ class DahuaClient:
             if preset_id > 0:
                 preset_ids.add(preset_id)
         return sorted(preset_ids)
+
+    @property
+    def use_rpc2(self) -> bool:
+        """Return whether RPC2 access is enabled for this client."""
+        return self._use_rpc2
 
     def _rpc2_key(self):
         return (self._device, self._username)
@@ -1726,28 +1792,229 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str,
-                                    light_index: int = 0, bank: str = "MiddleLight") -> dict:
-        """
-        async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
-        brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
-        NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
+    async def async_get_lighting_scheme_mode(
+        self, channel: int, profile_mode: str
+    ) -> str:
+        """Return LightingScheme.LightingMode via CGI getConfig."""
 
-        profile_mode: 0=day, 1=night, 2=scene
-        """
+        channel_index = int(channel)
+        profile_index = int(profile_mode)
 
-        # on = Manual, off = Off
-        mode = "Manual"
-        if not enabled:
-            mode = "Off"
-        # light_index is which light this device calls the white one. It is 0 on
-        # most models; some report 0 as the infrared emitter, and writing there
-        # changes a light nobody can see. See illuminator_light_index.
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{light_index}].{bank}[0].Light={brightness}".format(
-            channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness,
-            light_index=light_index, bank=bank
+        # LightingScheme is runtime-sensitive for these cameras.
+        # Avoid using an older shared getConfig snapshot.
+        clear_host_cache(self._address)
+
+        data = await self.get(
+            "/cgi-bin/configManager.cgi?"
+            "action=getConfig&name=LightingScheme"
         )
-        _LOGGER.debug("Turning light on: %s", url)
+
+        key = (
+            f"table.LightingScheme[{channel_index}]"
+            f"[{profile_index}].LightingMode"
+        )
+
+        mode = data.get(key)
+
+        if not isinstance(mode, str) or not mode:
+            raise ValueError(
+                "LightingScheme has no LightingMode for "
+                f"channel={channel_index}, profile={profile_index}"
+            )
+
+        return mode
+
+    async def async_set_lighting_scheme(
+        self, channel: int, profile_mode: str, mode: str
+    ) -> str:
+        """Set LightingScheme through CGI setConfig.
+
+        CGI setConfig is persistent, so the caller is responsible for
+        restoring the original mode.
+        """
+
+        channel_index = int(channel)
+        profile_index = int(profile_mode)
+
+        previous_mode = await self.async_get_lighting_scheme_mode(
+            channel_index,
+            str(profile_index),
+        )
+
+        if previous_mode == mode:
+            return previous_mode
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&LightingScheme[{channel_index}]"
+            f"[{profile_index}].LightingMode={mode}"
+        )
+
+        await self.get(url)
+
+        # Make the next getConfig observe the value just written.
+        clear_host_cache(self._address)
+
+        return previous_mode
+
+    async def async_set_lighting_v2(
+        self,
+        channel: int,
+        enabled: bool,
+        brightness: int,
+        profile_mode: str,
+        light_index: int = 0,
+        bank: str = "MiddleLight",
+    ) -> dict:
+        """Control one Lighting_V2 white-light entry."""
+
+        mode = "Manual" if enabled else "Off"
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&Lighting_V2[{channel}][{profile_mode}]"
+            f"[{light_index}].Mode={mode}"
+        )
+
+        # Brightness is meaningful only when turning the light on.
+        # Some cameras expose WhiteLight as NearLight rather than MiddleLight.
+        if enabled:
+            if bank not in ("NearLight", "MiddleLight"):
+                bank = "MiddleLight"
+
+            url += (
+                f"&Lighting_V2[{channel}][{profile_mode}]"
+                f"[{light_index}].{bank}[0].Light={brightness}"
+            )
+
+        _LOGGER.debug("Setting Lighting_V2 illuminator: %s", url)
+        return await self.get(url)
+
+    async def async_get_uptime_last(self) -> int:
+        """Return camera uptime from RPC2 magicBox.getUpTime."""
+
+        if not self._use_rpc2:
+            raise RuntimeError("RPC2 is disabled")
+
+        for attempt in (1, 2):
+            try:
+                holder = await self._shared_rpc2()
+
+                async with asyncio.timeout(5):
+                    response = await holder.client.request(
+                        method="magicBox.getUpTime",
+                        params=None,
+                    )
+
+                info = (
+                    (response.get("params") or {})
+                    .get("info") or {}
+                )
+
+                value = info.get("Last")
+
+                if value is None:
+                    raise RuntimeError(
+                        "magicBox.getUpTime returned no Last value"
+                    )
+
+                return int(value)
+
+            except Exception:
+                # A camera reboot invalidates the old RPC2 login.
+                # Drop the login task so the second attempt / next poll
+                # establishes a fresh session.
+                holder = _HOST_RPC2.get(self._rpc2_key())
+
+                if holder is not None:
+                    holder.task = None
+
+                if attempt == 2:
+                    raise
+
+        raise RuntimeError("Unable to read camera uptime")
+
+    async def async_get_lighting_v2_live_state(
+        self,
+        channel: int,
+        profile_mode: str,
+        light_index: int,
+    ):
+        """Read one Lighting_V2 row directly from the camera."""
+
+        url = (
+            "/cgi-bin/configManager.cgi?"
+            "action=getConfig&name=Lighting_V2"
+        )
+
+        # This read captures the configuration immediately before HA
+        # overrides the illuminator, so discard any old shared snapshot.
+        clear_host_cache(self._address)
+
+        data = await self.get(url)
+
+        base = (
+            f"table.Lighting_V2[{channel}]"
+            f"[{profile_mode}][{light_index}]"
+        )
+
+        mode = data.get(f"{base}.Mode")
+
+        near_key = f"{base}.NearLight[0].Light"
+        middle_key = f"{base}.MiddleLight[0].Light"
+
+        if near_key in data:
+            bank = "NearLight"
+            value = data.get(near_key)
+        elif middle_key in data:
+            bank = "MiddleLight"
+            value = data.get(middle_key)
+        else:
+            bank = "MiddleLight"
+            value = None
+
+        try:
+            brightness = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            brightness = None
+
+        if mode is None:
+            raise RuntimeError(
+                "Could not read live Lighting_V2 state "
+                f"for channel={channel} "
+                f"profile={profile_mode} "
+                f"index={light_index}"
+            )
+
+        return mode, bank, brightness
+
+    async def async_set_lighting_v2_raw(
+        self,
+        channel: int,
+        profile_mode: str,
+        light_index: int,
+        mode: str,
+        bank: str = "MiddleLight",
+        brightness=None,
+    ) -> dict:
+        """Write an exact Lighting_V2 mode and optional brightness."""
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&Lighting_V2[{channel}][{profile_mode}]"
+            f"[{light_index}].Mode={mode}"
+        )
+
+        if brightness is not None:
+            if bank not in ("NearLight", "MiddleLight"):
+                bank = "MiddleLight"
+
+            url += (
+                f"&Lighting_V2[{channel}][{profile_mode}]"
+                f"[{light_index}].{bank}[0].Light={brightness}"
+            )
+
+        _LOGGER.debug("Setting raw Lighting_V2: %s", url)
         return await self.get(url)
 
     # async def async_set_lighting_v2_for_flood_lights(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
@@ -2086,6 +2353,7 @@ class DahuaClient:
         TakenAwayDetection: missing object detection
         VideoAbnormalDetection: scene change event
         FaceDetection: face detect event
+        HumanTrait: human attributes/appearance metadata event
         AudioMutation: intensity change
         AudioAnomaly: input abnormal
         VideoUnFocus: defocus detect event

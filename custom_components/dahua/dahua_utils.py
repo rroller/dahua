@@ -508,11 +508,17 @@ def parse_ptz_presets(data) -> list:
     Only `Index` matters: the numbers need not be contiguous, because deleting
     preset 2 leaves 1 and 3.
 
-    An empty result is deliberately **not** "this camera has no presets". A
-    camera that does not implement the query answers exactly the same way, and
-    the two cannot be told apart, so the caller keeps its existing list rather
-    than removing controls somebody is using. Measured on a
-    DHI-NVR5464-16P-EI: fixed cameras answer 200 with an empty body.
+    An empty result means this device holds no presets. It is **not** the same
+    as the device declining to answer, which #762's version of this docstring
+    got wrong by claiming the two "cannot be told apart". They can, by status:
+
+        no PTZ motor, HFW3449E-S-IL and HFW3449T-ZS-IL   200, zero bytes
+        fixed cameras behind a DHI-NVR5464-16P-EI        200, empty body
+        does not implement getPresets, Intelbras IM7      400, "Bad Request"
+
+    A 400 raises before this is reached, so everything arriving here is a
+    device that answered. The caller is what decides; see `_async_preset_ids`
+    in select.py, which returns None for the refusal and this list otherwise.
     """
     if not isinstance(data, dict):
         return []
@@ -527,3 +533,65 @@ def parse_ptz_presets(data) -> list:
         if number > 0:
             found.add(number)
     return sorted(found)
+
+
+# Field names whose *value* is somebody's business rather than ours. The names
+# are kept, because "which field carries this" is the usual question; only the
+# contents go.
+EVENT_PRIVATE_FIELDS = frozenset({
+    # Spelled without separators: the lookup strips underscores, so "raw_plate"
+    # and "rawplate" both land here and only one spelling is listed.
+    "plate", "platenumber", "rawplate", "platedata", "plates",
+    "card", "cardno", "cardnumber", "cardname",
+    "user", "userid", "username", "usertype",
+    "password", "token", "secret", "key", "uuid",
+    "serialnumber", "defendcode", "imei", "phonenumber", "tel",
+    "faceid", "personid", "facefeature", "similarity",
+})
+
+EVENT_VALUE_LIMIT = 80
+EVENT_LIST_LIMIT = 6
+EVENT_DEPTH_LIMIT = 6
+
+
+def summarise_event(value, _depth: int = 0):
+    """An event with its shape intact and its contents cut down to size.
+
+    Written for diagnostics, and worth explaining because it looks like it
+    throws away the interesting part.
+
+    What people are asked for, over and over, is a raw event: which `Code` the
+    device sent, what `action` it carried, which field holds the direction or
+    the state or the object type. That is all structure. The values are rarely
+    the question, and some of them are a number plate, a card number or a
+    person's name.
+
+    So field names survive in full, values do not:
+
+    - a field named in EVENT_PRIVATE_FIELDS becomes `<redacted>`
+    - any other long value is truncated, keeping its start
+    - long lists keep their first few entries and say how many were dropped
+
+    The result publishes strictly less than the raw event people currently
+    paste into public issues by hand, while answering the same questions.
+    """
+    if _depth > EVENT_DEPTH_LIMIT:
+        return "<too deep>"
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if str(key).strip().lower().replace("_", "") in EVENT_PRIVATE_FIELDS:
+                out[key] = "<redacted>"
+            else:
+                out[key] = summarise_event(item, _depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        kept = [summarise_event(item, _depth + 1)
+                for item in list(value)[:EVENT_LIST_LIMIT]]
+        dropped = len(value) - len(kept)
+        if dropped > 0:
+            kept.append("<%d more>" % dropped)
+        return kept
+    if isinstance(value, str) and len(value) > EVENT_VALUE_LIMIT:
+        return value[:EVENT_VALUE_LIMIT] + "<truncated>"
+    return value

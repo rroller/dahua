@@ -2,6 +2,7 @@
 Custom integration to integrate Dahua cameras with Home Assistant.
 """
 import asyncio
+from collections import deque
 from typing import Any, Dict
 import logging
 import random
@@ -31,6 +32,7 @@ from .model_profiles import is_sdt4e425
 from .const import (
     CONF_EVENTS,
     CONF_PASSWORD,
+    ISSUE_URL,
     CONF_PORT,
     CONF_USERNAME,
     CONF_ADDRESS,
@@ -49,6 +51,8 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_USE_RPC2,
     CONF_NVR_ACTIVE_DETERRENCE,
+    CONF_MANUAL_SIREN,
+    CONF_MANUAL_SECURITY_LIGHT,
     CONF_AUTHORIZED_PLATES,
     CONF_AUTHORIZED_HOLD_TIME,
     DEFAULT_SCAN_INTERVAL,
@@ -100,6 +104,89 @@ PROBE_FAILED = (ClientError, TimeoutError)
 # supported"; a connection failure there should still fail setup. Timeouts join
 # it for the reason above, without widening the rest.
 PROBE_REFUSED = (ClientResponseError, TimeoutError)
+
+
+# Camera uptime is host-wide. An NVR may have many config entries, one per
+# channel, but they all refer to the same physical recorder uptime.
+#
+# Keep one shared sample per host so coordinator polling does not multiply
+# uptime requests by channel count.
+_HOST_UPTIME_STATE: dict[str, dict[str, Any]] = {}
+_HOST_UPTIME_LOCKS: dict[str, asyncio.Lock] = {}
+
+# NVR channel coordinators normally poll within a moment of each other.
+# Reuse the first host uptime read for the others in that poll burst.
+HOST_UPTIME_DEDUPE_SECONDS = 5.0
+
+
+async def _async_get_host_uptime_generation(coordinator) -> int:
+    """Poll one host-wide uptime value and return its reboot generation."""
+
+    address = coordinator._address
+
+    state = _HOST_UPTIME_STATE.setdefault(
+        address,
+        {
+            "uptime": None,
+            "generation": 0,
+            "last_read": 0.0,
+        },
+    )
+
+    lock = _HOST_UPTIME_LOCKS.setdefault(
+        address,
+        asyncio.Lock(),
+    )
+
+    async with lock:
+        # Another channel may have completed the host read while this
+        # coordinator was waiting for the lock.
+        now = time.monotonic()
+
+        if (
+            now - state["last_read"] < HOST_UPTIME_DEDUPE_SECONDS
+        ):
+            return int(state["generation"])
+
+        try:
+            current = await coordinator.client.async_get_uptime_last()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Cache failed attempts too, otherwise every NVR channel may repeat
+            # the same failed uptime request during the same poll burst.
+            state["last_read"] = time.monotonic()
+
+            # Uptime is an optional enhancement. A device/transport that does
+            # not support it must not make the normal coordinator poll fail.
+            _LOGGER.debug(
+                "Could not read host uptime for %s",
+                address,
+                exc_info=True,
+            )
+            return int(state["generation"])
+
+        previous = state["uptime"]
+
+        if (
+            previous is not None
+            and current < previous
+        ):
+            state["generation"] += 1
+
+            _LOGGER.info(
+                "Dahua host %s reboot detected "
+                "(uptime %s -> %s, generation=%s)",
+                address,
+                previous,
+                current,
+                state["generation"],
+            )
+
+        state["uptime"] = current
+        state["last_read"] = time.monotonic()
+
+        return int(state["generation"])
 
 
 def stream_lifetime(lived_seconds: float, received_data: bool) -> float:
@@ -434,6 +521,14 @@ def is_onvif_channel(data: dict, channel: int) -> bool:
 # 5 answered from the VTH, 6 not answered, 7 VTH calling the VTO, 8 unlock,
 # 9 unlock failed, 11 rebooted. Only a ring should raise the button sensor.
 DOORBELL_RINGING_STATES = frozenset({1, 2})
+
+# How many recent events diagnostics keeps per device.
+#
+# Ten rather than fifty: an ANPR event measured about 5 KB, so ten is a diagnostics
+# file somebody can still attach, and the questions this answers, which Code did
+# the device send and which field carries the state, are answered by the last few
+# rather than by a history.
+RECENT_EVENT_COUNT = 10
 
 
 # BackKeyLight State values that are not about ringing at all, and the event
@@ -1247,13 +1342,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.initialized = False
         self.model = ""
         self._firmware_version = ""
+        # What the device calls itself, "" when it did not answer. See
+        # async_get_device_class.
+        self._device_class = ""
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
+        # Doorbell call states already complained about, so the warning below is
+        # one per state rather than one per ring.
+        self._unknown_doorbell_states: set = set()
         self._supports_rpc2_siren = False
         self._supports_rpc2_security_light = False
         self._alarm_output_slots = 0
         self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
+        self._manual_siren = entry.options.get(CONF_MANUAL_SIREN, False)
+        self._manual_security_light = entry.options.get(CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._supports_smart_motion_detection = False
@@ -1275,6 +1378,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         self._supports_lighting_v2 = False
         self._supports_lighting_scheme_illuminator = False
+
+        # Host-wide camera/NVR reboot generation.
+        # Multiple NVR channel coordinators share the host uptime read.
+        self._camera_reboot_generation = 0
 
         # channel_number is not the channel_index. channel_number is the index + 1.
         # So channel index 0 is channel number 1. Except for some older firmwares where channel
@@ -1551,6 +1658,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.machine_name = data.get("table.General.MachineName")
                 self._serial_number = data.get("serialNumber")
                 self._firmware_version = data.get("version") or ""
+
+                # Ask the device what it is, before anything asks the model name.
+                # Cached here rather than read from is_doorbell(), which is called
+                # on every poll and from ten other places.
+                try:
+                    self._device_class = await self.client.async_get_device_class()
+                except PROBE_FAILED as probe_error:
+                    self._note_probe_refusal("device_class", probe_error)
+                    self._device_class = ""
+                _LOGGER.debug("Device reports class=%s", self._device_class or "<no answer>")
 
                 # Some Dahua firmwares index channels from 0, others from 1. The default
                 # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
@@ -1901,6 +2018,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if light_v2 is not None:
                     data.update(light_v2)
 
+            # Uptime is host-wide, so the shared helper collapses simultaneous
+            # NVR channel coordinator polls into one actual uptime request.
+            # Only use RPC2 when the user has explicitly enabled it.
+            if (
+                self._supports_lighting_v2
+                and self._wanted_by(LIGHT)
+                and self.client.use_rpc2
+            ):
+                self._camera_reboot_generation = (
+                    await _async_get_host_uptime_generation(self)
+                )
+
             async_record_host_success(self.hass, self._address)
             self._restore_poll_interval()
             return data
@@ -2088,21 +2217,44 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # complete mapping.
                     state = event.get("Data", {}).get("State", 0)
                     try:
-                        pressed = int(state) in DOORBELL_RINGING_STATES
+                        numeric_state = int(state)
                     except (TypeError, ValueError):
-                        pressed = False
+                        numeric_state = None
+                    pressed = numeric_state in DOORBELL_RINGING_STATES
                     if pressed:
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
                         self._dahua_event_timestamp[event_key] = 0
+                        self._note_unknown_doorbell_state(numeric_state, state)
             else:
                 continue
 
             for listener in listeners:
                 listener()
 
+    def _remember_event(self, event: dict) -> None:
+        """Keep the last few events, so diagnostics can show what arrived.
+
+        Deliberately does nothing but store. Everything that could go wrong,
+        redaction, truncation, serialising, happens when diagnostics is asked
+        for, which is a cold path with its own guards. This runs on the event
+        stream, where an unguarded exception takes every camera on the host down
+        until the stream reconnects (#705, #706), so it is written to be
+        incapable of raising rather than wrapped in a handler: a getattr with a
+        default, a dict copy, and an append to a bounded deque.
+
+        Stored before the event is enriched with the device name, because what
+        matters for diagnosis is what the device sent.
+        """
+        buffer = getattr(self, "_recent_events", None)
+        if buffer is None:
+            buffer = self._recent_events = deque(maxlen=RECENT_EVENT_COUNT)
+        buffer.append({"seconds_ago_at_capture": int(time.time()),
+                       "event": dict(event)})
+
     def handle_event(self, event: dict):
         """Handle one event the host stream has decided belongs to this channel."""
+        self._remember_event(event)
         _LOGGER.debug(
             "Event received from %s on channel %s: %s",
             self.get_address(),
@@ -2189,6 +2341,46 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         return [code]
 
+    def _note_unknown_doorbell_state(self, numeric_state, raw_state) -> None:
+        """Say so, once, when a doorbell reports a call state we do not know.
+
+        Only 1 and 2 count as ringing, and the comment beside that set has
+        always conceded the values vary by model. Everything else is treated as
+        "not ringing" and, until now, silently: a doorbell that reports its ring
+        as some other number produced no button press, no error, and nothing in
+        the log to say why.
+
+        That is the missing piece in a long row of issues, all of the shape "my
+        button press stopped working" with no way to tell whether the device is
+        quiet or is speaking a dialect we do not read (#175, #250, #329, #358,
+        #417, #556, #564, #593, #690). Every one of them needed this number and
+        could only get it by turning on debug logging and reading raw events.
+
+        Logged once per state per device, because a doorbell reports its state
+        on every call and a warning per ring would be worse than the bug.
+        """
+        if numeric_state in DOORBELL_STATE_EVENTS or numeric_state == 0:
+            # 8 and 9 are the unlock results, handled separately; 0 is idle,
+            # which is the normal way a call ends.
+            return
+        # getattr, like the other per-coordinator state: plenty of tests build a
+        # coordinator with object.__new__ and set only what they are about, and
+        # a diagnostic must never be the thing that breaks one.
+        seen = getattr(self, "_unknown_doorbell_states", None)
+        if seen is None:
+            seen = self._unknown_doorbell_states = set()
+        if numeric_state in seen:
+            return
+        seen.add(numeric_state)
+        _LOGGER.warning(
+            "%s reported doorbell call state %r, which this integration does "
+            "not recognise, so no button press was raised. Known states are "
+            "1 and 2 for ringing, 8 and 9 for unlock, 0 for idle. If the "
+            "doorbell was ringing when this appeared, please report this state "
+            "number at %s so it can be added",
+            self.get_device_name(), raw_state, ISSUE_URL,
+        )
+
     def get_event_timestamp(self, event_name: str) -> int:
         """
         Returns the event timestamp. If the event is firing then it will be the time of the firing. Otherwise returns 0.
@@ -2238,11 +2430,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Direct-camera RPC2 deterrence probe failed; using model fallback", exc_info=True)
 
     def uses_rpc2_deterrence(self, dahua_type: int | None = None) -> bool:
-        """Select RPC2 independently for each explicitly supported output."""
+        """Select RPC2 for detected or manually enabled direct-camera outputs."""
         speaker = getattr(self, "_supports_rpc2_siren", False)
         light = getattr(self, "_supports_rpc2_security_light", False)
-        if not (speaker or light) or self.is_nvr_channel():
+        manual_siren = getattr(self, "_manual_siren", False)
+        manual_light = getattr(self, "_manual_security_light", False)
+        if not (speaker or light or manual_siren or manual_light):
             return False
+        if self.is_nvr_channel():
+            return False
+        if (manual_siren or manual_light) and not self.is_doorbell():
+            speaker = speaker or manual_siren
+            light = light or manual_light
         return {1: light, 2: speaker}.get(dahua_type, speaker or light)
 
     def supports_siren(self) -> bool:
@@ -2283,7 +2482,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     def is_doorbell(self) -> bool:
-        """ Returns true if this is a doorbell (VTO) """
+        """ Returns true if this is a doorbell (VTO)
+
+        The device's own answer first, then the model-name list. Measured on a
+        VTO2000A, which reports `class=VTO`, and on a DHI-NVR5464-16P-EI, which
+        reports `class=NVR`.
+
+        Deliberately additive. A device that answers `VTO` is one, whatever its
+        model string says, which is what the list of prefixes below keeps
+        failing to cover for rebadges (#690). But a device that answers
+        something else, or does not answer at all, still gets the list: no
+        Amcrest or Imou doorbell has been measured here, and a wrong negative
+        would take every doorbell entity away from people who have them today.
+        """
+        if getattr(self, "_device_class", "") == "VTO":
+            return True
         m = self.model.upper()
         return (
             m.startswith(("VTO", "DH-VTO", "DHI-VTO", "DH_VTO", "DHI_VTO"))
@@ -2606,6 +2819,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return true if ring light is on for an Amcrest Doorbell"""
         return self.data.get("table.LightGlobal[0].Enable") == "true"
 
+    def get_illuminator_brightness_field(self) -> str:
+        """Return the brightness field used by this WhiteLight."""
+        profile_mode = self.get_profile_mode()
+        index = self.get_illuminator_index()
+
+        base = (
+            f"table.Lighting_V2[{self._channel}]"
+            f"[{profile_mode}][{index}]"
+        )
+
+        if f"{base}.NearLight[0].Light" in self.data:
+            return "NearLight"
+
+        if f"{base}.MiddleLight[0].Light" in self.data:
+            return "MiddleLight"
+
+        return "MiddleLight"
+
     def get_illuminator_brightness(self) -> int:
         """Return the brightness of the illuminator light, as reported by the camera itself, between 0..255 inclusive"""
 
@@ -2699,6 +2930,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._note_probe_refusal("lighting", probe_error)
             return False
         return len(conf) > 0
+
+    def get_camera_reboot_generation(self) -> int:
+        """Return the host reboot generation observed by this coordinator."""
+        return self._camera_reboot_generation
 
     def get_profile_mode(self) -> str:
         # profile_mode 0=day, 1=night, 2=scene
@@ -2852,6 +3087,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     address = normalize_address(entry.data.get(CONF_ADDRESS))
     if not _entries_for_address(hass, address):
         _HOST_FAILURES.pop(address, None)
+        _HOST_UPTIME_STATE.pop(address, None)
+        _HOST_UPTIME_LOCKS.pop(address, None)
         ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
         ir.async_delete_issue(
             hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)

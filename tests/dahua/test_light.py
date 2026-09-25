@@ -1,5 +1,7 @@
 """light.py had no tests at all, and day/night handling has regressed before."""
 
+from unittest.mock import Mock
+
 import pytest
 
 from custom_components.dahua import dahua_utils
@@ -12,30 +14,152 @@ class _Client:
     def __init__(self):
         self.v1 = []
         self.v2 = []
-        self.scheme = {}
+        self.v2_raw = []
         self.scheme_calls = []
         self.scheme_reads = 0
+        self.scheme_writes = []
+        self.operations = []
+
+        # Default camera state used by the existing illuminator tests.
+        self.scheme = "AIMode"
+        self.light_mode = "Manual"
+        self.light_brightness = 64
+        self.light_field = "NearLight"
 
     async def async_set_lighting_v1(self, channel, enabled, brightness, profile_mode="0"):
         self.v1.append((channel, enabled, brightness, profile_mode))
 
-    async def async_set_lighting_v2(self, channel, enabled, brightness, profile_mode,
-                                    light_index=0, bank="MiddleLight"):
-        self.v2.append((channel, enabled, brightness, profile_mode, light_index, bank))
-
-    async def async_get_lighting_scheme(self):
-        """Defined so the scheme check runs for real rather than erroring out.
-
-        Returning no scheme is the common camera: nothing blocks, nothing warns.
-        """
-        self.scheme_reads += 1
+    async def async_get_lighting_scheme_mode(self, channel, profile_mode):
         return self.scheme
 
+    async def async_get_lighting_scheme(self):
+        self.scheme_reads += 1
+        return {}
+
     async def async_set_lighting_scheme_illuminator(
-            self, channel, enabled, brightness, profile_mode, light_index):
+        self, channel, enabled, brightness, profile_mode, light_index
+    ):
         self.scheme_calls.append(
             (channel, enabled, brightness, profile_mode, light_index)
         )
+
+    async def async_set_lighting_scheme(self, channel, profile_mode, mode):
+        previous = self.scheme
+        self.scheme = mode
+        self.scheme_writes.append(
+            (channel, profile_mode, mode)
+        )
+        self.operations.append(
+            ("scheme", channel, profile_mode, mode)
+        )
+        return previous
+
+    async def async_get_lighting_v2_live_state(
+        self,
+        channel,
+        profile_mode,
+        light_index=0,
+    ):
+        return (
+            self.light_mode,
+            self.light_field,
+            self.light_brightness,
+        )
+
+    async def async_set_lighting_v2(
+        self,
+        channel,
+        enabled,
+        brightness,
+        profile_mode,
+        light_index=0,
+        bank="MiddleLight",
+    ):
+        self.v2.append(
+            (
+                channel,
+                enabled,
+                brightness,
+                profile_mode,
+                light_index,
+                bank,
+            )
+        )
+        self.operations.append(
+            (
+                "v2",
+                channel,
+                enabled,
+                brightness,
+                profile_mode,
+                light_index,
+                bank,
+            )
+        )
+
+        if enabled:
+            self.light_mode = "Manual"
+            self.light_brightness = brightness
+            self.light_field = bank
+        else:
+            self.light_mode = "Off"
+
+    async def async_set_lighting_v2_raw(
+        self,
+        channel,
+        profile_mode,
+        light_index,
+        mode,
+        bank="MiddleLight",
+        brightness=None,
+    ):
+        self.v2_raw.append(
+            (
+                channel,
+                profile_mode,
+                light_index,
+                mode,
+                bank,
+                brightness,
+            )
+        )
+        self.operations.append(
+            (
+                "v2_raw",
+                channel,
+                profile_mode,
+                light_index,
+                mode,
+                bank,
+                brightness,
+            )
+        )
+
+        self.light_mode = mode
+        self.light_brightness = brightness
+        self.light_field = bank
+
+
+class _Store:
+    """Minimal in-memory replacement for Home Assistant Store."""
+
+    def __init__(self):
+        self.data = None
+        self.saved = []
+        self.removed = 0
+
+    async def async_save(self, data):
+        self.data = dict(data)
+        self.saved.append(dict(data))
+
+    async def async_load(self):
+        if self.data is None:
+            return None
+        return dict(self.data)
+
+    async def async_remove(self):
+        self.data = None
+        self.removed += 1
 
 
 class _Coordinator:
@@ -52,6 +176,7 @@ class _Coordinator:
         self.illuminator_index = 0
         # Which brightness bank the white light uses; MiddleLight on most models.
         self.illuminator_bank = "MiddleLight"
+        self.camera_reboot_generation = 0
         self.uses_scheme = uses_scheme
 
     def get_channel(self):
@@ -88,6 +213,9 @@ class _Coordinator:
     def get_illuminator_bank(self):
         return self.illuminator_bank
 
+    def get_camera_reboot_generation(self):
+        return self.camera_reboot_generation
+
     def uses_lighting_scheme_illuminator(self):
         return self.uses_scheme
 
@@ -101,6 +229,21 @@ def _light(cls, coordinator, name="Infrared"):
     entity._coordinator = coordinator
     entity.coordinator = coordinator
     entity._name = name
+    # These unit tests bypass entity registration; observe state writes without
+    # asking Home Assistant to publish an unregistered entity.
+    entity.async_write_ha_state = Mock()
+
+    if cls is DahuaIlluminator:
+        entity._manual_on = False
+        entity._scheme_restore = None
+        entity._light_restore = None
+        entity._last_brightness = 255
+        entity._restore_store = _Store()
+        entity._seen_reboot_generation = (
+            coordinator.get_camera_reboot_generation()
+        )
+        entity._reboot_recovery_task = None
+
     return entity
 
 
@@ -195,27 +338,26 @@ async def test_illuminator_passes_the_profile_mode_through():
 
     await _light(DahuaIlluminator, c, "Illuminator").async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
-    assert c.client.v2 == [(2, True, 100, "1", 0, "MiddleLight")]
+    assert c.client.v2 == [
+        (2, True, 100, "1", 0, "NearLight")
+    ]
     assert c.client.v1 == [], "the illuminator must not use the v1 API"
 
 
 async def test_illuminator_turn_off_keeps_the_profile_mode():
     c = _Coordinator(channel=2, profile_mode="0")
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c._profile_mode = "1"
+    await light.async_turn_off()
 
-    await _light(DahuaIlluminator, c, "Illuminator").async_turn_off()
-
-    channel, enabled, _, profile_mode, _index, _bank = c.client.v2[0]
-    assert (channel, enabled, profile_mode) == (2, False, "0")
-
-
-async def test_a_camera_with_no_lighting_scheme_still_switches_on_cleanly():
-    """The scheme check must not get in the way of the command itself."""
-    c = _Coordinator(channel=2, profile_mode="0")
-
-    await _light(DahuaIlluminator, c, "Illuminator").async_turn_on()
-
-    assert c.client.v2, "the light command did not reach the client"
-    assert c.client.scheme_reads == 1, "the scheme was not consulted"
+    assert c.client.v2_raw == [
+        (2, "0", 0, "Off", "NearLight", None),
+        (2, "0", 0, "Manual", "NearLight", 64),
+    ]
+    assert c.client.scheme == "AIMode"
+    assert light._restore_store.data is None
+    light.async_write_ha_state.assert_called()
 
 
 async def test_illuminator_writes_to_the_light_the_device_calls_white():
@@ -241,7 +383,7 @@ async def test_scheme_illuminator_uses_the_two_table_client_path():
 
     light = _light(DahuaIlluminator, c, "Illuminator")
     await light.async_turn_on(**{ATTR_BRIGHTNESS: 255})
-    await light.async_turn_off()
+    await light.async_turn_off(**{ATTR_BRIGHTNESS: 255})
 
     assert c.client.scheme_calls == [
         (0, True, 100, "1", 1),
@@ -266,3 +408,333 @@ def test_the_two_lights_do_not_share_a_unique_id():
 def test_name_is_prefixed_with_the_device_name():
     c = _Coordinator()
     assert _light(DahuaInfraredLight, c, "Infrared").name == "Front Door Infrared"
+
+
+# --- Smart Dual Light restore regressions -----------------------------------
+
+async def test_duplicate_off_preserves_restored_camera_configuration():
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_off()
+    assert c.client.operations == []
+
+    await light.async_turn_on()
+    await light.async_turn_off()
+    operations = list(c.client.operations)
+    await light.async_turn_off()
+
+    assert c.client.operations == operations
+    assert (c.client.scheme, c.client.light_mode, c.client.light_brightness) == (
+        "AIMode", "Manual", 64
+    )
+
+
+async def test_brightness_update_keeps_original_profile_and_restore_snapshot():
+    c = _Coordinator(channel=2, profile_mode="0")
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c._profile_mode = "1"
+    c.illuminator_index = 1
+    await light.async_turn_on(**{ATTR_BRIGHTNESS: 128})
+
+    assert c.client.v2[-1] == (2, True, 50, "0", 0, "NearLight")
+    assert light._restore_store.data["old_brightness"] == 64
+    assert light._restore_store.data["previous_scheme"] == "AIMode"
+    await light.async_turn_off()
+    assert c.client.v2_raw[-1] == (2, "0", 0, "Manual", "NearLight", 64)
+
+
+@pytest.mark.parametrize("restart", [False, True])
+@pytest.mark.parametrize("mode,brightness", [("Auto", 100), ("Off", 100), ("Manual", 42)])
+async def test_external_change_is_preserved_on_off_and_restart(restart, mode, brightness):
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c.client.light_mode = mode
+    c.client.light_brightness = brightness
+    c.client.operations.clear()
+
+    if restart:
+        recovered_light = _light(DahuaIlluminator, c, "Illuminator")
+        recovered_light._restore_store = light._restore_store
+        assert await recovered_light._recover_persisted_override() is True
+    else:
+        await light.async_turn_off()
+
+    assert c.client.operations == []
+    assert light._restore_store.data is None
+    assert (c.client.light_mode, c.client.light_brightness) == (mode, brightness)
+
+
+async def test_external_scheme_change_is_preserved_on_off():
+    """A Web UI scheme change must not be replaced by HA's saved baseline."""
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c.client.scheme = "InfraredMode"
+    c.client.operations.clear()
+
+    await light.async_turn_off()
+
+    assert c.client.operations == []
+    assert c.client.scheme == "InfraredMode"
+    assert c.client.light_mode == "Manual"
+    assert light._restore_store.data is None
+    assert light.is_on is False
+
+
+async def test_camera_reverting_scheme_to_baseline_still_restores_light():
+    """A camera's own WhiteMode reversion must not block OFF cleanup."""
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    c.client.scheme = "AIMode"
+    c.client.operations.clear()
+
+    await light.async_turn_off()
+
+    assert c.client.light_mode == "Manual"
+    assert c.client.light_brightness == 64
+    assert c.client.scheme == "AIMode"
+    assert light._restore_store.data is None
+
+
+async def test_interrupted_restore_resumes_after_restart(monkeypatch):
+    c = _Coordinator()
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    await light.async_turn_on()
+    original_set = c.client.async_set_lighting_v2_raw
+
+    async def fail_restoring_row(channel, profile, index, mode, bank, brightness=None):
+        if mode == "Manual":
+            raise RuntimeError("Camera disconnected during restore")
+        return await original_set(channel, profile, index, mode, bank, brightness)
+
+    monkeypatch.setattr(c.client, "async_set_lighting_v2_raw", fail_restoring_row)
+    with pytest.raises(RuntimeError, match="disconnected"):
+        await light.async_turn_off()
+    assert light._restore_store.data["phase"] == "restoring"
+    assert c.client.scheme == "InfraredMode"
+
+    monkeypatch.setattr(c.client, "async_set_lighting_v2_raw", original_set)
+    recovered_light = _light(DahuaIlluminator, c, "Illuminator")
+    recovered_light._restore_store = light._restore_store
+    assert await recovered_light._recover_persisted_override() is True
+    assert light._restore_store.data is None
+    assert (c.client.scheme, c.client.light_mode, c.client.light_brightness) == (
+        "AIMode", "Manual", 64
+    )
+
+
+async def test_illuminator_safe_restore_order():
+    """WhiteLight must stay physically off while its original state is restored."""
+    c = _Coordinator(channel=2, profile_mode="0")
+    light = _light(DahuaIlluminator, c, "Illuminator")
+
+    await light._restore_camera_lighting(
+        (2, "0", "AIMode"),
+        (2, "0", 1, "NearLight", "Manual", 88),
+    )
+
+    assert c.client.operations == [
+        ("v2_raw", 2, "0", 1, "Off", "NearLight", None),
+        ("scheme", 2, "0", "InfraredMode"),
+        ("v2_raw", 2, "0", 1, "Manual", "NearLight", 88),
+        ("scheme", 2, "0", "AIMode"),
+    ]
+
+
+async def test_persisted_recovery_restores_whitemode_baseline():
+    """WhiteMode cannot be treated as stale only because the scheme matches."""
+    c = _Coordinator(channel=2, profile_mode="0")
+    c.client.scheme = "WhiteMode"
+    c.client.light_brightness = dahua_utils.hass_brightness_to_dahua_brightness(180)
+
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    light._restore_store.data = {
+        "active": True,
+        "scheme_channel": 2,
+        "scheme_profile": "0",
+        "previous_scheme": "WhiteMode",
+        "channel": 2,
+        "profile_mode": "0",
+        "index": 1,
+        "field": "NearLight",
+        "old_mode": "Manual",
+        "old_brightness": 71,
+        "ha_brightness": 180,
+    }
+
+    recovered = await light._recover_persisted_override()
+
+    assert recovered is True
+    assert light._restore_store.data is None
+    assert light._last_brightness == 180
+
+    assert c.client.operations == [
+        ("v2_raw", 2, "0", 1, "Off", "NearLight", None),
+        ("scheme", 2, "0", "InfraredMode"),
+        ("v2_raw", 2, "0", 1, "Manual", "NearLight", 71),
+        ("scheme", 2, "0", "WhiteMode"),
+    ]
+
+
+async def test_persisted_recovery_refuses_unknown_scheme():
+    """Do not overwrite a camera state that may have been changed externally."""
+    c = _Coordinator(channel=2, profile_mode="0")
+    c.client.scheme = "SomethingElse"
+    c.client.light_brightness = dahua_utils.hass_brightness_to_dahua_brightness(200)
+
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    snapshot = {
+        "active": True,
+        "scheme_channel": 2,
+        "scheme_profile": "0",
+        "previous_scheme": "AIMode",
+        "channel": 2,
+        "profile_mode": "0",
+        "index": 1,
+        "field": "NearLight",
+        "old_mode": "Manual",
+        "old_brightness": 88,
+        "ha_brightness": 200,
+    }
+    light._restore_store.data = dict(snapshot)
+
+    recovered = await light._recover_persisted_override()
+
+    assert recovered is False
+    assert light._restore_store.data == snapshot
+    assert c.client.operations == []
+
+
+async def test_persisted_recovery_clears_stale_snapshot():
+    """Clear a snapshot only when scheme and WhiteLight are both restored."""
+    c = _Coordinator(channel=2, profile_mode="0")
+    c.client.scheme = "AIMode"
+    c.client.light_mode = "Manual"
+    c.client.light_brightness = 88
+    c.client.light_field = "NearLight"
+
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    light._restore_store.data = {
+        "active": True,
+        "scheme_channel": 2,
+        "scheme_profile": "0",
+        "previous_scheme": "AIMode",
+        "channel": 2,
+        "profile_mode": "0",
+        "index": 1,
+        "field": "NearLight",
+        "old_mode": "Manual",
+        "old_brightness": 88,
+        "ha_brightness": 160,
+    }
+
+    recovered = await light._recover_persisted_override()
+
+    assert recovered is True
+    assert light._restore_store.data is None
+    assert c.client.operations == []
+
+
+async def test_restore_off_mode_preserves_saved_brightness():
+    """Mode=Off must still restore the saved brightness value exactly."""
+    c = _Coordinator(channel=2, profile_mode="0")
+    light = _light(DahuaIlluminator, c, "Illuminator")
+
+    await light._restore_camera_lighting(
+        (2, "0", "WhiteMode"),
+        (2, "0", 1, "NearLight", "Off", 30),
+    )
+
+    assert c.client.operations == [
+        ("v2_raw", 2, "0", 1, "Off", "NearLight", None),
+        ("v2_raw", 2, "0", 1, "Off", "NearLight", 30),
+        ("scheme", 2, "0", "WhiteMode"),
+    ]
+
+    assert c.client.light_mode == "Off"
+    assert c.client.light_brightness == 30
+
+
+async def test_persisted_recovery_repairs_partially_restored_state():
+    """Matching scheme alone must not discard a still-needed restore."""
+    c = _Coordinator(channel=2, profile_mode="0")
+
+    # The scheme has already returned to the original AIMode, but the
+    # WhiteLight brightness is still the HA override rather than the saved 30.
+    c.client.scheme = "AIMode"
+    c.client.light_mode = "Manual"
+    c.client.light_brightness = 100
+    c.client.light_field = "NearLight"
+
+    light = _light(DahuaIlluminator, c, "Illuminator")
+    light._restore_store.data = {
+        "active": True,
+        "scheme_channel": 2,
+        "scheme_profile": "0",
+        "previous_scheme": "AIMode",
+        "channel": 2,
+        "profile_mode": "0",
+        "index": 1,
+        "field": "NearLight",
+        "old_mode": "Manual",
+        "old_brightness": 30,
+        "ha_brightness": 255,
+    }
+
+    recovered = await light._recover_persisted_override()
+
+    assert recovered is True
+    assert light._restore_store.data is None
+
+    assert c.client.operations == [
+        ("v2_raw", 2, "0", 1, "Off", "NearLight", None),
+        ("scheme", 2, "0", "InfraredMode"),
+        ("v2_raw", 2, "0", 1, "Manual", "NearLight", 30),
+        ("scheme", 2, "0", "AIMode"),
+    ]
+
+    assert c.client.scheme == "AIMode"
+    assert c.client.light_mode == "Manual"
+    assert c.client.light_brightness == 30
+
+
+async def test_reboot_recovery_failure_leaves_generation_for_retry(monkeypatch):
+    """Failed reboot recovery must not consume the reboot generation."""
+    c = _Coordinator(channel=2, profile_mode="0")
+    light = _light(DahuaIlluminator, c, "Illuminator")
+
+    light._manual_on = True
+    light._seen_reboot_generation = 0
+
+    results = iter((False, True))
+
+    async def recover():
+        return next(results)
+
+    monkeypatch.setattr(
+        light,
+        "_recover_persisted_override",
+        recover,
+    )
+    monkeypatch.setattr(
+        DahuaIlluminator,
+        "async_write_ha_state",
+        lambda self: None,
+    )
+
+    # First recovery attempt fails. Generation 1 must remain unconsumed.
+    await light._async_handle_camera_reboot(1)
+
+    assert light._seen_reboot_generation == 0
+    assert light._manual_on is True
+
+    # A later retry succeeds and only then consumes generation 1.
+    await light._async_handle_camera_reboot(1)
+
+    assert light._seen_reboot_generation == 1
+    assert light._manual_on is False
+    assert light._scheme_restore is None
+    assert light._light_restore is None
