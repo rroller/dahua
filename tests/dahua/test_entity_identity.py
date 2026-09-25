@@ -25,11 +25,7 @@ from custom_components.dahua import light as light_module
 from custom_components.dahua import select as select_module
 from custom_components.dahua import switch as switch_module
 from custom_components.dahua.binary_sensor import DahuaEventSensor
-from custom_components.dahua.button import (
-    DahuaCancelCallButton,
-    DahuaOpenDoorButton,
-    DahuaRebootButton,
-)
+from custom_components.dahua.button import DahuaOpenDoorButton, DahuaRebootButton
 from custom_components.dahua.camera import DahuaCamera
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.light import (
@@ -41,15 +37,12 @@ from custom_components.dahua.light import (
 )
 from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
-    DahuaDayNightModeSelect,
     DahuaDoorbellLightSelect,
 )
 from custom_components.dahua.switch import (
-    DahuaAlarmOutputSwitch,
     DahuaDisarmingEventNotificationsLinkageBinarySwitch,
     DahuaDisarmingLinkageBinarySwitch,
     DahuaMotionDetectionBinarySwitch,
-    DahuaPrivacyModeBinarySwitch,
     DahuaSirenBinarySwitch,
     DahuaSmartMotionDetectionBinarySwitch,
 )
@@ -132,10 +125,7 @@ def _skip_ha_plumbing(monkeypatch):
     """Build the real entities, skipping only Home Assistant's own __init__."""
     for module in (bs_module, button_module, camera_module, light_module,
                    select_module, switch_module):
-        monkeypatch.setattr(
-            module.DahuaBaseEntity, "__init__",
-            lambda self, c, e: setattr(self, "_coordinator", c),
-        )
+        monkeypatch.setattr(module.DahuaBaseEntity, "__init__", lambda self, c, e: None)
     monkeypatch.setattr(bs_module.BinarySensorEntity, "__init__", lambda self: None)
     monkeypatch.setattr(select_module.SelectEntity, "__init__", lambda self: None)
     monkeypatch.setattr(camera_module.Camera, "__init__", lambda self: None)
@@ -171,8 +161,6 @@ GOLDEN_SUFFIXES = [
      lambda c: _bare(DahuaDisarmingEventNotificationsLinkageBinarySwitch, c)),
     ("_smart_motion_detection", lambda c: _bare(DahuaSmartMotionDetectionBinarySwitch, c)),
     ("_siren", lambda c: _bare(DahuaSirenBinarySwitch, c)),
-    ("_privacy_mode", lambda c: _bare(DahuaPrivacyModeBinarySwitch, c)),
-    ("_alarm_output_0", lambda c: DahuaAlarmOutputSwitch(c, _Entry(), output=0)),
     # light.py
     ("_infrared", lambda c: DahuaInfraredLight(c, _Entry(), "Infrared")),
     ("_illuminator", lambda c: DahuaIlluminator(c, _Entry(), "Illuminator")),
@@ -182,13 +170,11 @@ GOLDEN_SUFFIXES = [
     # button.py
     ("_reboot", lambda c: _bare(DahuaRebootButton, c)),
     ("_open_door", lambda c: _bare(DahuaOpenDoorButton, c)),
-    ("_cancel_call", lambda c: _bare(DahuaCancelCallButton, c)),
     # select.py
     ("_security_light", lambda c: DahuaDoorbellLightSelect(c, _Entry())),
     ("_preset_position", lambda c: DahuaCameraPresetPositionSelect(c, _Entry())),
     ("_1_preset_position",
      lambda c: DahuaCameraPresetPositionSelect(c, _Entry(), rpc2_channel=1)),
-    ("_day_night_mode", lambda c: DahuaDayNightModeSelect(c, _Entry())),
 ]
 
 
@@ -223,8 +209,6 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_event_notifications",
         "4L03CB4PAZC9E8F_2_smart_motion_detection",
         "4L03CB4PAZC9E8F_2_siren",
-        "4L03CB4PAZC9E8F_2_privacy_mode",
-        "4L03CB4PAZC9E8F_2_alarm_output_0",
         "4L03CB4PAZC9E8F_2_infrared",
         "4L03CB4PAZC9E8F_2_illuminator",
         "4L03CB4PAZC9E8F_2_ring_light",
@@ -232,11 +216,9 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_security",
         "4L03CB4PAZC9E8F_2_reboot",
         "4L03CB4PAZC9E8F_2_open_door",
-        "4L03CB4PAZC9E8F_2_cancel_call",
         "4L03CB4PAZC9E8F_2_security_light",
         "4L03CB4PAZC9E8F_2_preset_position",
         "4L03CB4PAZC9E8F_2_1_preset_position",
-        "4L03CB4PAZC9E8F_2_day_night_mode",
     }
 
 

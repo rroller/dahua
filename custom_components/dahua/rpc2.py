@@ -18,16 +18,6 @@ if sys.version_info > (3, 0):
     unicode = str
 
 
-class Rpc2MethodRefused(ConnectionError):
-    """The device answered an RPC2 call with result=false.
-
-    A ConnectionError subclass so existing handlers keep working, but a
-    distinct type because it means something quite different: the transport
-    reached the device and the device declined this particular method or
-    config table. That is evidence RPC2 *works* here, not that it does not.
-    """
-
-
 class DahuaRpc2Client:
     def __init__(
             self,
@@ -80,7 +70,7 @@ class DahuaRpc2Client:
                     message = error["message"].replace("\r", " ").replace("\n", " ")
                     details.append("message={0}".format(message[:200]))
             suffix = " ({0})".format(", ".join(details)) if details else ""
-            raise Rpc2MethodRefused(
+            raise ConnectionError(
                 "Dahua RPC2 method {0} returned result=false{1}".format(
                     method, suffix
                 )
@@ -235,31 +225,6 @@ class DahuaRpc2Client:
         response = await self.request(method="configManager.getConfig", params=params)
         return response['params']
 
-    async def set_configs(self, configs: list[tuple[str, list]]) -> dict:
-        """Commit complete config tables together through system.multicall."""
-        calls = []
-        for name, table in configs:
-            self._id += 1
-            calls.append({
-                "method": "configManager.setConfig",
-                "params": {"name": name, "table": table, "options": []},
-                "id": self._id,
-                "session": self._session_id,
-            })
-        response = await self.request(method="system.multicall", params=calls)
-        results = response.get("params")
-        if (
-                not isinstance(results, list)
-                or len(results) != len(calls)
-                or any(
-                    not isinstance(result, dict) or result.get("result") is not True
-                    for result in results
-                )):
-            raise ConnectionError(
-                "Dahua RPC2 system.multicall did not confirm every config write"
-            )
-        return response
-
     async def get_device_name(self) -> str:
         """Get the device name"""
         data = await self.get_config({"name": "General"})
@@ -269,33 +234,3 @@ class DahuaRpc2Client:
         """ async_get_coaxial_control_io_status returns the the current state of the speaker and white light. """
         response = await self.request(method="CoaxialControlIO.getStatus", params={"channel": channel})
         return CoaxialControlIOStatus(response)
-
-    async def _async_get_privacy_mode_table(self) -> list:
-        """Read the LeLensMask config table, logging in first if needed."""
-        if not self._session_id:
-            await self.login()
-        params = await self.get_config({"name": "LeLensMask"})
-        table = params.get("table")
-        if not isinstance(table, list) or not table or not isinstance(table[0], dict):
-            raise ValueError("Dahua RPC2 response is missing table for LeLensMask")
-        return table
-
-    async def async_get_privacy_mode(self) -> bool:
-        """Return True if the lens privacy mask (LeLensMask) is enabled."""
-        table = await self._async_get_privacy_mode_table()
-        return bool(table[0].get("Enable", False))
-
-    async def async_set_privacy_mode(self, enabled: bool) -> None:
-        """Enable or disable the lens privacy mask (LeLensMask).
-
-        The entry is read back and written with only Enable changed so the
-        camera keeps its own TimeSection schedule.
-        """
-        table = await self._async_get_privacy_mode_table()
-        entry = dict(table[0])
-        entry["Enable"] = enabled
-        await self.request(
-            method="configManager.setConfig",
-            params={"name": "LeLensMask", "table": [entry], "options": []},
-        )
-        _LOGGER.debug("RPC2 LeLensMask set to Enable=%s", enabled)

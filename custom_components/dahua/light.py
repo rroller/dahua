@@ -4,20 +4,16 @@ Illuminator for for Dahua cameras that have white light illuminators.
 See https://developers.home-assistant.io/docs/core/entity/light
 """
 
-import logging
-
 from homeassistant.core import HomeAssistant
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     LightEntity, LightEntityFeature, ColorMode,
 )
 
-from . import DahuaDataUpdateCoordinator, dahua_utils, scheme_blocking_white_light
+from . import DahuaDataUpdateCoordinator, dahua_utils
 from .const import DOMAIN, SECURITY_LIGHT_ICON, INFRARED_ICON
 from .entity import DahuaBaseEntity
 from .client import SECURITY_LIGHT_TYPE
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
@@ -108,8 +104,7 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(
-            channel, True, dahua_brightness, self._coordinator.get_infrared_profile())
+        await self._coordinator.client.async_set_lighting_v1(channel, True, dahua_brightness)
         await self.coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
@@ -117,8 +112,7 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(
-            channel, False, dahua_brightness, self._coordinator.get_infrared_profile())
+        await self._coordinator.client.async_set_lighting_v1(channel, False, dahua_brightness)
         await self.coordinator.async_refresh()
 
     @property
@@ -134,10 +128,6 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         super().__init__(coordinator, entry)
         self._name = name
         self._coordinator = coordinator
-        # Set once this device has refused the LightingScheme read. Recorders
-        # refuse it outright, so without this the check is retried on every
-        # light command, forever, and can never succeed.
-        self._scheme_unreadable = False
 
     @property
     def name(self):
@@ -184,53 +174,10 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        light_index = self._coordinator.get_illuminator_index()
-        if self._coordinator.uses_lighting_scheme_illuminator():
-            await self._coordinator.client.async_set_lighting_scheme_illuminator(
-                channel, True, dahua_brightness, profile_mode, light_index)
-        else:
-            await self._coordinator.client.async_set_lighting_v2(
-                channel, True, dahua_brightness, profile_mode, light_index,
-                self._coordinator.get_illuminator_bank())
-            await self._warn_if_the_scheme_blocks_it(channel, profile_mode)
+        await self._coordinator.client.async_set_lighting_v2(
+            channel, True, dahua_brightness, profile_mode,
+            self._coordinator.get_illuminator_index())
         await self._coordinator.async_refresh()
-
-    async def _warn_if_the_scheme_blocks_it(self, channel, profile_mode):
-        """Say so when the write will not reach the light.
-
-        Smart Dual Light cameras decide separately which emitter they are
-        willing to use. While that says AIMode or InfraredMode the white light
-        stays off however correct the write was, and the only symptom is an
-        entity that reports on next to a light that is not. Read at command
-        time, because the user can change it on the camera whenever they like.
-
-        Asked once per device, though. Measured on two recorders -- a
-        DHI-NVR5464-16P-EI and the one on #647 -- `getConfig&name=LightingScheme`
-        returns `400 Bad Request`, so on every NVR channel this read is a round
-        trip that cannot succeed and a traceback in the debug log for a check
-        that can never fire. One report has already been sent chasing it.
-        """
-        if getattr(self, "_scheme_unreadable", False):
-            return
-        try:
-            data = await self._coordinator.client.async_get_lighting_scheme()
-        except Exception:  # pylint: disable=broad-except
-            # Plenty of cameras have no such table. Not being able to check is
-            # not a reason to fail the command the user actually asked for --
-            # but it is a reason not to ask this device again.
-            self._scheme_unreadable = True
-            _LOGGER.debug(
-                "LightingScheme is not readable on this device; the white light "
-                "scheme check is switched off for it", exc_info=True)
-            return
-        blocking = scheme_blocking_white_light(data, channel, profile_mode)
-        if blocking is not None:
-            _LOGGER.warning(
-                "The white light on %s was set, but the camera's lighting scheme is "
-                "%s, so the light will not physically come on. Switch that camera to "
-                "white light in its own web interface to use this entity.",
-                self._coordinator.get_device_name(), blocking,
-            )
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
@@ -238,14 +185,9 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
         channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
-        light_index = self._coordinator.get_illuminator_index()
-        if self._coordinator.uses_lighting_scheme_illuminator():
-            await self._coordinator.client.async_set_lighting_scheme_illuminator(
-                channel, False, dahua_brightness, profile_mode, light_index)
-        else:
-            await self._coordinator.client.async_set_lighting_v2(
-                channel, False, dahua_brightness, profile_mode, light_index,
-                self._coordinator.get_illuminator_bank())
+        await self._coordinator.client.async_set_lighting_v2(
+            channel, False, dahua_brightness, profile_mode,
+            self._coordinator.get_illuminator_index())
         await self._coordinator.async_refresh()
 
 

@@ -84,10 +84,6 @@ def _coordinator(client):
     c._address = "10.0.0.7"
     c._channel = 0
     c._channel_number = 1
-    # is_nvr_channel reads this, and the coaxial probe asks it when choosing
-    # which channel to probe. object.__new__ skips __init__, so it has to be
-    # named here or the probe raises AttributeError instead of running.
-    c._nvr_active_deterrence = False
     c.initialized = False
     c.model = ""
     c.machine_name = None

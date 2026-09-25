@@ -5,14 +5,12 @@ import logging
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.model_profiles import is_sdt4e425
-from custom_components.dahua.vto import CancelCallRefused
 
 from .const import (
     DOMAIN,
@@ -22,12 +20,10 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 # This service handled setting the infrared mode on the camera to Off, Auto, or Manual... along with the brightness
 SERVICE_SET_INFRARED_MODE = "set_infrared_mode"
-SERVICE_SET_ILLUMINATOR_MODE = "set_illuminator_mode"
 # This service handles setting the video profile mode to day or night
 SERVICE_SET_VIDEO_PROFILE_MODE = "set_video_profile_mode"
 SERVICE_SET_FOCUS_ZOOM = "set_focus_zoom"
 SERVICE_SET_PRIVACY_MASKING = "set_privacy_masking"
-SERVICE_SET_PRIVACY_MODE = "set_privacy_mode"
 SERVICE_SET_CHANNEL_TITLE = "set_channel_title"
 SERVICE_SET_TEXT_OVERLAY = "set_text_overlay"
 SERVICE_SET_CUSTOM_OVERLAY = "set_custom_overlay"
@@ -126,14 +122,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("enabled", default=False): bool,
         },
         "async_set_privacy_masking"
-    )
-
-    platform.async_register_entity_service(
-        SERVICE_SET_PRIVACY_MODE,
-        {
-            vol.Required("enabled", default=False): bool,
-        },
-        "async_set_privacy_mode"
     )
 
     platform.async_register_entity_service(
@@ -267,18 +255,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             "async_set_infrared_mode"
         )
 
-    # The light entity can only say on or off. Off is not the same as automatic,
-    # and without this there is no way back to the camera's own behaviour.
-    if coordinator.supports_illuminator():
-        platform.async_register_entity_service(
-            SERVICE_SET_ILLUMINATOR_MODE,
-            {
-                vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto"]),
-                vol.Optional('brightness', default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
-            },
-            "async_set_illuminator_mode"
-        )
-
     platform.async_register_entity_service(
         SERVICE_GOTO_PRESET_POSITION,
         {
@@ -368,22 +344,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_set_infrared_mode(self, mode: str, brightness: int):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
         channel = self._logical_channel
-        await self._coordinator.client.async_set_lighting_v1_mode(
-            channel, mode, brightness, self._coordinator.get_infrared_profile())
-        await self._coordinator.async_refresh()
-
-    async def async_set_illuminator_mode(self, mode: str, brightness: int):
-        """Handles SERVICE_SET_ILLUMINATOR_MODE: illuminator mode and brightness.
-
-        Uses the same resolved light index and brightness bank as the light
-        entity, so the service and the toggle address the same physical light.
-        """
-        channel = self._logical_channel
-        await self._coordinator.client.async_set_lighting_v2_mode(
-            channel, mode, brightness, self._coordinator.get_profile_mode(),
-            self._coordinator.get_illuminator_index(),
-            self._coordinator.get_illuminator_bank(),
-        )
+        await self._coordinator.client.async_set_lighting_v1_mode(channel, mode, brightness)
         await self._coordinator.async_refresh()
 
     async def async_goto_preset_position(self, position: int):
@@ -430,11 +391,6 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """ Handles the service call from SERVICE_SET_PRIVACY_MASKING to control the privacy masking """
         await self._coordinator.client.async_setprivacymask(index, enabled)
 
-    async def async_set_privacy_mode(self, enabled: bool):
-        """ Handles the service call from SERVICE_SET_PRIVACY_MODE to control the lens privacy mask """
-        await self._coordinator.client.async_set_privacy_mode(enabled)
-        await self._coordinator.async_refresh()
-
     async def async_set_enable_channel_title(self, enabled: bool):
         """ Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE """
         channel = self._logical_channel
@@ -471,23 +427,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
     async def async_vto_cancel_call(self):
         """ Handles the service call from SERVICE_VTO_CANCEL_CALL to cancel VTO calls """
-        # The service is offered on every camera entity, and only a doorbell
-        # ever has a VTO client: on anything else this is None, and so was the
-        # error -- AttributeError on NoneType, with a traceback and no clue that
-        # the wrong entity had been picked. A doorbell between reconnects lands
-        # here too.
-        vto_client = self._coordinator.get_vto_client()
-        if vto_client is None:
-            raise HomeAssistantError(
-                "{0} has no doorbell connection to cancel a call on. This service "
-                "works on a VTO doorbell, once its event connection is up.".format(
-                    self._coordinator.get_device_name()
-                )
-            )
-        try:
-            await vto_client.cancel_call()
-        except CancelCallRefused as refused:
-            raise HomeAssistantError(str(refused)) from refused
+        await self._coordinator.get_vto_client().cancel_call()
 
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """

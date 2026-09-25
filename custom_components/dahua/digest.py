@@ -1,5 +1,4 @@
 """Dahua Digest Auth Support"""
-import base64
 import os
 import time
 import hashlib
@@ -15,18 +14,6 @@ from yarl import URL
 
 # How many times one request may answer a 401 before giving up.
 MAX_AUTH_ATTEMPTS = 3
-
-# Firmware old enough to predate digest on the CGI interface answers with a
-# Basic challenge instead, and #583 is what that looks like: the web UI works,
-# `curl -u` works, `curl --digest -u` gets a 401 carrying `WWW-Authenticate:
-# Basic realm="Device_CGI"`, and the integration reads that 401 as a wrong
-# password and starts a reauth that cannot succeed. Reported on an
-# IPC-HFW4300S-V2 on 2014 firmware and an IPC-HDW4300C on 2015 firmware.
-#
-# Only ever used when the device asks for it by name. Basic puts the password
-# on the wire in a header, so it is not something to offer unprompted.
-BASIC = "basic"
-DIGEST = "digest"
 
 
 class DigestAuth:
@@ -45,15 +32,6 @@ class DigestAuth:
         # the next. Callers passing nothing keep the old per-request behaviour.
         self._state = previous
         self.session = session
-
-    @property
-    def scheme(self):
-        """Which scheme this device asked for, once it has told us."""
-        return self._state.get("scheme")
-
-    @scheme.setter
-    def scheme(self, value):
-        self._state["scheme"] = value
 
     # Challenge and nonce count live in the shared state, exposed as attributes.
     @property
@@ -92,9 +70,7 @@ class DigestAuth:
             attempt_headers = dict(headers)
             sent_nonce = None
 
-            if self.scheme == BASIC:
-                attempt_headers["AUTHORIZATION"] = self._build_basic_header()
-            elif self.challenge:
+            if self.challenge:
                 authorization = self._build_digest_header(method.upper(), url)
                 if authorization:
                     attempt_headers["AUTHORIZATION"] = authorization
@@ -111,13 +87,6 @@ class DigestAuth:
 
             challenge = self._parse_401(response)
             if challenge is None:
-                # A device that wants Basic says so here. Switch once and
-                # retry; if it refuses that too, the credentials are wrong
-                # and the 401 is the honest answer.
-                if self._offered_scheme(response) == BASIC and self.scheme != BASIC:
-                    self.scheme = BASIC
-                    response.close()
-                    continue
                 return response
 
             if sent_nonce is not None:
@@ -135,19 +104,6 @@ class DigestAuth:
             self.challenge = challenge
 
         return response
-
-    @staticmethod
-    def _offered_scheme(response: ClientResponse):
-        """The auth scheme this 401 asked for, lowercased, or None."""
-        header = response.headers.get("www-authenticate", "")
-        if not header:
-            return None
-        return header.split(" ", 1)[0].lower() or None
-
-    def _build_basic_header(self):
-        """RFC 7617: base64 of user:password, and nothing else."""
-        raw = "{0}:{1}".format(self.username, self.password).encode("utf-8")
-        return "Basic " + base64.b64encode(raw).decode("ascii")
 
     def _parse_401(self, response: ClientResponse):
         """Returns the digest challenge carried by a 401, or None."""
@@ -189,14 +145,7 @@ class DigestAuth:
         def KD(s, d):
             return H("%s:%s" % (s, d))
 
-        # raw_path_qs, not path_qs: the request-URI that goes on the wire is
-        # percent-encoded by yarl, and RFC 7616 wants the uri in the header to
-        # be that same string. path_qs hands back the decoded form, so every URL
-        # carrying a square bracket -- which is every indexed write, from
-        # MotionDetect[0].Enable to Lighting_V2[3][0][1] -- was signed as
-        # "[0]" while "%5B0%5D" was sent. A device that checks is entitled to
-        # refuse that, and 403 is what refusing it looks like.
-        path = URL(url).raw_path_qs
+        path = URL(url).path_qs
         A1 = "%s:%s:%s" % (self.username, realm, self.password)
         A2 = "%s:%s" % (method, path)
 

@@ -55,9 +55,6 @@ class _FakeCoordinator:
     def supports_infrared_light(self):
         return False
 
-    def supports_illuminator(self):
-        return False
-
 
 class _CapturedCamera:
     def __init__(

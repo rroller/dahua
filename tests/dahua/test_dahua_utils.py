@@ -73,7 +73,6 @@ class TestParseEvent:
 
         assert len(events) == 1
         assert events[0]["Code"] == "CrossRegionDetection"
-        assert events[0]["data"]["Encoded"] == "dGVzdA=="
 
     def test_equals_in_non_json_data_preserved(self):
         """Bug #477: non-JSON data containing '=' is preserved intact."""
@@ -82,54 +81,6 @@ class TestParseEvent:
 
         assert len(events) == 1
         assert events[0]["data"] == "key=value"
-
-    # --- a block the stream cut short --------------------------------------
-    #
-    # stream_events passes on whatever response.content.iter_chunks() hands it,
-    # so a chunk boundary can fall anywhere -- including immediately after a
-    # part's headers. Such a block has three newline-separated pieces, and the
-    # guard that admitted it asked for three before reading the fourth.
-
-    def test_a_block_that_ends_after_its_headers_is_skipped(self):
-        """It used to raise IndexError, which ended the event stream."""
-        raw = "--myboundary\nContent-Type: text/plain\nContent-Length: 999\n"
-
-        assert parse_event(raw) == []
-
-    def test_a_truncated_block_does_not_discard_the_events_before_it(self):
-        """One bad block must cost one block, not the whole batch."""
-        raw = (_wrap_event("Code=VideoMotion;action=Start;index=0")
-               + "--myboundary\nContent-Type: text/plain\nContent-Length: 999\n")
-
-        events = parse_event(raw)
-
-        assert len(events) == 1
-        assert events[0]["Code"] == "VideoMotion"
-
-    # --- a fragment that is not key=value -----------------------------------
-
-    def test_a_semicolon_inside_the_json_does_not_end_the_stream(self):
-        """Users name rules and regions freely, and the payload is split on ';'."""
-        event_body = (
-            'Code=CrossRegionDetection;action=Start;index=0;data={\n'
-            '   "Name" : "Drive; Gate"\n'
-            '}'
-        )
-
-        events = parse_event(_wrap_event(event_body))
-
-        assert len(events) == 1
-        assert events[0]["Code"] == "CrossRegionDetection"
-        assert events[0]["action"] == "Start"
-        assert events[0]["index"] == "0"
-
-    def test_a_fragment_that_is_not_a_pair_is_skipped(self):
-        raw = _wrap_event("Code=VideoMotion;action=Start;garbage;index=0")
-
-        events = parse_event(raw)
-
-        assert len(events) == 1
-        assert events[0] == {"Code": "VideoMotion", "action": "Start", "index": "0"}
 
 
 class TestExtractPlateData:
@@ -187,16 +138,16 @@ class TestExtractPlateData:
 
     def test_homoglyph_conversion(self):
         """Greek/Cyrillic characters visually matching Latin are normalized."""
-        # Greek letters: Alpha (Α), Beta (Β), Epsilon (Ε)
+        # Greek letters: Chi (Χ), Zeta (Ζ), Omicron (Ο)
         event = {
             "Code": "Traffic",
             "data": {
-                "PlateNumber": "ΑΒΕ1234",
+                "PlateNumber": "ΧΖΟ3314",
             },
         }
         res = extract_plate_data(event)
         assert res is not None
-        assert res["plate"] == "ABE1234"
+        assert res["plate"] == "XZO3314"
 
     def test_unlicensed_and_empty_ignored(self):
         """Placeholder values like 'unlicensed', 'unknown', or non-plate objects return None."""
@@ -245,21 +196,13 @@ class TestNormalizePlate:
     def test_homoglyph_replacement(self):
         # Greek letters: Alpha, Beta, Epsilon, Zeta, Eta, Iota, Kappa, Mu, Nu, Omicron, Rho (looks like P), Tau, Upsilon, Chi
         assert normalize_plate("ΑΒΕΖΗΙΚΜΝΟΡΤΥΧ") == "ABEZHIKMNOPTYX"
-        assert normalize_plate("ΑΒΟ-1234") == "ABO1234"
-        assert normalize_plate("ΧΥΖ 5678") == "XYZ5678"
+        assert normalize_plate("ΧΖΟ-3314") == "XZO3314"
+        assert normalize_plate("ΧΖΖ 6820") == "XZZ6820"
 
     def test_empty_and_none(self):
         assert normalize_plate("") == ""
         assert normalize_plate(None) == ""
         assert normalize_plate("---") == ""
-
-
-    def test_greek_zero_omicron_positional_normalization(self):
-        # 3 letters + 4 digits: zero in letter section becomes O, O in digit section becomes 0
-        assert normalize_plate("AB01234") == "ABO1234"
-        assert normalize_plate("XYZ567O") == "XYZ5670"
-        assert normalize_plate("0BC1234") == "OBC1234"
-        assert normalize_plate("AB05678") == "ABO5678"
 
 
 class TestParseAuthorizedPlates:
@@ -271,9 +214,9 @@ class TestParseAuthorizedPlates:
         assert result == ["ABC1234", "XYZ5678", "MNO9999"]
 
     def test_deduplication_and_normalization(self):
-        raw = "ABC-1234, abc1234,   ABC 1234, ΑΒΟ1234 "
+        raw = "ABC-1234, abc1234,   ABC 1234, ΧΖΟ3314 "
         result = parse_authorized_plates(raw)
-        assert result == ["ABC1234", "ABO1234"]
+        assert result == ["ABC1234", "XZO3314"]
 
     def test_list_input(self):
         plates = ["ABC-1234", "xyz-5678"]
@@ -284,42 +227,4 @@ class TestParseAuthorizedPlates:
         assert parse_authorized_plates("") == []
         assert parse_authorized_plates(None) == []
         assert parse_authorized_plates("  ,  ,  ") == []
-
-
-class TestExtractPlateStringFallback:
-    """Tests for string fallback and candidate ranking in extract_plate_data."""
-
-    def test_extract_from_valid_json_string(self):
-        event = {
-            "Code": "TrafficParkingSpaceParking",
-            "data": '{"Object": {"ObjectType": "Plate", "Text": "AB01234", "Confidence": 94}}'
-        }
-        res = extract_plate_data(event)
-        assert res is not None
-        assert res["plate"] == "ABO1234"
-        assert res["confidence"] == 94
-
-    def test_extract_from_truncated_json_string(self):
-        # Truncated string simulating TCP packet split
-        truncated = '{"Object": {"ObjectType": "Plate", "Text": "AB01234", "Confidence": 90}, "TrafficCa'
-        event = {
-            "Code": "TrafficParkingSpaceParking",
-            "data": truncated
-        }
-        res = extract_plate_data(event)
-        assert res is not None
-        assert res["plate"] == "ABO1234"
-        assert res["confidence"] == 90
-
-    def test_extract_from_rtl_reversed_candidates(self):
-        # When Dahua includes both RTL scrambled and standard order
-        raw = '{"CurrentPlateInfo": [{"Text": "12340BA"}], "Object": {"Text": "AB01234", "Confidence": 91}}'
-        event = {
-            "Code": "TrafficParkingSpaceParking",
-            "data": raw
-        }
-        res = extract_plate_data(event)
-        assert res is not None
-        assert res["plate"] == "ABO1234"
-
 

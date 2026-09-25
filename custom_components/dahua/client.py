@@ -1,16 +1,14 @@
 """Dahua API Client."""
-
 import logging
 import re
 import socket
-from copy import deepcopy
 from contextlib import suppress
 import asyncio
 import time
 import aiohttp
 
 from .digest import DigestAuth
-from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
+from .rpc2 import DahuaRpc2Client
 from hashlib import md5
 from urllib.parse import quote
 
@@ -30,24 +28,6 @@ EVENT_STREAM_READ_TIMEOUT_SECONDS = 60
 # per host, shared across every client for that address.
 MAX_CONCURRENT_REQUESTS_PER_HOST = 2
 _HOST_LIMITS: dict = {}
-
-
-def _device_key(address: str, port) -> str:
-    """One device.
-
-    Two Dahua boxes can sit behind one IP on different ports -- a bridge
-    forwarding 80/554 to one and 81/555 to another. Everything that identifies a
-    device, rather than the network path to it, has to say which one.
-
-    The port is normalised because a config entry stores it as a string while
-    callers pass an int, and "192.168.0.175:80" must not be a different device
-    from "192.168.0.175:80".
-    """
-    try:
-        port = int(port)
-    except (TypeError, ValueError):
-        pass
-    return "{0}:{1}".format(address, port)
 
 
 def _host_limiter(address: str) -> asyncio.Semaphore:
@@ -84,12 +64,6 @@ _HOST_RPC2: dict = {}
 # meant eleven channels each rediscovering it, which is eleven failed logins
 # against a device that has just said it cannot do this.
 _HOST_RPC2_UNAVAILABLE: set = set()
-
-# (rpc2 key, config table) pairs the device answered but declined. Kept apart
-# from _HOST_RPC2_UNAVAILABLE on purpose: one table it will not serve says
-# nothing about the rest, and writing the host off for it costs a login on
-# every later read.
-_RPC2_TABLE_UNAVAILABLE: set = set()
 
 # The device states its own keepalive interval in the login reply. Ask slightly
 # inside it, the way the VTO keepalive already does.
@@ -188,40 +162,17 @@ async def _release_rpc2(key) -> None:
         await holder.session.close()
 
 
-def _digest_state(device: str, username: str) -> dict:
-    """The digest state shared by every client for this device and user.
+def _digest_state(address: str, username: str) -> dict:
+    """The digest state shared by every client for this host and user.
 
-    Keyed by user as well as device because the response digest is built from
-    the credentials, and entries for one NVR need not share them. Keyed by
-    device rather than address because a nonce is issued by one box and means
-    nothing to another that happens to answer on the same IP.
+    Keyed by user as well as host because the response digest is built from the
+    credentials, and entries for one NVR need not share them.
     """
-    key = (device, username)
+    key = (address, username)
     state = _HOST_DIGEST_STATE.get(key)
     if state is None:
         state = _HOST_DIGEST_STATE[key] = {}
     return state
-
-
-def _overlay_text(*parts: str) -> str:
-    """Join the lines of a title or overlay, each one safe to put in a URL.
-
-    The pipe is Dahua's line separator and has to arrive as a pipe, so the parts
-    are escaped and the separator is not.
-
-    Escaping them matters more than it looks. The text went into the URL raw,
-    and yarl then encodes the query on the way out -- a space becomes "+", which
-    this firmware stores literally. Measured on a DHI-NVR5464-16P-EI:
-
-        ChannelTitle[14].Name=Channel+1    -> stored as "Channel+1"
-        ChannelTitle[14].Name=Channel%201  -> stored as "Channel 1"
-
-    So every camera name with a space in it was being written back wrong, and
-    the device answers OK either way. A "#" is quieter still: yarl reads the
-    rest of the value as a URL fragment and the request line never carries it,
-    so "Gate#2" arrives as "Gate".
-    """
-    return "|".join(quote(part, safe="") for part in parts if part)
 
 
 # Most of what a coordinator reads every poll carries no channel argument:
@@ -264,11 +215,7 @@ _HOST_CACHE: dict = {}
 
 def _cache_lifetime(url: str) -> int:
     """How long this URL's answer stays good for."""
-    return (
-        CONFIG_CACHE_TTL_SECONDS
-        if CONFIG_READ_MARKER in url
-        else HOST_CACHE_TTL_SECONDS
-    )
+    return CONFIG_CACHE_TTL_SECONDS if CONFIG_READ_MARKER in url else HOST_CACHE_TTL_SECONDS
 
 
 # CGI reads are "action=getSomething". Everything else -- setConfig, reboot,
@@ -281,18 +228,13 @@ def _is_read(url: str) -> bool:
     return READ_ACTION_PREFIX in url
 
 
-def clear_host_cache(scope: str) -> None:
-    """Drop the shared reads for one device, or for every device at an address.
+def clear_host_cache(address: str) -> None:
+    """Drop every shared read for this host.
 
-    `scope` is either a device key ("10.0.0.1:80") or a bare address
-    ("10.0.0.1"), which matches every device behind it. A write is only a reason
-    to distrust what *that* device said, so the write path passes its own key;
-    the connector teardown has only the address, and dropping everything behind
-    it is right there because the connector is going too.
+    Called on every write, since a write is the reason a value the device
+    reports would change, and when the last entry for the host goes away.
     """
-    stale = [k for k in _HOST_CACHE
-             if k[0] == scope or k[0].startswith(scope + ":")]
-    for key in stale:
+    for key in [k for k in _HOST_CACHE if k[0] == address]:
         del _HOST_CACHE[key]
 
 
@@ -323,70 +265,6 @@ class EventStreamClosed(Exception):
     action=attach by answering 200 and closing would otherwise leave no trace
     anywhere.
     """
-
-
-def _pop_complete_multipart_part(buffer: bytes, boundary: bytes):
-    """Return one complete multipart part and the bytes left after it.
-
-    Dahua includes Content-Length on event-stream parts. Once that many payload
-    bytes are buffered, the part is complete and can be delivered immediately;
-    waiting for the next boundary adds up to one heartbeat interval of latency.
-
-    Devices that omit Content-Length keep the previous next-boundary fallback.
-    """
-    start = buffer.find(boundary)
-    if start == -1:
-        return None, buffer
-    if start:
-        buffer = buffer[start:]
-
-    header_end = buffer.find(b"\r\n\r\n", len(boundary))
-    separator_len = 4
-    if header_end == -1:
-        header_end = buffer.find(b"\n\n", len(boundary))
-        separator_len = 2
-    if header_end == -1:
-        return None, buffer
-
-    payload_start = header_end + separator_len
-    content_length = None
-    for line in buffer[len(boundary):header_end].splitlines():
-        name, separator, value = line.partition(b":")
-        if separator and name.strip().lower() == b"content-length":
-            try:
-                content_length = int(value.strip())
-            except ValueError:
-                content_length = None
-            if content_length is not None and content_length < 0:
-                content_length = None
-            break
-
-    if content_length is not None:
-        part_end = payload_start + content_length
-        next_boundary = buffer.find(boundary, payload_start)
-
-        # If the next part starts before the declared payload end, the length
-        # was wrong or the payload was truncated. The multipart framing is
-        # stronger evidence than a length that would consume into the next part.
-        if next_boundary != -1 and next_boundary < part_end:
-            return buffer[:next_boundary], buffer[next_boundary:]
-
-        if len(buffer) < part_end:
-            return None, buffer
-
-        part = buffer[:part_end]
-        remainder = buffer[part_end:]
-        # Content-Length excludes the CRLF framing before the next boundary.
-        if remainder.startswith(b"\r\n"):
-            remainder = remainder[2:]
-        elif remainder.startswith(b"\n"):
-            remainder = remainder[1:]
-        return part, remainder
-
-    next_boundary = buffer.find(boundary, payload_start)
-    if next_boundary == -1:
-        return None, buffer
-    return buffer[:next_boundary], buffer[next_boundary:]
 
 
 _CONFIG_READ = re.compile(r"configManager\.cgi\?action=getConfig&name=(.+)$")
@@ -422,268 +300,7 @@ def flatten_rpc2_config(name: str, node, prefix: str = None) -> dict:
 
 
 SECURITY_LIGHT_TYPE = 1
-
-# VideoInOptions[channel].DayNightColor, the portable spelling of the Day/Night
-# setting. Verified present on a DHI-NVR5464-16P-EI, a VTO, and the
-# DHI-VTO2311R-WP on #687, none of which carry VideoInDayNight at all.
-DAY_NIGHT_COLOR = {"Color": 0, "Brightness": 1, "BlackWhite": 2}
 SIREN_TYPE = 2
-
-
-# Some Dahua devices append a short proprietary block after the JPEG's end-of-image
-# marker. It is not part of the image and strict decoders are entitled to refuse it.
-DAHUA_TRAILER_SIGNATURE = b"dhav"
-JPEG_SOI = bytes((0xFF, 0xD8))
-JPEG_EOI = bytes((0xFF, 0xD9))
-
-
-def strip_dahua_snapshot_trailer(data: bytes) -> bytes:
-    """Drop a trailing `dhav` block that some devices add after the JPEG.
-
-    Measured on a VTO doorbell: every snapshot ends eight bytes past the
-    end-of-image marker, with `dhav` and four varying bytes. The NVR channels on
-    the same network end exactly at the marker, so this is per device rather than
-    per request, and it is stable across fetches.
-
-    Lenient decoders skip it, which is why this goes unnoticed. Strict ones do
-    not, and a JPEG with bytes after EOI is genuinely malformed.
-
-    Deliberately narrow: the data must look like a JPEG, must not already end at
-    the marker, and what follows the marker must carry the signature. Anything
-    else is returned untouched, because truncating an image on a guess is worse
-    than passing on a trailer.
-    """
-    if not data.startswith(JPEG_SOI) or data.endswith(JPEG_EOI):
-        return data
-    end = data.rfind(JPEG_EOI)
-    if end == -1:
-        return data
-    if not data[end + 2:].startswith(DAHUA_TRAILER_SIGNATURE):
-        return data
-    return data[:end + 2]
-
-
-JPEG_SOS = 0xDA
-JPEG_COM = 0xFE
-JPEG_APP0 = 0xE0
-JPEG_APP15 = 0xEF
-
-# Markers that carry a two-byte length and can appear in a JPEG header. Used to
-# find where a segment really ended when it lied about where that was.
-JPEG_LENGTH_BEARING_MARKERS = frozenset(
-    {0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7,
-     0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
-     0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xFE}
-    | set(range(JPEG_APP0, JPEG_APP15 + 1))
-)
-
-
-def _jpeg_header_is_consistent(data: bytes) -> bool:
-    """Whether every header segment's declared length lands on the next marker.
-
-    Walks from SOI to SOS only. Entropy-coded scan data is not marker-structured
-    and is never examined.
-    """
-    i = 2
-    while i + 3 < len(data):
-        if data[i] != 0xFF:
-            return False
-        marker = data[i + 1]
-        if marker == 0xFF:                      # fill byte
-            i += 1
-            continue
-        if marker == JPEG_SOS:
-            return True
-        if marker not in JPEG_LENGTH_BEARING_MARKERS:
-            return False
-        length = int.from_bytes(data[i + 2:i + 4], "big")
-        if length < 2:
-            return False
-        i += 2 + length
-    return False
-
-
-def _next_length_bearing_marker(data: bytes, start: int) -> int:
-    """Offset of the next plausible header marker at or after start, or -1."""
-    i = start
-    while i + 1 < len(data):
-        if data[i] == 0xFF and data[i + 1] in JPEG_LENGTH_BEARING_MARKERS:
-            return i
-        i += 1
-    return -1
-
-
-def repair_dahua_snapshot_header(data: bytes) -> bytes:
-    """Drop an ignorable header segment that declares the wrong length.
-
-    Measured on a DH-IPC-HFW2449TL-S-PRO snapshot supplied on #575. The file
-    starts and ends correctly and carries no trailer, but the first COM segment
-    declares 4094 bytes and actually occupies 4702 -- 608 short. A decoder that
-    trusts the length lands mid-padding on a 0x00 where a marker should be and
-    loses the rest of the file:
-
-        009e  COM  declares 4094  ->  109e  0x00, not 0xFF
-             the next real marker is at 12fe
-
-    The reporter's own tests isolate it exactly: removing that segment makes the
-    file acceptable, while zeroing its payload and leaving the length alone does
-    not. So the defect is the length, not the contents.
-
-    Only COM and APPn segments are dropped. Both are ignorable by definition --
-    a comment and application metadata -- so losing one costs nothing, whereas a
-    quantisation table or a frame header is the image. The result is re-walked
-    and the original returned unless the repair actually produced a consistent
-    header, so a guess that does not pay off changes nothing.
-    """
-    if not data.startswith(JPEG_SOI) or _jpeg_header_is_consistent(data):
-        return data
-
-    i = 2
-    while i + 3 < len(data):
-        if data[i] != 0xFF:
-            return data
-        marker = data[i + 1]
-        if marker == 0xFF:
-            i += 1
-            continue
-        if marker == JPEG_SOS or marker not in JPEG_LENGTH_BEARING_MARKERS:
-            return data
-        length = int.from_bytes(data[i + 2:i + 4], "big")
-        if length < 2:
-            return data
-        end = i + 2 + length
-        if end + 1 < len(data) and data[end] == 0xFF:
-            i = end
-            continue
-
-        # This segment does not end where it says it does.
-        if marker != JPEG_COM and not (JPEG_APP0 <= marker <= JPEG_APP15):
-            return data
-        resume = _next_length_bearing_marker(data, i + 4)
-        if resume == -1:
-            return data
-        repaired = data[:i] + data[resume:]
-        return repaired if _jpeg_header_is_consistent(repaired) else data
-
-    return data
-
-
-# A device that answers and refuses has told us something about itself. One that
-# never answers has told us about this moment.
-TRANSIENT_RPC2_FAILURES = (TimeoutError, aiohttp.ClientConnectionError)
-
-
-def rpc2_failure_is_permanent(exception: BaseException) -> bool:
-    """Whether an RPC2 failure should rule the transport out for this host.
-
-    The verdict is permanent for the life of the process, so it has to mean
-    "this device does not speak RPC2" rather than "this read did not come back".
-    Every exception used to count, which made a single timeout during one busy
-    moment switch a working device back to a login per call until Home Assistant
-    was restarted -- silently, since the fallback works.
-
-    Observed on a DHI-NVR5464-16P-EI: nine reads timed out within the same
-    second, two hours after startup, on a host that had been serving RPC2
-    perfectly well and went on being able to.
-    """
-    return not isinstance(exception, TRANSIENT_RPC2_FAILURES)
-
-
-def lighting_scheme_illuminator_tables(
-        lighting_scheme: list, lighting_v2: list, channel: int,
-        profile_mode: int, light_index: int, enabled: bool,
-        brightness: int, restore_mode: str | None = None) -> tuple[list, list]:
-    """Build the two complete tables used by dual-light Web5 cameras.
-
-    On IPC-Color4M-TZ, selecting WhiteMode without configuring the white
-    emitter does not light it, and configuring the emitter without selecting
-    WhiteMode does not light it either. Turning it off restores a captured mode.
-    Without one, do not guess: only stop a still-selected white emitter.
-    """
-    scheme = deepcopy(lighting_scheme)
-    lighting = deepcopy(lighting_v2)
-    try:
-        scheme_row = scheme[channel][profile_mode]
-        light_row = lighting[channel][profile_mode][light_index]
-    except (IndexError, KeyError, TypeError):
-        raise ValueError("Dahua lighting tables do not contain the selected light") from None
-    if not isinstance(scheme_row, dict) or not isinstance(light_row, dict):
-        raise ValueError("Dahua lighting tables contain malformed rows")
-    current_mode = scheme_row.get("LightingMode")
-    if not isinstance(current_mode, str) or not current_mode:
-        raise ValueError("Dahua lighting scheme is missing LightingMode")
-    if light_row.get("LightType") != "WhiteLight":
-        raise ValueError("Selected Dahua light is not the white emitter")
-
-    if enabled:
-        scheme_row["LightingMode"] = "WhiteMode"
-        light_row["Mode"] = "Manual"
-        light_row["PercentOfMaxBrightness"] = brightness
-        for bank_name in ("NearLight", "MiddleLight", "FarLight"):
-            bank = light_row.get(bank_name, [])
-            if not isinstance(bank, list):
-                raise ValueError("Dahua white-emitter bank is malformed")
-            for emitter in bank:
-                if not isinstance(emitter, dict):
-                    raise ValueError("Dahua white-emitter entry is malformed")
-                emitter["Light"] = brightness
-    elif restore_mode is not None:
-        scheme_row["LightingMode"] = restore_mode
-    elif current_mode == "WhiteMode":
-        light_row["Mode"] = "Off"
-    return scheme, lighting
-
-
-# 1 main stream + 2 sub-streams, which is what the coordinator starts with and
-# what the comment in get_max_extra_streams has always described.
-DEFAULT_EXTRA_STREAMS = 2
-
-
-def parse_extra_streams(value) -> int:
-    """How many sub-streams the device says it has, as a usable number.
-
-    Measured, because the shape of this answer decides how many camera
-    entities get created:
-
-        DHI-NVR5464-16P-EI (G61_NVR16PRO16P-I3)   table.MaxExtraStream=2
-        VTO2000A doorbell                         table.MaxExtraStream=1
-
-    A doorbell really does answer 1, and #237 is an AD410 owner whose log fills
-    with `Error opening stream ... subtype=2` for a sub-stream that does not
-    exist. So over-guessing this is not harmless -- it is a camera entity that
-    404s on every attempt, for as long as the entry exists.
-
-    Anything unreadable falls back to the common case rather than raising. The
-    caller is inside the one-time init block, whose handler turns any exception
-    into UpdateFailed, so a device answering a non-numeric value here would
-    never finish initialising and would retry for as long as it kept saying it.
-    """
-    try:
-        count = int(str(value).strip())
-    except (TypeError, ValueError):
-        return DEFAULT_EXTRA_STREAMS
-    # A negative count is not a smaller camera, it is a device talking nonsense.
-    if count < 0:
-        return DEFAULT_EXTRA_STREAMS
-    return count
-
-
-def _is_login_refused(exception: aiohttp.ClientResponseError) -> bool:
-    """True when the device refused the credentials, not the endpoint.
-
-    The identity calls below fall back to an id built from the credentials when
-    magicBox.cgi answers with an error, which is how cameras that do not
-    implement it at all are still supported. That fallback is right for a 404 or
-    a 501 -- the device has no such endpoint -- and wrong for a 401, where the
-    device understood the request perfectly and rejected the login. Synthesising
-    an identity from a password the camera has just refused is how a wrong
-    password came to produce a working-looking camera that never polls.
-
-    403 deliberately keeps the fallback. It means the login was accepted and
-    this account is not allowed that endpoint, which a restricted Dahua user
-    really can hit, and their credentials are not wrong.
-    """
-    return exception.status == 401
 
 
 class DahuaClient:
@@ -695,28 +312,26 @@ class DahuaClient:
     """
 
     def __init__(
-        self,
-        username: str,
-        password: str,
-        address: str,
-        port: int,
-        rtsp_port: int,
-        session: aiohttp.ClientSession,
-        use_https: bool = None,
-        use_rpc2: bool = False,
+            self,
+            username: str,
+            password: str,
+            address: str,
+            port: int,
+            rtsp_port: int,
+            session: aiohttp.ClientSession,
+            use_https: bool = None,
+            use_rpc2: bool = False
     ) -> None:
         self._username = username
         self._password = password
         # Strip trailing slashes from address to prevent malformed URLs like http://host/:80
         self._address = address.rstrip('/')
-        self._port = port
-        # Which device this is, as opposed to which address answers for it.
-        self._device = _device_key(self._address, port)
-        # One digest challenge shared by every request to this device, so a call
+        # One digest challenge shared by every request to this host, so a call
         # doesn't have to take a 401 before it can authenticate -- and neither
         # does the next config entry for the same NVR.
-        self._digest_state = _digest_state(self._device, username)
+        self._digest_state = _digest_state(self._address, username)
         self._session = session
+        self._port = port
         self._rtsp_port = rtsp_port
 
         # Callers that do not say keep the old behaviour: HTTPS only on 443.
@@ -735,9 +350,6 @@ class DahuaClient:
         # from under the other entries.
         self._rpc2_acquired = False
         self._rpc2_released = False
-        # Preserve the camera's policy while the illuminator temporarily owns
-        # a channel/profile. The entry is removed only after a successful off.
-        self._lighting_scheme_restore_modes: dict[tuple[int, int], str] = {}
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
         # includes the password, so the identity changes if the password does.
@@ -750,8 +362,8 @@ class DahuaClient:
         Returns the RTSP url for the supplied subtype (subtype is 0=Main stream, 1=Sub stream)
         """
         url = "rtsp://{0}:{1}@{2}:{3}/cam/realmonitor?channel={4}&subtype={5}".format(
-            quote(self._username, safe=""),
-            quote(self._password, safe=""),
+            quote(self._username, safe=''),
+            quote(self._password, safe=''),
             self._address,
             self._rtsp_port,
             channel,
@@ -774,10 +386,9 @@ class DahuaClient:
         and channel number are the same!
         """
         url = "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
-        return repair_dahua_snapshot_header(
-            strip_dahua_snapshot_trailer(await self.get_bytes(url)))
+        return await self.get_bytes(url)
 
-    async def async_get_system_info(self, strict_auth: bool = False) -> dict:
+    async def async_get_system_info(self) -> dict:
         """
         Get system info data from the getSystemInfo API. Example response:
 
@@ -792,20 +403,9 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
         except aiohttp.ClientResponseError as e:
-            # strict_auth only for the config flow, which is deciding whether a
-            # password is right. The coordinator shares this method, and there a
-            # 401 is not proof of a wrong password: eight channels of one NVR
-            # share a digest challenge, and a nonce that races between them is
-            # refused exactly like a bad credential. Raising here made every
-            # channel start a reauth flow at startup (#714), where before the
-            # identity simply fell back and the entry carried on.
-            if strict_auth and _is_login_refused(e):
-                raise
             self.identity_derived_from_credentials = True
-            not_hashed_id = "{0}_{1}_{2}_{3}".format(
-                self._address, self._rtsp_port, self._username, self._password
-            )
-            unique_cam_id = md5(not_hashed_id.encode("UTF-8")).hexdigest()
+            not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
+            unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"serialNumber": unique_cam_id}
 
     async def get_device_type(self) -> dict:
@@ -832,66 +432,35 @@ class DahuaClient:
             return {"version": "1.0"}
 
     async def get_machine_name(self) -> dict:
-        """get_machine_name returns the device name. Example response: name=FrontDoorCam"""
+        """ get_machine_name returns the device name. Example response: name=FrontDoorCam """
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getMachineName")
         except aiohttp.ClientResponseError as e:
-            if _is_login_refused(e):
-                raise
             self.identity_derived_from_credentials = True
-            not_hashed_id = "{0}_{1}_{2}_{3}".format(
-                self._address, self._rtsp_port, self._username, self._password
-            )
-            unique_cam_id = md5(not_hashed_id.encode("UTF-8")).hexdigest()
+            not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
+            unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"name": unique_cam_id}
 
     async def get_vendor(self) -> dict:
-        """get_vendor returns the vendor. Example response: vendor=Dahua"""
+        """ get_vendor returns the vendor. Example response: vendor=Dahua """
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getVendor")
         except aiohttp.ClientResponseError as e:
             return {"vendor": "Generic RTSP"}
 
     async def reboot(self) -> dict:
-        """Reboots the device"""
+        """ Reboots the device """
         return await self.get("/cgi-bin/magicBox.cgi?action=reboot")
 
     async def get_max_extra_streams(self) -> int:
-        """get_max_extra_streams returns the max number of sub streams supported by the camera"""
+        """ get_max_extra_streams returns the max number of sub streams supported by the camera """
         try:
             result = await self.get("/cgi-bin/magicBox.cgi?action=getProductDefinition&name=MaxExtraStream")
-        except aiohttp.ClientResponseError:
-            # No such endpoint on this device. Assume the standard 2, which is
-            # what this comment has always said -- the code returned 3.
-            return DEFAULT_EXTRA_STREAMS
-        return parse_extra_streams(result.get("table.MaxExtraStream"))
-
-    async def async_get_alarm_output_slots(self) -> dict:
-        """Return the number of physical alarm-output slots reported by the device."""
-        return await self.get("/cgi-bin/alarm.cgi?action=getOutSlots")
-
-    async def async_get_alarm_output_state(self) -> dict:
-        """Return the physical alarm-output state.
-
-        The response is deliberately left unmodified. Single-output devices
-        return ``result=0`` or ``result=1``; the encoding for devices with
-        multiple outputs has not yet been verified.
-        """
-        data = await self.get("/cgi-bin/alarm.cgi?action=getOutState")
-        return {"status.AlarmOut[0]": data.get("result")}
-
-    async def async_set_alarm_output_state(self, output: int, enabled: bool) -> dict:
-        """Force one alarm output on or off.
-
-        AlarmOut.Mode is a three-state control mode, not a boolean: 0 is Auto,
-        1 is Manual/Force ON, and 2 is Close/Force OFF.
-        """
-        mode = 1 if enabled else 2
-        url = (
-            "/cgi-bin/configManager.cgi?action=setConfig&"
-            "AlarmOut[{output}].Mode={mode}"
-        ).format(output=output, mode=mode)
-        return await self.get(url)
+            return int(result.get("table.MaxExtraStream", "2"))
+        except aiohttp.ClientResponseError as e:
+            pass
+        # If we can't fetch, just assume 2 since that's pretty standard
+        return 3
 
     async def async_get_coaxial_control_io_status(self, channel: int = 1) -> dict:
         """
@@ -904,9 +473,7 @@ class DahuaClient:
         status.status.Speaker=Off
         status.status.WhiteLight=Off
         """
-        url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel={channel}".format(
-            channel=channel
-        )
+        url = "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel={channel}".format(channel=channel)
         return await self.get(url)
 
     async def async_get_lighting_v2(self) -> dict:
@@ -939,14 +506,12 @@ class DahuaClient:
             return await self.get(url)
         except aiohttp.ClientResponseError as e:
             self.identity_derived_from_credentials = True
-            not_hashed_id = "{0}_{1}_{2}_{3}".format(
-                self._address, self._rtsp_port, self._username, self._password
-            )
-            unique_cam_id = md5(not_hashed_id.encode("UTF-8")).hexdigest()
+            not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
+            unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"table.General.MachineName": unique_cam_id}
 
     async def async_get_config(self, name) -> dict:
-        """async_get_config gets a config by name"""
+        """ async_get_config gets a config by name """
         # example name=Lighting[0][0]
         url = "/cgi-bin/configManager.cgi?action=getConfig&name={0}".format(name)
         try:
@@ -967,9 +532,7 @@ class DahuaClient:
         table.Lighting[0][0].Sensitive=3
         """
         try:
-            return await self.async_get_config(
-                "Lighting[{0}][{1}]".format(channel, profile_mode)
-            )
+            return await self.async_get_config("Lighting[{0}][{1}]".format(channel, profile_mode))
         except aiohttp.ClientResponseError as e:
             if e.status == 400:
                 # Some cams/dvrs/nvrs might not support this option.
@@ -1018,40 +581,33 @@ class DahuaClient:
         for index in range(10):
             rule = "table.VideoAnalyseRule[{0}][{1}].Enable".format(channel, index)
             if rule in rules:
-                rules_set.append(
-                    "VideoAnalyseRule[{0}][{1}].Enable={2}".format(
-                        channel, index, str(enabled).lower()
-                    )
-                )
+                rules_set.append("VideoAnalyseRule[{0}][{1}].Enable={2}".format(channel, index, str(enabled).lower()))
 
         if len(rules_set) > 0:
             url = "/cgi-bin/configManager.cgi?action=setConfig&" + "&".join(rules_set)
             return await self.get(url, True)
 
     async def async_set_ivs_rule(self, channel: int, index: int, enabled: bool):
-        """Sets and IVS rules to enabled or disabled. This also works for Amcrest smart motion detection"""
+        """ Sets and IVS rules to enabled or disabled. This also works for Amcrest smart motion detection"""
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[{0}][{1}].Enable={2}".format(
             channel, index, str(enabled).lower()
         )
         return await self.get(url, True)
 
     async def async_enabled_smart_motion_detection(self, channel: int, enabled: bool):
-        """Enables or disabled smart motion detection for Dahua devices (doesn't work for Amcrest)
+        """ Enables or disabled smart motion detection for Dahua devices (doesn't work for Amcrest)
 
         SmartMotionDetect is indexed by channel, like MotionDetect. Writing to
         [0] from every channel of an NVR set channel one's option no matter
         which camera the switch belonged to.
         """
         url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[{0}].Enable={1}".format(
-            channel, str(enabled).lower()
-        )
+            channel, str(enabled).lower())
         return await self.get(url, True)
 
     async def async_set_light_global_enabled(self, enabled: bool):
-        """Turns the blue ring light on/off for Amcrest doorbells"""
-        url = "/cgi-bin/configManager.cgi?action=setConfig&LightGlobal[0].Enable={0}".format(
-            str(enabled).lower()
-        )
+        """ Turns the blue ring light on/off for Amcrest doorbells """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&LightGlobal[0].Enable={0}".format(str(enabled).lower())
         return await self.get(url, True)
 
     async def async_get_smart_motion_detection(self) -> dict:
@@ -1103,7 +659,7 @@ class DahuaClient:
         return sorted(preset_ids)
 
     def _rpc2_key(self):
-        return (self._device, self._username)
+        return (self._address, self._username)
 
     async def _shared_rpc2(self) -> "_SharedRpc2Session":
         """This host's RPC2 session, logged in on first use.
@@ -1121,13 +677,8 @@ class DahuaClient:
         if holder is None:
             session = self._new_rpc2_session()
             client = DahuaRpc2Client(
-                self._username,
-                self._password,
-                self._address,
-                self._port,
-                self._rtsp_port,
-                session,
-                self._use_https,
+                self._username, self._password, self._address, self._port,
+                self._rtsp_port, session, self._use_https
             )
             holder = _SharedRpc2Session(session, client, None)
             _HOST_RPC2[key] = holder
@@ -1142,24 +693,17 @@ class DahuaClient:
         except Exception:
             # Clear the login, not the holder: the entries still hold
             # references to it, and the next read should try again.
-            if (
-                _HOST_RPC2.get(key) is holder
-                and holder.task is not None
-                and holder.task.done()
-            ):
+            if _HOST_RPC2.get(key) is holder and holder.task is not None and holder.task.done():
                 holder.task = None
             raise
 
         if keepalive_needs_starting(holder.keepalive):
             interval = (response.get("params") or {}).get(
-                "keepAliveInterval", RPC2_KEEPALIVE_FALLBACK_SECONDS
-            )
+                "keepAliveInterval", RPC2_KEEPALIVE_FALLBACK_SECONDS)
             try:
                 interval = max(float(interval) - RPC2_KEEPALIVE_MARGIN_SECONDS, 5.0)
             except (TypeError, ValueError):
-                interval = (
-                    RPC2_KEEPALIVE_FALLBACK_SECONDS - RPC2_KEEPALIVE_MARGIN_SECONDS
-                )
+                interval = RPC2_KEEPALIVE_FALLBACK_SECONDS - RPC2_KEEPALIVE_MARGIN_SECONDS
             holder.keepalive = asyncio.ensure_future(_rpc2_keepalive(holder, interval))
         return holder
 
@@ -1175,11 +719,6 @@ class DahuaClient:
                 holder = await self._shared_rpc2()
                 params = await holder.client.get_config({"name": name})
                 return flatten_rpc2_config(name, params.get("table"))
-            except Rpc2MethodRefused:
-                # The device answered. Logging in again cannot change its mind
-                # about a table it does not serve, and dropping the shared
-                # session to retry costs a login for nothing.
-                raise
             except Exception:  # pylint: disable=broad-except
                 holder = _HOST_RPC2.get(self._rpc2_key())
                 if holder is not None:
@@ -1187,88 +726,6 @@ class DahuaClient:
                 if attempt == 2:
                     raise
         return {}
-
-    async def async_get_lighting_scheme(self) -> dict:
-        """Which emitter the camera is willing to use, on Smart Dual Light models.
-
-        Deliberately not part of the poll. This is read when a light command is
-        given -- rare, and user initiated -- rather than on every poll for the
-        sake of a warning most devices never need.
-
-        CGI first, because that is what a camera answers and it costs no login.
-        RPC2 when CGI will not answer: a recorder refuses
-        getConfig&name=LightingScheme with 400 -- measured on a
-        DHI-NVR5464-16P-EI and on the recorder in #647 -- while the same table
-        reads perfectly over RPC2 on that second device.
-
-        That gap is the whole reason the warning exists. #647's white light was
-        held off by LightingMode=AIMode for weeks, the camera accepted every
-        write and lit nothing, and the check that would have said so could not
-        run because the only transport it tried was the one that recorder
-        refuses.
-
-        Judged by what comes back, not by whether something was raised:
-        _request returns {} for a table a device does not have, and that is not
-        a scheme.
-        """
-        try:
-            over_cgi = await self._request(
-                "/cgi-bin/configManager.cgi?action=getConfig&name=LightingScheme",
-                allow_rpc2=False,
-            )
-            if over_cgi:
-                return over_cgi
-        except aiohttp.ClientResponseError:
-            pass
-        return await self._rpc2_get_config("LightingScheme")
-
-    async def async_set_lighting_scheme_illuminator(
-            self, channel: int, enabled: bool, brightness: int,
-            profile_mode: int, light_index: int) -> dict:
-        """Control a white emitter that needs LightingScheme and Lighting_V2.
-
-        The IPC-Color4M-TZ physically requires both complete tables in one
-        Web5/RPC2 transaction. This user command opens the shared RPC2 session
-        even when RPC2 polling is disabled. Partial CGI writes are accepted but
-        do not light the emitter.
-        """
-        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
-            holder = await self._shared_rpc2()
-            scheme_params = await holder.client.get_config({"name": "LightingScheme"})
-            lighting_params = await holder.client.get_config({"name": "Lighting_V2"})
-            profile = int(profile_mode)
-            try:
-                current_mode = scheme_params["table"][channel][profile]["LightingMode"]
-            except (IndexError, KeyError, TypeError):
-                raise ValueError("Dahua lighting tables do not contain the selected scheme") from None
-            if not isinstance(current_mode, str) or not current_mode:
-                raise ValueError("Dahua lighting scheme is missing LightingMode")
-
-            key = (channel, profile)
-            restore_modes = getattr(self, "_lighting_scheme_restore_modes", None)
-            if restore_modes is None:
-                restore_modes = {}
-                self._lighting_scheme_restore_modes = restore_modes
-            restore_mode = None
-            if not enabled and current_mode == "WhiteMode":
-                restore_mode = restore_modes.get(key)
-            elif enabled and current_mode != "WhiteMode":
-                # Keep the recovery value even if the multicall reports a
-                # failure: an earlier nested write may already have selected
-                # WhiteMode, and a later off still needs a safe way back.
-                restore_modes[key] = current_mode
-            scheme, lighting = lighting_scheme_illuminator_tables(
-                scheme_params.get("table"), lighting_params.get("table"), channel,
-                profile, light_index, enabled, brightness, restore_mode,
-            )
-            clear_host_cache(self._device)
-            response = await holder.client.set_configs([
-                ("LightingScheme", scheme),
-                ("Lighting_V2", lighting),
-            ])
-            if not enabled:
-                restore_modes.pop(key, None)
-            return response
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
@@ -1312,13 +769,8 @@ class DahuaClient:
         """Read the real preset IDs exposed by Web5.0 RPC2."""
         session = self._rpc2_session()
         rpc2 = DahuaRpc2Client(
-            self._username,
-            self._password,
-            self._address,
-            self._port,
-            self._rtsp_port,
-            session,
-            self._use_https,
+            self._username, self._password, self._address, self._port,
+            self._rtsp_port, session, self._use_https
         )
         try:
             async with asyncio.timeout(5):
@@ -1332,23 +784,18 @@ class DahuaClient:
                 async with asyncio.timeout(3):
                     logout_ok = await rpc2.logout()
                 if not logout_ok:
-                    _LOGGER.debug("RPC2 logout reported failure after preset discovery")
+                    _LOGGER.debug(
+                        "RPC2 logout reported failure after preset discovery"
+                    )
             except Exception:
-                _LOGGER.debug(
-                    "RPC2 logout failed after preset discovery", exc_info=True
-                )
+                _LOGGER.debug("RPC2 logout failed after preset discovery", exc_info=True)
 
     async def async_goto_preset_rpc2(self, channel: int, position: int) -> dict:
         """Go to a real preset through the hardware-validated RPC2 contract."""
         session = self._rpc2_session()
         rpc2 = DahuaRpc2Client(
-            self._username,
-            self._password,
-            self._address,
-            self._port,
-            self._rtsp_port,
-            session,
-            self._use_https,
+            self._username, self._password, self._address, self._port,
+            self._rtsp_port, session, self._use_https
         )
         try:
             async with asyncio.timeout(5):
@@ -1362,93 +809,6 @@ class DahuaClient:
             except Exception:
                 _LOGGER.debug("RPC2 logout failed after GotoPreset", exc_info=True)
 
-    async def _async_privacy_mode_rpc2(self, action, description: str):
-        """Run one privacy-mode operation over this client's RPC2 session."""
-        session = self._rpc2_session()
-        rpc2 = DahuaRpc2Client(
-            self._username, self._password, self._address, self._port,
-            self._rtsp_port, session, self._use_https
-        )
-        try:
-            async with asyncio.timeout(5):
-                return await action(rpc2)
-        finally:
-            try:
-                async with asyncio.timeout(3):
-                    logout_ok = await rpc2.logout()
-                if not logout_ok:
-                    _LOGGER.debug("RPC2 logout reported failure after %s", description)
-            except Exception:
-                _LOGGER.debug("RPC2 logout failed after %s", description, exc_info=True)
-
-    async def async_privacy_mode_over_cgi(self):
-        """(row index, enabled) for this camera's LeLensMask, or None.
-
-        Judged by what comes back rather than by an exception, for the reason
-        async_detect_lighting_support gives: async_get_config swallows a
-        ClientResponseError and returns {}, and a device can also answer 200
-        with an empty body for a table it does not have -- a recorder on #669
-        does exactly that for VideoAnalyseRule. Neither of those is "privacy
-        mode is off", so only a response actually carrying the key counts.
-
-        The index is returned, and not assumed, because the write has to reach
-        the row the state was read from. Accepting any row while always writing
-        row 0 would be a control that reports one thing and changes another on
-        any device that reports more than one -- the shape of #679, #683 and
-        #689. Which row a device uses is not something I can check: neither of
-        mine carries this table at all.
-
-        Lowest index first, so the answer does not depend on dict ordering.
-        """
-        data = await self.async_get_config("LeLensMask")
-        if not data:
-            return None
-        for key in sorted(data):
-            match = re.match(r"table\.LeLensMask\[(\d+)\]\.Enable$", key)
-            if match:
-                return int(match.group(1)), str(data[key]).strip().lower() == "true"
-        return None
-
-    async def async_get_privacy_mode(self) -> bool:
-        """Return True if the camera's lens privacy mask is enabled.
-
-        CGI first. The RPC2 route came first historically, but #379 has a camera
-        -- an IP4M-1041W -- whose LeLensMask is readable and writable over CGI
-        while RPC2 answers `Authority:check failure`, which looks like a
-        permissions problem and is not one. Plain CGI is also what the Amcrest
-        integration uses for this, and it costs no login of its own, where the
-        RPC2 path logs in and out around every call.
-
-        RPC2 stays as the fallback: it is the route the feature was built and
-        verified on, and a camera that answers only there must keep working.
-        """
-        over_cgi = await self.async_privacy_mode_over_cgi()
-        if over_cgi is not None:
-            return over_cgi[1]
-        return await self._async_privacy_mode_rpc2(
-            lambda rpc2: rpc2.async_get_privacy_mode(), "privacy mode read"
-        )
-
-    async def async_set_privacy_mode(self, enabled: bool) -> None:
-        """Enable or disable the camera's lens privacy mask.
-
-        Written over whichever transport can read it, so the write never goes
-        somewhere the state is not read back from.
-
-        The CGI write names only Enable. setConfig merges, so the camera keeps
-        its own TimeSection schedule -- which is what the RPC2 path takes the
-        trouble to read back and rewrite by hand.
-        """
-        row = await self.async_privacy_mode_over_cgi()
-        if row is not None:
-            url = ("/cgi-bin/configManager.cgi?action=setConfig"
-                   "&LeLensMask[{0}].Enable={1}").format(row[0], str(bool(enabled)).lower())
-            await self.get(url, True)
-            return
-        await self._async_privacy_mode_rpc2(
-            lambda rpc2: rpc2.async_set_privacy_mode(enabled), "privacy mode write"
-        )
-
     async def async_get_light_global_enabled(self) -> dict:
         """
         Returns the state of the Amcrest blue ring light (if it's on or off)
@@ -1459,7 +819,7 @@ class DahuaClient:
         return await self.get(url)
 
     async def async_get_floodlightmode(self) -> dict:
-        """async_get_config_floodlightmode gets floodlight mode"""
+        """ async_get_config_floodlightmode gets floodlight mode """
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=FloodLightMode.Mode"
         try:
             return await self.async_get_config("FloodLightMode.Mode")
@@ -1467,54 +827,23 @@ class DahuaClient:
             return 2
 
     async def async_set_floodlightmode(self, mode: int) -> dict:
-        """async_set_floodlightmode will set the floodlight lighting control"""
+        """ async_set_floodlightmode will set the floodlight lighting control  """
         # 1 - Motion Acvtivation
         # 2 - Manual (for manual switching)
         # 3 - Schedule
         # 4 - PIR
-        url = "/cgi-bin/configManager.cgi?action=setConfig&FloodLightMode.Mode={mode}".format(
-            mode=mode
-        )
+        url = "/cgi-bin/configManager.cgi?action=setConfig&FloodLightMode.Mode={mode}".format(mode=mode)
         return await self.get(url)
 
-    async def async_set_lighting_v1(self, channel: int, enabled: bool, brightness: int,
-                                    profile_mode="0") -> dict:
+    async def async_set_lighting_v1(self, channel: int, enabled: bool, brightness: int) -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
         # on = Manual, off = Off
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        return await self.async_set_lighting_v1_mode(channel, mode, brightness, profile_mode)
+        return await self.async_set_lighting_v1_mode(channel, mode, brightness)
 
-    async def async_set_lighting_v2_mode(self, channel: int, mode: str, brightness: int,
-                                         profile_mode: str, light_index: int = 0,
-                                         bank: str = "MiddleLight") -> dict:
-        """Set the illuminator's mode and brightness, including back to Auto.
-
-        The light entity can only say on or off, which writes Manual or Off. Off
-        is not the same as automatic: it leaves the camera's own illumination
-        disabled until someone puts it back, and nothing in Home Assistant could
-        do that. This is the illuminator's equivalent of
-        async_set_lighting_v1_mode, which infrared has had all along.
-
-        Mode should be one of Auto, Manual or Off; On is accepted as Manual, as
-        the infrared service does.
-        """
-        if mode.lower() == "on":
-            mode = "Manual"
-        # The Dahua API expects the first character capitalised.
-        mode = mode.capitalize()
-
-        url = ("/cgi-bin/configManager.cgi?action=setConfig"
-               "&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}"
-               "&Lighting_V2[{channel}][{profile_mode}][{light_index}].{bank}[0].Light={brightness}").format(
-            channel=channel, profile_mode=profile_mode, light_index=light_index,
-            mode=mode, bank=bank, brightness=brightness,
-        )
-        return await self.get(url)
-
-    async def async_set_lighting_v1_mode(self, channel: int, mode: str, brightness: int,
-                                         profile_mode="0") -> dict:
+    async def async_set_lighting_v1_mode(self, channel: int, mode: str, brightness: int) -> dict:
         """
         async_set_lighting_v1_mode will set IR light (InfraRed light) mode and brightness
         Mode should be one of: Manual, Off, or Auto
@@ -1526,14 +855,8 @@ class DahuaClient:
         # Dahua api expects the first char to be capital
         mode = mode.capitalize()
 
-        # The profile is the caller's, not a hardcoded 0. The poll reads this
-        # channel's live profile, so writing to 0 wrote somewhere the state is
-        # not read back from, and on a camera running night the camera is not
-        # rendering from it either.
-        url = ("/cgi-bin/configManager.cgi?action=setConfig"
-               "&Lighting[{channel}][{profile}].Mode={mode}"
-               "&Lighting[{channel}][{profile}].MiddleLight[0].Light={brightness}").format(
-            channel=channel, profile=profile_mode, mode=mode, brightness=brightness
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting[{channel}][0].Mode={mode}&Lighting[{channel}][0].MiddleLight[0].Light={brightness}".format(
+            channel=channel, mode=mode, brightness=brightness
         )
         return await self.get(url)
 
@@ -1560,9 +883,7 @@ class DahuaClient:
             # Default to "day", which is 0
             mode = "0"
 
-        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{0}].Config[0]={1}".format(
-            channel, mode
-        )
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{0}].Config[0]={1}".format(channel, mode)
         return await self.get(url, True)
 
     async def async_adjustfocus_v1(self, focus: str, zoom: str):
@@ -1570,9 +891,7 @@ class DahuaClient:
         async_adjustfocus will set the zoom and focus
         """
 
-        url = "/cgi-bin/devVideoInput.cgi?action=adjustFocus&focus={0}&zoom={1}".format(
-            focus, zoom
-        )
+        url = "/cgi-bin/devVideoInput.cgi?action=adjustFocus&focus={0}&zoom={1}".format(focus, zoom)
         return await self.get(url, True)
 
     async def async_setprivacymask(self, index: int, enabled: bool):
@@ -1602,12 +921,8 @@ class DahuaClient:
         _LOGGER.debug("Switching night mode: %s", url)
         return await self.get(url, True)
 
-    async def async_enable_channel_title(
-        self,
-        channel: int,
-        enabled: bool,
-    ):
-        """async_set_enable_channel_title will enable or disables the camera's channel title overlay"""
+    async def async_enable_channel_title(self, channel: int, enabled: bool, ):
+        """ async_set_enable_channel_title will enable or disables the camera's channel title overlay """
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].ChannelTitle.EncodeBlend={1}".format(
             channel, str(enabled).lower()
         )
@@ -1616,7 +931,7 @@ class DahuaClient:
             raise Exception("Could enable/disable channel title")
 
     async def async_enable_time_overlay(self, channel: int, enabled: bool):
-        """async_set_enable_time_overlay will enable or disables the camera's time overlay"""
+        """ async_set_enable_time_overlay will enable or disables the camera's time overlay """
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].TimeTitle.EncodeBlend={1}".format(
             channel, str(enabled).lower()
         )
@@ -1625,7 +940,7 @@ class DahuaClient:
             raise Exception("Could not enable/disable time overlay")
 
     async def async_enable_text_overlay(self, channel: int, group: int, enabled: bool):
-        """async_set_enable_text_overlay will enable or disables the camera's text overlay"""
+        """ async_set_enable_text_overlay will enable or disables the camera's text overlay """
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].CustomTitle[{1}].EncodeBlend={2}".format(
             channel, group, str(enabled).lower()
         )
@@ -1633,10 +948,8 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable text overlay")
 
-    async def async_enable_custom_overlay(
-        self, channel: int, group: int, enabled: bool
-    ):
-        """async_set_enable_custom_overlay will enable or disables the camera's custom overlay"""
+    async def async_enable_custom_overlay(self, channel: int, group: int, enabled: bool):
+        """ async_set_enable_custom_overlay will enable or disables the camera's custom overlay """
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].UserDefinedTitle[{1}].EncodeBlend={2}".format(
             channel, group, str(enabled).lower()
         )
@@ -1646,7 +959,7 @@ class DahuaClient:
 
     async def async_set_service_set_channel_title(self, channel: int, text1: str, text2: str):
         """ async_set_service_set_channel_title sets the channel title """
-        text = _overlay_text(text1, text2)
+        text = '|'.join(filter(None, [text1, text2]))
         url = "/cgi-bin/configManager.cgi?action=setConfig&ChannelTitle[{0}].Name={1}".format(
             channel, text
         )
@@ -1657,7 +970,7 @@ class DahuaClient:
     async def async_set_service_set_text_overlay(self, channel: int, group: int, text1: str, text2: str, text3: str,
                                                  text4: str):
         """ async_set_service_set_text_overlay sets the video text overlay """
-        text = _overlay_text(text1, text2, text3, text4)
+        text = '|'.join(filter(None, [text1, text2, text3, text4]))
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].CustomTitle[{1}].Text={2}".format(
             channel, group, text
         )
@@ -1667,7 +980,7 @@ class DahuaClient:
 
     async def async_set_service_set_custom_overlay(self, channel: int, group: int, text1: str, text2: str):
         """ async_set_service_set_custom_overlay sets the customer overlay on the video"""
-        text = _overlay_text(text1, text2)
+        text = '|'.join(filter(None, [text1, text2]))
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].UserDefinedTitle[{1}].Text={2}".format(
             channel, group, text
         )
@@ -1676,7 +989,7 @@ class DahuaClient:
             raise Exception("Could not set text")
 
     async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str,
-                                    light_index: int = 0, bank: str = "MiddleLight") -> dict:
+                                    light_index: int = 0) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
@@ -1692,17 +1005,15 @@ class DahuaClient:
         # light_index is which light this device calls the white one. It is 0 on
         # most models; some report 0 as the infrared emitter, and writing there
         # changes a light nobody can see. See illuminator_light_index.
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{light_index}].{bank}[0].Light={brightness}".format(
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{light_index}].MiddleLight[0].Light={brightness}".format(
             channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness,
-            light_index=light_index, bank=bank
+            light_index=light_index
         )
         _LOGGER.debug("Turning light on: %s", url)
         return await self.get(url)
 
     # async def async_set_lighting_v2_for_flood_lights(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
-    async def async_set_lighting_v2_for_flood_lights(
-        self, channel: int, enabled: bool, profile_mode: str
-    ) -> dict:
+    async def async_set_lighting_v2_for_flood_lights(self, channel: int, enabled: bool, profile_mode: str) -> dict:
         """
         async_set_lighting_v2_for_floodlights will turn on or off the flood light on the camera. If turning on, the brightness will be used.
         brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
@@ -1717,10 +1028,10 @@ class DahuaClient:
         if not enabled:
             mode = "Off"
         url_base = "/cgi-bin/configManager.cgi?action=setConfig"
-        mode_cmnd = f"Lighting_V2[{channel}][{profile_mode}][1].Mode={mode}"
+        mode_cmnd = f'Lighting_V2[{channel}][{profile_mode}][1].Mode={mode}'
         # brightness_cmnd = f'Lighting_V2[{channel}][{profile_mode}][1].MiddleLight[0].Light={brightness}'
         # url = f'{url_base}&{mode_cmnd}&{brightness_cmnd}'
-        url = f"{url_base}&{mode_cmnd}"
+        url = f'{url_base}&{mode_cmnd}'
         _LOGGER.debug("Switching light: %s", url)
         return await self.get(url)
 
@@ -1733,18 +1044,14 @@ class DahuaClient:
         cmd = "Off"
         if mode == "on":
             cmd = "ForceOn&Lighting_V2[0][0][1].State=On"
-        elif mode in ("strobe", "flicker"):
+        elif mode in ('strobe', 'flicker'):
             cmd = "ForceOn&Lighting_V2[0][0][1].State=Flicker"
 
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][0][1].Mode={cmd}".format(
-            cmd=cmd
-        )
+        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[0][0][1].Mode={cmd}".format(cmd=cmd)
         _LOGGER.debug("Turning doorbell light on: %s", url)
         return await self.get(url)
 
-    async def async_set_video_in_day_night_mode(
-        self, channel: int, config_type: str, mode: str
-    ):
+    async def async_set_video_in_day_night_mode(self, channel: int, config_type: str, mode: str):
         """
         async_set_video_in_day_night_mode will set the video dan/night config. For example to see it to Color or Black
         and white.
@@ -1773,45 +1080,9 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInDayNight[{0}][{1}].Mode={2}".format(
             channel, str(config_no), mode
         )
-        try:
-            value = await self.get(url)
-            if "OK" in value or "ok" in value:
-                return
-        except aiohttp.ClientResponseError:
-            pass
-
-        # Plenty of devices do not have VideoInDayNight at all. Measured:
-        # a DHI-NVR5464-16P-EI answers 400 Bad Request, a VTO answers "Unknown
-        # error", and the DHI-VTO2311R-WP on #687 answers 400 -- while all three
-        # carry VideoInOptions[channel].DayNightColor, which is what their own
-        # web UI writes.
-        #
-        # Note this key is not profile scoped: VideoInOptions also carries
-        # NightOptions.DayNightColor and NormalOptions.DayNightColor, and the
-        # bare one is the setting the web UI exposes and the one verified to
-        # work. So config_type has no effect on this path, and saying so is
-        # better than picking a profile on a guess.
-        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoInOptions[{0}].DayNightColor={1}".format(
-            channel, DAY_NIGHT_COLOR[mode]
-        )
         value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set Day/Night mode")
-
-    async def async_get_video_in_options(self) -> dict:
-        """The VideoInOptions table, which carries this device's Day/Night mode.
-
-        Read whole, because neither narrower spelling works: measured on a
-        DHI-NVR5464-16P-EI and a VTO, both `name=VideoInOptions[0]` and
-        `name=VideoInOptions[0].DayNightColor` return an empty 200.
-
-        It is a host-wide getConfig, so the shared read cache answers it for
-        every channel of a recorder and holds it for CONFIG_CACHE_TTL_SECONDS --
-        one fetch per five minutes per host rather than one per poll. A write
-        clears that cache for the device, so setting the mode is reflected on
-        the next read rather than up to five minutes later.
-        """
-        return await self.async_get_config("VideoInOptions")
 
     async def async_get_video_in_mode(self) -> dict:
         """
@@ -1828,9 +1099,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
         return await self.get(url)
 
-    async def async_set_coaxial_control_state(
-        self, channel: int, dahua_type: int, enabled: bool
-    ) -> dict:
+    async def async_set_coaxial_control_state(self, channel: int, dahua_type: int, enabled: bool) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera.
 
@@ -1845,8 +1114,7 @@ class DahuaClient:
             io = "2"
 
         url = "/cgi-bin/coaxialControlIO.cgi?action=control&channel={channel}&info[0].Type={dahua_type}&info[0].IO={io}".format(
-            channel=channel, dahua_type=dahua_type, io=io
-        )
+            channel=channel, dahua_type=dahua_type, io=io)
         _LOGGER.debug("Setting coaxial control state to %s: %s", io, url)
         return await self.get(url)
 
@@ -1871,16 +1139,12 @@ class DahuaClient:
         if enabled:
             value = "true"
 
-        url = "/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage[{0}].Enable={1}".format(
-            channel, value
-        )
+        url = "/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage[{0}].Enable={1}".format(channel, value)
         try:
             return await self.get(url)
         except aiohttp.ClientResponseError:
             # Some cameras (e.g. DH-P3D-3F-PV-P) don't support channel-indexed disarming linkage
-            url = "/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage.Enable={0}".format(
-                value
-            )
+            url = "/cgi-bin/configManager.cgi?action=setConfig&DisableLinkage.Enable={0}".format(value)
             return await self.get(url)
 
     async def async_set_event_notifications(self, channel: int, enabled: bool) -> dict:
@@ -1892,16 +1156,12 @@ class DahuaClient:
         if enabled:
             value = "false"
 
-        url = "/cgi-bin/configManager.cgi?action=setConfig&DisableEventNotify[{0}].Enable={1}".format(
-            channel, value
-        )
+        url = "/cgi-bin/configManager.cgi?action=setConfig&DisableEventNotify[{0}].Enable={1}".format(channel, value)
         try:
             return await self.get(url)
         except aiohttp.ClientResponseError:
             # Some cameras (e.g. DH-P3D-3F-PV-P) don't support channel-indexed event notifications
-            url = "/cgi-bin/configManager.cgi?action=setConfig&DisableEventNotify.Enable={0}".format(
-                value
-            )
+            url = "/cgi-bin/configManager.cgi?action=setConfig&DisableEventNotify.Enable={0}".format(value)
             return await self.get(url)
 
     async def async_set_record_mode(self, channel: int, mode: str) -> dict:
@@ -1916,9 +1176,7 @@ class DahuaClient:
             mode = "1"
         elif mode.lower() == "off":
             mode = "2"
-        url = "/cgi-bin/configManager.cgi?action=setConfig&RecordMode[{0}].Mode={1}".format(
-            channel, mode
-        )
+        url = "/cgi-bin/configManager.cgi?action=setConfig&RecordMode[{0}].Mode={1}".format(channel, mode)
         _LOGGER.debug("Setting record mode: %s", url)
         return await self.get(url)
 
@@ -1948,9 +1206,7 @@ class DahuaClient:
         """
         async_access_control_open_door opens a door via a VTO
         """
-        url = "/cgi-bin/accessControl.cgi?action=openDoor&UserID=101&Type=Remote&channel={0}".format(
-            door_id
-        )
+        url = "/cgi-bin/accessControl.cgi?action=openDoor&UserID=101&Type=Remote&channel={0}".format(door_id)
         return await self.get(url)
 
     async def enable_motion_detection(self, channel: int, enabled: bool) -> dict:
@@ -1958,17 +1214,15 @@ class DahuaClient:
         enable_motion_detection will either enable/disable motion detection on the camera depending on the value
         """
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{channel}].Enable={enabled}&MotionDetect[{channel}].DetectVersion=V3.0".format(
-            channel=channel, enabled=str(enabled).lower()
-        )
+            channel=channel, enabled=str(enabled).lower())
         response = await self.get(url)
 
         if "OK" in response:
             return response
 
         # Some older cameras do not support the above API, so try this one
-        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].Enable={1}".format(
-            channel, str(enabled).lower()
-        )
+        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].Enable={1}".format(channel,
+                                                                                                str(enabled).lower())
         return await self.get(url)
 
     async def stream_events(self, on_receive, events: list, channel: int):
@@ -2029,14 +1283,12 @@ class DahuaClient:
         else:
             codes = ",".join(events)
         url = "{0}/cgi-bin/eventManager.cgi?action=attach&codes=[{1}]&heartbeat={2}".format(
-            self._base, codes, EVENT_STREAM_HEARTBEAT_SECONDS
-        )
+            self._base, codes, EVENT_STREAM_HEARTBEAT_SECONDS)
         if self._username is None or self._password is None:
             # Returning quietly here spun a silent sixty second retry loop that
             # never did anything and never said so.
             raise EventStreamClosed(
-                "Cannot subscribe to events on %s without credentials" % self._address
-            )
+                "Cannot subscribe to events on %s without credentials" % self._address)
 
         response = None
 
@@ -2046,42 +1298,14 @@ class DahuaClient:
             # Bound it on read instead, so a socket that stops delivering
             # is detected but one that keeps heartbeating is left alone.
             timeout = aiohttp.ClientTimeout(
-                total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS
-            )
-            auth = DigestAuth(
-                self._username, self._password, self._session, self._digest_state
-            )
+                total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
+            auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
             response = await auth.request("GET", url, timeout=timeout)
             response.raise_for_status()
 
-            # Buffer chunks until boundary delimiters so large event payloads (e.g. ANPR JSON)
-            # are never split across TCP chunk boundaries.
-            boundary = b"--myboundary"
-            content_type = response.headers.get("Content-Type", "")
-            if "boundary=" in content_type:
-                b_val = content_type.split("boundary=")[1].split(";")[0].strip().strip('"\'')
-                if b_val:
-                    boundary = b"--" + b_val.encode()
-
-            buffer = b""
+            # https://docs.aiohttp.org/en/stable/streams.html
             async for data, _ in response.content.iter_chunks():
-                # Buffer multipart parts across TCP chunks. Content-Length lets
-                # us deliver a complete part immediately instead of waiting for
-                # the next boundary (or the next five-second heartbeat).
-                if boundary in data or boundary in buffer:
-                    buffer += data
-                    while True:
-                        complete_part, buffer = _pop_complete_multipart_part(buffer, boundary)
-                        if complete_part is None:
-                            if boundary not in buffer and len(buffer) > 131072:
-                                buffer = buffer[-4096:]
-                            break
-                        on_receive(complete_part, channel)
-                else:
-                    on_receive(data, channel)
-
-            if buffer and buffer.startswith(boundary) and len(buffer.strip()) > len(boundary):
-                on_receive(buffer, channel)
+                on_receive(data, channel)
         finally:
             if response is not None:
                 response.close()
@@ -2089,9 +1313,7 @@ class DahuaClient:
         # Falling out of the loop means the device closed the stream on us.
         # It raises no exception, so without this the caller cannot tell a
         # refused subscription from a healthy one.
-        raise EventStreamClosed(
-            "Event stream to %s closed by the device" % self._address
-        )
+        raise EventStreamClosed("Event stream to %s closed by the device" % self._address)
 
     @staticmethod
     async def parse_dahua_api_response(data: str) -> dict:
@@ -2126,9 +1348,7 @@ class DahuaClient:
         async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
             response = None
             try:
-                auth = DigestAuth(
-                    self._username, self._password, self._session, self._digest_state
-                )
+                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                 response = await auth.request("GET", url)
                 response.raise_for_status()
             finally:
@@ -2143,9 +1363,7 @@ class DahuaClient:
         async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
             response = None
             try:
-                auth = DigestAuth(
-                    self._username, self._password, self._session, self._digest_state
-                )
+                auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                 response = await auth.request("GET", self._base + url)
                 response.raise_for_status()
 
@@ -2155,29 +1373,19 @@ class DahuaClient:
                     response.close()
 
     async def get(self, url: str, verify_ok=False) -> dict:
-        """Get information from the API, sharing the read across this device.
+        """Get information from the API, sharing the read across this host.
 
         Two entries for one NVR asking the same question at the same moment get
         one round trip between them, and a repeat inside the TTL gets none.
-        Shared per device, not per address: two boxes behind one IP on different
-        ports are not each other, and answering one with the other's reply is
-        how their identities got swapped (#664).
         """
         if not _is_read(url):
-            # Every write passes through here, so this is the one place that
-            # can say what was sent. Most write methods logged nothing at all,
-            # and a few logged their own URL, so "I clicked the entity and the
-            # debug log shows no request" was indistinguishable from "the
-            # request was never made" -- which is exactly the question #647
-            # needed answered about the infrared control.
-            _LOGGER.debug("Writing to %s: %s", self._address, url)
-            clear_host_cache(self._device)
+            clear_host_cache(self._address)
             return await self._request(url, verify_ok)
 
-        # Credentials are part of the key: entries for one device may be
+        # Credentials are part of the key: entries for one host may be
         # configured with different users, and a successful read is not
         # otherwise scoped to who made it.
-        key = (self._device, self._username, url)
+        key = (self._address, self._username, url)
         now = time.monotonic()
         entry = _HOST_CACHE.get(key)
         if entry is None or not entry.is_usable(now):
@@ -2201,61 +1409,32 @@ class DahuaClient:
 
         return dict(result)
 
-    async def _request(self, url: str, verify_ok=False, allow_rpc2=True) -> dict:
+    async def _request(self, url: str, verify_ok=False) -> dict:
         """Make the request. One caller per shared read reaches here."""
         # Not after close(): this client has given its share back, and taking
         # a new one would build a session nobody is left to release.
-        if (allow_rpc2 and self._use_rpc2 and not self._rpc2_released
+        if (self._use_rpc2 and not self._rpc2_released
                 and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE and not verify_ok):
             match = _CONFIG_READ.search(url)
-            if match and (self._rpc2_key(), match.group(1)) in _RPC2_TABLE_UNAVAILABLE:
-                match = None    # this table only; the transport is still good
             if match:
                 try:
                     async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
                         return await self._rpc2_get_config(match.group(1))
-                except Exception as rpc2_exception:  # pylint: disable=broad-except
-                    # Either way this read falls through to CGI rather than
-                    # being lost. What differs is whether the host is written
-                    # off: a device that cannot serve RPC2 should not pay for
-                    # the attempt on every read, but one that merely did not
-                    # answer in time should not lose the transport for good.
-                    if isinstance(rpc2_exception, Rpc2MethodRefused):
-                        # The device spoke RPC2 and declined this table. Ask
-                        # CGI for it from now on, and keep the transport for
-                        # everything else -- writing the host off here is what
-                        # put a working device back on a login per call.
-                        _RPC2_TABLE_UNAVAILABLE.add(
-                            (self._rpc2_key(), match.group(1)))
-                        _LOGGER.debug(
-                            "%s does not serve %s over RPC2, using CGI for that "
-                            "table; RPC2 is still in use for the rest",
-                            self._address, match.group(1),
-                        )
-                    elif not rpc2_failure_is_permanent(rpc2_exception):
-                        # Falls through to the CGI path below, like any other
-                        # failure here, but without writing the host off.
-                        _LOGGER.debug(
-                            "RPC2 read timed out for %s, using CGI for this one",
-                            self._address, exc_info=True,
-                        )
-                    else:
-                        _HOST_RPC2_UNAVAILABLE.add(self._rpc2_key())
-                        _LOGGER.warning(
-                            "RPC2 config reads are not working for %s, using CGI instead",
-                            self._address, exc_info=True,
-                        )
+                except Exception:  # pylint: disable=broad-except
+                    # Say it once, then stop trying. A device that cannot serve
+                    # RPC2 should not pay for the attempt on every read, and it
+                    # must not lose the reads either -- fall through to CGI.
+                    _HOST_RPC2_UNAVAILABLE.add(self._rpc2_key())
+                    _LOGGER.warning(
+                        "RPC2 config reads are not working for %s, using CGI instead",
+                        self._address, exc_info=True,
+                    )
         url = self._base + url
         try:
             async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
                 response = None
                 try:
-                    auth = DigestAuth(
-                        self._username,
-                        self._password,
-                        self._session,
-                        self._digest_state,
-                    )
+                    auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                     response = await auth.request("GET", url)
                     response.raise_for_status()
                     data = await response.text()
@@ -2281,7 +1460,7 @@ class DahuaClient:
 
     @staticmethod
     def to_stream_name(subtype: int) -> str:
-        """Given the subtype (aka, stream index), returns the stream name (Main or Sub)"""
+        """ Given the subtype (aka, stream index), returns the stream name (Main or Sub) """
         if subtype == 0:
             return "Main"
         elif subtype == 1:
@@ -2290,4 +1469,3 @@ class DahuaClient:
             return "Sub"
         else:
             return "Sub_{0}".format(subtype)
-

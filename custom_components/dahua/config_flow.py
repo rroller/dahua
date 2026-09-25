@@ -1,11 +1,10 @@
 """Adds config flow (UI flow) for Dahua IP cameras."""
-import asyncio
 import logging
 import ssl
 
 import voluptuous as vol
 
-from aiohttp import ClientConnectorError, ClientResponseError, ClientSession, TCPConnector
+from aiohttp import ClientSession, TCPConnector
 
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -42,105 +41,62 @@ https://developers.home-assistant.io/docs/data_entry_flow_index/
 """
 
 SSL_CONTEXT = ssl.create_default_context()
-# SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
+#SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
 SSL_CONTEXT.set_ciphers("DEFAULT")
 SSL_CONTEXT.check_hostname = False
 SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
-DEFAULT_EVENTS = [
-    "VideoMotion",
-    "CrossLineDetection",
-    "AlarmLocal",
-    "VideoLoss",
-    "VideoBlind",
-    "AudioMutation",
-    "CrossRegionDetection",
-    "SmartMotionHuman",
-    "SmartMotionVehicle",
-]
+DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss", "VideoBlind", "AudioMutation",
+                  "CrossRegionDetection", "SmartMotionHuman", "SmartMotionVehicle"]
 
-ALL_EVENTS = [
-    "VideoMotion",
-    "VideoLoss",
-    "AlarmLocal",
-    "CrossLineDetection",
-    "CrossRegionDetection",
-    "AudioMutation",
-    "SmartMotionHuman",
-    "SmartMotionVehicle",
-    "VideoBlind",
-    "AudioAnomaly",
-    "VideoMotionInfo",
-    "NewFile",
-    "IntelliFrame",
-    "LeftDetection",
-    "TakenAwayDetection",
-    "VideoAbnormalDetection",
-    "FaceDetection",
-    "HumanTrait",
-    "VideoUnFocus",
-    "WanderDetection",
-    "RioterDetection",
-    "ParkingDetection",
-    "MoveDetection",
-    "StorageNotExist",
-    "StorageFailure",
-    "StorageLowSpace",
-    "AlarmOutput",
-    "InterVideoAccess",
-    "NTPAdjustTime",
-    "TimeChange",
-    "MDResult",
-    "HeatImagingTemper",
-    "CrowdDetection",
-    "FireWarning",
-    "FireWarningInfo",
-    "ObjectPlacementDetection",
-    "ObjectRemovalDetection",
-    "All",
-    "Traffic",
-    "TrafficJunction",
-    "TrafficSnapshot",
-]
+ALL_EVENTS = ["VideoMotion",
+              "VideoLoss",
+              "AlarmLocal",
+              "CrossLineDetection",
+              "CrossRegionDetection",
+              "AudioMutation",
+              "SmartMotionHuman",
+              "SmartMotionVehicle",
+              "VideoBlind",
+              "AudioAnomaly",
+              "VideoMotionInfo",
+              "NewFile",
+              "IntelliFrame",
+              "LeftDetection",
+              "TakenAwayDetection",
+              "VideoAbnormalDetection",
+              "FaceDetection",
+              "HumanTrait",
+              "VideoUnFocus",
+              "WanderDetection",
+              "RioterDetection",
+              "ParkingDetection",
+              "MoveDetection",
+              "StorageNotExist",
+              "StorageFailure",
+              "StorageLowSpace",
+              "AlarmOutput",
+              "InterVideoAccess",
+              "NTPAdjustTime",
+              "TimeChange",
+              "MDResult",
+              "HeatImagingTemper",
+              "CrowdDetection",
+              "FireWarning",
+              "FireWarningInfo",
+              "ObjectPlacementDetection",
+              "ObjectRemovalDetection",
+              "All",
+              "Traffic",
+              "TrafficJunction",
+              "TrafficSnapshot",
+              ]
 
 """
 https://developers.home-assistant.io/docs/data_entry_flow_index
 """
-
-
-def describe_setup_failure(exception: BaseException) -> str:
-    """Which translation key explains why a device could not be added.
-
-    The form previously said "Username, Password, or Address is wrong" whatever
-    happened, which is true of exactly one of these and actively misleading for
-    the rest. A person told their password is wrong checks their password.
-
-    Only 401 and 403 are credentials. Everything else is the device not being
-    where, or not being what, we were told.
-    """
-    if isinstance(exception, ClientResponseError):
-        if exception.status in (401, 403):
-            # Reachable only because get_machine_name and async_get_system_info
-            # re-raise a 401 rather than synthesising an id from the refused
-            # credentials. If either goes back to swallowing it, a wrong
-            # password silently adds a camera again and this line goes dead.
-            return "auth"
-        return "unexpected_reply"
-    if isinstance(exception, ClientConnectorError):
-        return "cannot_connect"
-    # Order matters here and is not stylistic: TimeoutError and ssl.SSLError are
-    # both subclasses of OSError, so the generic connection case has to come
-    # last or it swallows them and every failure becomes "cannot connect".
-    if isinstance(exception, (TimeoutError, asyncio.TimeoutError)):
-        return "timeout"
-    if isinstance(exception, ssl.SSLError):
-        return "ssl_error"
-    if isinstance(exception, OSError):
-        # ConnectionRefusedError and friends, when they arrive unwrapped.
-        return "cannot_connect"
-    return "unknown"
 
 
 class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
@@ -164,7 +120,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         #     return self.async_abort(reason="single_instance_allowed")
 
         if user_input is not None:
-            data, error = await self._test_credentials(
+            data = await self._test_credentials(
                 user_input[CONF_USERNAME],
                 user_input[CONF_PASSWORD],
                 user_input[CONF_ADDRESS],
@@ -187,7 +143,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 self.init_info = user_input
                 return await self._show_config_form_name(user_input)
             else:
-                self._errors["base"] = error or "auth"
+                self._errors["base"] = "auth"
 
         return await self._show_config_form_user(user_input)
 
@@ -207,9 +163,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth(self, entry_data):
         """Handle reauthentication when credentials become invalid."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(
-            self.context["entry_id"]
-        )
+        self._reauth_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
         return await self._show_reauth_form()
 
     async def async_step_reauth_confirm(self, user_input=None):
@@ -218,7 +172,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             entry = self._reauth_entry
-            data, error = await self._test_credentials(
+            data = await self._test_credentials(
                 user_input[CONF_USERNAME],
                 user_input[CONF_PASSWORD],
                 entry.data[CONF_ADDRESS],
@@ -233,7 +187,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 await self.hass.config_entries.async_reload(entry.entry_id)
                 return self.async_abort(reason="reauth_successful")
-            self._errors["base"] = error or "auth"
+            self._errors["base"] = "auth"
 
         return await self._show_reauth_form()
 
@@ -264,7 +218,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         entry = self._get_reconfigure_entry()
 
         if user_input is not None:
-            data, error = await self._test_credentials(
+            data = await self._test_credentials(
                 entry.data[CONF_USERNAME],
                 entry.data[CONF_PASSWORD],
                 user_input[CONF_ADDRESS],
@@ -274,9 +228,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 True if user_input.get(CONF_USE_HTTPS) else None,
             )
             if data is not None:
-                return self.async_update_reload_and_abort(
-                    entry, data_updates=user_input
-                )
+                return self.async_update_reload_and_abort(entry, data_updates=user_input)
             self._errors["base"] = "auth"
 
         current = {**entry.data, **(user_input or {})}
@@ -284,21 +236,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="reconfigure",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_ADDRESS, default=current.get(CONF_ADDRESS, "")
-                    ): str,
-                    vol.Required(
-                        CONF_PORT, default=str(current.get(CONF_PORT, "80"))
-                    ): str,
-                    vol.Required(
-                        CONF_RTSP_PORT, default=str(current.get(CONF_RTSP_PORT, "554"))
-                    ): str,
-                    vol.Required(
-                        CONF_CHANNEL, default=int(current.get(CONF_CHANNEL, 0))
-                    ): int,
-                    vol.Optional(
-                        CONF_USE_HTTPS, default=bool(current.get(CONF_USE_HTTPS, False))
-                    ): bool,
+                    vol.Required(CONF_ADDRESS, default=current.get(CONF_ADDRESS, "")): str,
+                    vol.Required(CONF_PORT, default=str(current.get(CONF_PORT, "80"))): str,
+                    vol.Required(CONF_RTSP_PORT, default=str(current.get(CONF_RTSP_PORT, "554"))): str,
+                    vol.Required(CONF_CHANNEL, default=int(current.get(CONF_CHANNEL, 0))): int,
+                    vol.Optional(CONF_USE_HTTPS, default=bool(current.get(CONF_USE_HTTPS, False))): bool,
                 }
             ),
             errors=self._errors,
@@ -317,9 +259,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_RTSP_PORT, default="554"): str,
                     vol.Required(CONF_CHANNEL, default=0): int,
                     vol.Optional(CONF_USE_HTTPS, default=False): bool,
-                    vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(
-                        ALL_EVENTS
-                    ),
+                    vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(ALL_EVENTS),
                 }
             ),
             errors=self._errors,
@@ -338,39 +278,20 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     async def _test_credentials(self, username, password, address, port, rtsp_port, channel, use_https=None):
-        """Return (data, error) -- the device's name and serial, or why not.
-
-        The error is a translation key, because every failure used to arrive as
-        "Username, Password, or Address is wrong". A device that refuses the
-        connection, one on the wrong port, one that wants HTTPS and one that is
-        simply switched off all produced that same sentence, so people checked
-        their password repeatedly while the log quietly said something else --
-        #690 is that, with the ConnectionRefusedError traceback attached.
-
-        A 401 reaches here only because the identity calls re-raise it; every
-        other status still falls back to a synthesised id, so devices with no
-        magicBox.cgi are added exactly as before.
-        """
+        """Return name and serialNumber if credentials is valid."""
         # Self signed certs are used over HTTPS so we'll disable SSL verification
         connector = TCPConnector(enable_cleanup_closed=True, ssl=SSL_CONTEXT)
         session = ClientSession(connector=connector)
         try:
-            client = DahuaClient(
-                username, password, address, port, rtsp_port, session, use_https
-            )
+            client = DahuaClient(username, password, address, port, rtsp_port, session, use_https)
             data = await client.get_machine_name()
-            serial = await client.async_get_system_info(strict_auth=True)
+            serial = await client.async_get_system_info()
             data.update(serial)
             if "name" in data:
-                return data, None
-            # It answered, but not with anything recognisable.
-            return None, "unexpected_reply"
+                return data
         except Exception as exception:  # pylint: disable=broad-except
-            _LOGGER.error(
-                "Could not connect to Dahua device. For iMou devices see "
-                + "https://github.com/rroller/dahua/issues/6",
-                exc_info=exception,
-            )
+            _LOGGER.error("Could not connect to Dahua device. For iMou devices see " +
+                            "https://github.com/rroller/dahua/issues/6", exc_info=exception)
         finally:
             await session.close()
 
