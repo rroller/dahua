@@ -2197,9 +2197,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # 8 and 9 are the unlock results, handled separately; 0 is idle,
             # which is the normal way a call ends.
             return
-        if numeric_state in self._unknown_doorbell_states:
+        # getattr, like the other per-coordinator state: plenty of tests build a
+        # coordinator with object.__new__ and set only what they are about, and
+        # a diagnostic must never be the thing that breaks one.
+        seen = getattr(self, "_unknown_doorbell_states", None)
+        if seen is None:
+            seen = self._unknown_doorbell_states = set()
+        if numeric_state in seen:
             return
-        self._unknown_doorbell_states.add(numeric_state)
+        seen.add(numeric_state)
         _LOGGER.warning(
             "%s reported doorbell call state %r, which this integration does "
             "not recognise, so no button press was raised. Known states are "
