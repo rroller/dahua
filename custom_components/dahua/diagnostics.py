@@ -142,6 +142,13 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         "serial_is_derived_from_credentials": getattr(
             coordinator.client, "identity_derived_from_credentials", None
         ),
+        # Which identity questions the device refused, and with what status.
+        # A model of "Generic RTSP" or a firmware of "1.0" is not a device, it
+        # is this integration inventing an answer because magicBox.cgi returned
+        # an HTTP error, and until now nothing recorded which call or why
+        # (#583, #728, #767).
+        "identity_fallbacks": dict(
+            getattr(coordinator.client, "_identity_fallbacks", {}) or {}),
         "channel_index": _safe(coordinator.get_channel),
         "channel_number": _safe(coordinator.get_channel_number),
         "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
