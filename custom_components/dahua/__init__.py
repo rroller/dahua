@@ -2,6 +2,7 @@
 Custom integration to integrate Dahua cameras with Home Assistant.
 """
 import asyncio
+from collections import deque
 from typing import Any, Dict
 import logging
 import random
@@ -434,6 +435,14 @@ def is_onvif_channel(data: dict, channel: int) -> bool:
 # 5 answered from the VTH, 6 not answered, 7 VTH calling the VTO, 8 unlock,
 # 9 unlock failed, 11 rebooted. Only a ring should raise the button sensor.
 DOORBELL_RINGING_STATES = frozenset({1, 2})
+
+# How many recent events diagnostics keeps per device.
+#
+# Ten rather than fifty: an ANPR event measured about 5 KB, so ten is a diagnostics
+# file somebody can still attach, and the questions this answers, which Code did
+# the device send and which field carries the state, are answered by the last few
+# rather than by a history.
+RECENT_EVENT_COUNT = 10
 
 
 # BackKeyLight State values that are not about ringing at all, and the event
@@ -2087,8 +2096,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             for listener in listeners:
                 listener()
 
+    def _remember_event(self, event: dict) -> None:
+        """Keep the last few events, so diagnostics can show what arrived.
+
+        Deliberately does nothing but store. Everything that could go wrong,
+        redaction, truncation, serialising, happens when diagnostics is asked
+        for, which is a cold path with its own guards. This runs on the event
+        stream, where an unguarded exception takes every camera on the host down
+        until the stream reconnects (#705, #706), so it is written to be
+        incapable of raising rather than wrapped in a handler: a getattr with a
+        default, a dict copy, and an append to a bounded deque.
+
+        Stored before the event is enriched with the device name, because what
+        matters for diagnosis is what the device sent.
+        """
+        buffer = getattr(self, "_recent_events", None)
+        if buffer is None:
+            buffer = self._recent_events = deque(maxlen=RECENT_EVENT_COUNT)
+        buffer.append({"seconds_ago_at_capture": int(time.time()),
+                       "event": dict(event)})
+
     def handle_event(self, event: dict):
         """Handle one event the host stream has decided belongs to this channel."""
+        self._remember_event(event)
         _LOGGER.debug(
             "Event received from %s on channel %s: %s",
             self.get_address(),

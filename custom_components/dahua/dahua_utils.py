@@ -527,3 +527,65 @@ def parse_ptz_presets(data) -> list:
         if number > 0:
             found.add(number)
     return sorted(found)
+
+
+# Field names whose *value* is somebody's business rather than ours. The names
+# are kept, because "which field carries this" is the usual question; only the
+# contents go.
+EVENT_PRIVATE_FIELDS = frozenset({
+    # Spelled without separators: the lookup strips underscores, so "raw_plate"
+    # and "rawplate" both land here and only one spelling is listed.
+    "plate", "platenumber", "rawplate", "platedata", "plates",
+    "card", "cardno", "cardnumber", "cardname",
+    "user", "userid", "username", "usertype",
+    "password", "token", "secret", "key", "uuid",
+    "serialnumber", "defendcode", "imei", "phonenumber", "tel",
+    "faceid", "personid", "facefeature", "similarity",
+})
+
+EVENT_VALUE_LIMIT = 80
+EVENT_LIST_LIMIT = 6
+EVENT_DEPTH_LIMIT = 6
+
+
+def summarise_event(value, _depth: int = 0):
+    """An event with its shape intact and its contents cut down to size.
+
+    Written for diagnostics, and worth explaining because it looks like it
+    throws away the interesting part.
+
+    What people are asked for, over and over, is a raw event: which `Code` the
+    device sent, what `action` it carried, which field holds the direction or
+    the state or the object type. That is all structure. The values are rarely
+    the question, and some of them are a number plate, a card number or a
+    person's name.
+
+    So field names survive in full, values do not:
+
+    - a field named in EVENT_PRIVATE_FIELDS becomes `<redacted>`
+    - any other long value is truncated, keeping its start
+    - long lists keep their first few entries and say how many were dropped
+
+    The result publishes strictly less than the raw event people currently
+    paste into public issues by hand, while answering the same questions.
+    """
+    if _depth > EVENT_DEPTH_LIMIT:
+        return "<too deep>"
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if str(key).strip().lower().replace("_", "") in EVENT_PRIVATE_FIELDS:
+                out[key] = "<redacted>"
+            else:
+                out[key] = summarise_event(item, _depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        kept = [summarise_event(item, _depth + 1)
+                for item in list(value)[:EVENT_LIST_LIMIT]]
+        dropped = len(value) - len(kept)
+        if dropped > 0:
+            kept.append("<%d more>" % dropped)
+        return kept
+    if isinstance(value, str) and len(value) > EVENT_VALUE_LIMIT:
+        return value[:EVENT_VALUE_LIMIT] + "<truncated>"
+    return value
