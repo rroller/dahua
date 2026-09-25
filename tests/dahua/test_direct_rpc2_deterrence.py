@@ -13,7 +13,14 @@ from custom_components.dahua.switch import DahuaSirenBinarySwitch
 from tests.dahua.test_probe_timeouts import _coordinator, _Client
 
 
-def coordinator(model="OEM-IPC", speaker=False, light=False, nvr=False):
+def coordinator(
+    model="OEM-IPC",
+    speaker=False,
+    light=False,
+    nvr=False,
+    manual_siren=False,
+    manual_light=False,
+):
     c = object.__new__(DahuaDataUpdateCoordinator)
     c.model = model
     c._channel = 0
@@ -21,6 +28,8 @@ def coordinator(model="OEM-IPC", speaker=False, light=False, nvr=False):
     c._nvr_active_deterrence = nvr
     c._supports_rpc2_siren = speaker
     c._supports_rpc2_security_light = light
+    c._manual_siren = manual_siren
+    c._manual_security_light = manual_light
     c.client = SimpleNamespace(
         async_get_coaxial_control_io_caps_rpc2=AsyncMock(),
         async_set_coaxial_control_state_rpc2=AsyncMock(),
@@ -77,6 +86,52 @@ async def test_nvr_channel_zero_never_probes_rpc2(model, nvr):
     c = coordinator(model, nvr=nvr)
     await c._async_probe_direct_deterrence()
     c.client.async_get_coaxial_control_io_caps_rpc2.assert_not_awaited()
+    assert not c.uses_rpc2_deterrence()
+
+
+@pytest.mark.parametrize(
+    "manual_siren,manual_light",
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+async def test_manual_overrides_independently_enable_direct_camera_entities(
+    manual_siren, manual_light
+):
+    c = coordinator(manual_siren=manual_siren, manual_light=manual_light)
+    c.client.async_get_coaxial_control_io_caps_rpc2.return_value = {
+        "SupportControlSpeaker": False,
+        "SupportControlLight": False,
+    }
+    await c._async_probe_direct_deterrence()
+
+    assert c.supports_siren() is manual_siren
+    assert c.supports_security_light() is manual_light
+    assert c.uses_rpc2_deterrence(2) is manual_siren
+    assert c.uses_rpc2_deterrence(1) is manual_light
+
+    for entity_class, enabled, kind in (
+        (DahuaSirenBinarySwitch, manual_siren, 2),
+        (DahuaSecurityLight, manual_light, 1),
+    ):
+        if enabled:
+            entity = object.__new__(entity_class)
+            entity._coordinator = c
+            await entity.async_turn_on()
+            c.client.async_set_coaxial_control_state_rpc2.assert_awaited_with(kind, True)
+    c.client.async_set_coaxial_control_state.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "model,channel,nvr",
+    [
+        ("NVR5216", 0, False),
+        ("OEM-recorder", 0, True),
+        ("OEM-IPC", 1, False),
+        ("AD410", 0, False),
+    ],
+)
+def test_manual_override_does_not_enable_nvr_or_doorbell(model, channel, nvr):
+    c = coordinator(model, nvr=nvr, manual_siren=True, manual_light=True)
+    c._channel = channel
     assert not c.uses_rpc2_deterrence()
 
 

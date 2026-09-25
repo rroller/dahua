@@ -51,6 +51,8 @@ from .const import (
     CONF_SCAN_INTERVAL,
     CONF_USE_RPC2,
     CONF_NVR_ACTIVE_DETERRENCE,
+    CONF_MANUAL_SIREN,
+    CONF_MANUAL_SECURITY_LIGHT,
     CONF_AUTHORIZED_PLATES,
     CONF_AUTHORIZED_HOLD_TIME,
     DEFAULT_SCAN_INTERVAL,
@@ -1266,6 +1268,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_rpc2_security_light = False
         self._alarm_output_slots = 0
         self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
+        self._manual_siren = entry.options.get(CONF_MANUAL_SIREN, False)
+        self._manual_security_light = entry.options.get(CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._supports_smart_motion_detection = False
@@ -2307,11 +2311,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Direct-camera RPC2 deterrence probe failed; using model fallback", exc_info=True)
 
     def uses_rpc2_deterrence(self, dahua_type: int | None = None) -> bool:
-        """Select RPC2 independently for each explicitly supported output."""
+        """Select RPC2 for detected or manually enabled direct-camera outputs."""
         speaker = getattr(self, "_supports_rpc2_siren", False)
         light = getattr(self, "_supports_rpc2_security_light", False)
-        if not (speaker or light) or self.is_nvr_channel():
+        manual_siren = getattr(self, "_manual_siren", False)
+        manual_light = getattr(self, "_manual_security_light", False)
+        if not (speaker or light or manual_siren or manual_light):
             return False
+        if self.is_nvr_channel():
+            return False
+        if (manual_siren or manual_light) and not self.is_doorbell():
+            speaker = speaker or manual_siren
+            light = light or manual_light
         return {1: light, 2: speaker}.get(dahua_type, speaker or light)
 
     def supports_siren(self) -> bool:
