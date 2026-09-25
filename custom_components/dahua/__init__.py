@@ -31,6 +31,7 @@ from .model_profiles import is_sdt4e425
 from .const import (
     CONF_EVENTS,
     CONF_PASSWORD,
+    ISSUE_URL,
     CONF_PORT,
     CONF_USERNAME,
     CONF_ADDRESS,
@@ -1246,6 +1247,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
+        # Doorbell call states already complained about, so the warning below is
+        # one per state rather than one per ring.
+        self._unknown_doorbell_states: set = set()
         self._supports_rpc2_siren = False
         self._supports_rpc2_security_light = False
         self._alarm_output_slots = 0
@@ -2068,13 +2072,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # complete mapping.
                     state = event.get("Data", {}).get("State", 0)
                     try:
-                        pressed = int(state) in DOORBELL_RINGING_STATES
+                        numeric_state = int(state)
                     except (TypeError, ValueError):
-                        pressed = False
+                        numeric_state = None
+                    pressed = numeric_state in DOORBELL_RINGING_STATES
                     if pressed:
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
                         self._dahua_event_timestamp[event_key] = 0
+                        self._note_unknown_doorbell_state(numeric_state, state)
             else:
                 continue
 
@@ -2168,6 +2174,46 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return ["DoorbellPressed"]
 
         return [code]
+
+    def _note_unknown_doorbell_state(self, numeric_state, raw_state) -> None:
+        """Say so, once, when a doorbell reports a call state we do not know.
+
+        Only 1 and 2 count as ringing, and the comment beside that set has
+        always conceded the values vary by model. Everything else is treated as
+        "not ringing" and, until now, silently: a doorbell that reports its ring
+        as some other number produced no button press, no error, and nothing in
+        the log to say why.
+
+        That is the missing piece in a long row of issues, all of the shape "my
+        button press stopped working" with no way to tell whether the device is
+        quiet or is speaking a dialect we do not read (#175, #250, #329, #358,
+        #417, #556, #564, #593, #690). Every one of them needed this number and
+        could only get it by turning on debug logging and reading raw events.
+
+        Logged once per state per device, because a doorbell reports its state
+        on every call and a warning per ring would be worse than the bug.
+        """
+        if numeric_state in DOORBELL_STATE_EVENTS or numeric_state == 0:
+            # 8 and 9 are the unlock results, handled separately; 0 is idle,
+            # which is the normal way a call ends.
+            return
+        # getattr, like the other per-coordinator state: plenty of tests build a
+        # coordinator with object.__new__ and set only what they are about, and
+        # a diagnostic must never be the thing that breaks one.
+        seen = getattr(self, "_unknown_doorbell_states", None)
+        if seen is None:
+            seen = self._unknown_doorbell_states = set()
+        if numeric_state in seen:
+            return
+        seen.add(numeric_state)
+        _LOGGER.warning(
+            "%s reported doorbell call state %r, which this integration does "
+            "not recognise, so no button press was raised. Known states are "
+            "1 and 2 for ringing, 8 and 9 for unlock, 0 for idle. If the "
+            "doorbell was ringing when this appeared, please report this state "
+            "number at %s so it can be added",
+            self.get_device_name(), raw_state, ISSUE_URL,
+        )
 
     def get_event_timestamp(self, event_name: str) -> int:
         """
