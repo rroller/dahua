@@ -35,6 +35,13 @@ RPC2_EVENT_MAX_REQUESTS_PER_SECOND = 5
 RPC2_EVENT_SLOW_CYCLE_SECONDS = 5
 # "session is out of date"; same code _direct_coaxial_rpc2 recovers from.
 RPC2_SESSION_EXPIRED_CODE = 287637504
+# The CGI stream proves the transport is alive with the heartbeat it asks the
+# device for. The RPC2 poll has no such thing to forward, and a quiet camera
+# would otherwise deliver nothing for a whole stream lifetime -- which
+# DahuaHostEventStream reads as a silent stream, warns about, and backs off from
+# for up to ten minutes. So a successful cycle sends this instead. on_receive
+# records transport activity before it parses, and this parses to no event.
+RPC2_EVENT_HEARTBEAT = b"Heartbeat\r\n"
 
 # One NVR carries a config entry per channel, and every entry sets itself up at
 # the same moment. Dahua's HTTP server is small: a dozen simultaneous CGI calls
@@ -92,6 +99,17 @@ _HOST_DIGEST_STATE: dict = {}
 # Keyed by user as well as host: a session id is obtained with the password and
 # scoped to that user's rights, so it is even less shareable than a challenge.
 _HOST_RPC2: dict = {}
+
+# What the RPC2 poll last reported active, per host, as {(code, index)}.
+#
+# This is module state on purpose. The set used to be local to the poller, so
+# every restart began empty -- and a Start that was followed by a transport
+# failure was never given its Stop, because the replacement poller saw an
+# inactive device and had nothing to compare it against. The ordinary motion
+# sensor has no auto-off, so it stayed on until the next full motion event.
+# Keyed by host rather than held on the client, so the scheduled stream recycle
+# and a change of owning entry both inherit it.
+_HOST_RPC2_EVENT_STATE: dict[str, set] = {}
 
 # Whether RPC2 has already proven it cannot serve a host. A per-client verdict
 # meant eleven channels each rediscovering it, which is eleven failed logins
@@ -2571,7 +2589,21 @@ class DahuaClient:
                 "Polling %d event types over RPC2 on %s every %.0fs",
                 len(codes), self._address, cycle)
 
-        active: set[tuple[str, int]] = set()
+        # Inherited, not fresh: a Start whose Stop was lost to a transport
+        # failure or the scheduled recycle is still owed one, and the first
+        # inactive snapshot below is what pays it.
+        active: set[tuple[str, int]] = _HOST_RPC2_EVENT_STATE.setdefault(
+            self._address, set())
+
+        # A code that is no longer polled can never be observed inactive again,
+        # so anything left active under one would stay on forever.
+        for code, index in sorted({(c, i) for c, i in active if c not in codes}):
+            active.discard((code, index))
+            self._emit_rpc2_event(on_receive, code, "Stop", index, channel)
+            _LOGGER.debug(
+                "%s is no longer polled for %s; clearing its stale active state",
+                self._address, code)
+
         attached_to = None
 
         while True:
@@ -2596,6 +2628,12 @@ class DahuaClient:
                         # This device does not know this code. Asking again every
                         # cycle for the life of the entry buys nothing.
                         codes.remove(code)
+                        # Dropping it means it can never be observed inactive
+                        # again, so release anything it is still holding on the
+                        # way out or that Start is owed a Stop forever.
+                        for index in sorted({i for c, i in active if c == code}):
+                            active.discard((code, index))
+                            self._emit_rpc2_event(on_receive, code, "Stop", index, channel)
                         _LOGGER.debug(
                             "%s does not report %s over RPC2 (%s); no longer polling it",
                             self._address, code, refused)
@@ -2619,6 +2657,11 @@ class DahuaClient:
                     raise EventStreamClosed(
                         "%s reports none of the selected event types over RPC2"
                         % self._address)
+
+                # Every code answered, so the transport is healthy even if the
+                # device is quiet. Say so, or a camera with nothing happening is
+                # indistinguishable from a dead stream and gets backed off.
+                on_receive(RPC2_EVENT_HEARTBEAT, channel)
 
                 await asyncio.sleep(max(0.0, cycle - (time.monotonic() - started)))
 
