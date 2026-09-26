@@ -50,6 +50,8 @@ CONF_CHANNEL = "channel"
 CONF_AUTO_DETECT_CHANNEL = "auto_detect_channel"
 # Which other channels of a recorder to add alongside the one being set up.
 CONF_EXTRA_CHANNELS = "extra_channels"
+# Take every channel discovery found, without ticking sixteen boxes.
+CONF_ALL_CHANNELS = "all_channels"
 CONF_USE_HTTPS = "use_https"
 CONF_SCAN_INTERVAL = "scan_interval"
 # Prototype: route config reads over RPC2's session instead of a fresh digest
