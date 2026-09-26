@@ -24,6 +24,11 @@
                     "extra_channels": "Or just these"
                 }
             },
+            "areas": {
+                "title": "Where are these cameras?",
+                "description": "Pick an area for each one and they will be filed as they are added. Leave any of them blank to decide later. New areas can be created here if you need them.",
+                "data": {}
+            },
             "name": {
                 "title": "Configure Device Name",
                 "data": {
@@ -89,7 +94,8 @@
                     "manual_security_light": "Manually enable Security Light entity",
                     "disable_backchannel": "Don't open the two-way audio channel when streaming (fixes a doorbell stuck in a call, or talkback in the Dahua/Amcrest app; disables talking from Home Assistant)",
                     "authorized_plates": "Authorized license plates (comma-separated, e.g. ABC1234, XYZ5678)",
-                    "authorized_hold_time": "Authorized vehicle hold time (seconds to remain ON)"
+                    "authorized_hold_time": "Authorized vehicle hold time (seconds to remain ON)",
+                    "area": "Area (moves this device to it)"
                 },
                 "data_description": {
                     "manual_siren": "Enable this if your camera has a working siren, but the integration did not create the Siren entity.",

@@ -19,6 +19,7 @@ from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnecto
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -53,6 +54,7 @@ from .const import (
     CONF_NVR_ACTIVE_DETERRENCE,
     CONF_MANUAL_SIREN,
     CONF_MANUAL_SECURITY_LIGHT,
+    CONF_AREA,
     CONF_AUTHORIZED_PLATES,
     CONF_AUTHORIZED_HOLD_TIME,
     DEFAULT_SCAN_INTERVAL,
@@ -2691,6 +2693,31 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def add_plate_listener(self, listener):
         """Add a callback listener invoked when a new license plate event is parsed."""
         self._plate_listeners.append(listener)
+
+    def get_configured_area(self):
+        """The area_id this entry was given, or None.
+
+        Options win over data, like every other setting that can be changed
+        after setup. Chosen while adding a recorder so that ten channels do not
+        all arrive unfiled.
+        """
+        return self.config_entry.options.get(
+            CONF_AREA, self.config_entry.data.get(CONF_AREA)) or None
+
+    def configured_area_name(self):
+        """That area's *name*, which is what device_info has to be given.
+
+        The picker in the config flow returns an area_id; `suggested_area` in
+        device_info is matched on the name. So this is the one conversion in the
+        middle, and it has to tolerate an area the user has since deleted --
+        passing a stale id through would have Home Assistant create a new area
+        named after it.
+        """
+        area_id = self.get_configured_area()
+        if not area_id:
+            return None
+        area = ar.async_get(self.hass).async_get_area(area_id)
+        return area.name if area else None
 
     def get_authorized_plates(self) -> list[str]:
         """Return the list of configured authorized license plates (uppercase & normalized)."""

@@ -25,7 +25,7 @@ class DahuaBaseEntity(CoordinatorEntity):
     # https://developers.home-assistant.io/docs/device_registry_index
     @property
     def device_info(self):
-        return {
+        info = {
             "identifiers": {(DOMAIN, self._coordinator.get_serial_number())},
             "name": self._coordinator.get_device_name(),
             "model": self._coordinator.get_model(),
@@ -33,6 +33,18 @@ class DahuaBaseEntity(CoordinatorEntity):
             "configuration_url": "http://" + self._coordinator.get_address(),
             "sw_version": self._coordinator.get_firmware_version(),
         }
+        # Where the area chosen while adding this device is applied. Home
+        # Assistant honours suggested_area only when it *creates* the device, so
+        # this files a new one and never argues with a device the user has since
+        # moved. Changing the area of an existing device is the options flow's
+        # job, which moves it through the device registry instead.
+        #
+        # Omitted rather than passed as None: every key here is handed to
+        # async_get_or_create as given.
+        area = self._coordinator.configured_area_name()
+        if area:
+            info["suggested_area"] = area
+        return info
 
     @property
     def extra_state_attributes(self):
