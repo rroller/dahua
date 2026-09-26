@@ -1683,7 +1683,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Using channel number %s (auto_detect=%s)", self._channel_number, auto_detect)
 
                 await self._async_probe_direct_deterrence()
-                if not self.uses_rpc2_deterrence():
+                if self._wanted_by(LIGHT, SWITCH) and not self.uses_rpc2_deterrence():
                     try:
                         coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
                         await self.client.async_get_coaxial_control_io_status(coaxial_channel)
