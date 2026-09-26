@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -346,6 +347,69 @@ async def test_real_store_clear_failure_retains_recovery_mode(hass):
 
     assert (
         await IlluminatorRestoreStore(hass, "entry-clear-failure").async_get(0, 1)
+        == "InfraredMode"
+    )
+
+
+async def test_cancelled_store_write_finishes_before_newer_write(hass):
+    restore_store = IlluminatorRestoreStore(hass, "entry-cancelled-write")
+    await restore_store.async_set(0, 1, "AIMode")
+
+    original_write_data = restore_store._store._write_data
+    original_async_write_data = restore_store._store._async_write_data
+    delete_started = threading.Event()
+    finish_delete = threading.Event()
+    block_next_write = True
+
+    def blocking_write_data(path, data):
+        nonlocal block_next_write
+        if block_next_write:
+            block_next_write = False
+            delete_started.set()
+            assert finish_delete.wait(5)
+        original_write_data(path, data)
+
+    async def executor_write_data(path, data):
+        await hass.async_add_executor_job(blocking_write_data, path, data)
+
+    restore_store._store._async_write_data = executor_write_data
+    remove_task = asyncio.create_task(restore_store.async_remove(0, 1))
+    set_task = None
+    try:
+        async with asyncio.timeout(5):
+            while not delete_started.is_set():
+                await asyncio.sleep(0)
+
+        remove_task.cancel()
+        await asyncio.sleep(0)
+        set_task = asyncio.create_task(restore_store.async_set(0, 1, "InfraredMode"))
+        await asyncio.sleep(0)
+
+        assert restore_store._lock.locked()
+        assert not remove_task.done()
+        assert not set_task.done()
+
+        remove_task.cancel()
+        await asyncio.sleep(0)
+        assert restore_store._lock.locked()
+        assert not remove_task.done()
+        assert not set_task.done()
+
+        restore_store._store._async_write_data = original_async_write_data
+        finish_delete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await remove_task
+        await set_task
+    finally:
+        finish_delete.set()
+        await asyncio.gather(
+            remove_task,
+            *(task for task in (set_task,) if task is not None),
+            return_exceptions=True,
+        )
+
+    assert (
+        await IlluminatorRestoreStore(hass, "entry-cancelled-write").async_get(0, 1)
         == "InfraredMode"
     )
 

@@ -55,6 +55,24 @@ class IlluminatorRestoreStore:
             }
         return self._data
 
+    async def _async_save_locked(self, modes: dict[str, str]) -> None:
+        """Keep writes serialized until their executor work has finished."""
+        save_task = asyncio.create_task(self._store.async_save({"modes": modes}))
+        cancelled_error = None
+        while not save_task.done():
+            try:
+                await asyncio.shield(save_task)
+            except asyncio.CancelledError as err:
+                # Store writes in an executor. Cancelling the await does not
+                # stop that worker, so releasing our lock here could let a
+                # newer write finish first and then be overwritten by this
+                # older one. Repeated cancellations must not break the drain.
+                if cancelled_error is None:
+                    cancelled_error = err
+        save_task.result()
+        if cancelled_error is not None:
+            raise cancelled_error
+
     async def async_get(self, channel: int, profile: int) -> str | None:
         """Return the saved mode for one entry/channel/profile."""
         async with self._lock:
@@ -81,7 +99,7 @@ class IlluminatorRestoreStore:
             updated = dict(data)
             key = self._mode_key(channel, profile)
             updated[key] = mode
-            await self._store.async_save({"modes": updated})
+            await self._async_save_locked(updated)
             persisted = await self._load_fresh_modes()
             if persisted.get(key) != mode:
                 raise RuntimeError("Could not verify saved illuminator recovery state")
@@ -97,7 +115,7 @@ class IlluminatorRestoreStore:
 
             updated = dict(data)
             del updated[key]
-            await self._store.async_save({"modes": updated})
+            await self._async_save_locked(updated)
             persisted = await self._load_fresh_modes()
             if key in persisted:
                 raise RuntimeError(
