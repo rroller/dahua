@@ -21,6 +21,20 @@ TIMEOUT_SECONDS = 20
 # that has delivered nothing for a comfortable multiple of it has stalled.
 EVENT_STREAM_HEARTBEAT_SECONDS = 5
 EVENT_STREAM_READ_TIMEOUT_SECONDS = 60
+# How often to ask an RPC2-only device which events are active. Measured on an
+# SL300: a VideoMotion state lasted 11s and SmartMotionHuman 46s, so two
+# seconds cannot miss one, and 130 rounds over five minutes drew no complaint
+# from the device. One request per selected code per round is the cost.
+RPC2_EVENT_POLL_SECONDS = 2
+# getEventIndexes takes one code per request, so a wide event selection costs a
+# lot of round trips. Bound the rate and stretch the cycle instead of hammering a
+# small camera: 42 codes at a 2s cycle would be 20 requests a second.
+RPC2_EVENT_MAX_REQUESTS_PER_SECOND = 5
+# A cycle longer than this can miss a short event, so say so rather than quietly
+# polling too slowly to be useful.
+RPC2_EVENT_SLOW_CYCLE_SECONDS = 5
+# "session is out of date"; same code _direct_coaxial_rpc2 recovers from.
+RPC2_SESSION_EXPIRED_CODE = 287637504
 
 # One NVR carries a config entry per channel, and every entry sets itself up at
 # the same moment. Dahua's HTTP server is small: a dozen simultaneous CGI calls
@@ -2275,6 +2289,12 @@ class DahuaClient:
     # Nor 401/403, where the credentials are the problem on any transport.
     DOOR_CGI_ABSENT = (404, 501)
 
+    # Same reasoning as DOOR_CGI_ABSENT, for the event stream: these say the
+    # path is not there at all, so retrying it cannot help and a second
+    # transport is the only thing that could. Not 401/403, where the
+    # credentials are wrong on every transport.
+    EVENT_CGI_ABSENT = (404, 501)
+
     async def async_access_control_open_door(self, door_id: int = 1) -> dict:
         """Open a door, over CGI, falling back to RPC2 if the CGI path is absent.
 
@@ -2436,7 +2456,23 @@ class DahuaClient:
                 total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
             auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
             response = await auth.request("GET", url, timeout=timeout)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except aiohttp.ClientResponseError as cgi_error:
+                if cgi_error.status not in self.EVENT_CGI_ABSENT:
+                    raise
+                # No CGI event path on this device. Poll RPC2 instead, which is
+                # the only transport it has. Closing the response here and
+                # returning through the finally below would skip the poller, so
+                # it is closed explicitly and the poll runs in its place.
+                response.close()
+                response = None
+                _LOGGER.info(
+                    "eventManager.cgi answered %s on %s, so this device has no CGI "
+                    "event stream; subscribing over RPC2 instead",
+                    cgi_error.status, self._address)
+                await self._stream_events_rpc2(on_receive, events, channel)
+                return
 
             # Buffer chunks until boundary delimiters so large event payloads (e.g. ANPR JSON)
             # are never split across TCP chunk boundaries.
@@ -2474,6 +2510,135 @@ class DahuaClient:
         # It raises no exception, so without this the caller cannot tell a
         # refused subscription from a healthy one.
         raise EventStreamClosed("Event stream to %s closed by the device" % self._address)
+
+    @staticmethod
+    def _emit_rpc2_event(on_receive, code: str, action: str, index: int, channel: int) -> None:
+        """Hand the CGI stream's own wire format to the CGI stream's own consumer.
+
+        parse_event reads exactly this, and on_receive then filters on index and
+        dispatches, so the sensors and the dahua_event_received bus event are
+        reached by the identical path either transport is used. Keeping the format
+        rather than calling deeper in is what stops this becoming a second,
+        diverging event pipeline.
+        """
+        on_receive(
+            "Code={0};action={1};index={2}\r\n".format(code, action, index).encode(),
+            channel,
+        )
+
+    async def _stream_events_rpc2(self, on_receive, events: list, channel: int):
+        """Deliver events by polling RPC2, for devices that serve no CGI at all.
+
+        Some firmware answers 404 to every /cgi-bin/ path. An SL300 was measured
+        answering 404 to eventManager.cgi, magicBox.cgi and configManager.cgi
+        alike, serving no web UI, and with DHIP closed -- so the multipart event
+        stream this integration normally attaches to does not exist on it, and its
+        binary sensors could never move no matter what the app showed.
+
+        RPC2 does accept eventManager.attach, which returns a SID, but it offers
+        nothing to read that subscription with: getNextEvent, getEvents,
+        getCurrentEvents and getAlarmState all answer InterfaceNotFound
+        (268632064). What does exist is eventManager.getEventIndexes, which
+        reports the channels currently in a given alarm state -- {"indexes": [0]}
+        while active and {} when not. So the state is polled and its edges are
+        synthesised into event payloads, which is why nothing downstream changes.
+
+        getEventIndexes takes ONE code as a string. A list is refused, and "All"
+        answers {} even while a specific code reports active -- measured on the
+        SL300 with seven consecutive samples where SmartMotionHuman was active and
+        "All" was empty at the same instant -- so every code must be asked for
+        separately, and that is what bounds the poll rate.
+        """
+        codes = [code for code in events if code and code != "All"]
+        if not codes:
+            # "All" cannot be polled, so expand it rather than watch nothing.
+            # Imported here because config_flow imports this module.
+            from .config_flow import ALL_EVENTS  # pylint: disable=import-outside-toplevel
+            codes = [code for code in ALL_EVENTS if code != "All"]
+
+        cycle = max(
+            RPC2_EVENT_POLL_SECONDS,
+            len(codes) / RPC2_EVENT_MAX_REQUESTS_PER_SECOND,
+        )
+        if cycle > RPC2_EVENT_SLOW_CYCLE_SECONDS:
+            _LOGGER.warning(
+                "%s has no CGI event stream, so %d event types are polled over RPC2 "
+                "one at a time, giving a %.0fs cycle. An event shorter than that can "
+                "be missed -- select fewer event types to poll them faster",
+                self._address, len(codes), cycle)
+        else:
+            _LOGGER.debug(
+                "Polling %d event types over RPC2 on %s every %.0fs",
+                len(codes), self._address, cycle)
+
+        active: set[tuple[str, int]] = set()
+        attached_to = None
+
+        while True:
+            holder = await self._shared_rpc2()
+            login_task = getattr(holder, "task", None)
+            try:
+                if attached_to is not login_task:
+                    # The subscription belongs to the login, so a new login needs
+                    # a new attach. Without this a recovered session polls a SID
+                    # the device has already forgotten.
+                    await holder.client.request("eventManager.attach", {"codes": ["All"]})
+                    attached_to = login_task
+
+                started = time.monotonic()
+                for code in list(codes):
+                    try:
+                        response = await holder.client.request(
+                            "eventManager.getEventIndexes", {"code": code})
+                    except Rpc2MethodRefused as refused:
+                        if refused.code == RPC2_SESSION_EXPIRED_CODE:
+                            raise
+                        # This device does not know this code. Asking again every
+                        # cycle for the life of the entry buys nothing.
+                        codes.remove(code)
+                        _LOGGER.debug(
+                            "%s does not report %s over RPC2 (%s); no longer polling it",
+                            self._address, code, refused)
+                        continue
+
+                    indexes = set()
+                    for raw in ((response.get("params") or {}).get("indexes") or []):
+                        try:
+                            indexes.add(int(raw))
+                        except (TypeError, ValueError):
+                            continue
+
+                    for index in sorted(indexes - {i for c, i in active if c == code}):
+                        active.add((code, index))
+                        self._emit_rpc2_event(on_receive, code, "Start", index, channel)
+                    for index in sorted({i for c, i in active if c == code} - indexes):
+                        active.discard((code, index))
+                        self._emit_rpc2_event(on_receive, code, "Stop", index, channel)
+
+                if not codes:
+                    raise EventStreamClosed(
+                        "%s reports none of the selected event types over RPC2"
+                        % self._address)
+
+                await asyncio.sleep(max(0.0, cycle - (time.monotonic() - started)))
+
+            except Rpc2MethodRefused as refused:
+                if refused.code != RPC2_SESSION_EXPIRED_CODE:
+                    raise EventStreamClosed(
+                        "RPC2 event poll on %s was refused: %s" % (self._address, refused)
+                    ) from refused
+                # Expired login. Drop it so the next cycle logs in again, unless
+                # another caller has already replaced it.
+                _LOGGER.debug("RPC2 login on %s expired; logging in again", self._address)
+                if holder.task is login_task:
+                    holder.task = None
+                    holder.client._session_id = None  # pylint: disable=protected-access
+                attached_to = None
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+                # Hand it back to the caller's reconnect/backoff, exactly as the
+                # CGI stream does, rather than spinning here.
+                raise EventStreamClosed(
+                    "RPC2 event poll on %s failed: %s" % (self._address, err)) from err
 
     @staticmethod
     async def parse_dahua_api_response(data: str) -> dict:
