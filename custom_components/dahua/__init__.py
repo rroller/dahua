@@ -61,6 +61,7 @@ from .const import (
     EVENT_DAHUA_ANPR_RECOGNIZED,
 )
 from .dahua_utils import parse_event
+from .illuminator_restore import IlluminatorRestoreStore
 from .vto import DahuaVTOClient
 
 
@@ -1331,7 +1332,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(username, password, address, port, rtsp_port, self._session,
                                                use_https,
-                                               use_rpc2=entry.options.get(CONF_USE_RPC2, False))
+                                               use_rpc2=entry.options.get(CONF_USE_RPC2, False),
+                                               illuminator_restore_store=IlluminatorRestoreStore(
+                                                   hass, entry.entry_id
+                                               ))
 
         # self.config_entry = entry
         self.platforms = []
@@ -1984,6 +1988,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             for result in results:
                 if result is not None:
                     data.update(result)
+
+            if (getattr(self, "_supports_lighting_scheme_illuminator", False)
+                    and self._wanted_by(LIGHT)):
+                try:
+                    await self.client.async_reconcile_lighting_scheme_restore_modes()
+                except Exception:  # pylint: disable=broad-except
+                    # A stale recovery record is harmless and the next poll
+                    # retries it. Do not take the camera offline because HA
+                    # could not clean up its own local storage.
+                    _LOGGER.warning(
+                        "Could not reconcile stale illuminator recovery state"
+                    )
+                    _LOGGER.debug(
+                        "Could not reconcile stale illuminator recovery state",
+                        exc_info=True,
+                    )
 
             if self._supports_ptz_position:
                 self._preset_position = data.get("status.PresetID", "0") or "0"

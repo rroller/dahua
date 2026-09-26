@@ -698,7 +698,8 @@ class DahuaClient:
             rtsp_port: int,
             session: aiohttp.ClientSession,
             use_https: bool = None,
-            use_rpc2: bool = False
+            use_rpc2: bool = False,
+            illuminator_restore_store=None,
     ) -> None:
         self._username = username
         self._password = password
@@ -731,8 +732,9 @@ class DahuaClient:
         self._rpc2_acquired = False
         self._rpc2_released = False
         # Preserve the camera's policy while the illuminator temporarily owns
-        # a channel/profile. The entry is removed only after a successful off.
-        self._lighting_scheme_restore_modes: dict[tuple[int, int], str] = {}
+        # a channel/profile. Camera config survives HA restarts, so this must.
+        self._illuminator_restore_store = illuminator_restore_store
+        self._lighting_scheme_lock = asyncio.Lock()
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
         # includes the password, so the identity changes if the password does.
@@ -1328,7 +1330,10 @@ class DahuaClient:
         even when RPC2 polling is disabled. Partial CGI writes are accepted but
         do not light the emitter.
         """
-        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+        async with self._lighting_scheme_lock, asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            restore_store = self._illuminator_restore_store
+            if restore_store is None:
+                raise RuntimeError("Dahua illuminator recovery storage is unavailable")
             holder = await self._shared_rpc2()
             scheme_params = await holder.client.get_config({"name": "LightingScheme"})
             lighting_params = await holder.client.get_config({"name": "Lighting_V2"})
@@ -1340,31 +1345,56 @@ class DahuaClient:
             if not isinstance(current_mode, str) or not current_mode:
                 raise ValueError("Dahua lighting scheme is missing LightingMode")
 
-            key = (channel, profile)
-            restore_modes = getattr(self, "_lighting_scheme_restore_modes", None)
-            if restore_modes is None:
-                restore_modes = {}
-                self._lighting_scheme_restore_modes = restore_modes
-            restore_mode = None
-            if not enabled and current_mode == "WhiteMode":
-                restore_mode = restore_modes.get(key)
-            elif enabled and current_mode != "WhiteMode":
-                # Keep the recovery value even if the multicall reports a
-                # failure: an earlier nested write may already have selected
-                # WhiteMode, and a later off still needs a safe way back.
-                restore_modes[key] = current_mode
+            restore_mode = await restore_store.async_get(channel, profile)
             scheme, lighting = lighting_scheme_illuminator_tables(
                 scheme_params.get("table"), lighting_params.get("table"), channel,
-                profile, light_index, enabled, brightness, restore_mode,
+                profile, light_index, enabled, brightness,
+                restore_mode if current_mode == "WhiteMode" else None,
             )
+            if enabled and current_mode != "WhiteMode":
+                # This must finish before the persistent camera write. Keep the
+                # recovery value even if that write later fails: part of the
+                # multicall may already have selected WhiteMode.
+                await restore_store.async_set(channel, profile, current_mode)
             clear_host_cache(self._device)
             response = await holder.client.set_configs([
                 ("LightingScheme", scheme),
                 ("Lighting_V2", lighting),
             ])
             if not enabled:
-                restore_modes.pop(key, None)
+                await restore_store.async_remove(channel, profile)
+                if current_mode == "WhiteMode" and restore_mode is None:
+                    _LOGGER.warning(
+                        "Turned off Dahua white emitter for channel %s profile %s "
+                        "but could not restore its previous lighting mode because "
+                        "no saved recovery state exists",
+                        channel,
+                        profile,
+                    )
             return response
+
+    async def async_reconcile_lighting_scheme_restore_modes(self) -> None:
+        """Discard stale recovery state after confirming current camera modes."""
+        restore_store = self._illuminator_restore_store
+        if restore_store is None:
+            return
+        async with self._lighting_scheme_lock, asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            keys = await restore_store.async_keys()
+            if not keys:
+                return
+            holder = await self._shared_rpc2()
+            scheme_params = await holder.client.get_config({"name": "LightingScheme"})
+            for channel, profile in keys:
+                try:
+                    current_mode = scheme_params["table"][channel][profile]["LightingMode"]
+                except (IndexError, KeyError, TypeError):
+                    raise ValueError(
+                        "Dahua lighting tables do not contain the selected scheme"
+                    ) from None
+                if not isinstance(current_mode, str) or not current_mode:
+                    raise ValueError("Dahua lighting scheme is missing LightingMode")
+                if current_mode != "WhiteMode":
+                    await restore_store.async_remove(channel, profile)
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
