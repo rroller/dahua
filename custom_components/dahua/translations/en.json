@@ -18,9 +18,10 @@
             },
             "channels": {
                 "title": "Add other channels",
-                "description": "This recorder has other channels with a camera on them. Tick any you want added now. Channels that are empty, switched off, or reached over ONVIF are not listed, because this integration cannot drive them.",
+                "description": "This recorder has {count} other channels with a camera on them. Add all of them, or tick the ones you want. Channels that are empty, switched off, or reached over ONVIF are not listed, because this integration cannot drive them.",
                 "data": {
-                    "extra_channels": "Channels to add"
+                    "all_channels": "Add all {count} channels",
+                    "extra_channels": "Or just these"
                 }
             },
             "name": {
