@@ -1,6 +1,7 @@
 """IPC-Color4M-TZ needs two complete tables to control its white light."""
 
 import asyncio
+import functools
 import logging
 import threading
 from types import SimpleNamespace
@@ -361,16 +362,21 @@ async def test_cancelled_store_write_finishes_before_newer_write(hass):
     finish_delete = threading.Event()
     block_next_write = True
 
-    def blocking_write_data(path, data):
+    def blocking_write_data(*args, **kwargs):
         nonlocal block_next_write
         if block_next_write:
             block_next_write = False
             delete_started.set()
             assert finish_delete.wait(5)
-        original_write_data(path, data)
+        original_write_data(*args, **kwargs)
 
-    async def executor_write_data(path, data):
-        await hass.async_add_executor_job(blocking_write_data, path, data)
+    async def executor_write_data(*args, **kwargs):
+        if kwargs:
+            await hass.async_add_executor_job(
+                functools.partial(blocking_write_data, *args, **kwargs)
+            )
+        else:
+            await hass.async_add_executor_job(blocking_write_data, *args)
 
     restore_store._store._async_write_data = executor_write_data
     remove_task = asyncio.create_task(restore_store.async_remove(0, 1))
@@ -378,6 +384,8 @@ async def test_cancelled_store_write_finishes_before_newer_write(hass):
     try:
         async with asyncio.timeout(5):
             while not delete_started.is_set():
+                if remove_task.done():
+                    remove_task.result()
                 await asyncio.sleep(0)
 
         remove_task.cancel()
