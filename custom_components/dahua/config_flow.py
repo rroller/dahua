@@ -26,6 +26,7 @@ from .const import (
     PLATFORMS,
     CONF_CHANNEL,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_ALL_CHANNELS,
     CONF_EXTRA_CHANNELS,
     CONF_USE_RPC2,
     CONF_USE_HTTPS,
@@ -334,22 +335,34 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             await session.close()
 
     async def async_step_channels(self, user_input=None):
-        """Offer the recorder's other live channels."""
+        """Offer the recorder's other live channels.
+
+        A sixteen channel recorder means sixteen boxes to tick, and somebody
+        adding a recorder usually wants all of it. `all_channels` takes the
+        whole list in one click and is checked first, so a user who ticks it
+        does not also have to clear the individual boxes.
+        """
         if user_input is not None:
-            self._extra_channels = [
-                int(index) for index in user_input.get(CONF_EXTRA_CHANNELS, [])
-            ]
+            if user_input.get(CONF_ALL_CHANNELS):
+                self._extra_channels = sorted(self._found_channels)
+            else:
+                self._extra_channels = [
+                    int(index) for index in user_input.get(CONF_EXTRA_CHANNELS, [])
+                ]
             return await self._show_config_form_name(self.init_info)
 
         return self.async_show_form(
             step_id="channels",
             data_schema=vol.Schema({
+                vol.Optional(CONF_ALL_CHANNELS, default=False): bool,
                 vol.Optional(CONF_EXTRA_CHANNELS, default=[]):
                     cv.multi_select({
                         str(index): "Channel {0}: {1}".format(index + 1, name)
                         for index, name in sorted(self._found_channels.items())
                     }),
             }),
+            description_placeholders={
+                "count": str(len(self._found_channels))},
             errors=self._errors,
         )
 

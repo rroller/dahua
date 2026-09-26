@@ -26,6 +26,7 @@ from custom_components.dahua.config_flow import DahuaFlowHandler
 from custom_components.dahua.const import (
     CONF_ADDRESS,
     CONF_CHANNEL,
+    CONF_ALL_CHANNELS,
     CONF_EXTRA_CHANNELS,
     CONF_NAME,
     CONF_PASSWORD,
@@ -214,6 +215,89 @@ async def test_choosing_none_queues_nothing():
     await flow.async_step_channels({CONF_EXTRA_CHANNELS: []})
 
     assert flow._extra_channels == []
+
+
+# --- taking the lot in one click ---------------------------------------------
+
+async def _chose(flow, user_input):
+    """Run the step with `user_input` and return what it recorded."""
+    async def show(data):
+        return None
+
+    flow._show_config_form_name = show
+    await flow.async_step_channels(user_input)
+    return flow._extra_channels
+
+
+async def test_all_channels_takes_every_one_that_was_found():
+    """A sixteen channel recorder is sixteen boxes, and somebody adding a
+    recorder usually wants all of it."""
+    flow = _flow()
+    flow._found_channels = {1: "BACKYARD", 2: "DRIVEWAY", 5: "SHED"}
+
+    assert await _chose(flow, {CONF_ALL_CHANNELS: True}) == [1, 2, 5]
+
+
+async def test_all_channels_is_in_channel_order():
+    """These become entries in this order, so it is what the user sees."""
+    flow = _flow()
+    flow._found_channels = {9: "NINE", 2: "TWO", 11: "ELEVEN"}
+
+    assert await _chose(flow, {CONF_ALL_CHANNELS: True}) == [2, 9, 11]
+
+
+async def test_all_channels_wins_over_the_ticked_list():
+    """Ticking the switch must not also require clearing the boxes."""
+    flow = _flow()
+    flow._found_channels = {1: "ONE", 2: "TWO", 3: "THREE"}
+
+    chosen = await _chose(
+        flow, {CONF_ALL_CHANNELS: True, CONF_EXTRA_CHANNELS: ["2"]})
+
+    assert chosen == [1, 2, 3]
+
+
+async def test_leaving_it_off_still_honours_the_ticked_list():
+    """No regression: the existing behaviour is the default."""
+    flow = _flow()
+    flow._found_channels = {1: "ONE", 2: "TWO", 3: "THREE"}
+
+    chosen = await _chose(
+        flow, {CONF_ALL_CHANNELS: False, CONF_EXTRA_CHANNELS: ["3"]})
+
+    assert chosen == [3]
+
+
+async def test_all_channels_with_nothing_found_chooses_nothing():
+    """Cannot happen through the flow, which skips this step when the search
+    found nothing, but it must not raise if it ever does."""
+    flow = _flow()
+    flow._found_channels = {}
+
+    assert await _chose(flow, {CONF_ALL_CHANNELS: True}) == []
+
+
+async def test_the_form_says_how_many_were_found():
+    """The count is in the label and the description, so it has to be given."""
+    flow = _flow()
+    flow._found_channels = {1: "ONE", 4: "FOUR"}
+    flow._errors = {}
+
+    result = await flow.async_step_channels()
+
+    assert result["description_placeholders"] == {"count": "2"}
+
+
+async def test_the_form_offers_the_switch_and_the_list():
+    flow = _flow()
+    flow._found_channels = {1: "ONE"}
+    flow._errors = {}
+
+    result = await flow.async_step_channels()
+
+    keys = [str(key) for key in result["data_schema"].schema]
+    assert keys == [CONF_ALL_CHANNELS, CONF_EXTRA_CHANNELS], (
+        "the switch is offered first, above the boxes it replaces")
 
 
 def test_each_extra_channel_becomes_its_own_flow():
