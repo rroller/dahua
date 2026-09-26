@@ -189,19 +189,42 @@ async def test_a_channel_with_no_title_still_gets_a_label(monkeypatch):
 # --- the step, and what it queues -------------------------------------------
 
 async def test_choosing_channels_records_them_and_moves_on():
+    """It goes on to the areas step now, not straight to naming.
+
+    Choosing channels is what makes the areas step worth showing, so the two are
+    wired together -- see test_channel_areas.py. Naming still follows, one step
+    later.
+    """
     flow = _flow()
     flow._found_channels = {1: "BACKYARD", 2: "DRIVEWAY"}
+    reached = {}
+
+    async def areas():
+        reached["yes"] = True
+
+    flow.async_step_areas = areas
+
+    await flow.async_step_channels({CONF_EXTRA_CHANNELS: ["1", "2"]})
+
+    assert flow._extra_channels == [1, 2]
+    assert reached.get("yes"), "it must go on to placing them"
+
+
+async def test_choosing_channels_still_reaches_naming_through_the_areas_step():
+    """The original contract, one step further along: whatever else happens,
+    the user still gets to name the first device."""
+    flow = _flow()
+    flow._found_channels = {1: "BACKYARD"}
     shown = {}
 
     async def show(data):
         shown["data"] = data
 
+    await flow.async_step_channels({CONF_EXTRA_CHANNELS: ["1"]})
     flow._show_config_form_name = show
+    await flow.async_step_areas({})
 
-    await flow.async_step_channels({CONF_EXTRA_CHANNELS: ["1", "2"]})
-
-    assert flow._extra_channels == [1, 2]
-    assert shown["data"] is flow.init_info, "it must go on to naming the first one"
+    assert shown["data"] is flow.init_info
 
 
 async def test_choosing_none_queues_nothing():

@@ -11,6 +11,8 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import selector
 
 from . import dahua_utils
 from .client import DahuaClient
@@ -27,6 +29,7 @@ from .const import (
     CONF_CHANNEL,
     CONF_AUTO_DETECT_CHANNEL,
     CONF_ALL_CHANNELS,
+    CONF_AREA,
     CONF_EXTRA_CHANNELS,
     CONF_USE_RPC2,
     CONF_USE_HTTPS,
@@ -161,6 +164,10 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         # index -> label, for the other channels of a recorder
         self._found_channels = {}
         self._extra_channels = []
+        # Which area each extra channel was given, by channel index, and the
+        # form field each of those answers arrives under.
+        self._channel_areas = {}
+        self._area_fields = {}
         self._discovery_task = None
 
     async def async_step_user(self, user_input=None):
@@ -349,6 +356,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 self._extra_channels = [
                     int(index) for index in user_input.get(CONF_EXTRA_CHANNELS, [])
                 ]
+            if self._extra_channels:
+                return await self.async_step_areas()
             return await self._show_config_form_name(self.init_info)
 
         return self.async_show_form(
@@ -363,6 +372,64 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             }),
             description_placeholders={
                 "count": str(len(self._found_channels))},
+            errors=self._errors,
+        )
+
+    def _area_form_fields(self) -> dict:
+        """The label each device being added should be asked about, by channel.
+
+        The label is the schema key, because Home Assistant renders a key
+        verbatim when no translation string exists. That is what makes a form
+        whose fields depend on what the recorder reported readable, without
+        inventing a translation key per channel. The channel number is in every
+        label, so two channels that share a title cannot collide.
+        """
+        primary = int(self.init_info[CONF_CHANNEL])
+        fields = {
+            "{0} (this device)".format(self.init_info[CONF_NAME]): primary,
+        }
+        for index in self._extra_channels:
+            # The number the recorder itself shows, which is one more than the
+            # index this integration uses. A channel the recorder gave no title
+            # is just its number, rather than "Channel 7: Channel 7".
+            title = self._found_channels.get(index)
+            label = ("Channel {0}: {1}".format(index + 1, title) if title
+                     else "Channel {0}".format(index + 1))
+            fields[label] = index
+        return fields
+
+    async def async_step_areas(self, user_input=None):
+        """Ask which area each device being added belongs in.
+
+        Adding ten channels used to produce ten devices with no area, leaving
+        the user to file them one at a time in Settings -- right after being
+        shown a list that already named every one of them.
+
+        Only reached when extra channels were chosen. A single camera gains no
+        step; the options flow covers that one, and Home Assistant's own device
+        page is a click away.
+        """
+        if user_input is not None:
+            for label, index in self._area_fields.items():
+                area = user_input.get(label)
+                if not area:
+                    continue
+                if index == int(self.init_info[CONF_CHANNEL]):
+                    self.init_info[CONF_AREA] = area
+                else:
+                    self._channel_areas[index] = area
+            return await self._show_config_form_name(self.init_info)
+
+        self._area_fields = self._area_form_fields()
+        return self.async_show_form(
+            step_id="areas",
+            data_schema=vol.Schema({
+                # Optional, and a blank answer means no area rather than an
+                # error: somebody who has not made their areas yet must still
+                # be able to finish adding their cameras.
+                vol.Optional(label): selector.AreaSelector()
+                for label in self._area_fields
+            }),
             errors=self._errors,
         )
 
@@ -419,6 +486,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             data[CONF_CHANNEL] = index
             data[CONF_NAME] = self._found_channels.get(
                 index, "Channel {0}".format(index + 1))
+            # Every extra channel inherits init_info, which carries the
+            # *primary's* area. Without the pop, ticking one area for the
+            # recorder itself would silently file every other channel there too.
+            area = self._channel_areas.get(index)
+            if area:
+                data[CONF_AREA] = area
+            else:
+                data.pop(CONF_AREA, None)
             self.hass.async_create_task(
                 self.hass.config_entries.flow.async_init(
                     DOMAIN, context={"source": "import"}, data=data))
@@ -584,6 +659,7 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_user(self, user_input=None):
         """Handle a flow initialized by the user."""
         if user_input is not None:
+            await self._async_move_device(user_input.get(CONF_AREA))
             self.options.update(user_input)
             return await self._update_options()
 
@@ -661,10 +737,45 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
             )
         ] = vol.All(vol.Coerce(int), vol.Range(min=1, max=3600))
+        schema[
+            vol.Optional(
+                CONF_AREA,
+                default=self.options.get(
+                    CONF_AREA, self.config_entry.data.get(CONF_AREA, "")),
+            )
+        ] = selector.AreaSelector()
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(schema),
         )
+
+    async def _async_move_device(self, area_id):
+        """Put this entry's device in `area_id`, if that is a change.
+
+        The config flow uses `suggested_area`, which Home Assistant honours only
+        when it *creates* a device. This entry's device already exists, so that
+        would be silently ignored and the option would look broken. Moving it
+        through the device registry is the supported way round.
+
+        A no-op when the value has not changed, so opening options and pressing
+        submit does not re-file a device somebody has moved by hand.
+        """
+        stored = self.options.get(
+            CONF_AREA, self.config_entry.data.get(CONF_AREA))
+        if not area_id or area_id == stored:
+            return
+        coordinator = self.hass.data.get(DOMAIN, {}).get(
+            self.config_entry.entry_id)
+        if coordinator is None:
+            # Not loaded, so there is no device to move yet. The option is still
+            # stored, and the config flow's suggested_area applies whenever the
+            # device is next created.
+            return
+        registry = dr.async_get(self.hass)
+        device = registry.async_get_device(
+            identifiers={(DOMAIN, coordinator.get_serial_number())})
+        if device is not None:
+            registry.async_update_device(device.id, area_id=area_id)
 
     async def _update_options(self):
         """Update config entry options."""
