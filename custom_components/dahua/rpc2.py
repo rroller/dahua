@@ -27,6 +27,11 @@ class Rpc2MethodRefused(ConnectionError):
     config table. That is evidence RPC2 *works* here, not that it does not.
     """
 
+    def __init__(self, description: str, code=None, message=None):
+        super().__init__(description)
+        self.code = code
+        self.message = message
+
 
 class DahuaRpc2Client:
     def __init__(
@@ -72,18 +77,22 @@ class DahuaRpc2Client:
 
         if verify_result and resp_json['result'] is False:
             error = resp_json.get("error")
+            code = error.get("code") if isinstance(error, dict) else None
+            message = error.get("message") if isinstance(error, dict) else None
             details = []
             if isinstance(error, dict):
                 if error.get("code") is not None:
                     details.append("code={0}".format(error["code"]))
                 if isinstance(error.get("message"), str):
-                    message = error["message"].replace("\r", " ").replace("\n", " ")
-                    details.append("message={0}".format(message[:200]))
+                    display_message = error["message"].replace("\r", " ").replace("\n", " ")
+                    details.append("message={0}".format(display_message[:200]))
             suffix = " ({0})".format(", ".join(details)) if details else ""
             raise Rpc2MethodRefused(
                 "Dahua RPC2 method {0} returned result=false{1}".format(
                     method, suffix
-                )
+                ),
+                code=code,
+                message=message,
             )
 
         return resp_json

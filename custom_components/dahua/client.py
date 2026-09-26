@@ -1213,15 +1213,39 @@ class DahuaClient:
     # Direct-camera CoaxialControlIO RPC2 calls use channel 0, matching the
     # camera WebUI requests. Legacy CGI uses 1-based channel 1 for standalone
     # cameras; this protocol difference is intentional, not an off-by-one error.
+    async def _direct_coaxial_rpc2(self, method: str, *args):
+        """Retry one direct-camera call after a confirmed expired RPC2 login."""
+        for attempt in range(2):
+            holder = await self._shared_rpc2()
+            login_task = getattr(holder, "task", None)
+            try:
+                return await getattr(holder.client, method)(0, *args)
+            except Rpc2MethodRefused as exc:
+                expired = exc.code == 287637504 or (
+                    isinstance(exc.message, str)
+                    and "session is out of date" in exc.message.lower()
+                )
+                if attempt or not expired:
+                    raise
+                # Another caller may already have replaced this login. Do not
+                # tear down the new one when an old in-flight request returns.
+                if holder.task is login_task:
+                    holder.task = None
+                    holder.client._session_id = None
+                    holder.client._ptz_objects.clear()
+                    keepalive = holder.keepalive
+                    holder.keepalive = None
+                    if keepalive is not None and not keepalive.done():
+                        keepalive.cancel()
+                        await asyncio.gather(keepalive, return_exceptions=True)
+
     async def async_get_coaxial_control_io_caps_rpc2(self) -> dict[str, bool]:
         """Probe a direct camera on channel zero, independently of config transport."""
-        holder = await self._shared_rpc2()
-        return await holder.client.get_coaxial_control_io_caps(0)
+        return await self._direct_coaxial_rpc2("get_coaxial_control_io_caps")
 
     async def async_get_coaxial_control_io_status_rpc2(self) -> dict:
         """Read direct-camera deterrence state in the coordinator's CGI shape."""
-        holder = await self._shared_rpc2()
-        status = await holder.client.get_coaxial_control_io_status(0)
+        status = await self._direct_coaxial_rpc2("get_coaxial_control_io_status")
         return {
             "status.Speaker": "On" if status.speaker else "Off",
             "status.WhiteLight": "On" if status.white_light else "Off",
@@ -1231,8 +1255,9 @@ class DahuaClient:
         self, dahua_type: int, enabled: bool
     ) -> dict:
         """Write direct-camera deterrence on channel zero."""
-        holder = await self._shared_rpc2()
-        return await holder.client.set_coaxial_control_state(0, dahua_type, enabled)
+        return await self._direct_coaxial_rpc2(
+            "set_coaxial_control_state", dahua_type, enabled
+        )
 
     async def _rpc2_get_config(self, name: str) -> dict:
         """A config read over the shared session, in CGI's shape.
