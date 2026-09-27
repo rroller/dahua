@@ -24,7 +24,8 @@ import pytest
 from aiohttp import ClientResponseError
 
 from custom_components.dahua.client import DahuaClient, _is_login_refused
-from custom_components.dahua.config_flow import describe_setup_failure
+from custom_components.dahua.config_flow import (describe_setup_failure,
+                                                 fallback_device_name)
 
 
 def _status(status):
@@ -122,3 +123,123 @@ def test_the_split_is_on_401_alone():
     assert _is_login_refused(_status(401)) is True
     for other in (403, 404, 501, 400, 500):
         assert _is_login_refused(_status(other)) is False
+
+
+# --- and it must not be offered to the user as its name ----------------------
+#
+# The fallback id is fine as an id. It was also used as the *name*, and the flow
+# prefilled it as the default of the last step, so pressing Submit produced a
+# device called 4f3a9c8e... No platform sets _attr_has_entity_name, so that hash
+# then went into every entity_id permanently.
+
+
+def test_a_device_that_would_not_name_itself_gets_a_readable_name():
+    assert fallback_device_name("192.168.1.108", 0) == "Dahua camera at 192.168.1.108"
+
+
+def test_the_name_is_not_a_hash():
+    """The specific thing that shipped: md5 of address_rtspport_user_password."""
+    hashed = md5(b"192.168.1.108_554_admin_pw").hexdigest()
+
+    assert fallback_device_name("192.168.1.108", 0) != hashed
+
+
+def test_a_recorders_channels_do_not_all_get_the_same_name():
+    """Several channels of one NVR can fall back together, and eleven devices
+    called the same thing is no better than eleven hashes."""
+    names = {fallback_device_name("10.0.0.5", ch) for ch in (0, 1, 2, 3)}
+
+    assert len(names) == 4
+
+
+def test_the_channel_is_numbered_the_way_the_recorder_shows_it():
+    """1 based, matching the recorder's own UI, not the 0 based index."""
+    assert fallback_device_name("10.0.0.5", 3) == "Dahua camera at 10.0.0.5 channel 4"
+
+
+def test_a_single_camera_is_not_called_channel_1():
+    """Channel 0 is a standalone camera as often as it is a recorder's first
+    channel, and "channel 1" on a single camera is noise."""
+    assert "channel" not in fallback_device_name("10.0.0.5", 0)
+
+
+def test_a_channel_that_is_not_a_number_does_not_raise():
+    """entry.data has carried strings here before now."""
+    assert fallback_device_name("10.0.0.5", "not a number") == "Dahua camera at 10.0.0.5"
+    assert fallback_device_name("10.0.0.5", None) == "Dahua camera at 10.0.0.5"
+
+
+async def test_the_flow_offers_the_readable_name_and_keeps_the_hashed_id(monkeypatch):
+    """The helper is only worth anything if _test_credentials uses it.
+
+    And the id must NOT change with it: it is the unique_id, and a new one would
+    orphan every entry that already has the hashed form rather than repair it.
+    """
+    from custom_components.dahua import config_flow
+
+    hashed = md5(b"10.0.0.5_554_admin_pw").hexdigest()
+
+    class _Device:
+        """No magicBox.cgi, so both reads fall back."""
+
+        def __init__(self, *args, **kwargs):
+            self.identity_derived_from_credentials = False
+
+        async def get_machine_name(self):
+            self.identity_derived_from_credentials = True
+            return {"name": hashed}
+
+        async def async_get_system_info(self, strict_auth=False):
+            return {"serialNumber": hashed}
+
+    class _Session:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(config_flow, "DahuaClient", _Device)
+    monkeypatch.setattr(config_flow, "ClientSession", _Session)
+    monkeypatch.setattr(config_flow, "TCPConnector", lambda **kwargs: None)
+
+    handler = config_flow.DahuaFlowHandler()
+    data, error = await handler._test_credentials(
+        "admin", "pw", "10.0.0.5", "80", "554", 3)
+
+    assert error is None
+    assert data["name"] == "Dahua camera at 10.0.0.5 channel 4"
+    assert data["serialNumber"] == hashed, (
+        "the unique_id must keep the hashed form; changing it orphans existing entries")
+
+
+async def test_a_device_that_names_itself_is_left_alone(monkeypatch):
+    """The replacement must only apply to the fallback."""
+    from custom_components.dahua import config_flow
+
+    class _Device:
+        def __init__(self, *args, **kwargs):
+            self.identity_derived_from_credentials = False
+
+        async def get_machine_name(self):
+            return {"name": "FrontDoorCam"}
+
+        async def async_get_system_info(self, strict_auth=False):
+            return {"serialNumber": "4X7C5A1ZAG21L3F"}
+
+    class _Session:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(config_flow, "DahuaClient", _Device)
+    monkeypatch.setattr(config_flow, "ClientSession", _Session)
+    monkeypatch.setattr(config_flow, "TCPConnector", lambda **kwargs: None)
+
+    handler = config_flow.DahuaFlowHandler()
+    data, error = await handler._test_credentials(
+        "admin", "pw", "10.0.0.5", "80", "554", 3)
+
+    assert data["name"] == "FrontDoorCam"
