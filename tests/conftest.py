@@ -96,3 +96,17 @@ async def _stop_shared_event_streams():
     await _drain()
     yield
     await _drain()
+
+@pytest.fixture(autouse=True)
+def _clear_rpc2_event_state():
+    """What the RPC2 poll last reported active is module state, per host.
+
+    It has to survive a poller restart -- that is the point of it -- so it also
+    survives a test, and one test's active event would otherwise be inherited as
+    another's stale Start.
+    """
+    from custom_components.dahua import client as client_module
+
+    client_module._HOST_RPC2_EVENT_STATE.clear()
+    yield
+    client_module._HOST_RPC2_EVENT_STATE.clear()
