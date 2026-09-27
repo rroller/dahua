@@ -468,7 +468,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         if not self._override_matches(mode, brightness):
             return False
 
-        if self._scheme_restore is not None:
+        if self._scheme_restore is not None and self._scheme_restore[2] is not None:
             scheme_channel, scheme_profile, previous_scheme = self._scheme_restore
             current_scheme = (
                 await self._coordinator.client.async_get_lighting_scheme_mode(
@@ -543,7 +543,9 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
             scheme_channel = int(data["scheme_channel"])
             scheme_profile = str(data["scheme_profile"])
-            previous_scheme = str(data["previous_scheme"])
+            previous_scheme = data["previous_scheme"]
+            if previous_scheme is not None:
+                previous_scheme = str(previous_scheme)
 
             channel = int(data["channel"])
             profile_mode = str(data["profile_mode"])
@@ -577,7 +579,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             )
             return False
 
-        current_scheme = (
+        current_scheme = None if previous_scheme is None else (
             await self._coordinator.client
             .async_get_lighting_scheme_mode(
                 scheme_channel,
@@ -755,6 +757,16 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             previous_scheme,
         ) = scheme_restore
 
+        if previous_scheme is None:
+            # Ordinary white-light cameras have no emitter-selection scheme.
+            # Restoring a Manual baseline would switch the light back on.
+            # Keep OFF semantics while restoring its saved brightness.
+            if old_brightness is not None:
+                await self._coordinator.client.async_set_lighting_v2_raw(
+                    channel, profile_mode, index, "Off", field, old_brightness
+                )
+            return
+
         # Restore Manual/Auto WhiteLight state behind InfraredMode so the
         # physical white emitter does not immediately turn back on.
         if old_mode:
@@ -910,7 +922,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             scheme_channel, scheme_profile, _previous_scheme = (
                 self._scheme_restore
             )
-            current_scheme = (
+            current_scheme = None if _previous_scheme is None else (
                 await self._coordinator.client
                 .async_get_lighting_scheme_mode(scheme_channel, scheme_profile)
             )
@@ -933,7 +945,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
         # Then force WhiteMode. Some cameras later report AIMode again,
         # but the physical white-light override remains active.
-        if current_scheme != "WhiteMode":
+        if current_scheme is not None and current_scheme != "WhiteMode":
             await (
                 self._coordinator.client
                 .async_set_lighting_scheme(

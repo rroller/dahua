@@ -86,7 +86,7 @@ async def test_live_state_rejects_missing_mode():
 async def test_get_lighting_scheme_reads_requested_channel_and_profile():
     c = _client()
 
-    c.get = AsyncMock(
+    c._request = AsyncMock(
         return_value={
             "table.LightingScheme[3][2].LightingMode": "AIMode",
         }
@@ -96,15 +96,16 @@ async def test_get_lighting_scheme_reads_requested_channel_and_profile():
 
     assert mode == "AIMode"
 
-    c.get.assert_awaited_once_with(
+    c._request.assert_awaited_once_with(
         "/cgi-bin/configManager.cgi?"
-        "action=getConfig&name=LightingScheme"
+        "action=getConfig&name=LightingScheme",
+        allow_rpc2=False,
     )
 
 
 async def test_get_lighting_scheme_rejects_missing_mode():
     c = _client()
-    c.get = AsyncMock(return_value={})
+    c._request = AsyncMock(return_value={"table.LightingScheme[0][0].LightingMode": "AIMode"})
 
     with pytest.raises(ValueError):
         await c.async_get_lighting_scheme_mode(0, "2")
@@ -113,7 +114,7 @@ async def test_get_lighting_scheme_rejects_missing_mode():
 async def test_set_lighting_scheme_uses_persistent_cgi_and_returns_previous():
     c = _client()
 
-    c.get = AsyncMock(
+    c._request = AsyncMock(
         side_effect=[
             {
                 "table.LightingScheme[0][2].LightingMode": "AIMode",
@@ -130,9 +131,9 @@ async def test_set_lighting_scheme_uses_persistent_cgi_and_returns_previous():
 
     assert previous == "AIMode"
 
-    assert c.get.await_count == 2
+    assert c._request.await_count == 2
 
-    assert c.get.await_args_list[1].args[0] == (
+    assert c._request.await_args_list[1].args[0] == (
         "/cgi-bin/configManager.cgi?action=setConfig"
         "&LightingScheme[0][2].LightingMode=WhiteMode"
     )
@@ -141,7 +142,7 @@ async def test_set_lighting_scheme_uses_persistent_cgi_and_returns_previous():
 async def test_set_lighting_scheme_skips_write_when_already_correct():
     c = _client()
 
-    c.get = AsyncMock(
+    c._request = AsyncMock(
         return_value={
             "table.LightingScheme[0][2].LightingMode": "WhiteMode",
         }
@@ -154,7 +155,7 @@ async def test_set_lighting_scheme_skips_write_when_already_correct():
     )
 
     assert previous == "WhiteMode"
-    assert c.get.await_count == 1
+    assert c._request.await_count == 1
 
 
 # --- Lighting_V2 writes -----------------------------------------------------

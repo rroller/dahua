@@ -17,6 +17,11 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 TIMEOUT_SECONDS = 20
 
+# Unsupported table/method responses. LightingScheme returned 268959743 on
+# IPC-Color4K-X, DHI-NVR5464 and VTO2000A; CGI refusals vary between 400 and
+# 500. Decide absence from the RPC2 table read, not the CGI HTTP status.
+RPC2_TABLE_ABSENT_CODES = frozenset({268632064, 268959743})
+
 # The event stream asks the device to heartbeat at this interval, so a socket
 # that has delivered nothing for a comfortable multiple of it has stalled.
 EVENT_STREAM_HEARTBEAT_SECONDS = 5
@@ -1345,7 +1350,7 @@ class DahuaClient:
             "set_coaxial_control_state", dahua_type, enabled
         )
 
-    async def _rpc2_get_config(self, name: str) -> dict:
+    async def _rpc2_get_config(self, name: str, *, allow_missing=False) -> dict:
         """A config read over the shared session, in CGI's shape.
 
         One retry, because the failure this expects is an expired session and
@@ -1355,7 +1360,14 @@ class DahuaClient:
         for attempt in (1, 2):
             try:
                 holder = await self._shared_rpc2()
-                params = await holder.client.get_config({"name": name})
+                try:
+                    params = await holder.client.get_config({"name": name})
+                except Rpc2MethodRefused as exc:
+                    # Only a refusal of the table read can establish absence;
+                    # a failed login or expired session must still propagate.
+                    if allow_missing and exc.code in RPC2_TABLE_ABSENT_CODES:
+                        return {}
+                    raise
                 return flatten_rpc2_config(name, params.get("table"))
             except Rpc2MethodRefused:
                 # The device answered. Logging in again cannot change its mind
@@ -1435,8 +1447,11 @@ class DahuaClient:
             if over_cgi:
                 return over_cgi
         except aiohttp.ClientResponseError:
+            # CGI status alone cannot establish absence: some firmware uses
+            # 500 for an unsupported table. Let the RPC2 table read decide;
+            # login, session and transport failures there still propagate.
             pass
-        return await self._rpc2_get_config("LightingScheme")
+        return await self._rpc2_get_config("LightingScheme", allow_missing=True)
 
     async def async_set_lighting_scheme_illuminator(
             self, channel: int, enabled: bool, brightness: int,
@@ -1937,20 +1952,17 @@ class DahuaClient:
 
     async def async_get_lighting_scheme_mode(
         self, channel: int, profile_mode: str
-    ) -> str:
-        """Return LightingScheme.LightingMode via CGI getConfig."""
+    ) -> str | None:
+        """Return the live LightingMode, falling back to RPC2 when needed."""
 
         channel_index = int(channel)
         profile_index = int(profile_mode)
 
-        # LightingScheme is runtime-sensitive for these cameras.
-        # Avoid using an older shared getConfig snapshot.
-        clear_host_cache(self._address)
-
-        data = await self.get(
-            "/cgi-bin/configManager.cgi?"
-            "action=getConfig&name=LightingScheme"
-        )
+        # This uses _request directly (or RPC2), bypassing get's shared cache
+        # so restore capture always observes a fresh configuration.
+        data = await self.async_get_lighting_scheme()
+        if not data:
+            return None
 
         key = (
             f"table.LightingScheme[{channel_index}]"
@@ -1983,6 +1995,8 @@ class DahuaClient:
             channel_index,
             str(profile_index),
         )
+        if previous_mode is None:
+            raise ValueError("This device does not expose LightingScheme")
 
         if previous_mode == mode:
             return previous_mode
