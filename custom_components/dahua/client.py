@@ -44,7 +44,12 @@ RPC2_EVENT_IDLE_AFTER_SECONDS = 120
 # these devices rather than picked: #779 reports VideoMotion lasting 11s and
 # SmartMotionHuman 46s, so an idle poll at this interval still sees both. It snaps
 # back to the fast cycle the moment anything goes active.
-RPC2_EVENT_IDLE_POLL_SECONDS = 8
+#
+# 6 rather than 8 on @matthewdva's judgement in #783: 8 leaves three seconds of
+# margin against that 11s event and 6 leaves five, and it is their device and
+# their measurement. Backing off past 11 would start buying request rate with
+# missed events, which is the wrong way round.
+RPC2_EVENT_IDLE_POLL_SECONDS = 6
 # "session is out of date"; same code _direct_coaxial_rpc2 recovers from.
 RPC2_SESSION_EXPIRED_CODE = 287637504
 # The CGI stream proves the transport is alive with the heartbeat it asks the
@@ -2593,7 +2598,11 @@ class DahuaClient:
                 response = None
                 _LOGGER.info(
                     "eventManager.cgi answered %s on %s, so this device has no CGI "
-                    "event stream; subscribing over RPC2 instead",
+                    "event stream; subscribing over RPC2 instead. The same absent CGI "
+                    "makes the identity and capability probes fall back, so this device "
+                    "will report as Generic RTSP on firmware 1.0 and its CGI-only "
+                    "entities will be missing -- see identity_fallbacks in its "
+                    "diagnostics rather than reading that as a second fault",
                     cgi_error.status, self._address)
                 await self._stream_events_rpc2(on_receive, events, channel)
                 return
@@ -2687,9 +2696,10 @@ class DahuaClient:
         if cycle > RPC2_EVENT_SLOW_CYCLE_SECONDS:
             _LOGGER.warning(
                 "%s has no CGI event stream, so %d event types are polled over RPC2 "
-                "one at a time, giving a %.0fs cycle. An event shorter than that can "
-                "be missed -- select fewer event types to poll them faster",
-                self._address, len(codes), cycle)
+                "one at a time, giving a %.0fs cycle -- %.1f requests a second. An "
+                "event shorter than that cycle can be missed; select fewer event "
+                "types to poll them faster",
+                self._address, len(codes), cycle, len(codes) / cycle)
         else:
             _LOGGER.debug(
                 "Polling %d event types over RPC2 on %s every %.0fs -- %.1f requests "

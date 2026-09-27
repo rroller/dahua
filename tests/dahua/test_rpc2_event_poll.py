@@ -318,3 +318,35 @@ def test_easing_off_is_a_real_reduction():
     would be complexity for nothing."""
     assert (client_module.RPC2_EVENT_IDLE_POLL_SECONDS
             >= 2 * client_module.RPC2_EVENT_POLL_SECONDS)
+
+
+# --- what the fallback tells the user (#783, @matthewdva) ---------------------
+
+def test_the_fallback_message_explains_the_rest_of_the_damage():
+    """A device with no CGI does not only lose its event stream.
+
+    The same absent CGI makes the identity probes fall back, so it reports as
+    Generic RTSP on firmware 1.0 with its CGI-only entities missing. Without this
+    the user reads that as a second, unrelated fault. Lost once already, in the
+    first version of the backoff, so it is pinned here.
+    """
+    import inspect
+
+    source = inspect.getsource(DahuaClient.stream_events)
+    assert "Generic RTSP" in source
+    assert "identity_fallbacks" in source
+
+
+def test_the_slow_cycle_warning_says_the_rate():
+    """The warning is the line a user actually sees; a code count and an interval
+    are not the units "my camera stopped answering" arrives in."""
+    import inspect
+
+    source = inspect.getsource(DahuaClient._stream_events_rpc2)
+    warning = source.split("_LOGGER.warning")[1].split("_LOGGER.debug")[0]
+    assert "requests a second" in warning
+
+
+def test_the_idle_interval_keeps_real_margin():
+    """6s against an 11s measured event leaves five seconds; 8s left three."""
+    assert client_module.RPC2_EVENT_IDLE_POLL_SECONDS <= 6
