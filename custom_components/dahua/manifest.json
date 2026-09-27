@@ -12,6 +12,17 @@
   "dependencies": [
     "repairs"
   ],
+  "dhcp": [
+    {
+      "hostname": "*dahua*"
+    },
+    {
+      "macaddress": "3CEF8C*"
+    },
+    {
+      "macaddress": "30DDAA*"
+    }
+  ],
   "documentation": "https://github.com/rroller/dahua",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/rroller/dahua/issues",
