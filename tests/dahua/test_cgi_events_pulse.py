@@ -18,7 +18,9 @@ Found by comparing against myhomeiot/DahuaVTO, whose single event path has no
 such split.
 """
 
+import hashlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
@@ -64,14 +66,22 @@ def test_a_pulse_on_the_cgi_path_now_reaches_the_sensor():
     assert c._dahua_event_timestamp[key] > 0
 
 
-def test_an_access_control_card_is_scanned_on_the_cgi_path():
+async def test_an_access_control_card_is_scanned_on_the_cgi_path():
     c = _coordinator()
     _listening(c, "AccessControl")
 
-    c.handle_event({"Code": "AccessControl", "action": "Pulse",
-                    "Data": {"State": 1, "CardNo": "1234ABCD"}})
+    with patch("custom_components.dahua.async_scan_tag", new_callable=AsyncMock) as scan_tag:
+        c.handle_event({"Code": "AccessControl", "action": "Pulse",
+                        "Data": {"State": 1, "CardNo": "1234ABCD"}})
 
-    assert len(c.scanned) == 1, "the NFC tag was never handed to async_scan_tag"
+        # Execute every coroutine queued by the fake Home Assistant scheduler.
+        for coroutine in c.scanned:
+            await coroutine
+
+        assert len(c.scanned) == 1, "the NFC tag was never handed to async_scan_tag"
+        scan_tag.assert_awaited_once_with(
+            c.hass, hashlib.md5(b"1234ABCD").hexdigest(), "Side Gate"
+        )
 
 
 def test_a_pulse_that_is_not_a_press_leaves_the_sensor_off():
