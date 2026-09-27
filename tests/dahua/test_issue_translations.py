@@ -17,15 +17,22 @@ EN = json.loads((TRANSLATIONS / "en.json").read_text(encoding="utf-8"))
 ISSUE_PLACEHOLDERS = {
     "device_unreachable": {"address", "entries", "minutes", "port"},
     "http_dead_https_available": {"address", "entries", "minutes", "port"},
+    # Only the title's, for a fixable issue. Its flow fills its own form from
+    # the issue's `data`, and a name listed here but not supplied there renders
+    # literally as {removed} on screen.
+    "siblings_remain": {"address", "count"},
+    "removal_broke_things": {"removed", "dependents", "names"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
+SIBLINGS_FLOW_PLACEHOLDERS = {"address", "count", "titles", "removed",
+                              "dependents_note"}
 
 
 def _placeholders(text: str) -> set:
     return set(re.findall(r"\{(\w+)\}", text))
 
 
-@pytest.mark.parametrize("key", ["device_unreachable", "http_dead_https_available"])
+@pytest.mark.parametrize("key", sorted(ISSUE_PLACEHOLDERS))
 def test_every_issue_the_code_raises_has_a_title(key):
     assert EN["issues"][key]["title"].strip()
 
@@ -58,12 +65,39 @@ def test_the_fix_flow_can_abort():
     assert "not_configured" in abort
 
 
-@pytest.mark.parametrize("key", ["device_unreachable", "http_dead_https_available"])
+@pytest.mark.parametrize("key", sorted(ISSUE_PLACEHOLDERS))
 def test_no_text_uses_a_placeholder_the_code_does_not_supply(key):
     """An unsupplied placeholder renders literally as {whatever}."""
     issue = EN["issues"][key]
     used = _placeholders(issue["title"]) | _placeholders(issue.get("description", ""))
     assert used <= ISSUE_PLACEHOLDERS[key], f"unsupplied: {used - ISSUE_PLACEHOLDERS[key]}"
+
+
+def test_the_siblings_flow_only_uses_its_own_placeholders():
+    """The one that caught a real bug: the confirm text named {removed}, which
+    async_show_form did not supply, so it would have rendered literally."""
+    step = EN["issues"]["siblings_remain"]["fix_flow"]["step"]["confirm"]
+    used = _placeholders(step["title"]) | _placeholders(step["description"])
+    assert used <= SIBLINGS_FLOW_PLACEHOLDERS, (
+        f"unsupplied: {used - SIBLINGS_FLOW_PLACEHOLDERS}")
+
+
+def test_the_siblings_issue_is_fixable_and_the_notice_is_not():
+    """hassfest treats description and fix_flow as mutually exclusive, so an
+    issue is either read or acted on -- never both."""
+    offer = EN["issues"]["siblings_remain"]
+    assert "fix_flow" in offer and "description" not in offer
+    assert "not_configured" in offer["fix_flow"]["abort"]
+
+    notice = EN["issues"]["removal_broke_things"]
+    assert notice["description"].strip() and "fix_flow" not in notice
+
+
+def test_the_removal_offer_says_it_cannot_be_undone():
+    """It deletes config entries, which is the one irreversible thing any of
+    these flows do."""
+    text = EN["issues"]["siblings_remain"]["fix_flow"]["step"]["confirm"]["description"]
+    assert "cannot be undone" in text.lower()
 
 
 def test_the_fix_flow_only_uses_its_own_placeholders():

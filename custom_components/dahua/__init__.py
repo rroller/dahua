@@ -780,6 +780,13 @@ HTTPS_PROBE_MIN_INTERVAL = 600
 
 ISSUE_UNREACHABLE = "unreachable_{0}"
 ISSUE_HTTP_DEAD_HTTPS_AVAILABLE = "http_dead_https_available_{0}"
+# Raised when an entry is removed and other entries for the same recorder are
+# still configured. An NVR is one entry per channel, so "remove the recorder"
+# is eleven deletions and nobody realises until they are eight in.
+ISSUE_SIBLINGS_REMAIN = "siblings_remain_{0}"
+# Raised when the removed entry was referenced by automations or scripts. Those
+# break silently -- the entities simply stop existing and nothing fires.
+ISSUE_REMOVAL_BROKE_THINGS = "removal_broke_things_{0}"
 
 # address -> {"consecutive": int, "since": float, "entry_ids": set, "last_probe": float}
 #
@@ -3193,6 +3200,59 @@ def _async_forget_host(hass: HomeAssistant, address: str) -> None:
     )
 
 
+@callback
+def _async_dependents(hass: HomeAssistant, entry_id: str) -> dict:
+    """What referenced this entry, by kind, so a removal can say what it broke.
+
+    Home Assistant computes this; it is the same call the frontend's "related"
+    panel makes. Only reachable from async_remove_entry: it reads the entity and
+    device registry rows for the entry, and Home Assistant clears those
+    immediately afterwards.
+
+    Deliberately forgiving. This is a courtesy on a teardown path and nothing
+    here is worth failing a removal over, so an unavailable search component or
+    a changed signature degrades to "nothing found" rather than raising into a
+    hook whose exceptions are only logged anyway.
+    """
+    try:
+        # Imported here because the search component is an after_dependency:
+        # available in practice, but not something to fail setup over.
+        from homeassistant.components.search import (  # pylint: disable=import-outside-toplevel
+            ItemType, Searcher)
+        from homeassistant.helpers.entity import (  # pylint: disable=import-outside-toplevel
+            entity_sources)
+
+        found = Searcher(hass, entity_sources(hass)).async_search(
+            ItemType.CONFIG_ENTRY, entry_id)
+    except Exception as err:  # pylint: disable=broad-except
+        _LOGGER.debug("Could not work out what referenced %s: %s", entry_id, err)
+        return {}
+
+    # Only the kinds that break *silently*. A dashboard card that points at a
+    # missing entity says so on screen; an automation just stops firing. Scenes
+    # and groups are listed for the same reason.
+    return {
+        kind: sorted(found.get(kind) or ())
+        for kind in ("automation", "script", "scene", "group")
+        if found.get(kind)
+    }
+
+
+def _describe_dependents(dependents: dict) -> str:
+    """"3 automations and 1 script", or "" when nothing referenced it."""
+    words = {"automation": "automation", "script": "script",
+             "scene": "scene", "group": "group"}
+    parts = [
+        "%d %s%s" % (len(items), words[kind], "" if len(items) == 1 else "s")
+        for kind, items in dependents.items()
+    ]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Withdraw anything said about a host once its last entry is removed.
 
@@ -3212,13 +3272,81 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     most likely to be there precisely when it did not.
     """
     address = normalize_address(entry.data.get(CONF_ADDRESS))
-    if not address or _entries_for_address(hass, address):
+    # Read before anything else: Home Assistant clears the registry rows this
+    # depends on as soon as this hook returns.
+    dependents = _async_dependents(hass, entry.entry_id)
+    siblings = _entries_for_address(hass, address) if address else []
+
+    if address and not siblings:
+        _async_forget_host(hass, address)
+        _LOGGER.debug(
+            "Last entry for %s removed; forgot its host state and withdrew its repairs",
+            address,
+        )
+
+    _async_report_removal(hass, entry, address, siblings, dependents)
+
+
+@callback
+def _async_report_removal(hass: HomeAssistant, entry: ConfigEntry, address: str,
+                          siblings: list, dependents: dict) -> None:
+    """Say what the removal left behind, and offer to finish it.
+
+    At most one card, because two would be noise on a single deletion:
+
+    - other entries for the same recorder -> offer to remove them too, and
+      mention anything that referenced the one just removed
+    - nothing left for the host but things referenced it -> say what they were
+
+    Nothing to say means nothing raised. Removing a standalone camera that no
+    automation touched is silent, which is the common case.
+
+    Persistent on purpose: a removal is usually followed by a restart, and a
+    card that vanishes over one is no use to somebody who wanted to read it
+    afterwards.
+    """
+    described = _describe_dependents(dependents)
+
+    if siblings:
+        titles = ", ".join(sorted(e.title or "untitled" for e in siblings))
+        ir.async_create_issue(
+            hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(address),
+            is_fixable=True, is_persistent=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="siblings_remain",
+            # The title's placeholders, and only those. The fix flow fills its
+            # own form separately, from `data` below -- a placeholder named here
+            # but not there renders literally as {removed} on screen.
+            translation_placeholders={
+                "address": address,
+                "count": str(len(siblings)),
+            },
+            data={
+                "address": address,
+                "removed": entry.title or "untitled",
+                # A whole sentence or nothing, so the form reads correctly
+                # either way. A bare count would leave a dangling clause.
+                "dependents_note": (
+                    "%s also referenced the entry you removed, and are not "
+                    "repaired by this." % described.capitalize()
+                ) if described else "",
+            },
+        )
         return
-    _async_forget_host(hass, address)
-    _LOGGER.debug(
-        "Last entry for %s removed; forgot its host state and withdrew its repairs",
-        address,
-    )
+
+    if described:
+        ir.async_create_issue(
+            hass, DOMAIN, ISSUE_REMOVAL_BROKE_THINGS.format(entry.entry_id),
+            is_fixable=False, is_persistent=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="removal_broke_things",
+            translation_placeholders={
+                "removed": entry.title or "untitled",
+                "dependents": described,
+                "names": ", ".join(
+                    name for items in dependents.values() for name in items),
+            },
+        )
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

@@ -2,6 +2,7 @@
   "domain": "dahua",
   "name": "Dahua",
   "after_dependencies": [
+    "search",
     "tag"
   ],
   "codeowners": [

@@ -105,6 +105,24 @@
         }
     },
     "issues": {
+        "siblings_remain": {
+            "title": "{count} more Dahua entries still use {address}",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Remove the other {count} entries for {address}?",
+                        "description": "You removed **{removed}**, and {count} other Dahua configuration entries still use the device at {address}.\n\nA recorder is added one entry per channel, so removing all of it means removing every one. This removes the remaining {count} for you, one at a time:\n\n{titles}\n\n**This cannot be undone.** The entities and their history go with them. If you meant to remove only the one channel, dismiss this instead.\n\n{dependents_note}"
+                    }
+                },
+                "abort": {
+                    "not_configured": "No Dahua configuration entries use {address} any more, so there is nothing left to remove."
+                }
+            }
+        },
+        "removal_broke_things": {
+            "title": "{dependents} referenced the Dahua entry you removed",
+            "description": "You removed **{removed}**, and {dependents} referred to entities it provided:\n\n{names}\n\nThose entities no longer exist, so anything using them stops working quietly rather than reporting an error. Worth checking each one.\n\nThis is only a notice -- dismiss it once you have looked."
+        },
         "device_unreachable": {
             "title": "Dahua device at {address} is not responding",
             "description": "Home Assistant has not been able to reach the Dahua device at {address} for about {minutes} minutes. {entries} configuration entries use this device.\n\nCheck that it is powered on and reachable on your network. The debugging section of the documentation explains how to capture logs.\n\nThis message disappears on its own as soon as the device answers again."
