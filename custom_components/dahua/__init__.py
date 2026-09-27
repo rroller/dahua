@@ -1443,8 +1443,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._username = username
         self._password = password
 
-        # Async tasks for event streaming (replaces threads)
-        self._event_task: asyncio.Task | None = None
+        # The CGI event stream is not here: #615 moved it to one shared
+        # DahuaHostEventStream per address, keyed in _HOST_STREAMS. The
+        # _event_task that used to live here stayed behind as an attribute that
+        # was always None, and diagnostics went on reporting it, so
+        # stream_task_running read False for every device for three weeks.
         self._vto_task: asyncio.Task | None = None
         self._vto_client: DahuaVTOClient | None = None
 
@@ -1530,9 +1533,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def async_stop(self, event: Any = None):
         """ Stop anything we need to stop """
         await _release_host_stream(self)
-        if self._event_task is not None:
-            self._event_task.cancel()
-            self._event_task = None
         if self._vto_task is not None:
             self._vto_task.cancel()
             self._vto_task = None
