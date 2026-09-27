@@ -3026,6 +3026,12 @@ class DahuaClient:
                         config_read = _CONFIG_READ.search(url)
                         if config_read is None:
                             raise
+                        if ((self._rpc2_key(), config_read.group(1))
+                                in _RPC2_TABLE_UNAVAILABLE):
+                            # Both transports have already refused this table. The gate
+                            # above skips RPC2 for it, and without the same check here
+                            # every later read paid for the refusal again on the way past.
+                            raise
                         if self._rpc2_key() not in _HOST_CGI_CONFIG_ABSENT:
                             _HOST_CGI_CONFIG_ABSENT.add(self._rpc2_key())
                             _LOGGER.info(
@@ -3033,7 +3039,25 @@ class DahuaClient:
                                 "serves no CGI config; reading config over RPC2 from "
                                 "now on",
                                 cgi_error.status, self._address)
-                        return await self._rpc2_get_config(config_read.group(1))
+                        try:
+                            return await self._rpc2_get_config(config_read.group(1))
+                        except Rpc2MethodRefused as rpc2_refusal:
+                            # The device serves this table on neither transport. Raising
+                            # the RPC2 refusal changed the exception a caller sees for an
+                            # absent table from ClientResponseError to Rpc2MethodRefused,
+                            # and the callers that already tolerated a 404 do not catch
+                            # that -- which took an SL300's whole entry down on a read of
+                            # RemoteDevice, a table only a recorder has. A fallback has to
+                            # be invisible when it cannot help, so the original 404 is
+                            # what comes back.
+                            _RPC2_TABLE_UNAVAILABLE.add(
+                                (self._rpc2_key(), config_read.group(1)))
+                            _LOGGER.debug(
+                                "%s serves %s over neither CGI nor RPC2 (%s); reporting "
+                                "the original %s",
+                                self._address, config_read.group(1), rpc2_refusal,
+                                cgi_error.status)
+                            raise cgi_error from None
                     data = await response.text()
                     if verify_ok:
                         if data.lower().strip() != "ok":
