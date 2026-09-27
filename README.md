@@ -144,15 +144,22 @@ and the sub-stream you intend to use has to be enabled on the device.
        here. You only need the first one: the recorder's other channels are
        offered on the next screen, where they are listed by the number the
        recorder itself uses
-    8. **Events**: which of the device's events become binary sensors. The default
-       covers motion and the common smart-detection events. Most of the rest do
-       nothing on most cameras, and each one selected adds an entity. If you want
-       an event that is not listed, open an issue
+
+Only **username**, **password**, **address** and **channel** are asked at first.
+**Port**, **RTSP port** and **Use HTTPS** appear only if the connection fails, because
+their defaults are right on almost every device and a form that asks eight questions to
+add one camera is a form people get wrong. Which events become binary sensors is not
+asked here either: it is on the options screen, where it can be changed afterwards
+without removing the camera.
 
 On a recorder, the next screen offers the other channels that have a live camera on
 them, and the one after that lets you file each of them in an area. Channels that
 are empty, switched off, or reached over ONVIF are not offered, because this
 integration cannot drive them.
+
+The last screen asks for a name and shows a **still from the channel you chose**, so a
+channel number that is off by one is caught by looking rather than after the entry
+exists. A device that will not serve a snapshot simply shows no picture.
 
 NOTE: All streams will be added, even if not enabled in the camera. Just remove the
 ones you don't want.
@@ -444,6 +451,7 @@ Option | Default | Description
 Poll interval | 30 seconds | How often the device is asked for the state of its settings. Events do not use this — they arrive on a separate stream and are unaffected by a longer interval
 Camera, Switch, Light, Select, Binary sensor, Button, Sensor | on | Which platforms this entry creates. These also stop the requests that exist only to feed a platform, so turning one off reduces how much the device is asked, not just how many entities you see
 Auto-detect channel | on | Some firmwares number channels from 0 and others from 1. Turn this off if the detection gets it wrong on your camera
+Events | motion and the common smart-detection events | Which of the device's events become binary sensors. Most of the rest do nothing on most cameras, and each one selected adds an entity. An empty selection is honoured, which turns the event stream off for this entry. If you want an event that is not listed, open an issue
 Enable NVR active deterrence controls | off | Adds Warning Light and Alarm entities for a camera behind an NVR. Off by default because whether the NVR relays these commands varies by model — on some it accepts them and does nothing
 
 ## Reducing entries in your device's log

@@ -10,7 +10,6 @@
                     "address": "Endereço",
                     "port": "Porta",
                     "rtsp_port": "Porta RTSP",
-                    "events": "Eventos",
                     "channel": "Canal (câmeras individuais são 0, NVRs são o índice baseado em 0)"
                 }
             },

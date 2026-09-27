@@ -10,7 +10,6 @@
                     "address": "Dirección IP",
                     "port": "Puerto",
                     "rtsp_port": "Puerto RTSP",
-                    "events": "Eventos",
                     "channel": "Canal (Generalmente es el 0 a menos que uses un grabador)"
                 }
             },
