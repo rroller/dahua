@@ -64,6 +64,9 @@
             "timeout": "The camera did not answer in time. It may be busy, or reachable but very slow — try again, and check the port is the one it serves HTTP on.",
             "ssl_error": "The secure connection failed. If the camera does not serve HTTPS, clear the HTTPS option; if it does, it is usually on port 443.",
             "unexpected_reply": "Something answered, but not a Dahua camera. Check the port — the web interface and the API are not always the same one.",
+            "channel_not_on_device": "The recorder does not have that channel. This field counts from 0, so the recorder's channel 4 is 3 here and its last channel is one less than the number it shows.",
+            "channel_disabled": "That channel exists on the recorder but is switched off, so it has no camera to read. Enable it on the recorder first, then add it here.",
+            "channel_is_onvif": "That channel is reached over ONVIF, which this integration cannot drive: the recorder does not serve it on its own Dahua paths. Use Home Assistant's ONVIF integration for that camera, or switch the channel to Dahua's own protocol on the recorder.",
             "unknown": "Could not add the camera. The Home Assistant log has the reason."
         },
         "abort": {
