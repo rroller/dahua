@@ -17,6 +17,11 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 TIMEOUT_SECONDS = 20
 
+# Unsupported table/method responses. LightingScheme returned 268959743 on
+# IPC-Color4K-X, DHI-NVR5464 and VTO2000A; CGI refusals vary between 400 and
+# 500. Decide absence from the RPC2 table read, not the CGI HTTP status.
+RPC2_TABLE_ABSENT_CODES = frozenset({268632064, 268959743})
+
 # The event stream asks the device to heartbeat at this interval, so a socket
 # that has delivered nothing for a comfortable multiple of it has stalled.
 EVENT_STREAM_HEARTBEAT_SECONDS = 5
@@ -799,6 +804,15 @@ class DahuaClient:
         protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
 
+    def base_url(self) -> str:
+        """The scheme, host and port this client actually talks to.
+
+        Public because the device page's Visit link needs exactly this, and reaching
+        into _base from another module is the kind of thing that survives for years
+        behind a pylint disable.
+        """
+        return self._base
+
     def get_rtsp_stream_url(self, channel: int, subtype: int) -> str:
         """
         Returns the RTSP url for the supplied subtype (subtype is 0=Main stream, 1=Sub stream)
@@ -1345,7 +1359,7 @@ class DahuaClient:
             "set_coaxial_control_state", dahua_type, enabled
         )
 
-    async def _rpc2_get_config(self, name: str) -> dict:
+    async def _rpc2_get_config(self, name: str, *, allow_missing=False) -> dict:
         """A config read over the shared session, in CGI's shape.
 
         One retry, because the failure this expects is an expired session and
@@ -1355,7 +1369,14 @@ class DahuaClient:
         for attempt in (1, 2):
             try:
                 holder = await self._shared_rpc2()
-                params = await holder.client.get_config({"name": name})
+                try:
+                    params = await holder.client.get_config({"name": name})
+                except Rpc2MethodRefused as exc:
+                    # Only a refusal of the table read can establish absence;
+                    # a failed login or expired session must still propagate.
+                    if allow_missing and exc.code in RPC2_TABLE_ABSENT_CODES:
+                        return {}
+                    raise
                 return flatten_rpc2_config(name, params.get("table"))
             except Rpc2MethodRefused:
                 # The device answered. Logging in again cannot change its mind
@@ -1435,8 +1456,11 @@ class DahuaClient:
             if over_cgi:
                 return over_cgi
         except aiohttp.ClientResponseError:
+            # CGI status alone cannot establish absence: some firmware uses
+            # 500 for an unsupported table. Let the RPC2 table read decide;
+            # login, session and transport failures there still propagate.
             pass
-        return await self._rpc2_get_config("LightingScheme")
+        return await self._rpc2_get_config("LightingScheme", allow_missing=True)
 
     async def async_set_lighting_scheme_illuminator(
             self, channel: int, enabled: bool, brightness: int,
@@ -1937,20 +1961,17 @@ class DahuaClient:
 
     async def async_get_lighting_scheme_mode(
         self, channel: int, profile_mode: str
-    ) -> str:
-        """Return LightingScheme.LightingMode via CGI getConfig."""
+    ) -> str | None:
+        """Return the live LightingMode, falling back to RPC2 when needed."""
 
         channel_index = int(channel)
         profile_index = int(profile_mode)
 
-        # LightingScheme is runtime-sensitive for these cameras.
-        # Avoid using an older shared getConfig snapshot.
-        clear_host_cache(self._address)
-
-        data = await self.get(
-            "/cgi-bin/configManager.cgi?"
-            "action=getConfig&name=LightingScheme"
-        )
+        # This uses _request directly (or RPC2), bypassing get's shared cache
+        # so restore capture always observes a fresh configuration.
+        data = await self.async_get_lighting_scheme()
+        if not data:
+            return None
 
         key = (
             f"table.LightingScheme[{channel_index}]"
@@ -1983,6 +2004,8 @@ class DahuaClient:
             channel_index,
             str(profile_index),
         )
+        if previous_mode is None:
+            raise ValueError("This device does not expose LightingScheme")
 
         if previous_mode == mode:
             return previous_mode
@@ -3003,6 +3026,12 @@ class DahuaClient:
                         config_read = _CONFIG_READ.search(url)
                         if config_read is None:
                             raise
+                        if ((self._rpc2_key(), config_read.group(1))
+                                in _RPC2_TABLE_UNAVAILABLE):
+                            # Both transports have already refused this table. The gate
+                            # above skips RPC2 for it, and without the same check here
+                            # every later read paid for the refusal again on the way past.
+                            raise
                         if self._rpc2_key() not in _HOST_CGI_CONFIG_ABSENT:
                             _HOST_CGI_CONFIG_ABSENT.add(self._rpc2_key())
                             _LOGGER.info(
@@ -3010,7 +3039,25 @@ class DahuaClient:
                                 "serves no CGI config; reading config over RPC2 from "
                                 "now on",
                                 cgi_error.status, self._address)
-                        return await self._rpc2_get_config(config_read.group(1))
+                        try:
+                            return await self._rpc2_get_config(config_read.group(1))
+                        except Rpc2MethodRefused as rpc2_refusal:
+                            # The device serves this table on neither transport. Raising
+                            # the RPC2 refusal changed the exception a caller sees for an
+                            # absent table from ClientResponseError to Rpc2MethodRefused,
+                            # and the callers that already tolerated a 404 do not catch
+                            # that -- which took an SL300's whole entry down on a read of
+                            # RemoteDevice, a table only a recorder has. A fallback has to
+                            # be invisible when it cannot help, so the original 404 is
+                            # what comes back.
+                            _RPC2_TABLE_UNAVAILABLE.add(
+                                (self._rpc2_key(), config_read.group(1)))
+                            _LOGGER.debug(
+                                "%s serves %s over neither CGI nor RPC2 (%s); reporting "
+                                "the original %s",
+                                self._address, config_read.group(1), rpc2_refusal,
+                                cgi_error.status)
+                            raise cgi_error from None
                     data = await response.text()
                     if verify_ok:
                         if data.lower().strip() != "ok":
