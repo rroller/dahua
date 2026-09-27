@@ -22,6 +22,7 @@ discovery must work with nothing but the DHCP announcement and treat anything th
 device volunteers as a bonus.
 """
 
+import asyncio
 import json
 import struct
 
@@ -178,10 +179,96 @@ def test_a_model_without_a_serial_is_still_worth_having():
     assert info["HttpPort"] == 8000
 
 
-async def test_a_device_that_does_not_answer_costs_nothing():
-    """Four of the five devices this was written against do not answer. That has to
-    be an ordinary outcome, not an error: 192.0.2.1 is reserved and never replies."""
-    assert await discovery.async_probe("192.0.2.1", timeout=0.2) == {}
+# --- a device that will not answer -------------------------------------------
+#
+# No real sockets. Home Assistant's test framework blocks them, and a test that
+# leans on a reserved address being unreachable is leaning on the network anyway.
+
+
+class _SilentTransport:
+    """Accepts the probe and never delivers anything back."""
+
+    def __init__(self):
+        self.sent = []
+
+    def sendto(self, data):
+        self.sent.append(data)
+
+    def close(self):
+        self.closed = True
+
+
+async def test_a_silent_device_costs_nothing(monkeypatch):
+    """Most likely reason for silence is a device that is busy or switched off. It
+    has to read as "nothing to add", not as a failure."""
+    transport = _SilentTransport()
+
+    async def _endpoint(factory, remote_addr=None):
+        factory()
+        return transport, None
+
+    monkeypatch.setattr(asyncio.get_running_loop(),
+                        "create_datagram_endpoint", _endpoint)
+
+    assert await discovery.async_probe("10.0.0.5", timeout=0.01) == {}
+    assert transport.sent, "the probe should still have been sent"
+
+
+async def test_the_transport_is_closed_even_when_nothing_answers(monkeypatch):
+    """A socket left open per discovery would accumulate for the life of the
+    process, and DHCP discovery fires whenever a lease is renewed."""
+    transport = _SilentTransport()
+
+    async def _endpoint(factory, remote_addr=None):
+        factory()
+        return transport, None
+
+    monkeypatch.setattr(asyncio.get_running_loop(),
+                        "create_datagram_endpoint", _endpoint)
+
+    await discovery.async_probe("10.0.0.5", timeout=0.01)
+
+    assert getattr(transport, "closed", False)
+
+
+async def test_an_unreachable_host_is_not_an_error(monkeypatch):
+    """No route, or an ICMP port-unreachable, arrives as OSError."""
+    async def _refuse(factory, remote_addr=None):
+        raise OSError(101, "network unreachable")
+
+    monkeypatch.setattr(asyncio.get_running_loop(),
+                        "create_datagram_endpoint", _refuse)
+
+    assert await discovery.async_probe("10.0.0.5", timeout=0.01) == {}
+
+
+async def test_a_device_that_answers_with_rubbish_is_not_a_device(monkeypatch):
+    """Something else listening on 37810 must not become a discovery."""
+    async def _endpoint(factory, remote_addr=None):
+        protocol = factory()
+        protocol.datagram_received(b"who knows", ("10.0.0.5", 37810))
+        return _SilentTransport(), None
+
+    monkeypatch.setattr(asyncio.get_running_loop(),
+                        "create_datagram_endpoint", _endpoint)
+
+    assert await discovery.async_probe("10.0.0.5", timeout=1) == {}
+
+
+async def test_a_real_reply_comes_back_parsed(monkeypatch):
+    """The whole path, from probe to identity, without a network."""
+    async def _endpoint(factory, remote_addr=None):
+        protocol = factory()
+        protocol.datagram_received(_reply(), ("10.0.0.5", 37810))
+        return _SilentTransport(), None
+
+    monkeypatch.setattr(asyncio.get_running_loop(),
+                        "create_datagram_endpoint", _endpoint)
+
+    info = await discovery.async_probe("10.0.0.5", timeout=1)
+
+    assert info["SerialNo"] == "3C06520PAN00001"
+    assert info["HttpPort"] == 80
 
 
 # --- which entries count as "this device already" ----------------------------
