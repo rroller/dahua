@@ -32,7 +32,7 @@
             },
             "name": {
                 "title": "Name this camera",
-                "description": "{preview}\nGive it a name you will recognise in your dashboards and automations. If this is not the camera you meant to add, close this dialog and start again with a different channel number.",
+                "description": "Give it a name you will recognise in your dashboards and automations. If this is not the camera you meant to add, close this dialog and start again with a different channel number.\n\n{preview}",
                 "data": {
                     "name": "Device Name"
                 },

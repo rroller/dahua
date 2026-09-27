@@ -174,6 +174,21 @@ def test_every_placeholder_the_description_uses_is_supplied():
     assert _placeholders_in(description) == {"preview"}
 
 
+def test_the_description_reads_as_prose_when_there_is_no_picture():
+    """The placeholder is "" on a device that gave nothing, and the dialog renders this
+    with `<ha-markdown breaks>`, so a placeholder at the front would leave a blank line
+    above the text -- on exactly the devices that already get the worst of this flow.
+    Prose first and the picture after it removes the case entirely, and reads better
+    when there is one: instruction, then picture, then the field."""
+    with io.open(EN, encoding="utf-8") as handle:
+        description = json.load(handle)["config"]["step"]["name"]["description"]
+
+    assert description.rstrip().endswith("{preview}"), (
+        "the picture goes last: %r" % description)
+    without = description.replace("{preview}", "")
+    assert without == without.lstrip(), "a missing picture leaves a blank line"
+
+
 async def test_the_description_is_what_the_picture_is_placed_into(monkeypatch):
     """The key the form supplies is the key the shipped string asks for."""
     _stub_fetch(monkeypatch)
