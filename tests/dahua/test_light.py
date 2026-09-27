@@ -738,3 +738,27 @@ async def test_reboot_recovery_failure_leaves_generation_for_retry(monkeypatch):
     assert light._manual_on is False
     assert light._scheme_restore is None
     assert light._light_restore is None
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_illuminator_without_scheme_can_turn_on_and_off(restart):
+    """IPC-Color4K-X exposes WhiteLight but rejects LightingScheme."""
+    c = _Coordinator(channel=0, profile_mode="0")
+    c.client.scheme = None
+    c.client.light_mode = "Off"
+    c.client.light_brightness = 50
+    light = _light(DahuaIlluminator, c)
+    await light.async_turn_on()
+    assert c.client.v2[-1] == (0, True, 100, "0", 0, "NearLight")
+    assert light._restore_store.data["previous_scheme"] is None
+    await light.async_turn_on(**{ATTR_BRIGHTNESS: 128})
+    if restart:
+        recovered = _light(DahuaIlluminator, c)
+        recovered._restore_store = light._restore_store
+        assert await recovered._recover_persisted_override()
+    else:
+        await light.async_turn_off()
+    assert c.client.scheme_writes == []
+    assert c.client.light_mode == "Off"
+    assert c.client.light_brightness == 50
+    assert light._restore_store.data is None
