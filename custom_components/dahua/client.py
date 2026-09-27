@@ -134,6 +134,14 @@ _HOST_RPC2_UNAVAILABLE: set = set()
 # every later read.
 _RPC2_TABLE_UNAVAILABLE: set = set()
 
+# Hosts whose /cgi-bin/ config endpoint is not there at all -- an SL300 answers 404
+# to configManager.cgi as readily as to eventManager.cgi. Reads for these go over
+# RPC2 without waiting for the use_rpc2 option to be turned on, because on such a
+# device that option is not a preference, it is the only transport. Learnt from the
+# first 404 rather than probed at setup, and not remembered across a restart, so a
+# firmware update that restores CGI is picked up by paying one 404 again.
+_HOST_CGI_CONFIG_ABSENT: set = set()
+
 # The device states its own keepalive interval in the login reply. Ask slightly
 # inside it, the way the VTO keepalive already does.
 RPC2_KEEPALIVE_MARGIN_SECONDS = 5
@@ -956,8 +964,23 @@ class DahuaClient:
             return {"vendor": "Generic RTSP"}
 
     async def reboot(self) -> dict:
-        """ Reboots the device """
-        return await self.get("/cgi-bin/magicBox.cgi?action=reboot")
+        """Reboot, over CGI, falling back to RPC2 if the CGI path is absent.
+
+        Measured on an SL300: magicBox.reboot answers result=true and the device
+        only then goes down, so this returns before the connection drops rather
+        than having to treat a dropped request as a success.
+        """
+        try:
+            return await self.get("/cgi-bin/magicBox.cgi?action=reboot")
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "magicBox.cgi answered %s on %s; rebooting over RPC2",
+                cgi_error.status, self._address)
+            holder = await self._shared_rpc2()
+            await holder.client.request("magicBox.reboot")
+            return {"result": True}
 
     async def get_max_extra_streams(self) -> int:
         """ get_max_extra_streams returns the max number of sub streams supported by the camera """
@@ -1137,7 +1160,19 @@ class DahuaClient:
         """
         url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[{0}].Enable={1}".format(
             channel, str(enabled).lower())
-        return await self.get(url, True)
+        try:
+            return await self.get(url, True)
+        except aiohttp.ClientResponseError as cgi_error:
+            # Same absent CGI as the ordinary motion toggle, and this switch is
+            # offered on such devices -- an SL300 serves a SmartMotionDetect table
+            # with Enable true while its CGI path answers 404.
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting SmartMotionDetect "
+                "over RPC2", cgi_error.status, self._address)
+            return await self._rpc2_set_config_value(
+                "SmartMotionDetect", channel, "Enable", bool(enabled))
 
     async def async_set_light_global_enabled(self, enabled: bool):
         """ Turns the blue ring light on/off for Amcrest doorbells """
@@ -1329,6 +1364,40 @@ class DahuaClient:
                 if attempt == 2:
                     raise
         return {}
+
+    async def _rpc2_set_config_value(self, name: str, channel: int, key: str, value) -> dict:
+        """Set one field of one config table over RPC2, read-modify-write.
+
+        configManager.setConfig replaces the whole table, so the table is read
+        first and put back with one field changed -- writing a table built from
+        scratch would silently drop every setting it did not know about.
+
+        The table is per channel on some tables and a bare object on others
+        (MotionDetect is a one-element list on an SL300, General is an object), so
+        both shapes are handled rather than assumed.
+        """
+        holder = await self._shared_rpc2()
+        response = await holder.client.get_config({"name": name})
+        # This firmware returns the table at the top level; older ones nest it
+        # under params, and _rpc2_get_config reads it the same way.
+        table = response.get("table")
+        if table is None:
+            table = (response.get("params") or {}).get("table")
+        if isinstance(table, list):
+            if channel >= len(table):
+                raise ConnectionError(
+                    "%s has no channel %d in its %s table (%d entries)"
+                    % (self._address, channel, name, len(table)))
+            table[channel][key] = value
+        elif isinstance(table, dict):
+            table[key] = value
+        else:
+            raise ConnectionError(
+                "%s returned no %s table to write to over RPC2" % (self._address, name))
+        await holder.client.set_configs([(name, table)])
+        _LOGGER.debug("Set %s[%d].%s = %r over RPC2 on %s",
+                      name, channel, key, value, self._address)
+        return {"result": True}
 
     async def async_get_lighting_scheme(self) -> dict:
         """Which emitter the camera is willing to use, on Smart Dual Light models.
@@ -2325,6 +2394,12 @@ class DahuaClient:
     # credentials are wrong on every transport.
     EVENT_CGI_ABSENT = (404, 501)
 
+    # And the same for config and control endpoints. An SL300 answers 404 to every
+    # /cgi-bin/ path it has, so the motion-detection toggle wrote nothing and the
+    # reboot button did nothing -- both failing as though the request were wrong
+    # rather than the transport.
+    CONFIG_CGI_ABSENT = (404, 501)
+
     async def async_access_control_open_door(self, door_id: int = 1) -> dict:
         """Open a door, over CGI, falling back to RPC2 if the CGI path is absent.
 
@@ -2393,9 +2468,27 @@ class DahuaClient:
                 _LOGGER.debug("RPC2 logout failed after openDoor", exc_info=True)
 
     async def enable_motion_detection(self, channel: int, enabled: bool) -> dict:
+        """Toggle motion detection, over CGI, falling back to RPC2 if it is absent.
+
+        On a device with no /cgi-bin/ at all this raised a 404 out of the switch, so
+        the toggle did nothing -- and the state the switch showed came from a read
+        that had failed the same way, so it sat at off while the camera had
+        detection enabled the whole time. Measured on an SL300, whose
+        MotionDetect[0].Enable was true throughout.
         """
-        enable_motion_detection will either enable/disable motion detection on the camera depending on the value
-        """
+        try:
+            return await self._enable_motion_detection_cgi(channel, enabled)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting MotionDetect over RPC2",
+                cgi_error.status, self._address)
+            return await self._rpc2_set_config_value(
+                "MotionDetect", channel, "Enable", bool(enabled))
+
+    async def _enable_motion_detection_cgi(self, channel: int, enabled: bool) -> dict:
+        """The CGI route, tried first and kept exactly as it was."""
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{channel}].Enable={enabled}&MotionDetect[{channel}].DetectVersion=V3.0".format(
             channel=channel, enabled=str(enabled).lower())
         response = await self.get(url)
@@ -2407,6 +2500,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].Enable={1}".format(channel,
                                                                                                 str(enabled).lower())
         return await self.get(url)
+
 
     async def stream_events(self, on_receive, events: list, channel: int):
         """
@@ -2836,7 +2930,9 @@ class DahuaClient:
         """Make the request. One caller per shared read reaches here."""
         # Not after close(): this client has given its share back, and taking
         # a new one would build a session nobody is left to release.
-        if (allow_rpc2 and self._use_rpc2 and not self._rpc2_released
+        if (allow_rpc2
+                and (self._use_rpc2 or self._rpc2_key() in _HOST_CGI_CONFIG_ABSENT)
+                and not self._rpc2_released
                 and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE and not verify_ok):
             match = _CONFIG_READ.search(url)
             if match and (self._rpc2_key(), match.group(1)) in _RPC2_TABLE_UNAVAILABLE:
@@ -2883,7 +2979,28 @@ class DahuaClient:
                 try:
                     auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                     response = await auth.request("GET", url)
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except aiohttp.ClientResponseError as cgi_error:
+                        # A config read whose endpoint is not there is not a failed
+                        # read, it is the wrong transport. Remember the host so the
+                        # next read goes straight to RPC2, and answer this one.
+                        if (cgi_error.status not in self.CONFIG_CGI_ABSENT
+                                or verify_ok
+                                or not allow_rpc2
+                                or self._rpc2_key() in _HOST_RPC2_UNAVAILABLE):
+                            raise
+                        config_read = _CONFIG_READ.search(url)
+                        if config_read is None:
+                            raise
+                        if self._rpc2_key() not in _HOST_CGI_CONFIG_ABSENT:
+                            _HOST_CGI_CONFIG_ABSENT.add(self._rpc2_key())
+                            _LOGGER.info(
+                                "configManager.cgi answered %s on %s, so this device "
+                                "serves no CGI config; reading config over RPC2 from "
+                                "now on",
+                                cgi_error.status, self._address)
+                        return await self._rpc2_get_config(config_read.group(1))
                     data = await response.text()
                     if verify_ok:
                         if data.lower().strip() != "ok":
