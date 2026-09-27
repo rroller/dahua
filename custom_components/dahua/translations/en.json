@@ -75,10 +75,10 @@
         },
         "abort": {
             "single_instance_allowed": "Only a single instance is allowed.",
-            "channel_not_added": "That channel could not be added. A repair notice in Settings says which one and why.",
             "already_configured": "Only a single instance of a device is allowed.",
             "reauth_successful": "Re-authentication was successful.",
-            "reconfigure_successful": "Connection settings updated"
+            "reconfigure_successful": "Connection settings updated",
+            "channel_not_added": "That channel could not be added. A repair notice in Settings says which one and why."
         }
     },
     "options": {
