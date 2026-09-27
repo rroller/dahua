@@ -384,7 +384,7 @@ async def test_an_imported_channel_becomes_an_entry():
     flow = DahuaFlowHandler()
     created = {}
 
-    async def credentials(*args):
+    async def credentials(*args, **kwargs):
         return {"name": "BACKYARD", "serialNumber": "SER1"}, None
 
     async def set_unique_id(unique_id):
@@ -392,7 +392,11 @@ async def test_an_imported_channel_becomes_an_entry():
 
     flow._test_credentials = credentials
     flow.async_set_unique_id = set_unique_id
-    flow._abort_if_unique_id_configured = lambda: None
+    flow._abort_if_unique_id_configured = lambda **kwargs: None
+    # Re-adding a device now looks for its other channels, to move them to the
+    # address just confirmed. That reads the entry list through hass, which this
+    # test does not have, so it is stubbed like the other Home Assistant calls.
+    flow._async_current_entries = lambda: []
     flow.async_create_entry = lambda title, data: created.update(
         {"title": title, "data": data}) or created
 
@@ -409,16 +413,20 @@ async def test_an_imported_channel_that_no_longer_answers_aborts():
     flow = DahuaFlowHandler()
     aborted = {}
 
-    async def credentials(*args):
+    async def credentials(*args, **kwargs):
         return None, "cannot_connect"
 
     flow._test_credentials = credentials
     flow.async_abort = lambda reason: aborted.setdefault("reason", reason)
     flow.async_create_entry = lambda **kw: pytest.fail("created an entry anyway")
+    # Saying which channel was skipped is its own behaviour, tested in
+    # test_silent_channel_and_options.py. This test is about not creating anything.
+    flow._async_report_channel_not_added = lambda *args, **kwargs: None
 
     await flow.async_step_import(_entry_data(channel=3))
 
-    assert aborted["reason"] == "cannot_connect"
+    assert aborted["reason"] == "channel_not_added", (
+        "it used to abort with an *error* key, which config.abort had no string for")
 
 
 # --- the routing, and the wait the user is shown --------------------------
@@ -446,7 +454,7 @@ async def test_the_search_is_shown_as_a_wait():
     flow.hass = SimpleNamespace(
         async_create_task=lambda coro: asyncio.ensure_future(coro))
 
-    async def credentials(*args):
+    async def credentials(*args, **kwargs):
         return {"name": "Front", "serialNumber": "SER1"}, None
 
     async def discover(user_input, exclude):
@@ -455,7 +463,11 @@ async def test_the_search_is_shown_as_a_wait():
     flow._test_credentials = credentials
     flow._async_discover_channels = discover
     flow.async_set_unique_id = _noop
-    flow._abort_if_unique_id_configured = lambda: None
+    flow._abort_if_unique_id_configured = lambda **kwargs: None
+    # Re-adding a device now looks for its other channels, to move them to the
+    # address just confirmed. That reads the entry list through hass, which this
+    # test does not have, so it is stubbed like the other Home Assistant calls.
+    flow._async_current_entries = lambda: []
 
     result = await flow.async_step_user(_entry_data())
 

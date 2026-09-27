@@ -5,18 +5,22 @@ import ssl
 
 import voluptuous as vol
 
-from aiohttp import ClientConnectorError, ClientResponseError, ClientSession, TCPConnector
+from aiohttp import (ClientConnectorError, ClientResponseError, ClientSession,
+                     ClientSSLError, TCPConnector)
 
 from homeassistant import config_entries
+from homeassistant.data_entry_flow import section
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
 from . import dahua_utils
-from . import _async_probe_tcp
+from . import ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp
 from .client import DahuaClient
+from .discovery import async_probe as async_probe_identity
 from .const import (
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -125,6 +129,43 @@ https://developers.home-assistant.io/docs/data_entry_flow_index
 """
 
 
+def channel_unique_id(serial: str, channel) -> str:
+    """The entry id for one channel of one device.
+
+    The bare serial for channel 0 and `serial_N` above it. This was written out
+    separately in the add step and the import step, and **not at all** in the
+    reconfigure step, which is how reconfiguring a channel came to leave the id
+    behind. One function so the three cannot drift again.
+    """
+    index = int(channel or 0)
+    return serial if index == 0 else "{0}_{1}".format(serial, index)
+
+
+def fallback_device_name(address: str, channel) -> str:
+    """A name a person can read, for a device that would not tell us its own.
+
+    get_machine_name falls back to md5(address_rtspport_username_password) when a
+    device has no magicBox.cgi, and the flow offered that hash as the prefilled
+    default of the final step. Pressing Submit produced a device called
+    `4f3a9c8e...`, and because no platform sets _attr_has_entity_name, that hash
+    went into every entity_id for good.
+
+    The devices this hits are the ones the codebase already documents: the same
+    fallback path names #583, #728 and #767.
+
+    The channel is included from 1 upwards, and numbered the way the recorder shows
+    it, so several fallen-back channels of one NVR do not all arrive with the same
+    name.
+    """
+    try:
+        index = int(channel)
+    except (TypeError, ValueError):
+        index = 0
+    if index > 0:
+        return "Dahua camera at {0} channel {1}".format(address, index + 1)
+    return "Dahua camera at {0}".format(address)
+
+
 def describe_setup_failure(exception: BaseException) -> str:
     """Which translation key explains why a device could not be added.
 
@@ -136,7 +177,13 @@ def describe_setup_failure(exception: BaseException) -> str:
     where, or not being what, we were told.
     """
     if isinstance(exception, ClientResponseError):
-        if exception.status in (401, 403):
+        # 401 only, and not 403. _is_login_refused draws that line deliberately: a
+        # 403 means the login was accepted and this account is not allowed that
+        # endpoint, which a restricted Dahua user really can hit, so it keeps the
+        # identity fallback instead of raising. That means a 403 cannot reach here at
+        # all, and listing it as a credentials failure said the opposite of what the
+        # other function documents.
+        if exception.status == 401:
             # Reachable only because get_machine_name and async_get_system_info
             # re-raise a 401 rather than synthesising an id from the refused
             # credentials. If either goes back to swallowing it, a wrong
@@ -150,21 +197,91 @@ def describe_setup_failure(exception: BaseException) -> str:
             # A non-Dahua web server also lands here, so the message covers both.
             return "cgi_disabled"
         return "unexpected_reply"
+    # Order matters here and is not stylistic, and getting it wrong is what made
+    # ssl_error unreachable. aiohttp's TLS failures are *connection* errors:
+    #
+    #   ClientOSError(ClientConnectionError, OSError)
+    #   ClientConnectorError(ClientOSError)
+    #   ClientSSLError(ClientConnectorError)
+    #   ClientConnectorSSLError(ClientSSLError, ssl.SSLError)
+    #
+    # so a ClientConnectorError test placed first matches every TLS failure a
+    # request can raise, and the ssl.SSLError branch below it can never run. The
+    # TLS test has to come first. The bare ssl.SSLError arm is kept for a failure
+    # raised outside a request, which is the only way that type arrives alone.
+    if isinstance(exception, (ClientSSLError, ssl.SSLError)):
+        return "ssl_error"
     if isinstance(exception, ClientConnectorError):
         return "cannot_connect"
-    # Order matters here and is not stylistic: TimeoutError and ssl.SSLError are
-    # both subclasses of OSError, so the generic connection case has to come
-    # last or it swallows them and every failure becomes "cannot connect".
+    # TimeoutError is also an OSError subclass, so the generic connection case
+    # has to stay last or it swallows that too.
     if isinstance(exception, (TimeoutError, asyncio.TimeoutError)):
         return "timeout"
-    if isinstance(exception, ssl.SSLError):
-        return "ssl_error"
     if isinstance(exception, OSError):
         # ConnectionRefusedError and friends, when they arrive unwrapped.
         return "cannot_connect"
     return "unknown"
 
 
+# Errors that belong on the channel field rather than at the top of the form.
+CHANNEL_ERRORS = ("channel_not_on_device", "channel_disabled", "channel_is_onvif")
+
+# Failures that prove the transport already worked: the device answered and said
+# something specific about itself. Showing somebody the port and HTTPS fields after
+# one of these would point them away from the actual problem.
+TRANSPORT_WORKED = ("auth",) + CHANNEL_ERRORS
+
+
+async def async_channel_refusal(client, channel):
+    """Why this channel cannot work, when the device says so outright.
+
+    The channel was accepted unchecked until now: _test_credentials takes it and
+    never uses it, and DahuaClient has no channel parameter at all. So typing the
+    number the recorder displays -- 4 instead of 3, or 16 on a sixteen channel box
+    -- produced a green tick and an entry whose every entity was dead.
+
+    Only a recorder's own RemoteDevice table can answer this, and only for what it
+    states plainly. Everything else is deliberately left alone:
+
+      - no table, or an unreadable one, claims nothing. A standalone camera has
+        none, and a multi-lens camera serves several channels without one, so
+        refusing "channel > 0 with no table" would break those.
+      - channel 0 is never checked. It is a standalone camera at least as often as
+        a recorder's first slot, and no table is needed to know it is plausible.
+      - a slot that exists, is enabled and is not Onvif is accepted even though it
+        may still be empty. A camera removed from the recorder leaves a stale
+        enabled slot, and only a snapshot probe tells the difference. That probe is
+        what async_step_discover spends on the *other* channels; spending it here
+        would mean refusing a channel on a guess.
+
+    Every refusal below is the recorder's own statement about its own hardware.
+    """
+    try:
+        index = int(channel)
+    except (TypeError, ValueError):
+        return None
+    if index == 0:
+        return None
+    try:
+        devices = dahua_utils.parse_remote_devices(
+            await client.async_get_remote_devices())
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.debug("No RemoteDevice table to check channel %s against", index,
+                      exc_info=True)
+        return None
+    if not devices:
+        return None
+
+    slot = devices.get(index)
+    if slot is None:
+        return "channel_not_on_device"
+    if not slot.get("enabled"):
+        return "channel_disabled"
+    if slot.get("protocol") == "onvif":
+        # The recorder does not serve such a channel on its own Dahua paths, so
+        # snapshot answers 400 and RTSP times out (#710).
+        return "channel_is_onvif"
+    return None
 async def async_refine_connection_failure(address: str, reason: str) -> str:
     """Turn "nothing answered" into what the device is actually doing.
 
@@ -210,12 +327,149 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self.init_info = None
         # index -> label, for the other channels of a recorder
         self._found_channels = {}
+        # What a DHCP announcement, and the device itself, told us before we asked
+        # the user anything. Empty for a manual add.
+        self._discovered = {}
         self._extra_channels = []
         # Which area each extra channel was given, by channel index, and the
         # form field each of those answers arrives under.
         self._channel_areas = {}
         self._area_fields = {}
         self._discovery_task = None
+
+    async def async_step_dhcp(self, discovery_info):
+        """A Dahua device appeared on the network.
+
+        Two signals bring us here and they cover different devices: the OUI catches
+        one whose hostname has been changed, and the factory hostname (literally
+        `zhejiang.dahua.technology.co.ltd` on the doorbell measured here) catches
+        one on an OUI we do not list.
+
+        This only ever offers. Nothing is created, no credentials exist yet, and the
+        user fills in the same form as before, with the parts already known filled
+        in for them.
+        """
+        address = discovery_info.ip
+
+        # Dedupe repeated announcements while a flow for this device is open.
+        # Provisional on purpose: the entry's unique_id is the device's serial, and
+        # that is set later by the step that actually logs in. This only stops three
+        # announcements becoming three identical cards.
+        await self.async_set_unique_id(dr.format_mac(discovery_info.macaddress))
+
+        # Unauthenticated, and the reason the rest of this is worth doing: a device
+        # that answers hands over its serial, model and HTTP port. Only one of the
+        # five devices this was written against answers, so nothing below may depend
+        # on it.
+        info = await async_probe_identity(address)
+        serial = str(info.get("SerialNo") or "").strip()
+
+        if serial and self._async_entries_for_serial(serial):
+            return self.async_abort(reason="already_configured")
+
+        # No serial, or one we have not seen: an entry on this address is still
+        # reason enough not to nag.
+        self._async_abort_entries_match({CONF_ADDRESS: address})
+
+        self._discovered = {CONF_ADDRESS: address}
+        port = info.get("HttpPort")
+        if port:
+            self._discovered[CONF_PORT] = str(port)
+
+        name = (info.get("DeviceType") or info.get("MachineName")
+                or discovery_info.hostname or "Dahua device")
+        # Shown on the discovery card in the integrations list.
+        self.context["title_placeholders"] = {"name": name, "address": address}
+        return await self.async_step_user()
+
+    @callback
+    def _async_id_taken_by_another(self, entry, unique_id: str) -> bool:
+        """Is some other entry already this channel?
+
+        Moving an entry onto an id another one holds would leave two entries reading
+        one camera, with duplicate entities and no way for Home Assistant to tell
+        them apart.
+        """
+        return any(
+            other.entry_id != entry.entry_id and other.unique_id == unique_id
+            for other in self._async_current_entries()
+        )
+
+    @callback
+    def _async_report_channel_not_added(self, import_data, reason) -> None:
+        """Say which channel could not be added, somewhere the user will see it.
+
+        A repair rather than a log line, because the log is not where somebody looks
+        after ticking boxes on a form. Not fixable: what went wrong is on the device
+        or the network, and retrying it for them would just fail again.
+
+        Persistent, because this arrives while Home Assistant is still starting the
+        other channels and a card that vanishes on the next restart is no use to
+        somebody reading it afterwards.
+
+        The channel is named the way the recorder names it, one higher than the index
+        stored here, since that is the number the user ticked.
+        """
+        address = import_data.get(CONF_ADDRESS)
+        index = int(import_data.get(CONF_CHANNEL) or 0)
+        _LOGGER.warning(
+            "Channel %s on %s could not be added (%s), so it has been skipped",
+            index + 1, address, reason or "unknown")
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            ISSUE_CHANNEL_NOT_ADDED.format(address, index),
+            is_fixable=False,
+            is_persistent=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="channel_not_added",
+            translation_placeholders={
+                "address": str(address),
+                "channel": str(index + 1),
+                "reason": str(reason or "unknown"),
+            },
+        )
+
+    @callback
+    def _async_heal_siblings(self, unique_id: str, address: str) -> None:
+        """Move a recorder's other channels to the address just confirmed.
+
+        `_abort_if_unique_id_configured(updates=...)` heals the entry whose id
+        matches, and a recorder is one entry per channel. Healing only the matched
+        one leaves the other fifteen pointing at an address the device no longer has,
+        so they stay broken and each has to be reconfigured by hand.
+
+        Same serial is the same physical device, so this is not a guess, and it is
+        what the Gold discovery-update-info rule asks for. Entries already on the
+        right address are left alone so nothing is rewritten for no reason, and the
+        matched entry is left to `updates=`.
+        """
+        head, _sep, tail = unique_id.rpartition("_")
+        serial = head if head and tail.isdigit() else unique_id
+        for entry in self._async_entries_for_serial(serial):
+            if entry.unique_id == unique_id:
+                continue
+            if entry.data.get(CONF_ADDRESS) == address:
+                continue
+            _LOGGER.debug("Moving %s from %s to %s, same serial",
+                          entry.unique_id, entry.data.get(CONF_ADDRESS), address)
+            self.hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_ADDRESS: address})
+
+    def _async_entries_for_serial(self, serial: str) -> list:
+        """Every entry for one device, including a recorder's other channels.
+
+        The unique_id is the bare serial for channel 0 and `serial_N` above it, so a
+        prefix match is what covers a whole recorder. Without it, somebody who added
+        only channel 3 would have that recorder announce itself as undiscovered for
+        ever.
+        """
+        prefix = serial + "_"
+        return [
+            entry for entry in self._async_current_entries()
+            if (entry.unique_id or "") == serial
+            or (entry.unique_id or "").startswith(prefix)
+        ]
 
     async def async_step_user(self, user_input=None):
         """Handle a flow initialized by the user to add a camera."""
@@ -226,6 +480,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         #     return self.async_abort(reason="single_instance_allowed")
 
         if user_input is not None:
+            # The transport fields are not on the form until something fails, so fill
+            # in what is known: a discovery's HttpPort when it gave one, the ordinary
+            # defaults otherwise. Stored either way, because entry.data is what the
+            # coordinator reads.
+            for key, fallback in ((CONF_PORT, "80"), (CONF_RTSP_PORT, "554")):
+                if not user_input.get(key):
+                    user_input[key] = self._discovered.get(key, fallback)
+
             data, error = await self._test_credentials(
                 user_input[CONF_USERNAME],
                 user_input[CONF_PASSWORD],
@@ -234,22 +496,32 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input[CONF_RTSP_PORT],
                 user_input[CONF_CHANNEL],
                 True if user_input.get(CONF_USE_HTTPS) else None,
+                check_channel=True,
             )
             if data is not None:
                 # Only allow a camera to be setup once
                 if "serialNumber" in data and data["serialNumber"] is not None:
-                    channel = int(user_input[CONF_CHANNEL])
-                    unique_id = data["serialNumber"]
-                    if channel > 0:
-                        unique_id = unique_id + "_" + str(channel)
+                    unique_id = channel_unique_id(
+                        data["serialNumber"], user_input[CONF_CHANNEL])
                     await self.async_set_unique_id(unique_id)
-                    self._abort_if_unique_id_configured()
+                    # Heal the siblings first, because the call below raises.
+                    self._async_heal_siblings(unique_id, user_input[CONF_ADDRESS])
+                    # With no updates= this aborted and left the old address in
+                    # place, so somebody whose camera changed IP re-added it, was
+                    # told "already configured", and still had a broken entry with
+                    # nothing pointing at Reconfigure. Same serial is the same
+                    # device, so the address we have just talked to is the right one.
+                    self._abort_if_unique_id_configured(
+                        updates={CONF_ADDRESS: user_input[CONF_ADDRESS]})
 
                 user_input[CONF_NAME] = data["name"]
                 self.init_info = user_input
                 return await self.async_step_discover()
             else:
-                self._errors["base"] = error or "auth"
+                # A channel the recorder disowns is a problem with that field, not
+                # with the connection, so it is reported there.
+                field = CONF_CHANNEL if error in CHANNEL_ERRORS else "base"
+                self._errors[field] = error or "auth"
 
         return await self._show_config_form_user(user_input)
 
@@ -494,12 +766,16 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             import_data[CONF_RTSP_PORT], import_data[CONF_CHANNEL],
             True if import_data.get(CONF_USE_HTTPS) else None)
         if data is None:
-            return self.async_abort(reason=error or "auth")
+            # An import-sourced flow renders no card, so aborting here used to be
+            # completely silent: no error, no card, no repair, and the abort reason
+            # was an *error* key with no string behind it anyway. The user ticked
+            # sixteen channels, got twelve, and nothing said which or why.
+            self._async_report_channel_not_added(import_data, error)
+            return self.async_abort(reason="channel_not_added")
 
         serial = data.get("serialNumber")
         if serial:
-            channel = int(import_data[CONF_CHANNEL])
-            unique_id = serial if channel == 0 else "{0}_{1}".format(serial, channel)
+            unique_id = channel_unique_id(serial, import_data[CONF_CHANNEL])
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
 
@@ -563,6 +839,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 entry.data[CONF_PORT],
                 entry.data[CONF_RTSP_PORT],
                 entry.data.get(CONF_CHANNEL, 0),
+                # The entry's own setting, not the default. Omitting this left
+                # use_https as None, which DahuaClient resolves as
+                # `int(port) == 443` -- so an entry created with HTTPS on any
+                # other port was re-tested over plain HTTP, failed, and told the
+                # user nothing answered on a form whose whole premise is that
+                # their password went stale. There was no way out of that from
+                # the UI. async_step_reconfigure passes it correctly.
+                True if entry.data.get(CONF_USE_HTTPS) else None,
             )
             if data is not None:
                 self.hass.config_entries.async_update_entry(
@@ -576,15 +860,33 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return await self._show_reauth_form()
 
     async def _show_reauth_form(self):
-        """Show the reauthentication form."""
+        """Show the reauthentication form.
+
+        The description says "The credentials for {name} are no longer valid", so
+        it needs a placeholder. Without one there is nothing to substitute and the
+        sentence renders with a literal `{name}` or a hole in it. Home Assistant
+        fills the dialog *heading* from title_placeholders, which is a different
+        channel and does not reach the body.
+
+        The username is prefilled because it is usually not what expired. Asking
+        somebody to retype it on a form they only ever see when something is
+        already broken buys nothing.
+        """
+        entry = getattr(self, "_reauth_entry", None)
+        current = entry.data if entry is not None else {}
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_USERNAME): str,
+                    vol.Required(CONF_USERNAME,
+                                 default=current.get(CONF_USERNAME, "")): str,
                     vol.Required(CONF_PASSWORD): str,
                 }
             ),
+            description_placeholders={
+                "name": (entry.title if entry is not None and entry.title
+                         else current.get(CONF_ADDRESS, "this device")),
+            },
             errors=self._errors,
         )
 
@@ -610,42 +912,124 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input[CONF_RTSP_PORT],
                 user_input[CONF_CHANNEL],
                 True if user_input.get(CONF_USE_HTTPS) else None,
+                check_channel=True,
             )
             if data is not None:
+                # The channel is on this form, and changing it used to leave the
+                # unique_id behind. Two things went wrong with that: another entry
+                # could then be added for the channel this one had moved to, so two
+                # entries polled one camera and the duplicate guard could not see it;
+                # and the channel this one moved *away* from became unaddable for
+                # good, because a fresh add computes the id this entry is still
+                # holding and aborts.
+                serial = data.get("serialNumber")
+                if serial:
+                    moved_to = channel_unique_id(serial, user_input[CONF_CHANNEL])
+                    if moved_to != entry.unique_id:
+                        if self._async_id_taken_by_another(entry, moved_to):
+                            self._errors[CONF_CHANNEL] = "already_configured"
+                            return await self._show_reconfigure_form(entry, user_input)
+                        return self.async_update_reload_and_abort(
+                            entry, unique_id=moved_to, data_updates=user_input)
                 return self.async_update_reload_and_abort(entry, data_updates=user_input)
             self._errors["base"] = error or "auth"
 
+        return await self._show_reconfigure_form(entry, user_input)
+
+    async def _show_reconfigure_form(self, entry, user_input=None):
+        """The reconfigure form, prefilled from the entry and from what was typed.
+
+        Separated out because a channel that collides with another entry has to come
+        back to this form with an error on that field, rather than aborting.
+        """
         current = {**entry.data, **(user_input or {})}
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_ADDRESS, default=current.get(CONF_ADDRESS, "")): str,
-                    vol.Required(CONF_PORT, default=str(current.get(CONF_PORT, "80"))): str,
-                    vol.Required(CONF_RTSP_PORT, default=str(current.get(CONF_RTSP_PORT, "554"))): str,
-                    vol.Required(CONF_CHANNEL, default=int(current.get(CONF_CHANNEL, 0))): int,
+                    vol.Required(CONF_PORT,
+                                 default=str(current.get(CONF_PORT, "80"))): vol.All(cv.port, vol.Coerce(str)),
+                    vol.Required(CONF_RTSP_PORT,
+                                 default=str(current.get(CONF_RTSP_PORT, "554"))): vol.All(cv.port, vol.Coerce(str)),
+                    vol.Required(CONF_CHANNEL,
+                                 default=int(current.get(CONF_CHANNEL, 0))): vol.All(
+                                     vol.Coerce(int), vol.Range(min=0)),
                     vol.Optional(CONF_USE_HTTPS, default=bool(current.get(CONF_USE_HTTPS, False))): bool,
                 }
             ),
             errors=self._errors,
         )
 
-    async def _show_config_form_user(self, user_input):  # pylint: disable=unused-argument
-        """Show the configuration form to edit camera name."""
+    @callback
+    def _user_schema(self, reveal_transport=False):
+        """The add form's fields.
+
+        Four questions, not eight. Username, password and address are the ones only
+        the user can answer; the channel stays because hiding it would remove the
+        ability to add one channel of a recorder on its own, which is a capability
+        rather than a detail.
+
+        The port, the RTSP port and the HTTPS box appear **only after something has
+        failed**. They are transport details the integration can work out: 80 and 554
+        are right almost always, HTTPS follows from the port, and a discovery often
+        supplies the real one. Asking all three up front makes every user answer for
+        the few whose device is unusual, and #794 now names the unusual cases as they
+        happen ("it is listening on 443, tick HTTPS").
+
+        The events list is gone from here entirely. It is not needed to connect, so
+        the Bronze config-flow rule puts it in options, and it silently decided the
+        entity count: 42 codes, most of which do nothing on most cameras. An entry
+        created without it gets DEFAULT_EVENTS, which get_configured_events and the
+        options form both already handle.
+        """
+        fields = {
+            vol.Required(CONF_USERNAME): str,
+            vol.Required(CONF_PASSWORD): str,
+            vol.Required(CONF_ADDRESS): str,
+            vol.Required(CONF_CHANNEL, default=0): vol.All(
+                vol.Coerce(int), vol.Range(min=0)),
+        }
+        if reveal_transport:
+            # Checked as ports and stored as strings, which is what every existing
+            # entry holds: cv.port alone would store an int and leave two shapes
+            # mixed across entries for no gain. int() also strips whitespace, so a
+            # trailing space stops becoming "http://ip: 80", a yarl InvalidURL, and
+            # the message "the log has the reason".
+            #
+            # vol.Coerce(str) and not a bare str: in voluptuous a type is a *check*,
+            # not a conversion, so vol.All(cv.port, str) asserts that the int cv.port
+            # just produced is a string and fails every time.
+            fields[vol.Required(CONF_PORT, default="80")] = vol.All(
+                cv.port, vol.Coerce(str))
+            fields[vol.Required(CONF_RTSP_PORT, default="554")] = vol.All(
+                cv.port, vol.Coerce(str))
+            fields[vol.Optional(CONF_USE_HTTPS, default=False)] = bool
+        return vol.Schema(fields)
+
+    async def _show_config_form_user(self, user_input):
+        """Show the add form, prefilled with anything already known.
+
+        Two sources, and the order matters. What the user just typed wins, because a
+        submit that failed used to come back empty and a mistyped port meant
+        entering everything again. Behind that sits whatever a discovery worked out.
+
+        Suggested values rather than defaults, so validation is untouched: a
+        required field with an empty default is not the same thing as a required
+        field. The password is never prefilled from either source.
+        """
+        known = dict(self._discovered)
+        known.update({key: value for key, value in (user_input or {}).items()
+                      if key != CONF_PASSWORD and value not in (None, "")})
+
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_USERNAME): str,
-                    vol.Required(CONF_PASSWORD): str,
-                    vol.Required(CONF_ADDRESS): str,
-                    vol.Required(CONF_PORT, default="80"): str,
-                    vol.Required(CONF_RTSP_PORT, default="554"): str,
-                    vol.Required(CONF_CHANNEL, default=0): int,
-                    vol.Optional(CONF_USE_HTTPS, default=False): bool,
-                    vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(ALL_EVENTS),
-                }
-            ),
+            data_schema=self.add_suggested_values_to_schema(
+                self._user_schema(
+                    reveal_transport=any(
+                        reason not in TRANSPORT_WORKED
+                        for reason in self._errors.values())),
+                known),
             errors=self._errors,
         )
 
@@ -661,7 +1045,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             errors=self._errors,
         )
 
-    async def _test_credentials(self, username, password, address, port, rtsp_port, channel, use_https=None):
+    async def _test_credentials(self, username, password, address, port, rtsp_port,
+                                channel, use_https=None, check_channel=False):
         """Return (data, error) -- the device's name and serial, or why not.
 
         The error is a translation key, because every failure used to arrive as
@@ -681,9 +1066,28 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             client = DahuaClient(username, password, address, port, rtsp_port, session, use_https)
             data = await client.get_machine_name()
+            # True only if get_machine_name itself fell back: the flag starts
+            # False and this is the first call to use it. Reading it after the
+            # system-info call would also catch that one falling back, which says
+            # nothing about whether the *name* is a hash.
+            name_is_a_hash = client.identity_derived_from_credentials
             serial = await client.async_get_system_info(strict_auth=True)
             data.update(serial)
             if "name" in data:
+                # Asked for by the two steps where somebody types a channel. The
+                # import step adds channels that came out of the recorder's own
+                # table a moment earlier, so re-reading it once per channel would be
+                # sixteen pointless requests on a sixteen channel recorder, and
+                # reauth is not the place to start refusing an existing entry.
+                if check_channel:
+                    refusal = await async_channel_refusal(client, channel)
+                    if refusal:
+                        return None, refusal
+                if name_is_a_hash:
+                    # The unique_id deliberately keeps the hashed serial, because
+                    # changing it would orphan every entry that already has one.
+                    # Only what the user is shown changes.
+                    data["name"] = fallback_device_name(address, channel)
                 return data, None
             # It answered, but not with anything recognisable.
             return None, "unexpected_reply"
@@ -698,6 +1102,30 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             await session.close()
 
 
+# The collapsed group the platform toggles live in on the options form. Named here
+# because both the schema and the flattening need the same string.
+OPTIONS_SECTION_PLATFORMS = "platforms"
+
+
+def _flatten_sections(user_input: dict) -> dict:
+    """Lift a section's values back to the top level.
+
+    Home Assistant returns a section as a nested dict, and everything that reads
+    these options does `entry.options.get("binary_sensor")`. Flattening on the way in
+    keeps the stored shape exactly as it was, so this is a change to the form and not
+    to the data.
+
+    Only the sections this form declares are lifted. Flattening anything that happens
+    to be a dict would eventually swallow an option whose value is legitimately one.
+    """
+    flat = dict(user_input)
+    for name in (OPTIONS_SECTION_PLATFORMS,):
+        nested = flat.pop(name, None)
+        if isinstance(nested, dict):
+            flat.update(nested)
+    return flat
+
+
 class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
     """Dahua config flow options handler."""
 
@@ -709,13 +1137,26 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_user(self, user_input=None):
         """Handle a flow initialized by the user."""
         if user_input is not None:
-            await self._async_move_device(user_input.get(CONF_AREA))
-            self.options.update(user_input)
+            flat = _flatten_sections(user_input)
+            await self._async_move_device(flat.get(CONF_AREA))
+            self.options.update(flat)
             return await self._update_options()
 
+        # Eight "<platform> enabled" toggles used to be the first eight fields of a
+        # nineteen field form, so somebody opening Configure to change scan_interval
+        # scrolled past all of them. They are the least likely thing anybody came
+        # here to change, so they go in a collapsed section. Home Assistant nests a
+        # section's values in what it hands back, and every reader of these does
+        # `entry.options.get("binary_sensor")`, so _flatten_sections lifts them out
+        # again and the stored shape is unchanged.
         schema = {
-            vol.Required(x, default=self.options.get(x, True)): bool
-            for x in sorted(PLATFORMS)
+            vol.Required(OPTIONS_SECTION_PLATFORMS): section(
+                vol.Schema({
+                    vol.Required(x, default=self.options.get(x, True)): bool
+                    for x in sorted(PLATFORMS)
+                }),
+                {"collapsed": True},
+            )
         }
         schema[
             vol.Required(
