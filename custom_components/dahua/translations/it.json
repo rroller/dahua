@@ -23,11 +23,23 @@
             }
         },
         "error": {
-            "auth": "Utente, Password e/o Indirizzo errati."
+            "auth": "La telecamera ha rifiutato quel nome utente e password.",
+            "channel_not_on_device": "Il registratore non ha quel canale. Questo campo conta da 0, quindi il canale 4 del registratore qui è 3, e il suo ultimo canale è uno in meno del numero che mostra.",
+            "channel_disabled": "Quel canale esiste sul registratore ma è disattivato, quindi non ha alcuna telecamera da leggere. Attivalo prima sul registratore, poi aggiungilo qui.",
+            "channel_is_onvif": "Quel canale è raggiunto tramite ONVIF, che questa integrazione non può gestire: il registratore non lo serve sui propri percorsi Dahua. Usa l'integrazione ONVIF di Home Assistant per quella telecamera, oppure porta il canale sul protocollo proprietario Dahua nel registratore.",
+            "cannot_connect": "Nessuna risposta a quell'indirizzo e porta. Controlla che la telecamera sia accesa, che IP e porta siano corretti e che Home Assistant possa raggiungerla.",
+            "timeout": "La telecamera non ha risposto in tempo. Potrebbe essere occupata, o raggiungibile ma molto lenta: riprova e controlla che la porta sia quella su cui serve HTTP.",
+            "ssl_error": "La connessione sicura è fallita. Se la telecamera non serve HTTPS, deseleziona l'opzione HTTPS; se lo fa, di solito è sulla porta 443.",
+            "unexpected_reply": "Qualcosa ha risposto, ma non una telecamera Dahua. Controlla la porta: l'interfaccia web e l'API non sono sempre la stessa.",
+            "cgi_disabled": "Quell'indirizzo serve pagine web, ma non l'API Dahua. Su un dispositivo Dahua è quasi sempre il servizio CGI disattivato: attivalo in System, poi Security o Safety, poi System Service, poi CGI, e riprova. Se CGI è già attivo, controlla la porta, perché l'interfaccia web e l'API non sono sempre la stessa.",
+            "https_available": "Nessuna risposta su quella porta, ma il dispositivo è in ascolto sulla 443, quindi probabilmente serve HTTPS. Seleziona l'opzione HTTPS e usa la porta 443.",
+            "http_service_off": "Il dispositivo è acceso e risponde al protocollo proprietario Dahua, ma nulla serve HTTP su quella porta, quindi l'integrazione non riesce a raggiungere la sua API. Il servizio web è molto probabilmente disattivato: attiva HTTP e CGI in System, poi Security o Safety, poi System Service.",
+            "unknown": "Non è stato possibile aggiungere la telecamera. Il registro di Home Assistant ne riporta il motivo."
         },
         "abort": {
             "single_instance_allowed": "Solo una istanza è consentita.",
-            "already_configured": "Solo una istanza è consentita."
+            "already_configured": "Solo una istanza è consentita.",
+            "channel_not_added": "Quel canale non è stato aggiunto. Un avviso di riparazione in Impostazioni indica quale e perché."
         }
     },
     "options": {

@@ -23,11 +23,23 @@
             }
         },
         "error": {
-            "auth": "Nom d'utilisateur, mot de passe ou adresse incorrect."
+            "auth": "La caméra a refusé ce nom d'utilisateur et ce mot de passe.",
+            "channel_not_on_device": "L'enregistreur n'a pas ce canal. Ce champ compte à partir de 0 : le canal 4 de l'enregistreur est 3 ici, et son dernier canal est un de moins que le numéro affiché.",
+            "channel_disabled": "Ce canal existe sur l'enregistreur mais il est désactivé, il n'a donc aucune caméra à lire. Activez-le d'abord sur l'enregistreur, puis ajoutez-le ici.",
+            "channel_is_onvif": "Ce canal est atteint via ONVIF, que cette intégration ne peut pas piloter : l'enregistreur ne le sert pas par ses propres chemins Dahua. Utilisez l'intégration ONVIF de Home Assistant pour cette caméra, ou basculez le canal sur le protocole propre à Dahua sur l'enregistreur.",
+            "cannot_connect": "Rien n'a répondu à cette adresse et ce port. Vérifiez que la caméra est allumée, que l'IP et le port sont corrects, et que Home Assistant peut l'atteindre.",
+            "timeout": "La caméra n'a pas répondu à temps. Elle est peut-être occupée, ou joignable mais très lente : réessayez, et vérifiez que le port est bien celui qui sert HTTP.",
+            "ssl_error": "La connexion sécurisée a échoué. Si la caméra ne sert pas HTTPS, décochez l'option HTTPS ; si elle le fait, c'est en général sur le port 443.",
+            "unexpected_reply": "Quelque chose a répondu, mais pas une caméra Dahua. Vérifiez le port : l'interface web et l'API ne sont pas toujours la même.",
+            "cgi_disabled": "Cette adresse sert des pages web, mais pas l'API Dahua. Sur un appareil Dahua, c'est presque toujours le service CGI désactivé : activez-le dans System, puis Security ou Safety, puis System Service, puis CGI, et réessayez. Si CGI est déjà actif, vérifiez le port, car l'interface web et l'API ne sont pas toujours la même.",
+            "https_available": "Rien n'a répondu sur ce port, mais l'appareil écoute sur le 443 : il sert probablement HTTPS. Cochez l'option HTTPS et utilisez le port 443.",
+            "http_service_off": "L'appareil est allumé et répond au protocole propre à Dahua, mais rien ne sert HTTP sur ce port, donc l'intégration ne peut pas atteindre son API. Son service web est très probablement désactivé : activez HTTP et CGI dans System, puis Security ou Safety, puis System Service.",
+            "unknown": "Impossible d'ajouter la caméra. Le journal de Home Assistant en donne la raison."
         },
         "abort": {
             "single_instance_allowed": "Une seule instance est autorisée.",
-            "already_configured": "Une seule instance d'un périphérique est autorisée."
+            "already_configured": "Une seule instance d'un périphérique est autorisée.",
+            "channel_not_added": "Ce canal n'a pas pu être ajouté. Un avis de réparation dans Paramètres indique lequel et pourquoi."
         }
     },
     "options": {
