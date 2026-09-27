@@ -9,7 +9,9 @@ from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.rpc2 import DahuaRpc2Client, Rpc2MethodRefused
 
 EXPIRED = Rpc2MethodRefused(
-    "expired", code=287637504, message="session is out of date!"
+    "expired",
+    code=client_module.RPC2_SESSION_EXPIRED_CODE,
+    message="session is out of date!",
 )
 
 
@@ -29,6 +31,12 @@ class FakeRpc2:
 
     async def logout(self):
         return True
+
+    def forget_session(self):
+        # Mirrors DahuaRpc2Client.forget_session: the recovery path calls this
+        # instead of reaching in and clearing the two attributes itself.
+        self._session_id = None
+        self._ptz_objects.clear()
 
     async def request(self, **kwargs):
         return {"result": True}

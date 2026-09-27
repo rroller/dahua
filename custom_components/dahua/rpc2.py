@@ -150,6 +150,17 @@ class DahuaRpc2Client:
         _LOGGER.debug("RPC2 login succeeded")
         return response
 
+    def forget_session(self) -> None:
+        """Drop the login this client is holding, without talking to the device.
+
+        For a session the device has already expired: there is nothing to log out
+        of, and the next call logs in again. Callers used to reach in and clear
+        `_session_id` (and remember `_ptz_objects` too, or not), which is how the
+        second caller to need this got it subtly different.
+        """
+        self._session_id = None
+        self._ptz_objects.clear()
+
     async def logout(self) -> bool:
         """Logs out of the current session. Returns true if the logout was successful"""
         if not self._session_id:

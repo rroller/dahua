@@ -195,3 +195,97 @@ async def test_no_pollable_codes_ends_the_stream(monkeypatch):
 
     with pytest.raises(EventStreamClosed):
         await client._stream_events_rpc2(_collect()[1], ["VideoMotion"], 0)
+
+
+class _Clock:
+    """A monotonic clock only the fake sleep advances."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def time(self):
+        return self.now
+
+
+def _instrument(monkeypatch, fast=0.01, idle=0.05, window=120):
+    """Record the cycle sleeps, and let the test own the clock."""
+    sleeps = []
+    clock = _Clock()
+
+    async def _sleep(duration):
+        sleeps.append(round(duration, 4))
+        clock.now += duration
+
+    # Replacing the name inside the module, not the stdlib module itself.
+    monkeypatch.setattr(client_module, "time", clock)
+    monkeypatch.setattr(client_module.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(client_module, "RPC2_EVENT_POLL_SECONDS", fast)
+    monkeypatch.setattr(client_module, "RPC2_EVENT_IDLE_POLL_SECONDS", idle)
+    monkeypatch.setattr(client_module, "RPC2_EVENT_ACTIVE_WINDOW_SECONDS", window)
+    monkeypatch.setattr(client_module, "RPC2_EVENT_MAX_REQUESTS_PER_SECOND", 1000)
+    return sleeps
+
+
+async def test_an_active_event_holds_the_fast_cycle_and_quiet_backs_off(monkeypatch):
+    """The expensive rate is for when something is happening.
+
+    Nine default event types at the fast cycle is ~4.5 requests a second, forever,
+    against a device whose default scan_interval in this integration is 30s. Motion
+    is bursty, so the fast rate only earns that near an event.
+    """
+    fake = _FakeRpc2Client([
+        {"VideoMotion": []},        # quiet    -> idle
+        {"VideoMotion": [0]},       # active   -> fast
+        {"VideoMotion": [0]},       # active   -> fast
+        {"VideoMotion": []},        # cleared  -> idle
+    ])
+    client = _client(monkeypatch, fake)
+    # After _client, which sets its own cycle constants for the other tests.
+    sleeps = _instrument(monkeypatch, window=0)   # window off: test the active branch
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(_collect()[1], ["VideoMotion"], 0)
+
+    assert sleeps == [0.05, 0.01, 0.01, 0.05], sleeps
+
+
+async def test_the_fast_cycle_is_held_for_a_window_after_the_last_edge(monkeypatch):
+    """A burst usually has more in it, so do not slow down the instant it clears."""
+    fake = _FakeRpc2Client([
+        {"VideoMotion": [0]},   # Start         -> fast
+        {"VideoMotion": []},    # Stop          -> fast (the edge is this cycle)
+        {"VideoMotion": []},    # 0.01s quiet   -> inside the window, still fast
+        {"VideoMotion": []},    # 0.02s quiet   -> inside the window, still fast
+        {"VideoMotion": []},    # 0.03s quiet   -> window passed, backs off
+    ])
+    client = _client(monkeypatch, fake)
+    # The window has to be crossable by the cycles this script runs: four fast
+    # cycles of 0.01 put the clock 0.03 past the last edge.
+    sleeps = _instrument(monkeypatch, window=0.025)
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(_collect()[1], ["VideoMotion"], 0)
+
+    # Fast while active, fast for the window after the Stop, then backed off.
+    assert sleeps[0] == 0.01
+    assert sleeps[-1] == 0.05, sleeps
+    assert sleeps.count(0.01) >= 3, sleeps
+
+
+async def test_the_startup_line_states_the_request_rate(monkeypatch, caplog):
+    """A load figure nobody has to derive from a cycle and an event count."""
+    import logging
+
+    fake = _FakeRpc2Client([{"VideoMotion": []}])
+    client = _client(monkeypatch, fake)
+    _instrument(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.dahua"):
+        with pytest.raises(_StopPoll):
+            await client._stream_events_rpc2(_collect()[1], ["VideoMotion"], 0)
+
+    assert "req/s" in caplog.text
+    assert "once quiet" in caplog.text

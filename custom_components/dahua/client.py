@@ -26,6 +26,14 @@ EVENT_STREAM_READ_TIMEOUT_SECONDS = 60
 # seconds cannot miss one, and 130 rounds over five minutes drew no complaint
 # from the device. One request per selected code per round is the cost.
 RPC2_EVENT_POLL_SECONDS = 2
+# Motion is bursty, and a cycle costs one request per selected event type, so the
+# fast rate only earns its keep near an event. Once nothing has happened for
+# RPC2_EVENT_ACTIVE_WINDOW_SECONDS the cycle stretches to this, and the first edge
+# snaps it straight back. Deliberately still well under the shortest event state
+# measured on an SL300 (11s of VideoMotion): backing off further would start
+# trading missed events for request rate, which is the wrong way round.
+RPC2_EVENT_IDLE_POLL_SECONDS = 6
+RPC2_EVENT_ACTIVE_WINDOW_SECONDS = 120
 # getEventIndexes takes one code per request, so a wide event selection costs a
 # lot of round trips. Bound the rate and stretch the cycle instead of hammering a
 # small camera: 42 codes at a 2s cycle would be 20 requests a second.
@@ -1244,6 +1252,26 @@ class DahuaClient:
             holder.keepalive = asyncio.ensure_future(_rpc2_keepalive(holder, interval))
         return holder
 
+    @staticmethod
+    async def _forget_rpc2_login(holder, login_task) -> None:
+        """Drop an expired login so the next call logs in again.
+
+        Guarded on the login not having been replaced already: another caller may
+        have logged in while this request was still in flight, and tearing that one
+        down because an old request came back expired is how one expiry becomes
+        two. The keepalive goes with it -- one holding a dead session open is
+        holding nothing, and _shared_rpc2 starts a fresh one on the next call.
+        """
+        if holder.task is not login_task:
+            return
+        holder.task = None
+        holder.client.forget_session()
+        keepalive = holder.keepalive
+        holder.keepalive = None
+        if keepalive is not None and not keepalive.done():
+            keepalive.cancel()
+            await asyncio.gather(keepalive, return_exceptions=True)
+
     # Direct-camera CoaxialControlIO RPC2 calls use channel 0, matching the
     # camera WebUI requests. Legacy CGI uses 1-based channel 1 for standalone
     # cameras; this protocol difference is intentional, not an off-by-one error.
@@ -1255,23 +1283,13 @@ class DahuaClient:
             try:
                 return await getattr(holder.client, method)(0, *args)
             except Rpc2MethodRefused as exc:
-                expired = exc.code == 287637504 or (
+                expired = exc.code == RPC2_SESSION_EXPIRED_CODE or (
                     isinstance(exc.message, str)
                     and "session is out of date" in exc.message.lower()
                 )
                 if attempt or not expired:
                     raise
-                # Another caller may already have replaced this login. Do not
-                # tear down the new one when an old in-flight request returns.
-                if holder.task is login_task:
-                    holder.task = None
-                    holder.client._session_id = None
-                    holder.client._ptz_objects.clear()
-                    keepalive = holder.keepalive
-                    holder.keepalive = None
-                    if keepalive is not None and not keepalive.done():
-                        keepalive.cancel()
-                        await asyncio.gather(keepalive, return_exceptions=True)
+                await self._forget_rpc2_login(holder, login_task)
 
     async def async_get_coaxial_control_io_caps_rpc2(self) -> dict[str, bool]:
         """Probe a direct camera on channel zero, independently of config transport."""
@@ -2487,7 +2505,11 @@ class DahuaClient:
                 response = None
                 _LOGGER.info(
                     "eventManager.cgi answered %s on %s, so this device has no CGI "
-                    "event stream; subscribing over RPC2 instead",
+                    "event stream; subscribing over RPC2 instead. The same absent CGI "
+                    "makes the identity and capability probes fall back, so this device "
+                    "will report as Generic RTSP on firmware 1.0 and its CGI-only "
+                    "entities will be missing -- see identity_fallbacks in its "
+                    "diagnostics rather than reading that as a second fault",
                     cgi_error.status, self._address)
                 await self._stream_events_rpc2(on_receive, events, channel)
                 return
@@ -2574,20 +2596,31 @@ class DahuaClient:
             from .config_flow import ALL_EVENTS  # pylint: disable=import-outside-toplevel
             codes = [code for code in ALL_EVENTS if code != "All"]
 
-        cycle = max(
+        fast = max(
             RPC2_EVENT_POLL_SECONDS,
             len(codes) / RPC2_EVENT_MAX_REQUESTS_PER_SECOND,
         )
-        if cycle > RPC2_EVENT_SLOW_CYCLE_SECONDS:
+        # Never faster than the active cycle, which means this degenerates to no
+        # backoff at all once the rate bound has already stretched the cycle past
+        # the idle target -- 42 codes give an 8s cycle either way. That is the right
+        # way for it to fail: such a selection is already at the bound and already
+        # warned about below, and slowing it further would buy rate with missed
+        # events. The backoff is for the common case, where it is free.
+        idle = max(RPC2_EVENT_IDLE_POLL_SECONDS, fast)
+        # The rate is stated rather than left to be derived from the cycle and the
+        # event count, because "my camera stopped answering after a few days" is a
+        # report that needs the load written down next to it.
+        rates = ("%d event types polled one at a time: every %.0fs while active "
+                 "(%.1f req/s), every %.0fs once quiet (%.1f req/s)"
+                 % (len(codes), fast, len(codes) / fast, idle, len(codes) / idle))
+        if fast > RPC2_EVENT_SLOW_CYCLE_SECONDS:
             _LOGGER.warning(
-                "%s has no CGI event stream, so %d event types are polled over RPC2 "
-                "one at a time, giving a %.0fs cycle. An event shorter than that can "
-                "be missed -- select fewer event types to poll them faster",
-                self._address, len(codes), cycle)
+                "%s has no CGI event stream, so events are polled over RPC2: %s. An "
+                "event shorter than the cycle can be missed -- select fewer event "
+                "types to poll them faster",
+                self._address, rates)
         else:
-            _LOGGER.debug(
-                "Polling %d event types over RPC2 on %s every %.0fs",
-                len(codes), self._address, cycle)
+            _LOGGER.debug("Polling events over RPC2 on %s: %s", self._address, rates)
 
         # Inherited, not fresh: a Start whose Stop was lost to a transport
         # failure or the scheduled recycle is still owed one, and the first
@@ -2605,6 +2638,9 @@ class DahuaClient:
                 self._address, code)
 
         attached_to = None
+        # A fresh poller starts on the fast cycle: it may be replacing one that died
+        # mid-event, and that is the worst moment to be polling slowly.
+        last_edge = time.monotonic()
 
         while True:
             holder = await self._shared_rpc2()
@@ -2614,6 +2650,12 @@ class DahuaClient:
                     # The subscription belongs to the login, so a new login needs
                     # a new attach. Without this a recovered session polls a SID
                     # the device has already forgotten.
+                    #
+                    # codes=[All] here, while the poll below asks per single code, is
+                    # not a contradiction: the attach is what makes the device willing
+                    # to report at all, and getEventIndexes is only how the result is
+                    # read back -- it refuses a list, and answers {} for "All" even
+                    # while a specific code is active.
                     await holder.client.request("eventManager.attach", {"codes": ["All"]})
                     attached_to = login_task
 
@@ -2648,9 +2690,11 @@ class DahuaClient:
 
                     for index in sorted(indexes - {i for c, i in active if c == code}):
                         active.add((code, index))
+                        last_edge = time.monotonic()
                         self._emit_rpc2_event(on_receive, code, "Start", index, channel)
                     for index in sorted({i for c, i in active if c == code} - indexes):
                         active.discard((code, index))
+                        last_edge = time.monotonic()
                         self._emit_rpc2_event(on_receive, code, "Stop", index, channel)
 
                 if not codes:
@@ -2663,6 +2707,13 @@ class DahuaClient:
                 # indistinguishable from a dead stream and gets backed off.
                 on_receive(RPC2_EVENT_HEARTBEAT, channel)
 
+                # Fast while something is active, and for a window after the last
+                # edge, because motion arrives in bursts; slow in between, which is
+                # almost all of the time on almost every camera.
+                cycle = fast if (
+                    active
+                    or time.monotonic() - last_edge < RPC2_EVENT_ACTIVE_WINDOW_SECONDS
+                ) else idle
                 await asyncio.sleep(max(0.0, cycle - (time.monotonic() - started)))
 
             except Rpc2MethodRefused as refused:
@@ -2673,9 +2724,7 @@ class DahuaClient:
                 # Expired login. Drop it so the next cycle logs in again, unless
                 # another caller has already replaced it.
                 _LOGGER.debug("RPC2 login on %s expired; logging in again", self._address)
-                if holder.task is login_task:
-                    holder.task = None
-                    holder.client._session_id = None  # pylint: disable=protected-access
+                await self._forget_rpc2_login(holder, login_task)
                 attached_to = None
             except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
                 # Hand it back to the caller's reconnect/backoff, exactly as the
