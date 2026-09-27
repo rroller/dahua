@@ -393,6 +393,10 @@ async def test_an_imported_channel_becomes_an_entry():
     flow._test_credentials = credentials
     flow.async_set_unique_id = set_unique_id
     flow._abort_if_unique_id_configured = lambda **kwargs: None
+    # Re-adding a device now looks for its other channels, to move them to the
+    # address just confirmed. That reads the entry list through hass, which this
+    # test does not have, so it is stubbed like the other Home Assistant calls.
+    flow._async_current_entries = lambda: []
     flow.async_create_entry = lambda title, data: created.update(
         {"title": title, "data": data}) or created
 
@@ -456,6 +460,10 @@ async def test_the_search_is_shown_as_a_wait():
     flow._async_discover_channels = discover
     flow.async_set_unique_id = _noop
     flow._abort_if_unique_id_configured = lambda **kwargs: None
+    # Re-adding a device now looks for its other channels, to move them to the
+    # address just confirmed. That reads the entry list through hass, which this
+    # test does not have, so it is stubbed like the other Home Assistant calls.
+    flow._async_current_entries = lambda: []
 
     result = await flow.async_step_user(_entry_data())
 
