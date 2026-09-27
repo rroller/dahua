@@ -110,3 +110,17 @@ def _clear_rpc2_event_state():
     client_module._HOST_RPC2_EVENT_STATE.clear()
     yield
     client_module._HOST_RPC2_EVENT_STATE.clear()
+
+@pytest.fixture(autouse=True)
+def _clear_cgi_config_absent():
+    """Which hosts have no CGI config endpoint is learnt once, per host.
+
+    It is module state so one 404 teaches every later read, which also means one
+    test would otherwise teach the next -- and a test that expected a CGI call
+    would silently get an RPC2 one.
+    """
+    from custom_components.dahua import client as client_module
+
+    client_module._HOST_CGI_CONFIG_ABSENT.clear()
+    yield
+    client_module._HOST_CGI_CONFIG_ABSENT.clear()
