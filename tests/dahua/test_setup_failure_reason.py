@@ -24,7 +24,8 @@ import pathlib
 import ssl
 
 import pytest
-from aiohttp import ClientConnectorError, ClientResponseError
+from aiohttp import (ClientConnectorCertificateError, ClientConnectorError,
+                     ClientConnectorSSLError, ClientResponseError, ClientSSLError)
 
 from custom_components.dahua import config_flow
 from custom_components.dahua.config_flow import describe_setup_failure
@@ -78,7 +79,11 @@ def test_a_timeout_is_a_timeout():
 
 
 def test_an_ssl_failure_names_https():
-    """Ticking HTTPS against a camera that does not serve it, most often."""
+    """Ticking HTTPS against a camera that does not serve it, most often.
+
+    A bare ssl.SSLError only arrives from something outside a request. Keep this,
+    but note it is not the shape the flow actually sees -- see below.
+    """
     assert describe_setup_failure(ssl.SSLError("handshake failure")) == "ssl_error"
 
 
@@ -173,6 +178,61 @@ def test_anything_unrecognised_points_at_the_log():
     assert describe_setup_failure(ValueError("something else")) == "unknown"
 
 
+# --- the TLS failure a request actually raises -------------------------------
+#
+# This is what was broken. `ssl_error` was written and translated, and no user
+# could ever see it, because the branch above it matched first.
+
+def test_the_tls_error_a_request_raises_names_https():
+    """aiohttp raises ClientConnectorSSLError, never a bare ssl.SSLError.
+
+    The test above passed throughout, which is exactly why this one is needed:
+    it asserted on a type nothing in the flow produces.
+    """
+    err = ClientConnectorSSLError(
+        connection_key=None, os_error=ssl.SSLError("handshake failure"))
+
+    assert describe_setup_failure(err) == "ssl_error"
+
+
+def test_a_self_signed_certificate_names_https():
+    """#248 and #314: the DVR's own certificate. Reported as a credentials
+    problem for years, because this landed on cannot_connect."""
+    err = ClientConnectorCertificateError(
+        connection_key=None, certificate_error=ssl.CertificateError("self signed"))
+
+    assert describe_setup_failure(err) == "ssl_error"
+
+
+def test_the_branch_order_is_load_bearing():
+    """Why the TLS test must come before the connection test.
+
+    If this ever fails, aiohttp changed its hierarchy and the ordering comment in
+    describe_setup_failure needs rereading -- not this test deleting.
+    """
+    assert issubclass(ClientSSLError, ClientConnectorError), (
+        "a TLS error IS a connection error, so testing ClientConnectorError "
+        "first makes ssl_error unreachable")
+    assert issubclass(ClientConnectorSSLError, ClientSSLError)
+    assert issubclass(ClientConnectorCertificateError, ClientSSLError)
+
+
+def test_why_the_clientsslerror_arm_is_belt_and_braces():
+    """Naming ClientSSLError as well as ssl.SSLError is deliberate, and today it
+    is redundant. Recording that here rather than leaving it looking load-bearing.
+
+    Every TLS error aiohttp raises is *also* an ssl.SSLError, so ordering alone is
+    what fixes this and the extra arm changes no outcome. It is kept because it
+    says what the branch is for, and because it is the thing that would still hold
+    if aiohttp ever added a TLS error outside the ssl hierarchy.
+
+    If either assertion below stops holding, that arm has become load-bearing and
+    the comment in describe_setup_failure needs updating to say so.
+    """
+    assert issubclass(ClientConnectorSSLError, ssl.SSLError)
+    assert issubclass(ClientConnectorCertificateError, ssl.SSLError)
+
+
 # --- every reason must be a string a user can actually read ------------------
 
 def test_every_reason_has_a_translation():
@@ -187,6 +247,8 @@ def test_every_reason_has_a_translation():
         describe_setup_failure(ConnectionRefusedError()),
         describe_setup_failure(TimeoutError()),
         describe_setup_failure(ssl.SSLError()),
+        describe_setup_failure(ClientConnectorSSLError(
+            connection_key=None, os_error=ssl.SSLError())),
         describe_setup_failure(ValueError()),
     }
 

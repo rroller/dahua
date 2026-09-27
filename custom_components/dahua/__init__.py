@@ -3079,6 +3079,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """returns the IP address of this camera"""
         return self._address
 
+    def get_configuration_url(self) -> str:
+        """Where the device's own web interface actually is.
+
+        The same scheme and port the integration itself uses, because anything else
+        is a guess: the device page's link was built as "http://" + address, with no
+        port and always plain HTTP, so it was broken for every device on a port other
+        than 80 and every device that only serves HTTPS -- on the first page somebody
+        opens after adding a camera.
+        """
+        return self.client.base_url()
+
     def get_max_streams(self) -> int:
         """Returns the max number of streams supported by the device. All streams might not be enabled though"""
         return self._max_streams
