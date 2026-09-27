@@ -133,6 +133,16 @@ _HOST_RPC2: dict = {}
 # and a change of owning entry both inherit it.
 _HOST_RPC2_EVENT_STATE: dict[str, set] = {}
 
+# What the RPC2 event poller is doing for a host, so a diagnostics dump can say which
+# event transport is actually carrying events and what it is watching. Written here and
+# read only by diagnostics; nothing depends on it, and an absent entry means the poller
+# has never run for that address in this process.
+#
+# It exists because the poller is the *second* event transport. #780 added it for
+# devices that serve no CGI at all, and a dump said nothing whatsoever about it, so a
+# reporter whose events had stopped could not tell a dead transport from a quiet one.
+_HOST_RPC2_EVENT_POLL: dict[str, dict] = {}
+
 # Whether RPC2 has already proven it cannot serve a host. A per-client verdict
 # meant eleven channels each rediscovering it, which is eleven failed logins
 # against a device that has just said it cannot do this.
@@ -2738,6 +2748,18 @@ class DahuaClient:
                 len(codes) / max(cycle, RPC2_EVENT_IDLE_POLL_SECONDS),
                 RPC2_EVENT_IDLE_AFTER_SECONDS)
 
+        # Published for diagnostics, because the two log lines above are the only
+        # record that this transport is in use at all and a log line is not what a
+        # reporter pastes. Written before the loop so the description exists even if
+        # the first cycle never completes.
+        described = _HOST_RPC2_EVENT_POLL.setdefault(self._address, {})
+        described.update({
+            "code_count": len(codes),
+            "cycle_seconds": round(cycle, 1),
+            "idle_after_seconds": RPC2_EVENT_IDLE_AFTER_SECONDS,
+            "eased_cycle_seconds": max(cycle, RPC2_EVENT_IDLE_POLL_SECONDS),
+        })
+
         # Inherited, not fresh: a Start whose Stop was lost to a transport
         # failure or the scheduled recycle is still owed one, and the first
         # inactive snapshot below is what pays it.
@@ -2827,6 +2849,14 @@ class DahuaClient:
                     idle_since = None
                 elif idle_since is None:
                     idle_since = time.monotonic()
+
+                # A completed cycle, which is the one fact that distinguishes a poller
+                # that is working from one that described itself and then died. Its age
+                # is what diagnostics reports.
+                described["last_cycle"] = time.monotonic()
+                described["eased_off"] = bool(
+                    idle_since is not None
+                    and time.monotonic() - idle_since >= RPC2_EVENT_IDLE_AFTER_SECONDS)
 
                 wait = cycle
                 if (idle_since is not None
@@ -3033,6 +3063,12 @@ class DahuaClient:
                         config_read = _CONFIG_READ.search(url)
                         if config_read is None:
                             raise
+                        if ((self._rpc2_key(), config_read.group(1))
+                                in _RPC2_TABLE_UNAVAILABLE):
+                            # Both transports have already refused this table. The gate
+                            # above skips RPC2 for it, and without the same check here
+                            # every later read paid for the refusal again on the way past.
+                            raise
                         if self._rpc2_key() not in _HOST_CGI_CONFIG_ABSENT:
                             _HOST_CGI_CONFIG_ABSENT.add(self._rpc2_key())
                             _LOGGER.info(
@@ -3040,7 +3076,25 @@ class DahuaClient:
                                 "serves no CGI config; reading config over RPC2 from "
                                 "now on",
                                 cgi_error.status, self._address)
-                        return await self._rpc2_get_config(config_read.group(1))
+                        try:
+                            return await self._rpc2_get_config(config_read.group(1))
+                        except Rpc2MethodRefused as rpc2_refusal:
+                            # The device serves this table on neither transport. Raising
+                            # the RPC2 refusal changed the exception a caller sees for an
+                            # absent table from ClientResponseError to Rpc2MethodRefused,
+                            # and the callers that already tolerated a 404 do not catch
+                            # that -- which took an SL300's whole entry down on a read of
+                            # RemoteDevice, a table only a recorder has. A fallback has to
+                            # be invisible when it cannot help, so the original 404 is
+                            # what comes back.
+                            _RPC2_TABLE_UNAVAILABLE.add(
+                                (self._rpc2_key(), config_read.group(1)))
+                            _LOGGER.debug(
+                                "%s serves %s over neither CGI nor RPC2 (%s); reporting "
+                                "the original %s",
+                                self._address, config_read.group(1), rpc2_refusal,
+                                cgi_error.status)
+                            raise cgi_error from None
                     data = await response.text()
                     if verify_ok:
                         if data.lower().strip() != "ok":

@@ -10,7 +10,6 @@
                     "address": "Adres",
                     "port": "Poort",
                     "rtsp_port": "RTSP Poort",
-                    "events": "Events",
                     "channel": "Channel (Usually 0 unless you use an nvr)"
                 }
             },
@@ -22,11 +21,23 @@
             }
         },
         "error": {
-            "auth": "Gebruikersnaam, Wachtwoord, of Adres is verkeerd."
+            "auth": "De camera heeft die gebruikersnaam en dat wachtwoord geweigerd.",
+            "channel_not_on_device": "De recorder heeft dat kanaal niet. Dit veld telt vanaf 0, dus kanaal 4 van de recorder is hier 3, en het laatste kanaal is één lager dan het nummer dat de recorder toont.",
+            "channel_disabled": "Dat kanaal bestaat op de recorder maar staat uit, dus er is geen camera om uit te lezen. Zet het eerst aan op de recorder en voeg het daarna hier toe.",
+            "channel_is_onvif": "Dat kanaal wordt via ONVIF benaderd, wat deze integratie niet kan aansturen: de recorder levert het niet via zijn eigen Dahua-paden. Gebruik de ONVIF-integratie van Home Assistant voor die camera, of zet het kanaal op de recorder om naar het eigen protocol van Dahua.",
+            "cannot_connect": "Er antwoordde niets op dat adres en die poort. Controleer of de camera aan staat, of het IP-adres en de poort juist zijn, en of Home Assistant de camera kan bereiken.",
+            "timeout": "De camera antwoordde niet op tijd. Hij is mogelijk bezig, of wel bereikbaar maar heel langzaam: probeer het opnieuw en controleer of de poort degene is waarop HTTP wordt aangeboden.",
+            "ssl_error": "De beveiligde verbinding is mislukt. Biedt de camera geen HTTPS aan, schakel de HTTPS-optie dan uit; doet hij dat wel, dan is het meestal poort 443.",
+            "unexpected_reply": "Er antwoordde iets, maar geen Dahua-camera. Controleer de poort: de webinterface en de API zijn niet altijd dezelfde.",
+            "cgi_disabled": "Dat adres levert webpagina's, maar niet de Dahua-API. Op een Dahua-apparaat is dit bijna altijd de uitgeschakelde CGI-service: zet die aan onder System, dan Security of Safety, dan System Service, dan CGI, en probeer het opnieuw. Staat CGI al aan, controleer dan de poort, want de webinterface en de API zijn niet altijd dezelfde.",
+            "https_available": "Er antwoordde niets op die poort, maar het apparaat luistert op 443, dus het biedt vermoedelijk HTTPS aan. Vink de HTTPS-optie aan en gebruik poort 443.",
+            "http_service_off": "Het apparaat staat aan en antwoordt op het eigen protocol van Dahua, maar niets levert HTTP op die poort, dus de integratie kan de API niet bereiken. De webservice staat vrijwel zeker uit: zet HTTP en CGI aan onder System, dan Security of Safety, dan System Service.",
+            "unknown": "De camera kon niet worden toegevoegd. De reden staat in het logboek van Home Assistant."
         },
         "abort": {
             "single_instance_allowed": "Er is maar 1 integratie toegestaan.",
-            "already_configured": "Er is al een integratie geconfigureerd."
+            "already_configured": "Er is al een integratie geconfigureerd.",
+            "channel_not_added": "Dat kanaal kon niet worden toegevoegd. Een reparatiemelding in Instellingen vertelt welk kanaal en waarom."
         }
     },
     "options": {

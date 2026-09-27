@@ -64,6 +64,11 @@ async def _clear_shared_rpc2():
                 session.connector.close()
         client_module._HOST_RPC2.clear()
         client_module._HOST_RPC2_UNAVAILABLE.clear()
+        # Which (host, table) pairs a device has refused is module state too, and
+        # it was the one set here that nothing cleared: a test that made a device
+        # refuse a table taught every later test the same thing, so a later read
+        # of it skipped RPC2 for a reason that test never set up.
+        client_module._RPC2_TABLE_UNAVAILABLE.clear()
         if cancelled:
             await asyncio.gather(*cancelled, return_exceptions=True)
 
@@ -108,8 +113,12 @@ def _clear_rpc2_event_state():
     from custom_components.dahua import client as client_module
 
     client_module._HOST_RPC2_EVENT_STATE.clear()
+    # The poller's description of itself, which diagnostics reads. Same reasoning: it
+    # is keyed by host and outlives a restart, so it outlives a test too.
+    client_module._HOST_RPC2_EVENT_POLL.clear()
     yield
     client_module._HOST_RPC2_EVENT_STATE.clear()
+    client_module._HOST_RPC2_EVENT_POLL.clear()
 
 @pytest.fixture(autouse=True)
 def _clear_cgi_config_absent():

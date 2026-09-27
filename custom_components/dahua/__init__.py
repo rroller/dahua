@@ -21,13 +21,19 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
 from . import dahua_utils
-from .client import DahuaClient, clear_host_cache
+from .client import (
+    _HOST_RPC2_EVENT_POLL,
+    _HOST_RPC2_EVENT_STATE,
+    DahuaClient,
+    clear_host_cache,
+)
 from .model_profiles import is_sdt4e425
 
 from .const import (
@@ -789,6 +795,12 @@ ISSUE_HTTP_DEAD_HTTPS_AVAILABLE = "http_dead_https_available_{0}"
 # Raised when an entry is removed and other entries for the same recorder are
 # still configured. An NVR is one entry per channel, so "remove the recorder"
 # is eleven deletions and nobody realises until they are eight in.
+# Raised when a channel the user ticked on the channels step could not be added.
+# That step spawns one import-sourced flow per channel, and an import flow renders
+# no card at all, so its abort was invisible: somebody ticked sixteen channels, got
+# twelve, and had nothing anywhere telling them which four or why.
+ISSUE_CHANNEL_NOT_ADDED = "channel_not_added_{0}_{1}"
+
 ISSUE_SIBLINGS_REMAIN = "siblings_remain_{0}"
 # Raised when the removed entry was referenced by automations or scripts. Those
 # break silently -- the entities simply stop existing and nothing fires.
@@ -1446,8 +1458,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._username = username
         self._password = password
 
-        # Async tasks for event streaming (replaces threads)
-        self._event_task: asyncio.Task | None = None
+        # The CGI event stream is not here: #615 moved it to one shared
+        # DahuaHostEventStream per address, keyed in _HOST_STREAMS. The
+        # _event_task that used to live here stayed behind as an attribute that
+        # was always None, and diagnostics went on reporting it, so
+        # stream_task_running read False for every device for three weeks.
         self._vto_task: asyncio.Task | None = None
         self._vto_client: DahuaVTOClient | None = None
 
@@ -1533,9 +1548,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def async_stop(self, event: Any = None):
         """ Stop anything we need to stop """
         await _release_host_stream(self)
-        if self._event_task is not None:
-            self._event_task.cancel()
-            self._event_task = None
         if self._vto_task is not None:
             self._vto_task.cancel()
             self._vto_task = None
@@ -3418,6 +3430,12 @@ def _async_forget_host(hass: HomeAssistant, address: str) -> None:
     _HOST_FAILURES.pop(address, None)
     _HOST_UPTIME_STATE.pop(address, None)
     _HOST_UPTIME_LOCKS.pop(address, None)
+    # The RPC2 poller's own state. Safe only here: the active set deliberately outlives
+    # a reload, because a Start whose Stop was lost is still owed one, and clearing it
+    # while the host still had entries would leave those sensors stuck on. With the last
+    # entry gone there is nobody left to owe.
+    _HOST_RPC2_EVENT_POLL.pop(address, None)
+    _HOST_RPC2_EVENT_STATE.pop(address, None)
     ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
     ir.async_delete_issue(
         hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
@@ -3475,6 +3493,42 @@ def _describe_dependents(dependents: dict) -> str:
     if len(parts) == 1:
         return parts[0]
     return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ConfigEntry, device: DeviceEntry
+) -> bool:
+    """May the user delete this device from the device page?
+
+    Defining this at all is what puts a Delete button on a device card. Without it
+    `entry.supports_remove_device` is False and there is no button, so removing one
+    camera meant finding its config entry instead -- which on a recorder means
+    finding the right one of sixteen.
+
+    One entry is one channel is one device, and the identifier is derived from the
+    serial the device reports (`serial`, or `serial_N` above channel 0). So the device
+    this entry *currently* creates must not be removable: Home Assistant would delete
+    the row and the next reload would put it straight back, which looks like the
+    button did nothing.
+
+    A device whose identifier is not the one this entry now produces is stale, and
+    that really happens. A camera that answered with a synthesised identity and later
+    reported its real serial leaves the old record behind -- #583 has two device rows
+    for one camera, the live one carrying the fallback identity and the stale one
+    carrying the real model name. Those are exactly what the button is for.
+
+    Refusing when the coordinator is missing is deliberate. Setup failed or the entry
+    is unloaded, so nothing can be said about which device is current, and deleting
+    the live one on a guess is worse than leaving a stale row alone for now.
+    """
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coordinator is None:
+        return False
+
+    current = coordinator.get_serial_number()
+    return not any(
+        domain == DOMAIN and value == current for domain, value in device.identifiers
+    )
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
