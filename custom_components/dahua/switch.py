@@ -21,7 +21,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     # But only some cams have a siren, very few do actually
     has_siren = (
         coordinator.supports_nvr_active_deterrence()
-        if coordinator.is_nvr_channel()
+        if coordinator.is_recorder_host()
         else coordinator.supports_siren()
     )
     if has_siren:

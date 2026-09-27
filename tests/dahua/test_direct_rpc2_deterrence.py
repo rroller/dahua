@@ -26,12 +26,14 @@ def coordinator(
     c._channel = 0
     c._channel_number = 1
     c._nvr_active_deterrence = nvr
+    c._device_class = "NVR" if nvr or "NVR" in model else "IPC"
     c._supports_rpc2_siren = speaker
     c._supports_rpc2_security_light = light
     c._manual_siren = manual_siren
     c._manual_security_light = manual_light
     c.client = SimpleNamespace(
-        async_get_coaxial_control_io_caps_rpc2=AsyncMock(),
+        async_get_coaxial_control_io_caps_rpc2=AsyncMock(return_value={}),
+        async_get_product_definition_rpc2=AsyncMock(return_value=None),
         async_set_coaxial_control_state_rpc2=AsyncMock(),
         async_set_coaxial_control_state=AsyncMock(),
         async_set_nvr_coaxial_control_state=AsyncMock(),
@@ -69,13 +71,13 @@ async def test_probe_failure_keeps_model_fallback(error, model, expected):
 
 
 @pytest.mark.parametrize("model", ["TPC-BF1241-TB3F4-DW-S8-HW", "TPC-BF1241", "TPC-BF1241-OTHER"])
-async def test_thermal_zero_speaker_keeps_family_fallback(model):
+async def test_thermal_zero_speaker_has_no_family_fallback(model):
     c = coordinator(model)
     c.client.async_get_coaxial_control_io_caps_rpc2.return_value = {
         "SupportControlSpeaker": False, "SupportControlLight": True,
     }
     await c._async_probe_direct_deterrence()
-    assert c.supports_siren()
+    assert not c.supports_siren()
     assert c.supports_security_light()
     assert not c.uses_rpc2_deterrence(2)
     assert not coordinator("TPC-OTHER").supports_siren()

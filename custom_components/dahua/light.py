@@ -39,7 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
 
     has_security_light = (
         coordinator.supports_nvr_active_deterrence()
-        if coordinator.is_nvr_channel()
+        if coordinator.is_recorder_host()
         else coordinator.supports_security_light()
     )
     if has_security_light and not coordinator.is_amcrest_doorbell():

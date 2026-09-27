@@ -274,6 +274,23 @@ class DahuaRpc2Client:
         data = await self.get_config({"name": "General"})
         return data["table"]["MachineName"]
 
+    async def get_product_definition(self, name: str | None = None) -> dict | list | None:
+        """Read one optional ProductDefinition block without inferring support."""
+        response = await self.request(
+            method="magicBox.getProductDefinition",
+            params={"name": name} if name is not None else _PARAMS_UNSET,
+            verify_result=False,
+        )
+        if not isinstance(response, dict) or response.get("result") is not True:
+            return None
+        params = response.get("params")
+        definition = params.get("definition") if isinstance(params, dict) else None
+        if isinstance(definition, dict):
+            return definition
+        if name == "LightingControlMulti" and isinstance(definition, list):
+            return definition
+        return None
+
     async def get_coaxial_control_io_caps(self, channel: int = 0) -> dict[str, bool]:
         """Read explicit deterrence capabilities; never infer them from status."""
         response = await self.request(

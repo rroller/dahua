@@ -64,6 +64,12 @@ from .const import (
     EVENT_DAHUA_ANPR_RECOGNIZED,
 )
 from .dahua_utils import parse_event
+from .deterrence import (
+    product_definition_supports_security_light,
+    product_definition_supports_siren,
+    siren_definition_failure_reason,
+    security_light_definition_failure_reason,
+)
 from .illuminator_restore import IlluminatorRestoreStore
 from .vto import DahuaVTOClient
 
@@ -1382,6 +1388,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # What the device calls itself, "" when it did not answer. See
         # async_get_device_class.
         self._device_class = ""
+        self._siren_detection_sources = []
+        self._security_light_detection_sources = []
+        self._siren_detection_failures = []
+        self._security_light_detection_failures = []
         self.connected = None
         self.events: list = events
         self._supports_coaxial_control = False
@@ -2483,17 +2493,145 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._supports_profile_mode
 
     async def _async_probe_direct_deterrence(self) -> None:
-        """Cache explicit capabilities once during direct-camera setup."""
+        """Cache independent positive ProductDefinition and getCaps evidence."""
         self._supports_rpc2_siren = False
         self._supports_rpc2_security_light = False
-        if self.is_nvr_channel():
+        self._siren_detection_sources = []
+        self._security_light_detection_sources = []
+        self._siren_detection_failures = []
+        self._security_light_detection_failures = []
+        if self.is_recorder_host():
+            reason = "Direct-camera probes skipped: recorder device class"
+            self._siren_detection_failures.append(reason)
+            self._security_light_detection_failures.append(reason)
             return
+        definitions = {}
+        try:
+            full_definition = await self.client.async_get_product_definition_rpc2()
+            if isinstance(full_definition, dict):
+                definitions = full_definition
+        except Exception:
+            _LOGGER.debug(
+                "Full ProductDefinition probe failed; trying named blocks", exc_info=True
+            )
+
+        for names, attribute, parser in (
+            (
+                ("LightingControl", "LightingControlMulti"),
+                "_supports_rpc2_security_light",
+                product_definition_supports_security_light,
+            ),
+            (
+                ("AudioFileManager",),
+                "_supports_rpc2_siren",
+                product_definition_supports_siren,
+            ),
+        ):
+            failures = (
+                self._siren_detection_failures
+                if attribute == "_supports_rpc2_siren"
+                else self._security_light_detection_failures
+            )
+            for name in names:
+                path = (
+                    f"LightingControlMulti[{self.get_channel()}]"
+                    if name == "LightingControlMulti"
+                    else name
+                )
+                definition = definitions.get(name)
+                if not isinstance(definition, (dict, list)):
+                    try:
+                        definition = await self.client.async_get_product_definition_rpc2(
+                            name
+                        )
+                    except Exception as error:
+                        failures.append(
+                            f"ProductDefinition: {path} query failed ({type(error).__name__})"
+                        )
+                        _LOGGER.debug(
+                            "ProductDefinition %s probe failed", name, exc_info=True
+                        )
+                        continue
+                if name == "LightingControlMulti":
+                    channel = self.get_channel()
+                    if isinstance(definition, list) and not (
+                        0 <= channel < len(definition)
+                    ):
+                        failures.append(
+                            f"ProductDefinition: {path} channel index out of range (entries={len(definition)})"
+                        )
+                    definition = (
+                        definition[channel]
+                        if isinstance(definition, list) and 0 <= channel < len(definition)
+                        else None
+                    )
+                if parser(definition):
+                    setattr(self, attribute, True)
+                    if attribute == "_supports_rpc2_siren":
+                        siren = definition.get("SirenFileManager")
+                        if isinstance(siren, dict) and siren.get("Support") is True:
+                            reason = (
+                                "ProductDefinition: "
+                                "AudioFileManager.SirenFileManager.Support=true"
+                            )
+                        else:
+                            reason = (
+                                "ProductDefinition: AudioFileManager, "
+                                "SupportEventLinkList non-empty and "
+                                "PlayFormat/PlayFormet contains wav/pcm/aac/mp3"
+                            )
+                        self._siren_detection_sources.append(reason)
+                    else:
+                        path = (
+                            f"LightingControlMulti[{self.get_channel()}]"
+                            if name == "LightingControlMulti"
+                            else "LightingControl"
+                        )
+                        for key in ("FilckerLighting", "FlickerLighting"):
+                            flicker = definition["LinkingDetail"].get(key)
+                            if (
+                                isinstance(flicker, dict)
+                                and flicker.get("Support") is True
+                                and isinstance(flicker.get("LightType"), list)
+                                and bool(flicker["LightType"])
+                            ):
+                                self._security_light_detection_sources.append(
+                                    f"ProductDefinition: {path}.LinkingDetail.{key}, "
+                                    "Support=true and LightType non-empty"
+                                )
+                    break
+                explain = (
+                    siren_definition_failure_reason
+                    if attribute == "_supports_rpc2_siren"
+                    else security_light_definition_failure_reason
+                )
+                failures.append(f"ProductDefinition: {path}, {explain(definition)}")
+
         try:
             caps = await self.client.async_get_coaxial_control_io_caps_rpc2()
-            self._supports_rpc2_siren = caps.get("SupportControlSpeaker") is True
-            self._supports_rpc2_security_light = caps.get("SupportControlLight") is True
-        except Exception:  # Optional RPC2 support must not prevent legacy setup.
-            _LOGGER.debug("Direct-camera RPC2 deterrence probe failed; using model fallback", exc_info=True)
+            if caps.get("SupportControlSpeaker") is True:
+                self._supports_rpc2_siren = True
+                self._siren_detection_sources.append("getCaps: SupportControlSpeaker=true")
+            else:
+                self._siren_detection_failures.append(
+                    "getCaps: SupportControlSpeaker is missing or not true"
+                )
+            if caps.get("SupportControlLight") is True:
+                self._supports_rpc2_security_light = True
+                self._security_light_detection_sources.append(
+                    "getCaps: SupportControlLight=true"
+                )
+            else:
+                self._security_light_detection_failures.append(
+                    "getCaps: SupportControlLight is missing or not true"
+                )
+        except Exception as error:
+            reason = f"getCaps: query failed ({type(error).__name__})"
+            self._siren_detection_failures.append(reason)
+            self._security_light_detection_failures.append(reason)
+            _LOGGER.debug(
+                "Direct-camera getCaps probe failed; keeping other evidence", exc_info=True
+            )
 
     def uses_rpc2_deterrence(self, dahua_type: int | None = None) -> bool:
         """Select RPC2 for detected or manually enabled direct-camera outputs."""
@@ -2510,19 +2648,82 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             light = light or manual_light
         return {1: light, 2: speaker}.get(dahua_type, speaker or light)
 
+    def is_recorder_host(self) -> bool:
+        """Return whether the device class explicitly identifies a recorder."""
+        device_class = getattr(self, "_device_class", "")
+        return isinstance(device_class, str) and device_class.strip().upper() in {
+            "NVR",
+            "DVR",
+            "XVR",
+            "HCVR",
+        }
+
+    def get_siren_detection_sources(self) -> list[str]:
+        """Describe the evidence and failed checks used by supports_siren."""
+        sources = list(getattr(self, "_siren_detection_sources", []))
+        if getattr(self, "_manual_siren", False) and not self.is_doorbell():
+            sources.append("Manual override: manual_siren=true")
+        m = self.model.upper()
+        if "AS-PV" in m:
+            sources.append("Model fallback: contains AS-PV")
+        if "L46N" in m:
+            sources.append("Model fallback: contains L46N")
+        if m.startswith("W452ASD"):
+            sources.append("Model fallback: starts with W452ASD")
+        if sources:
+            return sources
+        failures = list(getattr(self, "_siren_detection_failures", []))
+        if not failures:
+            failures.append("Automatic detection has not run or evidence is unavailable")
+        failures.append("Model fallback: no matching siren model")
+        failures.append(
+            "Manual override: excluded for doorbell"
+            if getattr(self, "_manual_siren", False) and self.is_doorbell()
+            else "Manual override: disabled"
+        )
+        return failures
+
+    def get_security_light_detection_sources(self) -> list[str]:
+        """Describe the evidence and failed checks used by supports_security_light."""
+        sources = list(getattr(self, "_security_light_detection_sources", []))
+        if getattr(self, "_manual_security_light", False) and not self.is_doorbell():
+            sources.append("Manual override: manual_security_light=true")
+        m = self.model.upper()
+        if "AS-PV" in m:
+            sources.append("Model fallback: contains AS-PV")
+        if m in {"AD410", "DB61I"}:
+            sources.append(f"Model fallback: {m}")
+        if m.startswith("IP8M-2796E"):
+            sources.append("Model fallback: starts with IP8M-2796E")
+        if m.startswith("IPC-COLOR4M-TZ"):
+            sources.append("Model fallback: starts with IPC-COLOR4M-TZ")
+        if sources:
+            return sources
+        failures = list(getattr(self, "_security_light_detection_failures", []))
+        if not failures:
+            failures.append("Automatic detection has not run or evidence is unavailable")
+        failures.append("Model fallback: no matching security-light model")
+        failures.append(
+            "Manual override: excluded for doorbell"
+            if getattr(self, "_manual_security_light", False) and self.is_doorbell()
+            else "Manual override: disabled"
+        )
+        return failures
+
     def supports_siren(self) -> bool:
         """
         Returns true if this camera has a siren. For example, the IPC-HDW3849HP-AS-PV does
         https://dahuawiki.com/Template:NameConvention
         """
         m = self.model.upper()
-        return (self.uses_rpc2_deterrence(2)
-                or "AS-PV" in m or "L46N" in m or m.startswith("W452ASD")
-                # TPC-BF1241-TB3F4-DW-S8-HW reports SupportControlSpeaker=0
-                # via getCaps, but its built-in siren is present and controllable.
-                # Apply the fallback to the family; other TPC-BF1241 variants
-                # have not yet been verified to behave the same way.
-                or m.startswith("TPC-BF1241"))
+        return (
+            getattr(self, "_supports_rpc2_siren", False)
+            or (getattr(self, "_manual_siren", False) and not self.is_doorbell())
+            or self.uses_rpc2_deterrence(2)
+            or "AS-PV" in m
+            or "L46N" in m
+            or m.startswith("W452ASD")
+        )
 
     def supports_nvr_active_deterrence(self) -> bool:
         """Return whether NVR active-deterrence entities were explicitly enabled."""
@@ -2536,7 +2737,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         m = self.model.upper()
         return (
-            self.uses_rpc2_deterrence(1)
+            getattr(self, "_supports_rpc2_security_light", False)
+            or (getattr(self, "_manual_security_light", False) and not self.is_doorbell())
+            or self.uses_rpc2_deterrence(1)
             or "AS-PV" in m
             or m == "AD410"
             or m == "DB61I"
