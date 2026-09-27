@@ -30,6 +30,7 @@ from .const import (
     CONF_AUTO_DETECT_CHANNEL,
     CONF_ALL_CHANNELS,
     CONF_AREA,
+    DEFAULT_EVENTS,
     CONF_EXTRA_CHANNELS,
     CONF_USE_RPC2,
     CONF_USE_HTTPS,
@@ -64,9 +65,6 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 DISCOVERY_TIMEOUT_SECONDS = 30
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
-
-DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss", "VideoBlind", "AudioMutation",
-                  "CrossRegionDetection", "SmartMotionHuman", "SmartMotionVehicle"]
 
 ALL_EVENTS = ["VideoMotion",
               "VideoLoss",
