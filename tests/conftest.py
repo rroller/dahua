@@ -113,8 +113,12 @@ def _clear_rpc2_event_state():
     from custom_components.dahua import client as client_module
 
     client_module._HOST_RPC2_EVENT_STATE.clear()
+    # The poller's description of itself, which diagnostics reads. Same reasoning: it
+    # is keyed by host and outlives a restart, so it outlives a test too.
+    client_module._HOST_RPC2_EVENT_POLL.clear()
     yield
     client_module._HOST_RPC2_EVENT_STATE.clear()
+    client_module._HOST_RPC2_EVENT_POLL.clear()
 
 @pytest.fixture(autouse=True)
 def _clear_cgi_config_absent():
