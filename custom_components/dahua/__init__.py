@@ -1736,7 +1736,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 await self._async_probe_direct_deterrence()
                 if self._wanted_by(LIGHT, SWITCH) and not self.uses_rpc2_deterrence():
                     try:
-                        coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
+                        coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
                         await self.client.async_get_coaxial_control_io_status(coaxial_channel)
                         self._supports_coaxial_control = True
                     except PROBE_REFUSED as probe_error:
@@ -1997,7 +1997,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self.client.async_get_coaxial_control_io_status_rpc2()
                 ))
             elif self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
-                coaxial_channel = self._channel_number if self.is_nvr_channel() else 1
+                coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
                 coros.append(
                     asyncio.ensure_future(
                         self.client.async_get_coaxial_control_io_status(coaxial_channel)
@@ -2500,8 +2500,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._security_light_detection_sources = []
         self._siren_detection_failures = []
         self._security_light_detection_failures = []
-        if self.is_recorder_host():
-            reason = "Direct-camera probes skipped: recorder device class"
+        if self.uses_recorder_deterrence():
+            reason = "Direct-camera probes skipped: recorder classification or legacy fallback"
             self._siren_detection_failures.append(reason)
             self._security_light_detection_failures.append(reason)
             return
@@ -2641,7 +2641,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         manual_light = getattr(self, "_manual_security_light", False)
         if not (speaker or light or manual_siren or manual_light):
             return False
-        if self.is_nvr_channel():
+        if self.uses_recorder_deterrence():
             return False
         if (manual_siren or manual_light) and not self.is_doorbell():
             speaker = speaker or manual_siren
@@ -2658,6 +2658,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "HCVR",
         }
 
+    def uses_recorder_deterrence(self) -> bool:
+        """Use reported host class, falling back to legacy routing if unavailable."""
+        device_class = getattr(self, "_device_class", "")
+        if isinstance(device_class, str) and device_class.strip():
+            return self.is_recorder_host()
+        return self.is_nvr_channel()
+
     def get_siren_detection_sources(self) -> list[str]:
         """Describe the evidence and failed checks used by supports_siren."""
         sources = list(getattr(self, "_siren_detection_sources", []))
@@ -2670,6 +2677,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             sources.append("Model fallback: contains L46N")
         if m.startswith("W452ASD"):
             sources.append("Model fallback: starts with W452ASD")
+        if "TPC-BF1241" in m:
+            sources.append("Model fallback: contains TPC-BF1241")
         if sources:
             return sources
         failures = list(getattr(self, "_siren_detection_failures", []))
@@ -2723,6 +2732,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             or "AS-PV" in m
             or "L46N" in m
             or m.startswith("W452ASD")
+            or "TPC-BF1241" in m
         )
 
     def supports_nvr_active_deterrence(self) -> bool:

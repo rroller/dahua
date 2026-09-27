@@ -39,13 +39,13 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
 
     has_security_light = (
         coordinator.supports_nvr_active_deterrence()
-        if coordinator.is_recorder_host()
+        if coordinator.uses_recorder_deterrence()
         else coordinator.supports_security_light()
     )
     if has_security_light and not coordinator.is_amcrest_doorbell():
         #  The Amcrest doorbell works a little different and is added in select.py
         security_light_name = (
-            "Warning Light" if coordinator.is_nvr_channel() else "Security Light"
+            "Warning Light" if coordinator.uses_recorder_deterrence() else "Security Light"
         )
         entities.append(DahuaSecurityLight(coordinator, entry, security_light_name))
 
@@ -1237,7 +1237,7 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     async def async_turn_on(self, **kwargs):
         """Turn the light on"""
         channel = self._coordinator.get_channel()
-        if self._coordinator.is_nvr_channel():
+        if self._coordinator.uses_recorder_deterrence():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, True
             )
@@ -1250,7 +1250,7 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
         channel = self._coordinator.get_channel()
-        if self._coordinator.is_nvr_channel():
+        if self._coordinator.uses_recorder_deterrence():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, False
             )

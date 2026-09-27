@@ -152,7 +152,7 @@ async def test_full_definition_one_call_plus_independent_caps_and_sources():
 
 
 @pytest.mark.parametrize("channel", [0, 1])
-async def test_multichannel_camera_detects_and_preserves_channel_control(channel):
+async def test_multichannel_camera_detects_and_uses_direct_control(channel):
     c = coordinator()
     c._channel = channel
     c._channel_number = channel + 1
@@ -167,18 +167,19 @@ async def test_multichannel_camera_detects_and_preserves_channel_control(channel
         f"LightingControlMulti[{channel}]" in s
         for s in c.get_security_light_detection_sources()
     )
-    if channel:
-        from custom_components.dahua.light import DahuaSecurityLight
-        from custom_components.dahua.switch import DahuaSirenBinarySwitch
+    from custom_components.dahua.light import DahuaSecurityLight
+    from custom_components.dahua.switch import DahuaSirenBinarySwitch
 
-        for cls, kind in [(DahuaSecurityLight, 1), (DahuaSirenBinarySwitch, 2)]:
-            e = object.__new__(cls)
-            e._coordinator = c
-            await e.async_turn_on()
-            c.client.async_set_nvr_coaxial_control_state.assert_awaited_with(
-                channel + 1, kind, True
+    for cls, kind in [(DahuaSecurityLight, 1), (DahuaSirenBinarySwitch, 2)]:
+        e = object.__new__(cls)
+        e._coordinator = c
+        for enabled in (True, False):
+            await (e.async_turn_on() if enabled else e.async_turn_off())
+            c.client.async_set_coaxial_control_state_rpc2.assert_awaited_with(
+                kind, enabled
             )
-        c.client.async_set_coaxial_control_state_rpc2.assert_not_awaited()
+    c.client.async_set_nvr_coaxial_control_state.assert_not_awaited()
+    c.client.async_set_coaxial_control_state.assert_not_awaited()
 
 
 async def test_negative_single_definition_still_checks_multi():
@@ -294,7 +295,8 @@ async def test_multichannel_manual_overrides_without_probe_support(siren, light)
     await c._async_probe_direct_deterrence()
     assert c.supports_siren() is siren
     assert c.supports_security_light() is light
-    assert not c.uses_rpc2_deterrence()
+    assert c.uses_rpc2_deterrence(2) is siren
+    assert c.uses_rpc2_deterrence(1) is light
     if siren:
         assert c.get_siren_detection_sources() == ["Manual override: manual_siren=true"]
     if light:
@@ -461,7 +463,8 @@ async def test_diagnostics_adjacent_sources_match_capability_and_make_no_request
 @pytest.mark.parametrize("platform", ["switch", "light"])
 @pytest.mark.parametrize(
     "device_class,channel,opt_in,expected",
-    [("SD", 1, False, True), ("NVR", 0, False, False), ("NVR", 0, True, True)],
+    [("SD", 1, False, True), ("NVR", 0, False, False), ("NVR", 0, True, True),
+     ("", 0, True, True), ("", 1, True, True)],
 )
 async def test_entity_creation_uses_host_class_not_channel(
     monkeypatch, platform, device_class, channel, opt_in, expected
@@ -469,7 +472,7 @@ async def test_entity_creation_uses_host_class_not_channel(
     from custom_components.dahua import switch, light
 
     module = switch if platform == "switch" else light
-    c = coordinator(speaker=True, light=True, nvr=opt_in)
+    c = coordinator(speaker=bool(device_class), light=bool(device_class), nvr=opt_in)
     c._device_class = device_class
     c._channel = channel
     for name in (
