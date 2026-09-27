@@ -57,6 +57,11 @@ def _entry_data(channel=0):
 def _flow():
     flow = DahuaFlowHandler()
     flow.init_info = _entry_data()
+    # The naming step now fetches a still from the channel to show on the form. These
+    # tests are about which step comes next, so the picture is pre-empted rather than
+    # reached for over the network; "" is the value that means "asked, and there was
+    # none". test_flow_preview.py is where the picture itself is tested.
+    flow._preview_markdown = ""
     return flow
 
 

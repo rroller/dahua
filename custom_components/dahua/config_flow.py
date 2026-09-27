@@ -21,6 +21,7 @@ from . import dahua_utils
 from . import ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
+from .flow_preview import async_drop_preview, async_store_preview, preview_url
 from .const import (
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -314,6 +315,44 @@ async def async_refine_connection_failure(address: str, reason: str) -> str:
     return reason
 
 
+# camera.py already records that these devices refuse a snapshot under load, and a
+# recorder refuses more readily than a camera. So a still that has not arrived quickly
+# is one to do without rather than wait for: the form it decorates is useful without
+# it, and the add is already slow enough on a sixteen channel recorder.
+PREVIEW_TIMEOUT_SECONDS = 5
+
+# Only ever seen if the image fails to load, which is why it says where it came from
+# rather than describing the picture. Not translated: it lives in the markdown handed
+# to the dialog as a placeholder value, and a placeholder cannot carry a translation.
+PREVIEW_ALT_TEXT = "Snapshot from this camera"
+
+
+async def async_fetch_preview(username, password, address, port, rtsp_port,
+                              channel, use_https=None):
+    """Return one still from a channel, or None. Never raises.
+
+    A picture is a nicety, so every way of not getting one -- no snapshot endpoint, a
+    device that refuses under load, an ONVIF channel on a recorder that answers 400,
+    a timeout -- has to end with the flow carrying on unchanged.
+    """
+    connector = TCPConnector(ssl=SSL_CONTEXT)
+    session = ClientSession(connector=connector)
+    try:
+        client = DahuaClient(username, password, address, port, rtsp_port,
+                             session, use_https)
+        return await asyncio.wait_for(
+            client.async_get_snapshot(int(channel)), PREVIEW_TIMEOUT_SECONDS)
+    except Exception as exception:  # pylint: disable=broad-except
+        # Debug, not warning: this failing is not a fault and the user is about to be
+        # shown a working form. The connection itself has already been proven.
+        _LOGGER.debug(
+            "No preview still for channel %s at %s (%s)",
+            channel, address, exception)
+        return None
+    finally:
+        await session.close()
+
+
 class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for Dahua Camera API."""
 
@@ -336,6 +375,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self._channel_areas = {}
         self._area_fields = {}
         self._discovery_task = None
+        # The markdown for the still shown on the naming step, and the token holding
+        # the bytes behind it. None means not asked for yet; "" means asked and the
+        # device had nothing to give, which is remembered so it is asked only once.
+        self._preview_markdown = None
+        self._preview_token = None
 
     async def async_step_dhcp(self, discovery_info):
         """A Dahua device appeared on the network.
@@ -1042,8 +1086,49 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_NAME, default=user_input[CONF_NAME]): str,
                 }
             ),
+            description_placeholders={"preview": await self._async_preview_markdown()},
             errors=self._errors,
         )
+
+    async def _async_preview_markdown(self) -> str:
+        """A still from the channel being added, as markdown, or "" if there is none.
+
+        This is the last step before the entry exists and the only one that shows what
+        was actually configured, which is why the picture goes here rather than on a
+        step of its own: a wrong channel number is caught by looking, and the picture
+        is also what tells somebody what to call the camera.
+
+        Asked for once. This form is re-shown whenever the name comes back empty, and a
+        device that has already handed over an image should not be asked again -- nor
+        should one that refused, which is why a failure is remembered as "" rather than
+        retried.
+        """
+        if self._preview_markdown is not None:
+            return self._preview_markdown
+
+        self._preview_markdown = ""
+        info = self.init_info or {}
+        image = await async_fetch_preview(
+            info.get(CONF_USERNAME), info.get(CONF_PASSWORD),
+            info.get(CONF_ADDRESS), info.get(CONF_PORT), info.get(CONF_RTSP_PORT),
+            info.get(CONF_CHANNEL), True if info.get(CONF_USE_HTTPS) else None)
+        if image:
+            self._preview_token = async_store_preview(self.hass, image)
+            self._preview_markdown = "![{0}]({1})".format(
+                PREVIEW_ALT_TEXT, preview_url(self._preview_token))
+        return self._preview_markdown
+
+    @callback
+    def async_remove(self) -> None:
+        """Drop the held still, whichever way this flow ended.
+
+        Called for a created entry, an abort and a cancelled dialog alike, so this is
+        the one place that covers all three. The store expires entries on its own as
+        well, because this cannot run for a flow the process did not live to finish.
+        """
+        if self._preview_token:
+            async_drop_preview(self.hass, self._preview_token)
+            self._preview_token = None
 
     async def _test_credentials(self, username, password, address, port, rtsp_port,
                                 channel, use_https=None, check_channel=False):
