@@ -1,0 +1,41 @@
+name: Tag actions
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  version:
+    runs-on: "ubuntu-latest"
+    name: Tag matches manifest version
+    steps:
+      - name: Check out code from GitHub
+        uses: "actions/checkout@v2"
+
+      - name: Compare the tag with manifest.json
+        run: |
+          MANIFEST=custom_components/dahua/manifest.json
+          tag="${GITHUB_REF_NAME}"
+          raw="$(python3 -c "import json;print(json.load(open('$MANIFEST'))['version'])")"
+          version="$(printf '%s' "$raw" | tr -d '[:space:]')"
+
+          echo "tag              $tag"
+          echo "manifest version $raw"
+
+          if [ "$raw" != "$version" ]; then
+            echo "::warning::manifest.json version has surrounding whitespace ('$raw'). Tag 0.9.66 shipped that way."
+          fi
+
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag $tag ships manifest version $version."
+            echo "The version bump has to be committed BEFORE the tag is cut, or people cannot"
+            echo "tell which version they are running: HACS shows the manifest, not the tag."
+            echo "This is what happened with 0.9.84, which ships 0.9.83 -- a reporter bisecting"
+            echo "a regression in #728 installed it, read 0.9.83, and concluded the install had"
+            echo "failed, so a good datapoint was discarded."
+            echo "Fix: bump manifest.json, commit, then move the tag to that commit."
+            exit 1
+          fi
+
+          echo "Tag and manifest agree."
