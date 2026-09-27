@@ -3109,19 +3109,59 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id)
 
-    # If that was the last entry for this host, withdraw anything we said
-    # about it rather than leaving an orphaned card in Repairs.
-    address = normalize_address(entry.data.get(CONF_ADDRESS))
-    if not _entries_for_address(hass, address):
-        _HOST_FAILURES.pop(address, None)
-        _HOST_UPTIME_STATE.pop(address, None)
-        _HOST_UPTIME_LOCKS.pop(address, None)
-        ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
-        ir.async_delete_issue(
-            hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
-        )
-
+    # The host-scoped cleanup that used to live here has moved to
+    # async_remove_entry. It could never run from this function: Home Assistant
+    # unloads an entry *before* it deletes it, so _entries_for_address still
+    # counted the entry being unloaded and the "last one for this host" test was
+    # never true. It also should not run on a reload, which is the other reason
+    # this function is called -- dropping the failure count there would reset the
+    # poll backoff every time somebody saved an option.
     return unloaded
+
+
+@callback
+def _async_forget_host(hass: HomeAssistant, address: str) -> None:
+    """Drop what is remembered about a host, and withdraw what we said about it.
+
+    Only correct once the last entry for the address has gone. The failure count
+    drives the poll backoff and the two issues are per host, so a host that still
+    has entries must keep all of it.
+    """
+    _HOST_FAILURES.pop(address, None)
+    _HOST_UPTIME_STATE.pop(address, None)
+    _HOST_UPTIME_LOCKS.pop(address, None)
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
+    ir.async_delete_issue(
+        hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
+    )
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Withdraw anything said about a host once its last entry is removed.
+
+    This hook exists because unloading and removing are different things and
+    only this one means removal. Home Assistant deletes the entry from its own
+    registry *before* calling it, so unlike in async_unload_entry the count
+    below correctly excludes the entry that has just gone.
+
+    Without it a device that was unreachable, or that was offered the HTTPS
+    switch, left its Repairs card on the Settings page after being deleted --
+    pointing at an address with no entries, offering to reconfigure nothing, and
+    with no way for the user to dismiss it. The remembered failure count stayed
+    for the life of the process too, so re-adding the device inherited a backoff
+    it had not earned.
+
+    Deliberately takes no interest in whether setup ever succeeded. The card is
+    most likely to be there precisely when it did not.
+    """
+    address = normalize_address(entry.data.get(CONF_ADDRESS))
+    if not address or _entries_for_address(hass, address):
+        return
+    _async_forget_host(hass, address)
+    _LOGGER.debug(
+        "Last entry for %s removed; forgot its host state and withdrew its repairs",
+        address,
+    )
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
