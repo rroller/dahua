@@ -56,6 +56,7 @@ from .const import (
     CONF_MANUAL_SECURITY_LIGHT,
     CONF_AREA,
     CONF_AUTHORIZED_PLATES,
+    DEFAULT_EVENTS,
     CONF_AUTHORIZED_HOLD_TIME,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_AUTHORIZED_HOLD_TIME,
@@ -518,6 +519,19 @@ def is_onvif_channel(data: dict, channel: int) -> bool:
     return remote_device_protocol(data, channel) == "onvif"
 
 
+# The codes whose Pulse carries a `Data.State` that decides the sensor. Every
+# other Pulse is a moment -- something happened -- and reading a State out of one
+# that has none produced 0, which was then treated as "not ringing" and wrote the
+# sensor off. Thirteen of the forty-two selectable codes are Pulse shaped, so
+# thirteen sensors could never turn on (#573, and part of #336 and #456).
+#
+# `DoorbellPressed` is what BackKeyLight and PhoneCallDetect are translated to.
+# `AccessControl` belongs here too and is easy to miss: its Pulse carries a State
+# where 1 is a granted card and 0 is not, so treating it as a bare moment would
+# raise the sensor on a *refused* card. A pre-existing test caught that.
+# `DoorStatus` is handled separately above, on Open and Close rather than State.
+PULSE_STATE_CODES = frozenset({"DoorbellPressed", "AccessControl"})
+
 # BackKeyLight State values that mean the doorbell is ringing. See
 # myhomeiot/DahuaVTO, which documents the wider set: 4 voice message,
 # 5 answered from the VTH, 6 not answered, 7 VTH calling the VTO, 8 unlock,
@@ -646,12 +660,26 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 def get_configured_events(entry: ConfigEntry) -> list:
-    """Returns the events this entry subscribes to.
+    """Returns the events this entry subscribes to. Never None.
 
-    Options win when present, so the subscription can be changed after setup.
-    Entries created before the option existed only carry the setup-time value.
+    Options win when present, so the subscription can be changed after setup,
+    and an empty selection there is honoured because the user chose it. The
+    setup-time value in `data` is honoured the same way, empty included.
+
+    Neither present is a different thing, and it used to return None. That is
+    reachable by an entry old enough to predate the setting, and None is not a
+    list: `binary_sensor.async_setup_entry` iterates this without a guard, so
+    the whole platform raised TypeError and the device got **no binary sensors
+    at all** -- while `async_start_event_listener` quietly skipped the stream
+    because it does guard, so no events either, and nothing in the log tying the
+    two together. DEFAULT_EVENTS is what such an entry would be created with
+    today.
     """
-    return entry.options.get(CONF_EVENTS, entry.data.get(CONF_EVENTS))
+    if CONF_EVENTS in entry.options:
+        return list(entry.options[CONF_EVENTS] or [])
+    if CONF_EVENTS in entry.data:
+        return list(entry.data[CONF_EVENTS] or [])
+    return list(DEFAULT_EVENTS)
 
 
 def get_configured_use_https(entry: ConfigEntry):
@@ -2205,6 +2233,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
                         self._dahua_event_timestamp[event_key] = 0
+                elif code not in PULSE_STATE_CODES and code not in DOORBELL_STATE_EVENTS.values():
+                    # A Pulse that is not a door state and not a call state is a
+                    # notification that something happened. There is no Stop
+                    # coming, so raise it and let the sensor's hold clear it --
+                    # the same mechanism #761 gave the doorbell press.
+                    #
+                    # Recorded as momentary from what the device actually sent,
+                    # rather than from a list of codes here. The list would be a
+                    # guess: only InterVideoAccess has ever been seen as a Pulse
+                    # in a report (#329), and two more codes were added to the
+                    # selectable set in the last week alone.
+                    momentary = getattr(self, "_momentary_events", None)
+                    if momentary is None:
+                        momentary = self._momentary_events = set()
+                    momentary.add(event_key)
+                    self._dahua_event_timestamp[event_key] = int(time.time())
                 else:
                     # BackKeyLight carries the VTO's call state, and more than
                     # one value means ringing. myhomeiot/DahuaVTO documents
@@ -2382,6 +2426,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "number at %s so it can be added",
             self.get_device_name(), raw_state, ISSUE_URL,
         )
+
+    def event_is_momentary(self, event_name: str) -> bool:
+        """Whether this event has ever arrived as a Pulse on this device.
+
+        Asked by the binary sensor to decide whether it needs to clear itself.
+        A Pulse has no closing event, so a sensor raised by one and left alone
+        would stay on until Home Assistant restarted.
+
+        Derived from what the device sent rather than from a list of codes,
+        because the list would be a guess and would drift: the selectable set
+        gained FaceRecognition and HumanTrait in the last week.
+        """
+        return self.get_event_key(event_name) in getattr(self, "_momentary_events", ())
 
     def get_event_timestamp(self, event_name: str) -> int:
         """
@@ -3109,19 +3166,59 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id)
 
-    # If that was the last entry for this host, withdraw anything we said
-    # about it rather than leaving an orphaned card in Repairs.
-    address = normalize_address(entry.data.get(CONF_ADDRESS))
-    if not _entries_for_address(hass, address):
-        _HOST_FAILURES.pop(address, None)
-        _HOST_UPTIME_STATE.pop(address, None)
-        _HOST_UPTIME_LOCKS.pop(address, None)
-        ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
-        ir.async_delete_issue(
-            hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
-        )
-
+    # The host-scoped cleanup that used to live here has moved to
+    # async_remove_entry. It could never run from this function: Home Assistant
+    # unloads an entry *before* it deletes it, so _entries_for_address still
+    # counted the entry being unloaded and the "last one for this host" test was
+    # never true. It also should not run on a reload, which is the other reason
+    # this function is called -- dropping the failure count there would reset the
+    # poll backoff every time somebody saved an option.
     return unloaded
+
+
+@callback
+def _async_forget_host(hass: HomeAssistant, address: str) -> None:
+    """Drop what is remembered about a host, and withdraw what we said about it.
+
+    Only correct once the last entry for the address has gone. The failure count
+    drives the poll backoff and the two issues are per host, so a host that still
+    has entries must keep all of it.
+    """
+    _HOST_FAILURES.pop(address, None)
+    _HOST_UPTIME_STATE.pop(address, None)
+    _HOST_UPTIME_LOCKS.pop(address, None)
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
+    ir.async_delete_issue(
+        hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
+    )
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Withdraw anything said about a host once its last entry is removed.
+
+    This hook exists because unloading and removing are different things and
+    only this one means removal. Home Assistant deletes the entry from its own
+    registry *before* calling it, so unlike in async_unload_entry the count
+    below correctly excludes the entry that has just gone.
+
+    Without it a device that was unreachable, or that was offered the HTTPS
+    switch, left its Repairs card on the Settings page after being deleted --
+    pointing at an address with no entries, offering to reconfigure nothing, and
+    with no way for the user to dismiss it. The remembered failure count stayed
+    for the life of the process too, so re-adding the device inherited a backoff
+    it had not earned.
+
+    Deliberately takes no interest in whether setup ever succeeded. The card is
+    most likely to be there precisely when it did not.
+    """
+    address = normalize_address(entry.data.get(CONF_ADDRESS))
+    if not address or _entries_for_address(hass, address):
+        return
+    _async_forget_host(hass, address)
+    _LOGGER.debug(
+        "Last entry for %s removed; forgot its host state and withdrew its repairs",
+        address,
+    )
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

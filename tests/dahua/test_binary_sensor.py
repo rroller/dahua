@@ -35,6 +35,10 @@ class _Coordinator:
     def get_event_timestamp(self, event_name):
         return self.timestamps.get(event_name, 0)
 
+    def event_is_momentary(self, event_name):
+        """No event here has arrived as a Pulse, so none clears itself."""
+        return False
+
     def add_dahua_event_listener(self, event_name, callback):
         self.listeners.append((event_name, callback))
 
