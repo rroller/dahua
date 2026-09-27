@@ -15,6 +15,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector
 
 from . import dahua_utils
+from . import _async_probe_tcp
 from .client import DahuaClient
 from .const import (
     CONF_PASSWORD,
@@ -63,6 +64,15 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 # channel, two at a time. Running out means nothing is offered, which is
 # the same outcome as a device that has no channels to offer.
 DISCOVERY_TIMEOUT_SECONDS = 30
+
+# Dahua's own protocols: DHIP on 5000 and the private SDK port on 37777. A device
+# answering either of these while refusing HTTP is switched on, reachable, and has
+# its web/CGI service turned off. Measured on three cameras here which serve 5000
+# and 37777 and nothing at all across 27 scanned HTTP-ish ports.
+DAHUA_PRIVATE_PORTS = (37777, 5000)
+
+# Only spent on a path that has already failed, so no successful setup waits on it.
+FAILURE_PROBE_TIMEOUT_SECONDS = 3.0
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -132,6 +142,13 @@ def describe_setup_failure(exception: BaseException) -> str:
             # credentials. If either goes back to swallowing it, a wrong
             # password silently adds a camera again and this line goes dead.
             return "auth"
+        if exception.status == 404:
+            # Something is serving HTTP and does not have magicBox.cgi. On Dahua
+            # that is the CGI service being switched off, which is the highest
+            # value per issue of any device-side cause in the tracker: #145, #417
+            # and #465 were all a checkbox, and #465 asked for exactly this hint.
+            # A non-Dahua web server also lands here, so the message covers both.
+            return "cgi_disabled"
         return "unexpected_reply"
     if isinstance(exception, ClientConnectorError):
         return "cannot_connect"
@@ -146,6 +163,38 @@ def describe_setup_failure(exception: BaseException) -> str:
         # ConnectionRefusedError and friends, when they arrive unwrapped.
         return "cannot_connect"
     return "unknown"
+
+
+async def async_refine_connection_failure(address: str, reason: str) -> str:
+    """Turn "nothing answered" into what the device is actually doing.
+
+    `cannot_connect` says the HTTP request did not land. It does not say why, and
+    the message it produces guesses wrong in the two most common cases:
+
+        "Nothing answered at that address and port. Check the camera is on, that
+         the IP and port are right, and that Home Assistant can reach it."
+
+    A device serving HTTPS on 443, or one whose web service is off while Dahua's
+    own protocols still answer, is on, correctly addressed and perfectly
+    reachable. Every clause of that sentence sends the user somewhere useless.
+
+    Both are answerable without credentials, and cheaply, because this only runs
+    after a failure. Nothing is probed on a successful setup.
+    """
+    if reason != "cannot_connect":
+        return reason
+
+    # Checked first because it has a concrete action attached, and because the
+    # repair card that already detects this (http_dead_https_available) only
+    # exists for an entry that has been created.
+    if await _async_probe_tcp(address, 443, FAILURE_PROBE_TIMEOUT_SECONDS):
+        return "https_available"
+
+    for port in DAHUA_PRIVATE_PORTS:
+        if await _async_probe_tcp(address, port, FAILURE_PROBE_TIMEOUT_SECONDS):
+            return "http_service_off"
+
+    return reason
 
 
 class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
@@ -639,9 +688,12 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # It answered, but not with anything recognisable.
             return None, "unexpected_reply"
         except Exception as exception:  # pylint: disable=broad-except
-            _LOGGER.error("Could not connect to Dahua device. For iMou devices see " +
-                            "https://github.com/rroller/dahua/issues/6", exc_info=exception)
-            return None, describe_setup_failure(exception)
+            reason = describe_setup_failure(exception)
+            _LOGGER.error(
+                "Could not connect to Dahua device at %s (%s). For iMou devices "
+                "see https://github.com/rroller/dahua/issues/6",
+                address, reason, exc_info=exception)
+            return None, await async_refine_connection_failure(address, reason)
         finally:
             await session.close()
 
