@@ -50,9 +50,19 @@ def test_a_numeric_string_is_accepted():
 
 def _schema_defaults(result):
     out = {}
-    for marker in result["data_schema"].schema:
+    schema = result["data_schema"].schema
+    for marker in schema:
         default = getattr(marker, "default", None)
         out[str(marker.schema)] = default() if callable(default) else default
+        # A collapsed section is presentation, not a different set of fields. These
+        # tests ask whether a field is offered, so descend into it rather than
+        # reporting the section itself as the answer.
+        nested = getattr(schema[marker], "schema", None)
+        if nested is not None and hasattr(nested, "schema"):
+            for inner in nested.schema:
+                inner_default = getattr(inner, "default", None)
+                out[str(inner.schema)] = (inner_default() if callable(inner_default)
+                                          else inner_default)
     return out
 
 
