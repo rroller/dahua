@@ -10,7 +10,6 @@
                     "address": "Adres",
                     "port": "Poort",
                     "rtsp_port": "RTSP Poort",
-                    "events": "Events",
                     "channel": "Channel (Usually 0 unless you use an nvr)"
                 }
             },
