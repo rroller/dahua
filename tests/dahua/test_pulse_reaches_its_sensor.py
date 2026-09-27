@@ -150,6 +150,31 @@ def test_a_closed_door_still_clears_door_status():
     assert _stamp(c, "DoorStatus") == 0
 
 
+def test_a_refused_access_control_card_still_leaves_the_sensor_off():
+    """AccessControl's Pulse carries a State too: 1 is a granted card, 0 is not.
+
+    Missed on the first attempt, and caught by test_cgi_events_pulse.py. Treating
+    it as a bare moment raises the sensor on a *refused* card, which is the worst
+    possible direction to get wrong on a door.
+    """
+    c = _coordinator()
+    _listening(c, "AccessControl")
+
+    _pulse(c, "AccessControl", {"State": 0})
+
+    assert _stamp(c, "AccessControl") == 0
+
+
+def test_a_granted_access_control_card_raises_it():
+    c = _coordinator()
+    _listening(c, "AccessControl")
+
+    _pulse(c, "AccessControl", {"State": 1})
+
+    assert _stamp(c, "AccessControl") > 0
+    assert c.event_is_momentary("AccessControl") is False
+
+
 def test_start_and_stop_are_untouched():
     """The IVS codes genuinely pair up, and clearing those on a timer would end
     motion detection early for everybody."""

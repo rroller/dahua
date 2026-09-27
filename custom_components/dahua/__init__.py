@@ -518,12 +518,18 @@ def is_onvif_channel(data: dict, channel: int) -> bool:
     return remote_device_protocol(data, channel) == "onvif"
 
 
-# The only codes whose Pulse carries a doorbell call state. Every other Pulse
-# is a moment -- something happened -- and reading a `State` out of it that is
-# not there produced 0, which was then treated as "not ringing" and wrote the
+# The codes whose Pulse carries a `Data.State` that decides the sensor. Every
+# other Pulse is a moment -- something happened -- and reading a State out of one
+# that has none produced 0, which was then treated as "not ringing" and wrote the
 # sensor off. Thirteen of the forty-two selectable codes are Pulse shaped, so
 # thirteen sensors could never turn on (#573, and part of #336 and #456).
-DOORBELL_CALL_STATE_CODES = frozenset({"DoorbellPressed"})
+#
+# `DoorbellPressed` is what BackKeyLight and PhoneCallDetect are translated to.
+# `AccessControl` belongs here too and is easy to miss: its Pulse carries a State
+# where 1 is a granted card and 0 is not, so treating it as a bare moment would
+# raise the sensor on a *refused* card. A pre-existing test caught that.
+# `DoorStatus` is handled separately above, on Open and Close rather than State.
+PULSE_STATE_CODES = frozenset({"DoorbellPressed", "AccessControl"})
 
 # BackKeyLight State values that mean the doorbell is ringing. See
 # myhomeiot/DahuaVTO, which documents the wider set: 4 voice message,
@@ -2212,7 +2218,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
                         self._dahua_event_timestamp[event_key] = 0
-                elif code not in DOORBELL_CALL_STATE_CODES and code not in DOORBELL_STATE_EVENTS.values():
+                elif code not in PULSE_STATE_CODES and code not in DOORBELL_STATE_EVENTS.values():
                     # A Pulse that is not a door state and not a call state is a
                     # notification that something happened. There is no Stop
                     # coming, so raise it and let the sensor's hold clear it --
