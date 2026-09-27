@@ -17,6 +17,11 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 TIMEOUT_SECONDS = 20
 
+# Unsupported table/method responses. LightingScheme returned 268959743 on
+# IPC-Color4K-X, DHI-NVR5464 and VTO2000A; CGI refusals vary between 400 and
+# 500. Decide absence from the RPC2 table read, not the CGI HTTP status.
+RPC2_TABLE_ABSENT_CODES = frozenset({268632064, 268959743})
+
 # The event stream asks the device to heartbeat at this interval, so a socket
 # that has delivered nothing for a comfortable multiple of it has stalled.
 EVENT_STREAM_HEARTBEAT_SECONDS = 5
@@ -1276,7 +1281,7 @@ class DahuaClient:
                 except Rpc2MethodRefused as exc:
                     # Only a refusal of the table read can establish absence;
                     # a failed login or expired session must still propagate.
-                    if allow_missing and exc.code in (268632064, 268959743):
+                    if allow_missing and exc.code in RPC2_TABLE_ABSENT_CODES:
                         return {}
                     raise
                 return flatten_rpc2_config(name, params.get("table"))
@@ -1323,9 +1328,11 @@ class DahuaClient:
             )
             if over_cgi:
                 return over_cgi
-        except aiohttp.ClientResponseError as exc:
-            if exc.status not in (400, 404, 501):
-                raise
+        except aiohttp.ClientResponseError:
+            # CGI status alone cannot establish absence: some firmware uses
+            # 500 for an unsupported table. Let the RPC2 table read decide;
+            # login, session and transport failures there still propagate.
+            pass
         return await self._rpc2_get_config("LightingScheme", allow_missing=True)
 
     async def async_set_lighting_scheme_illuminator(
@@ -1833,10 +1840,8 @@ class DahuaClient:
         channel_index = int(channel)
         profile_index = int(profile_mode)
 
-        # LightingScheme is runtime-sensitive for these cameras.
-        # Avoid using an older shared getConfig snapshot.
-        clear_host_cache(self._address)
-
+        # This uses _request directly (or RPC2), bypassing get's shared cache
+        # so restore capture always observes a fresh configuration.
         data = await self.async_get_lighting_scheme()
         if not data:
             return None
