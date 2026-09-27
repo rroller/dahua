@@ -25,6 +25,12 @@ clearing it there would reset the backoff every time somebody saved an option.
 
 So it belongs in `async_remove_entry`, which only means removal, and which Home
 Assistant calls after the entry has left its registry.
+
+**`enable_custom_integrations` is load-bearing in every test here that removes
+through Home Assistant.** `ConfigEntry.async_remove` resolves the integration with
+`loader.async_get_integration` and returns early on `IntegrationNotFound`, so
+without that fixture the hook is never reached -- and the test asserting that a
+recorder's other channels keep their card passed for entirely the wrong reason.
 """
 import pytest
 from homeassistant.helpers import issue_registry as ir
@@ -91,7 +97,7 @@ def _open_issues(hass, address=ADDRESS):
 
 # --- removing the last entry ------------------------------------------------
 
-async def test_removing_the_last_entry_withdraws_both_issues(hass):
+async def test_removing_the_last_entry_withdraws_both_issues(hass, enable_custom_integrations):
     entry = _entry(hass)
     _raise_both(hass)
     assert len(_open_issues(hass)) == 2
@@ -102,7 +108,7 @@ async def test_removing_the_last_entry_withdraws_both_issues(hass):
     assert _open_issues(hass) == [], "a deleted device must not leave its card"
 
 
-async def test_removing_the_last_entry_forgets_its_failure_count(hass):
+async def test_removing_the_last_entry_forgets_its_failure_count(hass, enable_custom_integrations):
     """The count drives the poll backoff, so re-adding the device must not
     inherit a backoff it has not earned."""
     entry = _entry(hass)
@@ -116,7 +122,7 @@ async def test_removing_the_last_entry_forgets_its_failure_count(hass):
 
 # --- but not while the host still has entries -------------------------------
 
-async def test_removing_one_channel_of_a_recorder_keeps_the_issues(hass):
+async def test_removing_one_channel_of_a_recorder_keeps_the_issues(hass, enable_custom_integrations):
     """An NVR is one entry per channel. Deleting channel 2 must not withdraw a
     card that still describes the host the other ten are on."""
     first = _entry(hass, channel=0)
@@ -130,7 +136,7 @@ async def test_removing_one_channel_of_a_recorder_keeps_the_issues(hass):
     assert ADDRESS in dahua_module._HOST_FAILURES
 
 
-async def test_another_hosts_issues_are_untouched(hass):
+async def test_another_hosts_issues_are_untouched(hass, enable_custom_integrations):
     entry = _entry(hass, address=ADDRESS)
     _entry(hass, address=OTHER, channel=1)
     _raise_both(hass, ADDRESS)
@@ -162,8 +168,17 @@ async def test_unloading_does_not_withdraw_anything(hass):
 
 async def test_the_hook_runs_even_when_setup_never_succeeded(hass):
     """No coordinator was ever registered, which is *more* likely when a card
-    was raised, not less. The old code returned early in that case."""
-    entry = _entry(hass)
+    was raised, not less. The old code returned early in that case.
+
+    The entry is deliberately NOT registered with hass: the hook runs after Home
+    Assistant has deleted it, so that is the state it really sees. Registering it
+    would make the "any entries left for this host" guard refuse, and this test
+    would pass while proving the opposite of what it says.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="gone",
+        data={"username": "u", "password": "p", "address": ADDRESS,
+              "port": "80", "rtsp_port": "554", "channel": 0, "name": "gone"})
     _raise_both(hass)
     assert entry.entry_id not in hass.data.get(DOMAIN, {})
 
