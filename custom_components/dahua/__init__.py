@@ -518,6 +518,13 @@ def is_onvif_channel(data: dict, channel: int) -> bool:
     return remote_device_protocol(data, channel) == "onvif"
 
 
+# The only codes whose Pulse carries a doorbell call state. Every other Pulse
+# is a moment -- something happened -- and reading a `State` out of it that is
+# not there produced 0, which was then treated as "not ringing" and wrote the
+# sensor off. Thirteen of the forty-two selectable codes are Pulse shaped, so
+# thirteen sensors could never turn on (#573, and part of #336 and #456).
+DOORBELL_CALL_STATE_CODES = frozenset({"DoorbellPressed"})
+
 # BackKeyLight State values that mean the doorbell is ringing. See
 # myhomeiot/DahuaVTO, which documents the wider set: 4 voice message,
 # 5 answered from the VTH, 6 not answered, 7 VTH calling the VTO, 8 unlock,
@@ -2205,6 +2212,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
                         self._dahua_event_timestamp[event_key] = 0
+                elif code not in DOORBELL_CALL_STATE_CODES and code not in DOORBELL_STATE_EVENTS.values():
+                    # A Pulse that is not a door state and not a call state is a
+                    # notification that something happened. There is no Stop
+                    # coming, so raise it and let the sensor's hold clear it --
+                    # the same mechanism #761 gave the doorbell press.
+                    #
+                    # Recorded as momentary from what the device actually sent,
+                    # rather than from a list of codes here. The list would be a
+                    # guess: only InterVideoAccess has ever been seen as a Pulse
+                    # in a report (#329), and two more codes were added to the
+                    # selectable set in the last week alone.
+                    momentary = getattr(self, "_momentary_events", None)
+                    if momentary is None:
+                        momentary = self._momentary_events = set()
+                    momentary.add(event_key)
+                    self._dahua_event_timestamp[event_key] = int(time.time())
                 else:
                     # BackKeyLight carries the VTO's call state, and more than
                     # one value means ringing. myhomeiot/DahuaVTO documents
@@ -2382,6 +2405,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "number at %s so it can be added",
             self.get_device_name(), raw_state, ISSUE_URL,
         )
+
+    def event_is_momentary(self, event_name: str) -> bool:
+        """Whether this event has ever arrived as a Pulse on this device.
+
+        Asked by the binary sensor to decide whether it needs to clear itself.
+        A Pulse has no closing event, so a sensor raised by one and left alone
+        would stay on until Home Assistant restarted.
+
+        Derived from what the device sent rather than from a list of codes,
+        because the list would be a guess and would drift: the selectable set
+        gained FaceRecognition and HumanTrait in the last week.
+        """
+        return self.get_event_key(event_name) in getattr(self, "_momentary_events", ())
 
     def get_event_timestamp(self, event_name: str) -> int:
         """

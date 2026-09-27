@@ -41,6 +41,9 @@ class _Coordinator:
     def get_event_timestamp(self, name):
         return self._timestamp
 
+    def event_is_momentary(self, name):
+        return False
+
     def add_dahua_event_listener(self, name, listener):
         self.listeners.setdefault(name, []).append(listener)
 
