@@ -15,6 +15,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector
 
 from . import dahua_utils
+from . import discovery as dahua_discovery
 from .client import DahuaClient
 from .const import (
     CONF_PASSWORD,
@@ -161,12 +162,75 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self.init_info = None
         # index -> label, for the other channels of a recorder
         self._found_channels = {}
+        # What a DHCP announcement, and the device itself, told us before we asked
+        # the user anything. Empty for a manual add.
+        self._discovered = {}
         self._extra_channels = []
         # Which area each extra channel was given, by channel index, and the
         # form field each of those answers arrives under.
         self._channel_areas = {}
         self._area_fields = {}
         self._discovery_task = None
+
+    async def async_step_dhcp(self, discovery_info):
+        """A Dahua device appeared on the network.
+
+        Two signals bring us here and they cover different devices: the OUI catches
+        one whose hostname has been changed, and the factory hostname (literally
+        `zhejiang.dahua.technology.co.ltd` on the doorbell measured here) catches
+        one on an OUI we do not list.
+
+        This only ever offers. Nothing is created, no credentials exist yet, and the
+        user fills in the same form as before, with the parts already known filled
+        in for them.
+        """
+        address = discovery_info.ip
+
+        # Dedupe repeated announcements while a flow for this device is open.
+        # Provisional on purpose: the entry's unique_id is the device's serial, and
+        # that is set later by the step that actually logs in. This only stops three
+        # announcements becoming three identical cards.
+        await self.async_set_unique_id(dr.format_mac(discovery_info.macaddress))
+
+        # Unauthenticated, and the reason the rest of this is worth doing: a device
+        # that answers hands over its serial, model and HTTP port. Only one of the
+        # five devices this was written against answers, so nothing below may depend
+        # on it.
+        info = await dahua_discovery.async_probe(address)
+        serial = str(info.get("SerialNo") or "").strip()
+
+        if serial and self._async_entries_for_serial(serial):
+            return self.async_abort(reason="already_configured")
+
+        # No serial, or one we have not seen: an entry on this address is still
+        # reason enough not to nag.
+        self._async_abort_entries_match({CONF_ADDRESS: address})
+
+        self._discovered = {CONF_ADDRESS: address}
+        port = info.get("HttpPort")
+        if port:
+            self._discovered[CONF_PORT] = str(port)
+
+        name = (info.get("DeviceType") or info.get("MachineName")
+                or discovery_info.hostname or "Dahua device")
+        # Shown on the discovery card in the integrations list.
+        self.context["title_placeholders"] = {"name": name, "address": address}
+        return await self.async_step_user()
+
+    def _async_entries_for_serial(self, serial: str) -> list:
+        """Every entry for one device, including a recorder's other channels.
+
+        The unique_id is the bare serial for channel 0 and `serial_N` above it, so a
+        prefix match is what covers a whole recorder. Without it, somebody who added
+        only channel 3 would have that recorder announce itself as undiscovered for
+        ever.
+        """
+        prefix = serial + "_"
+        return [
+            entry for entry in self._async_current_entries()
+            if (entry.unique_id or "") == serial
+            or (entry.unique_id or "").startswith(prefix)
+        ]
 
     async def async_step_user(self, user_input=None):
         """Handle a flow initialized by the user to add a camera."""
@@ -581,22 +645,36 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             errors=self._errors,
         )
 
-    async def _show_config_form_user(self, user_input):  # pylint: disable=unused-argument
-        """Show the configuration form to edit camera name."""
+    async def _show_config_form_user(self, user_input):
+        """Show the add form, prefilled with anything already known.
+
+        Two sources, and the order matters. What the user just typed wins, because a
+        submit that failed used to come back empty and a mistyped port meant
+        entering everything again. Behind that sits whatever a discovery worked out.
+
+        Suggested values rather than defaults, so validation is untouched: a
+        required field with an empty default is not the same thing as a required
+        field. The password is never prefilled from either source.
+        """
+        known = dict(self._discovered)
+        known.update({key: value for key, value in (user_input or {}).items()
+                      if key != CONF_PASSWORD and value not in (None, "")})
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_USERNAME): str,
+                vol.Required(CONF_PASSWORD): str,
+                vol.Required(CONF_ADDRESS): str,
+                vol.Required(CONF_PORT, default="80"): str,
+                vol.Required(CONF_RTSP_PORT, default="554"): str,
+                vol.Required(CONF_CHANNEL, default=0): int,
+                vol.Optional(CONF_USE_HTTPS, default=False): bool,
+                vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(ALL_EVENTS),
+            }
+        )
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_USERNAME): str,
-                    vol.Required(CONF_PASSWORD): str,
-                    vol.Required(CONF_ADDRESS): str,
-                    vol.Required(CONF_PORT, default="80"): str,
-                    vol.Required(CONF_RTSP_PORT, default="554"): str,
-                    vol.Required(CONF_CHANNEL, default=0): int,
-                    vol.Optional(CONF_USE_HTTPS, default=False): bool,
-                    vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(ALL_EVENTS),
-                }
-            ),
+            data_schema=self.add_suggested_values_to_schema(schema, known),
             errors=self._errors,
         )
 

@@ -9,6 +9,11 @@
     "@rroller"
   ],
   "config_flow": true,
+  "dhcp": [
+    { "hostname": "*dahua*" },
+    { "macaddress": "3CEF8C*" },
+    { "macaddress": "30DDAA*" }
+  ],
   "dependencies": [
     "repairs"
   ],
