@@ -194,6 +194,11 @@ def describe_setup_failure(exception: BaseException) -> str:
 # Errors that belong on the channel field rather than at the top of the form.
 CHANNEL_ERRORS = ("channel_not_on_device", "channel_disabled", "channel_is_onvif")
 
+# Failures that prove the transport already worked: the device answered and said
+# something specific about itself. Showing somebody the port and HTTPS fields after
+# one of these would point them away from the actual problem.
+TRANSPORT_WORKED = ("auth",) + CHANNEL_ERRORS
+
 
 async def async_channel_refusal(client, channel):
     """Why this channel cannot work, when the device says so outright.
@@ -369,6 +374,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         #     return self.async_abort(reason="single_instance_allowed")
 
         if user_input is not None:
+            # The transport fields are not on the form until something fails, so fill
+            # in what is known: a discovery's HttpPort when it gave one, the ordinary
+            # defaults otherwise. Stored either way, because entry.data is what the
+            # coordinator reads.
+            for key, fallback in ((CONF_PORT, "80"), (CONF_RTSP_PORT, "554")):
+                if not user_input.get(key):
+                    user_input[key] = self._discovered.get(key, fallback)
+
             data, error = await self._test_credentials(
                 user_input[CONF_USERNAME],
                 user_input[CONF_PASSWORD],
@@ -783,34 +796,50 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     @callback
-    def _user_schema(self):
-        """The add form's fields, separated out so they can be validated directly.
+    def _user_schema(self, reveal_transport=False):
+        """The add form's fields.
 
-        The ports are checked as ports and stored as strings, which is what every
-        existing entry holds: cv.port on its own would store an int and leave two
-        shapes mixed across entries for no gain. int() also strips whitespace, so a
-        trailing space stops becoming "http://ip: 80", a yarl InvalidURL, and the
-        message "the log has the reason".
+        Four questions, not eight. Username, password and address are the ones only
+        the user can answer; the channel stays because hiding it would remove the
+        ability to add one channel of a recorder on its own, which is a capability
+        rather than a detail.
 
-        vol.Coerce(str) and not a bare str: in voluptuous a type is a *check*, not a
-        conversion, so vol.All(cv.port, str) asserts that the int cv.port just
-        produced is a string and fails every time. The first version of this did
-        exactly that and the tests caught it.
+        The port, the RTSP port and the HTTPS box appear **only after something has
+        failed**. They are transport details the integration can work out: 80 and 554
+        are right almost always, HTTPS follows from the port, and a discovery often
+        supplies the real one. Asking all three up front makes every user answer for
+        the few whose device is unusual, and #794 now names the unusual cases as they
+        happen ("it is listening on 443, tick HTTPS").
+
+        The events list is gone from here entirely. It is not needed to connect, so
+        the Bronze config-flow rule puts it in options, and it silently decided the
+        entity count: 42 codes, most of which do nothing on most cameras. An entry
+        created without it gets DEFAULT_EVENTS, which get_configured_events and the
+        options form both already handle.
         """
-        return vol.Schema(
-            {
-                vol.Required(CONF_USERNAME): str,
-                vol.Required(CONF_PASSWORD): str,
-                vol.Required(CONF_ADDRESS): str,
-                vol.Required(CONF_PORT, default="80"): vol.All(cv.port, vol.Coerce(str)),
-                vol.Required(CONF_RTSP_PORT, default="554"): vol.All(cv.port, vol.Coerce(str)),
-                vol.Required(CONF_CHANNEL, default=0): vol.All(
-                    vol.Coerce(int), vol.Range(min=0)),
-                vol.Optional(CONF_USE_HTTPS, default=False): bool,
-                vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS):
-                    cv.multi_select(ALL_EVENTS),
-            }
-        )
+        fields = {
+            vol.Required(CONF_USERNAME): str,
+            vol.Required(CONF_PASSWORD): str,
+            vol.Required(CONF_ADDRESS): str,
+            vol.Required(CONF_CHANNEL, default=0): vol.All(
+                vol.Coerce(int), vol.Range(min=0)),
+        }
+        if reveal_transport:
+            # Checked as ports and stored as strings, which is what every existing
+            # entry holds: cv.port alone would store an int and leave two shapes
+            # mixed across entries for no gain. int() also strips whitespace, so a
+            # trailing space stops becoming "http://ip: 80", a yarl InvalidURL, and
+            # the message "the log has the reason".
+            #
+            # vol.Coerce(str) and not a bare str: in voluptuous a type is a *check*,
+            # not a conversion, so vol.All(cv.port, str) asserts that the int cv.port
+            # just produced is a string and fails every time.
+            fields[vol.Required(CONF_PORT, default="80")] = vol.All(
+                cv.port, vol.Coerce(str))
+            fields[vol.Required(CONF_RTSP_PORT, default="554")] = vol.All(
+                cv.port, vol.Coerce(str))
+            fields[vol.Optional(CONF_USE_HTTPS, default=False)] = bool
+        return vol.Schema(fields)
 
     async def _show_config_form_user(self, user_input):
         """Show the add form, prefilled with anything already known.
@@ -830,7 +859,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(
-                self._user_schema(), known),
+                self._user_schema(
+                    reveal_transport=any(
+                        reason not in TRANSPORT_WORKED
+                        for reason in self._errors.values())),
+                known),
             errors=self._errors,
         )
 
