@@ -10,7 +10,6 @@
                     "address": "Adresse",
                     "port": "Port",
                     "rtsp_port": "Port RTSP",
-                    "streams": "Flux RTSP",
                     "events": "Événements",
                     "channel": "Canal (les caméras individuelles sont 0, les NVR sont indexés à partir de 0)"
                 }
