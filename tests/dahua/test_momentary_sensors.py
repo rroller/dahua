@@ -31,15 +31,21 @@ from custom_components.dahua.binary_sensor import (
 )
 
 
-def _sensor(event_name, started_ago=None):
-    """A sensor for `event_name`, with its event fired `started_ago` secs back."""
+def _sensor(event_name, started_ago=None, momentary=False):
+    """A sensor for `event_name`, with its event fired `started_ago` secs back.
+
+    `momentary` is what the coordinator reports when a code has arrived as a
+    Pulse -- there is no Stop coming for one, so the sensor has to clear itself
+    even though the code is not in the explicit list.
+    """
     sensor = object.__new__(DahuaEventSensor)
     sensor._event_name = event_name
     sensor._hold_seconds = MOMENTARY_EVENT_HOLD_SECONDS.get(event_name)
     sensor._unsub_timer = None
     stamp = 0 if started_ago is None else int(time.time()) - started_ago
     sensor._coordinator = SimpleNamespace(
-        get_event_timestamp=lambda name: stamp)
+        get_event_timestamp=lambda name: stamp,
+        event_is_momentary=lambda name: momentary)
     return sensor
 
 
@@ -129,3 +135,61 @@ async def test_removing_the_entity_drops_its_timer():
 
     assert cancelled == [True]
     assert sensor._unsub_timer is None
+
+
+# --- a Pulse that is not a doorbell call state (#573) ------------------------
+#
+# The Pulse branch of _dispatch_event handled DoorStatus and treated everything
+# else as a doorbell call state, reading `Data.State` out of it. A code that
+# carries no State read 0, 0 is not in DOORBELL_RINGING_STATES, and the sensor
+# was written *off*. Thirteen of the forty-two selectable codes are Pulse
+# shaped, so thirteen sensors could never turn on -- FaceDetection,
+# FaceRecognition, HumanTrait, InterVideoAccess, NewFile, NTPAdjustTime,
+# TimeChange, IntelliFrame, AlarmOutput, MDResult and the three Traffic codes.
+#
+# Which codes those are is deliberately NOT a list in the integration. Only
+# InterVideoAccess has ever been observed as a Pulse in a report (#329), and the
+# selectable set gained two codes in a week. The coordinator records what the
+# device actually sent, and the sensor asks it.
+
+def test_a_pulse_code_clears_itself_even_though_it_is_not_in_the_list():
+    """It has no entry in MOMENTARY_EVENT_HOLD_SECONDS, so without the
+    coordinator's answer it would stay on until Home Assistant restarted."""
+    sensor = _sensor("FaceDetection", started_ago=99, momentary=True)
+
+    assert sensor.is_on is False
+
+
+def test_a_pulse_code_is_on_while_the_hold_lasts():
+    sensor = _sensor("FaceDetection", started_ago=1, momentary=True)
+
+    assert sensor.is_on is True
+
+
+def test_the_same_code_stays_on_when_the_device_never_pulsed_it():
+    """A Start/Stop code must keep waiting for its Stop. Clearing those on a
+    timer would end motion detection early for everybody."""
+    sensor = _sensor("FaceDetection", started_ago=99, momentary=False)
+
+    assert sensor.is_on is True
+
+
+def test_the_explicit_list_still_wins():
+    """DoorbellPressed is 5s by name, and must not be changed by this."""
+    assert _sensor("DoorbellPressed", started_ago=99, momentary=True).is_on is False
+    assert _sensor("DoorbellPressed", started_ago=1, momentary=True).is_on is True
+
+
+def test_a_never_fired_pulse_code_is_off():
+    assert _sensor("FaceDetection", momentary=True).is_on is False
+
+
+def test_the_hold_resolves_per_read_not_at_construction():
+    """Whether a code is momentary is learned from the first event, so a sensor
+    built before that event has to pick it up afterwards."""
+    sensor = _sensor("FaceDetection", started_ago=99, momentary=False)
+    assert sensor.is_on is True
+
+    sensor._coordinator.event_is_momentary = lambda name: True
+
+    assert sensor.is_on is False, "the answer is read each time, not cached"

@@ -40,6 +40,16 @@ MOMENTARY_EVENT_HOLD_SECONDS = {
     "CallNoAnswered": 5,
 }
 
+# How long to show any other event that arrives as a Pulse.
+#
+# A Pulse has no closing event either, so it needs the same treatment -- but
+# which codes send one is not knowable from here. Thirteen of the forty-two
+# selectable codes are Pulse shaped, only InterVideoAccess has ever been seen as
+# one in a report (#329), and two more codes joined the list last week. So the
+# coordinator records what the device actually sent and this is the hold applied
+# when it says a code arrived that way.
+DEFAULT_PULSE_HOLD_SECONDS = 5
+
 # Override the device class for events
 DEVICE_CLASS_OVERRIDES = {
     "VideoMotion": MOTION_SENSOR_DEVICE_CLASS,
@@ -153,9 +163,27 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
         started = self._coordinator.get_event_timestamp(self._event_name)
         if started <= 0:
             return False
-        if self._hold_seconds is None:
+        hold = self._hold()
+        if hold is None:
             return True
-        return (time.time() - started) < self._hold_seconds
+        return (time.time() - started) < hold
+
+    def _hold(self):
+        """How long this sensor shows an event for, or None to wait for a Stop.
+
+        The explicit list wins, because those two are known and documented. Past
+        that, a code the device has sent as a Pulse gets the default hold: there
+        is no Stop coming for it, so a sensor left alone would stay on until
+        Home Assistant restarted.
+
+        Resolved per read rather than fixed in __init__, because whether a code
+        is momentary is learned from the first event rather than known at setup.
+        """
+        if self._hold_seconds is not None:
+            return self._hold_seconds
+        if self._coordinator.event_is_momentary(self._event_name):
+            return DEFAULT_PULSE_HOLD_SECONDS
+        return None
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
@@ -171,7 +199,8 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
         """
         self.schedule_update_ha_state()
 
-        if self._hold_seconds is None:
+        hold = self._hold()
+        if hold is None:
             return
 
         if self._unsub_timer is not None:
@@ -180,7 +209,7 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
 
         if self._coordinator.get_event_timestamp(self._event_name) > 0:
             self._unsub_timer = async_call_later(
-                self.hass, self._hold_seconds, self._async_hold_expired)
+                self.hass, hold, self._async_hold_expired)
 
     @callback
     def _async_hold_expired(self, _now=None):
