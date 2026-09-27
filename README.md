@@ -73,25 +73,116 @@ $ mv dahua-main/custom_components/dahua <home-assistant-install-directory>/confi
 
 > :warning: **After executing one of the above installation methods, restart Home Assistant. Also clear your browser cache before proceeding to the next step, as the integration may not be visible otherwise.**
 
-### Setup
-1. Now the integration is added to HACS and available in the normal HA integration installation, so...
-2. In the HA left menu, click `Configuration`
-3. Click `Integrations`
-4. Click `ADD INTEGRATION`
-5. Type `Dahua` and select it
-6. Enter the details:
-    1. **Username**: Your camera's username
-    2. **Password**: Your camera's password
-    3. **Address**: Your camera's address, typically just the IP address
-    4. **Port**: Your camera's HTTP port. Default is `80`
-    5. **RTSP Port**: Your camera's RTSP port, default is `554`. Used to live stream your camera in HA
-    6. **Events**: The integration will keep a connection open to the camera to capture motion events, alarm events, etc.
-       You can select which events you want to monitor and report in HA. If no events are selected then the connection will no be created.
-       If you want a specific event that's not listed here open an issue and I'll add it.
+### Before you start: settings on the device
 
-NOTE: All streams will be added, even if not enabled in the camera. Just remove the ones you don't want.
+Home Assistant talks to the device directly over its local HTTP API. Six things are
+decided **on the camera or recorder**, not in Home Assistant, and each one has been
+the entire cause of a failed setup for somebody. If you are setting up a device for
+the first time, it is worth checking these before you begin rather than after.
+
+Menu paths differ between firmware generations, so treat these as the setting to
+look for rather than an exact route.
+
+1. **The CGI service must be enabled.**
+   `System` → `Safety` (or `Security`) → `System Service` → `CGI Service`.
+   On some firmwares it is under `Local Settings` → `Security`.
+   *How to tell:* open `http://<address>/cgi-bin/magicBox.cgi?action=getMachineName`
+   in a browser. A **404** means CGI is off. A login prompt means it is on.
+
+2. **Use an account on the device, not a cloud account.**
+   The Dahua, Imou or Amcrest **app** login is a cloud account and will not work
+   here. You need a user created on the device itself, and it is usually `admin`
+   in lower case. Watch for a phone keyboard capitalising it.
+
+3. **If you have never set a password**, it is the *safety code* printed on the
+   device's label. A device that has never been initialised has no account at all
+   and has to be initialised first, through its own web interface or ConfigTool.
+
+4. **Authentication mode must be Compatible, not Safety.**
+   `Network` → `Basic Services` → `Authentication`, or on recorders
+   `Security` → `System Service` → `Basic Services` → `Private Protocol
+   Authentication Mode`. Set it to **Compatibility Mode**.
+
+5. **The digest algorithm must include MD5.**
+   `System` → `Security` → `Security Authentication`. With MD5 disabled the device
+   answers `500` to API calls. Selecting **more than one** algorithm for user
+   authentication is also known to break RTSP streaming, so MD5 alone is the
+   working combination people report.
+
+6. **Decide about HTTPS deliberately.**
+   If HTTPS is enabled on the device, either turn it off, or tick **Use HTTPS** in
+   Home Assistant and use port `443`. An HTTPS device added over plain HTTP on
+   port 80 will not connect, and this has caught people out after a firmware
+   update switched it on by itself.
+
+Two more that affect video rather than the connection: at least one sub-stream
+should be **H.264** rather than H.265, because H.265 will not render in the browser,
+and the sub-stream you intend to use has to be enabled on the device.
+
+> :warning: **Repeated failed logins will lock you out.** Dahua devices lock the
+> source IP after a number of failed attempts. At least one recorder reports its own
+> policy as 5 failures then a 300 second lock, and separately a device can refuse
+> with "Exceeded maximum number of connections", which needs a reboot rather than a
+> wait. If setup fails, fix the cause rather than retrying the same credentials.
+
+### Setup
+
+1. In the Home Assistant left menu, click **Settings**
+2. Click **Devices & services**
+3. Click **ADD INTEGRATION**
+4. Type `Dahua` and select it
+5. Enter the details:
+    1. **Username**: an account on the device, usually `admin` (see above)
+    2. **Password**: that account's password
+    3. **Address**: the device's IP address or hostname
+    4. **Port**: the HTTP port. `80` normally, or `443` for HTTPS
+    5. **RTSP port**: `554` normally. Used to stream the camera in Home Assistant
+    6. **Use HTTPS**: tick this if the device serves HTTPS on the port above.
+       Left unticked, HTTPS is used only when the port is `443`
+    7. **Channel**: **counted from 0.** A single camera is `0`. On a recorder this
+       is one less than the number the recorder shows, so its channel 4 is `3`
+       here. You only need the first one: the recorder's other channels are
+       offered on the next screen, where they are listed by the number the
+       recorder itself uses
+    8. **Events**: which of the device's events become binary sensors. The default
+       covers motion and the common smart-detection events. Most of the rest do
+       nothing on most cameras, and each one selected adds an entity. If you want
+       an event that is not listed, open an issue
+
+On a recorder, the next screen offers the other channels that have a live camera on
+them, and the one after that lets you file each of them in an area. Channels that
+are empty, switched off, or reached over ONVIF are not offered, because this
+integration cannot drive them.
+
+NOTE: All streams will be added, even if not enabled in the camera. Just remove the
+ones you don't want.
 
 ![Dahua Setup](static/setup1.png)
+
+### If it will not connect
+
+The error on the form names the cause where it can. What each one means:
+
+| What you see | What it usually is |
+|---|---|
+| The camera rejected that username and password | A genuine 401. Check it is a device account and not a cloud one, and that `admin` is lower case |
+| That address is serving web pages, but not the Dahua API | The CGI service is switched off. Prerequisite 1 above |
+| Nothing answered on that port, but the device is listening on 443 | It is serving HTTPS. Tick **Use HTTPS** and use port `443` |
+| The device is answering Dahua's own protocol, but nothing is serving HTTP | The device is alive and its web service is off. Turn on HTTP and CGI in System Service |
+| The secure connection failed | Either the device does not serve HTTPS on that port, or it does and it is on `443`. Self-signed certificates are accepted and are not the problem |
+| Nothing answered at that address and port | Nothing is listening. Check the address, and that Home Assistant can reach that subnet |
+| The camera did not answer in time | Reachable but slow or busy. Check the port is the one it serves HTTP on |
+
+Two cases the form cannot diagnose for you:
+
+- **Some devices have no local API at all.** Cloud-only Imou and Lechange models, and
+  some doorbells whose firmware moved to the cloud app, serve no `/cgi-bin/` API.
+  There is nothing this integration can do for those; ONVIF or the vendor's cloud
+  integration is the route. A downgrade to earlier firmware has restored the local
+  API for some people.
+- **Cameras behind a recorder's own PoE ports** often sit on a private subnet, such
+  as `10.1.1.x`, that Home Assistant cannot route to. Add them through the
+  recorder's address and channel number instead of trying to reach them directly.
 
 
 # Known supported cameras

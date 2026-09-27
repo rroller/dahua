@@ -384,7 +384,7 @@ async def test_an_imported_channel_becomes_an_entry():
     flow = DahuaFlowHandler()
     created = {}
 
-    async def credentials(*args):
+    async def credentials(*args, **kwargs):
         return {"name": "BACKYARD", "serialNumber": "SER1"}, None
 
     async def set_unique_id(unique_id):
@@ -409,7 +409,7 @@ async def test_an_imported_channel_that_no_longer_answers_aborts():
     flow = DahuaFlowHandler()
     aborted = {}
 
-    async def credentials(*args):
+    async def credentials(*args, **kwargs):
         return None, "cannot_connect"
 
     flow._test_credentials = credentials
@@ -446,7 +446,7 @@ async def test_the_search_is_shown_as_a_wait():
     flow.hass = SimpleNamespace(
         async_create_task=lambda coro: asyncio.ensure_future(coro))
 
-    async def credentials(*args):
+    async def credentials(*args, **kwargs):
         return {"name": "Front", "serialNumber": "SER1"}, None
 
     async def discover(user_input, exclude):
