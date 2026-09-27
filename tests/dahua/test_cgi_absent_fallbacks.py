@@ -222,3 +222,49 @@ async def test_smart_motion_toggle_falls_back_too(monkeypatch):
     # ObjectTypes and Sensitivity are exactly what a rebuilt table would lose.
     assert table[0]["ObjectTypes"] == {"Human": True, "Vehicle": False}
     assert table[0]["Sensitivity"] == "Middle"
+
+
+async def test_a_table_neither_transport_serves_reports_the_original_404(monkeypatch):
+    """The fallback must be invisible when it cannot help.
+
+    Raising the RPC2 refusal changed the exception a caller sees for an absent
+    table from ClientResponseError to Rpc2MethodRefused. Callers that already
+    tolerated a 404 do not catch that, so a read of RemoteDevice -- a table only a
+    recorder has -- took an SL300's whole config entry down with it.
+    """
+    from custom_components.dahua.rpc2 import Rpc2MethodRefused
+
+    _fake_cgi(monkeypatch, 404)
+
+    class _Refusing(_FakeRpc2):
+        async def get_config(self, params):
+            raise Rpc2MethodRefused("no such table", code=268959743, message="Unknown error")
+
+    client = _client(monkeypatch, _Refusing({}))
+
+    with pytest.raises(aiohttp.ClientResponseError) as caught:
+        await client._request(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice")
+    assert caught.value.status == 404
+
+
+async def test_a_refused_table_is_not_asked_for_again(monkeypatch):
+    """Once both transports have said no, stop paying for the round trip."""
+    from custom_components.dahua.rpc2 import Rpc2MethodRefused
+
+    _fake_cgi(monkeypatch, 404)
+    asked = []
+
+    class _Refusing(_FakeRpc2):
+        async def get_config(self, params):
+            asked.append(params["name"])
+            raise Rpc2MethodRefused("no such table", code=268959743, message="Unknown error")
+
+    client = _client(monkeypatch, _Refusing({}))
+    url = "/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice"
+
+    for _ in range(2):
+        with pytest.raises(aiohttp.ClientResponseError):
+            await client._request(url)
+
+    assert asked == ["RemoteDevice"], asked

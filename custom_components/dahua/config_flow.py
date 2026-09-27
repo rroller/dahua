@@ -5,7 +5,8 @@ import ssl
 
 import voluptuous as vol
 
-from aiohttp import ClientConnectorError, ClientResponseError, ClientSession, TCPConnector
+from aiohttp import (ClientConnectorError, ClientResponseError, ClientSession,
+                     ClientSSLError, TCPConnector)
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import section
@@ -197,15 +198,26 @@ def describe_setup_failure(exception: BaseException) -> str:
             # A non-Dahua web server also lands here, so the message covers both.
             return "cgi_disabled"
         return "unexpected_reply"
+    # Order matters here and is not stylistic, and getting it wrong is what made
+    # ssl_error unreachable. aiohttp's TLS failures are *connection* errors:
+    #
+    #   ClientOSError(ClientConnectionError, OSError)
+    #   ClientConnectorError(ClientOSError)
+    #   ClientSSLError(ClientConnectorError)
+    #   ClientConnectorSSLError(ClientSSLError, ssl.SSLError)
+    #
+    # so a ClientConnectorError test placed first matches every TLS failure a
+    # request can raise, and the ssl.SSLError branch below it can never run. The
+    # TLS test has to come first. The bare ssl.SSLError arm is kept for a failure
+    # raised outside a request, which is the only way that type arrives alone.
+    if isinstance(exception, (ClientSSLError, ssl.SSLError)):
+        return "ssl_error"
     if isinstance(exception, ClientConnectorError):
         return "cannot_connect"
-    # Order matters here and is not stylistic: TimeoutError and ssl.SSLError are
-    # both subclasses of OSError, so the generic connection case has to come
-    # last or it swallows them and every failure becomes "cannot connect".
+    # TimeoutError is also an OSError subclass, so the generic connection case
+    # has to stay last or it swallows that too.
     if isinstance(exception, (TimeoutError, asyncio.TimeoutError)):
         return "timeout"
-    if isinstance(exception, ssl.SSLError):
-        return "ssl_error"
     if isinstance(exception, OSError):
         # ConnectionRefusedError and friends, when they arrive unwrapped.
         return "cannot_connect"
@@ -871,6 +883,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 entry.data[CONF_PORT],
                 entry.data[CONF_RTSP_PORT],
                 entry.data.get(CONF_CHANNEL, 0),
+                # The entry's own setting, not the default. Omitting this left
+                # use_https as None, which DahuaClient resolves as
+                # `int(port) == 443` -- so an entry created with HTTPS on any
+                # other port was re-tested over plain HTTP, failed, and told the
+                # user nothing answered on a form whose whole premise is that
+                # their password went stale. There was no way out of that from
+                # the UI. async_step_reconfigure passes it correctly.
+                True if entry.data.get(CONF_USE_HTTPS) else None,
             )
             if data is not None:
                 self.hass.config_entries.async_update_entry(
@@ -884,15 +904,33 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return await self._show_reauth_form()
 
     async def _show_reauth_form(self):
-        """Show the reauthentication form."""
+        """Show the reauthentication form.
+
+        The description says "The credentials for {name} are no longer valid", so
+        it needs a placeholder. Without one there is nothing to substitute and the
+        sentence renders with a literal `{name}` or a hole in it. Home Assistant
+        fills the dialog *heading* from title_placeholders, which is a different
+        channel and does not reach the body.
+
+        The username is prefilled because it is usually not what expired. Asking
+        somebody to retype it on a form they only ever see when something is
+        already broken buys nothing.
+        """
+        entry = getattr(self, "_reauth_entry", None)
+        current = entry.data if entry is not None else {}
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_USERNAME): str,
+                    vol.Required(CONF_USERNAME,
+                                 default=current.get(CONF_USERNAME, "")): str,
                     vol.Required(CONF_PASSWORD): str,
                 }
             ),
+            description_placeholders={
+                "name": (entry.title if entry is not None and entry.title
+                         else current.get(CONF_ADDRESS, "this device")),
+            },
             errors=self._errors,
         )
 

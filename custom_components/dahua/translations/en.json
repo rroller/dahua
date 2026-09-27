@@ -4,17 +4,26 @@
         "step": {
             "user": {
                 "title": "Add Dahua Camera",
-                "description": "Example address: 192.168.1.108",
+                "description": "Home Assistant talks to the device directly, so it needs an account on the device itself rather than a Dahua or Imou cloud login.",
                 "data": {
                     "username": "Username",
                     "password": "Password",
                     "address": "Address",
                     "port": "Port",
-                    "rtsp_port": "RTSP Port",
-                    "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)",
-                    "streams": "RTSP Streams",
+                    "rtsp_port": "RTSP port",
+                    "use_https": "Use HTTPS",
                     "events": "Events",
-                    "channel": "Channel (a single camera is 0. On an NVR this is the 0-based index, which is one less than the number the recorder shows: its channel 4 is 3 here)"
+                    "channel": "Channel"
+                },
+                "data_description": {
+                    "username": "An account on the device itself, not a Dahua or Imou cloud login. It is usually admin, in lower case.",
+                    "password": "The device's own password. If one has never been set, it is the safety code printed on the device's label.",
+                    "address": "The device's IP address or hostname, for example 192.168.1.108.",
+                    "port": "The port the device serves its web interface on. Normally 80, or 443 for HTTPS.",
+                    "rtsp_port": "The port the device serves video on. Normally 554.",
+                    "use_https": "Tick this if the device serves HTTPS on the port above. Left unticked, HTTPS is used only when the port is 443.",
+                    "events": "Which of the device's events become binary sensors. The default covers motion and the common smart detection events. Most of the rest do nothing on most cameras, and each one selected adds an entity.",
+                    "channel": "Counted from 0, so a single camera is 0 and a recorder's channel 4 is 3 here. The recorder's other channels can be added on the next screen, where they are listed by the number the recorder shows."
                 }
             },
             "channels": {
@@ -54,9 +63,16 @@
                 "data": {
                     "address": "Address",
                     "port": "Port",
-                    "rtsp_port": "RTSP Port",
-                    "channel": "Channel (a single camera is 0. On an NVR this is the 0-based index, which is one less than the number the recorder shows: its channel 4 is 3 here)",
-                    "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)"
+                    "rtsp_port": "RTSP port",
+                    "channel": "Channel",
+                    "use_https": "Use HTTPS"
+                },
+                "data_description": {
+                    "address": "The device's IP address or hostname, for example 192.168.1.108.",
+                    "port": "The port the device serves its web interface on. Normally 80, or 443 for HTTPS.",
+                    "rtsp_port": "The port the device serves video on. Normally 554.",
+                    "use_https": "Tick this if the device serves HTTPS on the port above. Left unticked, HTTPS is used only when the port is 443.",
+                    "channel": "Counted from 0, so a single camera is 0 and a recorder's channel 4 is 3 here. The recorder's other channels can be added on the next screen, where they are listed by the number the recorder shows."
                 }
             }
         },
@@ -79,7 +95,7 @@
         },
         "abort": {
             "single_instance_allowed": "Only a single instance is allowed.",
-            "already_configured": "Only a single instance of a device is allowed.",
+            "already_configured": "That camera and channel are already added. To change its address or port use Configure on the existing entry, and to change its password use re-authentication, rather than adding it again.",
             "reauth_successful": "Re-authentication was successful.",
             "reconfigure_successful": "Connection settings updated",
             "channel_not_added": "That channel could not be added. A repair notice in Settings says which one and why."
