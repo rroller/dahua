@@ -22,6 +22,8 @@ async def async_create_fix_flow(
     """Return the flow that fixes this issue."""
     if issue_id.startswith("http_dead_https_available_"):
         return SwitchToHttpsRepairFlow(data or {})
+    if issue_id.startswith("siblings_remain_"):
+        return RemoveSiblingsRepairFlow(data or {})
     return ConfirmRepairFlow()
 
 
@@ -65,5 +67,62 @@ class SwitchToHttpsRepairFlow(RepairsFlow):
                 "address": str(self._address),
                 "entries": str(len(entries)),
                 "port": str(entries[0].data.get(CONF_PORT, "80")),
+            },
+        )
+
+
+class RemoveSiblingsRepairFlow(RepairsFlow):
+    """Remove the other entries for one recorder, having removed one of them.
+
+    An NVR is one config entry per channel, so removing "the recorder" is as
+    many deletions as it has channels and nobody realises until they are
+    part-way through. This finishes it in one step.
+
+    It removes rather than reconfigures, which is the one irreversible thing in
+    this file -- so the form lists exactly what will go, by name, and the user
+    presses the button. Nothing happens on merely opening the card.
+    """
+
+    def __init__(self, data: dict) -> None:
+        self._address = data.get("address")
+        self._removed = data.get("removed") or "the entry"
+        self._dependents_note = data.get("dependents_note") or ""
+
+    async def async_step_init(self, user_input: dict | None = None):
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(self, user_input: dict | None = None):
+        # Imported here rather than at module scope to avoid a circular import.
+        from . import ISSUE_SIBLINGS_REMAIN, _entries_for_address
+
+        entries = _entries_for_address(self.hass, self._address)
+        if not entries:
+            # Already dealt with by hand, or the last one went while the card
+            # was open. Nothing to do and nothing to apologise for.
+            ir.async_delete_issue(
+                self.hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(self._address))
+            return self.async_abort(reason="not_configured")
+
+        if user_input is not None:
+            for entry in entries:
+                await self.hass.config_entries.async_remove(entry.entry_id)
+                # Same reason the HTTPS flow staggers its reloads: a Dahua web
+                # server does not enjoy eleven simultaneous teardowns.
+                await asyncio.sleep(RELOAD_STAGGER_SECONDS)
+
+            ir.async_delete_issue(
+                self.hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(self._address))
+            return self.async_create_entry(data={})
+
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "address": str(self._address),
+                "count": str(len(entries)),
+                "titles": ", ".join(
+                    sorted(e.title or "untitled" for e in entries)),
+                "removed": str(self._removed),
+                "dependents_note": self._dependents_note,
             },
         )
