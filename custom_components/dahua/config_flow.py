@@ -115,6 +115,31 @@ https://developers.home-assistant.io/docs/data_entry_flow_index
 """
 
 
+def fallback_device_name(address: str, channel) -> str:
+    """A name a person can read, for a device that would not tell us its own.
+
+    get_machine_name falls back to md5(address_rtspport_username_password) when a
+    device has no magicBox.cgi, and the flow offered that hash as the prefilled
+    default of the final step. Pressing Submit produced a device called
+    `4f3a9c8e...`, and because no platform sets _attr_has_entity_name, that hash
+    went into every entity_id for good.
+
+    The devices this hits are the ones the codebase already documents: the same
+    fallback path names #583, #728 and #767.
+
+    The channel is included from 1 upwards, and numbered the way the recorder shows
+    it, so several fallen-back channels of one NVR do not all arrive with the same
+    name.
+    """
+    try:
+        index = int(channel)
+    except (TypeError, ValueError):
+        index = 0
+    if index > 0:
+        return "Dahua camera at {0} channel {1}".format(address, index + 1)
+    return "Dahua camera at {0}".format(address)
+
+
 def describe_setup_failure(exception: BaseException) -> str:
     """Which translation key explains why a device could not be added.
 
@@ -632,9 +657,19 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         try:
             client = DahuaClient(username, password, address, port, rtsp_port, session, use_https)
             data = await client.get_machine_name()
+            # True only if get_machine_name itself fell back: the flag starts
+            # False and this is the first call to use it. Reading it after the
+            # system-info call would also catch that one falling back, which says
+            # nothing about whether the *name* is a hash.
+            name_is_a_hash = client.identity_derived_from_credentials
             serial = await client.async_get_system_info(strict_auth=True)
             data.update(serial)
             if "name" in data:
+                if name_is_a_hash:
+                    # The unique_id deliberately keeps the hashed serial, because
+                    # changing it would orphan every entry that already has one.
+                    # Only what the user is shown changes.
+                    data["name"] = fallback_device_name(address, channel)
                 return data, None
             # It answered, but not with anything recognisable.
             return None, "unexpected_reply"
