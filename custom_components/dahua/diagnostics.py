@@ -255,15 +255,139 @@ def _client_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
     }
 
 
+def _stream_block(coordinator) -> dict[str, Any]:
+    """The state of the event stream that actually exists.
+
+    #615 moved the stream off the coordinator and onto one shared
+    `DahuaHostEventStream` per address, because an NVR with eleven channels was
+    holding eleven identical streams and throwing ten copies of every event away.
+    `coordinator._event_task` has been initialised to None and never assigned since,
+    so `stream_task_running` has reported False for every device on every version
+    since. That is worse than missing: on #728 it reads as the cause.
+
+    What is reported instead is the shared stream, and it is chosen to separate the
+    two failures that issue has been conflating:
+
+      task_running false                  nothing is attached at all
+      task_running true, received_data
+        false, failing true               the device is refusing the attach
+      task_running true, received_data
+        true, and events.active_count 0   events arrive and dispatch drops them
+
+    Only names and counts. The stream holds coordinators and a client, none of which
+    belongs in a public paste.
+    """
+    from . import _HOST_STREAMS
+
+    address = getattr(coordinator, "_address", None)
+    stream = _HOST_STREAMS.get(address)
+    if stream is None:
+        # Not an error. No configured events means no stream is started.
+        return {"registered": False}
+
+    task = getattr(stream, "_task", None)
+    by_channel = getattr(stream, "_by_channel", {}) or {}
+    return {
+        "registered": True,
+        "task_running": bool(task) and not task.done(),
+        # The union across every channel on this host, which is what the device was
+        # actually asked to send. A code missing here cannot arrive.
+        "attached_events": sorted(getattr(stream, "_events", ()) or ()),
+        "received_data": bool(getattr(stream, "_received_data", False)),
+        "last_attach_failed": bool(getattr(stream, "_failing", False)),
+        "consecutive_failures": getattr(stream, "_consecutive_failures", 0),
+        # The stream borrows one channel's client. If that entry is unloaded the
+        # stream moves, so knowing whether this entry is the one lending it explains
+        # why a reload of a different channel disturbed this one.
+        "this_entry_owns_it": getattr(stream, "_owner", None) is coordinator,
+        "channels_registered": sorted(by_channel),
+        "coordinators_registered": sum(len(group) for group in by_channel.values()),
+    }
+
+
+def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
+    """Which transport is carrying this entry's events.
+
+    Three exist and a dump named none of them. The order is the order the code decides
+    in: a doorbell takes the VTO listener and never registers a CGI stream, a device
+    whose `eventManager.cgi` is absent falls through to the RPC2 poll inside the stream's
+    own task, and everything else uses the CGI stream.
+    """
+    vto_task = getattr(coordinator, "_vto_task", None)
+    if vto_task is not None:
+        return "vto_listener"
+    if rpc2_poll.get("used"):
+        return "rpc2_poll"
+    from . import _HOST_STREAMS
+
+    if _HOST_STREAMS.get(getattr(coordinator, "_address", None)) is not None:
+        return "cgi_stream"
+    # No events were configured, so nothing was started. Not a fault.
+    return None
+
+
+def _rpc2_poll_block(coordinator) -> dict[str, Any]:
+    """The state of the *other* event transport.
+
+    #780 added an RPC2 event poller for devices that serve no CGI event stream at all,
+    and a diagnostics dump said nothing whatsoever about it. So on a device using it,
+    every event field in the dump described a transport that was not in use, and a
+    reporter whose events had stopped could not tell a dead poller from a quiet camera.
+
+    `used` says the poller has run for this host in this process, which is what
+    distinguishes the two transports. Whether it is running *now* is `used` together
+    with `stream.task_running`, since the poll runs inside that same task, and
+    `last_cycle_age_seconds` is the live signal: a poller that described itself and then
+    died has a `used` of True and an age that keeps growing.
+    """
+    from .client import _HOST_RPC2_EVENT_POLL, _HOST_RPC2_EVENT_STATE
+
+    address = getattr(coordinator, "_address", None)
+    described = _HOST_RPC2_EVENT_POLL.get(address)
+    if described is None:
+        return {"used": False}
+
+    last_cycle = described.get("last_cycle")
+    return {
+        "used": True,
+        # getEventIndexes takes one code at a time, so this is also the request count
+        # per cycle and the reason a long list polls slowly.
+        "polled_code_count": described.get("code_count"),
+        "cycle_seconds": described.get("cycle_seconds"),
+        "eased_cycle_seconds": described.get("eased_cycle_seconds"),
+        "idle_after_seconds": described.get("idle_after_seconds"),
+        "eased_off": bool(described.get("eased_off")),
+        # None means it described itself and has not completed a cycle since, which on a
+        # working poller should never be the case for long.
+        "last_cycle_age_seconds": (
+            round(time.monotonic() - last_cycle, 1) if last_cycle else None
+        ),
+        # What the poller currently holds active, and therefore what it still owes a
+        # Stop for. A code stuck in here is a sensor stuck on.
+        "active": sorted(
+            "%s-%s" % (code, index)
+            for code, index in _HOST_RPC2_EVENT_STATE.get(address, ()) or ()
+        ),
+    }
+
+
 def _events_block(coordinator) -> dict[str, Any]:
     now = int(time.time())
     timestamps = getattr(coordinator, "_dahua_event_timestamp", {}) or {}
-    event_task = getattr(coordinator, "_event_task", None)
     vto_task = getattr(coordinator, "_vto_task", None)
+    rpc2_poll = _rpc2_poll_block(coordinator)
 
     return {
         "configured": _safe(coordinator.get_event_list, []),
-        "stream_task_running": bool(event_task) and not event_task.done(),
+        # Which of the three transports is carrying events, named once so nobody has to
+        # infer it from the blocks below. A doorbell uses the VTO listener, a device
+        # with no CGI event path uses the RPC2 poll, and everything else uses the
+        # shared CGI stream.
+        "transport": _transport(coordinator, rpc2_poll),
+        # The shared per-host stream, not the coordinator attribute that has been
+        # dead since #615. See _stream_block.
+        "stream": _stream_block(coordinator),
+        "rpc2_poll": rpc2_poll,
         "vto_task_running": bool(vto_task) and not vto_task.done(),
         "vto_client_connected": getattr(coordinator, "_vto_client", None) is not None,
         # Listener keys are "<EventName>-<channel>". On an NVR, listeners for
