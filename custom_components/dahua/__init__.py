@@ -28,7 +28,12 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
 from . import dahua_utils
-from .client import DahuaClient, clear_host_cache
+from .client import (
+    _HOST_RPC2_EVENT_POLL,
+    _HOST_RPC2_EVENT_STATE,
+    DahuaClient,
+    clear_host_cache,
+)
 from .model_profiles import is_sdt4e425
 
 from .const import (
@@ -3212,6 +3217,12 @@ def _async_forget_host(hass: HomeAssistant, address: str) -> None:
     _HOST_FAILURES.pop(address, None)
     _HOST_UPTIME_STATE.pop(address, None)
     _HOST_UPTIME_LOCKS.pop(address, None)
+    # The RPC2 poller's own state. Safe only here: the active set deliberately outlives
+    # a reload, because a Start whose Stop was lost is still owed one, and clearing it
+    # while the host still had entries would leave those sensors stuck on. With the last
+    # entry gone there is nobody left to owe.
+    _HOST_RPC2_EVENT_POLL.pop(address, None)
+    _HOST_RPC2_EVENT_STATE.pop(address, None)
     ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
     ir.async_delete_issue(
         hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)

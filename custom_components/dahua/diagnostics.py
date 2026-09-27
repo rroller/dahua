@@ -305,16 +305,89 @@ def _stream_block(coordinator) -> dict[str, Any]:
     }
 
 
+def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
+    """Which transport is carrying this entry's events.
+
+    Three exist and a dump named none of them. The order is the order the code decides
+    in: a doorbell takes the VTO listener and never registers a CGI stream, a device
+    whose `eventManager.cgi` is absent falls through to the RPC2 poll inside the stream's
+    own task, and everything else uses the CGI stream.
+    """
+    vto_task = getattr(coordinator, "_vto_task", None)
+    if vto_task is not None:
+        return "vto_listener"
+    if rpc2_poll.get("used"):
+        return "rpc2_poll"
+    from . import _HOST_STREAMS
+
+    if _HOST_STREAMS.get(getattr(coordinator, "_address", None)) is not None:
+        return "cgi_stream"
+    # No events were configured, so nothing was started. Not a fault.
+    return None
+
+
+def _rpc2_poll_block(coordinator) -> dict[str, Any]:
+    """The state of the *other* event transport.
+
+    #780 added an RPC2 event poller for devices that serve no CGI event stream at all,
+    and a diagnostics dump said nothing whatsoever about it. So on a device using it,
+    every event field in the dump described a transport that was not in use, and a
+    reporter whose events had stopped could not tell a dead poller from a quiet camera.
+
+    `used` says the poller has run for this host in this process, which is what
+    distinguishes the two transports. Whether it is running *now* is `used` together
+    with `stream.task_running`, since the poll runs inside that same task, and
+    `last_cycle_age_seconds` is the live signal: a poller that described itself and then
+    died has a `used` of True and an age that keeps growing.
+    """
+    from .client import _HOST_RPC2_EVENT_POLL, _HOST_RPC2_EVENT_STATE
+
+    address = getattr(coordinator, "_address", None)
+    described = _HOST_RPC2_EVENT_POLL.get(address)
+    if described is None:
+        return {"used": False}
+
+    last_cycle = described.get("last_cycle")
+    return {
+        "used": True,
+        # getEventIndexes takes one code at a time, so this is also the request count
+        # per cycle and the reason a long list polls slowly.
+        "polled_code_count": described.get("code_count"),
+        "cycle_seconds": described.get("cycle_seconds"),
+        "eased_cycle_seconds": described.get("eased_cycle_seconds"),
+        "idle_after_seconds": described.get("idle_after_seconds"),
+        "eased_off": bool(described.get("eased_off")),
+        # None means it described itself and has not completed a cycle since, which on a
+        # working poller should never be the case for long.
+        "last_cycle_age_seconds": (
+            round(time.monotonic() - last_cycle, 1) if last_cycle else None
+        ),
+        # What the poller currently holds active, and therefore what it still owes a
+        # Stop for. A code stuck in here is a sensor stuck on.
+        "active": sorted(
+            "%s-%s" % (code, index)
+            for code, index in _HOST_RPC2_EVENT_STATE.get(address, ()) or ()
+        ),
+    }
+
+
 def _events_block(coordinator) -> dict[str, Any]:
     now = int(time.time())
     timestamps = getattr(coordinator, "_dahua_event_timestamp", {}) or {}
     vto_task = getattr(coordinator, "_vto_task", None)
+    rpc2_poll = _rpc2_poll_block(coordinator)
 
     return {
         "configured": _safe(coordinator.get_event_list, []),
+        # Which of the three transports is carrying events, named once so nobody has to
+        # infer it from the blocks below. A doorbell uses the VTO listener, a device
+        # with no CGI event path uses the RPC2 poll, and everything else uses the
+        # shared CGI stream.
+        "transport": _transport(coordinator, rpc2_poll),
         # The shared per-host stream, not the coordinator attribute that has been
         # dead since #615. See _stream_block.
         "stream": _stream_block(coordinator),
+        "rpc2_poll": rpc2_poll,
         "vto_task_running": bool(vto_task) and not vto_task.done(),
         "vto_client_connected": getattr(coordinator, "_vto_client", None) is not None,
         # Listener keys are "<EventName>-<channel>". On an NVR, listeners for
