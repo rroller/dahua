@@ -163,7 +163,13 @@ def describe_setup_failure(exception: BaseException) -> str:
     where, or not being what, we were told.
     """
     if isinstance(exception, ClientResponseError):
-        if exception.status in (401, 403):
+        # 401 only, and not 403. _is_login_refused draws that line deliberately: a
+        # 403 means the login was accepted and this account is not allowed that
+        # endpoint, which a restricted Dahua user really can hit, so it keeps the
+        # identity fallback instead of raising. That means a 403 cannot reach here at
+        # all, and listing it as a credentials failure said the opposite of what the
+        # other function documents.
+        if exception.status == 401:
             # Reachable only because get_machine_name and async_get_system_info
             # re-raise a 401 rather than synthesising an id from the refused
             # credentials. If either goes back to swallowing it, a wrong
@@ -205,6 +211,11 @@ def describe_setup_failure(exception: BaseException) -> str:
 
 # Errors that belong on the channel field rather than at the top of the form.
 CHANNEL_ERRORS = ("channel_not_on_device", "channel_disabled", "channel_is_onvif")
+
+# Failures that prove the transport already worked: the device answered and said
+# something specific about itself. Showing somebody the port and HTTPS fields after
+# one of these would point them away from the actual problem.
+TRANSPORT_WORKED = ("auth",) + CHANNEL_ERRORS
 
 
 async def async_channel_refusal(client, channel):
@@ -357,6 +368,32 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self.context["title_placeholders"] = {"name": name, "address": address}
         return await self.async_step_user()
 
+    @callback
+    def _async_heal_siblings(self, unique_id: str, address: str) -> None:
+        """Move a recorder's other channels to the address just confirmed.
+
+        `_abort_if_unique_id_configured(updates=...)` heals the entry whose id
+        matches, and a recorder is one entry per channel. Healing only the matched
+        one leaves the other fifteen pointing at an address the device no longer has,
+        so they stay broken and each has to be reconfigured by hand.
+
+        Same serial is the same physical device, so this is not a guess, and it is
+        what the Gold discovery-update-info rule asks for. Entries already on the
+        right address are left alone so nothing is rewritten for no reason, and the
+        matched entry is left to `updates=`.
+        """
+        head, _sep, tail = unique_id.rpartition("_")
+        serial = head if head and tail.isdigit() else unique_id
+        for entry in self._async_entries_for_serial(serial):
+            if entry.unique_id == unique_id:
+                continue
+            if entry.data.get(CONF_ADDRESS) == address:
+                continue
+            _LOGGER.debug("Moving %s from %s to %s, same serial",
+                          entry.unique_id, entry.data.get(CONF_ADDRESS), address)
+            self.hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_ADDRESS: address})
+
     def _async_entries_for_serial(self, serial: str) -> list:
         """Every entry for one device, including a recorder's other channels.
 
@@ -381,6 +418,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         #     return self.async_abort(reason="single_instance_allowed")
 
         if user_input is not None:
+            # The transport fields are not on the form until something fails, so fill
+            # in what is known: a discovery's HttpPort when it gave one, the ordinary
+            # defaults otherwise. Stored either way, because entry.data is what the
+            # coordinator reads.
+            for key, fallback in ((CONF_PORT, "80"), (CONF_RTSP_PORT, "554")):
+                if not user_input.get(key):
+                    user_input[key] = self._discovered.get(key, fallback)
+
             data, error = await self._test_credentials(
                 user_input[CONF_USERNAME],
                 user_input[CONF_PASSWORD],
@@ -399,7 +444,15 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     if channel > 0:
                         unique_id = unique_id + "_" + str(channel)
                     await self.async_set_unique_id(unique_id)
-                    self._abort_if_unique_id_configured()
+                    # Heal the siblings first, because the call below raises.
+                    self._async_heal_siblings(unique_id, user_input[CONF_ADDRESS])
+                    # With no updates= this aborted and left the old address in
+                    # place, so somebody whose camera changed IP re-added it, was
+                    # told "already configured", and still had a broken entry with
+                    # nothing pointing at Reconfigure. Same serial is the same
+                    # device, so the address we have just talked to is the right one.
+                    self._abort_if_unique_id_configured(
+                        updates={CONF_ADDRESS: user_input[CONF_ADDRESS]})
 
                 user_input[CONF_NAME] = data["name"]
                 self.init_info = user_input
@@ -821,34 +874,50 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     @callback
-    def _user_schema(self):
-        """The add form's fields, separated out so they can be validated directly.
+    def _user_schema(self, reveal_transport=False):
+        """The add form's fields.
 
-        The ports are checked as ports and stored as strings, which is what every
-        existing entry holds: cv.port on its own would store an int and leave two
-        shapes mixed across entries for no gain. int() also strips whitespace, so a
-        trailing space stops becoming "http://ip: 80", a yarl InvalidURL, and the
-        message "the log has the reason".
+        Four questions, not eight. Username, password and address are the ones only
+        the user can answer; the channel stays because hiding it would remove the
+        ability to add one channel of a recorder on its own, which is a capability
+        rather than a detail.
 
-        vol.Coerce(str) and not a bare str: in voluptuous a type is a *check*, not a
-        conversion, so vol.All(cv.port, str) asserts that the int cv.port just
-        produced is a string and fails every time. The first version of this did
-        exactly that and the tests caught it.
+        The port, the RTSP port and the HTTPS box appear **only after something has
+        failed**. They are transport details the integration can work out: 80 and 554
+        are right almost always, HTTPS follows from the port, and a discovery often
+        supplies the real one. Asking all three up front makes every user answer for
+        the few whose device is unusual, and #794 now names the unusual cases as they
+        happen ("it is listening on 443, tick HTTPS").
+
+        The events list is gone from here entirely. It is not needed to connect, so
+        the Bronze config-flow rule puts it in options, and it silently decided the
+        entity count: 42 codes, most of which do nothing on most cameras. An entry
+        created without it gets DEFAULT_EVENTS, which get_configured_events and the
+        options form both already handle.
         """
-        return vol.Schema(
-            {
-                vol.Required(CONF_USERNAME): str,
-                vol.Required(CONF_PASSWORD): str,
-                vol.Required(CONF_ADDRESS): str,
-                vol.Required(CONF_PORT, default="80"): vol.All(cv.port, vol.Coerce(str)),
-                vol.Required(CONF_RTSP_PORT, default="554"): vol.All(cv.port, vol.Coerce(str)),
-                vol.Required(CONF_CHANNEL, default=0): vol.All(
-                    vol.Coerce(int), vol.Range(min=0)),
-                vol.Optional(CONF_USE_HTTPS, default=False): bool,
-                vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS):
-                    cv.multi_select(ALL_EVENTS),
-            }
-        )
+        fields = {
+            vol.Required(CONF_USERNAME): str,
+            vol.Required(CONF_PASSWORD): str,
+            vol.Required(CONF_ADDRESS): str,
+            vol.Required(CONF_CHANNEL, default=0): vol.All(
+                vol.Coerce(int), vol.Range(min=0)),
+        }
+        if reveal_transport:
+            # Checked as ports and stored as strings, which is what every existing
+            # entry holds: cv.port alone would store an int and leave two shapes
+            # mixed across entries for no gain. int() also strips whitespace, so a
+            # trailing space stops becoming "http://ip: 80", a yarl InvalidURL, and
+            # the message "the log has the reason".
+            #
+            # vol.Coerce(str) and not a bare str: in voluptuous a type is a *check*,
+            # not a conversion, so vol.All(cv.port, str) asserts that the int cv.port
+            # just produced is a string and fails every time.
+            fields[vol.Required(CONF_PORT, default="80")] = vol.All(
+                cv.port, vol.Coerce(str))
+            fields[vol.Required(CONF_RTSP_PORT, default="554")] = vol.All(
+                cv.port, vol.Coerce(str))
+            fields[vol.Optional(CONF_USE_HTTPS, default=False)] = bool
+        return vol.Schema(fields)
 
     async def _show_config_form_user(self, user_input):
         """Show the add form, prefilled with anything already known.
@@ -868,7 +937,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(
-                self._user_schema(), known),
+                self._user_schema(
+                    reveal_transport=any(
+                        reason not in TRANSPORT_WORKED
+                        for reason in self._errors.values())),
+                known),
             errors=self._errors,
         )
 

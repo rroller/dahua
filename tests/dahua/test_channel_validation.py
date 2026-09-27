@@ -21,7 +21,8 @@ camera serving several channels over one address.
 import pytest
 
 from custom_components.dahua import config_flow
-from custom_components.dahua.config_flow import (CHANNEL_ERRORS, DahuaFlowHandler,
+from custom_components.dahua.config_flow import (CHANNEL_ERRORS, TRANSPORT_WORKED,
+                                                 DahuaFlowHandler,
                                                  async_channel_refusal)
 
 # Deliberately the module's own voluptuous rather than a fresh import. Home Assistant
@@ -177,10 +178,14 @@ def test_the_channel_errors_all_have_translations():
 
 
 def _validate(field, value):
-    """Push one value through the add form's own schema."""
+    """Push one value through the add form's own schema.
+
+    With the transport fields revealed, because that is the only form they appear
+    on: they are hidden until something fails.
+    """
     handler = DahuaFlowHandler()
     handler._errors = {}
-    schema = handler._user_schema()
+    schema = handler._user_schema(reveal_transport=True)
     return schema({"username": "u", "password": "p", "address": "1.2.3.4",
                    "port": "80", "rtsp_port": "554", "channel": 0,
                    **{field: value}})[field]
@@ -293,3 +298,140 @@ async def test_the_import_step_does_not_recheck(monkeypatch):
 
     assert error is None, "check_channel defaults off for the import path"
     assert data is not None
+
+
+# --- and the form only asks what it has to -----------------------------------
+#
+# Eight fields, including a 42 option multi-select of Dahua event codes and two
+# ports, before the integration would talk to anything. Most of that the
+# integration can work out, and #794 now names the cases where it cannot.
+
+
+def _keys(reveal=False):
+    return [str(marker.schema)
+            for marker in DahuaFlowHandler()._user_schema(reveal).schema]
+
+
+def test_the_form_asks_four_questions():
+    assert _keys() == ["username", "password", "address", "channel"]
+
+
+def test_the_transport_details_are_not_asked_up_front():
+    """80 and 554 are right almost always, and HTTPS follows from the port."""
+    hidden = {"port", "rtsp_port", "use_https"}
+
+    assert hidden.isdisjoint(_keys())
+
+
+def test_a_failure_reveals_them():
+    revealed = _keys(reveal=True)
+
+    assert "port" in revealed
+    assert "rtsp_port" in revealed
+    assert "use_https" in revealed
+
+
+def test_revealing_keeps_the_four_it_already_asked():
+    """The user must not have to retype what they already gave."""
+    for field in ("username", "password", "address", "channel"):
+        assert field in _keys(reveal=True)
+
+
+def test_the_events_list_is_not_on_the_add_form_at_all():
+    """Not needed to connect, so the Bronze config-flow rule puts it in options,
+    and it silently decided how many entities the device would get."""
+    assert "events" not in _keys()
+    assert "events" not in _keys(reveal=True)
+
+
+def test_an_entry_created_without_events_still_gets_the_defaults():
+    """Which is what makes removing the field safe."""
+    from types import SimpleNamespace
+
+    from custom_components.dahua import get_configured_events
+    from custom_components.dahua.const import DEFAULT_EVENTS
+
+    entry = SimpleNamespace(data={"address": "1.2.3.4"}, options={})
+
+    assert get_configured_events(entry) == list(DEFAULT_EVENTS)
+
+
+def test_a_refused_login_does_not_reveal_the_ports():
+    """The device answered, so the transport is fine and the ports are a
+    distraction from the actual problem."""
+    handler = DahuaFlowHandler()
+    handler._errors = {"base": "auth"}
+
+    assert any(reason not in TRANSPORT_WORKED
+               for reason in handler._errors.values()) is False
+
+
+def test_a_channel_refusal_does_not_reveal_the_ports_either():
+    handler = DahuaFlowHandler()
+    handler._errors = {"channel": "channel_not_on_device"}
+
+    assert any(reason not in TRANSPORT_WORKED
+               for reason in handler._errors.values()) is False
+
+
+def test_a_connection_failure_does_reveal_them():
+    handler = DahuaFlowHandler()
+    handler._errors = {"base": "cannot_connect"}
+
+    assert any(reason not in TRANSPORT_WORKED
+               for reason in handler._errors.values()) is True
+
+
+# --- the values the form stopped asking for still have to arrive --------------
+#
+# Hiding the ports is only safe if something supplies them. Testing the schema
+# alone leaves that unproven: mutations that dropped the fill, and that ignored a
+# discovery's port, both survived until these were added.
+
+
+async def _port_seen_by(monkeypatch, discovered=None, given=None):
+    """Drive the add form and report the transport it handed onwards."""
+    seen = {}
+    handler = _flow_with(monkeypatch, TABLE)
+    handler._discovered = dict(discovered or {})
+
+    async def _capture(username, password, address, port, rtsp_port, channel,
+                       use_https=None, check_channel=False):
+        seen.update(port=port, rtsp_port=rtsp_port, use_https=use_https)
+        return None, "auth"          # stay on the form; only the arguments matter
+
+    handler._test_credentials = _capture
+    submitted = {"username": "u", "password": "p", "address": "1.2.3.4",
+                 "channel": 0}
+    submitted.update(given or {})
+    await handler.async_step_user(submitted)
+    return seen
+
+
+async def test_the_ordinary_ports_are_supplied_without_being_asked(monkeypatch):
+    seen = await _port_seen_by(monkeypatch)
+
+    assert seen["port"] == "80"
+    assert seen["rtsp_port"] == "554"
+
+
+async def test_a_discovered_port_is_used_instead_of_the_default(monkeypatch):
+    """The whole reason #798 reads HttpPort off the device."""
+    seen = await _port_seen_by(monkeypatch, discovered={"port": "8000"})
+
+    assert seen["port"] == "8000"
+
+
+async def test_what_the_user_typed_beats_both(monkeypatch):
+    """Once a failure has revealed the field, their answer is the one that counts."""
+    seen = await _port_seen_by(monkeypatch, discovered={"port": "8000"},
+                               given={"port": "8443"})
+
+    assert seen["port"] == "8443"
+
+
+async def test_an_unticked_https_box_still_means_derive_it(monkeypatch):
+    """Absent is not False: DahuaClient reads None as "work it out from the port"."""
+    seen = await _port_seen_by(monkeypatch)
+
+    assert seen["use_https"] is None
