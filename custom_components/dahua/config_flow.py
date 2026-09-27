@@ -8,14 +8,16 @@ import voluptuous as vol
 from aiohttp import ClientConnectorError, ClientResponseError, ClientSession, TCPConnector
 
 from homeassistant import config_entries
+from homeassistant.data_entry_flow import section
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
 from . import dahua_utils
-from . import _async_probe_tcp
+from . import ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
 from .const import (
@@ -124,6 +126,18 @@ ALL_EVENTS = ["VideoMotion",
 """
 https://developers.home-assistant.io/docs/data_entry_flow_index
 """
+
+
+def channel_unique_id(serial: str, channel) -> str:
+    """The entry id for one channel of one device.
+
+    The bare serial for channel 0 and `serial_N` above it. This was written out
+    separately in the add step and the import step, and **not at all** in the
+    reconfigure step, which is how reconfiguring a channel came to leave the id
+    behind. One function so the three cannot drift again.
+    """
+    index = int(channel or 0)
+    return serial if index == 0 else "{0}_{1}".format(serial, index)
 
 
 def fallback_device_name(address: str, channel) -> str:
@@ -357,6 +371,54 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_user()
 
     @callback
+    def _async_id_taken_by_another(self, entry, unique_id: str) -> bool:
+        """Is some other entry already this channel?
+
+        Moving an entry onto an id another one holds would leave two entries reading
+        one camera, with duplicate entities and no way for Home Assistant to tell
+        them apart.
+        """
+        return any(
+            other.entry_id != entry.entry_id and other.unique_id == unique_id
+            for other in self._async_current_entries()
+        )
+
+    @callback
+    def _async_report_channel_not_added(self, import_data, reason) -> None:
+        """Say which channel could not be added, somewhere the user will see it.
+
+        A repair rather than a log line, because the log is not where somebody looks
+        after ticking boxes on a form. Not fixable: what went wrong is on the device
+        or the network, and retrying it for them would just fail again.
+
+        Persistent, because this arrives while Home Assistant is still starting the
+        other channels and a card that vanishes on the next restart is no use to
+        somebody reading it afterwards.
+
+        The channel is named the way the recorder names it, one higher than the index
+        stored here, since that is the number the user ticked.
+        """
+        address = import_data.get(CONF_ADDRESS)
+        index = int(import_data.get(CONF_CHANNEL) or 0)
+        _LOGGER.warning(
+            "Channel %s on %s could not be added (%s), so it has been skipped",
+            index + 1, address, reason or "unknown")
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            ISSUE_CHANNEL_NOT_ADDED.format(address, index),
+            is_fixable=False,
+            is_persistent=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="channel_not_added",
+            translation_placeholders={
+                "address": str(address),
+                "channel": str(index + 1),
+                "reason": str(reason or "unknown"),
+            },
+        )
+
+    @callback
     def _async_heal_siblings(self, unique_id: str, address: str) -> None:
         """Move a recorder's other channels to the address just confirmed.
 
@@ -427,10 +489,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             if data is not None:
                 # Only allow a camera to be setup once
                 if "serialNumber" in data and data["serialNumber"] is not None:
-                    channel = int(user_input[CONF_CHANNEL])
-                    unique_id = data["serialNumber"]
-                    if channel > 0:
-                        unique_id = unique_id + "_" + str(channel)
+                    unique_id = channel_unique_id(
+                        data["serialNumber"], user_input[CONF_CHANNEL])
                     await self.async_set_unique_id(unique_id)
                     # Heal the siblings first, because the call below raises.
                     self._async_heal_siblings(unique_id, user_input[CONF_ADDRESS])
@@ -694,12 +754,16 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             import_data[CONF_RTSP_PORT], import_data[CONF_CHANNEL],
             True if import_data.get(CONF_USE_HTTPS) else None)
         if data is None:
-            return self.async_abort(reason=error or "auth")
+            # An import-sourced flow renders no card, so aborting here used to be
+            # completely silent: no error, no card, no repair, and the abort reason
+            # was an *error* key with no string behind it anyway. The user ticked
+            # sixteen channels, got twelve, and nothing said which or why.
+            self._async_report_channel_not_added(import_data, error)
+            return self.async_abort(reason="channel_not_added")
 
         serial = data.get("serialNumber")
         if serial:
-            channel = int(import_data[CONF_CHANNEL])
-            unique_id = serial if channel == 0 else "{0}_{1}".format(serial, channel)
+            unique_id = channel_unique_id(serial, import_data[CONF_CHANNEL])
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
 
@@ -813,9 +877,33 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 check_channel=True,
             )
             if data is not None:
+                # The channel is on this form, and changing it used to leave the
+                # unique_id behind. Two things went wrong with that: another entry
+                # could then be added for the channel this one had moved to, so two
+                # entries polled one camera and the duplicate guard could not see it;
+                # and the channel this one moved *away* from became unaddable for
+                # good, because a fresh add computes the id this entry is still
+                # holding and aborts.
+                serial = data.get("serialNumber")
+                if serial:
+                    moved_to = channel_unique_id(serial, user_input[CONF_CHANNEL])
+                    if moved_to != entry.unique_id:
+                        if self._async_id_taken_by_another(entry, moved_to):
+                            self._errors[CONF_CHANNEL] = "already_configured"
+                            return await self._show_reconfigure_form(entry, user_input)
+                        return self.async_update_reload_and_abort(
+                            entry, unique_id=moved_to, data_updates=user_input)
                 return self.async_update_reload_and_abort(entry, data_updates=user_input)
             self._errors["base"] = error or "auth"
 
+        return await self._show_reconfigure_form(entry, user_input)
+
+    async def _show_reconfigure_form(self, entry, user_input=None):
+        """The reconfigure form, prefilled from the entry and from what was typed.
+
+        Separated out because a channel that collides with another entry has to come
+        back to this form with an error on that field, rather than aborting.
+        """
         current = {**entry.data, **(user_input or {})}
         return self.async_show_form(
             step_id="reconfigure",
@@ -976,6 +1064,30 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             await session.close()
 
 
+# The collapsed group the platform toggles live in on the options form. Named here
+# because both the schema and the flattening need the same string.
+OPTIONS_SECTION_PLATFORMS = "platforms"
+
+
+def _flatten_sections(user_input: dict) -> dict:
+    """Lift a section's values back to the top level.
+
+    Home Assistant returns a section as a nested dict, and everything that reads
+    these options does `entry.options.get("binary_sensor")`. Flattening on the way in
+    keeps the stored shape exactly as it was, so this is a change to the form and not
+    to the data.
+
+    Only the sections this form declares are lifted. Flattening anything that happens
+    to be a dict would eventually swallow an option whose value is legitimately one.
+    """
+    flat = dict(user_input)
+    for name in (OPTIONS_SECTION_PLATFORMS,):
+        nested = flat.pop(name, None)
+        if isinstance(nested, dict):
+            flat.update(nested)
+    return flat
+
+
 class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
     """Dahua config flow options handler."""
 
@@ -987,13 +1099,26 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_user(self, user_input=None):
         """Handle a flow initialized by the user."""
         if user_input is not None:
-            await self._async_move_device(user_input.get(CONF_AREA))
-            self.options.update(user_input)
+            flat = _flatten_sections(user_input)
+            await self._async_move_device(flat.get(CONF_AREA))
+            self.options.update(flat)
             return await self._update_options()
 
+        # Eight "<platform> enabled" toggles used to be the first eight fields of a
+        # nineteen field form, so somebody opening Configure to change scan_interval
+        # scrolled past all of them. They are the least likely thing anybody came
+        # here to change, so they go in a collapsed section. Home Assistant nests a
+        # section's values in what it hands back, and every reader of these does
+        # `entry.options.get("binary_sensor")`, so _flatten_sections lifts them out
+        # again and the stored shape is unchanged.
         schema = {
-            vol.Required(x, default=self.options.get(x, True)): bool
-            for x in sorted(PLATFORMS)
+            vol.Required(OPTIONS_SECTION_PLATFORMS): section(
+                vol.Schema({
+                    vol.Required(x, default=self.options.get(x, True)): bool
+                    for x in sorted(PLATFORMS)
+                }),
+                {"collapsed": True},
+            )
         }
         schema[
             vol.Required(
