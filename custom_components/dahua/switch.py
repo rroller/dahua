@@ -21,7 +21,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     # But only some cams have a siren, very few do actually
     has_siren = (
         coordinator.supports_nvr_active_deterrence()
-        if coordinator.is_nvr_channel()
+        if coordinator.uses_recorder_deterrence()
         else coordinator.supports_siren()
     )
     if has_siren:
@@ -29,7 +29,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             DahuaSirenBinarySwitch(
                 coordinator,
                 entry,
-                name="Alarm" if coordinator.is_nvr_channel() else "Siren",
+                name="Alarm" if coordinator.uses_recorder_deterrence() else "Siren",
             )
         )
     if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
@@ -248,7 +248,7 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable the camera's siren"""
         channel = self._coordinator.get_channel()
-        if self._coordinator.is_nvr_channel():
+        if self._coordinator.uses_recorder_deterrence():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SIREN_TYPE, True
             )
@@ -261,7 +261,7 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable camera siren"""
         channel = self._coordinator.get_channel()
-        if self._coordinator.is_nvr_channel():
+        if self._coordinator.uses_recorder_deterrence():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SIREN_TYPE, False
             )

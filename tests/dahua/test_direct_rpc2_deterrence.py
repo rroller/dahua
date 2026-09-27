@@ -26,12 +26,14 @@ def coordinator(
     c._channel = 0
     c._channel_number = 1
     c._nvr_active_deterrence = nvr
+    c._device_class = "NVR" if nvr or "NVR" in model else "IPC"
     c._supports_rpc2_siren = speaker
     c._supports_rpc2_security_light = light
     c._manual_siren = manual_siren
     c._manual_security_light = manual_light
     c.client = SimpleNamespace(
-        async_get_coaxial_control_io_caps_rpc2=AsyncMock(),
+        async_get_coaxial_control_io_caps_rpc2=AsyncMock(return_value={}),
+        async_get_product_definition_rpc2=AsyncMock(return_value=None),
         async_set_coaxial_control_state_rpc2=AsyncMock(),
         async_set_coaxial_control_state=AsyncMock(),
         async_set_nvr_coaxial_control_state=AsyncMock(),
@@ -76,6 +78,7 @@ async def test_thermal_zero_speaker_keeps_family_fallback(model):
     }
     await c._async_probe_direct_deterrence()
     assert c.supports_siren()
+    assert "Model fallback: contains TPC-BF1241" in c.get_siren_detection_sources()
     assert c.supports_security_light()
     assert not c.uses_rpc2_deterrence(2)
     assert not coordinator("TPC-OTHER").supports_siren()
@@ -125,7 +128,6 @@ async def test_manual_overrides_independently_enable_direct_camera_entities(
     [
         ("NVR5216", 0, False),
         ("OEM-recorder", 0, True),
-        ("OEM-IPC", 1, False),
         ("AD410", 0, False),
     ],
 )
@@ -257,3 +259,53 @@ async def test_client_caps_and_control_fix_channel_zero():
     await client.async_set_coaxial_control_state_rpc2(2, True)
     rpc.get_coaxial_control_io_caps.assert_awaited_once_with(0)
     rpc.set_coaxial_control_state.assert_awaited_once_with(0, 2, True)
+
+
+@pytest.mark.parametrize("channel", [0, 1])
+async def test_missing_class_preserves_recorder_opt_in_and_controls(channel):
+    c = coordinator(nvr=True)
+    c._device_class = ""
+    c._channel = channel
+    c._channel_number = channel + 1
+    await c._async_probe_direct_deterrence()
+    c.client.async_get_product_definition_rpc2.assert_not_awaited()
+    c.client.async_get_coaxial_control_io_caps_rpc2.assert_not_awaited()
+    for cls, kind in [(DahuaSirenBinarySwitch, 2), (DahuaSecurityLight, 1)]:
+        entity = object.__new__(cls)
+        entity._coordinator = c
+        for enabled in (True, False):
+            await (entity.async_turn_on() if enabled else entity.async_turn_off())
+            c.client.async_set_nvr_coaxial_control_state.assert_awaited_with(
+                channel + 1, kind, enabled
+            )
+    c.client.async_set_coaxial_control_state_rpc2.assert_not_awaited()
+
+
+@pytest.mark.parametrize("device_class", ["IPC", "SD", "OTHER"])
+async def test_nonzero_direct_camera_polls_rpc2(device_class):
+    client = _Client()
+    client.use_rpc2 = False
+    client.async_get_device_class = AsyncMock(return_value=device_class)
+    client.async_get_coaxial_control_io_caps_rpc2 = AsyncMock(return_value={
+        "SupportControlSpeaker": True, "SupportControlLight": True,
+    })
+    client.async_get_coaxial_control_io_status_rpc2 = AsyncMock(return_value={
+        "status.Speaker": "On", "status.WhiteLight": "Off",
+    })
+    c = _coordinator(client)
+    c._channel = 1
+    c._channel_number = 2
+    for _ in range(2):
+        data = await c._async_update_data()
+        assert data["status.Speaker"] == "On"
+    assert client.async_get_coaxial_control_io_status_rpc2.await_count == 2
+    assert "async_get_coaxial_control_io_status" not in client.called
+
+
+async def test_thermal_probe_failure_retains_siren_and_diagnostic_source():
+    c = coordinator("TPC-BF1241")
+    c.client.async_get_product_definition_rpc2.side_effect = TimeoutError
+    c.client.async_get_coaxial_control_io_caps_rpc2.side_effect = TimeoutError
+    await c._async_probe_direct_deterrence()
+    assert c.supports_siren()
+    assert c.get_siren_detection_sources() == ["Model fallback: contains TPC-BF1241"]

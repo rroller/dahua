@@ -206,7 +206,13 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
         "is_amcrest_doorbell": _safe(coordinator.is_amcrest_doorbell),
         "is_flood_light": _safe(coordinator.is_flood_light),
         "supports_siren": _safe(coordinator.supports_siren),
+        "supports_siren_sources": _safe(
+            lambda: coordinator.get_siren_detection_sources(), []
+        ),
         "supports_security_light": _safe(coordinator.supports_security_light),
+        "supports_security_light_sources": _safe(
+            lambda: coordinator.get_security_light_detection_sources(), []
+        ),
         "supports_infrared_light": _safe(coordinator.supports_infrared_light),
         "supports_illuminator": _safe(coordinator.supports_illuminator),
         "supports_smart_motion_amcrest": _safe(

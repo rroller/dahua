@@ -39,6 +39,12 @@ class _Coordinator:
     def get_channel_number(self):
         return self._channel + 1
 
+    def uses_recorder_deterrence(self):
+        return False
+
+    def is_recorder_host(self):
+        return False
+
     def is_nvr_channel(self):
         return False
 

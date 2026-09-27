@@ -1349,6 +1349,13 @@ class DahuaClient:
                         keepalive.cancel()
                         await asyncio.gather(keepalive, return_exceptions=True)
 
+    async def async_get_product_definition_rpc2(
+        self, name: str | None = None
+    ) -> dict | list | None:
+        """Read camera feature definitions using the existing shared RPC2 login."""
+        holder = await self._shared_rpc2()
+        return await holder.client.get_product_definition(name)
+
     async def async_get_coaxial_control_io_caps_rpc2(self) -> dict[str, bool]:
         """Probe a direct camera on channel zero, independently of config transport."""
         return await self._direct_coaxial_rpc2("get_coaxial_control_io_caps")
