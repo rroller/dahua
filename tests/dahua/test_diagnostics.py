@@ -74,7 +74,6 @@ class _Coordinator:
         self._supports_lighting_v2 = True
         self._dahua_event_timestamp = {"VideoMotion-0": 0}
         self._dahua_event_listeners = {"VideoMotion-0": object()}
-        self._event_task = None
         self._vto_task = None
         self._vto_client = None
 
