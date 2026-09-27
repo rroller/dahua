@@ -195,3 +195,126 @@ async def test_no_pollable_codes_ends_the_stream(monkeypatch):
 
     with pytest.raises(EventStreamClosed):
         await client._stream_events_rpc2(_collect()[1], ["VideoMotion"], 0)
+
+
+# --- easing off while nothing is happening -----------------------------------
+#
+# Nine default codes at a 2s cycle is about 4.5 requests a second, forever,
+# against a small camera -- roughly two orders of magnitude above anything else
+# this integration does, and #603 is the shape where one of these boxes runs out
+# of whatever it runs out of and stops answering. Motion is bursty, so the fast
+# rate only earns its keep near an event.
+#
+# The idle interval is bounded by evidence rather than taste: #779 measured
+# VideoMotion lasting 11s and SmartMotionHuman 46s on the device this was written
+# for, so an idle poll at 8s still sees both.
+
+def _record_sleeps(monkeypatch):
+    """What the poller actually waits between cycles."""
+    waits = []
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", fake_sleep)
+    return waits
+
+
+def _idle_settings(monkeypatch, after=0, idle=99):
+    monkeypatch.setattr(client_module, "RPC2_EVENT_IDLE_AFTER_SECONDS", after)
+    monkeypatch.setattr(client_module, "RPC2_EVENT_IDLE_POLL_SECONDS", idle)
+
+
+async def test_a_quiet_camera_eases_off(monkeypatch):
+    fake = _FakeRpc2Client([{"VideoMotion": []}, {"VideoMotion": []}])
+    client = _client(monkeypatch, fake)
+    _idle_settings(monkeypatch)
+    waits = _record_sleeps(monkeypatch)
+    _, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert waits, "the poller never waited at all"
+    assert all(w > 50 for w in waits), (
+        "a camera with nothing happening kept the fast rate: %s" % waits)
+
+
+async def test_a_busy_camera_keeps_the_fast_cycle(monkeypatch):
+    """Something active means the fast rate, and this is the half that matters:
+    easing off must not make it slow to react once something happens."""
+    fake = _FakeRpc2Client([{"VideoMotion": [0]}, {"VideoMotion": [0]}])
+    client = _client(monkeypatch, fake)
+    _idle_settings(monkeypatch)
+    waits = _record_sleeps(monkeypatch)
+    _, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert waits
+    assert all(w < 50 for w in waits), (
+        "an active camera was polled at the idle rate: %s" % waits)
+
+
+async def test_activity_snaps_it_back(monkeypatch):
+    """Idle, then something happens. The very next wait is the fast one."""
+    fake = _FakeRpc2Client([
+        {"VideoMotion": []},       # idle -> eased off
+        {"VideoMotion": [0]},      # active -> back to fast
+    ])
+    client = _client(monkeypatch, fake)
+    _idle_settings(monkeypatch)
+    waits = _record_sleeps(monkeypatch)
+    _, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert len(waits) == 2, waits
+    assert waits[0] > 50, "the idle cycle did not ease off"
+    assert waits[1] < 50, "it stayed slow while something was active"
+
+
+async def test_it_does_not_ease_off_before_the_idle_period(monkeypatch):
+    """One quiet cycle is not a quiet camera."""
+    fake = _FakeRpc2Client([{"VideoMotion": []}, {"VideoMotion": []}])
+    client = _client(monkeypatch, fake)
+    _idle_settings(monkeypatch, after=3600)
+    waits = _record_sleeps(monkeypatch)
+    _, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert all(w < 50 for w in waits), waits
+
+
+async def test_easing_off_never_polls_faster_than_the_rate_bound(monkeypatch):
+    """With enough codes the request bound already gives a cycle longer than the
+    idle interval, and that bound must still win."""
+    fake = _FakeRpc2Client([{}, {}])
+    client = _client(monkeypatch, fake)
+    monkeypatch.setattr(client_module, "RPC2_EVENT_POLL_SECONDS", 200)
+    _idle_settings(monkeypatch, after=0, idle=8)
+    waits = _record_sleeps(monkeypatch)
+    _, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion", "AlarmLocal"], 0)
+
+    assert all(w > 100 for w in waits), (
+        "easing off overrode the rate bound and polled faster: %s" % waits)
+
+
+def test_the_idle_interval_can_still_see_the_shortest_measured_event():
+    """#779 measured VideoMotion lasting 11s on the SL300. An idle poll longer
+    than that would miss a real event to save requests, which is the wrong trade."""
+    assert client_module.RPC2_EVENT_IDLE_POLL_SECONDS < 11
+
+
+def test_easing_off_is_a_real_reduction():
+    """If the idle interval were not meaningfully longer than the fast one this
+    would be complexity for nothing."""
+    assert (client_module.RPC2_EVENT_IDLE_POLL_SECONDS
+            >= 2 * client_module.RPC2_EVENT_POLL_SECONDS)

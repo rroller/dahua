@@ -33,6 +33,18 @@ RPC2_EVENT_MAX_REQUESTS_PER_SECOND = 5
 # A cycle longer than this can miss a short event, so say so rather than quietly
 # polling too slowly to be useful.
 RPC2_EVENT_SLOW_CYCLE_SECONDS = 5
+# After this long with nothing active, ease off. Motion is bursty, so the fast
+# rate only earns its keep near an event, and the fast rate is expensive: nine
+# default codes at a 2s cycle is about 4.5 requests a second, forever, against a
+# small camera -- some two orders of magnitude above anything else here. #603 is
+# the shape where one of these boxes runs out of whatever it runs out of and
+# stops answering.
+RPC2_EVENT_IDLE_AFTER_SECONDS = 120
+# How slowly, when idle. Bounded by the shortest event actually measured on one of
+# these devices rather than picked: #779 reports VideoMotion lasting 11s and
+# SmartMotionHuman 46s, so an idle poll at this interval still sees both. It snaps
+# back to the fast cycle the moment anything goes active.
+RPC2_EVENT_IDLE_POLL_SECONDS = 8
 # "session is out of date"; same code _direct_coaxial_rpc2 recovers from.
 RPC2_SESSION_EXPIRED_CODE = 287637504
 # The CGI stream proves the transport is alive with the heartbeat it asks the
@@ -2586,8 +2598,11 @@ class DahuaClient:
                 self._address, len(codes), cycle)
         else:
             _LOGGER.debug(
-                "Polling %d event types over RPC2 on %s every %.0fs",
-                len(codes), self._address, cycle)
+                "Polling %d event types over RPC2 on %s every %.0fs -- %.1f requests "
+                "a second, easing to %.1f after %ds with nothing active",
+                len(codes), self._address, cycle, len(codes) / cycle,
+                len(codes) / max(cycle, RPC2_EVENT_IDLE_POLL_SECONDS),
+                RPC2_EVENT_IDLE_AFTER_SECONDS)
 
         # Inherited, not fresh: a Start whose Stop was lost to a transport
         # failure or the scheduled recycle is still owed one, and the first
@@ -2605,6 +2620,9 @@ class DahuaClient:
                 self._address, code)
 
         attached_to = None
+        # When the device last had anything active, or None while it does. Only
+        # a run of quiet cycles eases the rate off; one Start restores it.
+        idle_since = None if active else time.monotonic()
 
         while True:
             holder = await self._shared_rpc2()
@@ -2614,6 +2632,11 @@ class DahuaClient:
                     # The subscription belongs to the login, so a new login needs
                     # a new attach. Without this a recovered session polls a SID
                     # the device has already forgotten.
+                    # "All" here and one code per poll below is not a
+                    # contradiction: the attach is what makes the device willing
+                    # to report at all, and getEventIndexes is only how the
+                    # result is read back -- it takes a single code, and "All"
+                    # answers empty even while a specific code is active.
                     await holder.client.request("eventManager.attach", {"codes": ["All"]})
                     attached_to = login_task
 
@@ -2663,7 +2686,20 @@ class DahuaClient:
                 # indistinguishable from a dead stream and gets backed off.
                 on_receive(RPC2_EVENT_HEARTBEAT, channel)
 
-                await asyncio.sleep(max(0.0, cycle - (time.monotonic() - started)))
+                # Anything active means the fast cycle, immediately -- the point
+                # of easing off is to be cheap while nothing is happening, not to
+                # be slow once something is.
+                if active:
+                    idle_since = None
+                elif idle_since is None:
+                    idle_since = time.monotonic()
+
+                wait = cycle
+                if (idle_since is not None
+                        and time.monotonic() - idle_since >= RPC2_EVENT_IDLE_AFTER_SECONDS):
+                    wait = max(cycle, RPC2_EVENT_IDLE_POLL_SECONDS)
+
+                await asyncio.sleep(max(0.0, wait - (time.monotonic() - started)))
 
             except Rpc2MethodRefused as refused:
                 if refused.code != RPC2_SESSION_EXPIRED_CODE:
