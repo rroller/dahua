@@ -74,6 +74,12 @@ EVENT_DAHUA_ANPR_RECOGNIZED = "dahua_anpr_recognized"
 
 # Defaults
 DEFAULT_NAME = "Dahua"
+# What an entry subscribes to when nothing has ever said otherwise. Lives here
+# rather than in config_flow because __init__ needs it too, and config_flow
+# imports __init__ back.
+DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss",
+                  "VideoBlind", "AudioMutation", "CrossRegionDetection",
+                  "SmartMotionHuman", "SmartMotionVehicle"]
 DEFAULT_AUTHORIZED_HOLD_TIME = 60
 # How often the coordinator polls each device for its settings. Events do not
 # come from polling - they arrive on the event stream - so this only paces the

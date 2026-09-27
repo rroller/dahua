@@ -56,6 +56,7 @@ from .const import (
     CONF_MANUAL_SECURITY_LIGHT,
     CONF_AREA,
     CONF_AUTHORIZED_PLATES,
+    DEFAULT_EVENTS,
     CONF_AUTHORIZED_HOLD_TIME,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_AUTHORIZED_HOLD_TIME,
@@ -646,12 +647,26 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 def get_configured_events(entry: ConfigEntry) -> list:
-    """Returns the events this entry subscribes to.
+    """Returns the events this entry subscribes to. Never None.
 
-    Options win when present, so the subscription can be changed after setup.
-    Entries created before the option existed only carry the setup-time value.
+    Options win when present, so the subscription can be changed after setup,
+    and an empty selection there is honoured because the user chose it. The
+    setup-time value in `data` is honoured the same way, empty included.
+
+    Neither present is a different thing, and it used to return None. That is
+    reachable by an entry old enough to predate the setting, and None is not a
+    list: `binary_sensor.async_setup_entry` iterates this without a guard, so
+    the whole platform raised TypeError and the device got **no binary sensors
+    at all** -- while `async_start_event_listener` quietly skipped the stream
+    because it does guard, so no events either, and nothing in the log tying the
+    two together. DEFAULT_EVENTS is what such an entry would be created with
+    today.
     """
-    return entry.options.get(CONF_EVENTS, entry.data.get(CONF_EVENTS))
+    if CONF_EVENTS in entry.options:
+        return list(entry.options[CONF_EVENTS] or [])
+    if CONF_EVENTS in entry.data:
+        return list(entry.data[CONF_EVENTS] or [])
+    return list(DEFAULT_EVENTS)
 
 
 def get_configured_use_https(entry: ConfigEntry):
