@@ -30,7 +30,7 @@ class DahuaBaseEntity(CoordinatorEntity):
             "name": self._coordinator.get_device_name(),
             "model": self._coordinator.get_model(),
             "manufacturer": "Dahua",
-            "configuration_url": "http://" + self._coordinator.get_address(),
+            "configuration_url": self._coordinator.get_configuration_url(),
             "sw_version": self._coordinator.get_firmware_version(),
         }
         # Where the area chosen while adding this device is applied. Home
