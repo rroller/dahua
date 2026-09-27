@@ -392,7 +392,7 @@ async def test_an_imported_channel_becomes_an_entry():
 
     flow._test_credentials = credentials
     flow.async_set_unique_id = set_unique_id
-    flow._abort_if_unique_id_configured = lambda: None
+    flow._abort_if_unique_id_configured = lambda **kwargs: None
     flow.async_create_entry = lambda title, data: created.update(
         {"title": title, "data": data}) or created
 
@@ -455,7 +455,7 @@ async def test_the_search_is_shown_as_a_wait():
     flow._test_credentials = credentials
     flow._async_discover_channels = discover
     flow.async_set_unique_id = _noop
-    flow._abort_if_unique_id_configured = lambda: None
+    flow._abort_if_unique_id_configured = lambda **kwargs: None
 
     result = await flow.async_step_user(_entry_data())
 

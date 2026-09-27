@@ -36,9 +36,25 @@ def _response_error(status):
 
 # --- the one case that really is the password --------------------------------
 
-@pytest.mark.parametrize("status", [401, 403])
-def test_a_rejected_login_is_a_rejected_login(status):
-    assert describe_setup_failure(_response_error(status)) == "auth"
+def test_a_rejected_login_is_a_rejected_login():
+    assert describe_setup_failure(_response_error(401)) == "auth"
+
+
+def test_a_403_is_not_a_rejected_login():
+    """It used to be listed alongside 401, which contradicted the other half of the
+    codebase. _is_login_refused is `status == 401` and says why:
+
+        403 deliberately keeps the fallback. It means the login was accepted and
+        this account is not allowed that endpoint, which a restricted Dahua user
+        really can hit, and their credentials are not wrong.
+
+    So a 403 never propagates out of the identity calls and cannot reach here. The
+    entry is created with a synthesised id instead, which is the documented
+    behaviour. Calling it a credentials failure was wrong even though it was
+    unreachable, and unreachable wrong code is how a later change reintroduces a
+    bug with confidence.
+    """
+    assert describe_setup_failure(_response_error(403)) != "auth"
 
 
 # --- and the ones that never were --------------------------------------------

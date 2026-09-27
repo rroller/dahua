@@ -162,7 +162,13 @@ def describe_setup_failure(exception: BaseException) -> str:
     where, or not being what, we were told.
     """
     if isinstance(exception, ClientResponseError):
-        if exception.status in (401, 403):
+        # 401 only, and not 403. _is_login_refused draws that line deliberately: a
+        # 403 means the login was accepted and this account is not allowed that
+        # endpoint, which a restricted Dahua user really can hit, so it keeps the
+        # identity fallback instead of raising. That means a 403 cannot reach here at
+        # all, and listing it as a credentials failure said the opposite of what the
+        # other function documents.
+        if exception.status == 401:
             # Reachable only because get_machine_name and async_get_system_info
             # re-raise a 401 rather than synthesising an id from the refused
             # credentials. If either goes back to swallowing it, a wrong
@@ -350,6 +356,32 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self.context["title_placeholders"] = {"name": name, "address": address}
         return await self.async_step_user()
 
+    @callback
+    def _async_heal_siblings(self, unique_id: str, address: str) -> None:
+        """Move a recorder's other channels to the address just confirmed.
+
+        `_abort_if_unique_id_configured(updates=...)` heals the entry whose id
+        matches, and a recorder is one entry per channel. Healing only the matched
+        one leaves the other fifteen pointing at an address the device no longer has,
+        so they stay broken and each has to be reconfigured by hand.
+
+        Same serial is the same physical device, so this is not a guess, and it is
+        what the Gold discovery-update-info rule asks for. Entries already on the
+        right address are left alone so nothing is rewritten for no reason, and the
+        matched entry is left to `updates=`.
+        """
+        head, _sep, tail = unique_id.rpartition("_")
+        serial = head if head and tail.isdigit() else unique_id
+        for entry in self._async_entries_for_serial(serial):
+            if entry.unique_id == unique_id:
+                continue
+            if entry.data.get(CONF_ADDRESS) == address:
+                continue
+            _LOGGER.debug("Moving %s from %s to %s, same serial",
+                          entry.unique_id, entry.data.get(CONF_ADDRESS), address)
+            self.hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_ADDRESS: address})
+
     def _async_entries_for_serial(self, serial: str) -> list:
         """Every entry for one device, including a recorder's other channels.
 
@@ -400,7 +432,15 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     if channel > 0:
                         unique_id = unique_id + "_" + str(channel)
                     await self.async_set_unique_id(unique_id)
-                    self._abort_if_unique_id_configured()
+                    # Heal the siblings first, because the call below raises.
+                    self._async_heal_siblings(unique_id, user_input[CONF_ADDRESS])
+                    # With no updates= this aborted and left the old address in
+                    # place, so somebody whose camera changed IP re-added it, was
+                    # told "already configured", and still had a broken entry with
+                    # nothing pointing at Reconfigure. Same serial is the same
+                    # device, so the address we have just talked to is the right one.
+                    self._abort_if_unique_id_configured(
+                        updates={CONF_ADDRESS: user_input[CONF_ADDRESS]})
 
                 user_input[CONF_NAME] = data["name"]
                 self.init_info = user_input
