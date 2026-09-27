@@ -93,21 +93,14 @@
             "single_instance_allowed": "Only a single instance is allowed.",
             "already_configured": "That camera and channel are already added. To change its address or port use Configure on the existing entry, and to change its password use re-authentication, rather than adding it again.",
             "reauth_successful": "Re-authentication was successful.",
-            "reconfigure_successful": "Connection settings updated"
+            "reconfigure_successful": "Connection settings updated",
+            "channel_not_added": "That channel could not be added. A repair notice in Settings says which one and why."
         }
     },
     "options": {
         "step": {
             "user": {
                 "data": {
-                    "binary_sensor": "Binary sensor enabled",
-                    "sensor": "Sensor enabled",
-                    "switch": "Switch enabled",
-                    "light": "Light enabled",
-                    "select": "Select enabled",
-                    "camera": "Camera enabled",
-                    "button": "Button enabled",
-                    "event": "Event enabled",
                     "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
                     "use_rpc2": "Read configuration over one RPC2 session per device (fewer logins in the device's log; leave off if unsure)",
                     "events": "Events to subscribe to",
@@ -123,11 +116,31 @@
                 "data_description": {
                     "manual_siren": "Enable this if your camera has a working siren, but the integration did not create the Siren entity.",
                     "manual_security_light": "Enable this if your camera has a working security light, but the integration did not create the Security Light entity."
+                },
+                "sections": {
+                    "platforms": {
+                        "name": "Entities to create",
+                        "description": "Every kind of entity is created by default. Turn one off and this device stops creating that kind entirely, which is a blunt instrument: to hide a single entity, disable it on the device page instead.",
+                        "data": {
+                            "binary_sensor": "Binary sensor enabled",
+                            "button": "Button enabled",
+                            "camera": "Camera enabled",
+                            "event": "Event enabled",
+                            "light": "Light enabled",
+                            "select": "Select enabled",
+                            "sensor": "Sensor enabled",
+                            "switch": "Switch enabled"
+                        }
+                    }
                 }
             }
         }
     },
     "issues": {
+        "channel_not_added": {
+            "title": "Channel {channel} on {address} was not added",
+            "description": "You ticked channel {channel} while adding this recorder, and it could not be added, so it has been skipped. The rest were added normally.\n\nThe reason given was `{reason}`. The usual causes are that the camera on that channel has stopped answering since the recorder last saw it, that the slot is enabled on the recorder with no camera actually in it, or that the recorder serves that channel over ONVIF, which this integration cannot drive.\n\nCheck the channel in the recorder's own interface, then add it from Add Integration once it is working. The Home Assistant log has the full reason."
+        },
         "siblings_remain": {
             "title": "{count} more Dahua entries still use {address}",
             "fix_flow": {

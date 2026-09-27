@@ -189,7 +189,12 @@ def test_the_new_platform_has_a_label_on_the_options_screen():
 
     path = Path(button_module.__file__).parent / "translations" / "en.json"
     data = json.loads(path.read_text(encoding="utf-8"))
-    labels = data["options"]["step"]["user"]["data"]
+    step = data["options"]["step"]["user"]
+    # The platform toggles moved into a collapsed section, so their labels moved with
+    # them. Either place renders; a label in neither shows as a bare key.
+    labels = dict(step["data"])
+    for section in step.get("sections", {}).values():
+        labels.update(section.get("data", {}))
 
     for platform in PLATFORMS:
         assert platform in labels, "%s has no label on the options screen" % platform

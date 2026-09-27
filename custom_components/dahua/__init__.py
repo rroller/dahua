@@ -783,6 +783,12 @@ ISSUE_HTTP_DEAD_HTTPS_AVAILABLE = "http_dead_https_available_{0}"
 # Raised when an entry is removed and other entries for the same recorder are
 # still configured. An NVR is one entry per channel, so "remove the recorder"
 # is eleven deletions and nobody realises until they are eight in.
+# Raised when a channel the user ticked on the channels step could not be added.
+# That step spawns one import-sourced flow per channel, and an import flow renders
+# no card at all, so its abort was invisible: somebody ticked sixteen channels, got
+# twelve, and had nothing anywhere telling them which four or why.
+ISSUE_CHANNEL_NOT_ADDED = "channel_not_added_{0}_{1}"
+
 ISSUE_SIBLINGS_REMAIN = "siblings_remain_{0}"
 # Raised when the removed entry was referenced by automations or scripts. Those
 # break silently -- the entities simply stop existing and nothing fires.

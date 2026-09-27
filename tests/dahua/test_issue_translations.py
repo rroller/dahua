@@ -22,6 +22,7 @@ ISSUE_PLACEHOLDERS = {
     # literally as {removed} on screen.
     "siblings_remain": {"address", "count"},
     "removal_broke_things": {"removed", "dependents", "names"},
+    "channel_not_added": {"address", "channel", "reason"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
 SIBLINGS_FLOW_PLACEHOLDERS = {"address", "count", "titles", "removed",
@@ -30,6 +31,26 @@ SIBLINGS_FLOW_PLACEHOLDERS = {"address", "count", "titles", "removed",
 
 def _placeholders(text: str) -> set:
     return set(re.findall(r"\{(\w+)\}", text))
+
+
+def test_the_map_above_covers_every_issue_the_code_raises():
+    """ISSUE_PLACEHOLDERS is hand written, and everything else in this file is
+    parametrized over it, so an issue missing from it is not checked at all.
+
+    That is a silent gap rather than a failure, which is the worst kind: adding
+    channel_not_added left it untested here and every test in this file still passed.
+    Deriving the set from the source makes the drift impossible instead.
+    """
+    source = ""
+    for name in ("config_flow.py", "__init__.py", "repairs.py"):
+        source += (TRANSLATIONS.parent / name).read_text(encoding="utf-8")
+
+    raised = set(re.findall(r'translation_key="([a-z_]+)"', source))
+
+    assert raised == set(ISSUE_PLACEHOLDERS), (
+        "in the code but not the map: %s; in the map but not the code: %s"
+        % (sorted(raised - set(ISSUE_PLACEHOLDERS)),
+           sorted(set(ISSUE_PLACEHOLDERS) - raised)))
 
 
 @pytest.mark.parametrize("key", sorted(ISSUE_PLACEHOLDERS))

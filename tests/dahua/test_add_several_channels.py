@@ -419,10 +419,14 @@ async def test_an_imported_channel_that_no_longer_answers_aborts():
     flow._test_credentials = credentials
     flow.async_abort = lambda reason: aborted.setdefault("reason", reason)
     flow.async_create_entry = lambda **kw: pytest.fail("created an entry anyway")
+    # Saying which channel was skipped is its own behaviour, tested in
+    # test_silent_channel_and_options.py. This test is about not creating anything.
+    flow._async_report_channel_not_added = lambda *args, **kwargs: None
 
     await flow.async_step_import(_entry_data(channel=3))
 
-    assert aborted["reason"] == "cannot_connect"
+    assert aborted["reason"] == "channel_not_added", (
+        "it used to abort with an *error* key, which config.abort had no string for")
 
 
 # --- the routing, and the wait the user is shown --------------------------
