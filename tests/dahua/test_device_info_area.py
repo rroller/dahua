@@ -41,8 +41,11 @@ class _Coordinator:
     def get_model(self):
         return "IPC-HDW5831R-ZE"
 
-    def get_address(self):
-        return "10.0.0.5"
+    def get_configuration_url(self):
+        # The scheme and port the client actually uses. This used to be composed
+        # here as "http://" + get_address(), which was wrong for every device on a
+        # port other than 80 and every HTTPS-only one.
+        return "https://10.0.0.5:8443"
 
     def get_firmware_version(self):
         return "2.800.0"
@@ -85,7 +88,7 @@ def test_the_identity_is_unchanged():
     assert info["model"] == "IPC-HDW5831R-ZE"
     assert info["manufacturer"] == "Dahua"
     assert info["sw_version"] == "2.800.0"
-    assert info["configuration_url"] == "http://10.0.0.5"
+    assert info["configuration_url"] == "https://10.0.0.5:8443"
 
 
 def test_an_area_adds_exactly_one_key():
