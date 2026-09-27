@@ -1261,7 +1261,7 @@ class DahuaClient:
             "set_coaxial_control_state", dahua_type, enabled
         )
 
-    async def _rpc2_get_config(self, name: str) -> dict:
+    async def _rpc2_get_config(self, name: str, *, allow_missing=False) -> dict:
         """A config read over the shared session, in CGI's shape.
 
         One retry, because the failure this expects is an expired session and
@@ -1271,7 +1271,14 @@ class DahuaClient:
         for attempt in (1, 2):
             try:
                 holder = await self._shared_rpc2()
-                params = await holder.client.get_config({"name": name})
+                try:
+                    params = await holder.client.get_config({"name": name})
+                except Rpc2MethodRefused as exc:
+                    # Only a refusal of the table read can establish absence;
+                    # a failed login or expired session must still propagate.
+                    if allow_missing and exc.code in (268632064, 268959743):
+                        return {}
+                    raise
                 return flatten_rpc2_config(name, params.get("table"))
             except Rpc2MethodRefused:
                 # The device answered. Logging in again cannot change its mind
@@ -1316,9 +1323,10 @@ class DahuaClient:
             )
             if over_cgi:
                 return over_cgi
-        except aiohttp.ClientResponseError:
-            pass
-        return await self._rpc2_get_config("LightingScheme")
+        except aiohttp.ClientResponseError as exc:
+            if exc.status not in (400, 404, 501):
+                raise
+        return await self._rpc2_get_config("LightingScheme", allow_missing=True)
 
     async def async_set_lighting_scheme_illuminator(
             self, channel: int, enabled: bool, brightness: int,
@@ -1819,8 +1827,8 @@ class DahuaClient:
 
     async def async_get_lighting_scheme_mode(
         self, channel: int, profile_mode: str
-    ) -> str:
-        """Return LightingScheme.LightingMode via CGI getConfig."""
+    ) -> str | None:
+        """Return the live LightingMode, falling back to RPC2 when needed."""
 
         channel_index = int(channel)
         profile_index = int(profile_mode)
@@ -1829,10 +1837,9 @@ class DahuaClient:
         # Avoid using an older shared getConfig snapshot.
         clear_host_cache(self._address)
 
-        data = await self.get(
-            "/cgi-bin/configManager.cgi?"
-            "action=getConfig&name=LightingScheme"
-        )
+        data = await self.async_get_lighting_scheme()
+        if not data:
+            return None
 
         key = (
             f"table.LightingScheme[{channel_index}]"
@@ -1865,6 +1872,8 @@ class DahuaClient:
             channel_index,
             str(profile_index),
         )
+        if previous_mode is None:
+            raise ValueError("This device does not expose LightingScheme")
 
         if previous_mode == mode:
             return previous_mode

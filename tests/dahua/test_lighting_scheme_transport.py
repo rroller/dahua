@@ -32,6 +32,7 @@ class _Client(DahuaClient):
     """The real method, with each transport replaced by a recorder."""
 
     def __init__(self, cgi, rpc2=None):
+        self._address = "camera"
         self._cgi = cgi
         self._rpc2 = rpc2
         self.tried = []
@@ -42,7 +43,7 @@ class _Client(DahuaClient):
             raise self._cgi
         return dict(self._cgi)
 
-    async def _rpc2_get_config(self, name):
+    async def _rpc2_get_config(self, name, **kwargs):
         self.tried.append("rpc2:%s" % name)
         if isinstance(self._rpc2, Exception):
             raise self._rpc2
@@ -115,3 +116,53 @@ def test_the_method_is_defined_once():
 
     # Match the whole method name, not async_get_lighting_scheme_mode.
     assert source.count("async def async_get_lighting_scheme(") == 1
+
+
+async def test_live_mode_read_falls_back_when_cgi_is_refused():
+    """Illuminator restore capture must use the same fallback as table reads."""
+    client = _Client(_refused(), rpc2=SCHEME)
+
+    assert await client.async_get_lighting_scheme_mode(0, "0") == "AIMode"
+    assert client.tried == ["cgi", "rpc2:LightingScheme"]
+
+
+async def test_mode_is_optional_when_both_transports_have_no_table():
+    client = _Client(_refused(), rpc2={})
+    assert await client.async_get_lighting_scheme_mode(0, "0") is None
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+async def test_auth_and_server_errors_do_not_imply_missing_scheme(status):
+    client = _Client(aiohttp.ClientResponseError(None, None, status=status))
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_lighting_scheme_mode(0, "0")
+    assert client.tried == ["cgi"]
+
+
+@pytest.mark.parametrize("code,missing", [(268959743, True), (268632064, True), (287637504, False)])
+async def test_only_table_refusals_allow_a_missing_scheme(code, missing):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from custom_components.dahua.rpc2 import Rpc2MethodRefused
+
+    client = object.__new__(DahuaClient)
+    client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(
+        client=SimpleNamespace(get_config=AsyncMock(
+            side_effect=Rpc2MethodRefused("refused", code=code)
+        ))
+    ))
+    if missing:
+        assert await client._rpc2_get_config("LightingScheme", allow_missing=True) == {}
+    else:
+        with pytest.raises(Rpc2MethodRefused):
+            await client._rpc2_get_config("LightingScheme", allow_missing=True)
+
+
+async def test_login_refusal_is_not_treated_as_missing_table():
+    from unittest.mock import AsyncMock
+    from custom_components.dahua.rpc2 import Rpc2MethodRefused
+
+    client = object.__new__(DahuaClient)
+    client._shared_rpc2 = AsyncMock(side_effect=Rpc2MethodRefused("login failed", code=268959743))
+    with pytest.raises(Rpc2MethodRefused):
+        await client._rpc2_get_config("LightingScheme", allow_missing=True)
