@@ -21,6 +21,7 @@ from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
@@ -3257,6 +3258,42 @@ def _describe_dependents(dependents: dict) -> str:
     if len(parts) == 1:
         return parts[0]
     return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, entry: ConfigEntry, device: DeviceEntry
+) -> bool:
+    """May the user delete this device from the device page?
+
+    Defining this at all is what puts a Delete button on a device card. Without it
+    `entry.supports_remove_device` is False and there is no button, so removing one
+    camera meant finding its config entry instead -- which on a recorder means
+    finding the right one of sixteen.
+
+    One entry is one channel is one device, and the identifier is derived from the
+    serial the device reports (`serial`, or `serial_N` above channel 0). So the device
+    this entry *currently* creates must not be removable: Home Assistant would delete
+    the row and the next reload would put it straight back, which looks like the
+    button did nothing.
+
+    A device whose identifier is not the one this entry now produces is stale, and
+    that really happens. A camera that answered with a synthesised identity and later
+    reported its real serial leaves the old record behind -- #583 has two device rows
+    for one camera, the live one carrying the fallback identity and the stale one
+    carrying the real model name. Those are exactly what the button is for.
+
+    Refusing when the coordinator is missing is deliberate. Setup failed or the entry
+    is unloaded, so nothing can be said about which device is current, and deleting
+    the live one on a guess is worse than leaving a stale row alone for now.
+    """
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coordinator is None:
+        return False
+
+    current = coordinator.get_serial_number()
+    return not any(
+        domain == DOMAIN and value == current for domain, value in device.identifiers
+    )
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
