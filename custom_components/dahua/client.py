@@ -799,6 +799,15 @@ class DahuaClient:
         protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
 
+    def base_url(self) -> str:
+        """The scheme, host and port this client actually talks to.
+
+        Public because the device page's Visit link needs exactly this, and reaching
+        into _base from another module is the kind of thing that survives for years
+        behind a pylint disable.
+        """
+        return self._base
+
     def get_rtsp_stream_url(self, channel: int, subtype: int) -> str:
         """
         Returns the RTSP url for the supplied subtype (subtype is 0=Main stream, 1=Sub stream)
