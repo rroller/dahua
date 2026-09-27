@@ -5,7 +5,8 @@ import ssl
 
 import voluptuous as vol
 
-from aiohttp import ClientConnectorError, ClientResponseError, ClientSession, TCPConnector
+from aiohttp import (ClientConnectorError, ClientResponseError, ClientSession,
+                     ClientSSLError, TCPConnector)
 
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -133,15 +134,26 @@ def describe_setup_failure(exception: BaseException) -> str:
             # password silently adds a camera again and this line goes dead.
             return "auth"
         return "unexpected_reply"
+    # Order matters here and is not stylistic, and getting it wrong is what made
+    # ssl_error unreachable. aiohttp's TLS failures are *connection* errors:
+    #
+    #   ClientOSError(ClientConnectionError, OSError)
+    #   ClientConnectorError(ClientOSError)
+    #   ClientSSLError(ClientConnectorError)
+    #   ClientConnectorSSLError(ClientSSLError, ssl.SSLError)
+    #
+    # so a ClientConnectorError test placed first matches every TLS failure a
+    # request can raise, and the ssl.SSLError branch below it can never run. The
+    # TLS test has to come first. The bare ssl.SSLError arm is kept for a failure
+    # raised outside a request, which is the only way that type arrives alone.
+    if isinstance(exception, (ClientSSLError, ssl.SSLError)):
+        return "ssl_error"
     if isinstance(exception, ClientConnectorError):
         return "cannot_connect"
-    # Order matters here and is not stylistic: TimeoutError and ssl.SSLError are
-    # both subclasses of OSError, so the generic connection case has to come
-    # last or it swallows them and every failure becomes "cannot connect".
+    # TimeoutError is also an OSError subclass, so the generic connection case
+    # has to stay last or it swallows that too.
     if isinstance(exception, (TimeoutError, asyncio.TimeoutError)):
         return "timeout"
-    if isinstance(exception, ssl.SSLError):
-        return "ssl_error"
     if isinstance(exception, OSError):
         # ConnectionRefusedError and friends, when they arrive unwrapped.
         return "cannot_connect"
