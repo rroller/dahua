@@ -70,6 +70,15 @@ def test_an_ssl_failure_names_https():
     assert describe_setup_failure(ssl.SSLError("handshake failure")) == "ssl_error"
 
 
+@pytest.mark.parametrize("status", [400, 404, 500, 503])
+def test_something_that_answered_but_not_as_a_camera(status):
+    assert describe_setup_failure(_response_error(status)) == "unexpected_reply"
+
+
+def test_anything_unrecognised_points_at_the_log():
+    assert describe_setup_failure(ValueError("something else")) == "unknown"
+
+
 # --- the TLS failure a request actually raises -------------------------------
 #
 # This is what was broken. `ssl_error` was written and translated, and no user
@@ -123,15 +132,6 @@ def test_why_the_clientsslerror_arm_is_belt_and_braces():
     """
     assert issubclass(ClientConnectorSSLError, ssl.SSLError)
     assert issubclass(ClientConnectorCertificateError, ssl.SSLError)
-
-
-@pytest.mark.parametrize("status", [400, 404, 500, 503])
-def test_something_that_answered_but_not_as_a_camera(status):
-    assert describe_setup_failure(_response_error(status)) == "unexpected_reply"
-
-
-def test_anything_unrecognised_points_at_the_log():
-    assert describe_setup_failure(ValueError("something else")) == "unknown"
 
 
 # --- every reason must be a string a user can actually read ------------------
