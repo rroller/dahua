@@ -15,8 +15,8 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector
 
 from . import dahua_utils
-from . import discovery as dahua_discovery
 from .client import DahuaClient
+from .discovery import async_probe as async_probe_identity
 from .const import (
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -196,7 +196,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         # that answers hands over its serial, model and HTTP port. Only one of the
         # five devices this was written against answers, so nothing below may depend
         # on it.
-        info = await dahua_discovery.async_probe(address)
+        info = await async_probe_identity(address)
         serial = str(info.get("SerialNo") or "").strip()
 
         if serial and self._async_entries_for_serial(serial):
