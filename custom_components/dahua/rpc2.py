@@ -10,6 +10,7 @@ import sys
 
 import aiohttp
 from custom_components.dahua.models import CoaxialControlIOStatus
+from custom_components.dahua.ivs import ivs_rule_index
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 _PARAMS_UNSET = object()
@@ -243,6 +244,43 @@ class DahuaRpc2Client:
         """Gets config for the supplied params """
         response = await self.request(method="configManager.getConfig", params=params)
         return response['params']
+
+    async def async_get_remote_ivs_rules(self, channel: int) -> list[dict]:
+        """Read the complete rule table for one zero-based NVR channel."""
+        if not self._session_id:
+            await self.login()
+        params = await self.get_config({
+            "name": "RemoteVideoAnalyseRule", "onlyLocal": False, "channel": channel,
+        })
+        table = params.get("table")
+        if not isinstance(table, list) or any(not isinstance(row, dict) for row in table):
+            raise ValueError("Dahua RPC2 response is missing RemoteVideoAnalyseRule table")
+        return table
+
+    async def async_set_remote_ivs_rule_by_id(
+            self, channel: int, rule_id: str, enabled: bool) -> None:
+        """Change one rule in a fresh complete table and write that table back."""
+        from custom_components.dahua.client import flatten_rpc2_config
+
+        table = await self.async_get_remote_ivs_rules(channel)
+        flat = flatten_rpc2_config(
+            "RemoteVideoAnalyseRule", table,
+            f"table.RemoteVideoAnalyseRule[{channel}]",
+        )
+        index = ivs_rule_index(flat, channel, rule_id, "RemoteVideoAnalyseRule")
+        if index is None:
+            raise ValueError(
+                f"Remote IVS rule {rule_id} is missing or ambiguous on channel {channel}"
+            )
+        updated = list(table)
+        updated[index] = {**table[index], "Enable": enabled}
+        await self.request(
+            method="configManager.setConfig",
+            params={
+                "name": "RemoteVideoAnalyseRule", "table": updated,
+                "options": [], "channel": channel,
+            },
+        )
 
     async def set_configs(self, configs: list[tuple[str, list]]) -> dict:
         """Commit complete config tables together through system.multicall."""

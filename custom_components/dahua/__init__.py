@@ -35,6 +35,7 @@ from .client import (
     clear_host_cache,
 )
 from .model_profiles import is_sdt4e425
+from .ivs import ivs_rules_for_channel, ivs_rule_index
 
 from .const import (
     CONF_EVENTS,
@@ -1544,6 +1545,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._manual_security_light = entry.options.get(CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
+        self._ivs_rules = []
         self._supports_smart_motion_detection = False
         self._supports_ptz_position = False
         self._supports_lighting = False
@@ -1941,6 +1943,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_smart_motion_detection = False
                 _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
+                try:
+                    remote_ivs = self.is_nvr_channel()
+                    ivs_table = (
+                        await self.client.async_get_remote_ivs_rules(self._channel)
+                        if remote_ivs else await self.client.async_get_ivs_rules()
+                    )
+                    name = "RemoteVideoAnalyseRule" if remote_ivs else "VideoAnalyseRule"
+                    self._ivs_rules = ivs_rules_for_channel(ivs_table, self._channel, name)
+                    if remote_ivs:
+                        for rule in self._ivs_rules:
+                            rule["remote"] = True
+                    data.update(ivs_table)
+                except PROBE_FAILED + (ConnectionError, ValueError):
+                    self._ivs_rules = []
+                _LOGGER.debug("Device IVS rules=%s", self._ivs_rules)
+
                 # Day/Night mode. Judged by whether this channel's row came
                 # back, not by whether the request raised: async_get_config
                 # swallows a ClientResponseError and returns {}, and a device
@@ -2143,6 +2161,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._async_coaxial_status(coaxial_channel)
                     )
                 )
+            if getattr(self, "_ivs_rules", []) and self._wanted_by(SWITCH):
+                ivs_read = (
+                    self.client.async_get_remote_ivs_rules(self._channel)
+                    if self.is_nvr_channel() else self.client.async_get_ivs_rules()
+                )
+                coros.append(asyncio.ensure_future(ivs_read))
             if self._supports_smart_motion_detection and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_smart_motion_detection()))
             if self.supports_smart_motion_detection_amcrest() and self._wanted_by(SWITCH):
@@ -3044,6 +3068,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         accepts and discards.
         """
         return self.data.get("table.SmartMotionDetect[{0}].Enable".format(self._channel))
+
+    def get_ivs_rules(self) -> list[dict]:
+        """Return the normal rules discovered during setup."""
+        return list(getattr(self, "_ivs_rules", []))
+
+    def is_ivs_rule_enabled(self, channel: int, rule_id: str) -> bool | None:
+        """Read the rule's current position; absent rules have unknown state."""
+        table = self.data or {}
+        name = "RemoteVideoAnalyseRule" if self.is_nvr_channel() else "VideoAnalyseRule"
+        index = ivs_rule_index(table, channel, rule_id, name)
+        if index is None:
+            return None
+        return table[f"table.{name}[{channel}][{index}].Enable"] == "true"
 
     def is_smart_motion_detection_enabled(self) -> bool:
         """ Returns true if smart motion detection is enabled """

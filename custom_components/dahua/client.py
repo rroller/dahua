@@ -9,6 +9,7 @@ import time
 import aiohttp
 
 from .digest import DigestAuth
+from .ivs import ivs_rule_index
 from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
 from hashlib import md5
 from urllib.parse import quote
@@ -72,6 +73,20 @@ RPC2_EVENT_HEARTBEAT = b"Heartbeat\r\n"
 # per host, shared across every client for that address.
 MAX_CONCURRENT_REQUESTS_PER_HOST = 2
 _HOST_LIMITS: dict = {}
+
+# A remote IVS write replaces a whole channel table. Entries for the same NVR
+# must serialize the fresh read and write together, even if they use different
+# RPC2 sessions or credentials.
+_HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _remote_ivs_lock(device: str, channel: int) -> asyncio.Lock:
+    key = (device, channel)
+    lock = _HOST_REMOTE_IVS_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _HOST_REMOTE_IVS_LOCKS[key] = lock
+    return lock
 
 
 def _device_key(address: str, port) -> str:
@@ -335,6 +350,8 @@ _HOST_CACHE: dict = {}
 
 def _cache_lifetime(url: str) -> int:
     """How long this URL's answer stays good for."""
+    if "name=VideoAnalyseRule" in url:
+        return HOST_CACHE_TTL_SECONDS
     return CONFIG_CACHE_TTL_SECONDS if CONFIG_READ_MARKER in url else HOST_CACHE_TTL_SECONDS
 
 
@@ -1156,6 +1173,36 @@ class DahuaClient:
         table.VideoAnalyseRule[0][1].Name=IVS-1
         """
         return await self.async_get_config("VideoAnalyseRule")
+
+    async def async_get_remote_ivs_rules(self, channel: int) -> dict:
+        """Read an NVR channel's remote rules in the coordinator's flat shape."""
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            holder = await self._shared_rpc2()
+            table = await holder.client.async_get_remote_ivs_rules(channel)
+        return flatten_rpc2_config(
+            "RemoteVideoAnalyseRule", table,
+            f"table.RemoteVideoAnalyseRule[{channel}]",
+        )
+
+    async def async_set_remote_ivs_rule_by_id(
+            self, channel: int, rule_id: str, enabled: bool) -> None:
+        """Write a remote rule through the shared authenticated RPC2 session."""
+        async with asyncio.timeout(TIMEOUT_SECONDS):
+            async with _remote_ivs_lock(self._device, channel), self._host_limit:
+                holder = await self._shared_rpc2()
+                await holder.client.async_set_remote_ivs_rule_by_id(
+                    channel, rule_id, enabled
+                )
+
+    async def async_set_ivs_rule_by_id(self, channel: int, rule_id: str, enabled: bool):
+        """Resolve the rule just before writing, bypassing the shared read cache."""
+        table = await self._request(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule"
+        )
+        index = ivs_rule_index(table, channel, rule_id)
+        if index is None:
+            raise ValueError(f"IVS rule {rule_id} is missing or ambiguous on channel {channel}")
+        return await self.async_set_ivs_rule(channel, index, enabled)
 
     async def async_set_all_ivs_rules(self, channel: int, enabled: bool):
         """
@@ -2998,6 +3045,10 @@ class DahuaClient:
 
     async def _request(self, url: str, verify_ok=False, allow_rpc2=True) -> dict:
         """Make the request. One caller per shared read reaches here."""
+        # Per-rule camera writes use CGI array indexes. Resolve and poll that
+        # same CGI table even when other config reads prefer RPC2.
+        if url == "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule":
+            allow_rpc2 = False
         # Not after close(): this client has given its share back, and taking
         # a new one would build a session nobody is left to release.
         if (allow_rpc2
