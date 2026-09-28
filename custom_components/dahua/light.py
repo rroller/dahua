@@ -63,7 +63,7 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -163,7 +163,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -1076,7 +1076,7 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -1128,7 +1128,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -1215,7 +1215,7 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     @property
     def name(self):
         """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):

@@ -11,6 +11,19 @@ class DahuaBaseEntity(CoordinatorEntity):
     DahuaBaseEntity is the base entity for all Dahua entities
     """
 
+    # `has-entity-name` is a Bronze rule on Home Assistant's integration quality
+    # scale, and every entity here inherits this class, so it is set once.
+    #
+    # Each entity used to compose its own display name as
+    # `get_device_name() + " Motion Detection"`. Home Assistant composes
+    # DEVICE + ENTITY itself when this is True, so the names it produces are
+    # unchanged -- what changes is that the entity now says only its own half.
+    # That is what makes the name translatable, keeps it correct when somebody
+    # renames the device, and stops the device name being baked into the
+    # entity_id of everything created from now on, which config_flow.py:152
+    # records the consequence of.
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
         super().__init__(coordinator)
         self.config_entry = config_entry

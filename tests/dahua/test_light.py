@@ -436,7 +436,10 @@ def test_the_two_lights_do_not_share_a_unique_id():
 
 def test_name_is_prefixed_with_the_device_name():
     c = _Coordinator()
-    assert _light(DahuaInfraredLight, c, "Infrared").name == "Front Door Infrared"
+    # `has_entity_name` is True, so an entity states only its own half and
+    # Home Assistant prefixes the device. The rendered name is unchanged;
+    # what this asserts is that the entity is no longer composing it.
+    assert _light(DahuaInfraredLight, c, "Infrared").name == "Infrared"
 
 
 # --- Smart Dual Light restore regressions -----------------------------------

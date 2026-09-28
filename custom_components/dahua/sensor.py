@@ -54,7 +54,7 @@ class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
 
     @property
     def name(self):
-        return self._coordinator.get_device_name() + " Firmware Version"
+        return "Firmware Version"
 
     @property
     def unique_id(self):
@@ -81,7 +81,7 @@ class DahuaSerialNumberSensor(DahuaBaseEntity, SensorEntity):
 
     @property
     def name(self):
-        return self._coordinator.get_device_name() + " Serial Number"
+        return "Serial Number"
 
     @property
     def unique_id(self):
@@ -102,7 +102,7 @@ class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
 
     @property
     def name(self):
-        return self._coordinator.get_device_name() + " Profile"
+        return "Profile"
 
     @property
     def unique_id(self):
@@ -131,7 +131,7 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
 
     @property
     def name(self):
-        return f"{self._coordinator.get_device_name()} License Plate"
+        return "License Plate"
 
     @property
     def unique_id(self):

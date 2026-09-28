@@ -100,7 +100,7 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         SelectEntity.__init__(self)
         self._coordinator = coordinator
-        self._attr_name = f"{coordinator.get_device_name()} Security Light"
+        self._attr_name = "Security Light"
         self._attr_unique_id = f"{coordinator.get_serial_number()}_security_light"
         self._attr_options = ["Off", "On", "Strobe"]
 
@@ -138,7 +138,7 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
         SelectEntity.__init__(self)
         self._coordinator = coordinator
         self._rpc2_channel = rpc2_channel
-        self._attr_name = f"{coordinator.get_device_name()} Preset Position"
+        self._attr_name = "Preset Position"
         suffix = "1_preset_position" if rpc2_channel == 1 else "preset_position"
         self._attr_unique_id = f"{coordinator.get_serial_number()}_{suffix}"
         if preset_ids is None:
@@ -195,7 +195,7 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
 
     @property
     def name(self):
-        return self._coordinator.get_device_name() + " Day/Night Mode"
+        return "Day/Night Mode"
 
     @property
     def unique_id(self):

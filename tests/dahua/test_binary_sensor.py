@@ -87,7 +87,10 @@ def sensor(monkeypatch):
     ("StorageNotExist", "Storage Not Exist"),
 ])
 def test_camel_case_events_become_readable_names(sensor, event_name, expected):
-    assert sensor(event_name).name == "Front Door " + expected
+    # `has_entity_name` is True, so an entity states only its own half and
+    # Home Assistant prefixes the device. The rendered name is unchanged;
+    # what this asserts is that the entity is no longer composing it.
+    assert sensor(event_name).name == expected
 
 
 @pytest.mark.parametrize("event_name,expected", [
@@ -96,12 +99,18 @@ def test_camel_case_events_become_readable_names(sensor, event_name, expected):
     ("DoorbellPressed", "Button Pressed"),
 ])
 def test_overridden_names_win_over_the_derived_one(sensor, event_name, expected):
-    assert sensor(event_name).name == "Front Door " + expected
+    # `has_entity_name` is True, so an entity states only its own half and
+    # Home Assistant prefixes the device. The rendered name is unchanged;
+    # what this asserts is that the entity is no longer composing it.
+    assert sensor(event_name).name == expected
 
 
 def test_consecutive_capitals_are_not_split(sensor):
     """IVS must not become I V S."""
-    assert sensor("IVS").name == "Front Door IVS"
+    # `has_entity_name` is True, so an entity states only its own half and
+    # Home Assistant prefixes the device. The rendered name is unchanged;
+    # what this asserts is that the entity is no longer composing it.
+    assert sensor("IVS").name == "IVS"
 
 
 # --- device classes and icons ----------------------------------------------
@@ -184,7 +193,10 @@ def test_authorized_vehicle_sensor_properties():
     c = _Coordinator()
     s = DahuaAuthorizedVehicleBinarySensor(c, object())
 
-    assert s.name == "Front Door Authorized Vehicle"
+    # `has_entity_name` is True, so an entity states only its own half and
+    # Home Assistant prefixes the device. The rendered name is unchanged;
+    # what this asserts is that the entity is no longer composing it.
+    assert s.name == "Authorized Vehicle"
     assert s.unique_id == "SERIAL1_authorized_vehicle"
     assert s.device_class == "presence"
     assert s.icon == "mdi:car-check"
