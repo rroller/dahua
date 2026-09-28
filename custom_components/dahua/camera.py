@@ -48,9 +48,34 @@ SERVICE_REBOOT = "reboot"
 SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
 SERVICE_GET_OVERLAY_TEXT = "get_overlay_text"
 SERVICE_PTZ_MOVE = "ptz_move"
+SERVICE_DEBUG_IVS_EVENT = "debug_ivs_event"
 
 # What ptz.cgi calls each direction. The eight compass moves plus the two
 # zoom directions, which are the same mechanism with a different code.
+def _dispatch_debug_ivs_event(
+    coordinator: DahuaDataUpdateCoordinator,
+    code: str,
+    rule_id: int,
+    action_type: str,
+    name: str = "",
+    object_type: str = "",
+) -> None:
+    """Inject one synthetic normal IVS event directly into this coordinator.
+
+    Debug-only helper for reproducing per-rule Start/Stop handling without
+    asking the physical camera to generate an IVS event. It deliberately calls
+    _dispatch_event() instead of firing dahua_event_received on Home Assistant's
+    event bus, because the latter is output-only and bypasses the integration's
+    event state machinery.
+    """
+    data = {"Class": "Normal", "RuleID": int(rule_id)}
+    if name:
+        data["Name"] = name
+    if object_type:
+        data["Object"] = {"ObjectType": object_type}
+    coordinator._dispatch_event({"Code": code, "data": data}, action_type)
+
+
 PTZ_MOVE_CODES = {
     "up": "Up",
     "down": "Down",
@@ -208,6 +233,20 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("enabled", default=True): bool,
         },
         "async_enable_ivs_rule"
+    )
+
+    # Temporary diagnostics service. This is intentionally an entity service so
+    # the selected Dahua camera determines the exact coordinator/channel.
+    platform.async_register_entity_service(
+        SERVICE_DEBUG_IVS_EVENT,
+        {
+            vol.Required("code"): str,
+            vol.Required("rule_id"): vol.Coerce(int),
+            vol.Required("action_type"): vol.In(["Start", "Stop", "Pulse"]),
+            vol.Optional("name", default=""): str,
+            vol.Optional("object_type", default=""): str,
+        },
+        "async_debug_ivs_event"
     )
 
     platform.async_register_entity_service(
@@ -554,6 +593,15 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """ Handles the service call from SERVICE_ENABLE_IVS_RULE """
         channel = self._logical_channel
         await self._coordinator.client.async_set_ivs_rule(channel, index, enabled)
+
+    async def async_debug_ivs_event(
+        self, code: str, rule_id: int, action_type: str,
+        name: str = "", object_type: str = "",
+    ):
+        """Inject a synthetic normal IVS event into this camera coordinator."""
+        _dispatch_debug_ivs_event(
+            self._coordinator, code, rule_id, action_type, name, object_type
+        )
 
     async def async_vto_open_door(self, door_id: int):
         """ Handles the service call from SERVICE_VTO_OPEN_DOOR """
