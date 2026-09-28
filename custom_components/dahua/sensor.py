@@ -23,6 +23,10 @@ PROFILE_NAMES = {
 }
 
 
+# A coordinator centralises the inbound reads, and nothing here sends a command,
+# so there is nothing to serialise: read only: every state comes from the coordinator.
+PARALLEL_UPDATES = 0
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
     coordinator: DahuaDataUpdateCoordinator = entry_coordinator(entry)

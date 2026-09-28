@@ -28,6 +28,10 @@ DOORBELL_PRESSED = "DoorbellPressed"
 EVENT_RING = "ring"
 
 
+# A coordinator centralises the inbound reads, and nothing here sends a command,
+# so there is nothing to serialise: read only: fired by the event stream, never polled.
+PARALLEL_UPDATES = 0
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the event platform."""
     coordinator: DahuaDataUpdateCoordinator = entry_coordinator(entry)
