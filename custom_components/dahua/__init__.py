@@ -1210,14 +1210,18 @@ async def _release_connector(address: str) -> None:
         await holder[0].close()
 
 
-
 # Raw IVS event codes that can become Smart Motion events later in
 # DahuaDataUpdateCoordinator.translate_event_code(). The host-level filter runs
 # before that translation, so these raw codes must be allowed through whenever
 # one of their derived events is selected.
 #
-# Doorbell-derived codes do not belong here: doorbells use the separate VTO
-# listener and never pass through DahuaHostEventStream.
+# translate_event_code also turns BackKeyLight and PhoneCallDetect into
+# DoorbellPressed, and those are deliberately absent. The reason is not that
+# doorbells use the VTO listener -- PhoneCallDetect is the Amcrest spelling and
+# an Amcrest device does come through this stream. It is that DoorbellPressed is
+# not in ALL_EVENTS, so it can never appear in a user's selection and can never
+# be the derived code this map exists to rescue. Make it selectable and its two
+# raw codes have to be added here; test_shared_event_stream.py asserts that.
 DERIVES_INTO = {
     "CrossLineDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
     "CrossRegionDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
@@ -1452,16 +1456,24 @@ class DahuaHostEventStream:
             # firmware limits on long explicit code lists. Preserve the user's
             # configured selection locally so that broadening the wire-level
             # subscription does not broaden Home Assistant events or entities.
-            code = event.get("Code")
-            derives_selected = bool(
-                set(DERIVES_INTO.get(code, ())) & self._events
-            )
-            if (
-                "All" not in self._events
-                and code not in self._events
-                and not derives_selected
-            ):
-                continue
+            #
+            # Only when the subscription was actually broadened. Otherwise the
+            # device is already filtering to the requested codes and this would
+            # be a second, redundant filter on the path every existing host
+            # takes -- so a single camera and any host whose union did not grow
+            # run exactly the code they ran before, rather than code that merely
+            # ought to agree with it. A user who selected "All" themselves is
+            # asking for everything and is not filtered either.
+            #
+            # getattr because plenty of tests build this object with __new__ and
+            # set only the attributes they are about, as the coordinator's own
+            # diagnostics do. Absent means "not broadened", which is the old
+            # behaviour.
+            if getattr(self, "_using_all_events", False) and "All" not in self._events:
+                code = event.get("Code")
+                derives = set(DERIVES_INTO.get(code, ())) & self._events
+                if code not in self._events and not derives:
+                    continue
 
             index = 0
             if "index" in event:

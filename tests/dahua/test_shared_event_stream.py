@@ -442,3 +442,90 @@ async def test_a_channel_with_no_events_starts_nothing(hass):
     await _settle()
 
     assert stream._task is None
+
+
+# --- what the All fallback must not cost --------------------------------------
+
+async def test_each_channel_still_gets_its_own_codes_under_all(hass):
+    """The guarantee the pre-#615 union attach used to hold, restated for `All`.
+
+    `test_expanded_shared_subscription_attaches_with_all_events` proves the wire
+    subscription broadens, and `test_all_subscription_still_filters_unrequested_codes`
+    proves an unwanted code is dropped. Neither proves the thing the original test
+    was for: that after all that, each channel still receives what it asked for.
+    Without this, a filter that dropped everything would pass the suite.
+    """
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["VideoMotion"])
+    second = _Coordinator(1, ["AlarmLocal"])
+    stream.register(first)
+    stream.register(second)
+    await _settle()
+
+    assert first.client.attached_with[-1] == ["All"], "not the All path"
+
+    stream.on_receive(b"Code=VideoMotion;action=Start;index=0\r\n", 0)
+    stream.on_receive(b"Code=AlarmLocal;action=Start;index=1\r\n", 1)
+
+    assert [event["Code"] for event in first.handled] == ["VideoMotion"]
+    assert [event["Code"] for event in second.handled] == ["AlarmLocal"]
+
+
+async def test_a_channels_own_code_is_not_dropped_because_a_sibling_wanted_it(hass):
+    """The union is what the filter checks, so a code only one channel selected
+    must still reach that channel and nobody else."""
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["VideoMotion", "AlarmLocal"])
+    second = _Coordinator(1, ["VideoMotion"])
+    stream.register(first)
+    stream.register(second)
+    await _settle()
+
+    stream.on_receive(b"Code=AlarmLocal;action=Start;index=0\r\n", 0)
+
+    assert [event["Code"] for event in first.handled] == ["AlarmLocal"]
+    assert second.handled == []
+
+
+# --- and the coupling that keeps DERIVES_INTO honest --------------------------
+
+def test_a_translated_code_that_becomes_selectable_must_be_mapped():
+    """`translate_event_code` rewrites four raw codes, and the host filter runs
+    before it, so any rewrite whose *target* a user can select needs its source
+    in DERIVES_INTO or the event is dropped before translation.
+
+    Two are mapped. The doorbell pair is safe only because `DoorbellPressed` is
+    absent from ALL_EVENTS and so can never be in anybody's selection. That is a
+    fact about the selectable list rather than about doorbells, and it would stop
+    being true the moment somebody made it selectable, which is exactly the
+    change this catches. #556 and #593 were both about `BackKeyLight` reaching an
+    entity, so it is not a hypothetical request.
+    """
+    from custom_components.dahua.config_flow import ALL_EVENTS
+    from custom_components.dahua import DERIVES_INTO
+
+    translations = {
+        "CrossLineDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+        "CrossRegionDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+        "BackKeyLight": ("DoorbellPressed",),
+        "PhoneCallDetect": ("DoorbellPressed",),
+    }
+
+    for raw, derived in translations.items():
+        selectable = [code for code in derived if code in ALL_EVENTS]
+        if not selectable:
+            continue
+        assert raw in DERIVES_INTO, (
+            "%s is selectable and is derived from %s, which the host filter "
+            "drops before translation. Add it to DERIVES_INTO."
+            % (selectable, raw))
+        assert set(selectable) <= set(DERIVES_INTO[raw])
+
+
+def test_the_mapped_sources_are_codes_a_device_actually_sends():
+    """A map keyed on something unselectable would silently never fire. Both
+    keys are real IVS codes a user can also select in their own right."""
+    from custom_components.dahua.config_flow import ALL_EVENTS
+    from custom_components.dahua import DERIVES_INTO
+
+    assert set(DERIVES_INTO) <= set(ALL_EVENTS)
