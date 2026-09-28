@@ -1,5 +1,6 @@
 """Switch platform for dahua."""
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -46,6 +47,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         devices.append(DahuaDisarmingLinkageBinarySwitch(coordinator, entry))
         devices.append(DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry))
 
+    devices.extend(
+        DahuaIVSRuleSwitch(coordinator, entry, rule)
+        for rule in coordinator.get_ivs_rules()
+    )
     async_add_devices(devices)
 
 
@@ -234,6 +239,55 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     def is_on(self):
         """ Return true if the switch is on. """
         return self._coordinator.is_smart_motion_detection_enabled()
+
+
+class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
+    """Enable or disable one normal IVS rule by its stable Dahua ID."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator, entry, rule: dict):
+        super().__init__(coordinator, entry)
+        self._channel = rule["channel"]
+        self._rule_id = rule["id"]
+        self._rule_name = rule["name"]
+
+    async def _async_set_enabled(self, enabled):
+        try:
+            await self._coordinator.client.async_set_ivs_rule_by_id(
+                self._channel, self._rule_id, enabled
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        await self._coordinator.async_refresh()
+
+    async def async_turn_on(self, **kwargs):
+        """Enable this rule at its current position."""
+        await self._async_set_enabled(True)
+
+    async def async_turn_off(self, **kwargs):
+        """Disable this rule at its current position."""
+        await self._async_set_enabled(False)
+
+    @property
+    def name(self):
+        """Return the camera and rule names."""
+        return self._coordinator.get_device_name() + " " + self._rule_name
+
+    @property
+    def unique_id(self):
+        """Keep identity when a rule is renamed or its array position changes."""
+        return f"{self._coordinator.get_serial_number()}_ivs_rule_{self._channel}_{self._rule_id}"
+
+    @property
+    def is_on(self):
+        """Resolve state from the current table."""
+        return self._coordinator.is_ivs_rule_enabled(self._channel, self._rule_id)
+
+    @property
+    def available(self):
+        """A removed or ambiguous rule cannot be controlled."""
+        return super().available and self.is_on is not None
 
 
 class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):

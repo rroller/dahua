@@ -35,6 +35,7 @@ from .client import (
     clear_host_cache,
 )
 from .model_profiles import is_sdt4e425
+from .ivs import ivs_rules_for_channel, ivs_rule_index
 
 from .const import (
     CONF_EVENTS,
@@ -1544,6 +1545,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._manual_security_light = entry.options.get(CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
+        self._ivs_rules = []
         self._supports_smart_motion_detection = False
         self._supports_ptz_position = False
         self._supports_lighting = False
@@ -1941,6 +1943,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_smart_motion_detection = False
                 _LOGGER.debug("Device supports smart motion detection=%s", self._supports_smart_motion_detection)
 
+                try:
+                    ivs_table = await self.client.async_get_ivs_rules()
+                    self._ivs_rules = ivs_rules_for_channel(ivs_table, self._channel)
+                    data.update(ivs_table)
+                except PROBE_FAILED:
+                    self._ivs_rules = []
+                _LOGGER.debug("Device IVS rules=%s", self._ivs_rules)
+
                 # Day/Night mode. Judged by whether this channel's row came
                 # back, not by whether the request raised: async_get_config
                 # swallows a ClientResponseError and returns {}, and a device
@@ -2143,6 +2153,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._async_coaxial_status(coaxial_channel)
                     )
                 )
+            if getattr(self, "_ivs_rules", []) and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self.client.async_get_ivs_rules()))
             if self._supports_smart_motion_detection and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_smart_motion_detection()))
             if self.supports_smart_motion_detection_amcrest() and self._wanted_by(SWITCH):
@@ -3044,6 +3056,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         accepts and discards.
         """
         return self.data.get("table.SmartMotionDetect[{0}].Enable".format(self._channel))
+
+    def get_ivs_rules(self) -> list[dict]:
+        """Return the normal rules discovered during setup."""
+        return list(getattr(self, "_ivs_rules", []))
+
+    def is_ivs_rule_enabled(self, channel: int, rule_id: str) -> bool | None:
+        """Read the rule's current position; absent rules have unknown state."""
+        table = self.data or {}
+        index = ivs_rule_index(table, channel, rule_id)
+        if index is None:
+            return None
+        return table[f"table.VideoAnalyseRule[{channel}][{index}].Enable"] == "true"
 
     def is_smart_motion_detection_enabled(self) -> bool:
         """ Returns true if smart motion detection is enabled """
