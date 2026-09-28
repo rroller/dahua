@@ -847,6 +847,9 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             await self._coordinator.client.async_set_lighting_scheme_illuminator(
                 channel, True, dahua_brightness, profile_mode, index
             )
+            # This dedicated API has no polled state for the entity. Publish
+            # ownership only after the camera accepts the complete-table write.
+            self._manual_on = True
             await self._coordinator.async_refresh()
             self.async_write_ha_state()
             return
@@ -1002,6 +1005,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             await self._coordinator.client.async_set_lighting_scheme_illuminator(
                 channel, False, dahua_brightness, profile_mode, index
             )
+            self._manual_on = False
             await self._coordinator.async_refresh()
             self.async_write_ha_state()
             return
