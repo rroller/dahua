@@ -34,6 +34,31 @@ class Rpc2MethodRefused(ConnectionError):
         self.message = message
 
 
+def refusal_reason(response: dict) -> tuple:
+    """Where a device put its reason for answering `result: false`.
+
+    Two shapes are in use and only one was being read. Most refusals carry a
+    nested object, which is where `code` and `message` were taken from:
+
+        {"result": false, "error": {"code": 268959743, "message": "Unknown error!"}}
+
+    Some carry the reason at the top level instead, with no `error` object at
+    all. Measured on a DHI-NVR5464 answering a 17KB `configManager.setConfig`:
+
+        {"result": false, "errCode": 287638033, "message": "Request length error!"}
+
+    Reading only the nested shape discarded that, so a refusal that explained
+    itself precisely was reported as "returned result=false" and nothing more,
+    and the reason had to be recovered by printing the raw response by hand.
+
+    Nested is preferred when present, so nothing about the first shape changes.
+    """
+    error = response.get("error")
+    if isinstance(error, dict):
+        return error.get("code"), error.get("message")
+    return response.get("errCode"), response.get("message")
+
+
 class DahuaRpc2Client:
     def __init__(
             self,
@@ -77,16 +102,13 @@ class DahuaRpc2Client:
         resp_json = json.loads(await resp.text())
 
         if verify_result and resp_json['result'] is False:
-            error = resp_json.get("error")
-            code = error.get("code") if isinstance(error, dict) else None
-            message = error.get("message") if isinstance(error, dict) else None
+            code, message = refusal_reason(resp_json)
             details = []
-            if isinstance(error, dict):
-                if error.get("code") is not None:
-                    details.append("code={0}".format(error["code"]))
-                if isinstance(error.get("message"), str):
-                    display_message = error["message"].replace("\r", " ").replace("\n", " ")
-                    details.append("message={0}".format(display_message[:200]))
+            if code is not None:
+                details.append("code={0}".format(code))
+            if isinstance(message, str) and message:
+                display_message = message.replace("\r", " ").replace("\n", " ")
+                details.append("message={0}".format(display_message[:200]))
             suffix = " ({0})".format(", ".join(details)) if details else ""
             raise Rpc2MethodRefused(
                 "Dahua RPC2 method {0} returned result=false{1}".format(
