@@ -215,7 +215,11 @@ async def test_two_entries_on_one_channel_fold_into_one_subentry(world):
     from the middle of the merge -- after entities had moved, with the
     backup the only way back. Two entries for one channel are one channel.
     """
-    world.entries.append(_Entry("dup", "192.168.0.213", 1, "Channel 1 again"))
+    dup = _Entry("dup", "192.168.0.213", 1, "Channel 1 again")
+    world.entries.append(dup)
+    # _ConfigEntries took a copy of the list when the fixture built it, so an
+    # entry added only to world.entries is one the merge never sees.
+    world.hass.config_entries._entries.append(dup)
     world.entities._owned["dup"] = [SimpleNamespace(entity_id="sensor.d")]
     world.devices._owned["dup"] = [SimpleNamespace(id="ddup")]
 
