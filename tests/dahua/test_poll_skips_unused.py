@@ -40,6 +40,13 @@ def _coordinator(**options):
     c._supports_disarming_linkage = True
     c._supports_event_notifications = True
     c._supports_coaxial_control = True
+    # `model = ""` above keeps the model-string capabilities out of the way, which also
+    # means this device has no siren and no security light. The poll now asks whether any
+    # entity will read the coaxial status before fetching it, so the reads these tests pin
+    # need a reader to exist. Overriding the leaf capabilities rather than
+    # creates_siren_entity keeps the real rule in play.
+    c.supports_siren = lambda: True
+    c.supports_security_light = lambda: True
     # is_nvr_channel reads this, and the poll asks it when choosing the
     # coaxial channel. object.__new__ means an attribute the class sets in
     # __init__ does not exist here unless it is named.
@@ -173,6 +180,9 @@ async def test_a_doorbell_with_no_security_light_does_not_start_fetching_it():
     nothing that never had the select begins paying for the read."""
     c = _coordinator(light=False)
     c.model = "DB600"       # an Amcrest doorbell, but no security light
+    # The shared fake grants this so the coaxial reads above have a reader. Here the
+    # model's own answer is the point, so it goes back.
+    c.supports_security_light = lambda: False
 
     await c._async_update_data()
 
@@ -192,3 +202,50 @@ async def test_disabling_one_platform_leaves_the_others_alone(disabled, still_wa
 
     for api in still_wanted:
         assert api in calls, f"disabling {disabled} wrongly dropped {api}"
+
+
+# --- and it is not fetched for a device with nothing that reads it ------------
+
+async def test_a_device_with_nothing_that_reads_the_coaxial_status_is_not_asked():
+    """`_supports_coaxial_control` means the endpoint answers, not that this device has a
+    siren or a light.
+
+    Measured on a DHI-NVR5464: eleven entries, no siren and no security light entity
+    anywhere, and the endpoint asked on every poll. At a 120 second interval that is on
+    the order of 7,900 requests a day for a value nothing displays.
+    """
+    c = _coordinator()
+    c.supports_siren = lambda: False
+    c.supports_security_light = lambda: False
+
+    await c._async_update_data()
+
+    assert COAXIAL not in c.client.calls
+
+
+async def test_a_flood_light_still_gets_the_coaxial_status():
+    """The reader that is easy to forget. `is_flood_light_on` reads WhiteLight out of this
+    same status when the camera reports floodlightmode, so a flood light camera has to keep
+    being asked even with no siren and no security light."""
+    c = _coordinator()
+    c.supports_siren = lambda: False
+    c.supports_security_light = lambda: False
+    c.is_flood_light = lambda: True
+    c._supports_floodlightmode = True
+
+    await c._async_update_data()
+
+    assert COAXIAL in c.client.calls
+
+
+async def test_a_flood_light_without_floodlightmode_is_not_asked():
+    """On that firmware the same entity reads Lighting_V2 instead."""
+    c = _coordinator()
+    c.supports_siren = lambda: False
+    c.supports_security_light = lambda: False
+    c.is_flood_light = lambda: True
+    c._supports_floodlightmode = False
+
+    await c._async_update_data()
+
+    assert COAXIAL not in c.client.calls
