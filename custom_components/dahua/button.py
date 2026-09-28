@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinator
 from custom_components.dahua.vto import CancelCallRefused
 
 from .const import DOMAIN
@@ -21,8 +21,7 @@ _LOGGER = logging.getLogger(__package__)
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the button platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-
+    coordinator: DahuaDataUpdateCoordinator = entry_coordinator(entry)
     buttons = [DahuaRebootButton(coordinator, entry)]
 
     # Opening a door is a VTO operation. On anything else the endpoint is not

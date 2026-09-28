@@ -3,7 +3,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinator
 
 from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON, PRIVACY_MODE_ICON
 from .entity import DahuaBaseEntity
@@ -12,8 +12,7 @@ from .client import SIREN_TYPE
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-
+    coordinator: DahuaDataUpdateCoordinator = entry_coordinator(entry)
     # I think most cameras have a motion sensor so we'll blindly add a switch for it
     devices = [
         DahuaMotionDetectionBinarySwitch(coordinator, entry),

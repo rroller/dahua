@@ -497,8 +497,8 @@ async def test_entity_creation_uses_host_class_not_channel(
         )
     added = []
     await module.async_setup_entry(
-        SimpleNamespace(data={"dahua": {"entry": c}}),
-        SimpleNamespace(entry_id="entry"),
+        SimpleNamespace(data={}),
+        SimpleNamespace(entry_id="entry", runtime_data={0: c}),
         added.extend,
     )
     assert ("deterrence" in added) is expected

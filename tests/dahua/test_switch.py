@@ -232,8 +232,9 @@ async def test_setup_asks_the_device_nothing():
     coordinator.supports_smart_motion_detection = lambda: False
     coordinator.supports_disarming_linkage = lambda: True
 
-    hass = SimpleNamespace(data={DOMAIN: {"e1": coordinator}})
-    entry = SimpleNamespace(entry_id="e1", options={})
+    hass = SimpleNamespace(data={})
+    entry = SimpleNamespace(entry_id="e1", options={},
+                            runtime_data={0: coordinator})
     added = []
 
     # The decision is what changed here, not how the entities are built.
@@ -264,7 +265,7 @@ async def test_the_disarming_switches_follow_what_the_device_answered():
     coordinator.supports_smart_motion_detection = lambda: False
     coordinator.supports_disarming_linkage = lambda: False
 
-    hass = SimpleNamespace(data={DOMAIN: {"e1": coordinator}})
+    hass = SimpleNamespace(data={})
     added = []
 
     with patch.multiple(
@@ -274,7 +275,10 @@ async def test_the_disarming_switches_follow_what_the_device_answered():
         DahuaDisarmingEventNotificationsLinkageBinarySwitch=lambda *a, **k: "notifications",
     ):
         await switch_module.async_setup_entry(
-            hass, SimpleNamespace(entry_id="e1", options={}), added.extend
+            hass,
+            SimpleNamespace(entry_id="e1", options={},
+                            runtime_data={0: coordinator}),
+            added.extend
         )
 
     assert "disarming" not in added

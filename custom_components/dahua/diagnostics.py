@@ -20,7 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from . import dahua_utils
+from . import dahua_utils, entry_coordinator
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
@@ -524,8 +524,7 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, config_entry: ConfigEntry
 ) -> Mapping[str, Any]:
     """Return diagnostics for a config entry."""
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]
-
+    coordinator = entry_coordinator(config_entry)
     return {
         "entry": _entry_block(config_entry),
         "coordinator": _coordinator_block(coordinator),

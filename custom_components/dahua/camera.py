@@ -11,7 +11,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinator
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.model_profiles import is_sdt4e425
 from custom_components.dahua.vto import CancelCallRefused
@@ -68,7 +68,7 @@ PTZ_MOVE_CODES = {
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator: DahuaDataUpdateCoordinator = entry_coordinator(config_entry)
     if is_sdt4e425(coordinator.get_model()):
         # This physical camera exposes two sensors. Preserve RRoller's native
         # Main/Sub/Sub_2 creation for each media channel from one config entry.
