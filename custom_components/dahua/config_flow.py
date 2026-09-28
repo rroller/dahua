@@ -18,7 +18,8 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
 from . import dahua_utils
-from . import ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp
+from . import (ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp,
+               is_synthesised_identity)
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
 from .flow_preview import async_drop_preview, async_store_preview, preview_url
@@ -1168,10 +1169,23 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     refusal = await async_channel_refusal(client, channel)
                     if refusal:
                         return None, refusal
+                if is_synthesised_identity(data.get("serialNumber")):
+                    # The identity is a hash of the credentials, so it changes whenever
+                    # the password does and the same camera comes back as a new device
+                    # (#805, #320). DHDiscover needs no credentials and the devices that
+                    # land here are the ones with no magicBox.cgi, which is an HTTP
+                    # service setting and does not touch the SDK port. Measured: the
+                    # probe's SerialNo is byte for byte what magicBox.cgi returns.
+                    found = await async_probe_identity(address)
+                    from_network = (found or {}).get("SerialNo")
+                    if from_network:
+                        _LOGGER.debug(
+                            "%s would not identify itself over HTTP, so the network "
+                            "probe's serial is used instead of a hash", address)
+                        data["serialNumber"] = from_network
                 if name_is_a_hash:
-                    # The unique_id deliberately keeps the hashed serial, because
-                    # changing it would orphan every entry that already has one.
-                    # Only what the user is shown changes.
+                    # Only what the user is shown. The identity above is separate: a
+                    # device can give a usable serial and still have no readable name.
                     data["name"] = fallback_device_name(address, channel)
                 return data, None
             # It answered, but not with anything recognisable.

@@ -724,6 +724,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         hass.data.setdefault(DOMAIN, {})
         _LOGGER.info(STARTUP_MESSAGE)
 
+    # Before anything reads the entry's identity. Costs nothing unless the id is md5
+    # shaped, and never raises: a camera that cannot be identified better keeps the
+    # identity it has rather than failing to set up.
+    try:
+        await async_migrate_synthesised_unique_id(hass, entry)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.debug("Could not re-identify %s from the network",
+                      entry.data.get(CONF_ADDRESS), exc_info=True)
+
     username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
     address = entry.data.get(CONF_ADDRESS)
@@ -835,6 +844,18 @@ _HOST_FAILURES: dict = {}
 # than one device, the same reason the digest state is keyed that way.
 _HOST_CHANNEL_BASE: dict = {}
 _HOST_CHANNEL_BASE_LOCKS: dict = {}
+
+# What the network probe said about a host, and the lock that stops a recorder's eleven
+# entries all asking at once. `None` is cached as an answer: a device that did not reply
+# will not reply for the next channel either, and re-probing eleven times would spend
+# eleven timeouts on it.
+_HOST_NETWORK_IDENTITY: dict = {}
+_HOST_NETWORK_IDENTITY_LOCKS: dict = {}
+
+# A synthesised identity is md5 hex, and a channel above zero carries its index. Matched
+# rather than guessed at, because a real Dahua serial is shorter, upper case and not hex:
+# BC0A198PAJ779DF against 4f3a9c8ecafe4f3a9c8ecafe4f3a9c8e.
+_SYNTHESISED_UNIQUE_ID = re.compile(r"^[0-9a-f]{32}(?:_\d+)?$")
 
 
 def normalize_address(address: str) -> str:
@@ -978,6 +999,98 @@ def async_host_is_unreachable(address: str) -> bool:
     """
     state = _HOST_FAILURES.get(normalize_address(address))
     return bool(state and state["consecutive"] >= UNREACHABLE_AFTER_FAILURES)
+
+
+def is_synthesised_identity(value) -> bool:
+    """Whether an identity is a hash of the credentials rather than a device serial.
+
+    A real Dahua serial is shorter, upper case and not hex: `BC0A198PAJ779DF` against
+    `4f3a9c8ecafe4f3a9c8ecafe4f3a9c8e`. The optional suffix is the channel index, which a
+    unique_id carries and a bare serial does not.
+    """
+    return bool(value) and bool(_SYNTHESISED_UNIQUE_ID.match(str(value)))
+
+
+async def async_network_identity(hass, address: str) -> dict:
+    """What the device says about itself over DHDiscover, asked once per host.
+
+    Credential free, which is the whole point: the devices that need this are the ones
+    that will not answer `magicBox.cgi`, and the identity those get today is
+    md5(address_rtspport_username_password). Change the password and the same physical
+    camera becomes a different device (#805, and #320 from the user's side).
+
+    UDP on the local subnet, so a camera behind a router answers nothing and keeps the
+    hash. An empty answer is cached for exactly that reason: it will be empty for the next
+    channel too, and re-probing would spend one timeout per entry on a recorder.
+    """
+    if address in _HOST_NETWORK_IDENTITY:
+        return _HOST_NETWORK_IDENTITY[address]
+
+    lock = _HOST_NETWORK_IDENTITY_LOCKS.get(address)
+    if lock is None:
+        lock = _HOST_NETWORK_IDENTITY_LOCKS[address] = asyncio.Lock()
+
+    async with lock:
+        # Another entry may have settled it while this one waited.
+        if address in _HOST_NETWORK_IDENTITY:
+            return _HOST_NETWORK_IDENTITY[address]
+        # Imported here because discovery imports nothing from us but config_flow does.
+        from .discovery import async_probe
+        found = await async_probe(address)
+        _HOST_NETWORK_IDENTITY[address] = found
+        return found
+
+
+async def async_migrate_synthesised_unique_id(hass, entry) -> None:
+    """Swap a credentials-derived unique_id for the serial the network offers.
+
+    Only ever touches an entry whose id is md5 shaped, so a device that answered
+    `magicBox.cgi` costs nothing here, not even the probe.
+
+    Deliberately does **not** merge or delete anything. If the serial is already held by
+    another entry then this camera is configured twice, which is #320, and both entries
+    have their own entities and history. Saying so and leaving them alone is the only safe
+    thing an automatic migration can do.
+    """
+    unique_id = entry.unique_id
+    if not is_synthesised_identity(unique_id):
+        return
+
+    address = entry.data.get(CONF_ADDRESS)
+    if not address:
+        return
+
+    found = await async_network_identity(hass, address)
+    serial = (found or {}).get("SerialNo")
+    if not serial:
+        _LOGGER.debug(
+            "%s still has a synthesised id and the network probe offered no serial, so "
+            "it keeps the one it has", address)
+        return
+
+    # Imported here because config_flow imports this module.
+    from .config_flow import channel_unique_id
+    wanted = channel_unique_id(serial, entry.data.get(CONF_CHANNEL, 0))
+    if wanted == unique_id:
+        return
+
+    # No need to exclude this entry: its own id is md5 shaped and `wanted` is a device
+    # serial, and the one case where they are equal already returned above.
+    taken = [other for other in hass.config_entries.async_entries(DOMAIN)
+             if other.unique_id == wanted]
+    if taken:
+        _LOGGER.warning(
+            "%s reports serial %s over the network, but the entry %s already holds that "
+            "identity, so this camera is configured twice. Leaving both alone: remove "
+            "whichever one you do not want rather than have this pick for you",
+            address, serial, taken[0].title)
+        return
+
+    _LOGGER.info(
+        "%s was identified by a hash of its own credentials, which changes whenever the "
+        "password does. The network probe reports serial %s, so this entry is being moved "
+        "onto it and will survive a credential change from now on", address, serial)
+    hass.config_entries.async_update_entry(entry, unique_id=wanted)
 
 
 async def async_device_is_zero_indexed(client, device: str):

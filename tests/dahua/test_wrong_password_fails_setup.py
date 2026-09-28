@@ -172,12 +172,27 @@ def test_a_channel_that_is_not_a_number_does_not_raise():
 async def test_the_flow_offers_the_readable_name_and_keeps_the_hashed_id(monkeypatch):
     """The helper is only worth anything if _test_credentials uses it.
 
-    And the id must NOT change with it: it is the unique_id, and a new one would
-    orphan every entry that already has the hashed form rather than repair it.
+    The id keeps the hash here, and the reason has changed since this was written. It
+    used to be "never change it, a new one would orphan every entry that has the hashed
+    form". #805 measured a way out of that: `DHDiscover` on UDP 37810 needs no
+    credentials and reports the device's real serial, so an identity better than a hash
+    of the password is available for exactly the devices that land here.
+
+    So the rule now is narrower: the hash is kept **when the network cannot do better**,
+    which is this test, because the probe below answers nothing. The other half, taking
+    the serial when there is one, is `test_identity_from_the_network.py`.
     """
     from custom_components.dahua import config_flow
 
     hashed = md5(b"10.0.0.5_554_admin_pw").hexdigest()
+
+    async def _no_probe(address):
+        """Silent, which is a camera behind a router. Stubbed rather than left to try a
+        real UDP socket: the identity is md5 shaped, so the flow now probes, and the
+        test harness fails any test that opens one."""
+        return {}
+
+    monkeypatch.setattr(config_flow, "async_probe_identity", _no_probe)
 
     class _Device:
         """No magicBox.cgi, so both reads fall back."""
