@@ -259,7 +259,25 @@ class DahuaRpc2Client:
 
     async def async_set_remote_ivs_rule_by_id(
             self, channel: int, rule_id: str, enabled: bool) -> None:
-        """Change one rule in a fresh complete table and write that table back."""
+        """Resolve the rule from a fresh read, then write that one field.
+
+        Writing the whole table back is refused by at least one recorder. A
+        DHI-NVR5464 answers `errCode 287638033, "Request length error!"`, because
+        the table for one channel is 9KB to 22KB depending on how many rules it
+        holds: each row carries its own `EventHandler` and `TimeSection` and runs
+        to 4.6KB on its own. The refusal applies in both directions, and to a
+        write that changes nothing, so every switch on such a device was inert.
+
+        Addressing the field instead makes the body 91 bytes. Measured on the
+        same recorder: the disable is accepted, reads back `False`, and the
+        restore reads back `True` with no other field altered.
+
+        The read stays exactly as it was, and has to. It is what resolves
+        `rule_id` to an index, the index is what addresses the row here, and the
+        `Id` a rule reports differs between the whole-table and per-channel read
+        shapes on this firmware, so substituting a cheaper read would silently
+        write to the wrong rule.
+        """
         from custom_components.dahua.client import flatten_rpc2_config
 
         table = await self.async_get_remote_ivs_rules(channel)
@@ -272,12 +290,11 @@ class DahuaRpc2Client:
             raise ValueError(
                 f"Remote IVS rule {rule_id} is missing or ambiguous on channel {channel}"
             )
-        updated = list(table)
-        updated[index] = {**table[index], "Enable": enabled}
         await self.request(
             method="configManager.setConfig",
             params={
-                "name": "RemoteVideoAnalyseRule", "table": updated,
+                "name": f"RemoteVideoAnalyseRule[{channel}][{index}].Enable",
+                "table": enabled,
                 "options": [], "channel": channel,
             },
         )
