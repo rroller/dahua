@@ -21,6 +21,7 @@ from custom_components.dahua.dahua_utils import (
     cloud_upgrade_version,
     firmware_is_newer,
 )
+from custom_components.dahua.rpc2 import DahuaRpc2Client
 from custom_components.dahua.update import DahuaFirmwareUpdateEntity
 
 # --- reading the two version strings -----------------------------------------
@@ -184,3 +185,88 @@ def test_ordering_does_not_take_the_awesomeversion_route():
 
     assert entity.version_is_newer("2.820.0000000.32.R", "2.800.0000016.0.R") is True
     assert entity.version_is_newer("2.800.0000016.0.R", "2.800.0000016.0.R") is False
+
+
+# --- the probe, where a bad device must not take setup down ------------------
+
+
+class _ProbeClient:
+    def __init__(self, info=None, error=None):
+        self._info = info
+        self._error = error
+
+    async def async_get_cloud_upgrade_info(self):
+        if self._error is not None:
+            raise self._error
+        return self._info
+
+
+def _probe_coordinator(client):
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator.client = client
+    coordinator._probe_refusals = {}
+    return coordinator
+
+
+async def test_the_probe_records_the_version_it_found():
+    coordinator = _probe_coordinator(
+        _ProbeClient(info={"LastVersion": "2.800.0000016.0", "LastSubVersion": "R"})
+    )
+
+    await coordinator._async_probe_cloud_upgrade()
+
+    assert coordinator.supports_cloud_upgrade() is True
+    assert coordinator.get_cloud_firmware_version() == "2.800.0000016.0.R"
+
+
+async def test_a_record_without_a_version_is_not_enough_for_an_entity():
+    """A table that exists but has not been filled in could only read unknown."""
+    coordinator = _probe_coordinator(_ProbeClient(info={"AutoCheck": True}))
+
+    await coordinator._async_probe_cloud_upgrade()
+
+    assert coordinator.supports_cloud_upgrade() is False
+    assert coordinator.get_cloud_firmware_version() is None
+
+
+async def test_a_probe_refusal_is_recorded_rather_than_raised():
+    coordinator = _probe_coordinator(
+        _ProbeClient(error=ConnectionError("no _DHCloudUpgrade_ table"))
+    )
+
+    await coordinator._async_probe_cloud_upgrade()
+
+    assert coordinator.supports_cloud_upgrade() is False
+    assert coordinator._probe_refusals["cloud_upgrade"]["error"] == "ConnectionError"
+
+
+# --- the RPC2 read -----------------------------------------------------------
+
+
+def _rpc2_returning(payload):
+    client = object.__new__(DahuaRpc2Client)
+    client._session_id = "session"
+
+    async def get_config(params):
+        assert params == {"name": "_DHCloudUpgrade_"}
+        return payload
+
+    client.get_config = get_config
+    return client
+
+
+async def test_the_rpc2_read_returns_the_first_record():
+    client = _rpc2_returning({"table": [{"LastVersion": "2.8", "LastSubVersion": "R"}]})
+
+    assert await client.get_cloud_upgrade_info() == {
+        "LastVersion": "2.8",
+        "LastSubVersion": "R",
+    }
+
+
+@pytest.mark.parametrize("payload", [{"table": []}, {"table": "x"}, {}])
+async def test_the_rpc2_read_rejects_a_table_it_cannot_use(payload):
+    client = _rpc2_returning(payload)
+
+    with pytest.raises(ValueError):
+        await client.get_cloud_upgrade_info()

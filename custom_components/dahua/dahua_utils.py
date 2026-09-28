@@ -640,6 +640,8 @@ def firmware_is_newer(latest: str | None, installed: str | None) -> bool:
     false alarm on a camera that is up to date. Missing trailing components
     compare equal (``2.800.0000016.0`` is not newer than ``2.800.0000016.0.R``),
     so a cloud record that omits the sub-version cannot trigger one either.
+    A change to the trailing letter alone (``R`` to ``S``) is deliberately not
+    treated as an update.
     """
     latest_parts = _firmware_numbers(latest)
     installed_parts = _firmware_numbers(installed)
