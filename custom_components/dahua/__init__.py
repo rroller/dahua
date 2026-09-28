@@ -1210,6 +1210,19 @@ async def _release_connector(address: str) -> None:
         await holder[0].close()
 
 
+
+# Raw IVS event codes that can become Smart Motion events later in
+# DahuaDataUpdateCoordinator.translate_event_code(). The host-level filter runs
+# before that translation, so these raw codes must be allowed through whenever
+# one of their derived events is selected.
+#
+# Doorbell-derived codes do not belong here: doorbells use the separate VTO
+# listener and never pass through DahuaHostEventStream.
+DERIVES_INTO = {
+    "CrossLineDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+    "CrossRegionDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+}
+
 class DahuaHostEventStream:
     """One event stream for a host, shared by every channel configured on it.
 
@@ -1288,13 +1301,15 @@ class DahuaHostEventStream:
 
     def _restart_if_needed(self) -> None:
         wanted = self._union()
-        # Before streams were shared, every channel attached with only its own
-        # event list. A shared NVR stream unions those lists, which can turn
-        # into a long codes=[A,B,C,...] request. Some firmware accepts the
-        # documented codes=[All] form but silently delivers nothing for a long
-        # explicit list. Use All only when more than one video channel shares
-        # the host; single-camera behaviour stays exactly as before.
-        use_all_events = len(self._by_channel) > 1 and bool(wanted)
+        # Before #615, every channel attached with only its own event list.
+        # A shared host stream can make that request strictly broader by taking
+        # the union across channels. Some Dahua firmware accepts codes=[All]
+        # but goes silent on that expanded explicit list. Use All only when
+        # sharing actually made the subscription larger than every individual
+        # channel's previous request shape; otherwise keep existing behaviour.
+        use_all_events = bool(wanted) and len(wanted) > max(
+            (len(c.events or ()) for c in self.coordinators), default=0
+        )
         if (
             self._task is not None
             and not self._task.done()
@@ -1438,7 +1453,14 @@ class DahuaHostEventStream:
             # configured selection locally so that broadening the wire-level
             # subscription does not broaden Home Assistant events or entities.
             code = event.get("Code")
-            if "All" not in self._events and code not in self._events:
+            derives_selected = bool(
+                set(DERIVES_INTO.get(code, ())) & self._events
+            )
+            if (
+                "All" not in self._events
+                and code not in self._events
+                and not derives_selected
+            ):
                 continue
 
             index = 0
