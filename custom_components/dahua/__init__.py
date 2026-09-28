@@ -724,6 +724,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         hass.data.setdefault(DOMAIN, {})
         _LOGGER.info(STARTUP_MESSAGE)
 
+    # Before anything reads the entry's identity. Costs nothing unless the id is md5
+    # shaped, and never raises: a camera that cannot be identified better keeps the
+    # identity it has rather than failing to set up.
+    try:
+        await async_migrate_synthesised_unique_id(hass, entry)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.debug("Could not re-identify %s from the network",
+                      entry.data.get(CONF_ADDRESS), exc_info=True)
+
     username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
     address = entry.data.get(CONF_ADDRESS)
@@ -1030,6 +1039,58 @@ async def async_network_identity(hass, address: str) -> dict:
         found = await async_probe(address)
         _HOST_NETWORK_IDENTITY[address] = found
         return found
+
+
+async def async_migrate_synthesised_unique_id(hass, entry) -> None:
+    """Swap a credentials-derived unique_id for the serial the network offers.
+
+    Only ever touches an entry whose id is md5 shaped, so a device that answered
+    `magicBox.cgi` costs nothing here, not even the probe.
+
+    Deliberately does **not** merge or delete anything. If the serial is already held by
+    another entry then this camera is configured twice, which is #320, and both entries
+    have their own entities and history. Saying so and leaving them alone is the only safe
+    thing an automatic migration can do.
+    """
+    unique_id = entry.unique_id
+    if not is_synthesised_identity(unique_id):
+        return
+
+    address = entry.data.get(CONF_ADDRESS)
+    if not address:
+        return
+
+    found = await async_network_identity(hass, address)
+    serial = (found or {}).get("SerialNo")
+    if not serial:
+        _LOGGER.debug(
+            "%s still has a synthesised id and the network probe offered no serial, so "
+            "it keeps the one it has", address)
+        return
+
+    # Imported here because config_flow imports this module.
+    from .config_flow import channel_unique_id
+    wanted = channel_unique_id(serial, entry.data.get(CONF_CHANNEL, 0))
+    if wanted == unique_id:
+        return
+
+    # No need to exclude this entry: its own id is md5 shaped and `wanted` is a device
+    # serial, and the one case where they are equal already returned above.
+    taken = [other for other in hass.config_entries.async_entries(DOMAIN)
+             if other.unique_id == wanted]
+    if taken:
+        _LOGGER.warning(
+            "%s reports serial %s over the network, but the entry %s already holds that "
+            "identity, so this camera is configured twice. Leaving both alone: remove "
+            "whichever one you do not want rather than have this pick for you",
+            address, serial, taken[0].title)
+        return
+
+    _LOGGER.info(
+        "%s was identified by a hash of its own credentials, which changes whenever the "
+        "password does. The network probe reports serial %s, so this entry is being moved "
+        "onto it and will survive a credential change from now on", address, serial)
+    hass.config_entries.async_update_entry(entry, unique_id=wanted)
 
 
 async def async_device_is_zero_indexed(client, device: str):

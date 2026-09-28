@@ -25,7 +25,10 @@ Two limits, both deliberate:
   own entities and history. Naming it and stopping is the only safe automatic move.
 """
 
+import ast
 import asyncio
+import io
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -34,6 +37,7 @@ import custom_components.dahua as dahua
 import custom_components.dahua.config_flow as flow_module
 import custom_components.dahua.discovery as discovery_module
 from custom_components.dahua import (
+    async_migrate_synthesised_unique_id,
     async_network_identity,
     is_synthesised_identity,
 )
@@ -203,3 +207,168 @@ async def test_a_new_add_keeps_the_hash_when_the_probe_is_silent(monkeypatch):
         "admin", "pw", ADDRESS, "80", "554", 0)
 
     assert data["serialNumber"] == HASH
+
+
+# --- the migration ----------------------------------------------------------
+
+def _entry(unique_id, channel=0, address=ADDRESS, entry_id="e1", title="Cam"):
+    return SimpleNamespace(
+        unique_id=unique_id, entry_id=entry_id, title=title,
+        data={CONF_ADDRESS: address, CONF_CHANNEL: channel})
+
+
+def _hass(entries=()):
+    updated = []
+
+    def async_update_entry(entry, **kwargs):
+        updated.append((entry.entry_id, kwargs))
+        if "unique_id" in kwargs:
+            entry.unique_id = kwargs["unique_id"]
+
+    return SimpleNamespace(
+        config_entries=SimpleNamespace(
+            async_entries=lambda domain: list(entries),
+            async_update_entry=async_update_entry),
+        _updated=updated)
+
+
+async def test_a_device_with_a_real_serial_is_never_even_probed(monkeypatch):
+    """The cost guarantee. Every healthy entry runs this on every setup, so it has to
+    stop before the network on the first line."""
+    calls = []
+    _stub_probe(monkeypatch, {"SerialNo": SERIAL}, calls)
+    hass = _hass()
+
+    await async_migrate_synthesised_unique_id(hass, _entry(SERIAL))
+
+    assert calls == [], "it probed a device that already knows who it is"
+    assert hass._updated == []
+
+
+async def test_a_hashed_identity_is_moved_onto_the_serial(monkeypatch):
+    _stub_probe(monkeypatch, {"SerialNo": SERIAL})
+    hass = _hass()
+    entry = _entry(HASH)
+
+    await async_migrate_synthesised_unique_id(hass, entry)
+
+    assert hass._updated == [("e1", {"unique_id": SERIAL})]
+
+
+async def test_the_channel_survives_the_move(monkeypatch):
+    """One entry per channel, and the index is part of the id. Dropping it would give
+    every channel of a recorder the same identity."""
+    _stub_probe(monkeypatch, {"SerialNo": SERIAL})
+    hass = _hass()
+
+    await async_migrate_synthesised_unique_id(hass, _entry(HASH + "_3", channel=3))
+
+    assert hass._updated == [("e1", {"unique_id": SERIAL + "_3"})]
+
+
+async def test_a_device_that_answers_nothing_keeps_its_hash(monkeypatch):
+    """UDP on the local subnet, so a camera behind a router gets no answer. It has to
+    keep working exactly as it does now."""
+    _stub_probe(monkeypatch, {})
+    hass = _hass()
+
+    await async_migrate_synthesised_unique_id(hass, _entry(HASH))
+
+    assert hass._updated == []
+
+
+async def test_a_reply_with_no_serial_keeps_the_hash(monkeypatch):
+    """The probe can identify a model without giving a serial; `parse_reply` keeps such
+    a reply so the form can still be prefilled."""
+    _stub_probe(monkeypatch, {"DeviceType": "IPC-HDW4300C"})
+    hass = _hass()
+
+    await async_migrate_synthesised_unique_id(hass, _entry(HASH))
+
+    assert hass._updated == []
+
+
+async def test_an_entry_with_no_address_is_left_alone(monkeypatch):
+    calls = []
+    _stub_probe(monkeypatch, {"SerialNo": SERIAL}, calls)
+    entry = _entry(HASH)
+    entry.data = {CONF_CHANNEL: 0}
+    hass = _hass()
+
+    await async_migrate_synthesised_unique_id(hass, entry)
+
+    assert calls == [] and hass._updated == []
+
+
+async def test_nothing_is_written_when_the_id_already_matches(monkeypatch):
+    """Otherwise every restart writes the entry again for no reason."""
+    _stub_probe(monkeypatch, {"SerialNo": HASH})
+    hass = _hass()
+
+    await async_migrate_synthesised_unique_id(hass, _entry(HASH))
+
+    assert hass._updated == []
+
+
+# --- the case it must refuse to resolve ------------------------------------
+
+async def test_a_serial_already_held_by_another_entry_is_not_taken(monkeypatch):
+    """#320: the camera is configured twice. Both entries have their own entities and
+    history, so picking one would silently destroy somebody's data."""
+    _stub_probe(monkeypatch, {"SerialNo": SERIAL})
+    other = _entry(SERIAL, entry_id="e2", title="The same camera, added twice")
+    hass = _hass([other])
+
+    await async_migrate_synthesised_unique_id(hass, _entry(HASH))
+
+    assert hass._updated == [], "it moved onto an id another entry already holds"
+
+
+async def test_the_entry_being_migrated_is_in_the_list_and_does_not_block_itself(monkeypatch):
+    """Its own row is in `async_entries`, and it must not read as a collision with
+    itself. It cannot: its id is md5 shaped and the target is a device serial, and the
+    one case where those are equal returns at the matching-id check above. That is why
+    there is no `entry_id` comparison in the collision test, and a mutation removing one
+    is how this was noticed."""
+    _stub_probe(monkeypatch, {"SerialNo": SERIAL})
+    entry = _entry(HASH)
+    hass = _hass([entry])
+
+    await async_migrate_synthesised_unique_id(hass, entry)
+
+    assert hass._updated == [("e1", {"unique_id": SERIAL})]
+
+
+async def test_a_collision_on_another_channel_does_not_block_this_one(monkeypatch):
+    """Channel 3 moving to `SERIAL_3` is not blocked by channel 0 holding `SERIAL`."""
+    _stub_probe(monkeypatch, {"SerialNo": SERIAL})
+    hass = _hass([_entry(SERIAL, entry_id="e2")])
+
+    await async_migrate_synthesised_unique_id(hass, _entry(HASH + "_3", channel=3))
+
+    assert hass._updated == [("e1", {"unique_id": SERIAL + "_3"})]
+
+
+# --- and the migration has to actually be called ---------------------------
+
+def test_setup_calls_the_migration():
+    """A helper that works and a setup that never calls it is the failure this repo keeps
+    shipping, and driving the real `async_setup_entry` needs the whole of Home Assistant.
+
+    So this reads the source instead: `async_setup_entry` must contain a call to
+    `async_migrate_synthesised_unique_id`. Static, but it fails for the one mutation the
+    tests above cannot see, and it names the function so a rename cannot slip past."""
+    source = io.open(
+        Path(__file__).resolve().parents[2]
+        / "custom_components" / "dahua" / "__init__.py", encoding="utf-8").read()
+    tree = ast.parse(source)
+
+    setup = next(node for node in tree.body
+                 if isinstance(node, ast.AsyncFunctionDef)
+                 and node.name == "async_setup_entry")
+    called = {ast.unparse(node.func) for node in ast.walk(setup)
+              if isinstance(node, ast.Call)}
+
+    assert "async_migrate_synthesised_unique_id" in called, (
+        "async_setup_entry does not call the migration, so no existing entry is ever "
+        "re-identified")
