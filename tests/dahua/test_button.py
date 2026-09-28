@@ -201,3 +201,46 @@ def test_the_new_platform_has_a_label_on_the_options_screen():
 
     for platform in PLATFORMS:
         assert platform in labels, "%s has no label on the options screen" % platform
+
+
+# --- several channels on one entry ------------------------------------------
+
+async def test_every_channel_on_the_entry_gets_its_own_buttons():
+    """The point of the loop, tested now rather than when #827 lands.
+
+    An entry owns one channel today, so every platform loop runs exactly once and
+    the change is invisible. That makes it the easy kind of refactor to get
+    subtly wrong: a loop that only ever executes once looks identical to code
+    that never loops. Constructing an entry with three channels is free and
+    proves the loop does what it exists for.
+    """
+    added = []
+    channels = {0: _Coordinator(doorbell=False),
+                1: _Coordinator(doorbell=True),
+                9: _Coordinator(doorbell=False)}
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": channels})()
+
+    await button_module.async_setup_entry(hass, entry, added.extend)
+
+    # One reboot button each, and the doorbell's two extras, in channel order.
+    assert [type(b).__name__ for b in added] == [
+        "DahuaRebootButton",
+        "DahuaRebootButton", "DahuaOpenDoorButton", "DahuaCancelCallButton",
+        "DahuaRebootButton",
+    ]
+
+
+async def test_each_button_belongs_to_its_own_channels_coordinator():
+    """Entities must not all end up pointing at the first channel, which is the
+    mistake a loop that reuses one variable invites."""
+    added = []
+    channels = {0: _Coordinator(doorbell=False), 1: _Coordinator(doorbell=False)}
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": channels})()
+
+    await button_module.async_setup_entry(hass, entry, added.extend)
+
+    owners = [button._coordinator for button in added]
+    assert owners == [channels[0], channels[1]]
+    assert owners[0] is not owners[1]
