@@ -333,8 +333,8 @@ async def test_junk_on_the_wire_is_ignored(hass):
 
 # --- the attach itself ------------------------------------------------------
 
-async def test_the_stream_attaches_with_every_channels_events(hass):
-    """Attaching with one channel's list would stop delivering another's codes."""
+async def test_expanded_shared_subscription_attaches_with_all_events(hass):
+    """Use All only when sharing makes the event list broader than before #615."""
     stream = _host_stream(hass, ADDRESS)
     first = _Coordinator(0, ["VideoMotion"])
     second = _Coordinator(1, ["CrossLineDetection", "AlarmLocal"])
@@ -342,8 +342,73 @@ async def test_the_stream_attaches_with_every_channels_events(hass):
     stream.register(second)
     await _settle()
 
-    attached = first.client.attached_with[-1]
-    assert set(attached) == {"VideoMotion", "CrossLineDetection", "AlarmLocal"}
+    assert first.client.attached_with[-1] == ["All"]
+
+
+async def test_shared_subscription_stays_explicit_when_union_does_not_grow(hass):
+    """Two channels choosing the same event do not need the All fallback."""
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["VideoMotion"])
+    second = _Coordinator(1, ["VideoMotion"])
+    stream.register(first)
+    await _settle()
+    before = first.client.attach_count
+
+    stream.register(second)
+    await _settle()
+
+    assert first.client.attach_count == before
+    assert first.client.attached_with[-1] == ["VideoMotion"]
+
+
+async def test_single_channel_keeps_its_explicit_event_subscription(hass):
+    """Single-camera behaviour is unchanged by the NVR compatibility path."""
+    stream = _host_stream(hass, ADDRESS)
+    only = _Coordinator(0, ["VideoMotion", "AlarmLocal"])
+    stream.register(only)
+    await _settle()
+
+    assert set(only.client.attached_with[-1]) == {"VideoMotion", "AlarmLocal"}
+
+
+async def test_all_subscription_still_filters_unrequested_codes(hass):
+    """codes=[All] on the wire must not broaden Home Assistant dispatch."""
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["VideoMotion"])
+    second = _Coordinator(1, ["AlarmLocal"])
+    stream.register(first)
+    stream.register(second)
+    await _settle()
+
+    stream.on_receive(
+        b"Code=NewFile;action=Start;index=0\r\n",
+        0,
+    )
+
+    assert first.handled == []
+    assert second.handled == []
+
+
+async def test_derived_smart_motion_allows_raw_ivs_event_through(hass):
+    """SmartMotionHuman may be selected even though the wire code is CrossRegionDetection."""
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["SmartMotionHuman"])
+    second = _Coordinator(1, ["VideoMotion"])
+    stream.register(first)
+    stream.register(second)
+    await _settle()
+
+    stream.on_receive(
+        (
+            b'Code=CrossRegionDetection;action=Start;index=0;'
+            b'data={"Object":{"ObjectType":"Human"}}\r\n'
+        ),
+        0,
+    )
+
+    assert len(first.handled) == 1
+    assert first.handled[0]["Code"] == "CrossRegionDetection"
+    assert second.handled == []
 
 
 async def test_it_does_not_re_attach_when_nothing_new_is_wanted(hass):
@@ -359,7 +424,7 @@ async def test_it_does_not_re_attach_when_nothing_new_is_wanted(hass):
     assert first.client.attach_count == before, "re-attached for no reason"
 
 
-async def test_it_re_attaches_when_a_channel_wants_something_new(hass):
+async def test_it_re_attaches_with_all_when_union_expands(hass):
     stream = _host_stream(hass, ADDRESS)
     first = _Coordinator(0, ["VideoMotion"])
     stream.register(first)
@@ -368,7 +433,7 @@ async def test_it_re_attaches_when_a_channel_wants_something_new(hass):
     stream.register(_Coordinator(1, ["FaceDetection"]))
     await _settle()
 
-    assert "FaceDetection" in first.client.attached_with[-1]
+    assert first.client.attached_with[-1] == ["All"]
 
 
 async def test_a_channel_with_no_events_starts_nothing(hass):
@@ -377,3 +442,124 @@ async def test_a_channel_with_no_events_starts_nothing(hass):
     await _settle()
 
     assert stream._task is None
+
+
+# --- what the All fallback must not cost --------------------------------------
+
+async def test_each_channel_still_gets_its_own_codes_under_all(hass):
+    """The guarantee the pre-#615 union attach used to hold, restated for `All`.
+
+    `test_expanded_shared_subscription_attaches_with_all_events` proves the wire
+    subscription broadens, and `test_all_subscription_still_filters_unrequested_codes`
+    proves an unwanted code is dropped. Neither proves the thing the original test
+    was for: that after all that, each channel still receives what it asked for.
+    Without this, a filter that dropped everything would pass the suite.
+    """
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["VideoMotion"])
+    second = _Coordinator(1, ["AlarmLocal"])
+    stream.register(first)
+    stream.register(second)
+    await _settle()
+
+    assert first.client.attached_with[-1] == ["All"], "not the All path"
+
+    stream.on_receive(b"Code=VideoMotion;action=Start;index=0\r\n", 0)
+    stream.on_receive(b"Code=AlarmLocal;action=Start;index=1\r\n", 1)
+
+    assert [event["Code"] for event in first.handled] == ["VideoMotion"]
+    assert [event["Code"] for event in second.handled] == ["AlarmLocal"]
+
+
+async def test_a_channels_own_code_is_not_dropped_because_a_sibling_wanted_it(hass):
+    """The union is what the filter checks, so a code only one channel selected
+    must still reach that channel and nobody else."""
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["VideoMotion", "AlarmLocal"])
+    second = _Coordinator(1, ["VideoMotion"])
+    stream.register(first)
+    stream.register(second)
+    await _settle()
+
+    stream.on_receive(b"Code=AlarmLocal;action=Start;index=0\r\n", 0)
+
+    assert [event["Code"] for event in first.handled] == ["AlarmLocal"]
+    assert second.handled == []
+
+
+# --- and the coupling that keeps DERIVES_INTO honest --------------------------
+
+def test_a_translated_code_that_becomes_selectable_must_be_mapped():
+    """`translate_event_code` rewrites four raw codes, and the host filter runs
+    before it, so any rewrite whose *target* a user can select needs its source
+    in DERIVES_INTO or the event is dropped before translation.
+
+    Two are mapped. The doorbell pair is safe only because `DoorbellPressed` is
+    absent from ALL_EVENTS and so can never be in anybody's selection. That is a
+    fact about the selectable list rather than about doorbells, and it would stop
+    being true the moment somebody made it selectable, which is exactly the
+    change this catches. #556 and #593 were both about `BackKeyLight` reaching an
+    entity, so it is not a hypothetical request.
+    """
+    from custom_components.dahua.config_flow import ALL_EVENTS
+    from custom_components.dahua import DERIVES_INTO
+
+    translations = {
+        "CrossLineDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+        "CrossRegionDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+        "BackKeyLight": ("DoorbellPressed",),
+        "PhoneCallDetect": ("DoorbellPressed",),
+    }
+
+    for raw, derived in translations.items():
+        selectable = [code for code in derived if code in ALL_EVENTS]
+        if not selectable:
+            continue
+        assert raw in DERIVES_INTO, (
+            "%s is selectable and is derived from %s, which the host filter "
+            "drops before translation. Add it to DERIVES_INTO."
+            % (selectable, raw))
+        assert set(selectable) <= set(DERIVES_INTO[raw])
+
+
+def test_the_mapped_sources_are_codes_a_device_actually_sends():
+    """A map keyed on something unselectable would silently never fire. Both
+    keys are real IVS codes a user can also select in their own right."""
+    from custom_components.dahua.config_flow import ALL_EVENTS
+    from custom_components.dahua import DERIVES_INTO
+
+    assert set(DERIVES_INTO) <= set(ALL_EVENTS)
+
+
+# --- the flag has to survive an incompletely built stream ---------------------
+
+def test_the_broadened_flag_has_a_class_level_default():
+    """Both `_async_run` and `on_receive` read `_using_all_events`, and several
+    test files build this object with `object.__new__` and set only what they are
+    about: `test_one_bad_event.py` sets three attributes, `test_refused_
+    credentials.py` six, and neither is about the subscription shape.
+
+    Assigning it only in `__init__` was a real CI failure rather than a
+    hypothetical one. `test_the_event_stream_stops_once_the_budget_is_gone` calls
+    `_async_run` directly on a bare instance, and the AttributeError landed inside
+    that method's retry loop, so it reported a nine second timeout rather than an
+    error and said nothing about the cause.
+    """
+    bare = DahuaHostEventStream.__new__(DahuaHostEventStream)
+
+    assert bare._using_all_events is False
+
+
+def test_a_bare_stream_dispatches_as_it_did_before(hass):
+    """The consequence of that default, stated as behaviour rather than as an
+    attribute: a stream with no `_events` at all still delivers, because it was
+    never broadened and so is not filtered."""
+    bare = DahuaHostEventStream.__new__(DahuaHostEventStream)
+    bare._address = ADDRESS
+    bare._received_data = False
+    only = _Coordinator(0, ["VideoMotion"])
+    bare._by_channel = {0: [only]}
+
+    bare.on_receive(b"Code=VideoMotion;action=Start;index=0\r\n", 0)
+
+    assert [event["Code"] for event in only.handled] == ["VideoMotion"]

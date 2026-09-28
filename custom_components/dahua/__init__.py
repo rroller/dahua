@@ -1210,6 +1210,23 @@ async def _release_connector(address: str) -> None:
         await holder[0].close()
 
 
+# Raw IVS event codes that can become Smart Motion events later in
+# DahuaDataUpdateCoordinator.translate_event_code(). The host-level filter runs
+# before that translation, so these raw codes must be allowed through whenever
+# one of their derived events is selected.
+#
+# translate_event_code also turns BackKeyLight and PhoneCallDetect into
+# DoorbellPressed, and those are deliberately absent. The reason is not that
+# doorbells use the VTO listener -- PhoneCallDetect is the Amcrest spelling and
+# an Amcrest device does come through this stream. It is that DoorbellPressed is
+# not in ALL_EVENTS, so it can never appear in a user's selection and can never
+# be the derived code this map exists to rescue. Make it selectable and its two
+# raw codes have to be added here; test_shared_event_stream.py asserts that.
+DERIVES_INTO = {
+    "CrossLineDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+    "CrossRegionDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+}
+
 class DahuaHostEventStream:
     """One event stream for a host, shared by every channel configured on it.
 
@@ -1220,6 +1237,15 @@ class DahuaHostEventStream:
     it.
     """
 
+    # Declared on the class, not only assigned in __init__, because several
+    # tests build a stream with object.__new__ and set just the attributes they
+    # are about: test_one_bad_event.py sets three, test_refused_credentials.py
+    # six, and neither is about the subscription shape. Both `_async_run` and
+    # `on_receive` read this, and on a bare instance the AttributeError from
+    # `_async_run` landed inside its retry loop and hung the test rather than
+    # failing it. A default here is one line and cannot be half-applied.
+    _using_all_events = False
+
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         self._hass = hass
         self._address = address
@@ -1227,6 +1253,13 @@ class DahuaHostEventStream:
         self._by_channel: Dict[int, list] = {}
         self._owner = None  # whose client the stream currently borrows
         self._events: frozenset = frozenset()
+        # A shared NVR stream can accumulate a much larger explicit code list
+        # than any one channel used before #615. Some Dahua firmware accepts
+        # codes=[All] but goes silent when given a long multi-code subscription.
+        # Track whether this host currently needs the broad subscription so a
+        # second channel joining (or the last extra channel leaving) restarts
+        # the stream even when the union of requested event names is unchanged.
+        self._using_all_events = False
         self._task: asyncio.Task | None = None
         # Whether the last attach failed, so an outage is reported once.
         self._failing = False
@@ -1281,9 +1314,24 @@ class DahuaHostEventStream:
 
     def _restart_if_needed(self) -> None:
         wanted = self._union()
-        if self._task is not None and not self._task.done() and wanted == self._events:
+        # Before #615, every channel attached with only its own event list.
+        # A shared host stream can make that request strictly broader by taking
+        # the union across channels. Some Dahua firmware accepts codes=[All]
+        # but goes silent on that expanded explicit list. Use All only when
+        # sharing actually made the subscription larger than every individual
+        # channel's previous request shape; otherwise keep existing behaviour.
+        use_all_events = bool(wanted) and len(wanted) > max(
+            (len(c.events or ()) for c in self.coordinators), default=0
+        )
+        if (
+            self._task is not None
+            and not self._task.done()
+            and wanted == self._events
+            and use_all_events == self._using_all_events
+        ):
             return
         self._events = wanted
+        self._using_all_events = use_all_events
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -1297,6 +1345,7 @@ class DahuaHostEventStream:
         self._by_channel.clear()
         self._owner = None
         self._events = frozenset()
+        self._using_all_events = False
 
     async def _async_run(self) -> None:
         """Hold the stream open, recycling it the way a single channel used to."""
@@ -1306,7 +1355,9 @@ class DahuaHostEventStream:
             try:
                 await asyncio.wait_for(
                     self._owner.client.stream_events(
-                        self.on_receive, sorted(self._events), 0
+                        self.on_receive,
+                        ["All"] if self._using_all_events else sorted(self._events),
+                        0,
                     ),
                     timeout=jittered(EVENT_STREAM_MAX_LIFETIME_SECONDS),
                 )
@@ -1410,6 +1461,27 @@ class DahuaHostEventStream:
             return
 
         for event in events:
+            # A multi-channel host may subscribe with codes=[All] to avoid
+            # firmware limits on long explicit code lists. Preserve the user's
+            # configured selection locally so that broadening the wire-level
+            # subscription does not broaden Home Assistant events or entities.
+            #
+            # Only when the subscription was actually broadened. Otherwise the
+            # device is already filtering to the requested codes and this would
+            # be a second, redundant filter on the path every existing host
+            # takes -- so a single camera and any host whose union did not grow
+            # run exactly the code they ran before, rather than code that merely
+            # ought to agree with it. A user who selected "All" themselves is
+            # asking for everything and is not filtered either.
+            #
+            # A bare instance defaults to False from the class attribute, so an
+            # incompletely built stream takes the old path rather than raising.
+            if self._using_all_events and "All" not in self._events:
+                code = event.get("Code")
+                derives = set(DERIVES_INTO.get(code, ())) & self._events
+                if code not in self._events and not derives:
+                    continue
+
             index = 0
             if "index" in event:
                 try:
