@@ -128,8 +128,9 @@ def _setup_coordinator(profile_support):
 
 
 def _setup(coordinator):
-    hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
-    entry = type("E", (), {"entry_id": "e1"})()
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1",
+                           "runtime_data": {0: coordinator}})()
     added = []
     return hass, entry, added
 

@@ -3,7 +3,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
 from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON, PRIVACY_MODE_ICON
 from .entity import DahuaBaseEntity
@@ -12,43 +12,42 @@ from .client import SIREN_TYPE
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    for coordinator in entry_coordinators(entry).values():
+        # I think most cameras have a motion sensor so we'll blindly add a switch for it
+        devices = [
+            DahuaMotionDetectionBinarySwitch(coordinator, entry),
+        ]
 
-    # I think most cameras have a motion sensor so we'll blindly add a switch for it
-    devices = [
-        DahuaMotionDetectionBinarySwitch(coordinator, entry),
-    ]
-
-    # But only some cams have a siren, very few do actually. The rule lives on the
-    # coordinator because the poll needs the same answer to decide whether to fetch the
-    # status this entity reads.
-    if coordinator.creates_siren_entity():
-        devices.append(
-            DahuaSirenBinarySwitch(
-                coordinator,
-                entry,
-                name="Alarm" if coordinator.uses_recorder_deterrence() else "Siren",
+        # But only some cams have a siren, very few do actually. The rule lives on the
+        # coordinator because the poll needs the same answer to decide whether to fetch the
+        # status this entity reads.
+        if coordinator.creates_siren_entity():
+            devices.append(
+                DahuaSirenBinarySwitch(
+                    coordinator,
+                    entry,
+                    name="Alarm" if coordinator.uses_recorder_deterrence() else "Siren",
+                )
             )
+        if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
+            devices.append(DahuaSmartMotionDetectionBinarySwitch(coordinator, entry))
+        if coordinator.supports_privacy_mode():
+            devices.append(DahuaPrivacyModeBinarySwitch(coordinator, entry))
+        if coordinator.supports_alarm_output():
+            devices.append(DahuaAlarmOutputSwitch(coordinator, entry, output=0))
+
+        # The coordinator already asked the device this during setup and kept the
+        # answer. Asking again here put a network round trip inside platform setup,
+        # where a device that is slow to answer eats the entry's setup budget.
+        if coordinator.supports_disarming_linkage():
+            devices.append(DahuaDisarmingLinkageBinarySwitch(coordinator, entry))
+            devices.append(DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry))
+
+        devices.extend(
+            DahuaIVSRuleSwitch(coordinator, entry, rule)
+            for rule in coordinator.get_ivs_rules()
         )
-    if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
-        devices.append(DahuaSmartMotionDetectionBinarySwitch(coordinator, entry))
-    if coordinator.supports_privacy_mode():
-        devices.append(DahuaPrivacyModeBinarySwitch(coordinator, entry))
-    if coordinator.supports_alarm_output():
-        devices.append(DahuaAlarmOutputSwitch(coordinator, entry, output=0))
-
-    # The coordinator already asked the device this during setup and kept the
-    # answer. Asking again here put a network round trip inside platform setup,
-    # where a device that is slow to answer eats the entry's setup budget.
-    if coordinator.supports_disarming_linkage():
-        devices.append(DahuaDisarmingLinkageBinarySwitch(coordinator, entry))
-        devices.append(DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry))
-
-    devices.extend(
-        DahuaIVSRuleSwitch(coordinator, entry, rule)
-        for rule in coordinator.get_ivs_rules()
-    )
-    async_add_devices(devices)
+        async_add_devices(devices)
 
 
 class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):

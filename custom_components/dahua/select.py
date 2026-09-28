@@ -3,7 +3,7 @@ import logging
 
 from homeassistant.core import HomeAssistant
 from homeassistant.components.select import SelectEntity
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
 from . import dahua_utils
 from .const import DOMAIN
@@ -15,47 +15,47 @@ _LOGGER = logging.getLogger(__package__)
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup select platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-    devices = []
+    for coordinator in entry_coordinators(entry).values():
+        devices = []
 
-    if coordinator.is_amcrest_doorbell() and coordinator.supports_security_light():
-        devices.append(DahuaDoorbellLightSelect(coordinator, entry))
+        if coordinator.is_amcrest_doorbell() and coordinator.supports_security_light():
+            devices.append(DahuaDoorbellLightSelect(coordinator, entry))
 
-    if is_sdt4e425(coordinator.get_model()):
-        try:
-            preset_ids = await coordinator.client.async_get_ptz_preset_ids(1)
-        except Exception:
-            _LOGGER.warning(
-                "Unable to enumerate SDT4E425 presets through RPC2", exc_info=True
-            )
-            preset_ids = []
-        devices.append(
-            DahuaCameraPresetPositionSelect(
-                coordinator, entry, preset_ids=preset_ids, rpc2_channel=1
-            )
-        )
-    else:
-        preset_ids = await _async_preset_ids(coordinator)
-        if preset_ids == []:
-            # The camera answered and holds no presets, so every option this
-            # control could offer would be a GotoPreset the device refuses.
-            # That is #525: four reporters, four cameras, one 400 from a
-            # dropdown that was never going to work. Two of those cameras have
-            # no PTZ motor at all.
-            #
-            # Not the same as None, which is the device declining to answer.
-            # Saving a preset and reloading the entry brings the control back.
-            _LOGGER.debug(
-                "Camera reports no presets, so no Preset Position control")
-        else:
+        if is_sdt4e425(coordinator.get_model()):
+            try:
+                preset_ids = await coordinator.client.async_get_ptz_preset_ids(1)
+            except Exception:
+                _LOGGER.warning(
+                    "Unable to enumerate SDT4E425 presets through RPC2", exc_info=True
+                )
+                preset_ids = []
             devices.append(
                 DahuaCameraPresetPositionSelect(
-                    coordinator, entry, preset_ids=preset_ids))
+                    coordinator, entry, preset_ids=preset_ids, rpc2_channel=1
+                )
+            )
+        else:
+            preset_ids = await _async_preset_ids(coordinator)
+            if preset_ids == []:
+                # The camera answered and holds no presets, so every option this
+                # control could offer would be a GotoPreset the device refuses.
+                # That is #525: four reporters, four cameras, one 400 from a
+                # dropdown that was never going to work. Two of those cameras have
+                # no PTZ motor at all.
+                #
+                # Not the same as None, which is the device declining to answer.
+                # Saving a preset and reloading the entry brings the control back.
+                _LOGGER.debug(
+                    "Camera reports no presets, so no Preset Position control")
+            else:
+                devices.append(
+                    DahuaCameraPresetPositionSelect(
+                        coordinator, entry, preset_ids=preset_ids))
 
-    if coordinator.supports_day_night_color():
-        devices.append(DahuaDayNightModeSelect(coordinator, entry))
+        if coordinator.supports_day_night_color():
+            devices.append(DahuaDayNightModeSelect(coordinator, entry))
 
-    async_add_devices(devices)
+        async_add_devices(devices)
 
 
 

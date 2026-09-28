@@ -43,13 +43,17 @@
     "options": {
         "step": {
             "user": {
-                "data": {
-                    "binary_sensor": "Binary sensor actief",
-                    "sensor": "Sensor actief",
-                    "switch": "Schakelaar actief",
-                    "light": "Lamp actief",
-                    "select": "Select enabled",
-                    "camera": "Camera actief"
+                "sections": {
+                    "platforms": {
+                        "data": {
+                            "binary_sensor": "Binary sensor actief",
+                            "camera": "Camera actief",
+                            "light": "Lamp actief",
+                            "select": "Select enabled",
+                            "sensor": "Sensor actief",
+                            "switch": "Schakelaar actief"
+                        }
+                    }
                 }
             }
         }

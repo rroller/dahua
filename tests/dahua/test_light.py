@@ -382,14 +382,43 @@ async def test_scheme_illuminator_uses_the_two_table_client_path():
     c.illuminator_index = 1
 
     light = _light(DahuaIlluminator, c, "Illuminator")
+    assert light.is_on is False
+
     await light.async_turn_on(**{ATTR_BRIGHTNESS: 255})
+    assert light.is_on is True
+
     await light.async_turn_off(**{ATTR_BRIGHTNESS: 255})
+    assert light.is_on is False
 
     assert c.client.scheme_calls == [
         (0, True, 100, "1", 1),
         (0, False, 100, "1", 1),
     ]
     assert c.client.v2 == []
+    assert light.async_write_ha_state.call_count == 2
+
+
+async def test_scheme_illuminator_failed_write_preserves_entity_state(monkeypatch):
+    c = _Coordinator(uses_scheme=True)
+    light = _light(DahuaIlluminator, c, "Illuminator")
+
+    async def fail_write(*_args):
+        raise RuntimeError("camera rejected write")
+
+    monkeypatch.setattr(
+        c.client,
+        "async_set_lighting_scheme_illuminator",
+        fail_write,
+    )
+
+    with pytest.raises(RuntimeError, match="camera rejected write"):
+        await light.async_turn_on()
+    assert light.is_on is False
+
+    light._manual_on = True
+    with pytest.raises(RuntimeError, match="camera rejected write"):
+        await light.async_turn_off()
+    assert light.is_on is True
 
 
 # --- identity --------------------------------------------------------------

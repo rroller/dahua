@@ -10,8 +10,10 @@ from custom_components.dahua.binary_sensor import (
     async_setup_entry,
 )
 from custom_components.dahua.const import DOMAIN
+from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua.diagnostics import _ivs_block
 from custom_components.dahua.entity import DahuaBaseEntity
-from custom_components.dahua.ivs import ivs_rules_for_channel
+from custom_components.dahua.ivs import ivs_rules_for_channel, ivs_discovery_diagnostics
 from tests.dahua.test_ivs_rules import coordinator, row
 
 
@@ -64,7 +66,7 @@ async def test_setup_creates_all_seven_normal_rules_including_stay():
     with patch.object(DahuaBaseEntity, "__init__", init):
         await async_setup_entry(
             SimpleNamespace(data={DOMAIN: {"entry": c}}),
-            SimpleNamespace(entry_id="entry"),
+            SimpleNamespace(entry_id="entry", runtime_data={0: c}),
             added.extend,
         )
 
@@ -146,3 +148,144 @@ def test_unknown_non_normal_and_malformed_events_do_not_change_rule_state():
         c._dispatch_event({"Code": "StayDetection", "data": data}, "Start")
     assert not fired
     assert c.get_event_timestamp("IVSRule_23") == 0
+
+
+def _nvr(channel):
+    c = _coordinator()
+    c._channel = channel
+    c._serial_number = "NVR"
+    c.get_serial_number = lambda: DahuaDataUpdateCoordinator.get_serial_number(c)
+    table = {
+        key.replace("VideoAnalyseRule[0]", f"RemoteVideoAnalyseRule[{channel}]"): value
+        for key, value in _rules().items()
+    }
+    table[f"table.RemoteVideoAnalyseRule[{channel}][9].Id"] = "0"
+    c._ivs_rules = ivs_rules_for_channel(table, channel, "RemoteVideoAnalyseRule")
+    c._ivs_discovery_diagnostics = ivs_discovery_diagnostics(
+        table, channel, "RemoteVideoAnalyseRule"
+    )
+    for rule in c._ivs_rules:
+        rule["remote"] = True
+    c.get_event_list = lambda: []
+    c.is_doorbell = lambda: False
+    return c
+
+
+async def test_nvr_setup_adds_rules_for_every_channel_with_distinct_identities():
+    channels = {channel: _nvr(channel) for channel in (0, 9)}
+    added = []
+
+    def init(self, coord, entry):
+        self._coordinator = self.coordinator = coord
+
+    with patch.object(DahuaBaseEntity, "__init__", init):
+        await async_setup_entry(
+            None, SimpleNamespace(runtime_data=channels), added.extend
+        )
+    sensors = [s for s in added if isinstance(s, DahuaIVSRuleBinarySensor)]
+    assert len(sensors) == 14
+    assert len({s.unique_id for s in sensors}) == 14
+    assert {s.unique_id for s in sensors if s._rule_id == "0"} == {
+        "NVR_ivs_rule_0",
+        "NVR_9_ivs_rule_0",
+    }
+
+
+@pytest.mark.parametrize("key", ["RuleId", "RuleID"])
+@pytest.mark.parametrize("action", ["Start", "Stop", "Pulse"])
+def test_nvr_wire_event_routes_id_zero_only_to_its_channel(key, action):
+    import json
+    import time
+
+    channels = [_nvr(channel) for channel in (0, 9)]
+    sensors = []
+    for c in channels:
+        sensor = _sensor(c, next(r for r in c.get_ivs_rules() if r["id"] == "0"))
+        sensors.append(sensor)
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+        c.handle_event = lambda event, coord=c: coord._dispatch_event(
+            event, event["action"]
+        )
+        if action == "Stop":
+            c._dispatch_event(
+                {"Code": "StayDetection", "data": {"Class": "Normal", key: 0}}, "Start"
+            )
+    payload = json.dumps({"Class": "Normal", key: 0})
+    wire = f"Code=StayDetection;action={action};index=9;data={payload}\r\n".encode()
+    for c in channels:
+        c.on_receive(wire, 9)
+    assert sensors[0].is_on == (action == "Stop")
+    assert sensors[1].is_on == (action != "Stop")
+    if action == "Pulse":
+        assert channels[1].event_is_momentary("IVSRule_0")
+        channels[1]._dahua_event_timestamp[channels[1].get_event_key("IVSRule_0")] = (
+            int(time.time()) - 6
+        )
+        assert not sensors[1].is_on
+
+
+def test_reordering_remote_rules_keeps_identity_and_event_target():
+    c = _nvr(9)
+    rule = next(r for r in c.get_ivs_rules() if r["id"] == "0")
+    sensor = _sensor(c, rule)
+    c._ivs_rules = [
+        {**r, "index": r["index"] + 20, "name": "Renamed"} for r in c.get_ivs_rules()
+    ]
+    replacement = _sensor(c, next(r for r in c.get_ivs_rules() if r["id"] == "0"))
+    assert replacement.unique_id == sensor.unique_id
+    c.add_dahua_event_listener(sensor._event_name, lambda: None)
+    c._dispatch_event(
+        {"Code": "StayDetection", "Data": {"Class": "Normal", "RuleID": "0"}}, "Start"
+    )
+    assert sensor.is_on
+    assert replacement.is_on
+
+
+def test_discovery_explains_missing_duplicate_and_invalid_rows():
+    table = {
+        **row(0, "1", channel=9),
+        **row(1, "1", channel=9),
+        **row(2, "2", channel=9),
+        **row(3, "3", "bad", channel=9),
+        **row(4, "0", channel=9),
+    }
+    del table["table.VideoAnalyseRule[9][2].Id"]
+    result = ivs_discovery_diagnostics(table, 9, "VideoAnalyseRule")
+    assert result["discovered_count"] == 1
+    assert result["skipped"] == [
+        {"index": 0, "reason": "duplicate_id"},
+        {"index": 1, "reason": "duplicate_id"},
+        {"index": 2, "reason": "missing_id"},
+        {"index": 3, "reason": "invalid_enable"},
+    ]
+
+
+def test_unmatched_diagnostics_are_bounded_and_do_not_guess(caplog):
+    import logging
+
+    c = _nvr(9)
+    c.add_dahua_event_listener(
+        "IVSRule_0", lambda: pytest.fail("Must not guess by index")
+    )
+    with caplog.at_level(logging.DEBUG, logger="custom_components.dahua"):
+        for _ in range(100):
+            c._dispatch_event(
+                {
+                    "Code": "StayDetection",
+                    "data": {"Class": "Normal", "RuleID": 999, "Name": "Stay Test"},
+                },
+                "Start",
+            )
+        c._dispatch_event(
+            {"Code": "StayDetection", "data": {"Class": "Normal"}}, "Start"
+        )
+    block = _ivs_block(SimpleNamespace(runtime_data={9: c, 0: _nvr(0)}))
+    assert block["9"]["unmatched_event_counts"] == {
+        "unknown_rule_id": 100,
+        "missing_rule_id": 1,
+    }
+    assert block["0"]["unmatched_event_counts"] == {}
+    assert block["9"]["discovery"]["source"] == "RemoteVideoAnalyseRule"
+    assert "Name" not in block["9"]["last_unmatched_event"]
+    assert len([r for r in caplog.records if "did not match" in r.message]) == 2
+    assert c.get_event_timestamp("IVSRule_0") == 0

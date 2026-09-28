@@ -11,7 +11,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.model_profiles import is_sdt4e425
 from custom_components.dahua.vto import CancelCallRefused
@@ -68,50 +68,53 @@ PTZ_MOVE_CODES = {
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-    if is_sdt4e425(coordinator.get_model()):
-        # This physical camera exposes two sensors. Preserve RRoller's native
-        # Main/Sub/Sub_2 creation for each media channel from one config entry.
-        sensors = (
-            # logical channel, media channel, display name, unique-id prefix
-            (0, 1, "Panorama", ""),
-            (1, 2, "PTZ", "1_"),
-        )
-        entities = []
-        for logical_channel, media_channel, sensor_name, unique_prefix in sensors:
-            for stream_index in range(coordinator.get_max_streams()):
-                stream_name = coordinator.client.to_stream_name(stream_index)
-                display_name = (
-                    sensor_name
-                    if stream_index == 0
-                    else f"{sensor_name} {stream_name}"
-                )
-                entities.append(
-                    DahuaCamera(
-                        coordinator,
-                        stream_index,
-                        config_entry,
-                        logical_channel=logical_channel,
-                        media_channel=media_channel,
-                        display_name=display_name,
-                        unique_suffix=f"{unique_prefix}{stream_name}",
-                    )
-                )
-        async_add_entities(entities)
-    else:
-        max_streams = coordinator.get_max_streams()
-        # Note the stream_index is 0 based. The main stream is index 0
-        for stream_index in range(max_streams):
-            async_add_entities(
-                [
-                    DahuaCamera(
-                        coordinator,
-                        stream_index,
-                        config_entry,
-                    )
-                ]
+    for coordinator in entry_coordinators(config_entry).values():
+        if is_sdt4e425(coordinator.get_model()):
+            # This physical camera exposes two sensors. Preserve RRoller's native
+            # Main/Sub/Sub_2 creation for each media channel from one config entry.
+            sensors = (
+                # logical channel, media channel, display name, unique-id prefix
+                (0, 1, "Panorama", ""),
+                (1, 2, "PTZ", "1_"),
             )
+            entities = []
+            for logical_channel, media_channel, sensor_name, unique_prefix in sensors:
+                for stream_index in range(coordinator.get_max_streams()):
+                    stream_name = coordinator.client.to_stream_name(stream_index)
+                    display_name = (
+                        sensor_name
+                        if stream_index == 0
+                        else f"{sensor_name} {stream_name}"
+                    )
+                    entities.append(
+                        DahuaCamera(
+                            coordinator,
+                            stream_index,
+                            config_entry,
+                            logical_channel=logical_channel,
+                            media_channel=media_channel,
+                            display_name=display_name,
+                            unique_suffix=f"{unique_prefix}{stream_name}",
+                        )
+                    )
+            async_add_entities(entities)
+        else:
+            max_streams = coordinator.get_max_streams()
+            # Note the stream_index is 0 based. The main stream is index 0
+            for stream_index in range(max_streams):
+                async_add_entities(
+                    [
+                        DahuaCamera(
+                            coordinator,
+                            stream_index,
+                            config_entry,
+                        )
+                    ]
+                )
 
+    # Registered once for the platform rather than once per channel:
+    # entity services are platform wide, and registering the same name
+    # twice raises. Note this sits outside the loop above.
     platform = entity_platform.async_get_current_platform()
 
     # https://developers.home-assistant.io/docs/dev_101_services/

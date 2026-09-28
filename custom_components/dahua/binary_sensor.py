@@ -4,7 +4,7 @@ import re
 from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorDeviceClass
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
 from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
@@ -74,26 +74,25 @@ ICON_OVERRIDES = {
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    for coordinator in entry_coordinators(entry).values():
+        sensors: list[BinarySensorEntity] = []
+        for event_name in coordinator.get_event_list():
+            sensors.append(DahuaEventSensor(coordinator, entry, event_name))
 
-    sensors: list[BinarySensorEntity] = []
-    for event_name in coordinator.get_event_list():
-        sensors.append(DahuaEventSensor(coordinator, entry, event_name))
+        # For doorbells we'll just add these since most people will want them
+        if coordinator.is_doorbell():
+            sensors.append(DahuaEventSensor(coordinator, entry, "DoorbellPressed"))
+            sensors.append(DahuaEventSensor(coordinator, entry, "Invite"))
+            sensors.append(DahuaEventSensor(coordinator, entry, "DoorStatus"))
+            sensors.append(DahuaEventSensor(coordinator, entry, "CallNoAnswered"))
 
-    for rule in coordinator.get_ivs_rules():
-        sensors.append(DahuaIVSRuleBinarySensor(coordinator, entry, rule))
+        for rule in coordinator.get_ivs_rules():
+            sensors.append(DahuaIVSRuleBinarySensor(coordinator, entry, rule))
 
-    # For doorbells we'll just add these since most people will want them
-    if coordinator.is_doorbell():
-        sensors.append(DahuaEventSensor(coordinator, entry, "DoorbellPressed"))
-        sensors.append(DahuaEventSensor(coordinator, entry, "Invite"))
-        sensors.append(DahuaEventSensor(coordinator, entry, "DoorStatus"))
-        sensors.append(DahuaEventSensor(coordinator, entry, "CallNoAnswered"))
+        sensors.append(DahuaAuthorizedVehicleBinarySensor(coordinator, entry))
 
-    sensors.append(DahuaAuthorizedVehicleBinarySensor(coordinator, entry))
-
-    if sensors:
-        async_add_devices(sensors)
+        if sensors:
+            async_add_devices(sensors)
 
 
 class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):

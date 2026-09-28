@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 from custom_components.dahua.vto import CancelCallRefused
 
 from .const import DOMAIN
@@ -21,17 +21,16 @@ _LOGGER = logging.getLogger(__package__)
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the button platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    for coordinator in entry_coordinators(entry).values():
+        buttons = [DahuaRebootButton(coordinator, entry)]
 
-    buttons = [DahuaRebootButton(coordinator, entry)]
+        # Opening a door is a VTO operation. On anything else the endpoint is not
+        # there, and a button that always errors is worse than no button.
+        if coordinator.is_doorbell():
+            buttons.append(DahuaOpenDoorButton(coordinator, entry))
+            buttons.append(DahuaCancelCallButton(coordinator, entry))
 
-    # Opening a door is a VTO operation. On anything else the endpoint is not
-    # there, and a button that always errors is worse than no button.
-    if coordinator.is_doorbell():
-        buttons.append(DahuaOpenDoorButton(coordinator, entry))
-        buttons.append(DahuaCancelCallButton(coordinator, entry))
-
-    async_add_devices(buttons)
+        async_add_devices(buttons)
 
 
 class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):

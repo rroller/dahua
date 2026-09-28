@@ -35,7 +35,7 @@ from .client import (
     clear_host_cache,
 )
 from .model_profiles import is_sdt4e425
-from .ivs import ivs_rules_for_channel, ivs_rule_index
+from .ivs import ivs_rules_for_channel, ivs_rule_index, ivs_discovery_diagnostics
 
 from .const import (
     CONF_EVENTS,
@@ -672,6 +672,49 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
+# The startup banner is logged once per Home Assistant run. It used to be guarded
+# by whether hass.data[DOMAIN] existed, which is gone now that runtime state
+# lives on the entry.
+_STARTUP_LOGGED = False
+
+# What an entry carries at runtime: the channels it owns, keyed by channel index.
+#
+# One member today, because a recorder is one config entry per channel. It is a
+# mapping so that an entry can own several, which is what #827 needs and the
+# reason removing a 64 channel NVR currently takes 64 deletions.
+#
+# Lazily evaluated, so naming DahuaDataUpdateCoordinator before it is defined is
+# fine.
+type DahuaConfigEntry = ConfigEntry[dict[int, "DahuaDataUpdateCoordinator"]]
+
+
+def entry_coordinators(entry: DahuaConfigEntry) -> dict:
+    """The channels this entry owns, keyed by channel index.
+
+    `runtime_data` is Home Assistant's own place for this, and it deletes the
+    attribute when an entry unloads, so an unloaded entry has none rather than an
+    empty one. Callers that run during teardown, or against an entry whose setup
+    failed, get an empty mapping instead of an AttributeError.
+    """
+    return getattr(entry, "runtime_data", None) or {}
+
+
+def entry_coordinator(entry: DahuaConfigEntry) -> "DahuaDataUpdateCoordinator":
+    """The single coordinator this entry owns.
+
+    Raises when the entry is not set up. Platforms are only ever asked to set up
+    an entry whose runtime data is already in place, so absence there is a bug
+    worth hearing about rather than something to paper over with None.
+
+    A named function rather than `next(iter(...))` spread across nine platforms,
+    so that #827 has one place to come back to when an entry owns more than one.
+    """
+    channels = entry_coordinators(entry)
+    if not channels:
+        raise KeyError("Dahua entry %s has no coordinator" % entry.entry_id)
+    return next(iter(channels.values()))
+
+
 def get_configured_events(entry: ConfigEntry) -> list:
     """Returns the events this entry subscribes to. Never None.
 
@@ -719,10 +762,11 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
     return timedelta(seconds=max(seconds, MIN_SCAN_INTERVAL))
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
+async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     """Set up this integration using UI."""
-    if hass.data.get(DOMAIN) is None:
-        hass.data.setdefault(DOMAIN, {})
+    global _STARTUP_LOGGED
+    if not _STARTUP_LOGGED:
+        _STARTUP_LOGGED = True
         _LOGGER.info(STARTUP_MESSAGE)
 
     # Before anything reads the entry's identity. Costs nothing unless the id is md5
@@ -759,7 +803,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         await coordinator.async_stop()
         raise
 
-    hass.data[DOMAIN][entry.entry_id] = coordinator
+    # Home Assistant's own place for per entry runtime state, and it clears the
+    # attribute itself when the entry unloads, so there is nothing to pop.
+    entry.runtime_data = {coordinator.get_channel(): coordinator}
 
     # https://developers.home-assistant.io/docs/config_entries_index/
     # Forward every platform in one call. Home Assistant gathers them into
@@ -1210,6 +1256,23 @@ async def _release_connector(address: str) -> None:
         await holder[0].close()
 
 
+# Raw IVS event codes that can become Smart Motion events later in
+# DahuaDataUpdateCoordinator.translate_event_code(). The host-level filter runs
+# before that translation, so these raw codes must be allowed through whenever
+# one of their derived events is selected.
+#
+# translate_event_code also turns BackKeyLight and PhoneCallDetect into
+# DoorbellPressed, and those are deliberately absent. The reason is not that
+# doorbells use the VTO listener -- PhoneCallDetect is the Amcrest spelling and
+# an Amcrest device does come through this stream. It is that DoorbellPressed is
+# not in ALL_EVENTS, so it can never appear in a user's selection and can never
+# be the derived code this map exists to rescue. Make it selectable and its two
+# raw codes have to be added here; test_shared_event_stream.py asserts that.
+DERIVES_INTO = {
+    "CrossLineDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+    "CrossRegionDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+}
+
 class DahuaHostEventStream:
     """One event stream for a host, shared by every channel configured on it.
 
@@ -1220,6 +1283,15 @@ class DahuaHostEventStream:
     it.
     """
 
+    # Declared on the class, not only assigned in __init__, because several
+    # tests build a stream with object.__new__ and set just the attributes they
+    # are about: test_one_bad_event.py sets three, test_refused_credentials.py
+    # six, and neither is about the subscription shape. Both `_async_run` and
+    # `on_receive` read this, and on a bare instance the AttributeError from
+    # `_async_run` landed inside its retry loop and hung the test rather than
+    # failing it. A default here is one line and cannot be half-applied.
+    _using_all_events = False
+
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         self._hass = hass
         self._address = address
@@ -1227,6 +1299,13 @@ class DahuaHostEventStream:
         self._by_channel: Dict[int, list] = {}
         self._owner = None  # whose client the stream currently borrows
         self._events: frozenset = frozenset()
+        # A shared NVR stream can accumulate a much larger explicit code list
+        # than any one channel used before #615. Some Dahua firmware accepts
+        # codes=[All] but goes silent when given a long multi-code subscription.
+        # Track whether this host currently needs the broad subscription so a
+        # second channel joining (or the last extra channel leaving) restarts
+        # the stream even when the union of requested event names is unchanged.
+        self._using_all_events = False
         self._task: asyncio.Task | None = None
         # Whether the last attach failed, so an outage is reported once.
         self._failing = False
@@ -1281,9 +1360,24 @@ class DahuaHostEventStream:
 
     def _restart_if_needed(self) -> None:
         wanted = self._union()
-        if self._task is not None and not self._task.done() and wanted == self._events:
+        # Before #615, every channel attached with only its own event list.
+        # A shared host stream can make that request strictly broader by taking
+        # the union across channels. Some Dahua firmware accepts codes=[All]
+        # but goes silent on that expanded explicit list. Use All only when
+        # sharing actually made the subscription larger than every individual
+        # channel's previous request shape; otherwise keep existing behaviour.
+        use_all_events = bool(wanted) and len(wanted) > max(
+            (len(c.events or ()) for c in self.coordinators), default=0
+        )
+        if (
+            self._task is not None
+            and not self._task.done()
+            and wanted == self._events
+            and use_all_events == self._using_all_events
+        ):
             return
         self._events = wanted
+        self._using_all_events = use_all_events
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -1297,6 +1391,7 @@ class DahuaHostEventStream:
         self._by_channel.clear()
         self._owner = None
         self._events = frozenset()
+        self._using_all_events = False
 
     async def _async_run(self) -> None:
         """Hold the stream open, recycling it the way a single channel used to."""
@@ -1306,7 +1401,9 @@ class DahuaHostEventStream:
             try:
                 await asyncio.wait_for(
                     self._owner.client.stream_events(
-                        self.on_receive, sorted(self._events), 0
+                        self.on_receive,
+                        ["All"] if self._using_all_events else sorted(self._events),
+                        0,
                     ),
                     timeout=jittered(EVENT_STREAM_MAX_LIFETIME_SECONDS),
                 )
@@ -1410,6 +1507,27 @@ class DahuaHostEventStream:
             return
 
         for event in events:
+            # A multi-channel host may subscribe with codes=[All] to avoid
+            # firmware limits on long explicit code lists. Preserve the user's
+            # configured selection locally so that broadening the wire-level
+            # subscription does not broaden Home Assistant events or entities.
+            #
+            # Only when the subscription was actually broadened. Otherwise the
+            # device is already filtering to the requested codes and this would
+            # be a second, redundant filter on the path every existing host
+            # takes -- so a single camera and any host whose union did not grow
+            # run exactly the code they ran before, rather than code that merely
+            # ought to agree with it. A user who selected "All" themselves is
+            # asking for everything and is not filtered either.
+            #
+            # A bare instance defaults to False from the class attribute, so an
+            # incompletely built stream takes the old path rather than raising.
+            if self._using_all_events and "All" not in self._events:
+                code = event.get("Code")
+                derives = set(DERIVES_INTO.get(code, ())) & self._events
+                if code not in self._events and not derives:
+                    continue
+
             index = 0
             if "index" in event:
                 try:
@@ -1951,12 +2069,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     )
                     name = "RemoteVideoAnalyseRule" if remote_ivs else "VideoAnalyseRule"
                     self._ivs_rules = ivs_rules_for_channel(ivs_table, self._channel, name)
+                    self._ivs_discovery_diagnostics = ivs_discovery_diagnostics(
+                        ivs_table, self._channel, name)
+                    _LOGGER.debug("IVS discovery: %s", self._ivs_discovery_diagnostics)
                     if remote_ivs:
                         for rule in self._ivs_rules:
                             rule["remote"] = True
                     data.update(ivs_table)
-                except PROBE_FAILED + (ConnectionError, ValueError):
+                except PROBE_FAILED + (ConnectionError, ValueError) as err:
                     self._ivs_rules = []
+                    self._ivs_discovery_diagnostics = {
+                        "channel": self._channel, "source": (
+                            "RemoteVideoAnalyseRule" if remote_ivs else "VideoAnalyseRule"),
+                        "discovered_count": 0, "read_error": type(err).__name__,
+                    }
                 _LOGGER.debug("Device IVS rules=%s", self._ivs_rules)
 
                 # Day/Night mode. Judged by whether this channel's row came
@@ -2390,6 +2516,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 rule["id"] == str(rule_id) for rule in self.get_ivs_rules()
             ):
                 codes.append(f"IVSRule_{rule_id}")
+            else:
+                # Configuration IDs and event IDs are not proven equivalent on
+                # every NVR. Record the mismatch; never guess by name or index.
+                reason = "missing_rule_id" if rule_id is None else "unknown_rule_id"
+                counts = getattr(self, "_ivs_unmatched_counts", None)
+                if counts is None:
+                    counts = self._ivs_unmatched_counts = {}
+                first = reason not in counts
+                counts[reason] = counts.get(reason, 0) + 1
+                self._ivs_last_unmatched = {
+                    "channel": self._channel, "reason": reason,
+                    "rule_id": str(rule_id)[:80] if isinstance(rule_id, (str, int)) else None,
+                    "code": str(event.get("Code", ""))[:80],
+                }
+                if first:
+                    _LOGGER.debug("Normal IVS event did not match a discovered rule: %s",
+                                  self._ivs_last_unmatched)
 
         for code in codes:
             event_key = self.get_event_key(code)
@@ -3655,27 +3798,41 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
            v = self.data.get(f"status.{key}", "")
         return v
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bool:
     """Handle removal of an entry."""
-    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    if coordinator is None:
+    channels = entry_coordinators(entry)
+    if not channels:
         # Setup may have failed before the coordinator was registered, or a
         # previous unload may already have removed it. Treat that as unloaded
         # so an options-triggered reload can continue cleanly.
         return True
 
-    await coordinator.async_stop()
+    # Every channel is stopped, and all of them are stopped even if one raises.
+    # A coordinator that keeps its session and its host pool reference is the
+    # leak async_stop exists to prevent, so one failure must not strand the rest.
+    for result in await asyncio.gather(
+            *[coordinator.async_stop() for coordinator in channels.values()],
+            return_exceptions=True):
+        if isinstance(result, BaseException):
+            _LOGGER.debug("Stopping a Dahua channel failed during unload",
+                          exc_info=result)
+
+    # The union across channels: a platform is forwarded once per entry however
+    # many channels asked for it, so unloading it once per channel would fail.
+    wanted = {platform
+              for coordinator in channels.values()
+              for platform in coordinator.platforms}
     unloaded = all(
         await asyncio.gather(
             *[
                 hass.config_entries.async_forward_entry_unload(entry, platform)
                 for platform in PLATFORMS
-                if platform in coordinator.platforms
+                if platform in wanted
             ]
         )
     )
-    if unloaded:
-        hass.data[DOMAIN].pop(entry.entry_id)
+    # Nothing to pop: Home Assistant deletes runtime_data itself when an entry
+    # unloads. Which also means this function must not read it again below.
 
     # The host-scoped cleanup that used to live here has moved to
     # async_remove_entry. It could never run from this function: Home Assistant
@@ -3794,11 +3951,11 @@ async def async_remove_config_entry_device(
     is unloaded, so nothing can be said about which device is current, and deleting
     the live one on a guess is worse than leaving a stale row alone for now.
     """
-    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    if coordinator is None:
+    channels = entry_coordinators(entry)
+    if not channels:
         return False
 
-    current = coordinator.get_serial_number()
+    current = next(iter(channels.values())).get_serial_number()
     return not any(
         domain == DOMAIN and value == current for domain, value in device.identifiers
     )

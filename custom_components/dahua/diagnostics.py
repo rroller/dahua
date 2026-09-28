@@ -20,7 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from . import dahua_utils
+from . import dahua_utils, entry_coordinator, entry_coordinators
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
@@ -520,12 +520,23 @@ def _active_issues(hass: HomeAssistant) -> list[dict[str, Any]]:
     ]
 
 
+def _ivs_block(config_entry) -> dict:
+    """Include every channel; counters describe this coordinator's current run."""
+    return {
+        str(channel): {
+            "discovery": getattr(coordinator, "_ivs_discovery_diagnostics", {}),
+            "unmatched_event_counts": dict(getattr(coordinator, "_ivs_unmatched_counts", {})),
+            "last_unmatched_event": getattr(coordinator, "_ivs_last_unmatched", None),
+        }
+        for channel, coordinator in entry_coordinators(config_entry).items()
+    }
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, config_entry: ConfigEntry
 ) -> Mapping[str, Any]:
     """Return diagnostics for a config entry."""
-    coordinator = hass.data[DOMAIN][config_entry.entry_id]
-
+    coordinator = entry_coordinator(config_entry)
     return {
         "entry": _entry_block(config_entry),
         "coordinator": _coordinator_block(coordinator),
@@ -533,6 +544,7 @@ async def async_get_config_entry_diagnostics(
         "capabilities": _capabilities_block(coordinator),
         "client": _client_block(coordinator, config_entry),
         "events": _events_block(coordinator),
+        "ivs": _ivs_block(config_entry),
         "host": _host_block(hass, coordinator, config_entry),
         "active_issues": _active_issues(hass),
     }

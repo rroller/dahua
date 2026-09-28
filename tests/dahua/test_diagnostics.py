@@ -174,7 +174,7 @@ def _entry(hass, *, address=ADDRESS, channel=0, title="Front Door"):
 
 def _install(hass, entry, coordinator=None):
     coordinator = coordinator or _Coordinator()
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    entry.runtime_data = {0: coordinator}
     return coordinator
 
 

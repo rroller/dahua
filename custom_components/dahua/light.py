@@ -14,7 +14,8 @@ from homeassistant.components.light import (
     LightEntity, LightEntityFeature, ColorMode,
 )
 
-from . import DahuaDataUpdateCoordinator, dahua_utils, scheme_blocking_white_light
+from . import (DahuaDataUpdateCoordinator, dahua_utils, entry_coordinators,
+               scheme_blocking_white_light)
 from .const import DOMAIN, SECURITY_LIGHT_ICON, INFRARED_ICON
 from .entity import DahuaBaseEntity
 from .client import SECURITY_LIGHT_TYPE
@@ -25,31 +26,30 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     """Setup light platform."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    for coordinator in entry_coordinators(entry).values():
+        entities = []
+        if coordinator.supports_infrared_light():
+            entities.append(DahuaInfraredLight(coordinator, entry, "Infrared"))
 
-    entities = []
-    if coordinator.supports_infrared_light():
-        entities.append(DahuaInfraredLight(coordinator, entry, "Infrared"))
+        if coordinator.supports_illuminator():
+            entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
 
-    if coordinator.supports_illuminator():
-        entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
+        if coordinator.is_flood_light():
+            entities.append(FloodLight(coordinator, entry, "Flood Light"))
 
-    if coordinator.is_flood_light():
-        entities.append(FloodLight(coordinator, entry, "Flood Light"))
+        # The rule lives on the coordinator because the poll needs the same answer to decide
+        # whether to fetch the status this entity reads. The Amcrest doorbell exclusion is
+        # part of it: its Security Light is a select built in select.py.
+        if coordinator.creates_security_light_entity():
+            security_light_name = (
+                "Warning Light" if coordinator.uses_recorder_deterrence() else "Security Light"
+            )
+            entities.append(DahuaSecurityLight(coordinator, entry, security_light_name))
 
-    # The rule lives on the coordinator because the poll needs the same answer to decide
-    # whether to fetch the status this entity reads. The Amcrest doorbell exclusion is
-    # part of it: its Security Light is a select built in select.py.
-    if coordinator.creates_security_light_entity():
-        security_light_name = (
-            "Warning Light" if coordinator.uses_recorder_deterrence() else "Security Light"
-        )
-        entities.append(DahuaSecurityLight(coordinator, entry, security_light_name))
+        if coordinator.is_amcrest_doorbell():
+            entities.append(AmcrestRingLight(coordinator, entry, "Ring Light"))
 
-    if coordinator.is_amcrest_doorbell():
-        entities.append(AmcrestRingLight(coordinator, entry, "Ring Light"))
-
-    async_add_entities(entities)
+        async_add_entities(entities)
 
 
 class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
@@ -847,6 +847,9 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             await self._coordinator.client.async_set_lighting_scheme_illuminator(
                 channel, True, dahua_brightness, profile_mode, index
             )
+            # This dedicated API has no polled state for the entity. Publish
+            # ownership only after the camera accepts the complete-table write.
+            self._manual_on = True
             await self._coordinator.async_refresh()
             self.async_write_ha_state()
             return
@@ -1002,6 +1005,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             await self._coordinator.client.async_set_lighting_scheme_illuminator(
                 channel, False, dahua_brightness, profile_mode, index
             )
+            self._manual_on = False
             await self._coordinator.async_refresh()
             self.async_write_ha_state()
             return

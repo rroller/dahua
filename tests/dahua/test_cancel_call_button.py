@@ -170,16 +170,20 @@ def _button(coordinator):
 
 async def test_only_a_doorbell_gets_one():
     added = []
-    hass = type("H", (), {"data": {"dahua": {"e1": _Coordinator(doorbell=True)}}})()
-    await async_setup_entry(hass, type("E", (), {"entry_id": "e1"})(), added.extend)
+    coordinator = _Coordinator(doorbell=True)
+    hass = type("H", (), {"data": {}})()
+    await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
+                          "runtime_data": {0: coordinator}})(), added.extend)
 
     assert any(isinstance(b, DahuaCancelCallButton) for b in added)
 
 
 async def test_a_camera_does_not():
     added = []
-    hass = type("H", (), {"data": {"dahua": {"e1": _Coordinator(doorbell=False)}}})()
-    await async_setup_entry(hass, type("E", (), {"entry_id": "e1"})(), added.extend)
+    coordinator = _Coordinator(doorbell=False)
+    hass = type("H", (), {"data": {}})()
+    await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
+                          "runtime_data": {0: coordinator}})(), added.extend)
 
     assert not any(isinstance(b, DahuaCancelCallButton) for b in added)
     assert any(isinstance(b, DahuaRebootButton) for b in added)

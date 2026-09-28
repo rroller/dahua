@@ -10,7 +10,7 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
 from .const import DOMAIN
 from .entity import DahuaBaseEntity, DahuaEventDrivenEntity
@@ -25,22 +25,21 @@ PROFILE_NAMES = {
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    for coordinator in entry_coordinators(entry).values():
+        sensors = [
+            DahuaFirmwareVersionSensor(coordinator, entry),
+            DahuaSerialNumberSensor(coordinator, entry),
+            DahuaLicensePlateSensor(coordinator, entry),
+        ]
 
-    sensors = [
-        DahuaFirmwareVersionSensor(coordinator, entry),
-        DahuaSerialNumberSensor(coordinator, entry),
-        DahuaLicensePlateSensor(coordinator, entry),
-    ]
+        # The profile is only ever read for devices that answered the Lighting
+        # probe. Adding the sensor unconditionally would show "Day" forever on a
+        # doorbell or a camera without selectable profiles, which is worse than
+        # no sensor at all (see #641 review).
+        if coordinator.supports_profile_mode():
+            sensors.append(DahuaProfileSensor(coordinator, entry))
 
-    # The profile is only ever read for devices that answered the Lighting
-    # probe. Adding the sensor unconditionally would show "Day" forever on a
-    # doorbell or a camera without selectable profiles, which is worse than
-    # no sensor at all (see #641 review).
-    if coordinator.supports_profile_mode():
-        sensors.append(DahuaProfileSensor(coordinator, entry))
-
-    async_add_devices(sensors)
+        async_add_devices(sensors)
 
 
 class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
