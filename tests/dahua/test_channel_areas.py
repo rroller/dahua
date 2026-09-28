@@ -15,8 +15,8 @@ whose fields depend on what the recorder reported read properly without inventin
 a translation key per channel. The channel number is in every label, so two
 channels sharing a title cannot collide.
 
-**The bug this shape can have.** `_queue_extra_channels` copies `init_info` for
-each extra channel, and `init_info` carries the *primary's* area. Without an
+**The bug this shape can have.** `_channel_subentries` copies `init_info` for
+each channel, and `init_info` carries the *primary's* area. Without an
 explicit override every other channel would silently be filed in the primary's
 area, which is worse than filing nothing. That is what
 `test_an_area_reaches_only_the_channel_it_was_chosen_for` exists for.
@@ -155,15 +155,19 @@ async def test_an_area_reaches_only_the_channel_it_was_chosen_for():
 
 
 def _queued(flow):
-    """Run _queue_extra_channels and return the data each started flow got."""
-    started = []
-    flow.hass = SimpleNamespace(
-        async_create_task=lambda coro: None,
-        config_entries=SimpleNamespace(flow=SimpleNamespace(
-            async_init=lambda domain, context=None, data=None: started.append(data))),
-    )
-    flow._queue_extra_channels()
-    return started
+    """The data each *extra* channel ends up carrying.
+
+    This used to run `_queue_extra_channels`, which started a config flow per
+    extra channel. #827 replaced that with one entry carrying a subentry per
+    channel, so the same question is now what data each channel's subentry gets,
+    and no fake hass is needed to ask it.
+
+    The primary is filtered out because these tests are about the extra channels
+    and their indexing reads better without it.
+    """
+    primary = flow.init_info[CONF_CHANNEL]
+    return [subentry["data"] for subentry in flow._channel_subentries()
+            if subentry["data"][CONF_CHANNEL] != primary]
 
 
 async def test_a_blank_answer_stores_no_area_at_all():

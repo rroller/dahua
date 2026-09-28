@@ -179,5 +179,36 @@
                 }
             }
         }
+    },
+    "config_subentries": {
+        "channel": {
+            "entry_type": "channel",
+            "initiate_flow": {
+                "user": "Add a channel"
+            },
+            "step": {
+                "reconfigure": {
+                    "title": "{name}",
+                    "description": "Settings for channel {channel} of this recorder. Anything that applies to the whole device, such as how often it is polled, is on the recorder's own Configure button instead.",
+                    "data": {
+                        "name": "Name",
+                        "area": "Area (moves this device to it)",
+                        "events": "Events to subscribe to",
+                        "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
+                        "nvr_active_deterrence": "Enable NVR active deterrence controls",
+                        "manual_siren": "Manually enable Siren entity",
+                        "manual_security_light": "Manually enable Security Light entity",
+                        "disable_backchannel": "Don't open the two-way audio channel when streaming (fixes a doorbell stuck in a call, or talkback in the Dahua/Amcrest app; disables talking from Home Assistant)"
+                    },
+                    "data_description": {
+                        "manual_security_light": "Enable this if your camera has a working security light, but the integration did not create the Security Light entity.",
+                        "manual_siren": "Enable this if your camera has a working siren, but the integration did not create the Siren entity."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "Channel updated"
+            }
+        }
     }
 }

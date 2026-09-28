@@ -381,7 +381,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         self._motion_status = False
         self._stream_source = rtsp_stream_source(
             coordinator.client.get_rtsp_stream_url(self._channel_number, stream_index),
-            config_entry.options.get(CONF_DISABLE_BACKCHANNEL, False),
+            coordinator.channel_option(CONF_DISABLE_BACKCHANNEL, False),
         )
 
     @property
