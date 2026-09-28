@@ -18,7 +18,11 @@ from pathlib import Path
 
 import pytest
 
-from custom_components.dahua.config_flow import DahuaFlowHandler
+from custom_components.dahua.config_flow import (
+    DahuaFlowHandler,
+    OPTIONS_SECTION_PLATFORMS,
+)
+from custom_components.dahua.const import PLATFORMS
 
 TRANSLATIONS = (Path(__file__).resolve().parents[2]
                 / "custom_components" / "dahua" / "translations")
@@ -133,3 +137,61 @@ def test_the_areas_step_declares_no_fields_on_purpose():
     renders a key verbatim when no string exists. That is what lets a form whose fields
     depend on the device read properly without inventing a key per channel."""
     assert _labels("areas") == set()
+
+
+# --- the options form's platform toggles, which are built from a constant ------
+
+def _section(step="user", language="en"):
+    """The strings for the collapsed platform section, if a language has any."""
+    path = TRANSLATIONS / ("%s.json" % language)
+    body = json.loads(path.read_text(encoding="utf-8"))["options"]["step"]
+    return body.get(step, {}).get("sections", {}).get(
+        OPTIONS_SECTION_PLATFORMS, {})
+
+
+def _platform_labels(language="en"):
+    return set(_section(language=language).get("data", {}))
+
+
+def test_every_platform_toggle_has_a_label():
+    """The toggles are `{vol.Required(x): bool for x in sorted(PLATFORMS)}`, so a
+    platform added to that constant grows a checkbox whether or not anybody wrote a
+    string for it.
+
+    The frontend looks a section's child up at
+    `options.step.<step>.sections.<section>.data.<field>` and at nothing else, and
+    renders the raw key when that misses. So the new platform appears to the user as
+    the word `number`, in every language, because English is the per-key fallback and
+    English would not have it either.
+    """
+    missing = set(PLATFORMS) - _platform_labels()
+
+    assert not missing, "no label for the %s toggle" % sorted(missing)
+
+
+def test_the_platform_section_labels_no_platform_that_does_not_exist():
+    """The orphan direction, which is the half #814 was about: a string for a
+    platform that is no longer in `PLATFORMS` renders nowhere at all."""
+    orphans = _platform_labels() - set(PLATFORMS)
+
+    assert not orphans, "labels the %s toggle, which is not a platform" % sorted(
+        orphans)
+
+
+def test_the_platform_section_has_a_heading_of_its_own():
+    """A section's heading comes from `sections.<name>.name`, and falls back to the
+    raw key exactly as a field does, so the group would be titled `platforms`."""
+    section = _section()
+
+    assert section.get("name"), "the platform section has no heading"
+    assert section.get("description"), "the platform section has no description"
+
+
+def test_every_description_in_the_section_describes_a_toggle_in_it():
+    """`sections.<name>.data_description.<field>` is read only for a field in that
+    same section, so one naming a field elsewhere renders nowhere."""
+    described = set(_section().get("data_description", {}))
+
+    orphans = described - _platform_labels()
+
+    assert not orphans, "the section describes %s" % sorted(orphans)
