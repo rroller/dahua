@@ -594,3 +594,57 @@ set_privacy_mode:
       default: true
       selector:
         boolean:
+
+
+debug_ivs_event:
+  name: Debug IVS Event
+  description: >-
+    Debug-only service that injects a synthetic Normal IVS Start, Stop, or Pulse
+    directly into the selected Dahua camera coordinator. It does not send an
+    event to the physical camera.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    code:
+      name: Event code
+      description: Dahua IVS event code, for example CrossLineDetection.
+      required: true
+      example: CrossLineDetection
+      selector:
+        text:
+    rule_id:
+      name: Rule ID
+      description: Stable Dahua RuleID to inject.
+      required: true
+      example: 8
+      selector:
+        number:
+          mode: box
+          min: 0
+          max: 10000
+    action_type:
+      name: Action
+      description: Synthetic event action.
+      required: true
+      selector:
+        select:
+          options:
+            - Start
+            - Stop
+            - Pulse
+    name:
+      name: Rule name
+      description: Optional Dahua rule name for diagnostics.
+      required: false
+      example: Rule4
+      selector:
+        text:
+    object_type:
+      name: Object type
+      description: Optional ObjectType such as Human or Vehicle.
+      required: false
+      example: Human
+      selector:
+        text:
