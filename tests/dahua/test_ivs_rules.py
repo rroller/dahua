@@ -163,13 +163,16 @@ class TestIVSActions:
                        "supports_smart_motion_detection_amcrest", "supports_privacy_mode",
                        "supports_alarm_output", "supports_disarming_linkage"):
             setattr(c, method, lambda: False)
-        hass = SimpleNamespace(data={DOMAIN: {"entry": c}})
+        hass = SimpleNamespace(data={})
         added = []
         def init(self, coord, entry):
             self._coordinator = coord
             self.coordinator = coord
         with patch.object(DahuaBaseEntity, "__init__", init):
-            await async_setup_entry(hass, SimpleNamespace(entry_id="entry"), added.extend)
+            await async_setup_entry(
+                hass,
+                SimpleNamespace(entry_id="entry", runtime_data={0: c}),
+                added.extend)
         rules = [s for s in added if isinstance(s, DahuaIVSRuleSwitch)]
         self.assertEqual(len(rules), 2)
         self.assertEqual(len({s.unique_id for s in rules}), 2)

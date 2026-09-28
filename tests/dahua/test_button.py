@@ -74,8 +74,9 @@ def test_the_button_platform_is_registered():
 async def test_the_setup_adds_a_reboot_button_for_a_camera():
     added = []
     coordinator = _Coordinator(doorbell=False)
-    hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
-    entry = type("E", (), {"entry_id": "e1"})()
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1",
+                           "runtime_data": {0: coordinator}})()
 
     await button_module.async_setup_entry(hass, entry, added.extend)
 
@@ -87,8 +88,9 @@ async def test_a_doorbell_also_gets_an_open_door_button():
     sees on the device page."""
     added = []
     coordinator = _Coordinator(doorbell=True)
-    hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
-    entry = type("E", (), {"entry_id": "e1"})()
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1",
+                           "runtime_data": {0: coordinator}})()
 
     await button_module.async_setup_entry(hass, entry, added.extend)
 
@@ -101,8 +103,9 @@ async def test_a_camera_gets_no_open_door_button():
     """The endpoint is a VTO operation. A button that always errors is worse
     than no button."""
     added = []
-    hass = type("H", (), {"data": {"dahua": {"e1": _Coordinator(doorbell=False)}}})()
-    entry = type("E", (), {"entry_id": "e1"})()
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1",
+                           "runtime_data": {0: _Coordinator(doorbell=False)}})()
 
     await button_module.async_setup_entry(hass, entry, added.extend)
 

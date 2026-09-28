@@ -26,18 +26,26 @@ from custom_components.dahua.const import DOMAIN
 SERIAL = "BC0A198PAJ779DF"
 
 
-def _hass(entry_id="e1", serial=SERIAL, loaded=True):
-    coordinator = SimpleNamespace(get_serial_number=lambda: serial)
-    data = {DOMAIN: {entry_id: coordinator} if loaded else {}}
-    return SimpleNamespace(data=data)
+def _hass():
+    """No Dahua state of its own: runtime data lives on the entry."""
+    return SimpleNamespace(data={})
 
 
 def _device(*identifiers):
     return SimpleNamespace(identifiers=set(identifiers))
 
 
-def _entry(entry_id="e1"):
-    return SimpleNamespace(entry_id=entry_id)
+def _entry(entry_id="e1", serial=SERIAL, loaded=True):
+    """An entry carrying its coordinator, or an unloaded one carrying none.
+
+    `serial` and `loaded` describe the entry rather than Home Assistant, which is
+    what moving off hass.data makes obvious: an unloaded entry is one with no
+    runtime_data at all, because Home Assistant deletes the attribute.
+    """
+    entry = SimpleNamespace(entry_id=entry_id)
+    if loaded:
+        entry.runtime_data = {0: SimpleNamespace(get_serial_number=lambda: serial)}
+    return entry
 
 
 # --- the live device must stay ------------------------------------------------
@@ -53,7 +61,7 @@ async def test_the_device_this_entry_creates_cannot_be_removed():
 async def test_the_live_channel_device_cannot_be_removed():
     """Above channel 0 the identifier carries the channel."""
     allowed = await async_remove_config_entry_device(
-        _hass(serial=SERIAL + "_3"), _entry(), _device((DOMAIN, SERIAL + "_3")))
+        _hass(), _entry(serial=SERIAL + "_3"), _device((DOMAIN, SERIAL + "_3")))
 
     assert allowed is False
 
@@ -74,7 +82,7 @@ async def test_a_row_from_an_earlier_identity_can_be_removed():
     """#583: the camera used to answer with a synthesised id and now reports its
     real serial, so the old row sits there for ever with the real model name on it."""
     allowed = await async_remove_config_entry_device(
-        _hass(serial=SERIAL), _entry(),
+        _hass(), _entry(serial=SERIAL),
         _device((DOMAIN, "4f3a9c8ecafe4f3a9c8ecafe4f3a9c8e")))
 
     assert allowed is True
@@ -84,7 +92,7 @@ async def test_another_channels_row_can_be_removed_from_this_entry():
     """Each channel has its own entry, so a row for a different channel is not this
     entry's to keep alive."""
     allowed = await async_remove_config_entry_device(
-        _hass(serial=SERIAL + "_3"), _entry(), _device((DOMAIN, SERIAL + "_4")))
+        _hass(), _entry(serial=SERIAL + "_3"), _device((DOMAIN, SERIAL + "_4")))
 
     assert allowed is True
 
@@ -102,7 +110,7 @@ async def test_an_unloaded_entry_refuses():
     """Setup failed or the entry is unloaded, so which device is current cannot be
     known. Deleting the live one on a guess is worse than leaving a stale row."""
     allowed = await async_remove_config_entry_device(
-        _hass(loaded=False), _entry(), _device((DOMAIN, SERIAL)))
+        _hass(), _entry(loaded=False), _device((DOMAIN, SERIAL)))
 
     assert allowed is False
 
@@ -110,16 +118,25 @@ async def test_an_unloaded_entry_refuses():
 async def test_an_unloaded_entry_refuses_even_a_stale_looking_row():
     """The same reasoning: without a coordinator, "stale" is a guess."""
     allowed = await async_remove_config_entry_device(
-        _hass(loaded=False), _entry(), _device((DOMAIN, "something-else")))
+        _hass(), _entry(loaded=False), _device((DOMAIN, "something-else")))
 
     assert allowed is False
 
 
 async def test_an_entry_the_domain_has_never_seen_refuses():
+    """This used to be a distinct case and no longer is, which is worth saying.
+
+    When the coordinator lived in `hass.data[DOMAIN]` there were two ways to know
+    nothing about an entry: the domain key was absent entirely, or it was present
+    without this entry in it. Runtime data has one state for both, the absence of
+    the attribute, so this now approaches the same condition as
+    `test_an_unloaded_entry_refuses` from the other side rather than testing a
+    second mechanism. Kept because the answer still matters; narrowed to say so.
+    """
     hass = SimpleNamespace(data={})
 
     allowed = await async_remove_config_entry_device(
-        hass, _entry(), _device((DOMAIN, SERIAL)))
+        hass, _entry(loaded=False), _device((DOMAIN, SERIAL)))
 
     assert allowed is False
 

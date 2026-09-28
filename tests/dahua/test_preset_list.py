@@ -216,8 +216,9 @@ async def _added(monkeypatch, answer, day_night=False):
     monkeypatch.setattr(select_module.DahuaBaseEntity, "__init__",
                         lambda self, coordinator, config_entry: None)
     coordinator = _setup_coordinator(answer, day_night)
-    hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
-    entry = type("E", (), {"entry_id": "e1"})()
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1",
+                           "runtime_data": {0: coordinator}})()
 
     added = []
     await select_module.async_setup_entry(hass, entry, added.extend)

@@ -71,8 +71,10 @@ def test_the_event_platform_is_registered():
 
 async def test_a_doorbell_gets_one():
     added = []
-    hass = type("H", (), {"data": {"dahua": {"e1": _Coordinator(doorbell=True)}}})()
-    await async_setup_entry(hass, type("E", (), {"entry_id": "e1"})(), added.extend)
+    coordinator = _Coordinator(doorbell=True)
+    hass = type("H", (), {"data": {}})()
+    await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
+                          "runtime_data": {0: coordinator}})(), added.extend)
 
     assert len(added) == 1
     assert isinstance(added[0], DahuaDoorbellEvent)
@@ -81,8 +83,10 @@ async def test_a_doorbell_gets_one():
 async def test_a_camera_does_not():
     """There is no button, so the entity would sit at unknown for ever."""
     added = []
-    hass = type("H", (), {"data": {"dahua": {"e1": _Coordinator(doorbell=False)}}})()
-    await async_setup_entry(hass, type("E", (), {"entry_id": "e1"})(), added.extend)
+    coordinator = _Coordinator(doorbell=False)
+    hass = type("H", (), {"data": {}})()
+    await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
+                          "runtime_data": {0: coordinator}})(), added.extend)
 
     assert added == []
 
