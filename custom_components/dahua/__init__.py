@@ -2134,7 +2134,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(
                     self.client.async_get_coaxial_control_io_status_rpc2()
                 ))
-            elif self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
+            elif self._supports_coaxial_control and self.reads_coaxial_status():
                 coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
                 # Wrapped, because a device that refuses this must not take the whole
                 # entry offline. See _async_coaxial_status.
@@ -3050,6 +3050,59 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if self.supports_smart_motion_detection_amcrest():
             return self.data.get("table.VideoAnalyseRule[0][0].Enable", "").lower() == "true"
         return (self._smart_motion_row() or "").lower() == "true"
+
+    def creates_siren_entity(self) -> bool:
+        """Whether switch.py creates the siren for this entry.
+
+        One source of truth, because two places need the same answer: the platform
+        deciding whether to create the entity, and the poll deciding whether anything
+        will read what it fetches. Two copies of this rule drifting apart would either
+        spend a request per poll on nothing or leave a switch reading a value nobody
+        fetched, and the second is much worse than the first.
+        """
+        if self.uses_recorder_deterrence():
+            return self.supports_nvr_active_deterrence()
+        return self.supports_siren()
+
+    def creates_security_light_entity(self) -> bool:
+        """Whether light.py creates the security light for this entry.
+
+        An Amcrest doorbell is excluded because its Security Light is a *select* built in
+        select.py, and that reads `Lighting_V2` rather than the coaxial status.
+        """
+        if self.is_amcrest_doorbell():
+            return False
+        if self.uses_recorder_deterrence():
+            return self.supports_nvr_active_deterrence()
+        return self.supports_security_light()
+
+    def reads_coaxial_status(self) -> bool:
+        """Whether any entity this entry creates reads `coaxialControlIO` status.
+
+        Three do, and the third is the one to miss: a flood light reads `WhiteLight` out
+        of this same status when the camera reports floodlightmode, and reads
+        `Lighting_V2` when it does not. See `is_flood_light_on`.
+
+        Measured on a DHI-NVR5464 with eleven entries: it answered this endpoint on every
+        poll while having no siren and no security light entity anywhere, which is on the
+        order of 7,900 requests a day for a value nothing displays. The platform gates
+        were always there; the poll simply asked a broader question than the entities did.
+
+        The RPC2 branch deliberately keeps its own condition. `uses_rpc2_deterrence`
+        already returns False unless a speaker or light is detected or manually enabled,
+        so it cannot fetch for nothing.
+        """
+        if self.creates_siren_entity() and self._wanted_by(SWITCH):
+            return True
+        if self._wanted_by(LIGHT):
+            if self.creates_security_light_entity():
+                return True
+            # The flood light only reads the coaxial status on firmware that reports
+            # floodlightmode. Without it the same entity reads Lighting_V2 instead, and
+            # fetching this would be pointless for it too.
+            if self.is_flood_light() and self._supports_floodlightmode:
+                return True
+        return False
 
     def is_siren_on(self) -> bool:
         """ Returns true if the camera siren is on """

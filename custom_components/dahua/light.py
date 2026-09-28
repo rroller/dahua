@@ -37,13 +37,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     if coordinator.is_flood_light():
         entities.append(FloodLight(coordinator, entry, "Flood Light"))
 
-    has_security_light = (
-        coordinator.supports_nvr_active_deterrence()
-        if coordinator.uses_recorder_deterrence()
-        else coordinator.supports_security_light()
-    )
-    if has_security_light and not coordinator.is_amcrest_doorbell():
-        #  The Amcrest doorbell works a little different and is added in select.py
+    # The rule lives on the coordinator because the poll needs the same answer to decide
+    # whether to fetch the status this entity reads. The Amcrest doorbell exclusion is
+    # part of it: its Security Light is a select built in select.py.
+    if coordinator.creates_security_light_entity():
         security_light_name = (
             "Warning Light" if coordinator.uses_recorder_deterrence() else "Security Light"
         )

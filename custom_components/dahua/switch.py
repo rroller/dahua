@@ -18,13 +18,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         DahuaMotionDetectionBinarySwitch(coordinator, entry),
     ]
 
-    # But only some cams have a siren, very few do actually
-    has_siren = (
-        coordinator.supports_nvr_active_deterrence()
-        if coordinator.uses_recorder_deterrence()
-        else coordinator.supports_siren()
-    )
-    if has_siren:
+    # But only some cams have a siren, very few do actually. The rule lives on the
+    # coordinator because the poll needs the same answer to decide whether to fetch the
+    # status this entity reads.
+    if coordinator.creates_siren_entity():
         devices.append(
             DahuaSirenBinarySwitch(
                 coordinator,
