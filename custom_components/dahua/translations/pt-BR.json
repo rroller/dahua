@@ -43,13 +43,17 @@
     "options": {
         "step": {
             "user": {
-                "data": {
-                    "binary_sensor": "Binary sensor ativado",
-                    "sensor": "Sensor ativado",
-                    "switch": "Interruptor ativado",
-                    "light": "Luz ativada",
-                    "select": "Selecione ativado",
-                    "camera": "Câmera ativada"
+                "sections": {
+                    "platforms": {
+                        "data": {
+                            "binary_sensor": "Binary sensor ativado",
+                            "camera": "Câmera ativada",
+                            "light": "Luz ativada",
+                            "select": "Selecione ativado",
+                            "sensor": "Sensor ativado",
+                            "switch": "Interruptor ativado"
+                        }
+                    }
                 }
             }
         }

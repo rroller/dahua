@@ -153,6 +153,13 @@ def _platform_labels(language="en"):
     return set(_section(language=language).get("data", {}))
 
 
+def _options_data(language):
+    """The keys at the options step's own `data`, outside any section."""
+    path = TRANSLATIONS / ("%s.json" % language)
+    body = json.loads(path.read_text(encoding="utf-8")).get("options", {})
+    return set(body.get("step", {}).get("user", {}).get("data", {}))
+
+
 def test_every_platform_toggle_has_a_label():
     """The toggles are `{vol.Required(x): bool for x in sorted(PLATFORMS)}`, so a
     platform added to that constant grows a checkbox whether or not anybody wrote a
@@ -169,13 +176,37 @@ def test_every_platform_toggle_has_a_label():
     assert not missing, "no label for the %s toggle" % sorted(missing)
 
 
-def test_the_platform_section_labels_no_platform_that_does_not_exist():
+@pytest.mark.parametrize("language", ["en", "bg", "ca", "es", "fr", "it", "nl",
+                                      "pt", "pt-BR"])
+def test_no_language_labels_a_platform_that_does_not_exist(language):
     """The orphan direction, which is the half #814 was about: a string for a
     platform that is no longer in `PLATFORMS` renders nowhere at all."""
-    orphans = _platform_labels() - set(PLATFORMS)
+    orphans = _platform_labels(language) - set(PLATFORMS)
 
-    assert not orphans, "labels the %s toggle, which is not a platform" % sorted(
-        orphans)
+    assert not orphans, "%s labels the %s toggle, which is not a platform" % (
+        language, sorted(orphans))
+
+
+@pytest.mark.parametrize("language", ["en", "bg", "ca", "es", "fr", "it", "nl",
+                                      "pt", "pt-BR"])
+def test_no_language_labels_a_platform_outside_the_section(language):
+    """A platform label at the step's own `data` is read by nothing.
+
+    The toggles were the first eight fields of the options form before they moved
+    into the collapsed section, and eight of the nine files kept their six
+    translated labels at the old path. Those installs showed the English labels
+    while their own translations sat unread, which is worse than an untranslated
+    string because it looks like nobody had written one.
+
+    Scoped to the platform keys deliberately. `options.step.user.data` is a live
+    path that legitimately holds `scan_interval`, `events`, `area` and the rest, so
+    the rule is about which keys belong in the section, not about that dict being
+    empty."""
+    stranded = _options_data(language) & set(PLATFORMS)
+
+    assert not stranded, (
+        "%s labels %s at options.step.user.data, where a section's child is never "
+        "looked up" % (language, sorted(stranded)))
 
 
 def test_the_platform_section_has_a_heading_of_its_own():
