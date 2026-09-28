@@ -836,6 +836,18 @@ _HOST_FAILURES: dict = {}
 _HOST_CHANNEL_BASE: dict = {}
 _HOST_CHANNEL_BASE_LOCKS: dict = {}
 
+# What the network probe said about a host, and the lock that stops a recorder's eleven
+# entries all asking at once. `None` is cached as an answer: a device that did not reply
+# will not reply for the next channel either, and re-probing eleven times would spend
+# eleven timeouts on it.
+_HOST_NETWORK_IDENTITY: dict = {}
+_HOST_NETWORK_IDENTITY_LOCKS: dict = {}
+
+# A synthesised identity is md5 hex, and a channel above zero carries its index. Matched
+# rather than guessed at, because a real Dahua serial is shorter, upper case and not hex:
+# BC0A198PAJ779DF against 4f3a9c8ecafe4f3a9c8ecafe4f3a9c8e.
+_SYNTHESISED_UNIQUE_ID = re.compile(r"^[0-9a-f]{32}(?:_\d+)?$")
+
 
 def normalize_address(address: str) -> str:
     """One device, one key.
@@ -978,6 +990,46 @@ def async_host_is_unreachable(address: str) -> bool:
     """
     state = _HOST_FAILURES.get(normalize_address(address))
     return bool(state and state["consecutive"] >= UNREACHABLE_AFTER_FAILURES)
+
+
+def is_synthesised_identity(value) -> bool:
+    """Whether an identity is a hash of the credentials rather than a device serial.
+
+    A real Dahua serial is shorter, upper case and not hex: `BC0A198PAJ779DF` against
+    `4f3a9c8ecafe4f3a9c8ecafe4f3a9c8e`. The optional suffix is the channel index, which a
+    unique_id carries and a bare serial does not.
+    """
+    return bool(value) and bool(_SYNTHESISED_UNIQUE_ID.match(str(value)))
+
+
+async def async_network_identity(hass, address: str) -> dict:
+    """What the device says about itself over DHDiscover, asked once per host.
+
+    Credential free, which is the whole point: the devices that need this are the ones
+    that will not answer `magicBox.cgi`, and the identity those get today is
+    md5(address_rtspport_username_password). Change the password and the same physical
+    camera becomes a different device (#805, and #320 from the user's side).
+
+    UDP on the local subnet, so a camera behind a router answers nothing and keeps the
+    hash. An empty answer is cached for exactly that reason: it will be empty for the next
+    channel too, and re-probing would spend one timeout per entry on a recorder.
+    """
+    if address in _HOST_NETWORK_IDENTITY:
+        return _HOST_NETWORK_IDENTITY[address]
+
+    lock = _HOST_NETWORK_IDENTITY_LOCKS.get(address)
+    if lock is None:
+        lock = _HOST_NETWORK_IDENTITY_LOCKS[address] = asyncio.Lock()
+
+    async with lock:
+        # Another entry may have settled it while this one waited.
+        if address in _HOST_NETWORK_IDENTITY:
+            return _HOST_NETWORK_IDENTITY[address]
+        # Imported here because discovery imports nothing from us but config_flow does.
+        from .discovery import async_probe
+        found = await async_probe(address)
+        _HOST_NETWORK_IDENTITY[address] = found
+        return found
 
 
 async def async_device_is_zero_indexed(client, device: str):
