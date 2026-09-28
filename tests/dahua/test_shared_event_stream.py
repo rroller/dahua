@@ -333,8 +333,8 @@ async def test_junk_on_the_wire_is_ignored(hass):
 
 # --- the attach itself ------------------------------------------------------
 
-async def test_multi_channel_stream_attaches_with_all_events(hass):
-    """A shared NVR stream avoids long explicit event-code subscriptions."""
+async def test_expanded_shared_subscription_attaches_with_all_events(hass):
+    """Use All only when sharing makes the event list broader than before #615."""
     stream = _host_stream(hass, ADDRESS)
     first = _Coordinator(0, ["VideoMotion"])
     second = _Coordinator(1, ["CrossLineDetection", "AlarmLocal"])
@@ -343,6 +343,22 @@ async def test_multi_channel_stream_attaches_with_all_events(hass):
     await _settle()
 
     assert first.client.attached_with[-1] == ["All"]
+
+
+async def test_shared_subscription_stays_explicit_when_union_does_not_grow(hass):
+    """Two channels choosing the same event do not need the All fallback."""
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["VideoMotion"])
+    second = _Coordinator(1, ["VideoMotion"])
+    stream.register(first)
+    await _settle()
+    before = first.client.attach_count
+
+    stream.register(second)
+    await _settle()
+
+    assert first.client.attach_count == before
+    assert first.client.attached_with[-1] == ["VideoMotion"]
 
 
 async def test_single_channel_keeps_its_explicit_event_subscription(hass):
@@ -373,6 +389,28 @@ async def test_all_subscription_still_filters_unrequested_codes(hass):
     assert second.handled == []
 
 
+async def test_derived_smart_motion_allows_raw_ivs_event_through(hass):
+    """SmartMotionHuman may be selected even though the wire code is CrossRegionDetection."""
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["SmartMotionHuman"])
+    second = _Coordinator(1, ["VideoMotion"])
+    stream.register(first)
+    stream.register(second)
+    await _settle()
+
+    stream.on_receive(
+        (
+            b'Code=CrossRegionDetection;action=Start;index=0;'
+            b'data={"Object":{"ObjectType":"Human"}}\r\n'
+        ),
+        0,
+    )
+
+    assert len(first.handled) == 1
+    assert first.handled[0]["Code"] == "CrossRegionDetection"
+    assert second.handled == []
+
+
 async def test_it_does_not_re_attach_when_nothing_new_is_wanted(hass):
     stream = _host_stream(hass, ADDRESS)
     first = _Coordinator(0, ["VideoMotion"])
@@ -386,7 +424,7 @@ async def test_it_does_not_re_attach_when_nothing_new_is_wanted(hass):
     assert first.client.attach_count == before, "re-attached for no reason"
 
 
-async def test_it_re_attaches_when_a_channel_wants_something_new(hass):
+async def test_it_re_attaches_with_all_when_union_expands(hass):
     stream = _host_stream(hass, ADDRESS)
     first = _Coordinator(0, ["VideoMotion"])
     stream.register(first)
@@ -395,7 +433,7 @@ async def test_it_re_attaches_when_a_channel_wants_something_new(hass):
     stream.register(_Coordinator(1, ["FaceDetection"]))
     await _settle()
 
-    assert "FaceDetection" in first.client.attached_with[-1]
+    assert first.client.attached_with[-1] == ["All"]
 
 
 async def test_a_channel_with_no_events_starts_nothing(hass):
