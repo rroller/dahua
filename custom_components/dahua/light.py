@@ -14,7 +14,7 @@ from homeassistant.components.light import (
     LightEntity, LightEntityFeature, ColorMode,
 )
 
-from . import (DahuaDataUpdateCoordinator, dahua_utils, entry_coordinator,
+from . import (DahuaDataUpdateCoordinator, dahua_utils, entry_coordinators,
                scheme_blocking_white_light)
 from .const import DOMAIN, SECURITY_LIGHT_ICON, INFRARED_ICON
 from .entity import DahuaBaseEntity
@@ -26,30 +26,30 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     """Setup light platform."""
-    coordinator = entry_coordinator(entry)
-    entities = []
-    if coordinator.supports_infrared_light():
-        entities.append(DahuaInfraredLight(coordinator, entry, "Infrared"))
+    for coordinator in entry_coordinators(entry).values():
+        entities = []
+        if coordinator.supports_infrared_light():
+            entities.append(DahuaInfraredLight(coordinator, entry, "Infrared"))
 
-    if coordinator.supports_illuminator():
-        entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
+        if coordinator.supports_illuminator():
+            entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
 
-    if coordinator.is_flood_light():
-        entities.append(FloodLight(coordinator, entry, "Flood Light"))
+        if coordinator.is_flood_light():
+            entities.append(FloodLight(coordinator, entry, "Flood Light"))
 
-    # The rule lives on the coordinator because the poll needs the same answer to decide
-    # whether to fetch the status this entity reads. The Amcrest doorbell exclusion is
-    # part of it: its Security Light is a select built in select.py.
-    if coordinator.creates_security_light_entity():
-        security_light_name = (
-            "Warning Light" if coordinator.uses_recorder_deterrence() else "Security Light"
-        )
-        entities.append(DahuaSecurityLight(coordinator, entry, security_light_name))
+        # The rule lives on the coordinator because the poll needs the same answer to decide
+        # whether to fetch the status this entity reads. The Amcrest doorbell exclusion is
+        # part of it: its Security Light is a select built in select.py.
+        if coordinator.creates_security_light_entity():
+            security_light_name = (
+                "Warning Light" if coordinator.uses_recorder_deterrence() else "Security Light"
+            )
+            entities.append(DahuaSecurityLight(coordinator, entry, security_light_name))
 
-    if coordinator.is_amcrest_doorbell():
-        entities.append(AmcrestRingLight(coordinator, entry, "Ring Light"))
+        if coordinator.is_amcrest_doorbell():
+            entities.append(AmcrestRingLight(coordinator, entry, "Ring Light"))
 
-    async_add_entities(entities)
+        async_add_entities(entities)
 
 
 class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
