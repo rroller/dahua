@@ -2380,7 +2380,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         AccessControl card was never handed to async_scan_tag. Both behaviours
         existed on the doorbell path the whole time.
         """
-        for code in self.translate_event_code(event):
+        codes = self.translate_event_code(event)
+        data = event.get("data", event.get("Data", {}))
+        if isinstance(data, dict) and data.get("Class") == "Normal":
+            rule_id = data.get("RuleID")
+            if rule_id is None:
+                rule_id = data.get("RuleId")
+            if rule_id is not None and any(
+                rule["id"] == str(rule_id) for rule in self.get_ivs_rules()
+            ):
+                codes.append(f"IVSRule_{rule_id}")
+
+        for code in codes:
             event_key = self.get_event_key(code)
 
             if code == "AccessControl":
@@ -3892,4 +3903,3 @@ def _async_report_removal(hass: HomeAssistant, entry: ConfigEntry, address: str,
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
     await hass.config_entries.async_reload(entry.entry_id)
-

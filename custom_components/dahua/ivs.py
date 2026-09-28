@@ -23,6 +23,7 @@ def ivs_rules_for_channel(table: dict, channel: int, name: str = "VideoAnalyseRu
             "index": int(match[1]),
             "id": rule_id,
             "name": table.get(prefix + ".Name") or f"IVS Rule {rule_id}",
+            "type": table.get(prefix + ".Type"),
         })
     return sorted((rule for rule in rules if ids[rule["id"]] == 1), key=lambda rule: rule["index"])
 
