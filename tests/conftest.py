@@ -110,15 +110,21 @@ def _clear_rpc2_event_state():
     survives a test, and one test's active event would otherwise be inherited as
     another's stale Start.
     """
+    from custom_components import dahua as dahua_module
     from custom_components.dahua import client as client_module
 
-    client_module._HOST_RPC2_EVENT_STATE.clear()
-    # The poller's description of itself, which diagnostics reads. Same reasoning: it
-    # is keyed by host and outlives a restart, so it outlives a test too.
-    client_module._HOST_RPC2_EVENT_POLL.clear()
+    def _drain():
+        client_module._HOST_RPC2_EVENT_STATE.clear()
+        # The poller's description of itself, which diagnostics reads. Same reasoning:
+        # it is keyed by host and outlives a restart, so it outlives a test too.
+        client_module._HOST_RPC2_EVENT_POLL.clear()
+        # And which channels have already had a capability refusal reported, or one
+        # test's refusal silences the warning another test is asserting on.
+        dahua_module._CAPABILITY_REFUSALS_REPORTED.clear()
+
+    _drain()
     yield
-    client_module._HOST_RPC2_EVENT_STATE.clear()
-    client_module._HOST_RPC2_EVENT_POLL.clear()
+    _drain()
 
 @pytest.fixture(autouse=True)
 def _clear_cgi_config_absent():
