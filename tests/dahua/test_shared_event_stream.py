@@ -333,8 +333,8 @@ async def test_junk_on_the_wire_is_ignored(hass):
 
 # --- the attach itself ------------------------------------------------------
 
-async def test_the_stream_attaches_with_every_channels_events(hass):
-    """Attaching with one channel's list would stop delivering another's codes."""
+async def test_multi_channel_stream_attaches_with_all_events(hass):
+    """A shared NVR stream avoids long explicit event-code subscriptions."""
     stream = _host_stream(hass, ADDRESS)
     first = _Coordinator(0, ["VideoMotion"])
     second = _Coordinator(1, ["CrossLineDetection", "AlarmLocal"])
@@ -342,8 +342,35 @@ async def test_the_stream_attaches_with_every_channels_events(hass):
     stream.register(second)
     await _settle()
 
-    attached = first.client.attached_with[-1]
-    assert set(attached) == {"VideoMotion", "CrossLineDetection", "AlarmLocal"}
+    assert first.client.attached_with[-1] == ["All"]
+
+
+async def test_single_channel_keeps_its_explicit_event_subscription(hass):
+    """Single-camera behaviour is unchanged by the NVR compatibility path."""
+    stream = _host_stream(hass, ADDRESS)
+    only = _Coordinator(0, ["VideoMotion", "AlarmLocal"])
+    stream.register(only)
+    await _settle()
+
+    assert set(only.client.attached_with[-1]) == {"VideoMotion", "AlarmLocal"}
+
+
+async def test_all_subscription_still_filters_unrequested_codes(hass):
+    """codes=[All] on the wire must not broaden Home Assistant dispatch."""
+    stream = _host_stream(hass, ADDRESS)
+    first = _Coordinator(0, ["VideoMotion"])
+    second = _Coordinator(1, ["AlarmLocal"])
+    stream.register(first)
+    stream.register(second)
+    await _settle()
+
+    stream.on_receive(
+        b"Code=NewFile;action=Start;index=0\r\n",
+        0,
+    )
+
+    assert first.handled == []
+    assert second.handled == []
 
 
 async def test_it_does_not_re_attach_when_nothing_new_is_wanted(hass):
