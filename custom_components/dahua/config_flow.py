@@ -9,6 +9,7 @@ from aiohttp import (ClientConnectorError, ClientResponseError, ClientSession,
                      ClientSSLError, TCPConnector)
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.data_entry_flow import section
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
@@ -22,6 +23,7 @@ from . import (ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp, entry_coordinators,
                is_synthesised_identity)
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
+from .migrate import CHANNEL_SUBENTRY
 from .flow_preview import async_drop_preview, async_store_preview, preview_url
 from .const import (
     CONF_PASSWORD,
@@ -834,37 +836,50 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if self.init_info is not None:
                 self.init_info.update(user_input)
-                self._queue_extra_channels()
                 return self.async_create_entry(
                     title=self.init_info["name"],
                     data=self.init_info,
+                    subentries=self._channel_subentries(),
                 )
 
         return await self._show_config_form_name(user_input or self.init_info)
 
-    def _queue_extra_channels(self) -> None:
-        """Start a flow for each additional channel the user ticked.
+    def _channel_subentries(self) -> list:
+        """One subentry per channel the user chose, primary included.
 
-        Creating this entry ends this flow, so the rest go through their own.
-        Each sets its own unique_id and aborts if that channel is already
-        configured, so this cannot add the same channel twice.
+        This used to start a separate config flow per extra channel, so a 64
+        channel recorder became 64 config entries and removing it meant 64
+        deletions (#827). One entry with a subentry each is the shape Home
+        Assistant expects of a hub, and the shape its own delete button
+        understands.
+
+        The primary is a subentry too, rather than living only in the entry's
+        data. Setup reads channels from the subentries when there are any, so
+        leaving the primary out would have brought up every channel except the
+        one the user actually started from.
         """
-        for index in self._extra_channels:
+        subentries = []
+        for index in [self.init_info[CONF_CHANNEL]] + list(self._extra_channels):
             data = dict(self.init_info)
             data[CONF_CHANNEL] = index
-            data[CONF_NAME] = self._found_channels.get(
-                index, "Channel {0}".format(index + 1))
-            # Every extra channel inherits init_info, which carries the
-            # *primary's* area. Without the pop, ticking one area for the
-            # recorder itself would silently file every other channel there too.
-            area = self._channel_areas.get(index)
-            if area:
-                data[CONF_AREA] = area
-            else:
-                data.pop(CONF_AREA, None)
-            self.hass.async_create_task(
-                self.hass.config_entries.flow.async_init(
-                    DOMAIN, context={"source": "import"}, data=data))
+            if index != self.init_info[CONF_CHANNEL]:
+                data[CONF_NAME] = self._found_channels.get(
+                    index, "Channel {0}".format(index + 1))
+                # Every channel inherits init_info, which carries the *primary's*
+                # area. Without this, ticking one area for the recorder itself
+                # would silently file every other channel there too.
+                area = self._channel_areas.get(index)
+                if area:
+                    data[CONF_AREA] = area
+                else:
+                    data.pop(CONF_AREA, None)
+            subentries.append(ConfigSubentryData(
+                data=data,
+                subentry_type=CHANNEL_SUBENTRY,
+                title=data[CONF_NAME],
+                unique_id="%s_%s" % (data[CONF_ADDRESS], index),
+            ))
+        return subentries
 
     async def async_step_reauth(self, entry_data):
         """Handle reauthentication when credentials become invalid."""

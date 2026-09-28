@@ -4054,6 +4054,11 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     # Read before anything else: Home Assistant clears the registry rows this
     # depends on as soon as this hook returns.
     dependents = _async_dependents(hass, entry.entry_id)
+    # Normally none: #827 merged each recorder onto one entry, so removing "the
+    # recorder" is one deletion and there is nothing left to offer. This is kept
+    # for the case that migration refused, where a host really does still have an
+    # entry per channel and the offer is the only thing that makes removing it
+    # bearable. Dormant rather than dead.
     siblings = _entries_for_address(hass, address) if address else []
 
     if address and not siblings:

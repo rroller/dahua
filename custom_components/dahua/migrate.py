@@ -66,7 +66,10 @@ BACKED_UP = (
     "core.entity_registry",
 )
 
-SUBENTRY_TYPE = "channel"
+# Shared with the config flow so a merged recorder and a freshly added one
+# look identical, and so a subentry reconfigure flow can be registered for
+# one type rather than two.
+CHANNEL_SUBENTRY = "channel"
 
 
 def _channel_of(entry) -> int:
@@ -180,7 +183,7 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
             continue
         subentry = ConfigSubentry(
             data=dict(entry.data),
-            subentry_type=SUBENTRY_TYPE,
+            subentry_type=CHANNEL_SUBENTRY,
             title=entry.title or "Channel %d" % channel,
             unique_id=unique_id,
         )
