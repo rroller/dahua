@@ -1552,7 +1552,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # _async_probe_cloud_upgrade.
         self._supports_cloud_upgrade = False
         self._cloud_firmware_version: str | None = None
-        self._cloud_upgrade_checked_at = 0.0
+        self._cloud_upgrade_checked_at: float | None = None
         self._ivs_rules = []
         self._supports_smart_motion_detection = False
         self._supports_ptz_position = False
@@ -2738,7 +2738,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def _cloud_upgrade_read_is_due(self) -> bool:
         """Whether the reused cloud upgrade record is old enough to re-read."""
-        checked_at = getattr(self, "_cloud_upgrade_checked_at", 0.0)
+        checked_at = getattr(self, "_cloud_upgrade_checked_at", None)
+        if checked_at is None:
+            return True
         return time.monotonic() - checked_at >= FIRMWARE_UPGRADE_REFRESH_SECONDS
 
     async def _async_probe_direct_deterrence(self) -> None:
