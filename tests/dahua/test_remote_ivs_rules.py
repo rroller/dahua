@@ -1,10 +1,14 @@
 """NVR IVS writes preserve the complete channel table and stable rule IDs."""
 
+import asyncio
+from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from custom_components.dahua.client import flatten_rpc2_config
+from custom_components.dahua import client as client_module
+from custom_components.dahua.client import DahuaClient, flatten_rpc2_config
 from custom_components.dahua.ivs import ivs_rules_for_channel
 from custom_components.dahua.rpc2 import DahuaRpc2Client
 
@@ -104,3 +108,86 @@ async def test_remote_poll_reads_channel_table_only_when_switches_enabled(hass):
         if enabled:
             c.client.async_get_remote_ivs_rules.assert_awaited_once_with(10)
             assert data["table.RemoteVideoAnalyseRule[10][0].Enable"] == "false"
+
+
+def _client(rpc, username="u"):
+    client = DahuaClient(username, "p", "10.0.0.5", 80, 554, object())
+    client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc))
+    return client
+
+
+async def test_concurrent_remote_writes_to_one_channel_preserve_both_changes():
+    table = [rule(1, True), rule(2, True, "IVS-2")]
+    rpc = object.__new__(DahuaRpc2Client)
+    rpc._session_id = "session"
+
+    async def get_config(_params):
+        snapshot = deepcopy(table)
+        await asyncio.sleep(0.01)
+        return {"table": snapshot}
+
+    async def request(*, method, params):
+        assert method == "configManager.setConfig"
+        table[:] = deepcopy(params["table"])
+        return {"result": True}
+
+    rpc.get_config = get_config
+    rpc.request = request
+    # Different entries, even with different credentials, control one recorder.
+    first, second = _client(rpc, "u1"), _client(rpc, "u2")
+    await asyncio.gather(
+        first.async_set_remote_ivs_rule_by_id(10, "1", False),
+        second.async_set_remote_ivs_rule_by_id(10, "2", False),
+    )
+
+    assert [row["Enable"] for row in table] == [False, False]
+    assert table[0]["Points"] == [{"X": 12, "Y": 34}]
+
+
+@pytest.mark.parametrize("write", [False, True])
+async def test_remote_requests_share_the_host_request_limit(write):
+    active = peak = 0
+
+    async def request(*_args):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return [rule(1, True)]
+
+    rpc = SimpleNamespace(
+        async_get_remote_ivs_rules=request,
+        async_set_remote_ivs_rule_by_id=request,
+    )
+    clients = [_client(rpc) for _ in range(8)]
+    if write:
+        await asyncio.gather(*(
+            c.async_set_remote_ivs_rule_by_id(i, "1", False)
+            for i, c in enumerate(clients)
+        ))
+    else:
+        await asyncio.gather(*(
+            c.async_get_remote_ivs_rules(i) for i, c in enumerate(clients)
+        ))
+
+    assert peak == client_module.MAX_CONCURRENT_REQUESTS_PER_HOST
+
+
+@pytest.mark.parametrize("write", [False, True])
+async def test_remote_requests_time_out_when_the_device_stalls(monkeypatch, write):
+    monkeypatch.setattr(client_module, "TIMEOUT_SECONDS", 0.01)
+
+    async def stalled(*_args):
+        await asyncio.Event().wait()
+
+    rpc = SimpleNamespace(
+        async_get_remote_ivs_rules=stalled,
+        async_set_remote_ivs_rule_by_id=stalled,
+    )
+    client = _client(rpc)
+    with pytest.raises(TimeoutError):
+        if write:
+            await client.async_set_remote_ivs_rule_by_id(10, "1", False)
+        else:
+            await client.async_get_remote_ivs_rules(10)

@@ -17,8 +17,12 @@ def _clear_shared_host_reads():
     from custom_components.dahua import client as client_module
 
     client_module._HOST_CACHE.clear()
+    client_module._HOST_LIMITS.clear()
+    client_module._HOST_REMOTE_IVS_LOCKS.clear()
     yield
     client_module._HOST_CACHE.clear()
+    client_module._HOST_LIMITS.clear()
+    client_module._HOST_REMOTE_IVS_LOCKS.clear()
 
 
 @pytest.fixture(autouse=True)

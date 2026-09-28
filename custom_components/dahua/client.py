@@ -74,6 +74,20 @@ RPC2_EVENT_HEARTBEAT = b"Heartbeat\r\n"
 MAX_CONCURRENT_REQUESTS_PER_HOST = 2
 _HOST_LIMITS: dict = {}
 
+# A remote IVS write replaces a whole channel table. Entries for the same NVR
+# must serialize the fresh read and write together, even if they use different
+# RPC2 sessions or credentials.
+_HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _remote_ivs_lock(device: str, channel: int) -> asyncio.Lock:
+    key = (device, channel)
+    lock = _HOST_REMOTE_IVS_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _HOST_REMOTE_IVS_LOCKS[key] = lock
+    return lock
+
 
 def _device_key(address: str, port) -> str:
     """One device.
@@ -1162,8 +1176,9 @@ class DahuaClient:
 
     async def async_get_remote_ivs_rules(self, channel: int) -> dict:
         """Read an NVR channel's remote rules in the coordinator's flat shape."""
-        holder = await self._shared_rpc2()
-        table = await holder.client.async_get_remote_ivs_rules(channel)
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            holder = await self._shared_rpc2()
+            table = await holder.client.async_get_remote_ivs_rules(channel)
         return flatten_rpc2_config(
             "RemoteVideoAnalyseRule", table,
             f"table.RemoteVideoAnalyseRule[{channel}]",
@@ -1172,8 +1187,12 @@ class DahuaClient:
     async def async_set_remote_ivs_rule_by_id(
             self, channel: int, rule_id: str, enabled: bool) -> None:
         """Write a remote rule through the shared authenticated RPC2 session."""
-        holder = await self._shared_rpc2()
-        await holder.client.async_set_remote_ivs_rule_by_id(channel, rule_id, enabled)
+        async with asyncio.timeout(TIMEOUT_SECONDS):
+            async with _remote_ivs_lock(self._device, channel), self._host_limit:
+                holder = await self._shared_rpc2()
+                await holder.client.async_set_remote_ivs_rule_by_id(
+                    channel, rule_id, enabled
+                )
 
     async def async_set_ivs_rule_by_id(self, channel: int, rule_id: str, enabled: bool):
         """Resolve the rule just before writing, bypassing the shared read cache."""
