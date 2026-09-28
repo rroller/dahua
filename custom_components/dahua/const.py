@@ -33,7 +33,18 @@ SELECT = "select"
 BUTTON = "button"
 SENSOR = "sensor"
 EVENT = "event"
-PLATFORMS = [BINARY_SENSOR, SWITCH, LIGHT, CAMERA, SELECT, BUTTON, SENSOR, EVENT]
+UPDATE = "update"
+PLATFORMS = [
+    BINARY_SENSOR,
+    SWITCH,
+    LIGHT,
+    CAMERA,
+    SELECT,
+    BUTTON,
+    SENSOR,
+    EVENT,
+    UPDATE,
+]
 
 
 # Configuration and options

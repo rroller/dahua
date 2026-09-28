@@ -51,6 +51,7 @@ from .const import (
     LIGHT,
     SELECT,
     SWITCH,
+    UPDATE,
     CONF_RTSP_PORT,
     STARTUP_MESSAGE,
     CONF_CHANNEL,
@@ -70,7 +71,7 @@ from .const import (
     MIN_SCAN_INTERVAL,
     EVENT_DAHUA_ANPR_RECOGNIZED,
 )
-from .dahua_utils import parse_event
+from .dahua_utils import cloud_upgrade_version, parse_event
 from .deterrence import (
     product_definition_supports_security_light,
     product_definition_supports_siren,
@@ -1545,6 +1546,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._manual_security_light = entry.options.get(CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
+        # What the device's own cloud OTA check last found, read from its
+        # _DHCloudUpgrade_ config table. Reading it is local; see
+        # _async_probe_cloud_upgrade.
+        self._supports_cloud_upgrade = False
+        self._cloud_firmware_version: str | None = None
         self._ivs_rules = []
         self._supports_smart_motion_detection = False
         self._supports_ptz_position = False
@@ -1917,6 +1923,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_event_notifications = False
                 _LOGGER.debug("Device supports event notifications=%s", self._supports_event_notifications)
 
+                await self._async_probe_cloud_upgrade()
+                _LOGGER.debug(
+                    "Device supports cloud upgrade=%s", self._supports_cloud_upgrade
+                )
+
                 # PTZ position readback. The SDT4E425 PTZ sensor is controllable,
                 # but firmware V3.200.0000027.6.R returns HTTP 400 for CGI getStatus.
                 # Do not conflate PTZ/preset control with CGI position readback.
@@ -2199,6 +2210,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             for result in results:
                 if result is not None:
                     data.update(result)
+
+            # The cloud OTA record is a local config read, but it is only of
+            # use to the informational update entity, so it is not read at all
+            # when that platform is switched off -- the same rule the coaxial
+            # status followed in #817. A refusal here is not fatal: the last
+            # known answer stands.
+            wants_cloud_upgrade = getattr(self, "_supports_cloud_upgrade", False)
+            if wants_cloud_upgrade and self._wanted_by(UPDATE):
+                try:
+                    info = await self.client.async_get_cloud_upgrade_info()
+                    self._cloud_firmware_version = cloud_upgrade_version(info)
+                except Exception:  # pylint: disable=broad-except
+                    _LOGGER.debug(
+                        "Could not read the cloud upgrade record", exc_info=True
+                    )
 
             if (getattr(self, "_supports_lighting_scheme_illuminator", False)
                     and self._wanted_by(LIGHT)):
@@ -2655,6 +2681,43 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         profile sensor exists only where the profile is ever updated.
         """
         return self._supports_profile_mode
+
+    def supports_cloud_upgrade(self) -> bool:
+        """Whether the device serves a cloud OTA record to read.
+
+        Set once at setup from the ``_DHCloudUpgrade_`` config table; a
+        firmware without it gets no firmware-update entity, the same gate the
+        profile sensor uses.
+        """
+        return self._supports_cloud_upgrade
+
+    def get_cloud_firmware_version(self) -> str | None:
+        """The newest firmware the device's own cloud check found, or None.
+
+        None means "nothing known", not "up to date": the device only fills
+        this in after its own OTA check has run, so Home Assistant reports the
+        update entity as unknown until then rather than inventing a result.
+        """
+        return self._cloud_firmware_version
+
+    async def _async_probe_cloud_upgrade(self) -> None:
+        """Read the device's cached cloud OTA record, once, at setup.
+
+        The record is a local config table, so this costs the device one config
+        read and nothing else: no Dahua server is asked and no separate cloud
+        poll is added. A firmware that serves no ``_DHCloudUpgrade_`` table is
+        simply not given an update entity later, the same way the profile
+        sensor is only created where the profile is ever read.
+        """
+        try:
+            info = await self.client.async_get_cloud_upgrade_info()
+        except Exception as probe_error:  # pylint: disable=broad-except
+            self._note_probe_refusal("cloud_upgrade", probe_error)
+            self._supports_cloud_upgrade = False
+            self._cloud_firmware_version = None
+            return
+        self._supports_cloud_upgrade = True
+        self._cloud_firmware_version = cloud_upgrade_version(info)
 
     async def _async_probe_direct_deterrence(self) -> None:
         """Cache independent positive ProductDefinition and getCaps evidence."""

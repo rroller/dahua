@@ -1,0 +1,186 @@
+"""The firmware update entity reports; it does not install.
+
+The device learns of a newer image from its own cloud OTA check and leaves the
+record in a local config table. These tests cover the two halves that are easy
+to get wrong: joining the two version fields the record carries, and ordering
+Dahua firmware strings, which Home Assistant's own ``AwesomeVersion`` cannot do
+-- it calls ``2.800.0000016.0.R`` unknown and raises, and the update component
+reads a raised comparison as "an update is available".
+"""
+
+from types import SimpleNamespace
+
+import pytest
+from homeassistant.components.update import UpdateEntityFeature
+
+from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import entity as entity_module
+from custom_components.dahua import update as update_module
+from custom_components.dahua.dahua_utils import (
+    clean_firmware_version,
+    cloud_upgrade_version,
+    firmware_is_newer,
+)
+from custom_components.dahua.update import DahuaFirmwareUpdateEntity
+
+# --- reading the two version strings -----------------------------------------
+
+
+def test_the_build_date_is_not_part_of_the_version():
+    assert (
+        clean_firmware_version("2.800.0000016.0.R,build:2020-06-05")
+        == "2.800.0000016.0.R"
+    )
+
+
+def test_a_firmware_without_a_build_date_is_returned_as_is():
+    assert clean_firmware_version("3.120.0000.0.R") == "3.120.0000.0.R"
+
+
+def test_nothing_is_not_a_version():
+    assert clean_firmware_version("") == ""
+    assert clean_firmware_version(None) == ""
+
+
+def test_the_cloud_record_names_a_complete_version():
+    """LastVersion and LastSubVersion are two halves of one string."""
+    assert (
+        cloud_upgrade_version({"LastVersion": "2.800.0000016.0", "LastSubVersion": "R"})
+        == "2.800.0000016.0.R"
+    )
+
+
+def test_a_sub_version_already_inside_the_main_one_is_not_doubled():
+    assert (
+        cloud_upgrade_version(
+            {"LastVersion": "2.800.0000016.0.R", "LastSubVersion": "R"}
+        )
+        == "2.800.0000016.0.R"
+    )
+
+
+def test_a_record_without_a_version_is_unknown():
+    assert cloud_upgrade_version({"AutoCheck": True}) is None
+    assert cloud_upgrade_version(None) is None
+
+
+# --- the comparison Home Assistant cannot make -------------------------------
+
+
+def test_the_same_version_is_not_newer():
+    assert firmware_is_newer("2.800.0000016.0.R", "2.800.0000016.0.R") is False
+
+
+def test_a_cloud_record_missing_the_trailing_component_is_not_newer():
+    """``2.800.0000016.0`` must not read as an update over ``2.800.0000016.0.R``."""
+    assert firmware_is_newer("2.800.0000016.0", "2.800.0000016.0.R") is False
+
+
+def test_a_higher_build_is_newer():
+    assert firmware_is_newer("2.820.0000000.32.R", "2.800.0000016.0.R") is True
+
+
+def test_an_unknown_version_is_never_newer():
+    assert firmware_is_newer(None, "2.800.0000016.0.R") is False
+    assert firmware_is_newer("2.800.0000016.0.R", None) is False
+    assert firmware_is_newer("", "2.800.0000016.0.R") is False
+
+
+# --- the coordinator's accessors ---------------------------------------------
+
+
+def test_the_accessors_carry_the_flag_and_the_version():
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._supports_cloud_upgrade = True
+    coordinator._cloud_firmware_version = "2.820.0000000.32.R"
+
+    assert coordinator.supports_cloud_upgrade() is True
+    assert coordinator.get_cloud_firmware_version() == "2.820.0000000.32.R"
+
+
+# --- the entity is gated on the capability -----------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _skip_ha_plumbing(monkeypatch):
+    monkeypatch.setattr(
+        entity_module.DahuaBaseEntity, "__init__", lambda self, c, e: None
+    )
+
+
+def _coordinator(
+    supports=True, installed="2.800.0000016.0.R,build:2020-06-05", latest=None
+):
+    return SimpleNamespace(
+        get_device_name=lambda: "Front Door",
+        get_serial_number=lambda: "SERIAL1",
+        get_firmware_version=lambda: installed,
+        get_cloud_firmware_version=lambda: latest,
+        supports_cloud_upgrade=lambda: supports,
+    )
+
+
+def _setup(coordinator):
+    hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
+    entry = type("E", (), {"entry_id": "e1"})()
+    added = []
+    return hass, entry, added
+
+
+async def test_no_update_entity_without_a_cloud_record():
+    """A device with no record could only ever read unknown, which is worse
+    than no entity -- the same reasoning as the profile sensor gate."""
+    hass, entry, added = _setup(_coordinator(supports=False))
+
+    await update_module.async_setup_entry(hass, entry, added.extend)
+
+    assert not any(isinstance(e, DahuaFirmwareUpdateEntity) for e in added)
+
+
+async def test_the_update_entity_is_added_when_the_device_has_one():
+    hass, entry, added = _setup(
+        _coordinator(supports=True, latest="2.820.0000000.32.R")
+    )
+
+    await update_module.async_setup_entry(hass, entry, added.extend)
+
+    assert any(isinstance(e, DahuaFirmwareUpdateEntity) for e in added)
+
+
+def _entity(coordinator):
+    entity = object.__new__(DahuaFirmwareUpdateEntity)
+    entity._coordinator = coordinator
+    return entity
+
+
+def test_installed_version_drops_the_build_date():
+    assert _entity(_coordinator()).installed_version == "2.800.0000016.0.R"
+
+
+def test_installed_version_is_unknown_when_the_device_reported_none():
+    assert _entity(_coordinator(installed="")).installed_version is None
+
+
+def test_latest_version_is_what_the_cloud_record_named():
+    entity = _entity(_coordinator(latest="2.820.0000000.32.R"))
+
+    assert entity.latest_version == "2.820.0000000.32.R"
+
+
+def test_the_entity_is_named_after_the_device():
+    entity = _entity(_coordinator())
+
+    assert entity.name == "Front Door Firmware Update"
+    assert entity.unique_id == "SERIAL1_firmware_update"
+
+
+def test_it_reports_and_installs_nothing():
+    """No INSTALL feature: a wrong image bricks the camera."""
+    assert _entity(_coordinator()).supported_features == UpdateEntityFeature(0)
+
+
+def test_ordering_does_not_take_the_awesomeversion_route():
+    entity = _entity(_coordinator(latest="2.820.0000000.32.R"))
+
+    assert entity.version_is_newer("2.820.0000000.32.R", "2.800.0000016.0.R") is True
+    assert entity.version_is_newer("2.800.0000016.0.R", "2.800.0000016.0.R") is False

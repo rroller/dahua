@@ -443,13 +443,18 @@ Button |  Description |
 Reboot | Reboots the device
 Open Door | On a VTO (doorbell), opens the door
 
+## Update
+Update |  Description |
+:------------ | :------------ |
+Firmware | Compares the firmware the device is running against the newest one its own cloud check found. Informational only: there is no install button, because a wrong or interrupted image bricks the camera, so flashing stays a deliberate act on the device's own web UI or app. The entity is only created on a device whose firmware serves the `_DHCloudUpgrade_` record; reading it is a local request, Home Assistant never contacts Dahua itself
+
 # Options
 Open the integration, find the device and choose **Configure**. Options apply to that entry only, so on an NVR each channel is configured separately.
 
 Option | Default | Description
 :------------ | :------------ | :------------
 Poll interval | 30 seconds | How often the device is asked for the state of its settings. Events do not use this — they arrive on a separate stream and are unaffected by a longer interval
-Camera, Switch, Light, Select, Binary sensor, Button, Sensor | on | Which platforms this entry creates. These also stop the requests that exist only to feed a platform, so turning one off reduces how much the device is asked, not just how many entities you see
+Camera, Switch, Light, Select, Binary sensor, Button, Sensor, Update | on | Which platforms this entry creates. These also stop the requests that exist only to feed a platform, so turning one off reduces how much the device is asked, not just how many entities you see
 Auto-detect channel | on | Some firmwares number channels from 0 and others from 1. Turn this off if the detection gets it wrong on your camera
 Events | motion and the common smart-detection events | Which of the device's events become binary sensors. Most of the rest do nothing on most cameras, and each one selected adds an entity. An empty selection is honoured, which turns the event stream off for this entry. If you want an event that is not listed, open an issue
 Enable NVR active deterrence controls | off | Adds Warning Light and Alarm entities for a camera behind an NVR. Off by default because whether the NVR relays these commands varies by model — on some it accepts them and does nothing

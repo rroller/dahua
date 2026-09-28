@@ -595,3 +595,64 @@ def summarise_event(value, _depth: int = 0):
     if isinstance(value, str) and len(value) > EVENT_VALUE_LIMIT:
         return value[:EVENT_VALUE_LIMIT] + "<truncated>"
     return value
+
+
+def clean_firmware_version(version: str | None) -> str:
+    """The version part of a reported firmware string, without its build date.
+
+    ``/cgi-bin/magicBox.cgi?action=getSoftwareVersion`` answers
+    ``2.800.0000016.0.R,build:2020-06-05``. The build date is a separate fact
+    (``get_build_date`` peels it off); the version to compare against a cloud
+    record is the part before it.
+    """
+    if not version:
+        return ""
+    return version.split(",", 1)[0].strip()
+
+
+def cloud_upgrade_version(table: dict | None) -> str | None:
+    """The newest firmware named by a ``_DHCloudUpgrade_`` record, or None.
+
+    The device stores what its own cloud check found as ``LastVersion`` plus a
+    ``LastSubVersion`` (``R`` on the firmwares seen so far). The two are joined
+    only when the sub-version is not already part of the main one, so a
+    firmware that puts the whole string in ``LastVersion`` is not doubled up.
+    """
+    if not isinstance(table, dict):
+        return None
+    main = table.get("LastVersion")
+    if not isinstance(main, str) or not main.strip():
+        return None
+    main = main.strip().rstrip(".")
+    sub = table.get("LastSubVersion")
+    if isinstance(sub, str) and sub.strip() and not main.endswith(sub.strip()):
+        return f"{main}.{sub.strip()}"
+    return main
+
+
+def firmware_is_newer(latest: str | None, installed: str | None) -> bool:
+    """Whether ``latest`` is a newer Dahua firmware than ``installed``.
+
+    Compared on the numeric components, because these strings are not versions
+    Home Assistant's ``AwesomeVersion`` can order: it calls
+    ``2.800.0000016.0.R`` unknown and raises instead of comparing, and the
+    update entity reads a raised comparison as "an update is available" -- a
+    false alarm on a camera that is up to date. Missing trailing components
+    compare equal (``2.800.0000016.0`` is not newer than ``2.800.0000016.0.R``),
+    so a cloud record that omits the sub-version cannot trigger one either.
+    """
+    latest_parts = _firmware_numbers(latest)
+    installed_parts = _firmware_numbers(installed)
+    if not latest_parts or not installed_parts:
+        return False
+    width = max(len(latest_parts), len(installed_parts))
+    latest_parts = latest_parts + (0,) * (width - len(latest_parts))
+    installed_parts = installed_parts + (0,) * (width - len(installed_parts))
+    return latest_parts > installed_parts
+
+
+def _firmware_numbers(version: str | None) -> tuple[int, ...]:
+    """The integer runs of a firmware string: 2.800.0000016.0.R -> (2, 800, 16, 0)."""
+    if not version:
+        return ()
+    return tuple(int(part) for part in re.findall(r"\d+", version))
