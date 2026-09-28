@@ -43,6 +43,18 @@ def _clear_channel_numbering():
 
 
 @pytest.fixture(autouse=True)
+def _clear_host_uptime():
+    """Keep host-wide uptime samples and their locks within one test loop."""
+    from custom_components import dahua as dahua_module
+
+    dahua_module._HOST_UPTIME_STATE.clear()
+    dahua_module._HOST_UPTIME_LOCKS.clear()
+    yield
+    dahua_module._HOST_UPTIME_STATE.clear()
+    dahua_module._HOST_UPTIME_LOCKS.clear()
+
+
+@pytest.fixture(autouse=True)
 async def _clear_shared_rpc2():
     """The RPC2 registry holds a login task and a keepalive task.
 

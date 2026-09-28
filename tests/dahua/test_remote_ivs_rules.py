@@ -101,6 +101,7 @@ async def test_remote_poll_reads_channel_table_only_when_switches_enabled(hass):
         c.is_nvr_channel = lambda: True
         c._ivs_rules = ivs_rules_for_channel(table, 10, "RemoteVideoAnalyseRule")
         c.client.async_get_remote_ivs_rules = AsyncMock(return_value=table)
+        c.client.async_get_uptime_last = AsyncMock(return_value=60)
 
         data = await c._async_update_data()
 
