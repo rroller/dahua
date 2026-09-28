@@ -1227,6 +1227,13 @@ class DahuaHostEventStream:
         self._by_channel: Dict[int, list] = {}
         self._owner = None  # whose client the stream currently borrows
         self._events: frozenset = frozenset()
+        # A shared NVR stream can accumulate a much larger explicit code list
+        # than any one channel used before #615. Some Dahua firmware accepts
+        # codes=[All] but goes silent when given a long multi-code subscription.
+        # Track whether this host currently needs the broad subscription so a
+        # second channel joining (or the last extra channel leaving) restarts
+        # the stream even when the union of requested event names is unchanged.
+        self._using_all_events = False
         self._task: asyncio.Task | None = None
         # Whether the last attach failed, so an outage is reported once.
         self._failing = False
@@ -1281,9 +1288,22 @@ class DahuaHostEventStream:
 
     def _restart_if_needed(self) -> None:
         wanted = self._union()
-        if self._task is not None and not self._task.done() and wanted == self._events:
+        # Before streams were shared, every channel attached with only its own
+        # event list. A shared NVR stream unions those lists, which can turn
+        # into a long codes=[A,B,C,...] request. Some firmware accepts the
+        # documented codes=[All] form but silently delivers nothing for a long
+        # explicit list. Use All only when more than one video channel shares
+        # the host; single-camera behaviour stays exactly as before.
+        use_all_events = len(self._by_channel) > 1 and bool(wanted)
+        if (
+            self._task is not None
+            and not self._task.done()
+            and wanted == self._events
+            and use_all_events == self._using_all_events
+        ):
             return
         self._events = wanted
+        self._using_all_events = use_all_events
         if self._task is not None:
             self._task.cancel()
             self._task = None
@@ -1297,6 +1317,7 @@ class DahuaHostEventStream:
         self._by_channel.clear()
         self._owner = None
         self._events = frozenset()
+        self._using_all_events = False
 
     async def _async_run(self) -> None:
         """Hold the stream open, recycling it the way a single channel used to."""
@@ -1306,7 +1327,9 @@ class DahuaHostEventStream:
             try:
                 await asyncio.wait_for(
                     self._owner.client.stream_events(
-                        self.on_receive, sorted(self._events), 0
+                        self.on_receive,
+                        ["All"] if self._using_all_events else sorted(self._events),
+                        0,
                     ),
                     timeout=jittered(EVENT_STREAM_MAX_LIFETIME_SECONDS),
                 )
@@ -1410,6 +1433,14 @@ class DahuaHostEventStream:
             return
 
         for event in events:
+            # A multi-channel host may subscribe with codes=[All] to avoid
+            # firmware limits on long explicit code lists. Preserve the user's
+            # configured selection locally so that broadening the wire-level
+            # subscription does not broaden Home Assistant events or entities.
+            code = event.get("Code")
+            if "All" not in self._events and code not in self._events:
+                continue
+
             index = 0
             if "index" in event:
                 try:
