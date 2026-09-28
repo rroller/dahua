@@ -842,6 +842,19 @@ _HOST_FAILURES: dict = {}
 #
 # Keyed by device rather than address because one address can answer for more
 # than one device, the same reason the digest state is keyed that way.
+# Statuses that mean "this device does not serve that here", as opposed to a device that
+# cannot be reached. A 400 is what a recorder returns for a capability endpoint it does not
+# implement on a channel: measured on a DHI-NVR5464, where `coaxialControlIO.cgi` has
+# answered 400 on seven different channels, and it is the same shape as `LightingScheme`
+# answering 400 on recorders. 404 and 501 are the CGI-absent pair already used for the
+# event and config endpoints.
+CAPABILITY_REFUSED = (400, 404, 501)
+
+# Which (device, channel) pairs have already had a capability refusal reported, so a
+# recorder that refuses on every poll produces one warning rather than one per poll. It
+# refused 949 times in nine hours here, each one a WARNING, which buries everything else.
+_CAPABILITY_REFUSALS_REPORTED: set = set()
+
 _HOST_CHANNEL_BASE: dict = {}
 _HOST_CHANNEL_BASE_LOCKS: dict = {}
 
@@ -2123,9 +2136,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 ))
             elif self._supports_coaxial_control and self._wanted_by(LIGHT, SWITCH):
                 coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
+                # Wrapped, because a device that refuses this must not take the whole
+                # entry offline. See _async_coaxial_status.
                 coros.append(
                     asyncio.ensure_future(
-                        self.client.async_get_coaxial_control_io_status(coaxial_channel)
+                        self._async_coaxial_status(coaxial_channel)
                     )
                 )
             if self._supports_smart_motion_detection and self._wanted_by(SWITCH):
@@ -3467,6 +3482,45 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ True if the lens privacy mask is currently enabled """
         return self.data.get("privacy_mode_enabled", False)
 
+    async def _async_coaxial_status(self, channel: int):
+        """Read the siren and white light state, or give up on this poll only.
+
+        This is one optional capability among a dozen gathered together, and the gather
+        is what the coordinator's result depends on, so any exception here used to take
+        the **entire entry** offline for that cycle: every entity stale, a host failure
+        recorded against the shared count that all of a recorder's channels use, and the
+        poll interval backed off.
+
+        Measured on a DHI-NVR5464: `coaxialControlIO.cgi?action=getStatus` answers 400 on
+        seven of its channels at various times, once for nine hours straight at about 109
+        an hour. A 400 is the device understanding the request and refusing it, which is
+        not a reason to report the camera as broken.
+
+        Deliberately does **not** stop asking. The refusals here recovered on their own,
+        so a capability the user may rely on must not be switched off for the life of the
+        process by one bad answer. What changes is that a refusal costs a stale reading
+        rather than a failed poll, and says so once rather than every two minutes.
+        """
+        try:
+            return await self.client.async_get_coaxial_control_io_status(channel)
+        except ClientResponseError as error:
+            if error.status not in CAPABILITY_REFUSED:
+                raise
+            target = (self.client.device_key, channel)
+            if target not in _CAPABILITY_REFUSALS_REPORTED:
+                _CAPABILITY_REFUSALS_REPORTED.add(target)
+                _LOGGER.warning(
+                    "%s refused the siren and white light state for channel %s with "
+                    "HTTP %s. That is this device saying it does not serve that here, "
+                    "not a fault, so those entities will hold their last value and the "
+                    "rest of this camera is unaffected. Reported once per channel",
+                    self._address, channel, error.status)
+            else:
+                _LOGGER.debug(
+                    "%s still refuses coaxial status for channel %s (HTTP %s)",
+                    self._address, channel, error.status)
+            return None
+
     async def _async_fetch_privacy_mode(self) -> dict:
         """ Poll the privacy mode state, keeping the last known value on failure """
         try:
@@ -3549,6 +3603,11 @@ def _async_forget_host(hass: HomeAssistant, address: str) -> None:
     # entry gone there is nobody left to owe.
     _HOST_RPC2_EVENT_POLL.pop(address, None)
     _HOST_RPC2_EVENT_STATE.pop(address, None)
+    # Which channels have already been reported as refusing a capability. Keyed by
+    # device_key, which is "address:port", so this matches on the address part.
+    for target in [t for t in _CAPABILITY_REFUSALS_REPORTED
+                   if str(t[0]).split(":")[0] == address]:
+        _CAPABILITY_REFUSALS_REPORTED.discard(target)
     ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
     ir.async_delete_issue(
         hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
