@@ -10,7 +10,7 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinator
 
 from .const import DOMAIN
 from .entity import DahuaBaseEntity, DahuaEventDrivenEntity
@@ -25,8 +25,7 @@ PROFILE_NAMES = {
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-
+    coordinator: DahuaDataUpdateCoordinator = entry_coordinator(entry)
     sensors = [
         DahuaFirmwareVersionSensor(coordinator, entry),
         DahuaSerialNumberSensor(coordinator, entry),

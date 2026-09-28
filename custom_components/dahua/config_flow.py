@@ -18,7 +18,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
 from . import dahua_utils
-from . import (ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp,
+from . import (ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp, entry_coordinators,
                is_synthesised_identity)
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
@@ -1354,8 +1354,8 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_AREA, self.config_entry.data.get(CONF_AREA))
         if not area_id or area_id == stored:
             return
-        coordinator = self.hass.data.get(DOMAIN, {}).get(
-            self.config_entry.entry_id)
+        channels = entry_coordinators(self.config_entry)
+        coordinator = next(iter(channels.values()), None)
         if coordinator is None:
             # Not loaded, so there is no device to move yet. The option is still
             # stored, and the config flow's suggested_area applies whenever the

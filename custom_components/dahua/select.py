@@ -3,7 +3,7 @@ import logging
 
 from homeassistant.core import HomeAssistant
 from homeassistant.components.select import SelectEntity
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinator
 
 from . import dahua_utils
 from .const import DOMAIN
@@ -15,7 +15,7 @@ _LOGGER = logging.getLogger(__package__)
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup select platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator: DahuaDataUpdateCoordinator = entry_coordinator(entry)
     devices = []
 
     if coordinator.is_amcrest_doorbell() and coordinator.supports_security_light():

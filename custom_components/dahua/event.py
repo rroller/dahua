@@ -7,7 +7,7 @@ import logging
 from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.core import HomeAssistant, callback
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinator
 
 from .const import DOMAIN
 from .entity import DahuaEventDrivenEntity
@@ -30,8 +30,7 @@ EVENT_RING = "ring"
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the event platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-
+    coordinator: DahuaDataUpdateCoordinator = entry_coordinator(entry)
     # Only a doorbell has a button to press. On anything else this entity would
     # sit at unknown for ever, which is worse than not offering it.
     if coordinator.is_doorbell():

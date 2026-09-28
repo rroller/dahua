@@ -14,7 +14,8 @@ from homeassistant.components.light import (
     LightEntity, LightEntityFeature, ColorMode,
 )
 
-from . import DahuaDataUpdateCoordinator, dahua_utils, scheme_blocking_white_light
+from . import (DahuaDataUpdateCoordinator, dahua_utils, entry_coordinator,
+               scheme_blocking_white_light)
 from .const import DOMAIN, SECURITY_LIGHT_ICON, INFRARED_ICON
 from .entity import DahuaBaseEntity
 from .client import SECURITY_LIGHT_TYPE
@@ -25,8 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     """Setup light platform."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-
+    coordinator = entry_coordinator(entry)
     entities = []
     if coordinator.supports_infrared_light():
         entities.append(DahuaInfraredLight(coordinator, entry, "Infrared"))

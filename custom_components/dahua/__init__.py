@@ -672,6 +672,49 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
+# The startup banner is logged once per Home Assistant run. It used to be guarded
+# by whether hass.data[DOMAIN] existed, which is gone now that runtime state
+# lives on the entry.
+_STARTUP_LOGGED = False
+
+# What an entry carries at runtime: the channels it owns, keyed by channel index.
+#
+# One member today, because a recorder is one config entry per channel. It is a
+# mapping so that an entry can own several, which is what #827 needs and the
+# reason removing a 64 channel NVR currently takes 64 deletions.
+#
+# Lazily evaluated, so naming DahuaDataUpdateCoordinator before it is defined is
+# fine.
+type DahuaConfigEntry = ConfigEntry[dict[int, "DahuaDataUpdateCoordinator"]]
+
+
+def entry_coordinators(entry: DahuaConfigEntry) -> dict:
+    """The channels this entry owns, keyed by channel index.
+
+    `runtime_data` is Home Assistant's own place for this, and it deletes the
+    attribute when an entry unloads, so an unloaded entry has none rather than an
+    empty one. Callers that run during teardown, or against an entry whose setup
+    failed, get an empty mapping instead of an AttributeError.
+    """
+    return getattr(entry, "runtime_data", None) or {}
+
+
+def entry_coordinator(entry: DahuaConfigEntry) -> "DahuaDataUpdateCoordinator":
+    """The single coordinator this entry owns.
+
+    Raises when the entry is not set up. Platforms are only ever asked to set up
+    an entry whose runtime data is already in place, so absence there is a bug
+    worth hearing about rather than something to paper over with None.
+
+    A named function rather than `next(iter(...))` spread across nine platforms,
+    so that #827 has one place to come back to when an entry owns more than one.
+    """
+    channels = entry_coordinators(entry)
+    if not channels:
+        raise KeyError("Dahua entry %s has no coordinator" % entry.entry_id)
+    return next(iter(channels.values()))
+
+
 def get_configured_events(entry: ConfigEntry) -> list:
     """Returns the events this entry subscribes to. Never None.
 
@@ -719,10 +762,11 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
     return timedelta(seconds=max(seconds, MIN_SCAN_INTERVAL))
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
+async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     """Set up this integration using UI."""
-    if hass.data.get(DOMAIN) is None:
-        hass.data.setdefault(DOMAIN, {})
+    global _STARTUP_LOGGED
+    if not _STARTUP_LOGGED:
+        _STARTUP_LOGGED = True
         _LOGGER.info(STARTUP_MESSAGE)
 
     # Before anything reads the entry's identity. Costs nothing unless the id is md5
@@ -759,7 +803,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         await coordinator.async_stop()
         raise
 
-    hass.data[DOMAIN][entry.entry_id] = coordinator
+    # Home Assistant's own place for per entry runtime state, and it clears the
+    # attribute itself when the entry unloads, so there is nothing to pop.
+    entry.runtime_data = {coordinator.get_channel(): coordinator}
 
     # https://developers.home-assistant.io/docs/config_entries_index/
     # Forward every platform in one call. Home Assistant gathers them into
@@ -3716,27 +3762,41 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
            v = self.data.get(f"status.{key}", "")
         return v
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bool:
     """Handle removal of an entry."""
-    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    if coordinator is None:
+    channels = entry_coordinators(entry)
+    if not channels:
         # Setup may have failed before the coordinator was registered, or a
         # previous unload may already have removed it. Treat that as unloaded
         # so an options-triggered reload can continue cleanly.
         return True
 
-    await coordinator.async_stop()
+    # Every channel is stopped, and all of them are stopped even if one raises.
+    # A coordinator that keeps its session and its host pool reference is the
+    # leak async_stop exists to prevent, so one failure must not strand the rest.
+    for result in await asyncio.gather(
+            *[coordinator.async_stop() for coordinator in channels.values()],
+            return_exceptions=True):
+        if isinstance(result, BaseException):
+            _LOGGER.debug("Stopping a Dahua channel failed during unload",
+                          exc_info=result)
+
+    # The union across channels: a platform is forwarded once per entry however
+    # many channels asked for it, so unloading it once per channel would fail.
+    wanted = {platform
+              for coordinator in channels.values()
+              for platform in coordinator.platforms}
     unloaded = all(
         await asyncio.gather(
             *[
                 hass.config_entries.async_forward_entry_unload(entry, platform)
                 for platform in PLATFORMS
-                if platform in coordinator.platforms
+                if platform in wanted
             ]
         )
     )
-    if unloaded:
-        hass.data[DOMAIN].pop(entry.entry_id)
+    # Nothing to pop: Home Assistant deletes runtime_data itself when an entry
+    # unloads. Which also means this function must not read it again below.
 
     # The host-scoped cleanup that used to live here has moved to
     # async_remove_entry. It could never run from this function: Home Assistant
@@ -3855,11 +3915,11 @@ async def async_remove_config_entry_device(
     is unloaded, so nothing can be said about which device is current, and deleting
     the live one on a guess is worse than leaving a stale row alone for now.
     """
-    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    if coordinator is None:
+    channels = entry_coordinators(entry)
+    if not channels:
         return False
 
-    current = coordinator.get_serial_number()
+    current = next(iter(channels.values())).get_serial_number()
     return not any(
         domain == DOMAIN and value == current for domain, value in device.identifiers
     )

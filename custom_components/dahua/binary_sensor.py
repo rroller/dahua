@@ -4,7 +4,7 @@ import re
 from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorDeviceClass
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinator
 
 from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
@@ -74,8 +74,7 @@ ICON_OVERRIDES = {
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
-
+    coordinator: DahuaDataUpdateCoordinator = entry_coordinator(entry)
     sensors: list[BinarySensorEntity] = []
     for event_name in coordinator.get_event_list():
         sensors.append(DahuaEventSensor(coordinator, entry, event_name))
