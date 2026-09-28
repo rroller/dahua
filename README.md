@@ -334,6 +334,64 @@ as they fire. That can help you understand the events. Or you can HA and open De
 "Listen to events" enter `dahua_event_received` and then click "Start Listening" and wait for events to fire (you might
 need to walk in front of your cam to make motion events fire, or press a button, etc)
 
+## An event on the bus does not mean a sensor will update
+
+These are two separate things, and reading one as the other has produced several
+issue reports where nothing was actually broken.
+
+**Every event that arrives is put on the bus, before anything else happens.** It is
+fired with the raw code the device sent, before any translation and before any sensor
+is considered. So if you see a code in `dahua_event_received`, the connection to the
+device and the event stream are working. That is all it proves.
+
+**A binary sensor only updates if you selected that event for that entry.** The
+sensors that exist come from the event list on the entry, and an event you did not
+select has no sensor and no listener, so nothing is written. (Doorbells are the one
+exception: they always get Doorbell Pressed, Invite, Door Status and Call No
+Answered, because almost everybody wants them.) Seeing
+`CrossRegionDetection` on the bus while a Smart Motion sensor stays off is exactly
+what a correctly working system looks like when `SmartMotionHuman` was not selected.
+
+To change the selection: **Settings, Devices and Services, Dahua, Configure**, on the
+entry you mean. Ticking boxes in the camera's own web interface does not affect which
+Home Assistant entities exist.
+
+### Smart Motion is derived from the IVS event
+
+Many cameras never send `SmartMotionHuman` at all. They send `CrossLineDetection` or
+`CrossRegionDetection` carrying an object type, and the integration fires the matching
+smart motion code as well:
+
+```
+Code: CrossRegionDetection
+data:
+  Object:
+    ObjectType: Human
+```
+
+becomes both `CrossRegionDetection` and `SmartMotionHuman`, so on such a camera
+`SmartMotionHuman` is the better sensor to use: it fires only for people, where the
+Cross Region one fires for anything that trips the rule. Both fire when both are
+selected. But the smart motion sensor only exists if you selected it, so on a camera
+sending the payload above you can see `CrossRegionDetection` on the bus all day and
+get nothing from Smart Motion until it is ticked.
+
+### Events are per channel
+
+On a recorder each channel is its own entry with its own event list, and an event
+updates the sensor belonging to the channel it came from. If channel 1 has
+`SmartMotionHuman` selected and channel 2 does not, motion on channel 2 appears on the
+bus and updates nothing.
+
+### A sensor that says "no longer being provided"
+
+If you deselect an event, its sensor is not created next time the entry loads, and
+Home Assistant leaves the old entity behind showing `unavailable` with "This entity is
+no longer being provided by the dahua integration". That is Home Assistant reporting
+an entity nothing owns any more, not a fault in the integration, and it will never
+update again. Either select the event again, or delete the entity from its own page.
+Reloading or restarting will not clear it.
+
 ## Example Code Events
 | Code | Description |
 | ----- | ----------- |
