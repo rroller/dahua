@@ -762,6 +762,29 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
     return timedelta(seconds=max(seconds, MIN_SCAN_INTERVAL))
 
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Run once for the integration, before any config entry is set up.
+
+    The only safe place for the channel merge (#827). Two reasons it cannot live
+    in `async_migrate_entry`: Home Assistant sets entries up concurrently, so a
+    per entry migration can run while another channel's entities are already
+    loaded, and `async_update_entity_platform` refuses an entity that is loaded.
+    Here, nothing is.
+
+    Never fails setup. A recorder that could not be merged is still perfectly
+    usable in the shape it is already in, so an exception here would take working
+    cameras offline to fix a papercut.
+    """
+    try:
+        from .migrate import async_merge_channel_entries
+        await async_merge_channel_entries(hass)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not merge the Dahua config entries. Every entry is left as it "
+            "was and the integration will set up normally")
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     """Set up this integration using UI."""
     global _STARTUP_LOGGED
