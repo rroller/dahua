@@ -13,6 +13,13 @@ from .model_profiles import is_sdt4e425
 _LOGGER = logging.getLogger(__package__)
 
 
+# One at a time, because selecting a preset moves the camera and these devices are measurably intolerant of
+# concurrent requests: MAX_CONCURRENT_REQUESTS_PER_HOST is 2 for the same reason,
+# and the login storms behind #577 and #603 are what happens without it. A
+# coordinator does not help here, since it only centralises inbound reads and
+# leaves outbound actions uncontrolled.
+PARALLEL_UPDATES = 1
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup select platform."""
     for coordinator in entry_coordinators(entry).values():

@@ -72,6 +72,10 @@ ICON_OVERRIDES = {
 }
 
 
+# A coordinator centralises the inbound reads, and nothing here sends a command,
+# so there is nothing to serialise: read only: every state comes from the coordinator.
+PARALLEL_UPDATES = 0
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
     for coordinator in entry_coordinators(entry).values():
