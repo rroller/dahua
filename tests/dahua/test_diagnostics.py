@@ -40,6 +40,10 @@ class _Client:
         self._rtsp_port = 554
         self._use_https = None
         self._digest_state = {}
+        # The real client exposes this as a property; anything shared per
+        # device keys on it rather than on the address, because one address
+        # can answer for two devices on different ports.
+        self.device_key = "%s:80" % ADDRESS
         self._rpc2_session_instance = None
         self._host_limit = client_module._host_limiter(ADDRESS)
         self.identity_derived_from_credentials = False
@@ -70,7 +74,6 @@ class _Coordinator:
         self._supports_lighting_v2 = True
         self._dahua_event_timestamp = {"VideoMotion-0": 0}
         self._dahua_event_listeners = {"VideoMotion-0": object()}
-        self._event_task = None
         self._vto_task = None
         self._vto_client = None
 
@@ -110,6 +113,15 @@ class _Coordinator:
 
     def get_profile_mode(self):
         return "0"
+
+    # _safe(coordinator.get_x) reads the attribute before _safe can catch
+    # anything, so a fake missing one of these is an AttributeError out of
+    # the handler, which Home Assistant serves as a 500 with no explanation.
+    def get_illuminator_index(self):
+        return 1
+
+    def get_illuminator_bank(self):
+        return "NearLight"
 
     def get_event_list(self):
         return ["VideoMotion"]
@@ -372,3 +384,152 @@ async def test_device_diagnostics_does_not_publish_the_identifiers(hass):
     assert SERIAL not in json.dumps(result, cls=ExtendedJSONEncoder)
     assert result["device_registry"]["name"] == "Front Door"
     assert "coordinator" in result
+
+
+# --- the questions people keep being asked by hand --------------------------
+
+async def test_it_says_which_auth_scheme_the_device_asked_for(hass):
+    """#583: a camera that wants Basic looked exactly like a wrong password."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["client"]["auth_scheme"] == "digest"
+
+
+async def test_a_device_that_asked_for_basic_says_so(hass):
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    coordinator.client._digest_state["scheme"] = "basic"
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["client"]["auth_scheme"] == "basic"
+
+
+async def test_it_says_which_light_the_device_calls_white(hass):
+    """#570 and #647 both turned on knowing these two."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["illuminator_light_index"] == 1
+    assert device["illuminator_brightness_bank"] == "NearLight"
+
+
+async def test_it_reports_the_tables_this_device_refused(hass):
+    """A refusal names something the model will not do, which is the useful half."""
+    from custom_components.dahua import client as client_module
+
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    # The same key diagnostics builds, getattr and all: this fake client has
+    # no _username, and the real one may not either before login.
+    key = (coordinator.client._address,
+           getattr(coordinator.client, "_username", None))
+    client_module._RPC2_TABLE_UNAVAILABLE.add((key, "LightingScheme"))
+    try:
+        host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+    finally:
+        client_module._RPC2_TABLE_UNAVAILABLE.discard((key, "LightingScheme"))
+
+    assert host["rpc2_tables_refused"] == ["LightingScheme"]
+
+
+async def test_another_devices_refusals_are_not_reported_here(hass):
+    from custom_components.dahua import client as client_module
+
+    entry = _entry(hass)
+    _install(hass, entry)
+    client_module._RPC2_TABLE_UNAVAILABLE.add((("10.9.9.9", "admin"), "Lighting_V2"))
+    try:
+        host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+    finally:
+        client_module._RPC2_TABLE_UNAVAILABLE.discard(
+            (("10.9.9.9", "admin"), "Lighting_V2"))
+
+    assert host["rpc2_tables_refused"] == []
+
+
+async def test_the_new_fields_carry_nothing_secret(hass):
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+    dumped = json.dumps(result, cls=ExtendedJSONEncoder)
+
+    assert PASSWORD not in dumped
+    assert USERNAME not in dumped
+    assert SERIAL not in dumped
+
+
+# --- what the channel numbering probe concluded -----------------------------
+
+async def test_a_device_found_to_be_zero_indexed_says_so(hass):
+    from custom_components.dahua import _HOST_CHANNEL_BASE
+
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    _HOST_CHANNEL_BASE[coordinator.client.device_key] = True
+    try:
+        device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+    finally:
+        _HOST_CHANNEL_BASE.clear()
+
+    assert device["device_is_zero_indexed"] is True
+
+
+async def test_a_device_that_answered_no_says_so(hass):
+    from custom_components.dahua import _HOST_CHANNEL_BASE
+
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    _HOST_CHANNEL_BASE[coordinator.client.device_key] = False
+    try:
+        device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+    finally:
+        _HOST_CHANNEL_BASE.clear()
+
+    assert device["device_is_zero_indexed"] is False
+
+
+async def test_a_device_that_never_answered_reports_nothing_decided(hass):
+    """The #724 case, and the reason this field exists.
+
+    A timeout used to count as a no, so entries that timed out renumbered
+    themselves one channel high while their neighbours did not. channel_number
+    on its own can never show that; beside this it can.
+    """
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["device_is_zero_indexed"] is None
+
+
+async def test_another_devices_answer_is_not_borrowed(hass):
+    from custom_components.dahua import _HOST_CHANNEL_BASE
+
+    entry = _entry(hass)
+    _install(hass, entry)
+    _HOST_CHANNEL_BASE["10.9.9.9:80"] = True
+    try:
+        device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+    finally:
+        _HOST_CHANNEL_BASE.clear()
+
+    assert device["device_is_zero_indexed"] is None
+
+
+async def test_a_client_without_a_device_key_does_not_break_diagnostics(hass):
+    """Diagnostics that raises is served as a 500 with no explanation."""
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    del coordinator.client.device_key
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["device_is_zero_indexed"] is None

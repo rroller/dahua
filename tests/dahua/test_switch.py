@@ -3,6 +3,7 @@
 import pytest
 
 from custom_components.dahua.client import SECURITY_LIGHT_TYPE, SIREN_TYPE
+from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.switch import (
     DahuaDisarmingEventNotificationsLinkageBinarySwitch,
     DahuaDisarmingLinkageBinarySwitch,
@@ -26,6 +27,13 @@ class _Client:
 
 
 class _Coordinator:
+    # The real rule rather than a copy of it. switch.py now asks the coordinator whether
+    # to create the siren, because the poll needs the same answer to decide whether to
+    # fetch the status that entity reads, and a hand-written second copy here would be
+    # the same drift that change removes. It derives from uses_recorder_deterrence and
+    # supports_siren below, exactly as production does.
+    creates_siren_entity = DahuaDataUpdateCoordinator.creates_siren_entity
+
     def __init__(self, channel=4, amcrest=False):
         self.client = _Client()
         self._channel = channel
@@ -39,11 +47,23 @@ class _Coordinator:
     def get_channel_number(self):
         return self._channel + 1
 
+    def uses_recorder_deterrence(self):
+        return False
+
+    def is_recorder_host(self):
+        return False
+
     def is_nvr_channel(self):
         return False
 
     def supports_nvr_active_deterrence(self):
         return False
+
+    def uses_rpc2_deterrence(self, dahua_type=None):
+        return False
+
+    def get_ivs_rules(self):
+        return []
 
     def get_serial_number(self):
         return "SERIAL1"

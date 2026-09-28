@@ -38,6 +38,9 @@ PROBES = [
     ("async_get_ptz_position", "_supports_ptz_position"),
     ("async_get_smart_motion_detection", "_supports_smart_motion_detection"),
     ("async_get_lighting_v2", "_supports_lighting_v2"),
+    # Asked before anything reads the model name, so a device that is slow to
+    # say what it is must still be set up on its model name alone.
+    ("async_get_device_class", None),
 ]
 
 # What the device must answer before any probe runs. These are not probes: if

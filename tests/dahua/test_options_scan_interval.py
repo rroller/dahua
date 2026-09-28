@@ -4,8 +4,16 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 from custom_components.dahua import get_configured_scan_interval
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.dahua.config_flow import DahuaOptionsFlowHandler
-from custom_components.dahua.const import DEFAULT_SCAN_INTERVAL, MIN_SCAN_INTERVAL
+from custom_components.dahua.const import (
+    CONF_MANUAL_SECURITY_LIGHT,
+    CONF_MANUAL_SIREN,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+    MIN_SCAN_INTERVAL,
+)
 
 
 def _entry(**options):
@@ -42,9 +50,19 @@ def test_a_numeric_string_is_accepted():
 
 def _schema_defaults(result):
     out = {}
-    for marker in result["data_schema"].schema:
+    schema = result["data_schema"].schema
+    for marker in schema:
         default = getattr(marker, "default", None)
         out[str(marker.schema)] = default() if callable(default) else default
+        # A collapsed section is presentation, not a different set of fields. These
+        # tests ask whether a field is offered, so descend into it rather than
+        # reporting the section itself as the answer.
+        nested = getattr(schema[marker], "schema", None)
+        if nested is not None and hasattr(nested, "schema"):
+            for inner in nested.schema:
+                inner_default = getattr(inner, "default", None)
+                out[str(inner.schema)] = (inner_default() if callable(inner_default)
+                                          else inner_default)
     return out
 
 
@@ -53,11 +71,17 @@ def _validators(result):
 
 
 async def _shown_options_form(hass, entry):
+    registered = MockConfigEntry(
+        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options))
+    registered.add_to_hass(hass)
+
     handler = DahuaOptionsFlowHandler()
     handler.hass = hass
-    # Assigning config_entry is deprecated and raises under the test harness;
-    # set the attribute Home Assistant's own flow manager populates.
-    handler._config_entry = entry
+    # Home Assistant resolves config_entry by looking the id up in hass, so the
+    # entry has to be registered there and the flow's handler has to carry that
+    # id. Assigning the entry onto the handler, by any attribute name, stopped
+    # working once the id became the only link.
+    handler.handler = registered.entry_id
     handler.options = dict(entry.options)
     return await handler.async_step_user()
 
@@ -110,3 +134,17 @@ async def test_nvr_active_deterrence_preserves_the_configured_value(hass):
     )
 
     assert defaults["nvr_active_deterrence"] is True
+
+
+async def test_manual_deterrence_options_default_off_and_preserve_choices(hass):
+    defaults = _schema_defaults(await _shown_options_form(hass, _entry()))
+    assert defaults[CONF_MANUAL_SIREN] is False
+    assert defaults[CONF_MANUAL_SECURITY_LIGHT] is False
+
+    defaults = _schema_defaults(
+        await _shown_options_form(
+            hass, _entry(manual_siren=True, manual_security_light=True)
+        )
+    )
+    assert defaults[CONF_MANUAL_SIREN] is True
+    assert defaults[CONF_MANUAL_SECURITY_LIGHT] is True

@@ -1,5 +1,6 @@
 """Switch platform for dahua."""
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -18,18 +19,15 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         DahuaMotionDetectionBinarySwitch(coordinator, entry),
     ]
 
-    # But only some cams have a siren, very few do actually
-    has_siren = (
-        coordinator.supports_nvr_active_deterrence()
-        if coordinator.is_nvr_channel()
-        else coordinator.supports_siren()
-    )
-    if has_siren:
+    # But only some cams have a siren, very few do actually. The rule lives on the
+    # coordinator because the poll needs the same answer to decide whether to fetch the
+    # status this entity reads.
+    if coordinator.creates_siren_entity():
         devices.append(
             DahuaSirenBinarySwitch(
                 coordinator,
                 entry,
-                name="Alarm" if coordinator.is_nvr_channel() else "Siren",
+                name="Alarm" if coordinator.uses_recorder_deterrence() else "Siren",
             )
         )
     if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
@@ -46,6 +44,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         devices.append(DahuaDisarmingLinkageBinarySwitch(coordinator, entry))
         devices.append(DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry))
 
+    devices.extend(
+        DahuaIVSRuleSwitch(coordinator, entry, rule)
+        for rule in coordinator.get_ivs_rules()
+    )
     async_add_devices(devices)
 
 
@@ -236,6 +238,60 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         return self._coordinator.is_smart_motion_detection_enabled()
 
 
+class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
+    """Enable or disable one normal IVS rule by its stable Dahua ID."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator, entry, rule: dict):
+        super().__init__(coordinator, entry)
+        self._channel = rule["channel"]
+        self._rule_id = rule["id"]
+        self._rule_name = rule["name"]
+        self._remote = rule.get("remote", False)
+
+    async def _async_set_enabled(self, enabled):
+        try:
+            setter = (
+                self._coordinator.client.async_set_remote_ivs_rule_by_id
+                if self._remote else self._coordinator.client.async_set_ivs_rule_by_id
+            )
+            await setter(
+                self._channel, self._rule_id, enabled
+            )
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        await self._coordinator.async_refresh()
+
+    async def async_turn_on(self, **kwargs):
+        """Enable this rule at its current position."""
+        await self._async_set_enabled(True)
+
+    async def async_turn_off(self, **kwargs):
+        """Disable this rule at its current position."""
+        await self._async_set_enabled(False)
+
+    @property
+    def name(self):
+        """Return the camera and rule names."""
+        return self._coordinator.get_device_name() + " " + self._rule_name
+
+    @property
+    def unique_id(self):
+        """Keep identity when a rule is renamed or its array position changes."""
+        return f"{self._coordinator.get_serial_number()}_ivs_rule_{self._channel}_{self._rule_id}"
+
+    @property
+    def is_on(self):
+        """Resolve state from the current table."""
+        return self._coordinator.is_ivs_rule_enabled(self._channel, self._rule_id)
+
+    @property
+    def available(self):
+        """A removed or ambiguous rule cannot be controlled."""
+        return super().available and self.is_on is not None
+
+
 class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua siren switch class. Used to enable or disable camera built in sirens"""
 
@@ -248,10 +304,12 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable the camera's siren"""
         channel = self._coordinator.get_channel()
-        if self._coordinator.is_nvr_channel():
+        if self._coordinator.uses_recorder_deterrence():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SIREN_TYPE, True
             )
+        elif self._coordinator.uses_rpc2_deterrence(SIREN_TYPE):
+            await self._coordinator.client.async_set_coaxial_control_state_rpc2(SIREN_TYPE, True)
         else:
             await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, True)
         await self._coordinator.async_refresh()
@@ -259,10 +317,12 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable camera siren"""
         channel = self._coordinator.get_channel()
-        if self._coordinator.is_nvr_channel():
+        if self._coordinator.uses_recorder_deterrence():
             await self._coordinator.client.async_set_nvr_coaxial_control_state(
                 self._coordinator.get_channel_number(), SIREN_TYPE, False
             )
+        elif self._coordinator.uses_rpc2_deterrence(SIREN_TYPE):
+            await self._coordinator.client.async_set_coaxial_control_state_rpc2(SIREN_TYPE, False)
         else:
             await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, False)
         await self._coordinator.async_refresh()

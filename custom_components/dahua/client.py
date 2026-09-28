@@ -9,7 +9,8 @@ import time
 import aiohttp
 
 from .digest import DigestAuth
-from .rpc2 import DahuaRpc2Client
+from .ivs import ivs_rule_index
+from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
 from hashlib import md5
 from urllib.parse import quote
 
@@ -17,10 +18,53 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 TIMEOUT_SECONDS = 20
 
+# Unsupported table/method responses. LightingScheme returned 268959743 on
+# IPC-Color4K-X, DHI-NVR5464 and VTO2000A; CGI refusals vary between 400 and
+# 500. Decide absence from the RPC2 table read, not the CGI HTTP status.
+RPC2_TABLE_ABSENT_CODES = frozenset({268632064, 268959743})
+
 # The event stream asks the device to heartbeat at this interval, so a socket
 # that has delivered nothing for a comfortable multiple of it has stalled.
 EVENT_STREAM_HEARTBEAT_SECONDS = 5
 EVENT_STREAM_READ_TIMEOUT_SECONDS = 60
+# How often to ask an RPC2-only device which events are active. Measured on an
+# SL300: a VideoMotion state lasted 11s and SmartMotionHuman 46s, so two
+# seconds cannot miss one, and 130 rounds over five minutes drew no complaint
+# from the device. One request per selected code per round is the cost.
+RPC2_EVENT_POLL_SECONDS = 2
+# getEventIndexes takes one code per request, so a wide event selection costs a
+# lot of round trips. Bound the rate and stretch the cycle instead of hammering a
+# small camera: 42 codes at a 2s cycle would be 20 requests a second.
+RPC2_EVENT_MAX_REQUESTS_PER_SECOND = 5
+# A cycle longer than this can miss a short event, so say so rather than quietly
+# polling too slowly to be useful.
+RPC2_EVENT_SLOW_CYCLE_SECONDS = 5
+# After this long with nothing active, ease off. Motion is bursty, so the fast
+# rate only earns its keep near an event, and the fast rate is expensive: nine
+# default codes at a 2s cycle is about 4.5 requests a second, forever, against a
+# small camera -- some two orders of magnitude above anything else here. #603 is
+# the shape where one of these boxes runs out of whatever it runs out of and
+# stops answering.
+RPC2_EVENT_IDLE_AFTER_SECONDS = 120
+# How slowly, when idle. Bounded by the shortest event actually measured on one of
+# these devices rather than picked: #779 reports VideoMotion lasting 11s and
+# SmartMotionHuman 46s, so an idle poll at this interval still sees both. It snaps
+# back to the fast cycle the moment anything goes active.
+#
+# 6 rather than 8 on @matthewdva's judgement in #783: 8 leaves three seconds of
+# margin against that 11s event and 6 leaves five, and it is their device and
+# their measurement. Backing off past 11 would start buying request rate with
+# missed events, which is the wrong way round.
+RPC2_EVENT_IDLE_POLL_SECONDS = 6
+# "session is out of date"; same code _direct_coaxial_rpc2 recovers from.
+RPC2_SESSION_EXPIRED_CODE = 287637504
+# The CGI stream proves the transport is alive with the heartbeat it asks the
+# device for. The RPC2 poll has no such thing to forward, and a quiet camera
+# would otherwise deliver nothing for a whole stream lifetime -- which
+# DahuaHostEventStream reads as a silent stream, warns about, and backs off from
+# for up to ten minutes. So a successful cycle sends this instead. on_receive
+# records transport activity before it parses, and this parses to no event.
+RPC2_EVENT_HEARTBEAT = b"Heartbeat\r\n"
 
 # One NVR carries a config entry per channel, and every entry sets itself up at
 # the same moment. Dahua's HTTP server is small: a dozen simultaneous CGI calls
@@ -29,6 +73,20 @@ EVENT_STREAM_READ_TIMEOUT_SECONDS = 60
 # per host, shared across every client for that address.
 MAX_CONCURRENT_REQUESTS_PER_HOST = 2
 _HOST_LIMITS: dict = {}
+
+# A remote IVS write replaces a whole channel table. Entries for the same NVR
+# must serialize the fresh read and write together, even if they use different
+# RPC2 sessions or credentials.
+_HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _remote_ivs_lock(device: str, channel: int) -> asyncio.Lock:
+    key = (device, channel)
+    lock = _HOST_REMOTE_IVS_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _HOST_REMOTE_IVS_LOCKS[key] = lock
+    return lock
 
 
 def _device_key(address: str, port) -> str:
@@ -79,10 +137,45 @@ _HOST_DIGEST_STATE: dict = {}
 # scoped to that user's rights, so it is even less shareable than a challenge.
 _HOST_RPC2: dict = {}
 
+# What the RPC2 poll last reported active, per host, as {(code, index)}.
+#
+# This is module state on purpose. The set used to be local to the poller, so
+# every restart began empty -- and a Start that was followed by a transport
+# failure was never given its Stop, because the replacement poller saw an
+# inactive device and had nothing to compare it against. The ordinary motion
+# sensor has no auto-off, so it stayed on until the next full motion event.
+# Keyed by host rather than held on the client, so the scheduled stream recycle
+# and a change of owning entry both inherit it.
+_HOST_RPC2_EVENT_STATE: dict[str, set] = {}
+
+# What the RPC2 event poller is doing for a host, so a diagnostics dump can say which
+# event transport is actually carrying events and what it is watching. Written here and
+# read only by diagnostics; nothing depends on it, and an absent entry means the poller
+# has never run for that address in this process.
+#
+# It exists because the poller is the *second* event transport. #780 added it for
+# devices that serve no CGI at all, and a dump said nothing whatsoever about it, so a
+# reporter whose events had stopped could not tell a dead transport from a quiet one.
+_HOST_RPC2_EVENT_POLL: dict[str, dict] = {}
+
 # Whether RPC2 has already proven it cannot serve a host. A per-client verdict
 # meant eleven channels each rediscovering it, which is eleven failed logins
 # against a device that has just said it cannot do this.
 _HOST_RPC2_UNAVAILABLE: set = set()
+
+# (rpc2 key, config table) pairs the device answered but declined. Kept apart
+# from _HOST_RPC2_UNAVAILABLE on purpose: one table it will not serve says
+# nothing about the rest, and writing the host off for it costs a login on
+# every later read.
+_RPC2_TABLE_UNAVAILABLE: set = set()
+
+# Hosts whose /cgi-bin/ config endpoint is not there at all -- an SL300 answers 404
+# to configManager.cgi as readily as to eventManager.cgi. Reads for these go over
+# RPC2 without waiting for the use_rpc2 option to be turned on, because on such a
+# device that option is not a preference, it is the only transport. Learnt from the
+# first 404 rather than probed at setup, and not remembered across a restart, so a
+# firmware update that restores CGI is picked up by paying one 404 again.
+_HOST_CGI_CONFIG_ABSENT: set = set()
 
 # The device states its own keepalive interval in the login reply. Ask slightly
 # inside it, the way the VTO keepalive already does.
@@ -257,6 +350,8 @@ _HOST_CACHE: dict = {}
 
 def _cache_lifetime(url: str) -> int:
     """How long this URL's answer stays good for."""
+    if "name=VideoAnalyseRule" in url:
+        return HOST_CACHE_TTL_SECONDS
     return CONFIG_CACHE_TTL_SECONDS if CONFIG_READ_MARKER in url else HOST_CACHE_TTL_SECONDS
 
 
@@ -312,6 +407,70 @@ class EventStreamClosed(Exception):
     action=attach by answering 200 and closing would otherwise leave no trace
     anywhere.
     """
+
+
+def _pop_complete_multipart_part(buffer: bytes, boundary: bytes):
+    """Return one complete multipart part and the bytes left after it.
+
+    Dahua includes Content-Length on event-stream parts. Once that many payload
+    bytes are buffered, the part is complete and can be delivered immediately;
+    waiting for the next boundary adds up to one heartbeat interval of latency.
+
+    Devices that omit Content-Length keep the previous next-boundary fallback.
+    """
+    start = buffer.find(boundary)
+    if start == -1:
+        return None, buffer
+    if start:
+        buffer = buffer[start:]
+
+    header_end = buffer.find(b"\r\n\r\n", len(boundary))
+    separator_len = 4
+    if header_end == -1:
+        header_end = buffer.find(b"\n\n", len(boundary))
+        separator_len = 2
+    if header_end == -1:
+        return None, buffer
+
+    payload_start = header_end + separator_len
+    content_length = None
+    for line in buffer[len(boundary):header_end].splitlines():
+        name, separator, value = line.partition(b":")
+        if separator and name.strip().lower() == b"content-length":
+            try:
+                content_length = int(value.strip())
+            except ValueError:
+                content_length = None
+            if content_length is not None and content_length < 0:
+                content_length = None
+            break
+
+    if content_length is not None:
+        part_end = payload_start + content_length
+        next_boundary = buffer.find(boundary, payload_start)
+
+        # If the next part starts before the declared payload end, the length
+        # was wrong or the payload was truncated. The multipart framing is
+        # stronger evidence than a length that would consume into the next part.
+        if next_boundary != -1 and next_boundary < part_end:
+            return buffer[:next_boundary], buffer[next_boundary:]
+
+        if len(buffer) < part_end:
+            return None, buffer
+
+        part = buffer[:part_end]
+        remainder = buffer[part_end:]
+        # Content-Length excludes the CRLF framing before the next boundary.
+        if remainder.startswith(b"\r\n"):
+            remainder = remainder[2:]
+        elif remainder.startswith(b"\n"):
+            remainder = remainder[1:]
+        return part, remainder
+
+    next_boundary = buffer.find(boundary, payload_start)
+    if next_boundary == -1:
+        return None, buffer
+    return buffer[:next_boundary], buffer[next_boundary:]
 
 
 _CONFIG_READ = re.compile(r"configManager\.cgi\?action=getConfig&name=(.+)$")
@@ -559,6 +718,58 @@ def lighting_scheme_illuminator_tables(
     return scheme, lighting
 
 
+# 1 main stream + 2 sub-streams, which is what the coordinator starts with and
+# what the comment in get_max_extra_streams has always described.
+DEFAULT_EXTRA_STREAMS = 2
+
+
+def parse_extra_streams(value) -> int:
+    """How many sub-streams the device says it has, as a usable number.
+
+    Measured, because the shape of this answer decides how many camera
+    entities get created:
+
+        DHI-NVR5464-16P-EI (G61_NVR16PRO16P-I3)   table.MaxExtraStream=2
+        VTO2000A doorbell                         table.MaxExtraStream=1
+
+    A doorbell really does answer 1, and #237 is an AD410 owner whose log fills
+    with `Error opening stream ... subtype=2` for a sub-stream that does not
+    exist. So over-guessing this is not harmless -- it is a camera entity that
+    404s on every attempt, for as long as the entry exists.
+
+    Anything unreadable falls back to the common case rather than raising. The
+    caller is inside the one-time init block, whose handler turns any exception
+    into UpdateFailed, so a device answering a non-numeric value here would
+    never finish initialising and would retry for as long as it kept saying it.
+    """
+    try:
+        count = int(str(value).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_EXTRA_STREAMS
+    # A negative count is not a smaller camera, it is a device talking nonsense.
+    if count < 0:
+        return DEFAULT_EXTRA_STREAMS
+    return count
+
+
+def _is_login_refused(exception: aiohttp.ClientResponseError) -> bool:
+    """True when the device refused the credentials, not the endpoint.
+
+    The identity calls below fall back to an id built from the credentials when
+    magicBox.cgi answers with an error, which is how cameras that do not
+    implement it at all are still supported. That fallback is right for a 404 or
+    a 501 -- the device has no such endpoint -- and wrong for a 401, where the
+    device understood the request perfectly and rejected the login. Synthesising
+    an identity from a password the camera has just refused is how a wrong
+    password came to produce a working-looking camera that never polls.
+
+    403 deliberately keeps the fallback. It means the login was accepted and
+    this account is not allowed that endpoint, which a restricted Dahua user
+    really can hit, and their credentials are not wrong.
+    """
+    return exception.status == 401
+
+
 class DahuaClient:
     """
     DahuaClient is the client for accessing Dahua IP Cameras. The APIs were discovered from the "API of HTTP Protocol Specification" V2.76 2019-07-25 document
@@ -576,7 +787,8 @@ class DahuaClient:
             rtsp_port: int,
             session: aiohttp.ClientSession,
             use_https: bool = None,
-            use_rpc2: bool = False
+            use_rpc2: bool = False,
+            illuminator_restore_store=None,
     ) -> None:
         self._username = username
         self._password = password
@@ -609,14 +821,24 @@ class DahuaClient:
         self._rpc2_acquired = False
         self._rpc2_released = False
         # Preserve the camera's policy while the illuminator temporarily owns
-        # a channel/profile. The entry is removed only after a successful off.
-        self._lighting_scheme_restore_modes: dict[tuple[int, int], str] = {}
+        # a channel/profile. Camera config survives HA restarts, so this must.
+        self._illuminator_restore_store = illuminator_restore_store
+        self._lighting_scheme_lock = asyncio.Lock()
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
         # includes the password, so the identity changes if the password does.
         self.identity_derived_from_credentials = False
         protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, self._address, port)
+
+    def base_url(self) -> str:
+        """The scheme, host and port this client actually talks to.
+
+        Public because the device page's Visit link needs exactly this, and reaching
+        into _base from another module is the kind of thing that survives for years
+        behind a pylint disable.
+        """
+        return self._base
 
     def get_rtsp_stream_url(self, channel: int, subtype: int) -> str:
         """
@@ -631,9 +853,14 @@ class DahuaClient:
             subtype,
         )
         if subtype == 3:
+            # Quoted for the same reason as above: a password containing @, :
+            # or / makes the URL parse as something else entirely, and the
+            # error surfaces from the stream worker as "Port could not be cast
+            # to integer value" rather than as anything about a password
+            # (#362). This branch was missed when the main path was fixed.
             url = "rtsp://{0}:{1}@{2}".format(
-                self._username,
-                self._password,
+                quote(self._username, safe=''),
+                quote(self._password, safe=''),
                 self._address,
             )
 
@@ -650,7 +877,7 @@ class DahuaClient:
         return repair_dahua_snapshot_header(
             strip_dahua_snapshot_trailer(await self.get_bytes(url)))
 
-    async def async_get_system_info(self) -> dict:
+    async def async_get_system_info(self, strict_auth: bool = False) -> dict:
         """
         Get system info data from the getSystemInfo API. Example response:
 
@@ -665,10 +892,56 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSystemInfo")
         except aiohttp.ClientResponseError as e:
+            # strict_auth only for the config flow, which is deciding whether a
+            # password is right. The coordinator shares this method, and there a
+            # 401 is not proof of a wrong password: eight channels of one NVR
+            # share a digest challenge, and a nonce that races between them is
+            # refused exactly like a bad credential. Raising here made every
+            # channel start a reauth flow at startup (#714), where before the
+            # identity simply fell back and the entry carried on.
+            if strict_auth and _is_login_refused(e):
+                raise
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
             return {"serialNumber": unique_cam_id}
+
+    def _note_identity_fallback(self, what: str, exception) -> None:
+        """Say why this device's identity had to be invented.
+
+        `Generic RTSP` and firmware `1.0` are not device types. They are what
+        this client returns when magicBox.cgi answers with an HTTP error, and
+        they reach the user as a device page naming a camera nobody has, with
+        most entities unavailable and **nothing in the log saying why**. #583
+        is that, on a 2014 IPC-HFW4300S-V2, and the same unanswered question
+        sits under #728 and #767.
+
+        The status is the useful half. A 400 is the device saying it does not
+        serve that action, which is a fact about the firmware; a 401 is it
+        refusing the credentials, which is a different problem wearing the same
+        device page.
+
+        Once per client per question, because these are asked on every setup
+        and a warning per poll would be worse than the silence it replaces.
+        """
+        status = getattr(exception, "status", None)
+        # Self-initialising, like the coordinator's probe refusals: this runs
+        # inside an except branch whose whole purpose is to keep setup alive,
+        # so it must never be the thing that raises.
+        seen = getattr(self, "_identity_fallbacks", None)
+        if seen is None:
+            seen = self._identity_fallbacks = {}
+        if what in seen:
+            return
+        seen[what] = status
+        _LOGGER.warning(
+            "%s refused %s with HTTP %s, so this device is being reported as "
+            "an unidentified camera. Most entities depend on that answer and "
+            "will be unavailable. The credentials and the address are not "
+            "necessarily wrong: a device whose CGI interface refuses this "
+            "action answers the same way",
+            self._address, what, status,
+        )
 
     async def get_device_type(self) -> dict:
         """
@@ -681,7 +954,29 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getDeviceType")
         except aiohttp.ClientResponseError as e:
+            self._note_identity_fallback("getDeviceType", e)
             return {"type": "Generic RTSP"}
+
+    async def async_get_device_class(self) -> str:
+        """What the device calls itself, rather than what its model name looks like.
+
+        Measured 2026-09-25 on two devices on one network:
+
+            VTO2000A doorbell            class=VTO
+            DHI-NVR5464-16P-EI recorder  class=NVR
+
+        Every doorbell capability in this integration is currently decided by a
+        model-name prefix (`is_doorbell` matches VTO, AD, DB6, DB2X, AV-V), which
+        fails for every rebadge nobody has added yet. This is the device's own
+        answer to the same question.
+
+        Returns "" when the device does not answer, which is treated as no
+        information rather than as a denial: the caller keeps its model-name
+        match. A device that has not implemented getDeviceClass is not thereby
+        saying it is not a doorbell.
+        """
+        result = await self.get("/cgi-bin/magicBox.cgi?action=getDeviceClass")
+        return (result.get("class") or "").strip().upper()
 
     async def get_software_version(self) -> dict:
         """
@@ -691,6 +986,7 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSoftwareVersion")
         except aiohttp.ClientResponseError as e:
+            self._note_identity_fallback("getSoftwareVersion", e)
             return {"version": "1.0"}
 
     async def get_machine_name(self) -> dict:
@@ -698,6 +994,8 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getMachineName")
         except aiohttp.ClientResponseError as e:
+            if _is_login_refused(e):
+                raise
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(self._address, self._rtsp_port, self._username, self._password)
             unique_cam_id = md5(not_hashed_id.encode('UTF-8')).hexdigest()
@@ -708,21 +1006,37 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getVendor")
         except aiohttp.ClientResponseError as e:
+            self._note_identity_fallback("getVendor", e)
             return {"vendor": "Generic RTSP"}
 
     async def reboot(self) -> dict:
-        """ Reboots the device """
-        return await self.get("/cgi-bin/magicBox.cgi?action=reboot")
+        """Reboot, over CGI, falling back to RPC2 if the CGI path is absent.
+
+        Measured on an SL300: magicBox.reboot answers result=true and the device
+        only then goes down, so this returns before the connection drops rather
+        than having to treat a dropped request as a success.
+        """
+        try:
+            return await self.get("/cgi-bin/magicBox.cgi?action=reboot")
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "magicBox.cgi answered %s on %s; rebooting over RPC2",
+                cgi_error.status, self._address)
+            holder = await self._shared_rpc2()
+            await holder.client.request("magicBox.reboot")
+            return {"result": True}
 
     async def get_max_extra_streams(self) -> int:
         """ get_max_extra_streams returns the max number of sub streams supported by the camera """
         try:
             result = await self.get("/cgi-bin/magicBox.cgi?action=getProductDefinition&name=MaxExtraStream")
-            return int(result.get("table.MaxExtraStream", "2"))
-        except aiohttp.ClientResponseError as e:
-            pass
-        # If we can't fetch, just assume 2 since that's pretty standard
-        return 3
+        except aiohttp.ClientResponseError:
+            # No such endpoint on this device. Assume the standard 2, which is
+            # what this comment has always said -- the code returned 3.
+            return DEFAULT_EXTRA_STREAMS
+        return parse_extra_streams(result.get("table.MaxExtraStream"))
 
     async def async_get_alarm_output_slots(self) -> dict:
         """Return the number of physical alarm-output slots reported by the device."""
@@ -860,6 +1174,36 @@ class DahuaClient:
         """
         return await self.async_get_config("VideoAnalyseRule")
 
+    async def async_get_remote_ivs_rules(self, channel: int) -> dict:
+        """Read an NVR channel's remote rules in the coordinator's flat shape."""
+        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            holder = await self._shared_rpc2()
+            table = await holder.client.async_get_remote_ivs_rules(channel)
+        return flatten_rpc2_config(
+            "RemoteVideoAnalyseRule", table,
+            f"table.RemoteVideoAnalyseRule[{channel}]",
+        )
+
+    async def async_set_remote_ivs_rule_by_id(
+            self, channel: int, rule_id: str, enabled: bool) -> None:
+        """Write a remote rule through the shared authenticated RPC2 session."""
+        async with asyncio.timeout(TIMEOUT_SECONDS):
+            async with _remote_ivs_lock(self._device, channel), self._host_limit:
+                holder = await self._shared_rpc2()
+                await holder.client.async_set_remote_ivs_rule_by_id(
+                    channel, rule_id, enabled
+                )
+
+    async def async_set_ivs_rule_by_id(self, channel: int, rule_id: str, enabled: bool):
+        """Resolve the rule just before writing, bypassing the shared read cache."""
+        table = await self._request(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule"
+        )
+        index = ivs_rule_index(table, channel, rule_id)
+        if index is None:
+            raise ValueError(f"IVS rule {rule_id} is missing or ambiguous on channel {channel}")
+        return await self.async_set_ivs_rule(channel, index, enabled)
+
     async def async_set_all_ivs_rules(self, channel: int, enabled: bool):
         """
         Sets all IVS rules to enabled or disabled
@@ -892,7 +1236,19 @@ class DahuaClient:
         """
         url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[{0}].Enable={1}".format(
             channel, str(enabled).lower())
-        return await self.get(url, True)
+        try:
+            return await self.get(url, True)
+        except aiohttp.ClientResponseError as cgi_error:
+            # Same absent CGI as the ordinary motion toggle, and this switch is
+            # offered on such devices -- an SL300 serves a SmartMotionDetect table
+            # with Enable true while its CGI path answers 404.
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting SmartMotionDetect "
+                "over RPC2", cgi_error.status, self._address)
+            return await self._rpc2_set_config_value(
+                "SmartMotionDetect", channel, "Enable", bool(enabled))
 
     async def async_set_light_global_enabled(self, enabled: bool):
         """ Turns the blue ring light on/off for Amcrest doorbells """
@@ -927,6 +1283,16 @@ class DahuaClient:
         url = "/cgi-bin/ptz.cgi?action=getStatus"
         return await self.get(url)
 
+    async def async_get_ptz_presets(self, channel: int) -> dict:
+        """The preset positions this channel actually holds.
+
+        Returned raw so the caller can tell an empty answer from a refusal: a
+        camera that does not implement this answers exactly like one with no
+        presets, and those must not be treated the same.
+        """
+        url = "/cgi-bin/ptz.cgi?action=getPresets&channel={0}".format(channel)
+        return await self.get(url)
+
     @staticmethod
     def parse_ptz_preset_ids(data: list) -> list[int]:
         """Return sorted positive preset IDs from ptz.getPresets."""
@@ -946,6 +1312,11 @@ class DahuaClient:
             if preset_id > 0:
                 preset_ids.add(preset_id)
         return sorted(preset_ids)
+
+    @property
+    def use_rpc2(self) -> bool:
+        """Return whether RPC2 access is enabled for this client."""
+        return self._use_rpc2
 
     def _rpc2_key(self):
         return (self._device, self._username)
@@ -996,7 +1367,63 @@ class DahuaClient:
             holder.keepalive = asyncio.ensure_future(_rpc2_keepalive(holder, interval))
         return holder
 
-    async def _rpc2_get_config(self, name: str) -> dict:
+    # Direct-camera CoaxialControlIO RPC2 calls use channel 0, matching the
+    # camera WebUI requests. Legacy CGI uses 1-based channel 1 for standalone
+    # cameras; this protocol difference is intentional, not an off-by-one error.
+    async def _direct_coaxial_rpc2(self, method: str, *args):
+        """Retry one direct-camera call after a confirmed expired RPC2 login."""
+        for attempt in range(2):
+            holder = await self._shared_rpc2()
+            login_task = getattr(holder, "task", None)
+            try:
+                return await getattr(holder.client, method)(0, *args)
+            except Rpc2MethodRefused as exc:
+                expired = exc.code == 287637504 or (
+                    isinstance(exc.message, str)
+                    and "session is out of date" in exc.message.lower()
+                )
+                if attempt or not expired:
+                    raise
+                # Another caller may already have replaced this login. Do not
+                # tear down the new one when an old in-flight request returns.
+                if holder.task is login_task:
+                    holder.task = None
+                    holder.client._session_id = None
+                    holder.client._ptz_objects.clear()
+                    keepalive = holder.keepalive
+                    holder.keepalive = None
+                    if keepalive is not None and not keepalive.done():
+                        keepalive.cancel()
+                        await asyncio.gather(keepalive, return_exceptions=True)
+
+    async def async_get_product_definition_rpc2(
+        self, name: str | None = None
+    ) -> dict | list | None:
+        """Read camera feature definitions using the existing shared RPC2 login."""
+        holder = await self._shared_rpc2()
+        return await holder.client.get_product_definition(name)
+
+    async def async_get_coaxial_control_io_caps_rpc2(self) -> dict[str, bool]:
+        """Probe a direct camera on channel zero, independently of config transport."""
+        return await self._direct_coaxial_rpc2("get_coaxial_control_io_caps")
+
+    async def async_get_coaxial_control_io_status_rpc2(self) -> dict:
+        """Read direct-camera deterrence state in the coordinator's CGI shape."""
+        status = await self._direct_coaxial_rpc2("get_coaxial_control_io_status")
+        return {
+            "status.Speaker": "On" if status.speaker else "Off",
+            "status.WhiteLight": "On" if status.white_light else "Off",
+        }
+
+    async def async_set_coaxial_control_state_rpc2(
+        self, dahua_type: int, enabled: bool
+    ) -> dict:
+        """Write direct-camera deterrence on channel zero."""
+        return await self._direct_coaxial_rpc2(
+            "set_coaxial_control_state", dahua_type, enabled
+        )
+
+    async def _rpc2_get_config(self, name: str, *, allow_missing=False) -> dict:
         """A config read over the shared session, in CGI's shape.
 
         One retry, because the failure this expects is an expired session and
@@ -1006,8 +1433,20 @@ class DahuaClient:
         for attempt in (1, 2):
             try:
                 holder = await self._shared_rpc2()
-                params = await holder.client.get_config({"name": name})
+                try:
+                    params = await holder.client.get_config({"name": name})
+                except Rpc2MethodRefused as exc:
+                    # Only a refusal of the table read can establish absence;
+                    # a failed login or expired session must still propagate.
+                    if allow_missing and exc.code in RPC2_TABLE_ABSENT_CODES:
+                        return {}
+                    raise
                 return flatten_rpc2_config(name, params.get("table"))
+            except Rpc2MethodRefused:
+                # The device answered. Logging in again cannot change its mind
+                # about a table it does not serve, and dropping the shared
+                # session to retry costs a login for nothing.
+                raise
             except Exception:  # pylint: disable=broad-except
                 holder = _HOST_RPC2.get(self._rpc2_key())
                 if holder is not None:
@@ -1015,6 +1454,40 @@ class DahuaClient:
                 if attempt == 2:
                     raise
         return {}
+
+    async def _rpc2_set_config_value(self, name: str, channel: int, key: str, value) -> dict:
+        """Set one field of one config table over RPC2, read-modify-write.
+
+        configManager.setConfig replaces the whole table, so the table is read
+        first and put back with one field changed -- writing a table built from
+        scratch would silently drop every setting it did not know about.
+
+        The table is per channel on some tables and a bare object on others
+        (MotionDetect is a one-element list on an SL300, General is an object), so
+        both shapes are handled rather than assumed.
+        """
+        holder = await self._shared_rpc2()
+        response = await holder.client.get_config({"name": name})
+        # This firmware returns the table at the top level; older ones nest it
+        # under params, and _rpc2_get_config reads it the same way.
+        table = response.get("table")
+        if table is None:
+            table = (response.get("params") or {}).get("table")
+        if isinstance(table, list):
+            if channel >= len(table):
+                raise ConnectionError(
+                    "%s has no channel %d in its %s table (%d entries)"
+                    % (self._address, channel, name, len(table)))
+            table[channel][key] = value
+        elif isinstance(table, dict):
+            table[key] = value
+        else:
+            raise ConnectionError(
+                "%s returned no %s table to write to over RPC2" % (self._address, name))
+        await holder.client.set_configs([(name, table)])
+        _LOGGER.debug("Set %s[%d].%s = %r over RPC2 on %s",
+                      name, channel, key, value, self._address)
+        return {"result": True}
 
     async def async_get_lighting_scheme(self) -> dict:
         """Which emitter the camera is willing to use, on Smart Dual Light models.
@@ -1047,8 +1520,11 @@ class DahuaClient:
             if over_cgi:
                 return over_cgi
         except aiohttp.ClientResponseError:
+            # CGI status alone cannot establish absence: some firmware uses
+            # 500 for an unsupported table. Let the RPC2 table read decide;
+            # login, session and transport failures there still propagate.
             pass
-        return await self._rpc2_get_config("LightingScheme")
+        return await self._rpc2_get_config("LightingScheme", allow_missing=True)
 
     async def async_set_lighting_scheme_illuminator(
             self, channel: int, enabled: bool, brightness: int,
@@ -1060,7 +1536,10 @@ class DahuaClient:
         even when RPC2 polling is disabled. Partial CGI writes are accepted but
         do not light the emitter.
         """
-        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+        async with self._lighting_scheme_lock, asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            restore_store = self._illuminator_restore_store
+            if restore_store is None:
+                raise RuntimeError("Dahua illuminator recovery storage is unavailable")
             holder = await self._shared_rpc2()
             scheme_params = await holder.client.get_config({"name": "LightingScheme"})
             lighting_params = await holder.client.get_config({"name": "Lighting_V2"})
@@ -1072,31 +1551,56 @@ class DahuaClient:
             if not isinstance(current_mode, str) or not current_mode:
                 raise ValueError("Dahua lighting scheme is missing LightingMode")
 
-            key = (channel, profile)
-            restore_modes = getattr(self, "_lighting_scheme_restore_modes", None)
-            if restore_modes is None:
-                restore_modes = {}
-                self._lighting_scheme_restore_modes = restore_modes
-            restore_mode = None
-            if not enabled and current_mode == "WhiteMode":
-                restore_mode = restore_modes.get(key)
-            elif enabled and current_mode != "WhiteMode":
-                # Keep the recovery value even if the multicall reports a
-                # failure: an earlier nested write may already have selected
-                # WhiteMode, and a later off still needs a safe way back.
-                restore_modes[key] = current_mode
+            restore_mode = await restore_store.async_get(channel, profile)
             scheme, lighting = lighting_scheme_illuminator_tables(
                 scheme_params.get("table"), lighting_params.get("table"), channel,
-                profile, light_index, enabled, brightness, restore_mode,
+                profile, light_index, enabled, brightness,
+                restore_mode if current_mode == "WhiteMode" else None,
             )
+            if enabled and current_mode != "WhiteMode":
+                # This must finish before the persistent camera write. Keep the
+                # recovery value even if that write later fails: part of the
+                # multicall may already have selected WhiteMode.
+                await restore_store.async_set(channel, profile, current_mode)
             clear_host_cache(self._device)
             response = await holder.client.set_configs([
                 ("LightingScheme", scheme),
                 ("Lighting_V2", lighting),
             ])
             if not enabled:
-                restore_modes.pop(key, None)
+                await restore_store.async_remove(channel, profile)
+                if current_mode == "WhiteMode" and restore_mode is None:
+                    _LOGGER.warning(
+                        "Turned off Dahua white emitter for channel %s profile %s "
+                        "but could not restore its previous lighting mode because "
+                        "no saved recovery state exists",
+                        channel,
+                        profile,
+                    )
             return response
+
+    async def async_reconcile_lighting_scheme_restore_modes(self) -> None:
+        """Discard stale recovery state after confirming current camera modes."""
+        restore_store = self._illuminator_restore_store
+        if restore_store is None:
+            return
+        async with self._lighting_scheme_lock, asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            keys = await restore_store.async_keys()
+            if not keys:
+                return
+            holder = await self._shared_rpc2()
+            scheme_params = await holder.client.get_config({"name": "LightingScheme"})
+            for channel, profile in keys:
+                try:
+                    current_mode = scheme_params["table"][channel][profile]["LightingMode"]
+                except (IndexError, KeyError, TypeError):
+                    raise ValueError(
+                        "Dahua lighting tables do not contain the selected scheme"
+                    ) from None
+                if not isinstance(current_mode, str) or not current_mode:
+                    raise ValueError("Dahua lighting scheme is missing LightingMode")
+                if current_mode != "WhiteMode":
+                    await restore_store.async_remove(channel, profile)
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
@@ -1364,6 +1868,24 @@ class DahuaClient:
         )
         return await self.get(url)
 
+    async def async_ptz_move(self, channel: int, code: str, speed: int,
+                             duration: float) -> None:
+        """Move the camera, then stop it.
+
+        ptz.cgi has no notion of moving by an amount: a start begins the
+        motion and it continues until a matching stop, so the duration is
+        how far it goes. That is also why the stop is in a finally. A
+        request that fails after the start would otherwise leave the
+        camera turning until something else stopped it.
+        """
+        base = ("/cgi-bin/ptz.cgi?action={0}&channel={1}&code={2}"
+                "&arg1=0&arg2={3}&arg3=0")
+        await self.get(base.format("start", channel, code, speed))
+        try:
+            await asyncio.sleep(duration)
+        finally:
+            await self.get(base.format("stop", channel, code, speed))
+
     async def async_set_video_profile_mode(self, channel: int, mode: str):
         """
         async_set_video_profile_mode will set camera's profile mode to day or night
@@ -1450,6 +1972,26 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable customer overlay")
 
+    async def async_get_remote_devices(self) -> dict:
+        """Read the recorder's camera slots.
+
+        Host wide, and only meaningful on a recorder. A standalone camera
+        either has no such table or reports nothing useful, and the caller
+        treats an empty answer as "nothing to offer".
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice")
+
+    async def async_get_video_widget(self) -> dict:
+        """Read the overlay configuration.
+
+        One table for the whole device, indexed by channel, so the channels
+        of a recorder share this read. It is a getConfig, so the shared
+        cache answers it and a write from here drops that cache.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoWidget")
+
     async def async_set_service_set_channel_title(self, channel: int, text1: str, text2: str):
         """ async_set_service_set_channel_title sets the channel title """
         text = _overlay_text(text1, text2)
@@ -1481,28 +2023,228 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set text")
 
-    async def async_set_lighting_v2(self, channel: int, enabled: bool, brightness: int, profile_mode: str,
-                                    light_index: int = 0, bank: str = "MiddleLight") -> dict:
-        """
-        async_set_lighting_v2 will turn on or off the white light on the camera. If turning on, the brightness will be used.
-        brightness is in the range of 0 to 100 inclusive where 100 is the brightest.
-        NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
+    async def async_get_lighting_scheme_mode(
+        self, channel: int, profile_mode: str
+    ) -> str | None:
+        """Return the live LightingMode, falling back to RPC2 when needed."""
 
-        profile_mode: 0=day, 1=night, 2=scene
-        """
+        channel_index = int(channel)
+        profile_index = int(profile_mode)
 
-        # on = Manual, off = Off
-        mode = "Manual"
-        if not enabled:
-            mode = "Off"
-        # light_index is which light this device calls the white one. It is 0 on
-        # most models; some report 0 as the infrared emitter, and writing there
-        # changes a light nobody can see. See illuminator_light_index.
-        url = "/cgi-bin/configManager.cgi?action=setConfig&Lighting_V2[{channel}][{profile_mode}][{light_index}].Mode={mode}&Lighting_V2[{channel}][{profile_mode}][{light_index}].{bank}[0].Light={brightness}".format(
-            channel=channel, profile_mode=profile_mode, mode=mode, brightness=brightness,
-            light_index=light_index, bank=bank
+        # This uses _request directly (or RPC2), bypassing get's shared cache
+        # so restore capture always observes a fresh configuration.
+        data = await self.async_get_lighting_scheme()
+        if not data:
+            return None
+
+        key = (
+            f"table.LightingScheme[{channel_index}]"
+            f"[{profile_index}].LightingMode"
         )
-        _LOGGER.debug("Turning light on: %s", url)
+
+        mode = data.get(key)
+
+        if not isinstance(mode, str) or not mode:
+            raise ValueError(
+                "LightingScheme has no LightingMode for "
+                f"channel={channel_index}, profile={profile_index}"
+            )
+
+        return mode
+
+    async def async_set_lighting_scheme(
+        self, channel: int, profile_mode: str, mode: str
+    ) -> str:
+        """Set LightingScheme through CGI setConfig.
+
+        CGI setConfig is persistent, so the caller is responsible for
+        restoring the original mode.
+        """
+
+        channel_index = int(channel)
+        profile_index = int(profile_mode)
+
+        previous_mode = await self.async_get_lighting_scheme_mode(
+            channel_index,
+            str(profile_index),
+        )
+        if previous_mode is None:
+            raise ValueError("This device does not expose LightingScheme")
+
+        if previous_mode == mode:
+            return previous_mode
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&LightingScheme[{channel_index}]"
+            f"[{profile_index}].LightingMode={mode}"
+        )
+
+        await self.get(url)
+
+        # Make the next getConfig observe the value just written.
+        clear_host_cache(self._address)
+
+        return previous_mode
+
+    async def async_set_lighting_v2(
+        self,
+        channel: int,
+        enabled: bool,
+        brightness: int,
+        profile_mode: str,
+        light_index: int = 0,
+        bank: str = "MiddleLight",
+    ) -> dict:
+        """Control one Lighting_V2 white-light entry."""
+
+        mode = "Manual" if enabled else "Off"
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&Lighting_V2[{channel}][{profile_mode}]"
+            f"[{light_index}].Mode={mode}"
+        )
+
+        # Brightness is meaningful only when turning the light on.
+        # Some cameras expose WhiteLight as NearLight rather than MiddleLight.
+        if enabled:
+            if bank not in ("NearLight", "MiddleLight"):
+                bank = "MiddleLight"
+
+            url += (
+                f"&Lighting_V2[{channel}][{profile_mode}]"
+                f"[{light_index}].{bank}[0].Light={brightness}"
+            )
+
+        _LOGGER.debug("Setting Lighting_V2 illuminator: %s", url)
+        return await self.get(url)
+
+    async def async_get_uptime_last(self) -> int:
+        """Return camera uptime from RPC2 magicBox.getUpTime."""
+
+        if not self._use_rpc2:
+            raise RuntimeError("RPC2 is disabled")
+
+        for attempt in (1, 2):
+            try:
+                holder = await self._shared_rpc2()
+
+                async with asyncio.timeout(5):
+                    response = await holder.client.request(
+                        method="magicBox.getUpTime",
+                        params=None,
+                    )
+
+                info = (
+                    (response.get("params") or {})
+                    .get("info") or {}
+                )
+
+                value = info.get("Last")
+
+                if value is None:
+                    raise RuntimeError(
+                        "magicBox.getUpTime returned no Last value"
+                    )
+
+                return int(value)
+
+            except Exception:
+                # A camera reboot invalidates the old RPC2 login.
+                # Drop the login task so the second attempt / next poll
+                # establishes a fresh session.
+                holder = _HOST_RPC2.get(self._rpc2_key())
+
+                if holder is not None:
+                    holder.task = None
+
+                if attempt == 2:
+                    raise
+
+        raise RuntimeError("Unable to read camera uptime")
+
+    async def async_get_lighting_v2_live_state(
+        self,
+        channel: int,
+        profile_mode: str,
+        light_index: int,
+    ):
+        """Read one Lighting_V2 row directly from the camera."""
+
+        url = (
+            "/cgi-bin/configManager.cgi?"
+            "action=getConfig&name=Lighting_V2"
+        )
+
+        # This read captures the configuration immediately before HA
+        # overrides the illuminator, so discard any old shared snapshot.
+        clear_host_cache(self._address)
+
+        data = await self.get(url)
+
+        base = (
+            f"table.Lighting_V2[{channel}]"
+            f"[{profile_mode}][{light_index}]"
+        )
+
+        mode = data.get(f"{base}.Mode")
+
+        near_key = f"{base}.NearLight[0].Light"
+        middle_key = f"{base}.MiddleLight[0].Light"
+
+        if near_key in data:
+            bank = "NearLight"
+            value = data.get(near_key)
+        elif middle_key in data:
+            bank = "MiddleLight"
+            value = data.get(middle_key)
+        else:
+            bank = "MiddleLight"
+            value = None
+
+        try:
+            brightness = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            brightness = None
+
+        if mode is None:
+            raise RuntimeError(
+                "Could not read live Lighting_V2 state "
+                f"for channel={channel} "
+                f"profile={profile_mode} "
+                f"index={light_index}"
+            )
+
+        return mode, bank, brightness
+
+    async def async_set_lighting_v2_raw(
+        self,
+        channel: int,
+        profile_mode: str,
+        light_index: int,
+        mode: str,
+        bank: str = "MiddleLight",
+        brightness=None,
+    ) -> dict:
+        """Write an exact Lighting_V2 mode and optional brightness."""
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&Lighting_V2[{channel}][{profile_mode}]"
+            f"[{light_index}].Mode={mode}"
+        )
+
+        if brightness is not None:
+            if bank not in ("NearLight", "MiddleLight"):
+                bank = "MiddleLight"
+
+            url += (
+                f"&Lighting_V2[{channel}][{profile_mode}]"
+                f"[{light_index}].{bank}[0].Light={brightness}"
+            )
+
+        _LOGGER.debug("Setting raw Lighting_V2: %s", url)
         return await self.get(url)
 
     # async def async_set_lighting_v2_for_flood_lights(self, channel: int, enabled: bool, brightness: int, profile_mode: str) -> dict:
@@ -1731,17 +2473,114 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=DisableEventNotify"
         return await self.get(url)
 
+    # A device answering these has no such CGI path at all, so there is
+    # nothing to retry and a second transport is worth trying. Deliberately
+    # NOT 400: #154 reports an intermittent 400 on a VTO whose door opened
+    # anyway, and retrying that over another route could open it twice.
+    # Nor 401/403, where the credentials are the problem on any transport.
+    DOOR_CGI_ABSENT = (404, 501)
+
+    # Same reasoning as DOOR_CGI_ABSENT, for the event stream: these say the
+    # path is not there at all, so retrying it cannot help and a second
+    # transport is the only thing that could. Not 401/403, where the
+    # credentials are wrong on every transport.
+    EVENT_CGI_ABSENT = (404, 501)
+
+    # And the same for config and control endpoints. An SL300 answers 404 to every
+    # /cgi-bin/ path it has, so the motion-detection toggle wrote nothing and the
+    # reboot button did nothing -- both failing as though the request were wrong
+    # rather than the transport.
+    CONFIG_CGI_ABSENT = (404, 501)
+
     async def async_access_control_open_door(self, door_id: int = 1) -> dict:
-        """
-        async_access_control_open_door opens a door via a VTO
+        """Open a door, over CGI, falling back to RPC2 if the CGI path is absent.
+
+        #465's VTO answers 404 to the CGI endpoint on every channel, so on that
+        firmware this has never been able to work. myhomeiot/DahuaVTO opens the
+        same door over Dahua's JSON protocol instead, which that device may
+        implement -- a second route is the only thing that could help.
+
+        The fallback is not cached and not probed at setup. A remembered
+        "use RPC2" would be state that can be wrong after a firmware update,
+        and setup cannot probe openDoor without opening the door. One wasted
+        round trip per press is nothing next to a stale decision about a lock.
         """
         url = "/cgi-bin/accessControl.cgi?action=openDoor&UserID=101&Type=Remote&channel={0}".format(door_id)
-        return await self.get(url)
+        try:
+            return await self.get(url)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.DOOR_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "accessControl.cgi answered %s on %s; trying RPC2",
+                cgi_error.status, self._address)
+            try:
+                result = await self._async_open_door_rpc2(door_id)
+            except Exception as rpc2_error:  # pylint: disable=broad-except
+                # Both routes are gone. Name both, because "open door failed"
+                # is not a bug report and this is the line a user will paste.
+                raise ConnectionError(
+                    "Could not open door {0} on {1}: the CGI endpoint answered "
+                    "{2}, and RPC2 answered {3}".format(
+                        door_id, self._address, cgi_error.status, rpc2_error)
+                ) from rpc2_error
+            _LOGGER.info(
+                "Opened door %s on %s over RPC2; this device has no "
+                "accessControl CGI endpoint (it answered %s)",
+                door_id, self._address, cgi_error.status)
+            return result
+
+    async def _async_open_door_rpc2(self, door_id: int) -> dict:
+        """One door, one session, logged out afterwards.
+
+        A private client rather than the shared one on purpose: this is a
+        one-shot user action, so it must not leave a cached session with a
+        keepalive behind for someone who never enabled RPC2. Same shape as
+        async_goto_preset_rpc2.
+
+        The CGI path sends door_id as its channel and the factory counts from
+        zero, so door 1 is channel 0. That mapping is inferred from
+        myhomeiot/DahuaVTO, whose service defaults to channel 1 and sends 0 on
+        the wire, and is consistent with #488 finding door 2 at Index 1. It is
+        not verified on hardware.
+        """
+        session = self._rpc2_session()
+        rpc2 = DahuaRpc2Client(
+            self._username, self._password, self._address, self._port,
+            self._rtsp_port, session, self._use_https
+        )
+        try:
+            async with asyncio.timeout(TIMEOUT_SECONDS):
+                return await rpc2.async_open_door(max(0, door_id - 1))
+        finally:
+            try:
+                async with asyncio.timeout(5):
+                    await rpc2.logout()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("RPC2 logout failed after openDoor", exc_info=True)
 
     async def enable_motion_detection(self, channel: int, enabled: bool) -> dict:
+        """Toggle motion detection, over CGI, falling back to RPC2 if it is absent.
+
+        On a device with no /cgi-bin/ at all this raised a 404 out of the switch, so
+        the toggle did nothing -- and the state the switch showed came from a read
+        that had failed the same way, so it sat at off while the camera had
+        detection enabled the whole time. Measured on an SL300, whose
+        MotionDetect[0].Enable was true throughout.
         """
-        enable_motion_detection will either enable/disable motion detection on the camera depending on the value
-        """
+        try:
+            return await self._enable_motion_detection_cgi(channel, enabled)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting MotionDetect over RPC2",
+                cgi_error.status, self._address)
+            return await self._rpc2_set_config_value(
+                "MotionDetect", channel, "Enable", bool(enabled))
+
+    async def _enable_motion_detection_cgi(self, channel: int, enabled: bool) -> dict:
+        """The CGI route, tried first and kept exactly as it was."""
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{channel}].Enable={enabled}&MotionDetect[{channel}].DetectVersion=V3.0".format(
             channel=channel, enabled=str(enabled).lower())
         response = await self.get(url)
@@ -1753,6 +2592,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].Enable={1}".format(channel,
                                                                                                 str(enabled).lower())
         return await self.get(url)
+
 
     async def stream_events(self, on_receive, events: list, channel: int):
         """
@@ -1774,6 +2614,7 @@ class DahuaClient:
         TakenAwayDetection: missing object detection
         VideoAbnormalDetection: scene change event
         FaceDetection: face detect event
+        HumanTrait: human attributes/appearance metadata event
         AudioMutation: intensity change
         AudioAnomaly: input abnormal
         VideoUnFocus: defocus detect event
@@ -1785,7 +2626,9 @@ class DahuaClient:
         StorageFailure: storage failure event.
         StorageLowSpace: storage low space event.
         AlarmOutput: alarm output event.
-        InterVideoAccess: I don't know what this is
+        InterVideoAccess: access to the device's own interface, web logins and
+            logouts among them. The specific action is in Data.Type, for example
+            {"Type": "WebAllLogout"}. Arrives as a Pulse. Reported in #240.
         NTPAdjustTime: NTP time updates?
         TimeChange: Some event for time changes, related to NTPAdjustTime
         MDResult: motion detection data reporting event. The motion detect window contains 18 rows and 22 columns. The event info contains motion detect data with mask of every row.
@@ -1829,11 +2672,56 @@ class DahuaClient:
                 total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS)
             auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
             response = await auth.request("GET", url, timeout=timeout)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except aiohttp.ClientResponseError as cgi_error:
+                if cgi_error.status not in self.EVENT_CGI_ABSENT:
+                    raise
+                # No CGI event path on this device. Poll RPC2 instead, which is
+                # the only transport it has. Closing the response here and
+                # returning through the finally below would skip the poller, so
+                # it is closed explicitly and the poll runs in its place.
+                response.close()
+                response = None
+                _LOGGER.info(
+                    "eventManager.cgi answered %s on %s, so this device has no CGI "
+                    "event stream; subscribing over RPC2 instead. The same absent CGI "
+                    "makes the identity and capability probes fall back, so this device "
+                    "will report as Generic RTSP on firmware 1.0 and its CGI-only "
+                    "entities will be missing -- see identity_fallbacks in its "
+                    "diagnostics rather than reading that as a second fault",
+                    cgi_error.status, self._address)
+                await self._stream_events_rpc2(on_receive, events, channel)
+                return
 
-            # https://docs.aiohttp.org/en/stable/streams.html
+            # Buffer chunks until boundary delimiters so large event payloads (e.g. ANPR JSON)
+            # are never split across TCP chunk boundaries.
+            boundary = b"--myboundary"
+            content_type = response.headers.get("Content-Type", "")
+            if "boundary=" in content_type:
+                b_val = content_type.split("boundary=")[1].split(";")[0].strip().strip('"\'')
+                if b_val:
+                    boundary = b"--" + b_val.encode()
+
+            buffer = b""
             async for data, _ in response.content.iter_chunks():
-                on_receive(data, channel)
+                # Buffer multipart parts across TCP chunks. Content-Length lets
+                # us deliver a complete part immediately instead of waiting for
+                # the next boundary (or the next five-second heartbeat).
+                if boundary in data or boundary in buffer:
+                    buffer += data
+                    while True:
+                        complete_part, buffer = _pop_complete_multipart_part(buffer, boundary)
+                        if complete_part is None:
+                            if boundary not in buffer and len(buffer) > 131072:
+                                buffer = buffer[-4096:]
+                            break
+                        on_receive(complete_part, channel)
+                else:
+                    on_receive(data, channel)
+
+            if buffer and buffer.startswith(boundary) and len(buffer.strip()) > len(boundary):
+                on_receive(buffer, channel)
         finally:
             if response is not None:
                 response.close()
@@ -1842,6 +2730,205 @@ class DahuaClient:
         # It raises no exception, so without this the caller cannot tell a
         # refused subscription from a healthy one.
         raise EventStreamClosed("Event stream to %s closed by the device" % self._address)
+
+    @staticmethod
+    def _emit_rpc2_event(on_receive, code: str, action: str, index: int, channel: int) -> None:
+        """Hand the CGI stream's own wire format to the CGI stream's own consumer.
+
+        parse_event reads exactly this, and on_receive then filters on index and
+        dispatches, so the sensors and the dahua_event_received bus event are
+        reached by the identical path either transport is used. Keeping the format
+        rather than calling deeper in is what stops this becoming a second,
+        diverging event pipeline.
+        """
+        on_receive(
+            "Code={0};action={1};index={2}\r\n".format(code, action, index).encode(),
+            channel,
+        )
+
+    async def _stream_events_rpc2(self, on_receive, events: list, channel: int):
+        """Deliver events by polling RPC2, for devices that serve no CGI at all.
+
+        Some firmware answers 404 to every /cgi-bin/ path. An SL300 was measured
+        answering 404 to eventManager.cgi, magicBox.cgi and configManager.cgi
+        alike, serving no web UI, and with DHIP closed -- so the multipart event
+        stream this integration normally attaches to does not exist on it, and its
+        binary sensors could never move no matter what the app showed.
+
+        RPC2 does accept eventManager.attach, which returns a SID, but it offers
+        nothing to read that subscription with: getNextEvent, getEvents,
+        getCurrentEvents and getAlarmState all answer InterfaceNotFound
+        (268632064). What does exist is eventManager.getEventIndexes, which
+        reports the channels currently in a given alarm state -- {"indexes": [0]}
+        while active and {} when not. So the state is polled and its edges are
+        synthesised into event payloads, which is why nothing downstream changes.
+
+        getEventIndexes takes ONE code as a string. A list is refused, and "All"
+        answers {} even while a specific code reports active -- measured on the
+        SL300 with seven consecutive samples where SmartMotionHuman was active and
+        "All" was empty at the same instant -- so every code must be asked for
+        separately, and that is what bounds the poll rate.
+        """
+        codes = [code for code in events if code and code != "All"]
+        if not codes:
+            # "All" cannot be polled, so expand it rather than watch nothing.
+            # Imported here because config_flow imports this module.
+            from .config_flow import ALL_EVENTS  # pylint: disable=import-outside-toplevel
+            codes = [code for code in ALL_EVENTS if code != "All"]
+
+        cycle = max(
+            RPC2_EVENT_POLL_SECONDS,
+            len(codes) / RPC2_EVENT_MAX_REQUESTS_PER_SECOND,
+        )
+        if cycle > RPC2_EVENT_SLOW_CYCLE_SECONDS:
+            _LOGGER.warning(
+                "%s has no CGI event stream, so %d event types are polled over RPC2 "
+                "one at a time, giving a %.0fs cycle -- %.1f requests a second. An "
+                "event shorter than that cycle can be missed; select fewer event "
+                "types to poll them faster",
+                self._address, len(codes), cycle, len(codes) / cycle)
+        else:
+            _LOGGER.debug(
+                "Polling %d event types over RPC2 on %s every %.0fs -- %.1f requests "
+                "a second, easing to %.1f after %ds with nothing active",
+                len(codes), self._address, cycle, len(codes) / cycle,
+                len(codes) / max(cycle, RPC2_EVENT_IDLE_POLL_SECONDS),
+                RPC2_EVENT_IDLE_AFTER_SECONDS)
+
+        # Published for diagnostics, because the two log lines above are the only
+        # record that this transport is in use at all and a log line is not what a
+        # reporter pastes. Written before the loop so the description exists even if
+        # the first cycle never completes.
+        described = _HOST_RPC2_EVENT_POLL.setdefault(self._address, {})
+        described.update({
+            "code_count": len(codes),
+            "cycle_seconds": round(cycle, 1),
+            "idle_after_seconds": RPC2_EVENT_IDLE_AFTER_SECONDS,
+            "eased_cycle_seconds": max(cycle, RPC2_EVENT_IDLE_POLL_SECONDS),
+        })
+
+        # Inherited, not fresh: a Start whose Stop was lost to a transport
+        # failure or the scheduled recycle is still owed one, and the first
+        # inactive snapshot below is what pays it.
+        active: set[tuple[str, int]] = _HOST_RPC2_EVENT_STATE.setdefault(
+            self._address, set())
+
+        # A code that is no longer polled can never be observed inactive again,
+        # so anything left active under one would stay on forever.
+        for code, index in sorted({(c, i) for c, i in active if c not in codes}):
+            active.discard((code, index))
+            self._emit_rpc2_event(on_receive, code, "Stop", index, channel)
+            _LOGGER.debug(
+                "%s is no longer polled for %s; clearing its stale active state",
+                self._address, code)
+
+        attached_to = None
+        # When the device last had anything active, or None while it does. Only
+        # a run of quiet cycles eases the rate off; one Start restores it.
+        idle_since = None if active else time.monotonic()
+
+        while True:
+            holder = await self._shared_rpc2()
+            login_task = getattr(holder, "task", None)
+            try:
+                if attached_to is not login_task:
+                    # The subscription belongs to the login, so a new login needs
+                    # a new attach. Without this a recovered session polls a SID
+                    # the device has already forgotten.
+                    # "All" here and one code per poll below is not a
+                    # contradiction: the attach is what makes the device willing
+                    # to report at all, and getEventIndexes is only how the
+                    # result is read back -- it takes a single code, and "All"
+                    # answers empty even while a specific code is active.
+                    await holder.client.request("eventManager.attach", {"codes": ["All"]})
+                    attached_to = login_task
+
+                started = time.monotonic()
+                for code in list(codes):
+                    try:
+                        response = await holder.client.request(
+                            "eventManager.getEventIndexes", {"code": code})
+                    except Rpc2MethodRefused as refused:
+                        if refused.code == RPC2_SESSION_EXPIRED_CODE:
+                            raise
+                        # This device does not know this code. Asking again every
+                        # cycle for the life of the entry buys nothing.
+                        codes.remove(code)
+                        # Dropping it means it can never be observed inactive
+                        # again, so release anything it is still holding on the
+                        # way out or that Start is owed a Stop forever.
+                        for index in sorted({i for c, i in active if c == code}):
+                            active.discard((code, index))
+                            self._emit_rpc2_event(on_receive, code, "Stop", index, channel)
+                        _LOGGER.debug(
+                            "%s does not report %s over RPC2 (%s); no longer polling it",
+                            self._address, code, refused)
+                        continue
+
+                    indexes = set()
+                    for raw in ((response.get("params") or {}).get("indexes") or []):
+                        try:
+                            indexes.add(int(raw))
+                        except (TypeError, ValueError):
+                            continue
+
+                    for index in sorted(indexes - {i for c, i in active if c == code}):
+                        active.add((code, index))
+                        self._emit_rpc2_event(on_receive, code, "Start", index, channel)
+                    for index in sorted({i for c, i in active if c == code} - indexes):
+                        active.discard((code, index))
+                        self._emit_rpc2_event(on_receive, code, "Stop", index, channel)
+
+                if not codes:
+                    raise EventStreamClosed(
+                        "%s reports none of the selected event types over RPC2"
+                        % self._address)
+
+                # Every code answered, so the transport is healthy even if the
+                # device is quiet. Say so, or a camera with nothing happening is
+                # indistinguishable from a dead stream and gets backed off.
+                on_receive(RPC2_EVENT_HEARTBEAT, channel)
+
+                # Anything active means the fast cycle, immediately -- the point
+                # of easing off is to be cheap while nothing is happening, not to
+                # be slow once something is.
+                if active:
+                    idle_since = None
+                elif idle_since is None:
+                    idle_since = time.monotonic()
+
+                # A completed cycle, which is the one fact that distinguishes a poller
+                # that is working from one that described itself and then died. Its age
+                # is what diagnostics reports.
+                described["last_cycle"] = time.monotonic()
+                described["eased_off"] = bool(
+                    idle_since is not None
+                    and time.monotonic() - idle_since >= RPC2_EVENT_IDLE_AFTER_SECONDS)
+
+                wait = cycle
+                if (idle_since is not None
+                        and time.monotonic() - idle_since >= RPC2_EVENT_IDLE_AFTER_SECONDS):
+                    wait = max(cycle, RPC2_EVENT_IDLE_POLL_SECONDS)
+
+                await asyncio.sleep(max(0.0, wait - (time.monotonic() - started)))
+
+            except Rpc2MethodRefused as refused:
+                if refused.code != RPC2_SESSION_EXPIRED_CODE:
+                    raise EventStreamClosed(
+                        "RPC2 event poll on %s was refused: %s" % (self._address, refused)
+                    ) from refused
+                # Expired login. Drop it so the next cycle logs in again, unless
+                # another caller has already replaced it.
+                _LOGGER.debug("RPC2 login on %s expired; logging in again", self._address)
+                if holder.task is login_task:
+                    holder.task = None
+                    holder.client._session_id = None  # pylint: disable=protected-access
+                attached_to = None
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+                # Hand it back to the caller's reconnect/backoff, exactly as the
+                # CGI stream does, rather than spinning here.
+                raise EventStreamClosed(
+                    "RPC2 event poll on %s failed: %s" % (self._address, err)) from err
 
     @staticmethod
     async def parse_dahua_api_response(data: str) -> dict:
@@ -1863,6 +2950,15 @@ class DahuaClient:
                 # We didn't get a key=value. We just got a key. Just stick it in the dictionary and move on
                 data_dict[parts[0]] = line
         return data_dict
+
+    @property
+    def device_key(self) -> str:
+        """Which device this is, as opposed to which address answers for it.
+
+        Two devices can sit behind one address on different ports, so anything
+        shared per device keys on this rather than on the address.
+        """
+        return self._device
 
     async def async_probe_snapshot(self, channel_number: int) -> None:
         """Checks the snapshot endpoint answers for a channel, without fetching the image.
@@ -1910,6 +3006,13 @@ class DahuaClient:
         how their identities got swapped (#664).
         """
         if not _is_read(url):
+            # Every write passes through here, so this is the one place that
+            # can say what was sent. Most write methods logged nothing at all,
+            # and a few logged their own URL, so "I clicked the entity and the
+            # debug log shows no request" was indistinguishable from "the
+            # request was never made" -- which is exactly the question #647
+            # needed answered about the infrared control.
+            _LOGGER.debug("Writing to %s: %s", self._address, url)
             clear_host_cache(self._device)
             return await self._request(url, verify_ok)
 
@@ -1942,11 +3045,19 @@ class DahuaClient:
 
     async def _request(self, url: str, verify_ok=False, allow_rpc2=True) -> dict:
         """Make the request. One caller per shared read reaches here."""
+        # Per-rule camera writes use CGI array indexes. Resolve and poll that
+        # same CGI table even when other config reads prefer RPC2.
+        if url == "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule":
+            allow_rpc2 = False
         # Not after close(): this client has given its share back, and taking
         # a new one would build a session nobody is left to release.
-        if (allow_rpc2 and self._use_rpc2 and not self._rpc2_released
+        if (allow_rpc2
+                and (self._use_rpc2 or self._rpc2_key() in _HOST_CGI_CONFIG_ABSENT)
+                and not self._rpc2_released
                 and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE and not verify_ok):
             match = _CONFIG_READ.search(url)
+            if match and (self._rpc2_key(), match.group(1)) in _RPC2_TABLE_UNAVAILABLE:
+                match = None    # this table only; the transport is still good
             if match:
                 try:
                     async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
@@ -1957,7 +3068,19 @@ class DahuaClient:
                     # off: a device that cannot serve RPC2 should not pay for
                     # the attempt on every read, but one that merely did not
                     # answer in time should not lose the transport for good.
-                    if not rpc2_failure_is_permanent(rpc2_exception):
+                    if isinstance(rpc2_exception, Rpc2MethodRefused):
+                        # The device spoke RPC2 and declined this table. Ask
+                        # CGI for it from now on, and keep the transport for
+                        # everything else -- writing the host off here is what
+                        # put a working device back on a login per call.
+                        _RPC2_TABLE_UNAVAILABLE.add(
+                            (self._rpc2_key(), match.group(1)))
+                        _LOGGER.debug(
+                            "%s does not serve %s over RPC2, using CGI for that "
+                            "table; RPC2 is still in use for the rest",
+                            self._address, match.group(1),
+                        )
+                    elif not rpc2_failure_is_permanent(rpc2_exception):
                         # Falls through to the CGI path below, like any other
                         # failure here, but without writing the host off.
                         _LOGGER.debug(
@@ -1977,7 +3100,52 @@ class DahuaClient:
                 try:
                     auth = DigestAuth(self._username, self._password, self._session, self._digest_state)
                     response = await auth.request("GET", url)
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except aiohttp.ClientResponseError as cgi_error:
+                        # A config read whose endpoint is not there is not a failed
+                        # read, it is the wrong transport. Remember the host so the
+                        # next read goes straight to RPC2, and answer this one.
+                        if (cgi_error.status not in self.CONFIG_CGI_ABSENT
+                                or verify_ok
+                                or not allow_rpc2
+                                or self._rpc2_key() in _HOST_RPC2_UNAVAILABLE):
+                            raise
+                        config_read = _CONFIG_READ.search(url)
+                        if config_read is None:
+                            raise
+                        if ((self._rpc2_key(), config_read.group(1))
+                                in _RPC2_TABLE_UNAVAILABLE):
+                            # Both transports have already refused this table. The gate
+                            # above skips RPC2 for it, and without the same check here
+                            # every later read paid for the refusal again on the way past.
+                            raise
+                        if self._rpc2_key() not in _HOST_CGI_CONFIG_ABSENT:
+                            _HOST_CGI_CONFIG_ABSENT.add(self._rpc2_key())
+                            _LOGGER.info(
+                                "configManager.cgi answered %s on %s, so this device "
+                                "serves no CGI config; reading config over RPC2 from "
+                                "now on",
+                                cgi_error.status, self._address)
+                        try:
+                            return await self._rpc2_get_config(config_read.group(1))
+                        except Rpc2MethodRefused as rpc2_refusal:
+                            # The device serves this table on neither transport. Raising
+                            # the RPC2 refusal changed the exception a caller sees for an
+                            # absent table from ClientResponseError to Rpc2MethodRefused,
+                            # and the callers that already tolerated a 404 do not catch
+                            # that -- which took an SL300's whole entry down on a read of
+                            # RemoteDevice, a table only a recorder has. A fallback has to
+                            # be invisible when it cannot help, so the original 404 is
+                            # what comes back.
+                            _RPC2_TABLE_UNAVAILABLE.add(
+                                (self._rpc2_key(), config_read.group(1)))
+                            _LOGGER.debug(
+                                "%s serves %s over neither CGI nor RPC2 (%s); reporting "
+                                "the original %s",
+                                self._address, config_read.group(1), rpc2_refusal,
+                                cgi_error.status)
+                            raise cgi_error from None
                     data = await response.text()
                     if verify_ok:
                         if data.lower().strip() != "ok":
@@ -2010,4 +3178,3 @@ class DahuaClient:
             return "Sub"
         else:
             return "Sub_{0}".format(subtype)
-

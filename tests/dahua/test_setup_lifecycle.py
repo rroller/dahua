@@ -13,6 +13,7 @@ down, which on an eleven-channel NVR is eleven times over.
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryNotReady
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -47,6 +48,9 @@ def _refcount(address=ADDRESS):
 def _entry(hass, address=ADDRESS):
     entry = MockConfigEntry(domain=DOMAIN, data={**DATA, "address": address})
     entry.add_to_hass(hass)
+    # Care: not put into SETUP_IN_PROGRESS here. One test drives setup through
+    # Home Assistant itself, which only accepts an entry that is NOT_LOADED.
+    # The direct callers below set the state themselves.
     return entry
 
 
@@ -77,7 +81,21 @@ def _no_platforms(hass):
     )
 
 
+def _setting_up(hass, entry):
+    """Put the entry in the state real setup would have put it in.
+
+    async_config_entry_first_refresh refuses to run outside SETUP_IN_PROGRESS,
+    so anything calling async_setup_entry directly has to say so.
+    """
+    entry._async_set_state(hass, ConfigEntryState.SETUP_IN_PROGRESS, None)
+
+
 async def _try_setup(hass, entry):
+    # Calling async_setup_entry directly rather than going through
+    # hass.config_entries.async_setup is deliberate: these tests are about what
+    # the function gives back when it fails, and the flow manager turns that
+    # into an entry state instead of letting the exception out.
+    _setting_up(hass, entry)
     try:
         await dahua_module.async_setup_entry(hass, entry)
     except Exception:
@@ -161,6 +179,7 @@ async def test_the_error_still_reaches_home_assistant(hass):
     entry = _entry(hass)
     starts, forward, unload = _no_platforms(hass)
 
+    _setting_up(hass, entry)
     with _wedged(), starts, forward, unload:
         with pytest.raises(ConfigEntryNotReady):
             await dahua_module.async_setup_entry(hass, entry)

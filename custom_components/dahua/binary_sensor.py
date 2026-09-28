@@ -20,6 +20,36 @@ NAME_OVERRIDES = {
     "DoorbellPressed": "Button Pressed",  # For VTO/Doorbell devices
 }
 
+# Events that are a moment rather than a state, and how long to show them for.
+#
+# Most events arrive as a pair: a Start raises the sensor and a Stop clears it.
+# These do not. A doorbell press is a single notification that something
+# happened, so nothing ever arrives to turn the sensor off again and it stays on
+# until Home Assistant restarts (#375, #486).
+#
+# Deliberately a short list rather than a rule. VideoMotion and the IVS codes
+# genuinely use Start and Stop and must keep doing so: clearing those on a timer
+# would end motion detection early for everybody, which is far worse than the
+# bug being fixed.
+#
+# Whichever comes first wins. A device that does send a closing event still
+# clears the sensor immediately, so this only adds a floor for devices that
+# never send one.
+MOMENTARY_EVENT_HOLD_SECONDS = {
+    "DoorbellPressed": 5,
+    "CallNoAnswered": 5,
+}
+
+# How long to show any other event that arrives as a Pulse.
+#
+# A Pulse has no closing event either, so it needs the same treatment -- but
+# which codes send one is not knowable from here. Thirteen of the forty-two
+# selectable codes are Pulse shaped, only InterVideoAccess has ever been seen as
+# one in a report (#329), and two more codes joined the list last week. So the
+# coordinator records what the device actually sent and this is the hold applied
+# when it says a code arrived that way.
+DEFAULT_PULSE_HOLD_SECONDS = 5
+
 # Override the device class for events
 DEVICE_CLASS_OVERRIDES = {
     "VideoMotion": MOTION_SENSOR_DEVICE_CLASS,
@@ -77,6 +107,10 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
         # event_name is the event name, example: VideoMotion, CrossLineDetection, SmartMotionHuman, etc
         self._event_name = event_name
 
+        # None for an ordinary event, which stays on until the device says stop.
+        self._hold_seconds = MOMENTARY_EVENT_HOLD_SECONDS.get(event_name)
+        self._unsub_timer = None
+
         self._coordinator = coordinator
         self._device_name = coordinator.get_device_name()
         self._device_class = DEVICE_CLASS_OVERRIDES.get(event_name, MOTION_SENSOR_DEVICE_CLASS)
@@ -123,12 +157,71 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
         This is the magic part of this sensor along with the async_added_to_hass method below.
         The async_added_to_hass method adds a listener to the coordinator so when the event is started or stopped
         it calls the schedule_update_ha_state function. schedule_update_ha_state gets the current value from this is_on method.
+
+        A momentary event also expires on its own, because no stop is coming.
         """
-        return self._coordinator.get_event_timestamp(self._event_name) > 0
+        started = self._coordinator.get_event_timestamp(self._event_name)
+        if started <= 0:
+            return False
+        hold = self._hold()
+        if hold is None:
+            return True
+        return (time.time() - started) < hold
+
+    def _hold(self):
+        """How long this sensor shows an event for, or None to wait for a Stop.
+
+        The explicit list wins, because those two are known and documented. Past
+        that, a code the device has sent as a Pulse gets the default hold: there
+        is no Stop coming for it, so a sensor left alone would stay on until
+        Home Assistant restarted.
+
+        Resolved per read rather than fixed in __init__, because whether a code
+        is momentary is learned from the first event rather than known at setup.
+        """
+        if self._hold_seconds is not None:
+            return self._hold_seconds
+        if self._coordinator.event_is_momentary(self._event_name):
+            return DEFAULT_PULSE_HOLD_SECONDS
+        return None
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
-        self._coordinator.add_dahua_event_listener(self._event_name, self.schedule_update_ha_state)
+        self._coordinator.add_dahua_event_listener(self._event_name, self._async_event_fired)
+
+    @callback
+    def _async_event_fired(self):
+        """Show the new state, and for a momentary event arrange to clear it.
+
+        is_on going false on its own is not enough: nothing would ask it again,
+        so the sensor would keep showing on until some other event happened to
+        write to it. The timer is what makes Home Assistant look again.
+        """
+        self.schedule_update_ha_state()
+
+        hold = self._hold()
+        if hold is None:
+            return
+
+        if self._unsub_timer is not None:
+            self._unsub_timer()
+            self._unsub_timer = None
+
+        if self._coordinator.get_event_timestamp(self._event_name) > 0:
+            self._unsub_timer = async_call_later(
+                self.hass, hold, self._async_hold_expired)
+
+    @callback
+    def _async_hold_expired(self, _now=None):
+        """The hold is over, so ask for the state again."""
+        self._unsub_timer = None
+        self.schedule_update_ha_state()
+
+    async def async_will_remove_from_hass(self):
+        """Drop the timer with the entity, so it cannot fire into nothing."""
+        if self._unsub_timer is not None:
+            self._unsub_timer()
+            self._unsub_timer = None
 
     @property
     def should_poll(self) -> bool:

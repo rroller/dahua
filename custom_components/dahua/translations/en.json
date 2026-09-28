@@ -1,25 +1,50 @@
 {
     "config": {
+        "flow_title": "{name} ({address})",
         "step": {
             "user": {
                 "title": "Add Dahua Camera",
-                "description": "Example address: 192.168.1.108",
+                "description": "Home Assistant talks to the device directly, so it needs an account on the device itself rather than a Dahua or Imou cloud login.",
                 "data": {
                     "username": "Username",
                     "password": "Password",
                     "address": "Address",
                     "port": "Port",
-                    "rtsp_port": "RTSP Port",
-                    "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)",
-                    "streams": "RTSP Streams",
-                    "events": "Events",
-                    "channel": "Channel (single cameras are 0, NVRs are the 0 based index)"
+                    "rtsp_port": "RTSP port",
+                    "use_https": "Use HTTPS",
+                    "channel": "Channel"
+                },
+                "data_description": {
+                    "username": "An account on the device itself, not a Dahua or Imou cloud login. It is usually admin, in lower case.",
+                    "password": "The device's own password. If one has never been set, it is the safety code printed on the device's label.",
+                    "address": "The device's IP address or hostname, for example 192.168.1.108.",
+                    "port": "The port the device serves its web interface on. Normally 80, or 443 for HTTPS.",
+                    "rtsp_port": "The port the device serves video on. Normally 554.",
+                    "use_https": "Tick this if the device serves HTTPS on the port above. Left unticked, HTTPS is used only when the port is 443.",
+                    "channel": "Counted from 0, so a single camera is 0 and a recorder's channel 4 is 3 here. The recorder's other channels can be added on the next screen, where they are listed by the number the recorder shows."
                 }
             },
+            "channels": {
+                "title": "Add other channels",
+                "description": "This recorder has {count} other channels with a camera on them. Add all of them, or tick the ones you want. Channels that are empty, switched off, or reached over ONVIF are not listed, because this integration cannot drive them.",
+                "data": {
+                    "all_channels": "Add all {count} channels",
+                    "extra_channels": "Or just these"
+                }
+            },
+            "areas": {
+                "title": "Where are these cameras?",
+                "description": "Pick an area for each one and they will be filed as they are added. Leave any of them blank to decide later. New areas can be created here if you need them.",
+                "data": {}
+            },
             "name": {
-                "title": "Configure Device Name",
+                "title": "Name this camera",
+                "description": "Give it a name you will recognise in your dashboards and automations. If this is not the camera you meant to add, close this dialog and start again with a different channel number.\n\n{preview}",
                 "data": {
                     "name": "Device Name"
+                },
+                "data_description": {
+                    "name": "Used for the device and as the prefix for every entity it creates."
                 }
             },
             "reauth_confirm": {
@@ -36,45 +61,106 @@
                 "data": {
                     "address": "Address",
                     "port": "Port",
-                    "rtsp_port": "RTSP Port",
-                    "channel": "Channel (single cameras are 0, NVRs are the 0 based index)",
-                    "use_https": "Use HTTPS (otherwise HTTPS is used only on port 443)"
+                    "rtsp_port": "RTSP port",
+                    "channel": "Channel",
+                    "use_https": "Use HTTPS"
+                },
+                "data_description": {
+                    "address": "The device's IP address or hostname, for example 192.168.1.108.",
+                    "port": "The port the device serves its web interface on. Normally 80, or 443 for HTTPS.",
+                    "rtsp_port": "The port the device serves video on. Normally 554.",
+                    "use_https": "Tick this if the device serves HTTPS on the port above. Left unticked, HTTPS is used only when the port is 443.",
+                    "channel": "Counted from 0, so a single camera is 0 and a recorder's channel 4 is 3 here. The recorder's other channels can be added on the next screen, where they are listed by the number the recorder shows."
                 }
             }
         },
+        "progress": {
+            "discover": "Looking for other channels on this device. This can take up to {seconds} seconds."
+        },
         "error": {
-            "auth": "Username, Password, or Address is wrong."
+            "auth": "The camera rejected that username and password.",
+            "channel_not_on_device": "The recorder does not have that channel. This field counts from 0, so the recorder's channel 4 is 3 here and its last channel is one less than the number it shows.",
+            "channel_disabled": "That channel exists on the recorder but is switched off, so it has no camera to read. Enable it on the recorder first, then add it here.",
+            "channel_is_onvif": "That channel is reached over ONVIF, which this integration cannot drive: the recorder does not serve it on its own Dahua paths. Use Home Assistant's ONVIF integration for that camera, or switch the channel to Dahua's own protocol on the recorder.",
+            "cannot_connect": "Nothing answered at that address and port. Check the camera is on, that the IP and port are right, and that Home Assistant can reach it.",
+            "timeout": "The camera did not answer in time. It may be busy, or reachable but very slow — try again, and check the port is the one it serves HTTP on.",
+            "ssl_error": "The secure connection failed. If the camera does not serve HTTPS, clear the HTTPS option; if it does, it is usually on port 443.",
+            "unexpected_reply": "Something answered, but not a Dahua camera. Check the port — the web interface and the API are not always the same one.",
+            "cgi_disabled": "That address is serving web pages, but not the Dahua API. On a Dahua device this is almost always the CGI service being switched off: turn it on under System, then Security or Safety, then System Service, then CGI, and try again. If CGI is already on, check the port, because the web interface and the API are not always the same one.",
+            "https_available": "Nothing answered on that port, but the device is listening on 443, so it is probably serving HTTPS. Tick the HTTPS option and use port 443.",
+            "http_service_off": "The device is switched on and answering Dahua's own protocol, but nothing is serving HTTP on that port, so the integration cannot reach its API. Its web service is most likely switched off: turn on HTTP and CGI under System, then Security or Safety, then System Service.",
+            "unknown": "Could not add the camera. The Home Assistant log has the reason."
         },
         "abort": {
             "single_instance_allowed": "Only a single instance is allowed.",
-            "already_configured": "Only a single instance of a device is allowed.",
+            "already_configured": "That camera and channel are already added. To change its address or port use Configure on the existing entry, and to change its password use re-authentication, rather than adding it again.",
             "reauth_successful": "Re-authentication was successful.",
-            "reconfigure_successful": "Connection settings updated"
+            "reconfigure_successful": "Connection settings updated",
+            "channel_not_added": "That channel could not be added. A repair notice in Settings says which one and why."
         }
     },
     "options": {
         "step": {
             "user": {
                 "data": {
-                    "binary_sensor": "Binary sensor enabled",
-                    "sensor": "Sensor enabled",
-                    "switch": "Switch enabled",
-                    "light": "Light enabled",
-                    "select": "Select enabled",
-                    "camera": "Camera enabled",
-                    "button": "Button enabled",
                     "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
                     "use_rpc2": "Read configuration over one RPC2 session per device (fewer logins in the device's log; leave off if unsure)",
                     "events": "Events to subscribe to",
                     "scan_interval": "Seconds between device polls (events are not affected)",
                     "nvr_active_deterrence": "Enable NVR active deterrence controls",
+                    "manual_siren": "Manually enable Siren entity",
+                    "manual_security_light": "Manually enable Security Light entity",
+                    "disable_backchannel": "Don't open the two-way audio channel when streaming (fixes a doorbell stuck in a call, or talkback in the Dahua/Amcrest app; disables talking from Home Assistant)",
                     "authorized_plates": "Authorized license plates (comma-separated, e.g. ABC1234, XYZ5678)",
-                    "authorized_hold_time": "Authorized vehicle hold time (seconds to remain ON)"
+                    "authorized_hold_time": "Authorized vehicle hold time (seconds to remain ON)",
+                    "area": "Area (moves this device to it)"
+                },
+                "data_description": {
+                    "manual_siren": "Enable this if your camera has a working siren, but the integration did not create the Siren entity.",
+                    "manual_security_light": "Enable this if your camera has a working security light, but the integration did not create the Security Light entity."
+                },
+                "sections": {
+                    "platforms": {
+                        "name": "Entities to create",
+                        "description": "Every kind of entity is created by default. Turn one off and this device stops creating that kind entirely, which is a blunt instrument: to hide a single entity, disable it on the device page instead.",
+                        "data": {
+                            "binary_sensor": "Binary sensor enabled",
+                            "button": "Button enabled",
+                            "camera": "Camera enabled",
+                            "event": "Event enabled",
+                            "light": "Light enabled",
+                            "select": "Select enabled",
+                            "sensor": "Sensor enabled",
+                            "switch": "Switch enabled"
+                        }
+                    }
                 }
             }
         }
     },
     "issues": {
+        "channel_not_added": {
+            "title": "Channel {channel} on {address} was not added",
+            "description": "You ticked channel {channel} while adding this recorder, and it could not be added, so it has been skipped. The rest were added normally.\n\nThe reason given was `{reason}`. The usual causes are that the camera on that channel has stopped answering since the recorder last saw it, that the slot is enabled on the recorder with no camera actually in it, or that the recorder serves that channel over ONVIF, which this integration cannot drive.\n\nCheck the channel in the recorder's own interface, then add it from Add Integration once it is working. The Home Assistant log has the full reason."
+        },
+        "siblings_remain": {
+            "title": "{count} more Dahua entries still use {address}",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Remove the other {count} entries for {address}?",
+                        "description": "You removed **{removed}**, and {count} other Dahua configuration entries still use the device at {address}.\n\nA recorder is added one entry per channel, so removing all of it means removing every one. This removes the remaining {count} for you, one at a time:\n\n{titles}\n\n**This cannot be undone.** The entities and their history go with them. If you meant to remove only the one channel, dismiss this instead.\n\n{dependents_note}"
+                    }
+                },
+                "abort": {
+                    "not_configured": "No Dahua configuration entries use {address} any more, so there is nothing left to remove."
+                }
+            }
+        },
+        "removal_broke_things": {
+            "title": "{dependents} referenced the Dahua entry you removed",
+            "description": "You removed **{removed}**, and {dependents} referred to entities it provided:\n\n{names}\n\nThose entities no longer exist, so anything using them stops working quietly rather than reporting an error. Worth checking each one.\n\nThis is only a notice -- dismiss it once you have looked."
+        },
         "device_unreachable": {
             "title": "Dahua device at {address} is not responding",
             "description": "Home Assistant has not been able to reach the Dahua device at {address} for about {minutes} minutes. {entries} configuration entries use this device.\n\nCheck that it is powered on and reachable on your network. The debugging section of the documentation explains how to capture logs.\n\nThis message disappears on its own as soon as the device answers again."
