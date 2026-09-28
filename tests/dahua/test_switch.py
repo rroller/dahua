@@ -191,10 +191,15 @@ def test_every_switch_has_its_own_unique_id():
     assert all(i.startswith("SERIAL1_") for i in ids)
 
 
-def test_every_switch_is_named_after_the_device():
+def test_no_switch_repeats_the_device_name():
+    """Was "is named after the device". `has_entity_name` makes Home Assistant
+    prefix the device, so a switch that still carried the prefix would render it
+    twice. Every switch must still have a name, which is the other half of this."""
     c = _Coordinator()
     for cls in ALL:
-        assert _switch(cls, c).name.startswith("Garage "), cls.__name__
+        name = _switch(cls, c).name
+        assert name, cls.__name__
+        assert "Garage" not in name, cls.__name__
 
 
 @pytest.mark.parametrize("cls,key", [
