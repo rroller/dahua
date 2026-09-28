@@ -55,7 +55,18 @@ class _Coordinator:
 
 @pytest.fixture(autouse=True)
 def _skip_ha_plumbing(monkeypatch):
-    monkeypatch.setattr(button_module.DahuaBaseEntity, "__init__", lambda self, c, e: None)
+    """Skip Entity's own setup, but keep what the real __init__ stores.
+
+    This was a lambda that did nothing, which left every entity here with
+    no coordinator. Harmless while each test attached its own fake by
+    hand, and useless the moment a test wanted to ask the platform which
+    channel an entity ended up on: there was nothing to ask.
+    """
+    def _init(self, coordinator, config_entry):
+        self._coordinator = coordinator
+        self.config_entry = config_entry
+
+    monkeypatch.setattr(button_module.DahuaBaseEntity, "__init__", _init)
 
 
 def _button(cls, coordinator=None):
@@ -241,8 +252,11 @@ async def test_each_button_belongs_to_its_own_channels_coordinator():
 
     await button_module.async_setup_entry(hass, entry, added.extend)
 
-    # `coordinator` rather than `_coordinator`: CoordinatorEntity sets the
-    # public one, and the private copy is assigned after super().__init__.
-    owners = [button.coordinator for button in added]
+    # `_coordinator`, not CoordinatorEntity's public `coordinator`: the
+    # autouse fixture above stands in for DahuaBaseEntity.__init__, so
+    # CoordinatorEntity.__init__ never runs here and the public one is
+    # never set. Every other read in this file goes through `_coordinator`
+    # too, which is what the entities themselves use.
+    owners = [button._coordinator for button in added]
     assert owners == [channels[0], channels[1]]
     assert owners[0] is not owners[1]
