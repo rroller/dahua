@@ -241,6 +241,8 @@ async def test_each_button_belongs_to_its_own_channels_coordinator():
 
     await button_module.async_setup_entry(hass, entry, added.extend)
 
-    owners = [button._coordinator for button in added]
+    # `coordinator` rather than `_coordinator`: CoordinatorEntity sets the
+    # public one, and the private copy is assigned after super().__init__.
+    owners = [button.coordinator for button in added]
     assert owners == [channels[0], channels[1]]
     assert owners[0] is not owners[1]

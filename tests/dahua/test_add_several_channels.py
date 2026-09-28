@@ -328,23 +328,20 @@ async def test_the_form_offers_the_switch_and_the_list():
         "the switch is offered first, above the boxes it replaces")
 
 
-def test_each_extra_channel_becomes_its_own_flow():
+def test_each_extra_channel_becomes_its_own_subentry():
+    """This used to start a config flow per extra channel, so sixteen channels
+    became sixteen config entries. #827 makes them subentries of one entry."""
     flow = _flow()
     flow._found_channels = {1: "BACKYARD", 2: "DRIVEWAY"}
     flow._extra_channels = [1, 2]
-    started = []
-    flow.hass = SimpleNamespace(
-        async_create_task=lambda coro: None,
-        config_entries=SimpleNamespace(flow=SimpleNamespace(
-            async_init=lambda domain, context=None, data=None: started.append(data))),
-    )
 
-    flow._queue_extra_channels()
+    extras = [s["data"] for s in flow._channel_subentries()
+              if s["data"][CONF_CHANNEL] != 0]
 
-    assert [d[CONF_CHANNEL] for d in started] == [1, 2]
-    assert [d[CONF_NAME] for d in started] == ["BACKYARD", "DRIVEWAY"]
-    assert all(d[CONF_PASSWORD] == "pw" for d in started), \
-        "each flow needs the credentials the user already gave"
+    assert [d[CONF_CHANNEL] for d in extras] == [1, 2]
+    assert [d[CONF_NAME] for d in extras] == ["BACKYARD", "DRIVEWAY"]
+    assert all(d[CONF_PASSWORD] == "pw" for d in extras), \
+        "each channel needs the credentials the user already gave"
 
 
 def test_queueing_does_not_mutate_the_first_entrys_data():
@@ -356,31 +353,23 @@ def test_queueing_does_not_mutate_the_first_entrys_data():
     flow = _flow()
     flow._found_channels = {1: "BACKYARD"}
     flow._extra_channels = [1]
-    flow.hass = SimpleNamespace(
-        async_create_task=lambda coro: None,
-        config_entries=SimpleNamespace(flow=SimpleNamespace(
-            async_init=lambda domain, context=None, data=None: None)),
-    )
 
-    flow._queue_extra_channels()
+    flow._channel_subentries()
 
     assert flow.init_info[CONF_CHANNEL] == 0
     assert flow.init_info[CONF_NAME] == "Front"
 
 
-def test_nothing_chosen_starts_no_flows():
+def test_nothing_chosen_makes_only_the_primary():
+    """A single camera is one channel, and it is still a subentry: setup reads
+    channels from the subentries whenever there are any, so leaving the primary
+    out would bring up nothing at all."""
     flow = _flow()
     flow._extra_channels = []
-    started = []
-    flow.hass = SimpleNamespace(
-        async_create_task=lambda coro: started.append(coro),
-        config_entries=SimpleNamespace(flow=SimpleNamespace(
-            async_init=lambda **kw: None)),
-    )
 
-    flow._queue_extra_channels()
+    subentries = flow._channel_subentries()
 
-    assert started == []
+    assert [s["data"][CONF_CHANNEL] for s in subentries] == [0]
 
 
 # --- the step that actually creates the extra entries ------------------------
@@ -570,24 +559,22 @@ async def test_a_recorder_that_probes_forever_gives_up(monkeypatch):
     assert found == {}, "a hung recorder must not hold the form open"
 
 
-async def test_creating_the_first_entry_starts_the_others():
+async def test_creating_the_entry_carries_every_channel():
     """The join at the other end.
 
-    _queue_extra_channels is tested directly above and nothing tested that
-    anything calls it. Dropping the call leaves every other test here green
-    and the feature doing nothing at all.
+    _channel_subentries is tested directly above and nothing tested that
+    anything calls it. Dropping the argument leaves every other test here green
+    and the feature quietly creating a single channel.
     """
     flow = _flow()
     flow._found_channels = {1: "BACKYARD"}
     flow._extra_channels = [1]
-    started = []
-    flow.hass = SimpleNamespace(
-        async_create_task=lambda coro: None,
-        config_entries=SimpleNamespace(flow=SimpleNamespace(
-            async_init=lambda domain, context=None, data=None: started.append(data))),
-    )
-    flow.async_create_entry = lambda title, data: None
+    passed = {}
+    flow.async_create_entry = (
+        lambda title, data, subentries=None: passed.update(subentries=subentries))
 
     await flow.async_step_name({"name": "Front Door"})
 
-    assert [d[CONF_CHANNEL] for d in started] == [1]
+    assert passed["subentries"] is not None, \
+        "the channels were never handed to async_create_entry"
+    assert [s["data"][CONF_CHANNEL] for s in passed["subentries"]] == [0, 1]

@@ -1737,6 +1737,14 @@ async def _release_host_stream(coordinator) -> None:
 
 
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
+
+    # Declared on the class, not only assigned in __init__, because a great many
+    # tests build a coordinator with object.__new__ and set only the attributes
+    # they are about. channel_option reads this, and those tests reach it through
+    # configured_area_name and the authorized plate list, so without a default
+    # they fail on the attribute rather than on anything they are testing.
+    _channel_config: dict = {}
+
     """Class to manage fetching data from the API."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, events: list, address: str, port: int, rtsp_port: int,
@@ -1787,10 +1795,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_rpc2_siren = False
         self._supports_rpc2_security_light = False
         self._alarm_output_slots = 0
-        self._nvr_active_deterrence = self.channel_option(
+        # Read off the local `entry` rather than through channel_option, because
+        # that reads self.config_entry and DataUpdateCoordinator does not set it
+        # until super().__init__ further down. The precedence is the same one
+        # channel_option applies: this channel's own answer, then the entry's.
+        def _channel_first(key, default=None):
+            if key in self._channel_config:
+                return self._channel_config[key]
+            return entry.options.get(key, default)
+
+        self._nvr_active_deterrence = _channel_first(
             CONF_NVR_ACTIVE_DETERRENCE, False)
-        self._manual_siren = self.channel_option(CONF_MANUAL_SIREN, False)
-        self._manual_security_light = self.channel_option(
+        self._manual_siren = _channel_first(CONF_MANUAL_SIREN, False)
+        self._manual_security_light = _channel_first(
             CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
