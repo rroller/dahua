@@ -773,6 +773,16 @@ def channel_configs(entry: DahuaConfigEntry) -> list:
     Sorted by channel so that runtime_data, and therefore every platform's
     entities, comes out in channel order rather than in whatever order the
     subentries happen to be stored.
+
+    The channel comes back as an int even where it was stored as a string. The
+    add flow wrote it as a string for extra channels and left it absent for the
+    first, so both shapes are in the wild, and `runtime_data` is keyed on it:
+    "3" and 3 are the same channel and two different keys.
+
+    One channel is returned once. Two subentries claiming the same channel would
+    otherwise each get a coordinator, only one of which ends up in
+    `runtime_data` -- leaving the other polling the device with nothing owning it
+    and nothing to stop it at unload.
     """
     if entry.subentries:
         pairs = [(subentry_id, dict(subentry.data))
@@ -780,13 +790,24 @@ def channel_configs(entry: DahuaConfigEntry) -> list:
     else:
         pairs = [(None, dict(entry.data))]
 
-    def channel_of(pair):
+    def channel_of(config):
         try:
-            return int(pair[1].get(CONF_CHANNEL, 0) or 0)
+            return int(config.get(CONF_CHANNEL, 0) or 0)
         except (TypeError, ValueError):
             return 0
 
-    return sorted(pairs, key=channel_of)
+    channels: dict[int, tuple] = {}
+    for subentry_id, config in pairs:
+        channel = channel_of(config)
+        if channel in channels:
+            _LOGGER.warning(
+                "Dahua entry %s has more than one channel %s; using the first "
+                "and ignoring the rest", entry.entry_id, channel)
+            continue
+        config[CONF_CHANNEL] = channel
+        channels[channel] = (subentry_id, config)
+
+    return [channels[channel] for channel in sorted(channels)]
 
 
 def events_for_channel(entry: DahuaConfigEntry, config: dict) -> list:

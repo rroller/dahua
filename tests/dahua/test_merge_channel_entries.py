@@ -51,6 +51,14 @@ class _ConfigEntries:
         return list(self._entries)
 
     def async_add_subentry(self, entry, subentry):
+        # Home Assistant refuses a second subentry with a unique id the
+        # entry already has (_raise_if_subentry_unique_id_exists). Accepting
+        # it quietly here made a merge that could raise from inside itself,
+        # halfway through moving entities, look safe.
+        if any(s.unique_id == subentry.unique_id
+               for s in entry.subentries.values()):
+            raise ValueError("duplicate subentry unique id %s"
+                             % subentry.unique_id)
         self._log.append(("subentry", entry.entry_id, subentry.unique_id))
         entry.subentries[subentry.subentry_id] = subentry
         return True
@@ -199,6 +207,29 @@ async def test_every_entity_ends_up_on_the_surviving_entry(world):
 
 
 # --- a host that needs nothing doing ----------------------------------------
+
+async def test_two_entries_on_one_channel_fold_into_one_subentry(world):
+    """A device that reports no serial number got no unique id, so nothing
+    stopped the same channel being added twice. Home Assistant raises on the
+    second subentry with the same unique id, and that raise would have come
+    from the middle of the merge -- after entities had moved, with the
+    backup the only way back. Two entries for one channel are one channel.
+    """
+    world.entries.append(_Entry("dup", "192.168.0.213", 1, "Channel 1 again"))
+    world.entities._owned["dup"] = [SimpleNamespace(entity_id="sensor.d")]
+    world.devices._owned["dup"] = [SimpleNamespace(id="ddup")]
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    survivor = world.entries[0]
+    assert [s.unique_id for s in survivor.subentries.values()] == [
+        "192.168.0.213_0", "192.168.0.213_1"]
+    # And the duplicate's entities came across rather than being stranded
+    # on an entry the merge then refused to remove.
+    moved = {e[1] for e in world.log if e[0] == "entity"}
+    assert moved == {"sensor.a", "sensor.b", "sensor.c", "sensor.d"}
+    assert ("remove", "dup") in world.log
+
 
 async def test_a_single_camera_is_left_completely_alone(world):
     await migrate.async_merge_channel_entries(world.hass)

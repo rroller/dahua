@@ -169,6 +169,14 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
 
     # Idempotent: a subentry per channel already present means this host has been
     # done, and a half finished run can be re-entered without duplicating any.
+    #
+    # Added to as the loop goes, not only read. Two entries can claim the same
+    # channel of the same host -- a device that reports no serial number gets no
+    # unique id, so nothing stopped it being added twice -- and Home Assistant
+    # raises on a second subentry with the same unique id. Snapshotting this
+    # before the loop meant that raise came from inside the merge, after some
+    # entities had already moved. Both entries now fold onto the one channel,
+    # which is what they always were.
     existing = {
         subentry.unique_id: subentry_id
         for subentry_id, subentry in survivor.subentries.items()
@@ -188,6 +196,7 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
             unique_id=unique_id,
         )
         hass.config_entries.async_add_subentry(survivor, subentry)
+        existing[unique_id] = subentry.subentry_id
         subentry_for[entry.entry_id] = subentry.subentry_id
 
     # Counted before anything moves, so the check at the end is against what was
@@ -272,4 +281,7 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
         "redundant entries removed, with all %d accounted for on the merged "
         "entry. Entity ids are unchanged, so dashboards and automations keep "
         "working",
-        address, len(subentry_for), moved, removed, survived)
+        # The subentries the survivor actually has, not the number of entries
+        # that were folded into them: two entries can share a channel, and
+        # counting entries would then claim a channel that does not exist.
+        address, len(survivor.subentries), moved, removed, survived)

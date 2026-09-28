@@ -80,6 +80,39 @@ def test_a_channel_with_an_unreadable_number_is_treated_as_zero():
     assert [c[0] for c in configs] == ["bad", "one"]
 
 
+def test_the_channel_comes_back_as_a_number_whatever_it_was_stored_as():
+    """runtime_data is keyed on the channel, so "3" and 3 would be two keys for
+    one channel -- and get_channel() is declared to return an int, which
+    anything doing arithmetic on it is entitled to believe."""
+    configs = channel_configs(_entry(subentries={"s": _sub("3")}))
+
+    assert configs[0][1]["channel"] == 3
+    assert isinstance(configs[0][1]["channel"], int)
+
+
+def test_one_channel_is_described_once():
+    """Two subentries claiming one channel would each get a coordinator, and
+    only one of them would end up in runtime_data. The other would keep polling
+    the device with nothing owning it, and unload -- which walks runtime_data --
+    would never stop it. That is a session left open for the life of Home
+    Assistant, on a device that locks out a host making too many."""
+    configs = channel_configs(_entry(subentries={
+        "first": _sub(3), "second": _sub(3), "other": _sub(4)}))
+
+    assert [c[1]["channel"] for c in configs] == [3, 4]
+    assert [c[0] for c in configs] == ["first", "other"]
+
+
+def test_a_string_and_an_int_are_the_same_channel():
+    """The two shapes are both in the wild, so the duplicate above is not a
+    hypothetical: one entry added through the form and one imported can disagree
+    about the type and agree about the channel."""
+    configs = channel_configs(_entry(subentries={
+        "as_int": _sub(3), "as_string": _sub("3")}))
+
+    assert len(configs) == 1
+
+
 # --- per channel event lists ------------------------------------------------
 
 def test_each_channel_keeps_its_own_event_list():
