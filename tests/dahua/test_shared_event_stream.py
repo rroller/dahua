@@ -529,3 +529,37 @@ def test_the_mapped_sources_are_codes_a_device_actually_sends():
     from custom_components.dahua import DERIVES_INTO
 
     assert set(DERIVES_INTO) <= set(ALL_EVENTS)
+
+
+# --- the flag has to survive an incompletely built stream ---------------------
+
+def test_the_broadened_flag_has_a_class_level_default():
+    """Both `_async_run` and `on_receive` read `_using_all_events`, and several
+    test files build this object with `object.__new__` and set only what they are
+    about: `test_one_bad_event.py` sets three attributes, `test_refused_
+    credentials.py` six, and neither is about the subscription shape.
+
+    Assigning it only in `__init__` was a real CI failure rather than a
+    hypothetical one. `test_the_event_stream_stops_once_the_budget_is_gone` calls
+    `_async_run` directly on a bare instance, and the AttributeError landed inside
+    that method's retry loop, so it reported a nine second timeout rather than an
+    error and said nothing about the cause.
+    """
+    bare = DahuaHostEventStream.__new__(DahuaHostEventStream)
+
+    assert bare._using_all_events is False
+
+
+def test_a_bare_stream_dispatches_as_it_did_before(hass):
+    """The consequence of that default, stated as behaviour rather than as an
+    attribute: a stream with no `_events` at all still delivers, because it was
+    never broadened and so is not filtered."""
+    bare = DahuaHostEventStream.__new__(DahuaHostEventStream)
+    bare._address = ADDRESS
+    bare._received_data = False
+    only = _Coordinator(0, ["VideoMotion"])
+    bare._by_channel = {0: [only]}
+
+    bare.on_receive(b"Code=VideoMotion;action=Start;index=0\r\n", 0)
+
+    assert [event["Code"] for event in only.handled] == ["VideoMotion"]

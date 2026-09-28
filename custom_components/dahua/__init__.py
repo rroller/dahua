@@ -1237,6 +1237,15 @@ class DahuaHostEventStream:
     it.
     """
 
+    # Declared on the class, not only assigned in __init__, because several
+    # tests build a stream with object.__new__ and set just the attributes they
+    # are about: test_one_bad_event.py sets three, test_refused_credentials.py
+    # six, and neither is about the subscription shape. Both `_async_run` and
+    # `on_receive` read this, and on a bare instance the AttributeError from
+    # `_async_run` landed inside its retry loop and hung the test rather than
+    # failing it. A default here is one line and cannot be half-applied.
+    _using_all_events = False
+
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         self._hass = hass
         self._address = address
@@ -1465,11 +1474,9 @@ class DahuaHostEventStream:
             # ought to agree with it. A user who selected "All" themselves is
             # asking for everything and is not filtered either.
             #
-            # getattr because plenty of tests build this object with __new__ and
-            # set only the attributes they are about, as the coordinator's own
-            # diagnostics do. Absent means "not broadened", which is the old
-            # behaviour.
-            if getattr(self, "_using_all_events", False) and "All" not in self._events:
+            # A bare instance defaults to False from the class attribute, so an
+            # incompletely built stream takes the old path rather than raising.
+            if self._using_all_events and "All" not in self._events:
                 code = event.get("Code")
                 derives = set(DERIVES_INTO.get(code, ())) & self._events
                 if code not in self._events and not derives:
