@@ -955,6 +955,18 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(config_entry):
         return DahuaOptionsFlowHandler()
 
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(cls, config_entry) -> dict:
+        """Let a channel be reconfigured on its own.
+
+        Without this the settings that belong to one channel would be unreachable
+        after it was added, which would be a step backwards from an entry per
+        channel: each of those had its own options screen. Home Assistant renders
+        this as a Configure button on the channel itself.
+        """
+        return {CHANNEL_SUBENTRY: DahuaChannelSubentryFlow}
+
     async def async_step_reconfigure(self, user_input=None):
         """Change an existing entry's connection settings.
 
@@ -1386,4 +1398,67 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
         """Update config entry options."""
         return self.async_create_entry(
             title=self.config_entry.data.get(CONF_USERNAME), data=self.options
+        )
+
+
+class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
+    """Change the settings that belong to one channel of a recorder.
+
+    These used to live in the channel's own config entry options, because a
+    channel *was* an entry. #827 merged the entries, so they live on the channel's
+    subentry and this is how they are edited.
+
+    Only the genuinely per channel ones are here. Anything host wide -- the poll
+    interval, whether to use RPC2, which platforms to create -- stays on the entry
+    and is edited from its Configure button, because asking the same question once
+    per channel on a 64 channel recorder would be its own kind of unusable.
+    """
+
+    async def async_step_reconfigure(self, user_input=None):
+        """Show and save one channel's settings."""
+        subentry = self._get_reconfigure_subentry()
+        data = dict(subentry.data)
+
+        if user_input is not None:
+            # An area of "" means "no area", which is a real answer and different
+            # from not having been asked, so it is stored rather than dropped.
+            merged = {**data, **user_input}
+            return self.async_update_and_abort(
+                self._get_entry(),
+                subentry,
+                data=merged,
+                title=merged.get(CONF_NAME) or subentry.title,
+            )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema({
+                vol.Required(CONF_NAME,
+                             default=data.get(CONF_NAME, subentry.title)): str,
+                vol.Optional(CONF_AREA,
+                             default=data.get(CONF_AREA) or ""):
+                    selector.AreaSelector(),
+                vol.Optional(
+                    CONF_EVENTS,
+                    default=data.get(CONF_EVENTS, DEFAULT_EVENTS)):
+                    cv.multi_select(ALL_EVENTS),
+                vol.Required(
+                    CONF_AUTO_DETECT_CHANNEL,
+                    default=data.get(CONF_AUTO_DETECT_CHANNEL, True)): bool,
+                vol.Required(
+                    CONF_NVR_ACTIVE_DETERRENCE,
+                    default=data.get(CONF_NVR_ACTIVE_DETERRENCE, False)): bool,
+                vol.Required(CONF_MANUAL_SIREN,
+                             default=data.get(CONF_MANUAL_SIREN, False)): bool,
+                vol.Required(
+                    CONF_MANUAL_SECURITY_LIGHT,
+                    default=data.get(CONF_MANUAL_SECURITY_LIGHT, False)): bool,
+                vol.Required(
+                    CONF_DISABLE_BACKCHANNEL,
+                    default=data.get(CONF_DISABLE_BACKCHANNEL, False)): bool,
+            }),
+            description_placeholders={
+                "channel": str(data.get(CONF_CHANNEL, 0)),
+                "name": subentry.title,
+            },
         )
