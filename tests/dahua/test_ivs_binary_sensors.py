@@ -11,6 +11,7 @@ from custom_components.dahua.binary_sensor import (
 )
 from custom_components.dahua.const import DOMAIN
 from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua.camera import _dispatch_debug_ivs_event
 from custom_components.dahua.diagnostics import _ivs_block
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.ivs import ivs_rules_for_channel, ivs_discovery_diagnostics
@@ -98,6 +99,23 @@ def test_stay_rule_event_only_changes_its_own_sensor(key):
     c._dispatch_event(event, "Stop")
     assert not sensors["23"].is_on
     assert fired == ["23", "23"]
+
+
+def test_debug_ivs_event_start_stop_updates_rule_sensor():
+    c = _coordinator()
+    rule = next(rule for rule in c.get_ivs_rules() if rule["id"] == "8")
+    sensor = _sensor(c, rule)
+    c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    _dispatch_debug_ivs_event(
+        c, "CrossRegionDetection", 8, "Start", "Rule1", "Human"
+    )
+    assert sensor.is_on
+
+    _dispatch_debug_ivs_event(
+        c, "CrossRegionDetection", 8, "Stop", "Rule1", "Human"
+    )
+    assert not sensor.is_on
 
 
 def test_crossline_and_crossregion_keep_their_own_rules_and_smart_motion():
