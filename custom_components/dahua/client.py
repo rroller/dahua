@@ -1160,6 +1160,21 @@ class DahuaClient:
         """
         return await self.async_get_config("VideoAnalyseRule")
 
+    async def async_get_remote_ivs_rules(self, channel: int) -> dict:
+        """Read an NVR channel's remote rules in the coordinator's flat shape."""
+        holder = await self._shared_rpc2()
+        table = await holder.client.async_get_remote_ivs_rules(channel)
+        return flatten_rpc2_config(
+            "RemoteVideoAnalyseRule", table,
+            f"table.RemoteVideoAnalyseRule[{channel}]",
+        )
+
+    async def async_set_remote_ivs_rule_by_id(
+            self, channel: int, rule_id: str, enabled: bool) -> None:
+        """Write a remote rule through the shared authenticated RPC2 session."""
+        holder = await self._shared_rpc2()
+        await holder.client.async_set_remote_ivs_rule_by_id(channel, rule_id, enabled)
+
     async def async_set_ivs_rule_by_id(self, channel: int, rule_id: str, enabled: bool):
         """Resolve the rule just before writing, bypassing the shared read cache."""
         table = await self._request(

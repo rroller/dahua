@@ -3,12 +3,12 @@
 import re
 
 
-def ivs_rules_for_channel(table: dict, channel: int) -> list[dict]:
+def ivs_rules_for_channel(table: dict, channel: int, name: str = "VideoAnalyseRule") -> list[dict]:
     """Return complete normal rules with unambiguous Dahua IDs on this channel."""
     rules = []
     ids = {}
     for key, value in table.items():
-        match = re.fullmatch(rf"table.VideoAnalyseRule\[{channel}\]\[(\d+)\]\.Id", key)
+        match = re.fullmatch(rf"table.{name}\[{channel}\]\[(\d+)\]\.Id", key)
         if not match or value is None or str(value).strip() == "":
             continue
         rule_id = str(value)
@@ -27,9 +27,9 @@ def ivs_rules_for_channel(table: dict, channel: int) -> list[dict]:
     return sorted((rule for rule in rules if ids[rule["id"]] == 1), key=lambda rule: rule["index"])
 
 
-def ivs_rule_index(table: dict, channel: int, rule_id: str) -> int | None:
+def ivs_rule_index(table: dict, channel: int, rule_id: str, name: str = "VideoAnalyseRule") -> int | None:
     """Resolve an ID in the current table, never falling back to an old index."""
-    for rule in ivs_rules_for_channel(table, channel):
+    for rule in ivs_rules_for_channel(table, channel, name):
         if rule["id"] == str(rule_id):
             return rule["index"]
     return None

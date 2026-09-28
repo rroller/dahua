@@ -251,10 +251,15 @@ class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
         self._channel = rule["channel"]
         self._rule_id = rule["id"]
         self._rule_name = rule["name"]
+        self._remote = rule.get("remote", False)
 
     async def _async_set_enabled(self, enabled):
         try:
-            await self._coordinator.client.async_set_ivs_rule_by_id(
+            setter = (
+                self._coordinator.client.async_set_remote_ivs_rule_by_id
+                if self._remote else self._coordinator.client.async_set_ivs_rule_by_id
+            )
+            await setter(
                 self._channel, self._rule_id, enabled
             )
         except ValueError as err:

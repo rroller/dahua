@@ -24,6 +24,9 @@ def row(index, rule_id, enabled="true", channel=2, kind="Normal", name="Line"):
 def coordinator(table):
     c = object.__new__(DahuaDataUpdateCoordinator)
     c.data = table
+    c._channel = 0
+    c.model = ""
+    c._nvr_active_deterrence = False
     c._ivs_rules = ivs_rules_for_channel(table, 2)
     c.get_serial_number = lambda: "SERIAL"
     c.get_device_name = lambda: "Garden"
@@ -132,6 +135,27 @@ class TestIVSActions:
         with self.assertRaises(TimeoutError):
             await entity(c).async_turn_off()
         c.client.get.assert_not_awaited()
+
+    async def test_nvr_switch_uses_remote_setter_and_remote_state(self):
+        remote = {
+            "table.RemoteVideoAnalyseRule[10][0].Id": "1",
+            "table.RemoteVideoAnalyseRule[10][0].Class": "Normal",
+            "table.RemoteVideoAnalyseRule[10][0].Name": "IVS-1",
+            "table.RemoteVideoAnalyseRule[10][0].Enable": "true",
+        }
+        c = coordinator({})
+        c._channel = 10
+        c.model = "NVR"
+        c._nvr_active_deterrence = False
+        c.data = remote
+        c._ivs_rules = ivs_rules_for_channel(remote, 10, "RemoteVideoAnalyseRule")
+        c._ivs_rules[0]["remote"] = True
+        c.client.async_set_remote_ivs_rule_by_id = AsyncMock()
+        switch = entity(c, "1")
+        self.assertTrue(switch.is_on)
+        await switch.async_turn_off()
+        c.client.async_set_remote_ivs_rule_by_id.assert_awaited_once_with(10, "1", False)
+        c.client._request.assert_not_awaited()
 
     async def test_setup_adds_all_normal_rules_without_network_reads(self):
         c = coordinator({**row(0, "42"), **row(17, "7")})
