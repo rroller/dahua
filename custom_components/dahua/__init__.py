@@ -762,6 +762,48 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
     return timedelta(seconds=max(seconds, MIN_SCAN_INTERVAL))
 
 
+def channel_configs(entry: DahuaConfigEntry) -> list:
+    """(subentry_id, config) for every channel this entry owns.
+
+    A merged recorder keeps one subentry per channel (#827). An entry with no
+    subentries is a single camera, or a recorder channel that predates the merge,
+    and its own `data` is that one channel -- so both shapes come out of here the
+    same way and setup has one path rather than two.
+
+    Sorted by channel so that runtime_data, and therefore every platform's
+    entities, comes out in channel order rather than in whatever order the
+    subentries happen to be stored.
+    """
+    if entry.subentries:
+        pairs = [(subentry_id, dict(subentry.data))
+                 for subentry_id, subentry in entry.subentries.items()]
+    else:
+        pairs = [(None, dict(entry.data))]
+
+    def channel_of(pair):
+        try:
+            return int(pair[1].get(CONF_CHANNEL, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return sorted(pairs, key=channel_of)
+
+
+def events_for_channel(entry: DahuaConfigEntry, config: dict) -> list:
+    """The events one channel subscribes to.
+
+    A single channel entry keeps them where it always did, so
+    get_configured_events still decides for it. A channel of a merged recorder
+    keeps its own list in its subentry, which is what stops one channel's
+    selection becoming every channel's.
+    """
+    if not entry.subentries:
+        return get_configured_events(entry)
+    if CONF_EVENTS in config:
+        return list(config[CONF_EVENTS] or [])
+    return get_configured_events(entry)
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Run once for the integration, before any config entry is set up.
 
@@ -801,34 +843,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         _LOGGER.debug("Could not re-identify %s from the network",
                       entry.data.get(CONF_ADDRESS), exc_info=True)
 
-    username = entry.data.get(CONF_USERNAME)
-    password = entry.data.get(CONF_PASSWORD)
-    address = entry.data.get(CONF_ADDRESS)
-    port = int(entry.data.get(CONF_PORT))
-    rtsp_port = int(entry.data.get(CONF_RTSP_PORT))
-    events = get_configured_events(entry)
-    name = entry.data.get(CONF_NAME)
-    channel = entry.data.get(CONF_CHANNEL, 0)
-    use_https = get_configured_use_https(entry)
+    # One coordinator per channel. A single camera has one, a merged recorder has
+    # one per subentry (#827), and channel_configs hands back the same shape for
+    # both so there is a single path here.
+    built = []
+    for _subentry_id, config in channel_configs(entry):
+        built.append(DahuaDataUpdateCoordinator(
+            hass,
+            entry=entry,
+            events=events_for_channel(entry, config),
+            address=config.get(CONF_ADDRESS),
+            port=int(config.get(CONF_PORT)),
+            rtsp_port=int(config.get(CONF_RTSP_PORT)),
+            username=config.get(CONF_USERNAME),
+            password=config.get(CONF_PASSWORD),
+            name=config.get(CONF_NAME),
+            channel=config.get(CONF_CHANNEL, 0),
+            use_https=True if config.get(CONF_USE_HTTPS) else None,
+        ))
 
-    coordinator = DahuaDataUpdateCoordinator(hass, entry=entry, events=events, address=address, port=port,
-                                             rtsp_port=rtsp_port, username=username, password=password, name=name,
-                                             channel=channel, use_https=use_https)
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except Exception:
-        # The coordinator opens a session and takes a reference on the host's
-        # shared connection pool in its constructor, and only async_stop gives
-        # them back. Nothing reaches async_stop unless the coordinator makes it
-        # into hass.data, which a failed setup never does -- so without this,
-        # every retry against a device that is not answering leaks one session
-        # and one reference, forever, and Home Assistant retries forever.
-        await coordinator.async_stop()
-        raise
+    # Concurrently, because a 64 channel recorder doing this one channel at a time
+    # would take minutes of startup. It is not a thundering herd: every request
+    # still goes through the host's MAX_CONCURRENT_REQUESTS_PER_HOST semaphore, so
+    # this changes how long the *waiting* takes and not how hard the device is hit.
+    results = await asyncio.gather(
+        *[coordinator.async_config_entry_first_refresh() for coordinator in built],
+        return_exceptions=True)
+
+    coordinators = []
+    failures = []
+    for coordinator, result in zip(built, results):
+        if isinstance(result, BaseException):
+            # The coordinator opens a session and takes a reference on the host's
+            # shared connection pool in its constructor, and only async_stop gives
+            # them back. A coordinator that never reaches runtime_data is never
+            # stopped by unload, so without this every retry against a device that
+            # is not answering leaks one session and one reference, forever.
+            await coordinator.async_stop()
+            failures.append((coordinator.get_channel(), result))
+        else:
+            coordinators.append(coordinator)
+
+    if not coordinators:
+        # Nothing came up, so the host is the problem rather than one channel.
+        # Raising is what gets Home Assistant to retry the whole entry.
+        raise failures[0][1]
+
+    if failures:
+        # One bad channel must not take a recorder's other sixty three offline.
+        # Said once, with the channels named, because the alternative is a user
+        # wondering why one camera is missing and finding nothing in the log.
+        _LOGGER.warning(
+            "%s set up %d of %d channels. These did not answer and will be "
+            "retried on the next poll: %s",
+            entry.data.get(CONF_ADDRESS), len(coordinators),
+            len(built), ", ".join(str(channel) for channel, _ in failures))
 
     # Home Assistant's own place for per entry runtime state, and it clears the
     # attribute itself when the entry unloads, so there is nothing to pop.
-    entry.runtime_data = {coordinator.get_channel(): coordinator}
+    entry.runtime_data = {c.get_channel(): c for c in coordinators}
 
     # https://developers.home-assistant.io/docs/config_entries_index/
     # Forward every platform in one call. Home Assistant gathers them into
@@ -837,9 +910,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # to cover the sum of six platforms rather than the slowest one. A device
     # answering slowly could exhaust it and take the whole entry down with a
     # CancelledError -- see #513.
-    coordinator.platforms.extend(p for p in PLATFORMS if entry.options.get(p, True))
-    if coordinator.platforms:
-        await hass.config_entries.async_forward_entry_setups(entry, coordinator.platforms)
+    #
+    # The platform list is per entry, so it is the same for every channel and the
+    # forward happens once. Each coordinator still carries its own copy because
+    # unload reads it back off them.
+    wanted = [p for p in PLATFORMS if entry.options.get(p, True)]
+    for coordinator in coordinators:
+        coordinator.platforms.extend(wanted)
+    if wanted:
+        await hass.config_entries.async_forward_entry_setups(entry, wanted)
 
     # Wrapped, because unloading does not clear an entry's update listeners.
     # A plain add_update_listener leaves one behind on every reload, and then a
@@ -847,9 +926,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # against an NVR, exactly the burst that wedges it.
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
-    entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
-    )
+    # Every channel gets its own shutdown hook. A single one would have left the
+    # other channels' sessions and host pool references open on a Home Assistant
+    # stop, which is the leak async_stop exists to prevent.
+    for coordinator in coordinators:
+        entry.async_on_unload(
+            hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
+        )
 
     return True
 
