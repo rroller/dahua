@@ -182,6 +182,7 @@
     },
     "config_subentries": {
         "channel": {
+            "entry_type": "channel",
             "initiate_flow": {
                 "user": "Add a channel"
             },

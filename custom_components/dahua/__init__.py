@@ -847,50 +847,60 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # one per subentry (#827), and channel_configs hands back the same shape for
     # both so there is a single path here.
     built = []
-    for _subentry_id, config in channel_configs(entry):
-        built.append(DahuaDataUpdateCoordinator(
-            hass,
-            entry=entry,
-            events=events_for_channel(entry, config),
-            address=config.get(CONF_ADDRESS),
-            port=int(config.get(CONF_PORT)),
-            rtsp_port=int(config.get(CONF_RTSP_PORT)),
-            username=config.get(CONF_USERNAME),
-            password=config.get(CONF_PASSWORD),
-            name=config.get(CONF_NAME),
-            channel=config.get(CONF_CHANNEL, 0),
-            use_https=True if config.get(CONF_USE_HTTPS) else None,
-            # This channel's own settings. Empty for a single camera, which is
-            # what keeps channel_option identical to reading entry.options there.
-            channel_config=config if _subentry_id else None,
-        ))
-
-    # Concurrently, because a 64 channel recorder doing this one channel at a time
-    # would take minutes of startup. It is not a thundering herd: every request
-    # still goes through the host's MAX_CONCURRENT_REQUESTS_PER_HOST semaphore, so
-    # this changes how long the *waiting* takes and not how hard the device is hit.
-    results = await asyncio.gather(
-        *[coordinator.async_config_entry_first_refresh() for coordinator in built],
-        return_exceptions=True)
-
     coordinators = []
     failures = []
-    for coordinator, result in zip(built, results):
-        if isinstance(result, BaseException):
-            # The coordinator opens a session and takes a reference on the host's
-            # shared connection pool in its constructor, and only async_stop gives
-            # them back. A coordinator that never reaches runtime_data is never
-            # stopped by unload, so without this every retry against a device that
-            # is not answering leaks one session and one reference, forever.
-            await coordinator.async_stop()
-            failures.append((coordinator.get_channel(), result))
-        else:
-            coordinators.append(coordinator)
+    try:
+        for _subentry_id, config in channel_configs(entry):
+            built.append(DahuaDataUpdateCoordinator(
+                hass,
+                entry=entry,
+                events=events_for_channel(entry, config),
+                address=config.get(CONF_ADDRESS),
+                port=int(config.get(CONF_PORT)),
+                rtsp_port=int(config.get(CONF_RTSP_PORT)),
+                username=config.get(CONF_USERNAME),
+                password=config.get(CONF_PASSWORD),
+                name=config.get(CONF_NAME),
+                channel=config.get(CONF_CHANNEL, 0),
+                use_https=True if config.get(CONF_USE_HTTPS) else None,
+                # This channel's own settings. Empty for a single camera, which
+                # is what keeps channel_option identical to entry.options there.
+                channel_config=config if _subentry_id else None,
+            ))
 
-    if not coordinators:
-        # Nothing came up, so the host is the problem rather than one channel.
-        # Raising is what gets Home Assistant to retry the whole entry.
-        raise failures[0][1]
+        # Concurrently, because a 64 channel recorder doing these one at a time
+        # would add minutes to startup. Not a thundering herd: every request still
+        # passes the host's MAX_CONCURRENT_REQUESTS_PER_HOST semaphore, so this
+        # changes how long the waiting takes rather than how hard the device is hit.
+        results = await asyncio.gather(
+            *[c.async_config_entry_first_refresh() for c in built],
+            return_exceptions=True)
+
+        for coordinator, result in zip(built, results):
+            if isinstance(result, BaseException):
+                failures.append((coordinator.get_channel(), result))
+            else:
+                coordinators.append(coordinator)
+
+        if not coordinators:
+            # Nothing came up, so the host is the problem rather than one channel.
+            # Raising is what gets Home Assistant to retry the whole entry.
+            raise failures[0][1]
+    finally:
+        # Every coordinator holds an aiohttp session and a reference on the host's
+        # shared connection pool from its constructor, and only async_stop gives
+        # them back. Unload can only stop the ones that reached runtime_data, so
+        # anything built and not adopted has to be given back here.
+        #
+        # In a finally rather than beside the failure branch, because the ways to
+        # leave this block are more numerous than they look: a refusal from one
+        # channel, a raise from int(port) on the next channel's config, or the
+        # re-raise above. Home Assistant retries a failed setup forever, so a leak
+        # here is not leaked once but once per retry for as long as the device is
+        # down, which on a 64 channel recorder is 64 at a time.
+        for coordinator in built:
+            if coordinator not in coordinators:
+                await coordinator.async_stop()
 
     if failures:
         # One bad channel must not take a recorder's other sixty three offline.
