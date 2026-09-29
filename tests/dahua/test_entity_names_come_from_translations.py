@@ -53,21 +53,24 @@ WAS = {
     ("switch", "smart_motion_detection"): "Smart Motion Detection",
     ("switch", "alarm_output"): "Alarm Output",
     ("switch", "privacy_mode"): "Privacy Mode",
+    # Named by the platform until the six below moved; the two pairs are a
+    # capability choice, not an index.
+    ("light", "infrared"): "Infrared",
+    ("light", "illuminator"): "Illuminator",
+    ("light", "flood_light"): "Flood Light",
+    ("light", "ring_light"): "Ring Light",
+    ("light", "security_light"): "Security Light",
+    ("light", "warning_light"): "Warning Light",
+    ("switch", "siren"): "Siren",
+    ("switch", "alarm"): "Alarm",
 }
 
 # Entities whose name is not this integration's to translate. Listed rather than
 # detected, so that adding a new hard coded English name fails here.
 NAMED_ELSEWHERE = {
-    # The rule's own name, read off the device. User data.
+    # The rule's own name, read off the device. User data, not a string this
+    # integration can translate.
     "DahuaIVSRuleSwitch",
-    # Handed in by the platform, and several vary by index, so these want
-    # translation_placeholders rather than a plain key.
-    "DahuaSirenBinarySwitch",
-    "DahuaInfraredLight",
-    "DahuaIlluminator",
-    "AmcrestRingLight",
-    "FloodLight",
-    "DahuaSecurityLight",
     # One name per event code, about thirty of them behind a NAME_OVERRIDES map.
     "DahuaEventSensor",
     # The stream's name, from the client's own to_stream_name.
@@ -97,10 +100,37 @@ def _declared(cls):
     return None
 
 
+def _keys_passed_in(platform):
+    """Literal `translation_key="..."` arguments in this platform's module.
+
+    Two entities are not one name: the security light is "Warning Light" on a
+    recorder and "Security Light" otherwise, and the siren is "Alarm" or "Siren".
+    That is a choice between two fixed strings, so the class declares neither and
+    the platform passes the key. The literals sit in `async_setup_entry`, which is
+    where the choice is made, so they are as findable as a class attribute.
+    """
+    tree = ast.parse(io.open(PACKAGE / ("%s.py" % platform), encoding="utf-8").read())
+    keys = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "translation_key":
+                continue
+            for inner in ast.walk(keyword.value):
+                if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
+                    keys.add(inner.value)
+    return keys
+
+
 def _keys_in_code():
-    return {(platform, key): cls.name
-            for platform, cls in _classes()
-            if (key := _declared(cls)) is not None}
+    found = {(platform, key): cls.name
+             for platform, cls in _classes()
+             if (key := _declared(cls)) is not None}
+    for platform in PLATFORMS:
+        for key in _keys_passed_in(platform):
+            found.setdefault((platform, key), "chosen by %s.py" % platform)
+    return found
 
 
 def _names_in_file():

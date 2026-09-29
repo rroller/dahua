@@ -160,6 +160,26 @@
                 "name": "Cancel Call"
             }
         },
+        "light": {
+            "infrared": {
+                "name": "Infrared"
+            },
+            "illuminator": {
+                "name": "Illuminator"
+            },
+            "flood_light": {
+                "name": "Flood Light"
+            },
+            "ring_light": {
+                "name": "Ring Light"
+            },
+            "security_light": {
+                "name": "Security Light"
+            },
+            "warning_light": {
+                "name": "Warning Light"
+            }
+        },
         "select": {
             "security_light": {
                 "name": "Security Light"
@@ -203,6 +223,12 @@
             },
             "privacy_mode": {
                 "name": "Privacy Mode"
+            },
+            "siren": {
+                "name": "Siren"
+            },
+            "alarm": {
+                "name": "Alarm"
             }
         }
     },

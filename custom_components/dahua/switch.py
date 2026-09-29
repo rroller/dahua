@@ -33,7 +33,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
                 DahuaSirenBinarySwitch(
                     coordinator,
                     entry,
-                    name="Alarm" if coordinator.uses_recorder_deterrence() else "Siren",
+                    translation_key=("alarm"
+                                     if coordinator.uses_recorder_deterrence()
+                                     else "siren"),
                 )
             )
         if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
@@ -269,11 +271,18 @@ class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua siren switch class. Used to enable or disable camera built in sirens"""
 
-    _name = "Siren"
+    def __init__(self, coordinator, entry, *, translation_key):
+        """`translation_key` rather than a name, and keyword only.
 
-    def __init__(self, coordinator, entry, name="Siren"):
+        Called "Alarm" on a recorder and "Siren" otherwise, which the
+        platform decides.
+
+        Keyword only so a call site still passing the old display
+        name positionally fails with a TypeError instead of setting a
+        translation key that is not a slug and never matching.
+        """
         super().__init__(coordinator, entry)
-        self._name = name
+        self._attr_translation_key = translation_key
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable the camera's siren"""
@@ -300,11 +309,6 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         else:
             await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, False)
         await self._coordinator.async_refresh()
-
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._name
 
     @property
     def unique_id(self):
