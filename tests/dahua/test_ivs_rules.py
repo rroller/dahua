@@ -94,6 +94,9 @@ class TestIVSDiscovery(TestCase):
     def test_read_cache_expires_before_next_default_poll(self):
         self.assertEqual(_cache_lifetime("/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule"), 5)
         self.assertEqual(_cache_lifetime("/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"), 300)
+        # The active day/night profile is live state, and every light command
+        # addresses the Lighting row it names.
+        self.assertEqual(_cache_lifetime("/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"), 5)
 
 
 class TestIVSActions:

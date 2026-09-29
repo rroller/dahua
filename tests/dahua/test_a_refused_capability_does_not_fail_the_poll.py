@@ -82,6 +82,8 @@ def _coordinator(raises=None, returns=None, over_rpc2=False):
         _calls=calls)
     coordinator._async_coaxial_status = (
         dahua.DahuaDataUpdateCoordinator._async_coaxial_status.__get__(coordinator))
+    coordinator._previous_coaxial_status = (
+        dahua.DahuaDataUpdateCoordinator._previous_coaxial_status.__get__(coordinator))
     return coordinator
 
 
@@ -100,6 +102,37 @@ async def test_the_400_this_recorder_actually_sends_is_covered():
     """Named on its own because 400 is the one measured here, and the pair already used
     for the CGI endpoints is (404, 501), which would have missed it."""
     assert 400 in CAPABILITY_REFUSED
+
+
+async def test_a_refusal_holds_the_last_reading_instead_of_reading_off():
+    """The entities say they hold their last value, and the poll used to make that
+    false: it builds its data from scratch, so a refused read left the keys out and
+    the siren switch read "off" while the device was on."""
+    coordinator = _coordinator(raises=_refusal(400))
+    coordinator.data = {
+        "status.status.Speaker": "On",
+        "status.status.WhiteLight": "Off",
+        "status.PresetID": "3",
+    }
+
+    result = await coordinator._async_coaxial_status(12)
+
+    assert result == {"status.status.Speaker": "On",
+                      "status.status.WhiteLight": "Off"}
+    assert "status.PresetID" not in result, (
+        "another read's fresh value would have been overwritten with a stale one")
+
+
+async def test_an_rpc2_refusal_holds_the_last_reading_too():
+    coordinator = _coordinator(
+        over_rpc2=True,
+        raises=Rpc2MethodRefused("refused", code=268894210,
+                                 message="Method not found!"))
+    coordinator.data = {"status.Speaker": "On"}
+
+    result = await coordinator._async_coaxial_status(1)
+
+    assert result == {"status.Speaker": "On"}
 
 
 async def test_a_reading_is_passed_through_when_the_device_answers():

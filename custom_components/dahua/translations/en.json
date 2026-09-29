@@ -385,6 +385,9 @@
         },
         "no_vto_connection_for_service": {
             "message": "{device} has no doorbell connection to cancel a call on. This service works on a VTO doorbell, once its event connection is up."
+        },
+        "open_door_needs_a_doorbell": {
+            "message": "{device} is not a doorbell, so it has no door to open. This service works on a VTO."
         }
     },
     "issues": {

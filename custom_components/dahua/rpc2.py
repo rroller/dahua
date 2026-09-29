@@ -99,7 +99,16 @@ class DahuaRpc2Client:
             url = "{0}/RPC2".format(self._base)
 
         resp = await self._session.post(url, json=data)
-        resp_json = json.loads(await resp.text())
+        try:
+            resp_json = json.loads(await resp.text())
+        except ValueError as error:
+            # An HTML error page, a 503 body or a truncated answer is this read
+            # not coming back, not "this device does not speak RPC2". Raised as
+            # a connection error so rpc2_failure_is_permanent does not write the
+            # transport off for the host after two of them.
+            raise aiohttp.ClientConnectionError(
+                "Dahua RPC2 answered with a body that is not JSON"
+            ) from error
 
         if verify_result and resp_json['result'] is False:
             code, message = refusal_reason(resp_json)
