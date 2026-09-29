@@ -54,8 +54,10 @@ from homeassistant.config_entries import ConfigSubentry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 
-from .const import CONF_ADDRESS, CONF_CHANNEL, DOMAIN
+from . import ISSUE_SIBLINGS_REMAIN
+from .const import CONF_ADDRESS, CONF_CHANNEL, CONF_PORT, DOMAIN
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -86,6 +88,20 @@ def _channel_of(entry) -> int:
 
 def _address_of(entry) -> str:
     return (entry.data.get(CONF_ADDRESS) or "").strip().rstrip("/").lower()
+
+
+def _port_of(entry) -> str:
+    """Which of the device behind an address this entry is.
+
+    Two Dahua boxes can sit behind one IP on different ports -- a bridge
+    forwarding 80/554 to one and 81/555 to another, which the rest of the
+    integration already treats as two devices (client.py's device_key). Grouping
+    by address alone folded the second device's channel 0 onto the first device's
+    subentry, so its configuration was dropped and its entities were re-parented
+    to the wrong camera. The default stands in for an entry that predates the
+    field, which is what it was using.
+    """
+    return str(entry.data.get(CONF_PORT) or "80")
 
 
 def _subentry_unique_id(address: str, channel: int) -> str:
@@ -124,13 +140,13 @@ async def async_merge_channel_entries(hass: HomeAssistant) -> None:
     """
     entries = hass.config_entries.async_entries(DOMAIN)
 
-    by_address: dict[str, list] = {}
+    by_host: dict[tuple[str, str], list] = {}
     for entry in entries:
         address = _address_of(entry)
         if address:
-            by_address.setdefault(address, []).append(entry)
+            by_host.setdefault((address, _port_of(entry)), []).append(entry)
 
-    hosts = {address: group for address, group in by_address.items()
+    hosts = {host: group for host, group in by_host.items()
              if len(group) > 1}
     if not hosts:
         return
@@ -146,7 +162,7 @@ async def async_merge_channel_entries(hass: HomeAssistant) -> None:
         "inside Home Assistant, so keep them until you are happy",
         len(hosts), backup)
 
-    for address, group in hosts.items():
+    for (address, _port), group in hosts.items():
         try:
             await _async_merge_host(hass, address, group)
         except Exception:  # pylint: disable=broad-except
@@ -275,6 +291,16 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
             continue
         await hass.config_entries.async_remove(entry.entry_id)
         removed += 1
+
+    if removed:
+        # These removals are the merge's, not the user's, but each one runs the
+        # same removal hook a manual deletion does. That hook sees the surviving
+        # entry as a sibling and raises the "more Dahua entries still use
+        # <address>" card -- whose fix removes every entry at the address, which
+        # is the recorder this merge has just finished creating. Nothing is left
+        # to offer, so the card it just raised is withdrawn.
+        ir.async_delete_issue(
+            hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(address))
 
     _LOGGER.warning(
         "%s is now one Dahua entry with %d channels: %d entities moved and %d "
