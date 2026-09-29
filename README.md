@@ -364,11 +364,13 @@ reload the integration after adding rules. Direct cameras use `VideoAnalyseRule`
 and NVR channels use the per-channel `RemoteVideoAnalyseRule` read. Keep that read
 shape: some NVR firmware reports different IDs when reading the whole recorder.
 
-Events must carry `Class=Normal` and a matching `RuleId` or `RuleID`. The integration
-does not guess a match from the rule name or array position. NVR configuration IDs
-and event IDs still need comparison on real hardware; a discovered entity alone
-does not prove that its event IDs match. Start/Stop events control the state, while
-Pulse events use the existing short hold before clearing.
+To activate a per-rule sensor, a Start must carry `Class=Normal` and a matching
+`RuleId` or `RuleID`. The integration does not guess a match from the rule name
+or array position. NVR configuration IDs and event IDs still need comparison on
+real hardware; a discovered entity alone does not prove that its event IDs match.
+A Stop clears all active rules with the same event Code on that channel: some
+cameras emit several rule Starts but only one Stop. This also handles a Stop
+without usable rule data. Pulse events use the existing short hold before clearing.
 
 The downloaded diagnostics contain an `ivs` section for every configured channel:
 the setup read source, discovered count, skipped row indexes and reasons, and
@@ -412,7 +414,8 @@ Home Assistant leaves the old entity behind showing `unavailable` with "This ent
 no longer being provided by the dahua integration". That is Home Assistant reporting
 an entity nothing owns any more, not a fault in the integration, and it will never
 update again. Either select the event again, or delete the entity from its own page.
-Reloading or restarting will not clear it.
+Reloading or restarting will not clear it. The same applies to a per-rule IVS
+sensor after its rule is deleted from the device.
 
 ## Example Code Events
 | Code | Description |

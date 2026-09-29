@@ -2506,9 +2506,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         existed on the doorbell path the whole time.
         """
         codes = self.translate_event_code(event)
+        raw_code = event.get("Code")
         data = event.get("data", event.get("Data", {}))
         if isinstance(data, dict) and data.get("Class") == "Normal":
-            raw_code = event.get("Code")
             rule_id = data.get("RuleID")
             if rule_id is None:
                 rule_id = data.get("RuleId")
@@ -2534,18 +2534,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug("Normal IVS event did not match a discovered rule: %s",
                                   self._ivs_last_unmatched)
 
-            # Real cameras can emit Start once for every matching rule of one
-            # event code, but only one Stop when that code becomes inactive.
-            # The generic sensors already follow that code-level state. Mirror
-            # the same semantics for per-rule sensors: a Stop for this code
-            # clears every discovered rule of that code on this channel.
-            if action == "Stop" and raw_code:
-                for rule in self.get_ivs_rules():
-                    if rule.get("type") != raw_code:
-                        continue
-                    rule_code = f"IVSRule_{rule['id']}"
-                    if rule_code not in codes:
-                        codes.append(rule_code)
+        # A camera can send several rule Starts but only one Stop for the code.
+        # Clear every rule of that code even when the Stop has no usable data.
+        if action == "Stop" and raw_code:
+            for rule in self.get_ivs_rules():
+                if rule.get("type") != raw_code:
+                    continue
+                rule_code = f"IVSRule_{rule['id']}"
+                if rule_code not in codes:
+                    codes.append(rule_code)
 
         for code in codes:
             event_key = self.get_event_key(code)

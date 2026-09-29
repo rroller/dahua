@@ -33,8 +33,8 @@ def _rules():
     return table
 
 
-def _coordinator():
-    table = _rules()
+def _coordinator(table=None):
+    table = _rules() if table is None else table
     c = coordinator(table)
     c._channel = 0
     c._ivs_rules = ivs_rules_for_channel(table, 0)
@@ -239,21 +239,54 @@ def test_same_code_stop_does_not_require_object_id():
 
 
 def test_stay_stop_clears_all_same_code_rules_if_multiple_exist():
-    c = _coordinator()
-    stay = _sensor(c, next(rule for rule in c.get_ivs_rules() if rule["id"] == "23"))
-    c.add_dahua_event_listener(stay._event_name, lambda: None)
+    table = _rules()
+    table.update(row(10, "24", channel=0, name="Stay Two"))
+    table["table.VideoAnalyseRule[0][10].Type"] = "StayDetection"
+    c = _coordinator(table)
+    sensors = {
+        rule["id"]: _sensor(c, rule)
+        for rule in c.get_ivs_rules() if rule["type"] == "StayDetection"
+    }
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
 
-    c._dispatch_event(
-        {"Code": "StayDetection", "data": {"Class": "Normal", "RuleID": 23}},
-        "Start",
-    )
-    assert stay.is_on
+    for rule_id in (23, 24):
+        c._dispatch_event(
+            {"Code": "StayDetection", "data": {"Class": "Normal", "RuleID": rule_id}},
+            "Start",
+        )
+    assert all(sensor.is_on for sensor in sensors.values())
 
     c._dispatch_event(
         {"Code": "StayDetection", "data": {"Class": "Normal", "RuleID": 23}},
         "Stop",
     )
-    assert not stay.is_on
+    assert all(not sensor.is_on for sensor in sensors.values())
+
+
+@pytest.mark.parametrize("stop_data", [None, "truncated"])
+def test_stop_without_normal_data_clears_same_code_rules(stop_data):
+    c = _coordinator()
+    sensors = {
+        rule["id"]: _sensor(c, rule)
+        for rule in c.get_ivs_rules() if rule["id"] in ("17", "20")
+    }
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    for rule_id in (17, 20):
+        c._dispatch_event(
+            {"Code": "CrossLineDetection",
+             "data": {"Class": "Normal", "RuleID": rule_id}},
+            "Start",
+        )
+    assert all(sensor.is_on for sensor in sensors.values())
+
+    stop = {"Code": "CrossLineDetection"}
+    if stop_data is not None:
+        stop["data"] = stop_data
+    c._dispatch_event(stop, "Stop")
+    assert all(not sensor.is_on for sensor in sensors.values())
 
 
 def test_unknown_non_normal_and_malformed_events_do_not_change_rule_state():
