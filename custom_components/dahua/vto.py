@@ -456,7 +456,21 @@ class DahuaVTOClient(asyncio.Protocol):
             # Another example
             # \x00\x00\x00DHIP\x8c-\x96{\x08\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00{"id":8,"method":"client.notifyEventStream","params":{"SID":513,"eventList":[{"Action":"State","Code":"VideoMotionInfo","Data":[{"Id":0,"Region":[4194303,4194303,4128767,3997695,3801087,3801087,3932159,3407871,3932159,3932158,3932156,3735548,3678204,2101244,2047,2097663,3146239,524799],"RegionName":"Region1","State":"Active","Threshold":54}],"Index":0}]},"session":1722306858}\n
 
-            data = str(response)
+            # Decoded, not `str(response)`. `data_received` slices `self.buffer`,
+            # which is bytes, so `str()` gives the *repr*: a UTF-8 byte becomes the
+            # four characters backslash, x and two hex digits. `\x` is not a valid
+            # JSON escape, so raw_decode refuses the object and extract_json_objects
+            # moves past it. One u-umlaut in a card holder's name dropped the whole
+            # event, in silence. ASCII survived by accident, the repr of ASCII bytes
+            # being the same characters, which is why this held up for so long.
+            #
+            # errors="replace" is required rather than defensive: the DHIP header in
+            # front of every frame is binary and not valid UTF-8, so a strict decode
+            # would raise on every packet.
+            if isinstance(response, (bytes, bytearray)):
+                data = response.decode("utf-8", errors="replace")
+            else:
+                data = str(response)
 
             jsons = DahuaVTOClient.extract_json_objects(data)
             for j in jsons:
