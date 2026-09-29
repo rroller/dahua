@@ -113,10 +113,23 @@ def test_the_sensors_do_not_collide():
     assert all(i.startswith("SERIAL1_4_") for i in ids)
 
 
-def test_the_sensors_are_named_after_the_device():
+def test_the_sensors_name_themselves_through_the_translation_file():
+    """This has been through two rounds of the same idea. It began as "the name
+    starts with Garage", which was right while the entity composed the whole
+    thing; `has_entity_name` moved the device half to Home Assistant, so it
+    became "the name does not contain Garage"; and `entity-translations` moved
+    the entity half into translations/en.json, so the string is not on the class
+    at all any more and the key is what is left to check.
+
+    The strings, and that they are unchanged from what the properties returned,
+    are pinned in test_entity_names_come_from_translations.py."""
+    # Off an instance: `_attr_translation_key` read from the class is a
+    # property object, courtesy of the CachedProperties metaclass, and a
+    # property object is truthy. This assertion passed for a class that
+    # declared nothing at all until it was written this way.
     c = _coordinator()
     for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor, DahuaProfileSensor):
-        assert _sensor(cls, c).name.startswith("Garage "), cls.__name__
+        assert _sensor(cls, c).translation_key, cls.__name__
 
 
 # --- the profile sensor is gated on the capability -------------------------------
@@ -128,8 +141,9 @@ def _setup_coordinator(profile_support):
 
 
 def _setup(coordinator):
-    hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
-    entry = type("E", (), {"entry_id": "e1"})()
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1",
+                           "runtime_data": {0: coordinator}})()
     added = []
     return hass, entry, added
 

@@ -194,7 +194,9 @@ async def test_a_failed_setup_is_not_published_to_hass_data(hass):
     with _wedged(), starts, forward, unload:
         await _try_setup(hass, entry)
 
-    assert entry.entry_id not in hass.data.get(DOMAIN, {})
+    # Home Assistant deletes runtime_data when an entry unloads, so the
+    # absence of the attribute is what "unloaded" looks like now.
+    assert not hasattr(entry, "runtime_data")
 
 
 # --- the successful setup, unchanged ---------------------------------------

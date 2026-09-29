@@ -102,12 +102,20 @@ def test_an_area_adds_exactly_one_key():
 
 # --- where the name comes from ------------------------------------------------
 
-def _coordinator_with(options=None, data=None, areas=None):
-    """A real coordinator, with only the config entry and hass stood in for."""
+def _coordinator_with(options=None, data=None, areas=None, channel_config=None):
+    """A real coordinator, with only the config entry and hass stood in for.
+
+    `channel_config` is the #827 shape: a subentry's own settings. Absent means a
+    single camera, where the entry's data *is* this channel's data. Every test here
+    used to be the second case, which is why nothing noticed that a merged
+    recorder's channels were reading the primary channel's area.
+    """
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator.config_entry = SimpleNamespace(
         options=dict(options or {}), data=dict(data or {}))
     coordinator.hass = SimpleNamespace(data={}, _areas=dict(areas or {}))
+    if channel_config is not None:
+        coordinator._channel_config = dict(channel_config)
     return coordinator
 
 
@@ -133,3 +141,59 @@ def test_no_area_anywhere_reads_as_none():
 def test_a_blank_area_reads_as_none_not_as_an_empty_string():
     """A cleared picker stores "", which must not be passed on as a value."""
     assert _coordinator_with(options={CONF_AREA: ""}).get_configured_area() is None
+
+
+# --- and on a merged recorder, entry.data belongs to another channel ----------
+
+def test_a_channel_does_not_inherit_the_primary_channels_area():
+    """The regression #827 left behind, and it cancelled out a guard.
+
+    `_channel_subentries` pops CONF_AREA from a channel with no chosen area,
+    precisely so that ticking an area for the recorder does not file every other
+    channel there. This read `entry.data` as the fallback, and on a merged entry
+    that is the primary channel's config, area included. Measured before the fix: a
+    channel whose area had been popped reported the primary's.
+    """
+    channel = _coordinator_with(
+        data={CONF_AREA: "living_room"},   # the primary channel's own answer
+        channel_config={"channel": 5})     # this channel chose none
+
+    assert channel.get_configured_area() is None
+
+
+def test_a_channel_with_its_own_area_keeps_it():
+    channel = _coordinator_with(
+        data={CONF_AREA: "living_room"},
+        channel_config={"channel": 5, CONF_AREA: "garage"})
+
+    assert channel.get_configured_area() == "garage"
+
+
+def test_the_primary_channel_still_gets_the_area_it_chose():
+    """Its subentry keeps the key, so it resolves without the fallback at all."""
+    primary = _coordinator_with(
+        data={CONF_AREA: "living_room"},
+        channel_config={"channel": 0, CONF_AREA: "living_room"})
+
+    assert primary.get_configured_area() == "living_room"
+
+
+def test_an_entry_wide_option_still_reaches_a_channel_that_chose_nothing():
+    """Deliberately not closed off. That area is an entry-wide answer given in the
+    options flow, so applying it to a channel that has not chosen one is coherent.
+    What is not coherent is `entry.data`'s area, which is one channel's own answer
+    from the add flow."""
+    channel = _coordinator_with(
+        options={CONF_AREA: "whole_house"},
+        data={CONF_AREA: "living_room"},
+        channel_config={"channel": 5})
+
+    assert channel.get_configured_area() == "whole_house"
+
+
+def test_a_single_camera_still_reads_its_own_entry_data():
+    """The pre-#827 shape, and the reason the fallback cannot simply go: with no
+    subentry the entry's data is this channel's data."""
+    camera = _coordinator_with(data={CONF_AREA: "porch"})
+
+    assert camera.get_configured_area() == "porch"

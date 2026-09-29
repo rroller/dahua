@@ -63,10 +63,11 @@ from homeassistant.core import HomeAssistant, callback
 
 _LOGGER = logging.getLogger(__name__)
 
-# Where the still images live. Deliberately not inside hass.data[DOMAIN]: that dict is
-# coordinators keyed by entry_id and several platforms index it directly. Keeping this
-# in hass.data rather than a module global is what makes the registration guard below
-# survive an integration reload, which a module global would not.
+# Where the still images live. Its own key rather than anything entry scoped,
+# because a preview belongs to a config *flow*: there is no entry yet, so there is
+# no `runtime_data` to put it on. Keeping it in hass.data rather than in a module
+# global is what makes the registration guard below survive an integration reload,
+# which a module global would not.
 DATA_FLOW_PREVIEWS = "dahua_flow_previews"
 
 PREVIEW_PATH = "/api/dahua/flow_preview"

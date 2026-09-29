@@ -16,6 +16,7 @@ a real eleven-channel install.
 """
 
 import pytest
+from types import SimpleNamespace
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua import binary_sensor as bs_module
@@ -113,6 +114,13 @@ class _Coordinator:
 
     get_serial_number = DahuaDataUpdateCoordinator.get_serial_number
 
+    # Borrowed the same way, because entity code now asks the coordinator for its
+    # channel's settings rather than reading the entry's options directly. A fake
+    # that answered differently would be testing the fake.
+    channel_option = DahuaDataUpdateCoordinator.channel_option
+    _channel_config: dict = {}
+    config_entry = SimpleNamespace(options={})
+
     def get_channel(self):
         return self._channel
 
@@ -175,11 +183,12 @@ GOLDEN_SUFFIXES = [
     ("_privacy_mode", lambda c: _bare(DahuaPrivacyModeBinarySwitch, c)),
     ("_alarm_output_0", lambda c: DahuaAlarmOutputSwitch(c, _Entry(), output=0)),
     # light.py
-    ("_infrared", lambda c: DahuaInfraredLight(c, _Entry(), "Infrared")),
-    ("_illuminator", lambda c: DahuaIlluminator(c, _Entry(), "Illuminator")),
-    ("_ring_light", lambda c: AmcrestRingLight(c, _Entry(), "Ring Light")),
-    ("_flood_light", lambda c: FloodLight(c, _Entry(), "Flood Light")),
-    ("_security", lambda c: DahuaSecurityLight(c, _Entry(), "Security")),
+    ("_infrared", lambda c: DahuaInfraredLight(c, _Entry())),
+    ("_illuminator", lambda c: DahuaIlluminator(c, _Entry())),
+    ("_ring_light", lambda c: AmcrestRingLight(c, _Entry())),
+    ("_flood_light", lambda c: FloodLight(c, _Entry())),
+    ("_security", lambda c: DahuaSecurityLight(
+        c, _Entry(), translation_key="security_light")),
     # button.py
     ("_reboot", lambda c: _bare(DahuaRebootButton, c)),
     ("_open_door", lambda c: _bare(DahuaOpenDoorButton, c)),

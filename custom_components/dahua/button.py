@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 from custom_components.dahua.vto import CancelCallRefused
 
 from .const import DOMAIN
@@ -19,32 +19,36 @@ from .entity import DahuaBaseEntity
 _LOGGER = logging.getLogger(__package__)
 
 
+# One at a time, because reboot and door open are writes and these devices are measurably intolerant of
+# concurrent requests: MAX_CONCURRENT_REQUESTS_PER_HOST is 2 for the same reason,
+# and the login storms behind #577 and #603 are what happens without it. A
+# coordinator does not help here, since it only centralises inbound reads and
+# leaves outbound actions uncontrolled.
+PARALLEL_UPDATES = 1
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the button platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    for coordinator in entry_coordinators(entry).values():
+        buttons = [DahuaRebootButton(coordinator, entry)]
 
-    buttons = [DahuaRebootButton(coordinator, entry)]
+        # Opening a door is a VTO operation. On anything else the endpoint is not
+        # there, and a button that always errors is worse than no button.
+        if coordinator.is_doorbell():
+            buttons.append(DahuaOpenDoorButton(coordinator, entry))
+            buttons.append(DahuaCancelCallButton(coordinator, entry))
 
-    # Opening a door is a VTO operation. On anything else the endpoint is not
-    # there, and a button that always errors is worse than no button.
-    if coordinator.is_doorbell():
-        buttons.append(DahuaOpenDoorButton(coordinator, entry))
-        buttons.append(DahuaCancelCallButton(coordinator, entry))
-
-    async_add_devices(buttons)
+        async_add_devices(buttons)
 
 
 class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):
     """Reboots the device."""
 
+    _attr_translation_key = "reboot"
+
     _attr_device_class = ButtonDeviceClass.RESTART
     # Diagnostic would hide it from the device page controls; this is an action
     # the user takes deliberately, so it belongs with the configuration.
     _attr_entity_category = EntityCategory.CONFIG
-
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Reboot"
 
     @property
     def unique_id(self):
@@ -63,9 +67,7 @@ class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):
 class DahuaOpenDoorButton(DahuaBaseEntity, ButtonEntity):
     """Opens the door on a VTO."""
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Open Door"
+    _attr_translation_key = "open_door"
 
     @property
     def unique_id(self):
@@ -88,9 +90,7 @@ class DahuaCancelCallButton(DahuaBaseEntity, ButtonEntity):
     waits now, which is what makes a button honest.
     """
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Cancel Call"
+    _attr_translation_key = "cancel_call"
 
     @property
     def unique_id(self):
@@ -101,10 +101,19 @@ class DahuaCancelCallButton(DahuaBaseEntity, ButtonEntity):
         vto_client = self._coordinator.get_vto_client()
         if vto_client is None:
             raise HomeAssistantError(
-                "{0} has no doorbell connection to cancel a call on. It comes back when the event connection reconnects.".format(
-                    self._coordinator.get_device_name()))
+                translation_domain=DOMAIN,
+                translation_key="no_vto_connection_for_button",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()},
+            )
         _LOGGER.debug("Cancelling call on %s", self._coordinator.get_address())
         try:
             await vto_client.cancel_call()
         except CancelCallRefused as refused:
-            raise HomeAssistantError(str(refused)) from refused
+            # The reason is whatever the doorbell said, so it stays as it came
+            # and only the sentence around it is translated.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cancel_call_refused",
+                translation_placeholders={"reason": str(refused)},
+            ) from refused

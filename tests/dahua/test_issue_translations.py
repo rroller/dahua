@@ -4,6 +4,7 @@ None of the behavioural tests can see that, because creating an issue does not
 resolve its text. These are plain file assertions.
 """
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -33,6 +34,31 @@ def _placeholders(text: str) -> set:
     return set(re.findall(r"\{(\w+)\}", text))
 
 
+# An issue key is one handed to `async_create_issue`. Read from the call rather
+# than matched in the text: this was a regex with a lookbehind to keep an entity's
+# `_attr_translation_key` out, which worked until `HomeAssistantError` learnt
+# translation keys and four exception messages were reported as issues the code
+# raises with no strings for them. A pattern cannot tell those apart. The callee
+# can.
+ISSUE_RAISER = "async_create_issue"
+
+
+def issue_keys_in(source: str) -> set:
+    """Literal translation keys passed to async_create_issue in one module."""
+    keys = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name != ISSUE_RAISER:
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "translation_key" and isinstance(keyword.value, ast.Constant):
+                keys.add(keyword.value.value)
+    return keys
+
+
 def test_the_map_above_covers_every_issue_the_code_raises():
     """ISSUE_PLACEHOLDERS is hand written, and everything else in this file is
     parametrized over it, so an issue missing from it is not checked at all.
@@ -41,16 +67,45 @@ def test_the_map_above_covers_every_issue_the_code_raises():
     channel_not_added left it untested here and every test in this file still passed.
     Deriving the set from the source makes the drift impossible instead.
     """
-    source = ""
-    for name in ("config_flow.py", "__init__.py", "repairs.py"):
-        source += (TRANSLATIONS.parent / name).read_text(encoding="utf-8")
+    # Every module, not the three that happened to raise an issue when this was
+    # written. Two of them moved to host.py and this reported them as being in the
+    # map but not the code, which is exactly backwards.
+    from .integration_source import modules
 
-    raised = set(re.findall(r'translation_key="([a-z_]+)"', source))
+    raised = set()
+    for text in modules().values():
+        raised |= issue_keys_in(text)
 
     assert raised == set(ISSUE_PLACEHOLDERS), (
         "in the code but not the map: %s; in the map but not the code: %s"
         % (sorted(raised - set(ISSUE_PLACEHOLDERS)),
            sorted(set(ISSUE_PLACEHOLDERS) - raised)))
+
+
+def test_only_a_created_issue_counts_as_an_issue():
+    """Three unrelated things pass `translation_key=` and they read identically.
+
+    An entity is handed the key the platform chose, a HomeAssistantError names a
+    message, and only `async_create_issue` raises a repair. The regex this replaced
+    could not tell them apart, and the day HomeAssistantError learnt translation
+    keys it reported four exception messages as issues with no strings. So the
+    control is all three kinds at once.
+    """
+    sample = (
+        'ir.async_create_issue(hass, DOMAIN, key, translation_key="device_unreachable")\n'
+        'raise HomeAssistantError(translation_domain=DOMAIN,\n'
+        '                         translation_key="cancel_call_refused")\n'
+        'DahuaSirenBinarySwitch(c, e, translation_key="siren")\n'
+        '_attr_translation_key = "firmware_version"\n'
+    )
+
+    assert issue_keys_in(sample) == {"device_unreachable"}
+    # And the sample really does carry the other three kinds, or this proves
+    # nothing. Named rather than counted: the first version of this line asserted
+    # a count I worked out by hand, and got it wrong.
+    for confusable in ("cancel_call_refused", "siren", "firmware_version"):
+        assert confusable in sample
+        assert confusable not in issue_keys_in(sample)
 
 
 @pytest.mark.parametrize("key", sorted(ISSUE_PLACEHOLDERS))

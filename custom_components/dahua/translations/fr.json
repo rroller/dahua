@@ -43,13 +43,17 @@
     "options": {
         "step": {
             "user": {
-                "data": {
-                    "binary_sensor": "Capteur binaire activé",
-                    "sensor": "Capteur activé",
-                    "switch": "Interrupteur activé",
-                    "light": "Lumière activée",
-                    "select": "Sélection activée",
-                    "camera": "Caméra activée"
+                "sections": {
+                    "platforms": {
+                        "data": {
+                            "binary_sensor": "Capteur binaire activé",
+                            "camera": "Caméra activée",
+                            "light": "Lumière activée",
+                            "select": "Sélection activée",
+                            "sensor": "Capteur activé",
+                            "switch": "Interrupteur activé"
+                        }
+                    }
                 }
             }
         }

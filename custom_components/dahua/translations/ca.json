@@ -43,13 +43,17 @@
     "options": {
         "step": {
             "user": {
-                "data": {
-                    "binary_sensor": "Sensor binari habilitat",
-                    "sensor": "Sensor habilitat",
-                    "switch": "Interruptor habilitat",
-                    "light": "Llum habilitat",
-                    "select": "Select enabled",
-                    "camera": "Càmera habilitat"
+                "sections": {
+                    "platforms": {
+                        "data": {
+                            "binary_sensor": "Sensor binari habilitat",
+                            "camera": "Càmera habilitat",
+                            "light": "Llum habilitat",
+                            "select": "Select enabled",
+                            "sensor": "Sensor habilitat",
+                            "switch": "Interruptor habilitat"
+                        }
+                    }
                 }
             }
         }

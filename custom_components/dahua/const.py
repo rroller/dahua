@@ -7,15 +7,6 @@ ATTRIBUTION = "Data provided by https://ronnieroller.com"
 ISSUE_URL = "https://github.com/rroller/dahua/issues"
 
 # Icons - https://materialdesignicons.com/
-ICON = "mdi:format-quote-close"
-MOTION_DETECTION_ICON = "mdi:motion-sensor"
-SECURITY_LIGHT_ICON = "mdi:alarm-light-outline"
-SIREN_ICON = "mdi:bullhorn"
-INFRARED_ICON = "mdi:weather-night"
-DISARMING_ICON = "mdi:alarm-check"
-VOLUME_HIGH_ICON = "mdi:volume-high"
-BELL_ICON = "mdi:bell-ring"
-PRIVACY_MODE_ICON = "mdi:shield-lock"
 
 # Device classes - https://www.home-assistant.io/integrations/binary_sensor/#device-class
 MOTION_SENSOR_DEVICE_CLASS = "motion"

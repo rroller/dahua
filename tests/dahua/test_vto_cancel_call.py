@@ -31,11 +31,16 @@ def _camera(vto_client):
 
 
 async def test_cancelling_on_a_camera_says_what_is_wrong():
+    """A different key from the button's, deliberately: this one tells you the
+    service wants a doorbell, because picking the wrong entity is the way people
+    arrive here. The wording lives in translations/en.json now, so what is
+    checked here is the key and that the entity is still named."""
     with pytest.raises(HomeAssistantError) as err:
         await _camera(None).async_vto_cancel_call()
 
-    assert "Front Door" in str(err.value), "the message does not name the entity"
-    assert "doorbell" in str(err.value).lower()
+    assert err.value.translation_key == "no_vto_connection_for_service"
+    assert err.value.translation_placeholders == {"device": "Front Door"}, \
+        "the message would not name the entity"
 
 
 async def test_it_is_not_an_attribute_error():
