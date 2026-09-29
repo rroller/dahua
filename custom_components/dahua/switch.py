@@ -5,7 +5,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
-from .const import DOMAIN, SIREN_ICON
+from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .client import SIREN_TYPE
 
@@ -317,11 +317,6 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_siren"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return SIREN_ICON
 
     @property
     def is_on(self):

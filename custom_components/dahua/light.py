@@ -16,7 +16,7 @@ from homeassistant.components.light import (
 
 from . import (DahuaDataUpdateCoordinator, dahua_utils, entry_coordinators,
                scheme_blocking_white_light)
-from .const import DOMAIN, SECURITY_LIGHT_ICON, INFRARED_ICON
+from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .client import SECURITY_LIGHT_TYPE
 
@@ -124,11 +124,6 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         await self._coordinator.client.async_set_lighting_v1(
             channel, False, dahua_brightness, self._coordinator.get_infrared_profile())
         await self.coordinator.async_refresh()
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return INFRARED_ICON
 
 
 class DahuaIlluminator(DahuaBaseEntity, LightEntity):
@@ -1257,11 +1252,6 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
         else:
             await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
         await self._coordinator.async_refresh()
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return SECURITY_LIGHT_ICON
 
     @property
     def color_mode(self) -> ColorMode | str | None:

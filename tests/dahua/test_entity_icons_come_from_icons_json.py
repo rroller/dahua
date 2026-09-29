@@ -39,19 +39,23 @@ WAS = {
     ("switch", "motion_detection"): "mdi:motion-sensor",
     ("switch", "privacy_mode"): "mdi:shield-lock",
     ("switch", "smart_motion_detection"): "mdi:motion-sensor",
+    # Moved once #843 gave these three a translation key. The two pairs are one
+    # entity each under either of its two keys, because the name is a capability
+    # choice: the same glyph has to go under both or half the installs lose it.
+    ("light", "infrared"): "mdi:weather-night",
+    ("light", "security_light"): "mdi:alarm-light-outline",
+    ("light", "warning_light"): "mdi:alarm-light-outline",
+    ("switch", "siren"): "mdi:bullhorn",
+    ("switch", "alarm"): "mdi:bullhorn",
 }
 
 # Entities that still carry their icon in code, each because it has no
 # translation key to hang one off. Listed rather than detected, so that adding a
 # hard coded icon to a translated entity fails here.
 ICON_STAYS_IN_CODE = {
-    # One icon per event code, chosen from a map.
+    # One icon per event code, chosen from a map. Its keys arrive with the event
+    # sensor names, and the icons follow them.
     "DahuaEventSensor",
-    # These three are named by the platform rather than by a key, so they have
-    # nothing to key an icon off either. They go together with their names.
-    "DahuaSirenBinarySwitch",
-    "DahuaInfraredLight",
-    "DahuaSecurityLight",
 }
 
 
@@ -96,10 +100,37 @@ def _icons_in_file():
             for key, entry in keys.items()}
 
 
+def _keys_passed_in(platform):
+    """Literal `translation_key="..."` arguments in this platform's module.
+
+    The security light and the siren pick between two keys depending on whether
+    the host is a recorder, so the class declares neither and the platform passes
+    one. Those literals sit in `async_setup_entry`, so they are as findable as a
+    class attribute, and without reading them four of these icons would look
+    like they belong to nothing.
+    """
+    tree = ast.parse(io.open(PACKAGE / ("%s.py" % platform), encoding="utf-8").read())
+    keys = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "translation_key":
+                continue
+            for inner in ast.walk(keyword.value):
+                if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
+                    keys.add(inner.value)
+    return keys
+
+
 def _keys_in_code():
-    return {(platform, key): cls.name
-            for platform, cls in _classes()
-            if (key := _translation_key(cls)) is not None}
+    found = {(platform, key): cls.name
+             for platform, cls in _classes()
+             if (key := _translation_key(cls)) is not None}
+    for platform in PLATFORMS:
+        for key in _keys_passed_in(platform):
+            found.setdefault((platform, key), "chosen by %s.py" % platform)
+    return found
 
 
 # --- the two sides agree -----------------------------------------------------
