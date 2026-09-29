@@ -14,6 +14,8 @@ from custom_components.dahua.switch import (
     DahuaSmartMotionDetectionBinarySwitch,
 )
 
+from . import adds_entities
+
 
 class _Client:
     def __init__(self):
@@ -276,7 +278,7 @@ async def test_setup_asks_the_device_nothing():
         DahuaDisarmingLinkageBinarySwitch=lambda *a, **k: "disarming",
         DahuaDisarmingEventNotificationsLinkageBinarySwitch=lambda *a, **k: "notifications",
     ):
-        await switch_module.async_setup_entry(hass, entry, added.extend)
+        await switch_module.async_setup_entry(hass, entry, adds_entities(added))
 
     assert coordinator.client.calls == [], (
         "platform setup made a network call: %s" % coordinator.client.calls
@@ -310,7 +312,7 @@ async def test_the_disarming_switches_follow_what_the_device_answered():
             hass,
             SimpleNamespace(entry_id="e1", options={},
                             runtime_data={0: coordinator}),
-            added.extend
+            adds_entities(added)
         )
 
     assert "disarming" not in added
@@ -463,7 +465,7 @@ async def _added_for(coordinator):
         DahuaAlarmOutputSwitch=lambda *a, **k: "alarm_output",
     ):
         await switch_module.async_setup_entry(
-            SimpleNamespace(data={}), entry, added.extend)
+            SimpleNamespace(data={}), entry, adds_entities(added))
     return added
 
 

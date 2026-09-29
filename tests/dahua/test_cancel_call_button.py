@@ -34,6 +34,8 @@ from custom_components.dahua.button import (
 )
 from custom_components.dahua.vto import CancelCallRefused, DahuaVTOClient
 
+from . import adds_entities
+
 
 class _Transport:
     def __init__(self):
@@ -178,7 +180,7 @@ async def test_only_a_doorbell_gets_one():
     coordinator = _Coordinator(doorbell=True)
     hass = type("H", (), {"data": {}})()
     await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), added.extend)
+                          "runtime_data": {0: coordinator}})(), adds_entities(added))
 
     assert any(isinstance(b, DahuaCancelCallButton) for b in added)
 
@@ -188,7 +190,7 @@ async def test_a_camera_does_not():
     coordinator = _Coordinator(doorbell=False)
     hass = type("H", (), {"data": {}})()
     await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), added.extend)
+                          "runtime_data": {0: coordinator}})(), adds_entities(added))
 
     assert not any(isinstance(b, DahuaCancelCallButton) for b in added)
     assert any(isinstance(b, DahuaRebootButton) for b in added)

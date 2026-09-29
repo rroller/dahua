@@ -26,6 +26,8 @@ from custom_components.dahua.switch import (
     DahuaSmartMotionDetectionBinarySwitch,
 )
 
+from . import adds_entities
+
 CONFIGURATION_SWITCHES = [
     DahuaMotionDetectionBinarySwitch,
     DahuaDisarmingLinkageBinarySwitch,
@@ -153,7 +155,7 @@ def _setup(coordinator):
 
 async def test_the_profile_sensor_is_only_added_when_profile_mode_is_supported():
     hass, entry, added = _setup(_setup_coordinator(profile_support=True))
-    await sensor_module.async_setup_entry(hass, entry, added.extend)
+    await sensor_module.async_setup_entry(hass, entry, adds_entities(added))
     assert any(isinstance(s, DahuaProfileSensor) for s in added)
 
 
@@ -161,13 +163,13 @@ async def test_no_profile_sensor_without_profile_support():
     """The profile stays "0" (Day) forever on such a device; a wrong value
     looks like a working one, so no sensor is better."""
     hass, entry, added = _setup(_setup_coordinator(profile_support=False))
-    await sensor_module.async_setup_entry(hass, entry, added.extend)
+    await sensor_module.async_setup_entry(hass, entry, adds_entities(added))
     assert not any(isinstance(s, DahuaProfileSensor) for s in added)
 
 
 async def test_the_diagnostic_sensors_are_always_added():
     hass, entry, added = _setup(_setup_coordinator(profile_support=False))
-    await sensor_module.async_setup_entry(hass, entry, added.extend)
+    await sensor_module.async_setup_entry(hass, entry, adds_entities(added))
     names = [type(s).__name__ for s in added]
     assert "DahuaFirmwareVersionSensor" in names
     assert "DahuaSerialNumberSensor" in names

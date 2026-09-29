@@ -18,6 +18,8 @@ from custom_components.dahua.select import (
     DahuaDoorbellLightSelect,
 )
 
+from . import adds_entities
+
 
 class _Client:
     def __init__(self):
@@ -248,7 +250,7 @@ async def _added_for(coordinator, cgi_presets=None):
         _async_preset_ids=_preset_ids,
     ):
         await select_module.async_setup_entry(
-            SimpleNamespace(data={}), entry, added.extend)
+            SimpleNamespace(data={}), entry, adds_entities(added))
     return added
 
 

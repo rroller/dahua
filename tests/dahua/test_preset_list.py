@@ -33,6 +33,8 @@ from custom_components.dahua.select import (
     _async_preset_ids,
 )
 
+from . import adds_entities
+
 
 def _reply(*indexes, named=True):
     """A getPresets reply listing the given preset numbers."""
@@ -223,7 +225,7 @@ async def _added(monkeypatch, answer, day_night=False):
                            "runtime_data": {0: coordinator}})()
 
     added = []
-    await select_module.async_setup_entry(hass, entry, added.extend)
+    await select_module.async_setup_entry(hass, entry, adds_entities(added))
     return [type(entity).__name__ for entity in added]
 
 
