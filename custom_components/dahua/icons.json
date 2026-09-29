@@ -1,6 +1,12 @@
 {
     "entity": {
         "binary_sensor": {
+            "audio_anomaly": {
+                "default": "mdi:volume-high"
+            },
+            "audio_mutation": {
+                "default": "mdi:volume-high"
+            },
             "authorized_vehicle": {
                 "default": "mdi:car-check"
             }

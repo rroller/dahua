@@ -12,7 +12,6 @@ from custom_components.dahua.const import (
     MOTION_SENSOR_DEVICE_CLASS,
     SAFETY_DEVICE_CLASS,
     SOUND_DEVICE_CLASS,
-    VOLUME_HIGH_ICON,
 )
 
 
@@ -137,8 +136,14 @@ def test_device_class_mapping(sensor, event_name, expected):
     assert sensor(event_name).device_class == expected
 
 
-def test_audio_events_get_the_volume_icon(sensor):
-    assert sensor("AudioMutation").icon == VOLUME_HIGH_ICON
+def test_no_event_sensor_chooses_an_icon_in_code(sensor):
+    """The audio events' volume glyph moved to icons.json, keyed on the same
+    slug as their name and their unique id.
+
+    Asserted as None rather than deleted, because `Entity.icon` returns
+    `_attr_icon` whenever it is set and would then win over the file silently.
+    The glyph itself is pinned in test_entity_icons_come_from_icons_json.py."""
+    assert sensor("AudioMutation").icon is None
     assert sensor("VideoMotion").icon is None
 
 

@@ -47,16 +47,29 @@ WAS = {
     ("light", "warning_light"): "mdi:alarm-light-outline",
     ("switch", "siren"): "mdi:bullhorn",
     ("switch", "alarm"): "mdi:bullhorn",
+    # The event sensors, whose keys are derived from the event code at
+    # construction rather than written as literals. Named in
+    # EVENT_SENSOR_ICONS below for the same reason.
+    ("binary_sensor", "audio_anomaly"): "mdi:volume-high",
+    ("binary_sensor", "audio_mutation"): "mdi:volume-high",
+}
+
+# Keys no class declares, because DahuaEventSensor builds its own from the
+# event code. The scan below cannot see them, and
+# test_event_sensor_names_are_translated.py checks them against the codes the
+# platform can actually produce, which is the stronger check.
+EVENT_SENSOR_ICONS = {
+    ("binary_sensor", "audio_anomaly"),
+    ("binary_sensor", "audio_mutation"),
 }
 
 # Entities that still carry their icon in code, each because it has no
 # translation key to hang one off. Listed rather than detected, so that adding a
 # hard coded icon to a translated entity fails here.
-ICON_STAYS_IN_CODE = {
-    # One icon per event code, chosen from a map. Its keys arrive with the event
-    # sensor names, and the icons follow them.
-    "DahuaEventSensor",
-}
+# Nothing. Every entity in the integration takes its icon from icons.json now,
+# which is the point of the rule and is worth being able to say without a
+# list of exceptions after it.
+ICON_STAYS_IN_CODE = set()
 
 
 def _classes():
@@ -146,7 +159,8 @@ def _keys_in_code():
 def test_every_icon_in_the_file_belongs_to_an_entity():
     """An icon under a key nothing declares is never shown, and reads as
     coverage while it sits there."""
-    unknown = sorted(set(_icons_in_file()) - set(_keys_in_code()))
+    unknown = sorted(set(_icons_in_file()) - set(_keys_in_code())
+                     - EVENT_SENSOR_ICONS)
 
     assert not unknown, "in icons.json with nothing declaring the key: %s" % unknown
 

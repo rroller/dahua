@@ -8,7 +8,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinato
 
 from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
-    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS, VOLUME_HIGH_ICON,
+    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS,
 )
 from .entity import DahuaBaseEntity, DahuaEventDrivenEntity
 
@@ -148,12 +148,6 @@ DEVICE_CLASS_OVERRIDES = {
     "AudioMutation": SOUND_DEVICE_CLASS,
 }
 
-ICON_OVERRIDES = {
-    "AudioAnomaly": VOLUME_HIGH_ICON,
-    "AudioMutation": VOLUME_HIGH_ICON,
-}
-
-
 # A coordinator centralises the inbound reads, and nothing here sends a command,
 # so there is nothing to serialise: read only: every state comes from the coordinator.
 PARALLEL_UPDATES = 0
@@ -199,7 +193,6 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
         self._coordinator = coordinator
         self._device_name = coordinator.get_device_name()
         self._device_class = DEVICE_CLASS_OVERRIDES.get(event_name, MOTION_SENSOR_DEVICE_CLASS)
-        self._icon_override = ICON_OVERRIDES.get(event_name, None)
 
         self._name = event_display_name(event_name)
 
@@ -227,10 +220,6 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
     def device_class(self):
         """Return the class of this binary_sensor, Example: motion"""
         return self._device_class
-
-    @property
-    def icon(self) -> str:
-        return self._icon_override
 
     @property
     def is_on(self):

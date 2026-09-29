@@ -7,8 +7,6 @@ ATTRIBUTION = "Data provided by https://ronnieroller.com"
 ISSUE_URL = "https://github.com/rroller/dahua/issues"
 
 # Icons - https://materialdesignicons.com/
-ICON = "mdi:format-quote-close"
-VOLUME_HIGH_ICON = "mdi:volume-high"
 
 # Device classes - https://www.home-assistant.io/integrations/binary_sensor/#device-class
 MOTION_SENSOR_DEVICE_CLASS = "motion"
