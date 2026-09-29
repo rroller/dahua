@@ -93,7 +93,17 @@ def _entry_block(config_entry: ConfigEntry) -> dict[str, Any]:
         "options": dict(config_entry.options),
         # The *effective* values, after options override entry data. Users
         # routinely report the value they set rather than the one in force.
-        "resolved_events": get_configured_events(config_entry),
+        #
+        # Named "entry level" rather than "resolved", because since #827 an
+        # entry owns many channels and each may carry its own event list. This
+        # is the list a channel falls back to, not the list any channel is
+        # necessarily using. What a channel actually subscribes to is
+        # channels[].events.configured, which is the field #728 has been asked
+        # for three times, so the two must not be confusable.
+        #
+        # use_https and the scan interval below are entry wide for real: no
+        # subentry carries either, so "resolved" is honest for them.
+        "entry_level_events": get_configured_events(config_entry),
         "resolved_use_https": get_configured_use_https(config_entry),
         "resolved_scan_interval_seconds": _safe(
             lambda: get_configured_scan_interval(config_entry).total_seconds()
