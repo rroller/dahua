@@ -323,3 +323,169 @@ class TestExtractPlateStringFallback:
         assert res["plate"] == "ABO1234"
 
 
+
+
+class TestTruncatedPlateFallback:
+    """The regex fallback, reached only when the payload is not valid JSON.
+
+    An ANPR event carries a lot of JSON and arrives over a stream that splits on TCP
+    boundaries, so a truncated payload is ordinary rather than exceptional. When
+    json.loads fails, extract_plate_data hands the raw text to a regex extractor instead
+    of giving up, and that extractor had almost no coverage.
+
+    Worth noting why: the RTL test above passes *valid* JSON, so it goes down the parsed
+    path and never reaches the regex at all. Everything here is deliberately unparseable.
+    """
+
+    def test_a_truncated_payload_still_yields_the_plate_number(self):
+        truncated = '{"TrafficCar": {"PlateNumber": "ABC1234", "Speed": 4'
+        res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
+
+        assert res is not None
+        assert res["plate"] == "ABC1234"
+
+    def test_the_lowercase_spelling_is_accepted_too(self):
+        """Firmware differs on the case of this key."""
+        truncated = '{"trafficCar": {"plateNumber": "ABC1234", "Speed'
+        res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
+
+        assert res is not None
+        assert res["plate"] == "ABC1234"
+
+    def test_a_greek_format_candidate_beats_one_found_earlier(self):
+        """Three letters then four digits is the exact shape, so it wins outright.
+
+        The order is the whole test. "AB12" comes first and the last-resort branch
+        accepts it, but it does not stop looking; the exact shape later does, and takes
+        over. Without that preference the first plausible candidate in the payload wins,
+        and a payload has several -- ObjectType, colours and brands all arrive as Text.
+        """
+        truncated = '{"a": {"Text": "AB12"}, "b": {"Text": "ABC1234"}, "c'
+        res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
+
+        assert res is not None
+        assert res["plate"] == "ABC1234"
+
+    def test_the_exact_shape_stops_the_search(self):
+        """And nothing after it can take it back."""
+        truncated = '{"a": {"Text": "ABC1234"}, "b": {"Text": "ZZ99"}, "c'
+        res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
+
+        assert res["plate"] == "ABC1234"
+
+    def test_a_plate_the_device_sent_back_to_front_is_turned_round(self):
+        """Some firmware emits the plate right to left, so four digits arrive before
+        three letters. Flipped back, it is a valid plate; left alone it is not, and the
+        authorized list would never match it."""
+        truncated = '{"CurrentPlateInfo": [{"Text": "1234ABC"}], "Vehicl'
+        res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
+
+        assert res is not None
+        assert res["plate"] == "ABC1234"
+
+    def test_something_that_is_neither_shape_is_still_used(self):
+        """Last resort: anything with both a letter and a digit in it beats reporting no
+        plate at all, because plate formats vary by country and this integration is not
+        the place to enumerate them."""
+        truncated = '{"x": {"Text": "AB12"}, "y'
+        res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
+
+        assert res is not None
+        assert res["plate"] == "AB12"
+
+    def test_a_candidate_with_no_digits_is_not_a_plate(self):
+        """Otherwise every "Text" in the payload is a candidate, and they are not all
+        plates: ObjectType, vehicle colours and brands all arrive as Text."""
+        truncated = '{"x": {"Text": "Sedan"}, "y": {"Text": "Black"}, "z'
+        res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
+
+        assert res is None
+
+    def test_a_truncated_payload_with_nothing_plate_shaped_gives_nothing(self):
+        res = extract_plate_data({"Code": "TrafficJunction", "data": '{"Speed": 4'})
+
+        assert res is None
+
+    def test_the_confidence_comes_out_of_a_truncated_payload_too(self):
+        truncated = '{"TrafficCar": {"PlateNumber": "ABC1234"}, "Confidence": 87, "Ve'
+        res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
+
+        assert res["confidence"] == 87
+
+    def test_the_brand_and_colour_survive_truncation(self):
+        truncated = ('{"TrafficCar": {"PlateNumber": "ABC1234"}, "VehicleSign": "Audi",'
+                     ' "VehicleColor": "Black", "Vehic')
+        res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
+
+        assert res["vehicle_brand"] == "Audi"
+        assert res["vehicle_color"] == "Black"
+
+
+class TestPlateInItsOtherShapes:
+    """`Plate` arrives as a dict on some firmware and as a bare string on others, and
+    neither had a test. Both are checked only when Object did not supply a plate, so
+    getting the order wrong silently prefers the wrong field."""
+
+    def test_plate_as_a_dict_with_its_own_confidence(self):
+        event = {"Code": "TrafficJunction",
+                 "data": {"Plate": {"Text": "ABC1234", "Confidence": 77}}}
+        res = extract_plate_data(event)
+
+        assert res["plate"] == "ABC1234"
+        assert res["confidence"] == 77
+
+    def test_plate_as_a_bare_string(self):
+        res = extract_plate_data(
+            {"Code": "TrafficJunction", "data": {"Plate": "ABC1234"}})
+
+        assert res["plate"] == "ABC1234"
+
+    def test_the_lowercase_key_is_accepted(self):
+        res = extract_plate_data(
+            {"Code": "TrafficJunction", "data": {"plate": "ABC1234"}})
+
+        assert res["plate"] == "ABC1234"
+
+    def test_a_plate_field_holding_a_placeholder_is_not_a_plate(self):
+        """The same ignored list the Object branch uses, so a device that fills the field
+        in with "unlicensed" does not produce a sensor reading of that."""
+        for placeholder in ("unlicensed", "unknown", "none", "--", ""):
+            res = extract_plate_data(
+                {"Code": "TrafficJunction", "data": {"Plate": placeholder}})
+            assert res is None, placeholder
+
+
+class TestPlateDataEdges:
+    """The remaining answers a device can give."""
+
+    def test_data_that_is_neither_text_nor_a_mapping_is_not_a_plate(self):
+        for value in (42, [], None, 3.5):
+            assert extract_plate_data({"Code": "X", "data": value}) is None, value
+
+    def test_a_plate_of_only_punctuation_is_not_a_plate(self):
+        """normalize_plate strips to alphanumerics, so a field holding separators comes
+        back empty and must not become a reading."""
+        res = extract_plate_data(
+            {"Code": "X", "data": {"Object": {"ObjectType": "Plate", "Text": "-/-"}}})
+
+        assert res is None
+
+    def test_the_vehicle_type_falls_back_to_the_vehicle_text(self):
+        """Some firmware puts the body style in Vehicle.Text rather than in a named
+        field."""
+        event = {"Code": "X", "data": {
+            "Plate": "ABC1234",
+            "Vehicle": {"Text": "Estate"},
+        }}
+        res = extract_plate_data(event)
+
+        assert res["vehicle_type"] == "Estate"
+
+
+class TestAuthorizedPlatesEdges:
+    def test_something_that_is_neither_a_list_nor_a_string_is_no_list(self):
+        """The option comes from a config entry, so a hand-edited .storage can put
+        anything here. Returning an empty list means nothing is authorized, which is the
+        safe direction for a gate."""
+        assert parse_authorized_plates(42) == []
+        assert parse_authorized_plates({"a": 1}) == []
