@@ -71,8 +71,6 @@ NAMED_ELSEWHERE = {
     # The rule's own name, read off the device. User data, not a string this
     # integration can translate.
     "DahuaIVSRuleSwitch",
-    # One name per event code, about thirty of them behind a NAME_OVERRIDES map.
-    "DahuaEventSensor",
     # The stream's name, from the client's own to_stream_name.
     "DahuaCamera",
 }
@@ -110,9 +108,17 @@ def _keys_passed_in(platform):
     where the choice is made, so they are as findable as a class attribute.
     """
     tree = ast.parse(io.open(PACKAGE / ("%s.py" % platform), encoding="utf-8").read())
+    # Only calls that build an entity. `HomeAssistantError` takes a translation_key
+    # too, and collecting those reported five exception keys as entity names with
+    # nothing behind them. Keyed on the callee being a class in this module rather
+    # than on a list of things to ignore, so it stays right as more is added.
+    entity_classes = {node.name for node in tree.body
+                      if isinstance(node, ast.ClassDef)}
     keys = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) not in entity_classes:
             continue
         for keyword in node.keywords:
             if keyword.arg != "translation_key":
@@ -131,6 +137,21 @@ def _keys_in_code():
         for key in _keys_passed_in(platform):
             found.setdefault((platform, key), "chosen by %s.py" % platform)
     return found
+
+
+def _owned_by_the_event_sensor_file(pair):
+    """The 45 event sensor keys, which this file cannot see and does not own.
+
+    They are derived from the event code in `__init__`, so there is no literal
+    to find. test_event_sensor_names_are_translated.py checks them against the
+    derivation and against every code the platform can produce, which is more
+    than this scan could do.
+
+    Subtraction rather than importing binary_sensor, so this file stays pure ast
+    and json and keeps running without Home Assistant.
+    """
+    platform, _key = pair
+    return platform == "binary_sensor" and pair not in WAS
 
 
 def _names_in_file():
@@ -154,7 +175,8 @@ def test_every_key_the_code_declares_has_an_english_name():
 
 def test_every_name_in_the_file_belongs_to_an_entity():
     """Dead strings read as coverage, and a translator spends real time on them."""
-    unused = sorted(set(_names_in_file()) - set(_keys_in_code()))
+    unused = sorted(pair for pair in set(_names_in_file()) - set(_keys_in_code())
+                    if not _owned_by_the_event_sensor_file(pair))
 
     assert not unused, "in en.json with nothing declaring it: %s" % unused
 
@@ -163,7 +185,8 @@ def test_the_names_are_what_the_properties_returned():
     """The change was meant to be invisible. Home Assistant composes
     "<device> <entity>" from has_entity_name either way, so a string that differs
     from the old property renames an entity that is already on a dashboard."""
-    names = _names_in_file()
+    names = {pair: text for pair, text in _names_in_file().items()
+             if not _owned_by_the_event_sensor_file(pair)}
 
     assert names == WAS, "renamed: %s" % sorted(
         key for key in set(names) | set(WAS) if names.get(key) != WAS.get(key))

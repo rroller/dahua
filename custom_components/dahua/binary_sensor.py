@@ -20,6 +20,88 @@ NAME_OVERRIDES = {
     "DoorbellPressed": "Button Pressed",  # For VTO/Doorbell devices
 }
 
+# Event codes with a name in translations/en.json, so their sensors can be named
+# in any language. ALL_EVENTS plus the four the platform adds for a doorbell, as a
+# literal because the entity has to decide without reading its own translations.
+#
+# A code outside this set still gets a sensor: `get_event_list` reads the config
+# entry and nothing stops a hand edited .storage naming something else. It keeps
+# the derived English name rather than having no name at all.
+# test_event_sensor_names_are_translated.py asserts this matches both the file and
+# the codes the platform can produce, so the fallback cannot be reached by adding
+# a code to ALL_EVENTS and forgetting the string.
+TRANSLATED_EVENTS = frozenset({
+    "VideoMotion",
+    "VideoLoss",
+    "AlarmLocal",
+    "CrossLineDetection",
+    "CrossRegionDetection",
+    "AudioMutation",
+    "SmartMotionHuman",
+    "SmartMotionVehicle",
+    "VideoBlind",
+    "AudioAnomaly",
+    "VideoMotionInfo",
+    "NewFile",
+    "IntelliFrame",
+    "LeftDetection",
+    "TakenAwayDetection",
+    "VideoAbnormalDetection",
+    "FaceDetection",
+    "FaceRecognition",
+    "HumanTrait",
+    "VideoUnFocus",
+    "WanderDetection",
+    "RioterDetection",
+    "ParkingDetection",
+    "MoveDetection",
+    "StorageNotExist",
+    "StorageFailure",
+    "StorageLowSpace",
+    "AlarmOutput",
+    "InterVideoAccess",
+    "NTPAdjustTime",
+    "TimeChange",
+    "MDResult",
+    "HeatImagingTemper",
+    "CrowdDetection",
+    "FireWarning",
+    "FireWarningInfo",
+    "ObjectPlacementDetection",
+    "ObjectRemovalDetection",
+    "Traffic",
+    "TrafficJunction",
+    "TrafficSnapshot",
+    "DoorbellPressed",
+    "Invite",
+    "DoorStatus",
+    "CallNoAnswered",
+})
+
+
+def event_display_name(event_name: str) -> str:
+    """The English name for an event code.
+
+    A capital that follows a lower case letter starts a new word, so
+    SmartMotionHuman reads as "Smart Motion Human" while IVS stays IVS. Three
+    codes are named by hand instead.
+
+    A module function rather than inline in __init__ because the unique id, the
+    translation key and the tests all need the same answer, and a test that
+    reimplemented the regex would only ever agree with itself.
+    """
+    default = re.sub(r"(?<![A-Z])(?<!^)([A-Z])", r" \1", event_name)
+    return NAME_OVERRIDES.get(event_name, default)
+
+
+def event_translation_key(event_name: str) -> str:
+    """The slug for an event code, which is also its unique id suffix.
+
+    One string doing both jobs is deliberate: the keys are then the ids people
+    already have, so nothing has to be migrated and nothing moves.
+    """
+    return event_display_name(event_name).lower().replace(" ", "_")
+
 # Events that are a moment rather than a state, and how long to show them for.
 #
 # Most events arrive as a pair: a Start raises the sensor and a Stop clears it.
@@ -122,15 +204,18 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
         self._device_class = DEVICE_CLASS_OVERRIDES.get(event_name, MOTION_SENSOR_DEVICE_CLASS)
         self._icon_override = ICON_OVERRIDES.get(event_name, None)
 
-        # name is the friendly name, example: Cross Line Alarm. If the name is not found in the override it will be
-        # generated from the event_name. For example SmartMotionHuman will become "Smart Motion Human"
-        # https://stackoverflow.com/questions/25674532/pythonic-way-to-add-space-before-capital-letter-if-and-only-if-previous-letter-i/25674575
-        default_name = re.sub(r"(?<![A-Z])(?<!^)([A-Z])", r" \1", event_name)
-        self._name = NAME_OVERRIDES.get(event_name, default_name)
+        self._name = event_display_name(event_name)
 
-        # Build the unique ID. This will convert the name to lower underscores. For example, "Smart Motion Vehicle" will
-        # become "smart_motion_vehicle" and will be added as a suffix to the device serial number
-        self._unique_id = coordinator.get_serial_number() + "_" + self._name.lower().replace(" ", "_")
+        # The slug is the unique id suffix and the translation key both, so the
+        # keys are the ids people already have and nothing moves.
+        slug = event_translation_key(event_name)
+        self._unique_id = coordinator.get_serial_number() + "_" + slug
+        if event_name in TRANSLATED_EVENTS:
+            self._attr_translation_key = slug
+        else:
+            # Not a code this ships a string for, so keep the English name
+            # rather than leaving the sensor with no name of its own.
+            self._attr_name = self._name
         if event_name == "VideoMotion":
             # We need this for backwards compatibility as the VideoMotion was created with a unique ID of just the
             # serial number and we don't want to break people who are upgrading
@@ -140,11 +225,6 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
     def unique_id(self):
         """Return the entity unique ID."""
         return self._unique_id
-
-    @property
-    def name(self):
-        """Return the name of the binary_sensor. Example: Cam14 Motion Alarm"""
-        return self._name
 
     @property
     def device_class(self):
