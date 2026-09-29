@@ -190,7 +190,8 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
-        self._coordinator.add_dahua_event_listener(self._event_name, self._async_event_fired)
+        self.async_on_remove(self._coordinator.add_dahua_event_listener(
+            self._event_name, self._async_event_fired))
 
     @callback
     def _async_event_fired(self):
@@ -299,7 +300,7 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
                 )
             self.schedule_update_ha_state()
 
-        self._coordinator.add_plate_listener(_on_plate_update)
+        self.async_on_remove(self._coordinator.add_plate_listener(_on_plate_update))
 
         # Recheck state on startup/reload in case plate was recognized right before reload
         last_plate = self._coordinator.get_last_plate()

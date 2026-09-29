@@ -2,6 +2,7 @@ import time
 import pytest
 
 from custom_components.dahua import binary_sensor as bs
+from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 from custom_components.dahua.binary_sensor import (
     DahuaEventSensor,
     DahuaAuthorizedVehicleBinarySensor,
@@ -16,9 +17,17 @@ from custom_components.dahua.const import (
 
 
 class _Coordinator:
+    # The real thing, not a stand-in. Both of these return the callback that
+    # undoes them, the entities hand that to `async_on_remove`, and a fake
+    # returning None would have been accepted without a word.
+    add_dahua_event_listener = DahuaDataUpdateCoordinator.add_dahua_event_listener
+    add_plate_listener = DahuaDataUpdateCoordinator.add_plate_listener
+    get_event_key = DahuaDataUpdateCoordinator.get_event_key
+
     def __init__(self):
         self.timestamps = {}
-        self.listeners = []
+        self._channel = 0
+        self._dahua_event_listeners = {}
         self._plate_listeners = []
         self._last_plate = "unknown"
         self._last_plate_data = {}
@@ -39,9 +48,6 @@ class _Coordinator:
         """No event here has arrived as a Pulse, so none clears itself."""
         return False
 
-    def add_dahua_event_listener(self, event_name, callback):
-        self.listeners.append((event_name, callback))
-
     def get_last_plate(self):
         return self._last_plate
 
@@ -60,8 +66,6 @@ class _Coordinator:
     def is_plate_authorized(self, plate):
         return plate in self._authorized_plates
 
-    def add_plate_listener(self, callback):
-        self._plate_listeners.append(callback)
 
 
 @pytest.fixture
@@ -180,7 +184,31 @@ async def test_it_subscribes_to_its_event_when_added(sensor):
 
     await s.async_added_to_hass()
 
-    assert [name for name, _ in c.listeners] == ["CrossLineDetection"]
+    assert list(c._dahua_event_listeners) == [c.get_event_key("CrossLineDetection")]
+
+
+async def test_it_stops_listening_when_it_is_removed(sensor):
+    """A removed entity that keeps its callback is not only untidy. Whether a
+    key has listeners decides whether `_dispatch_event` reports that code at
+    all, and whether `translate_event_code` reports CrossLineDetection
+    alongside the SmartMotion translation, so a ghost answers yes to both. And
+    nothing stops the callback reaching an entity Home Assistant has removed.
+
+    `_on_remove` is Home Assistant's own list, which it drains on removal.
+    Reaching into it is how this test removes the entity without a platform.
+    """
+    c = _Coordinator()
+    s = sensor("CrossLineDetection", c)
+
+    await s.async_added_to_hass()
+    assert c._dahua_event_listeners, "never subscribed, so this proves nothing"
+
+    assert s._on_remove, "registered nothing to undo the subscription"
+    for undo in list(s._on_remove):
+        undo()
+
+    assert c._dahua_event_listeners == {}, (
+        "the key outlived the entity, so the poll still thinks something reads it")
 
 
 def test_these_sensors_are_pushed_not_polled(sensor):

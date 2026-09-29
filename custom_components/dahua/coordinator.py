@@ -1640,11 +1640,35 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         event_key = self.get_event_key(event_name)
         return self._dahua_event_timestamp.get(event_key, 0)
 
-    def add_dahua_event_listener(self, event_name: str, listener: CALLBACK_TYPE):
-        """ Adds an event listener for the given event (CrossLineDetection, etc).
-        This callback will be called when the event fire """
+    def add_dahua_event_listener(self, event_name: str,
+                                 listener: CALLBACK_TYPE) -> CALLBACK_TYPE:
+        """Listen for one event on this channel, and return how to stop.
+
+        The return value is what `Entity.async_on_remove` wants, and it used to
+        return nothing, so an entity that was removed left its callback here for
+        the life of the coordinator. That is not only untidy. Whether a key has
+        any listeners is read in two places that decide behaviour:
+        `_dispatch_event` skips a code nothing is listening for, and
+        `translate_event_code` decides whether to report the original
+        CrossLineDetection alongside the SmartMotion translation. A listener
+        belonging to an entity that no longer exists answers yes to both.
+
+        The key goes when its last listener does, because both of those checks
+        read the key rather than the list, and an empty list is still a key.
+        """
         event_key = self.get_event_key(event_name)
         self._dahua_event_listeners.setdefault(event_key, []).append(listener)
+
+        def remove() -> None:
+            listeners = self._dahua_event_listeners.get(event_key)
+            if not listeners:
+                return
+            if listener in listeners:
+                listeners.remove(listener)
+            if not listeners:
+                del self._dahua_event_listeners[event_key]
+
+        return remove
 
     def supports_disarming_linkage(self) -> bool:
         """Whether the device answered the disarming linkage read during setup."""
@@ -2246,9 +2270,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return the unix epoch timestamp when the last plate was recognized."""
         return self._last_plate_timestamp
 
-    def add_plate_listener(self, listener):
-        """Add a callback listener invoked when a new license plate event is parsed."""
+    def add_plate_listener(self, listener) -> CALLBACK_TYPE:
+        """Listen for a parsed plate, and return how to stop.
+
+        Same reason as add_dahua_event_listener: this returned nothing, so the
+        authorized vehicle sensor could not let go of its callback and a removed
+        one kept being called.
+        """
         self._plate_listeners.append(listener)
+
+        def remove() -> None:
+            if listener in self._plate_listeners:
+                self._plate_listeners.remove(listener)
+
+        return remove
 
     def get_configured_area(self):
         """The area_id this entry was given, or None.
