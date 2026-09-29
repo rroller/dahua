@@ -199,7 +199,12 @@ def test_authorized_vehicle_sensor_properties():
     assert s.translation_key == "authorized_vehicle"
     assert s.unique_id == "SERIAL1_authorized_vehicle"
     assert s.device_class == "presence"
-    assert s.icon == "mdi:car-check"
+    # The icon moved to icons.json with the name, and asserting it is None here
+    # rather than dropping the line: it has to *stay* gone, because
+    # `Entity.icon` returns `_attr_icon` whenever it is set and would then win
+    # over the file silently. mdi:car-check is pinned in
+    # test_entity_icons_come_from_icons_json.py.
+    assert s.icon is None
     assert s.should_poll is False
 
 

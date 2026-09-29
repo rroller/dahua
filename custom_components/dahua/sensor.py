@@ -99,7 +99,6 @@ class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
 
     _attr_translation_key = "profile"
 
-    _attr_icon = "mdi:theme-light-dark"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
@@ -126,7 +125,6 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
         super().__init__(coordinator, entry)
-        self._attr_icon = "mdi:car-back"
         self._unique_id = f"{coordinator.get_serial_number()}_license_plate"
 
     @property

@@ -240,7 +240,6 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
         super().__init__(coordinator, entry)
         self._attr_device_class = BinarySensorDeviceClass.PRESENCE
-        self._attr_icon = "mdi:car-check"
         self._unique_id = f"{coordinator.get_serial_number()}_authorized_vehicle"
         self._active_until: float = 0.0
         self._last_matched_plate: str | None = None

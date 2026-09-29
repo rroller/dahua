@@ -201,10 +201,6 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
         return self._coordinator.get_serial_number() + "_day_night_mode"
 
     @property
-    def icon(self):
-        return "mdi:theme-light-dark"
-
-    @property
     def current_option(self):
         """The mode the device reports, or None when it has not reported one.
 
