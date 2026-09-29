@@ -113,6 +113,58 @@ def test_a_string_and_an_int_are_the_same_channel():
     assert len(configs) == 1
 
 
+# --- the connection belongs to the entry, not the channel --------------------
+
+def test_the_entrys_connection_wins_over_a_stale_subentry_copy():
+    """reauth and reconfigure write `entry.data`, while a merged recorder's
+    coordinators are built from subentry data. The subentries kept their own copy
+    from the add flow, so without this overlay the reload after a successful
+    reauth rebuilt every coordinator from the old password -- the new one was
+    accepted, written, and ignored, and reauth started again forever."""
+    entry = _entry(
+        data={"address": "1.2.3.4", "username": "admin", "password": "new"},
+        subentries={"s0": _sub(0)})
+    entry.subentries["s0"].data.update(
+        {"username": "admin", "password": "old"})
+
+    config = channel_configs(entry)[0][1]
+
+    assert config["password"] == "new"
+    assert config["username"] == "admin"
+
+
+def test_a_connection_field_the_entry_does_not_carry_keeps_the_subentrys():
+    """A subentry written before a field existed, or one added by hand, still
+    sets it: the overlay adds what the entry has and takes nothing away."""
+    entry = _entry(subentries={"s0": _sub(0)})
+    entry.subentries["s0"].data["port"] = "8080"
+
+    config = channel_configs(entry)[0][1]
+
+    assert config["port"] == "8080"
+    assert config["address"] == "1.2.3.4"
+
+
+def test_a_mixed_device_entry_keeps_each_channels_own_connection():
+    """The old address-only migration could merge two devices that share an
+    address on different ports into one entry. Enforcing the entry's connection
+    there would point the second device's channel and entities at the first
+    recorder -- and the merge cannot repair it, because the entry is a group of
+    one and is left alone."""
+    entry = _entry(
+        data={"address": "10.0.0.1", "port": "80", "password": "first"},
+        subentries={"s0": _sub(0), "s1": _sub(1)})
+    entry.subentries["s0"].data.update({"port": "80", "password": "first"})
+    entry.subentries["s1"].data.update({"port": "81", "password": "second"})
+
+    configs = {c[0]: c[1] for c in channel_configs(entry)}
+
+    assert configs["s0"]["port"] == "80"
+    assert configs["s0"]["password"] == "first"
+    assert configs["s1"]["port"] == "81"
+    assert configs["s1"]["password"] == "second"
+
+
 # --- per channel event lists ------------------------------------------------
 
 def test_each_channel_keeps_its_own_event_list():
