@@ -1148,7 +1148,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug("Could not get preset position", exc_info=exception)
                     # The preset select reads this key. Carrying the last value
                     # stops a refusal from resetting the select to "0".
-                    previous = (getattr(self, "data", None) or {}).get("status.PresetID")
+                    previous = (getattr(self, "data", None) or {}).get(
+                        "status.PresetID"
+                    )
                     if previous is None:
                         return None
                     return {"status.PresetID": previous}

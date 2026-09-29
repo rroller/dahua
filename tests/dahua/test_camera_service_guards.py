@@ -41,6 +41,7 @@ def _camera(*, doorbell=False):
 
 # --- the profile write refreshes ---------------------------------------------
 
+
 async def test_setting_the_profile_refreshes_so_the_next_light_write_uses_it():
     camera, coordinator = _camera()
 
@@ -61,6 +62,7 @@ async def test_the_nvr_night_switch_path_refreshes_too():
 
 
 # --- and opening a door on a camera says what it is for -----------------------
+
 
 async def test_opening_a_door_on_a_camera_that_is_not_a_doorbell_says_so():
     camera, coordinator = _camera(doorbell=False)

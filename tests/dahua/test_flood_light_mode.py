@@ -33,19 +33,24 @@ async def _mode(payload):
 
 # --- the client returns the number -------------------------------------------
 
-@pytest.mark.parametrize("payload,expected", [
-    ({"FloodLightMode.Mode": "1"}, 1),
-    ({"table.FloodLightMode[0].Mode": "3"}, 3),
-    ({"table.FloodLightMode[0].Mode": "4", "table.Other": "x"}, 4),
-    ({"FloodLightMode.Mode": " 2 "}, 2),
-    ("1", 1),
-])
+
+@pytest.mark.parametrize(
+    "payload,expected",
+    [
+        ({"FloodLightMode.Mode": "1"}, 1),
+        ({"table.FloodLightMode[0].Mode": "3"}, 3),
+        ({"table.FloodLightMode[0].Mode": "4", "table.Other": "x"}, 4),
+        ({"FloodLightMode.Mode": " 2 "}, 2),
+        ("1", 1),
+    ],
+)
 async def test_the_mode_is_pulled_out_of_the_answer(payload, expected):
     assert await _mode(payload) == expected
 
 
-@pytest.mark.parametrize("payload", [{}, None, {"FloodLightMode.Mode": "bad"},
-                                     {"a": "1", "b": "2"}])
+@pytest.mark.parametrize(
+    "payload", [{}, None, {"FloodLightMode.Mode": "bad"}, {"a": "1", "b": "2"}]
+)
 async def test_an_unusable_answer_is_manual(payload):
     """Manual is what the light entity itself writes while it is on, so it is
     the least surprising fallback."""
@@ -53,6 +58,7 @@ async def test_an_unusable_answer_is_manual(payload):
 
 
 # --- and the light hands the number back, not the dict ------------------------
+
 
 class _Client:
     def __init__(self):
@@ -96,5 +102,6 @@ async def test_turning_off_sends_the_stored_mode_not_the_table():
 
     await entity.async_turn_off()
     assert coordinator.client.modes_set == [2, 1]
-    assert coordinator.client.modes_set[-1] == 1, (
-        "the mode is written as a number; a dict here goes into the URL")
+    assert (
+        coordinator.client.modes_set[-1] == 1
+    ), "the mode is written as a number; a dict here goes into the URL"
