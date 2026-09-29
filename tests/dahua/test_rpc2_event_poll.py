@@ -255,7 +255,13 @@ async def test_a_transient_refusal_does_not_cost_the_event(monkeypatch):
 
 async def test_a_success_between_refusals_starts_the_count_again(monkeypatch):
     """Consecutive, not cumulative. A code refused once in a while is a device
-    under load, and totting those up would eventually drop a code that works."""
+    under load, and totting those up would eventually drop a code that works.
+
+    `refuse_for` cannot express refusing every other time, hence the wrapper. The
+    discriminating assertion is the `_StopPoll`: counting cumulatively drops the
+    code on the third refusal, which empties the selection and raises
+    EventStreamClosed instead, so this test would not reach the script's end.
+    """
     monkeypatch.setattr(client_module, "RPC2_EVENT_REFUSALS_BEFORE_DROPPING", 2)
     fake = _FakeRpc2Client([{"VideoMotion": []}] * 6)
 

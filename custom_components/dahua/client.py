@@ -2853,6 +2853,17 @@ class DahuaClient:
         # How many cycles in a row each code has been refused. Consecutive, so a
         # successful read clears it: a code refused once an hour is a device under
         # load, not a device that does not know it.
+        #
+        # Local, so it lives for this stream lifetime, which is the same scope the
+        # `codes` list above has: a recycle rebuilds the selection and a code
+        # dropped in the last lifetime is asked for again in this one. That was
+        # already true before there was a count. The lifetime is
+        # EVENT_STREAM_MAX_LIFETIME_SECONDS (an hour) against a cycle of a couple
+        # of seconds, so a device that refuses a code every time still reaches the
+        # limit within the first few seconds of each lifetime. `active` is the one
+        # thing here that is deliberately inherited across a recycle, because an
+        # unpaid Stop is owed whoever takes over; a refusal count is not owed to
+        # anyone.
         refusals: dict[str, int] = {}
         # When the device last had anything active, or None while it does. Only
         # a run of quiet cycles eases the rate off; one Start restores it.
