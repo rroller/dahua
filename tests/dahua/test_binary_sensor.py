@@ -193,10 +193,10 @@ def test_authorized_vehicle_sensor_properties():
     c = _Coordinator()
     s = DahuaAuthorizedVehicleBinarySensor(c, object())
 
-    # `has_entity_name` is True, so an entity states only its own half and
-    # Home Assistant prefixes the device. The rendered name is unchanged;
-    # what this asserts is that the entity is no longer composing it.
-    assert s.name == "Authorized Vehicle"
+    # The name itself lives in translations/en.json now, and is pinned there
+    # by test_entity_names_come_from_translations.py. The key is what this
+    # entity is responsible for.
+    assert s.translation_key == "authorized_vehicle"
     assert s.unique_id == "SERIAL1_authorized_vehicle"
     assert s.device_class == "presence"
     assert s.icon == "mdi:car-check"

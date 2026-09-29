@@ -43,14 +43,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):
     """Reboots the device."""
 
+    _attr_translation_key = "reboot"
+
     _attr_device_class = ButtonDeviceClass.RESTART
     # Diagnostic would hide it from the device page controls; this is an action
     # the user takes deliberately, so it belongs with the configuration.
     _attr_entity_category = EntityCategory.CONFIG
-
-    @property
-    def name(self):
-        return "Reboot"
 
     @property
     def unique_id(self):
@@ -69,9 +67,7 @@ class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):
 class DahuaOpenDoorButton(DahuaBaseEntity, ButtonEntity):
     """Opens the door on a VTO."""
 
-    @property
-    def name(self):
-        return "Open Door"
+    _attr_translation_key = "open_door"
 
     @property
     def unique_id(self):
@@ -94,9 +90,7 @@ class DahuaCancelCallButton(DahuaBaseEntity, ButtonEntity):
     waits now, which is what makes a button honest.
     """
 
-    @property
-    def name(self):
-        return "Cancel Call"
+    _attr_translation_key = "cancel_call"
 
     @property
     def unique_id(self):

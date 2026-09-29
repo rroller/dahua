@@ -113,17 +113,23 @@ def test_the_sensors_do_not_collide():
     assert all(i.startswith("SERIAL1_4_") for i in ids)
 
 
-def test_the_sensors_do_not_repeat_the_device_name():
-    """These asserted the name started with "Garage ", which was right while the
-    entity composed the whole thing itself. `has_entity_name` moved that job to
-    Home Assistant, which prefixes the device, so an entity still carrying the
-    prefix would render it twice -- and a doubled string raises nothing, which is
-    why this is asserted rather than assumed."""
+def test_the_sensors_name_themselves_through_the_translation_file():
+    """This has been through two rounds of the same idea. It began as "the name
+    starts with Garage", which was right while the entity composed the whole
+    thing; `has_entity_name` moved the device half to Home Assistant, so it
+    became "the name does not contain Garage"; and `entity-translations` moved
+    the entity half into translations/en.json, so the string is not on the class
+    at all any more and the key is what is left to check.
+
+    The strings, and that they are unchanged from what the properties returned,
+    are pinned in test_entity_names_come_from_translations.py."""
+    # Off an instance: `_attr_translation_key` read from the class is a
+    # property object, courtesy of the CachedProperties metaclass, and a
+    # property object is truthy. This assertion passed for a class that
+    # declared nothing at all until it was written this way.
     c = _coordinator()
     for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor, DahuaProfileSensor):
-        name = _sensor(cls, c).name
-        assert name, cls.__name__
-        assert "Garage" not in name, cls.__name__
+        assert _sensor(cls, c).translation_key, cls.__name__
 
 
 # --- the profile sensor is gated on the capability -------------------------------

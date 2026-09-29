@@ -60,6 +60,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua motion detection switch class. Used to enable or disable motion detection"""
 
+    _attr_translation_key = "motion_detection"
+
     # Configuration, not a control: this changes how the camera behaves rather
     # than doing something now, so it belongs in the device page's configuration
     # section and out of auto-generated dashboards. The siren is deliberately
@@ -78,11 +80,6 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         channel = self._coordinator.get_channel()
         await self._coordinator.client.enable_motion_detection(channel, False)
         await self._coordinator.async_refresh()
-
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return "Motion Detection"
 
     @property
     def unique_id(self):
@@ -109,6 +106,8 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """will set the camera's disarming linkage (Event -> Disarming in the UI)"""
 
+    _attr_translation_key = "disarming"
+
     _attr_entity_category = EntityCategory.CONFIG
 
 
@@ -123,11 +122,6 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_disarming_linkage(channel, False)
         await self._coordinator.async_refresh()
-
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return "Disarming"
 
     @property
     def unique_id(self):
@@ -154,6 +148,8 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """will set the camera's event notifications when device is disarmed (Event -> Disarming -> Event Notifications in the UI)"""
 
+    _attr_translation_key = "event_notifications"
+
     _attr_entity_category = EntityCategory.CONFIG
 
 
@@ -168,11 +164,6 @@ class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, Switc
         channel = self._coordinator.get_channel()
         await self._coordinator.client.async_set_event_notifications(channel, False)
         await self._coordinator.async_refresh()
-
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return "Event Notifications"
 
     @property
     def unique_id(self):
@@ -198,6 +189,8 @@ class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, Switc
 class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """Enables or disables the Smart Motion Detection option in the camera"""
 
+    _attr_translation_key = "smart_motion_detection"
+
     _attr_entity_category = EntityCategory.CONFIG
 
 
@@ -218,11 +211,6 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
             await self._coordinator.client.async_enabled_smart_motion_detection(
                 self._coordinator.get_channel(), False)
         await self._coordinator.async_refresh()
-
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return "Smart Motion Detection"
 
     @property
     def unique_id(self):
@@ -363,6 +351,8 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
     """Switch for a physical alarm/relay output."""
 
+    _attr_translation_key = "alarm_output"
+
     _attr_icon = "mdi:alarm-light"
 
     def __init__(self, coordinator, entry, output: int):
@@ -380,11 +370,6 @@ class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        """Return the name of the switch."""
-        return "Alarm Output"
-
-    @property
     def unique_id(self):
         """Return a stable unique ID for this alarm output."""
         return self._coordinator.get_serial_number() + "_alarm_output_" + str(self._output)
@@ -398,6 +383,8 @@ class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua privacy mode switch class. Used to enable or disable the lens privacy mask"""
 
+    _attr_translation_key = "privacy_mode"
+
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable privacy mode"""
         await self._coordinator.client.async_set_privacy_mode(True)
@@ -407,11 +394,6 @@ class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
         """Turn off/disable privacy mode"""
         await self._coordinator.client.async_set_privacy_mode(False)
         await self._coordinator.async_refresh()
-
-    @property
-    def name(self):
-        """Return the name of the switch."""
-        return "Privacy Mode"
 
     @property
     def unique_id(self):

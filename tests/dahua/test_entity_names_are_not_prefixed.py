@@ -43,8 +43,12 @@ def _source(name):
 def _name_expressions(body):
     """Every `name` property body and every `_attr_name` assignment.
 
-    Both matter: three entities set `_attr_name` in __init__ and return it from
-    the property, so checking only the property would miss them.
+    Three entities used to set `_attr_name` in __init__ and return it from the
+    property, so checking only the property would have missed them. None does now:
+    `entity-translations` took two of them and `_attr_name` would beat the
+    translation anyway. The `_attr_name` half is kept because it is the shape
+    somebody reaches for next, and a check that has nothing to find today is
+    exactly the one that has to still work tomorrow.
     """
     found = []
     for match in re.finditer(r"    def name\(self\)[^\n]*:\n((?:        .*\n)+)",
