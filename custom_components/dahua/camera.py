@@ -575,15 +575,19 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         vto_client = self._coordinator.get_vto_client()
         if vto_client is None:
             raise HomeAssistantError(
-                "{0} has no doorbell connection to cancel a call on. This service "
-                "works on a VTO doorbell, once its event connection is up.".format(
-                    self._coordinator.get_device_name()
-                )
+                translation_domain=DOMAIN,
+                translation_key="no_vto_connection_for_service",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()},
             )
         try:
             await vto_client.cancel_call()
         except CancelCallRefused as refused:
-            raise HomeAssistantError(str(refused)) from refused
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cancel_call_refused",
+                translation_placeholders={"reason": str(refused)},
+            ) from refused
 
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """

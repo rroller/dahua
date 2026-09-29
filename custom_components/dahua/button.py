@@ -101,10 +101,19 @@ class DahuaCancelCallButton(DahuaBaseEntity, ButtonEntity):
         vto_client = self._coordinator.get_vto_client()
         if vto_client is None:
             raise HomeAssistantError(
-                "{0} has no doorbell connection to cancel a call on. It comes back when the event connection reconnects.".format(
-                    self._coordinator.get_device_name()))
+                translation_domain=DOMAIN,
+                translation_key="no_vto_connection_for_button",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()},
+            )
         _LOGGER.debug("Cancelling call on %s", self._coordinator.get_address())
         try:
             await vto_client.cancel_call()
         except CancelCallRefused as refused:
-            raise HomeAssistantError(str(refused)) from refused
+            # The reason is whatever the doorbell said, so it stays as it came
+            # and only the sentence around it is translated.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cancel_call_refused",
+                translation_placeholders={"reason": str(refused)},
+            ) from refused

@@ -108,9 +108,17 @@ def _keys_passed_in(platform):
     where the choice is made, so they are as findable as a class attribute.
     """
     tree = ast.parse(io.open(PACKAGE / ("%s.py" % platform), encoding="utf-8").read())
+    # Only calls that build an entity. `HomeAssistantError` takes a translation_key
+    # too, and collecting those reported five exception keys as entity names with
+    # nothing behind them. Keyed on the callee being a class in this module rather
+    # than on a list of things to ignore, so it stays right as more is added.
+    entity_classes = {node.name for node in tree.body
+                      if isinstance(node, ast.ClassDef)}
     keys = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
+            continue
+        if getattr(node.func, "id", None) not in entity_classes:
             continue
         for keyword in node.keywords:
             if keyword.arg != "translation_key":

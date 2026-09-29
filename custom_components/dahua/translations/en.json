@@ -367,6 +367,20 @@
             }
         }
     },
+    "exceptions": {
+        "cancel_call_refused": {
+            "message": "The doorbell would not cancel the call: {reason}"
+        },
+        "ivs_rule_write_failed": {
+            "message": "Could not change that IVS rule: {reason}"
+        },
+        "no_vto_connection_for_button": {
+            "message": "{device} has no doorbell connection to cancel a call on. It comes back when the event connection reconnects."
+        },
+        "no_vto_connection_for_service": {
+            "message": "{device} has no doorbell connection to cancel a call on. This service works on a VTO doorbell, once its event connection is up."
+        }
+    },
     "issues": {
         "channel_not_added": {
             "title": "Channel {channel} on {address} was not added",
