@@ -1,0 +1,42 @@
+{
+    "entity": {
+        "binary_sensor": {
+            "authorized_vehicle": {
+                "default": "mdi:car-check"
+            }
+        },
+        "select": {
+            "day_night_mode": {
+                "default": "mdi:theme-light-dark"
+            }
+        },
+        "sensor": {
+            "license_plate": {
+                "default": "mdi:car-back"
+            },
+            "profile": {
+                "default": "mdi:theme-light-dark"
+            }
+        },
+        "switch": {
+            "alarm_output": {
+                "default": "mdi:alarm-light"
+            },
+            "disarming": {
+                "default": "mdi:alarm-check"
+            },
+            "event_notifications": {
+                "default": "mdi:bell-ring"
+            },
+            "motion_detection": {
+                "default": "mdi:motion-sensor"
+            },
+            "privacy_mode": {
+                "default": "mdi:shield-lock"
+            },
+            "smart_motion_detection": {
+                "default": "mdi:motion-sensor"
+            }
+        }
+    }
+}

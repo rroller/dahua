@@ -5,7 +5,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
-from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON, PRIVACY_MODE_ICON
+from .const import DOMAIN, SIREN_ICON
 from .entity import DahuaBaseEntity
 from .client import SIREN_TYPE
 
@@ -90,11 +90,6 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         return self._coordinator.get_serial_number() + "_motion_detection"
 
     @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return MOTION_DETECTION_ICON
-
-    @property
     def is_on(self):
         """
         Return true if the switch is on.
@@ -133,11 +128,6 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
         return self._coordinator.get_serial_number() + "_disarming"
 
     @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return DISARMING_ICON
-
-    @property
     def is_on(self):
         """
         Return true if the switch is on.
@@ -173,11 +163,6 @@ class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, Switc
         https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_event_notifications"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return BELL_ICON
 
     @property
     def is_on(self):
@@ -220,11 +205,6 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_smart_motion_detection"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return MOTION_DETECTION_ICON
 
     @property
     def is_on(self):
@@ -353,8 +333,6 @@ class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
 
     _attr_translation_key = "alarm_output"
 
-    _attr_icon = "mdi:alarm-light"
-
     def __init__(self, coordinator, entry, output: int):
         super().__init__(coordinator, entry)
         self._output = output
@@ -402,11 +380,6 @@ class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_privacy_mode"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return PRIVACY_MODE_ICON
 
     @property
     def is_on(self):
