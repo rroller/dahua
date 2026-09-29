@@ -917,7 +917,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 await self._async_probe_direct_deterrence()
                 if self._wanted_by(LIGHT, SWITCH) and not self.uses_rpc2_deterrence():
                     try:
-                        coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
+                        coaxial_channel = self.get_coaxial_status_channel()
                         await self.client.async_get_coaxial_control_io_status(coaxial_channel)
                         self._supports_coaxial_control = True
                     except PROBE_REFUSED as probe_error:
@@ -1211,12 +1211,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             #
             # The two conditions stay as they were: reads_coaxial_status explains
             # why the RPC2 branch keeps its own.
-            coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
             if self.uses_rpc2_deterrence() and self._wanted_by(LIGHT, SWITCH):
                 coros.append(asyncio.ensure_future(
-                    self._async_coaxial_status(coaxial_channel)
+                    self._async_coaxial_status(
+                        self.get_rpc2_coaxial_status_channel()
+                    )
                 ))
             elif self._supports_coaxial_control and self.reads_coaxial_status():
+                coaxial_channel = self.get_coaxial_status_channel()
                 coros.append(
                     asyncio.ensure_future(
                         self._async_coaxial_status(coaxial_channel)
@@ -2010,6 +2012,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             sources.append("Model fallback: starts with IP8M-2796E")
         if m.startswith("IPC-COLOR4M-TZ"):
             sources.append("Model fallback: starts with IPC-COLOR4M-TZ")
+        if m.startswith("PTZ3E10X-T180"):
+            sources.append("Model fallback: starts with PTZ3E10X-T180")
         if sources:
             return sources
         failures = list(getattr(self, "_security_light_detection_failures", []))
@@ -2062,6 +2066,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # alternating red/blue active-deterrence LEDs, despite the CGI
             # status field calling the output WhiteLight.
             or m.startswith("IPC-COLOR4M-TZ")
+            # Both sensor channels alias one shared warning-light circuit.
+            # Keep a CGI fallback when the RPC2 capability probe is unavailable.
+            or m.startswith("PTZ3E10X-T180")
         )
 
     def is_doorbell(self) -> bool:
@@ -2248,6 +2255,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         select.py, and that reads `Lighting_V2` rather than the coaxial status.
         """
         if self.is_amcrest_doorbell():
+            return False
+        # Both sensor channels on this camera address one chassis-wide warning
+        # circuit. Keep one entity on the primary channel rather than exposing
+        # two controls that race the same output.
+        if (
+            str(getattr(self, "model", "")).upper().startswith("PTZ3E10X-T180")
+            and getattr(self, "_channel", 0) != 0
+        ):
             return False
         if self.uses_recorder_deterrence():
             return self.supports_nvr_active_deterrence()
@@ -2661,6 +2676,38 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
 
+    def is_ptz3e10x_t180(self) -> bool:
+        """Return whether this is the verified dual-sensor T180 family."""
+        return self.model.upper().startswith("PTZ3E10X-T180")
+
+    def get_coaxial_status_channel(self) -> int:
+        """Return the CGI channel that reports coaxial deterrence state."""
+        if self.uses_recorder_deterrence():
+            return self._channel_number
+        if self.is_ptz3e10x_t180():
+            return 2
+        return 1
+
+    def get_rpc2_coaxial_status_channel(self) -> int:
+        """Return the RPC2 channel that reports direct deterrence state."""
+        if self.is_ptz3e10x_t180():
+            return 1
+        return 0
+
+    def get_security_light_control_channel(self) -> int:
+        """Return the CGI channel that controls the security light."""
+        if self.uses_recorder_deterrence():
+            return self._channel_number
+        if self.is_ptz3e10x_t180():
+            return 1
+        return self._channel
+
+    def get_security_light_off_io(self) -> int:
+        """Return the device-specific IO value that disables the light."""
+        if not self.uses_recorder_deterrence() and self.is_ptz3e10x_t180():
+            return 0
+        return 2
+
     def is_nvr_channel(self) -> bool:
         """Return whether this entry represents a camera channel on an NVR.
 
@@ -2789,7 +2836,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         try:
             if self.uses_rpc2_deterrence():
-                return await self.client.async_get_coaxial_control_io_status_rpc2()
+                return await self.client.async_get_coaxial_control_io_status_rpc2(
+                    channel
+                )
             return await self.client.async_get_coaxial_control_io_status(channel)
         except Rpc2MethodRefused as refused:
             if rpc2_refusal_is_a_stale_login(refused):
