@@ -103,6 +103,8 @@ async def test_initial_nvr_discovery_uses_the_per_channel_remote_read(hass):
     c._channel = channel
     c._channel_number = channel + 1
     c.is_nvr_channel = lambda: True
+    # Polling the IVS switches reads the table again; this test isolates discovery.
+    c._wanted_by = lambda *_: False
 
     await c._async_update_data()
 
