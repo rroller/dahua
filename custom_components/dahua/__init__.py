@@ -293,6 +293,21 @@ CONNECTION_KEYS = (
 )
 
 
+def subentries_share_one_connection(configs: list) -> bool:
+    """Whether these channel configs all describe the same device.
+
+    A merged recorder's subentries all carry the connection they were added
+    with. The old address-only migration could merge two devices that share an
+    address on different ports into one entry, though, and that entry's
+    subentries disagree about the connection. Only one can be enforced, and
+    enforcing the entry's would point the other device's channels and entities
+    at the wrong box, so an entry like that keeps each channel's own.
+    """
+    seen = {tuple((key, config.get(key)) for key in CONNECTION_KEYS)
+            for config in configs}
+    return len(seen) <= 1
+
+
 def channel_configs(entry: DahuaConfigEntry) -> list:
     """(subentry_id, config) for every channel this entry owns.
 
@@ -316,10 +331,19 @@ def channel_configs(entry: DahuaConfigEntry) -> list:
     and nothing to stop it at unload.
     """
     if entry.subentries:
-        connection = {key: entry.data[key] for key in CONNECTION_KEYS
-                      if key in entry.data}
-        pairs = [(subentry_id, {**dict(subentry.data), **connection})
-                 for subentry_id, subentry in entry.subentries.items()]
+        subentries = [(subentry_id, dict(subentry.data))
+                      for subentry_id, subentry in entry.subentries.items()]
+        # The entry's connection is only authoritative when its channels agree
+        # about what they are connected to. An entry the old address-only
+        # migration built from two devices on one address disagrees with itself,
+        # and one connection cannot describe both.
+        if subentries_share_one_connection([config for _, config in subentries]):
+            connection = {key: entry.data[key] for key in CONNECTION_KEYS
+                          if key in entry.data}
+            pairs = [(subentry_id, {**config, **connection})
+                     for subentry_id, config in subentries]
+        else:
+            pairs = subentries
     else:
         pairs = [(None, dict(entry.data))]
 

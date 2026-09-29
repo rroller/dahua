@@ -145,6 +145,26 @@ def test_a_connection_field_the_entry_does_not_carry_keeps_the_subentrys():
     assert config["address"] == "1.2.3.4"
 
 
+def test_a_mixed_device_entry_keeps_each_channels_own_connection():
+    """The old address-only migration could merge two devices that share an
+    address on different ports into one entry. Enforcing the entry's connection
+    there would point the second device's channel and entities at the first
+    recorder -- and the merge cannot repair it, because the entry is a group of
+    one and is left alone."""
+    entry = _entry(
+        data={"address": "10.0.0.1", "port": "80", "password": "first"},
+        subentries={"s0": _sub(0), "s1": _sub(1)})
+    entry.subentries["s0"].data.update({"port": "80", "password": "first"})
+    entry.subentries["s1"].data.update({"port": "81", "password": "second"})
+
+    configs = {c[0]: c[1] for c in channel_configs(entry)}
+
+    assert configs["s0"]["port"] == "80"
+    assert configs["s0"]["password"] == "first"
+    assert configs["s1"]["port"] == "81"
+    assert configs["s1"]["password"] == "second"
+
+
 # --- per channel event lists ------------------------------------------------
 
 def test_each_channel_keeps_its_own_event_list():
