@@ -2286,14 +2286,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return remove
 
     def get_configured_area(self):
-        """The area_id this entry was given, or None.
+        """The area_id this channel was given, or None.
 
         Options win over data, like every other setting that can be changed
         after setup. Chosen while adding a recorder so that ten channels do not
         all arrive unfiled.
+
+        `entry.data` is only this channel's data when the entry has no subentry
+        for it, which is a single camera. On a merged recorder `entry.data` is the
+        *primary* channel's config, so using it as the fallback filed every
+        channel the user left blank into the primary's area. That is exactly what
+        `_channel_subentries` pops the key to prevent, and the two cancelled out:
+        measured, a channel whose area had been popped still reported the
+        primary's.
+
+        The entry's *options* are left as a fallback on purpose. That area is an
+        entry-wide answer the user gave in the options flow, so applying it to a
+        channel that has not chosen one is coherent. `entry.data`'s area is the
+        primary channel's own answer during the add flow, which is nobody else's.
         """
-        return self.channel_option(
-            CONF_AREA, self.config_entry.data.get(CONF_AREA)) or None
+        own_data_is_this_channels = not self._channel_config
+        fallback = (self.config_entry.data.get(CONF_AREA)
+                    if own_data_is_this_channels else None)
+        return self.channel_option(CONF_AREA, fallback) or None
 
     def configured_area_name(self):
         """That area's *name*, which is what device_info has to be given.
