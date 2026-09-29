@@ -505,6 +505,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # they fail on the attribute rather than on anything they are testing.
     _channel_config: dict = {}
 
+    # Same reason, and None rather than {} because a dict here would be one dict
+    # shared by every coordinator in the process: eleven channels of a recorder
+    # would pool their counts and the field would name no channel in particular.
+    _events_without_listener: dict = None
+
     """Class to manage fetching data from the API."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, events: list, address: str, port: int, rtsp_port: int,
@@ -1424,6 +1429,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             listeners = self._dahua_event_listeners.get(event_key)
             if not listeners:
+                # The event arrived, was decided to belong to this channel, and
+                # updates nothing. Worth counting rather than dropping in silence:
+                # the timestamp a binary sensor reads is written below this line, so
+                # a sensor that exists while its key is absent here is a sensor that
+                # can never move, and from the outside that is indistinguishable
+                # from the device having stopped sending. It is the reading #825 has
+                # been unable to get: the event reaches the bus either way.
+                counts = self._events_without_listener
+                if counts is None:
+                    counts = self._events_without_listener = {}
+                counts[event_key] = counts.get(event_key, 0) + 1
                 continue
 
             if action == "Start":
