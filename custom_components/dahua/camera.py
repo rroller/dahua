@@ -76,7 +76,11 @@ PARALLEL_UPDATES = 1
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
-    for coordinator in entry_coordinators(config_entry).values():
+    # Listed once: the capability checks further down need every channel, not
+    # whichever one the loop below happened to leave behind.
+    coordinators = list(entry_coordinators(config_entry).values())
+
+    for coordinator in coordinators:
         if is_sdt4e425(coordinator.get_model()):
             # This physical camera exposes two sensors. Preserve RRoller's native
             # Main/Sub/Sub_2 creation for each media channel from one config entry.
@@ -287,7 +291,15 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     )
 
     # Exposes a service to enable setting the cameras infrared light to Auto, Manual, and Off along with the brightness
-    if coordinator.supports_infrared_light():
+    #
+    # `any`, not the loop variable. Entity services are registered once for the
+    # whole platform, so a recorder asking the last channel it happened to iterate
+    # decided this for every channel: a recorder whose channel 0 has an
+    # illuminator and whose last channel does not lost the service for all of
+    # them. And an entry with no channels -- what entry_coordinators returns for a
+    # setup that failed or one being torn down -- left `coordinator` unbound and
+    # raised UnboundLocalError here, taking the platform's other services with it.
+    if any(c.supports_infrared_light() for c in coordinators):
         # "async_set_infrared_mode" is the method called upon calling the service. Defined below in DahuaCamera class
         platform.async_register_entity_service(
             SERVICE_SET_INFRARED_MODE,
@@ -300,7 +312,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
 
     # The light entity can only say on or off. Off is not the same as automatic,
     # and without this there is no way back to the camera's own behaviour.
-    if coordinator.supports_illuminator():
+    if any(c.supports_illuminator() for c in coordinators):
         platform.async_register_entity_service(
             SERVICE_SET_ILLUMINATOR_MODE,
             {

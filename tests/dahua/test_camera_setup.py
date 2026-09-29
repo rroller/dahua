@@ -42,12 +42,21 @@ class _Client:
 
 
 class _Coordinator:
-    def __init__(self, model="IPC-HDW1234", max_streams=2, channel=0, number=1):
+    def __init__(self, model="IPC-HDW1234", max_streams=2, channel=0, number=1,
+                 infrared=False, illuminator=False):
         self.client = _Client()
         self._model = model
         self._max_streams = max_streams
         self._channel = channel
         self._number = number
+        self._infrared = infrared
+        self._illuminator = illuminator
+
+    def supports_infrared_light(self):
+        return self._infrared
+
+    def supports_illuminator(self):
+        return self._illuminator
 
     def get_model(self):
         return self._model
@@ -217,8 +226,10 @@ async def test_a_recorders_channels_do_not_register_the_services_again(setup):
 
 async def test_an_entry_with_nothing_set_up_still_registers_its_services(setup):
     """`entry_coordinators` returns an empty mapping for an entry whose setup failed or
-    which is being torn down. That must not stop the platform being set up, and must
-    not add entities for channels that are not there."""
+    which is being torn down -- its docstring says so, and this caller did not handle
+    it. The capability checks below the loop read the loop variable, so an empty
+    mapping left it unbound and this raised UnboundLocalError, taking every other
+    service on the platform with it."""
     entry = _Entry({})
     added = []
 
@@ -228,3 +239,51 @@ async def test_an_entry_with_nothing_set_up_still_registers_its_services(setup):
     assert added == []
     assert setup.built == []
     assert setup.platform.registered, "the platform lost its services"
+
+
+# --- the capability services, which are per platform but were asked per channel ---
+#
+# Entity services are registered once for the whole platform. The two conditional ones
+# were gated on `coordinator`, the variable left behind by the loop above, so on a
+# recorder the last channel iterated decided for all of them.
+
+async def test_the_infrared_service_is_registered_when_the_camera_has_one(setup):
+    await setup(_Coordinator(infrared=True))
+
+    assert camera_module.SERVICE_SET_INFRARED_MODE in setup.platform.registered
+
+
+async def test_the_infrared_service_is_absent_when_nothing_has_one(setup):
+    """The gate has to still be a gate. Registering it unconditionally would offer a
+    service for hardware that is not there."""
+    await setup(_Coordinator(infrared=False))
+
+    assert camera_module.SERVICE_SET_INFRARED_MODE not in setup.platform.registered
+
+
+async def test_one_channel_with_an_illuminator_is_enough_for_the_recorder(setup):
+    """The bug. Channel 0 has the illuminator and the last channel does not, and the
+    service is registered once for the platform -- so asking only the channel the loop
+    finished on took `set_illuminator_mode` away from the channel that could use it."""
+    await setup(_Coordinator(channel=0, illuminator=True),
+                _Coordinator(channel=1, illuminator=False),
+                _Coordinator(channel=2, illuminator=False))
+
+    assert camera_module.SERVICE_SET_ILLUMINATOR_MODE in setup.platform.registered, (
+        "the channel with the illuminator cannot be told to go back to automatic")
+
+
+async def test_the_capability_is_not_lost_when_the_last_channel_lacks_it(setup):
+    """The same fault from the other side, and the ordering that used to matter: the
+    supporting channel last would have worked by luck, so this puts it first."""
+    await setup(_Coordinator(channel=0, infrared=True),
+                _Coordinator(channel=1, infrared=False))
+
+    assert camera_module.SERVICE_SET_INFRARED_MODE in setup.platform.registered
+
+
+async def test_a_recorder_where_no_channel_has_one_still_does_not_get_it(setup):
+    await setup(*[_Coordinator(channel=i) for i in range(4)])
+
+    assert camera_module.SERVICE_SET_INFRARED_MODE not in setup.platform.registered
+    assert camera_module.SERVICE_SET_ILLUMINATOR_MODE not in setup.platform.registered
