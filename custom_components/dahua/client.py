@@ -1479,11 +1479,18 @@ class DahuaClient:
                         # table" and stopped asking RPC2 for it for the life of
                         # the process. Another caller may already have replaced
                         # the login, so only tear down the one we were holding.
-                        if holder.task is login_task:
+                        # Everything here goes through getattr because tests
+                        # hand this method a stand-in holder.
+                        if getattr(holder, "task", None) is login_task:
                             holder.task = None
-                            holder.client._session_id = None
-                            holder.client._ptz_objects.clear()
-                            keepalive = holder.keepalive
+                            rpc2_holder_client = getattr(holder, "client", None)
+                            if rpc2_holder_client is not None:
+                                rpc2_holder_client._session_id = None
+                                ptz_objects = getattr(
+                                    rpc2_holder_client, "_ptz_objects", None)
+                                if ptz_objects is not None:
+                                    ptz_objects.clear()
+                            keepalive = getattr(holder, "keepalive", None)
                             holder.keepalive = None
                             if keepalive is not None and not keepalive.done():
                                 keepalive.cancel()
