@@ -1,5 +1,6 @@
 """Tests for host-shared camera uptime and reboot generation detection."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -336,3 +337,32 @@ async def test_it_stops_after_two_attempts(monkeypatch):
         await client.async_get_uptime_last()
 
     assert len(rpc2.calls) == 2, "retried more than once"
+
+
+# --- and the one exception that is not the device's fault --------------------
+
+async def test_a_cancelled_uptime_read_is_not_treated_as_an_unsupported_device():
+    """Cancellation is how Home Assistant stops a coordinator, not something the
+    device did.
+
+    Everything else in `_async_get_host_uptime_generation` is swallowed on purpose,
+    because uptime is an optional enhancement and a device that cannot answer must
+    not fail the poll. A CancelledError caught by that same handler would be
+    swallowed too, so a coordinator being shut down would carry on into the rest of
+    its cycle and asyncio would warn that the cancellation was ignored.
+
+    The read is deliberately not cached either. `last_read` exists to stop eleven
+    channels of a recorder repeating a request the device just refused, and a
+    cancelled read is not a refusal: the next poll should try it.
+    """
+    coordinator = _coordinator("10.0.0.1", 500)
+    coordinator.client.async_get_uptime_last = AsyncMock(
+        side_effect=asyncio.CancelledError()
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await dahua_module._async_get_host_uptime_generation(coordinator)
+
+    state = dahua_module._HOST_UPTIME_STATE["10.0.0.1"]
+    assert state["last_read"] == 0.0, (
+        "a cancelled read was cached as a failed one, so the next poll will skip it")
