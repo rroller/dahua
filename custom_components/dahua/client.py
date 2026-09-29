@@ -1807,12 +1807,31 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=LightGlobal[0].Enable"
         return await self.get(url)
 
-    async def async_get_floodlightmode(self) -> dict:
-        """ async_get_config_floodlightmode gets floodlight mode """
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=FloodLightMode.Mode"
+    async def async_get_floodlightmode(self) -> int:
+        """ async_get_floodlightmode gets the floodlight mode as its number.
+
+        1 motion activation, 2 manual, 3 schedule, 4 PIR. The endpoint answers
+        a config table, so the mode is pulled out of whichever single key this
+        firmware used; a malformed or refused answer reports 2 (manual), which
+        is the mode the light entity itself writes while it is on.
+        """
         try:
-            return await self.async_get_config("FloodLightMode.Mode")
-        except aiohttp.ClientResponseError as e:
+            config = await self.async_get_config("FloodLightMode.Mode")
+        except aiohttp.ClientResponseError:
+            return 2
+        if isinstance(config, dict):
+            if "FloodLightMode.Mode" in config:
+                config = config["FloodLightMode.Mode"]
+            elif len(config) == 1:
+                config = next(iter(config.values()))
+            else:
+                for key, value in config.items():
+                    if key.endswith(".Mode"):
+                        config = value
+                        break
+        try:
+            return int(str(config).strip())
+        except (TypeError, ValueError):
             return 2
 
     async def async_set_floodlightmode(self, mode: int) -> dict:
