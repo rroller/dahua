@@ -82,7 +82,7 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def name(self):
         """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + "Motion Detection"
+        return "Motion Detection"
 
     @property
     def unique_id(self):
@@ -127,7 +127,7 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def name(self):
         """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + "Disarming"
+        return "Disarming"
 
     @property
     def unique_id(self):
@@ -172,7 +172,7 @@ class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, Switc
     @property
     def name(self):
         """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + "Event Notifications"
+        return "Event Notifications"
 
     @property
     def unique_id(self):
@@ -222,7 +222,7 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def name(self):
         """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + "Smart Motion Detection"
+        return "Smart Motion Detection"
 
     @property
     def unique_id(self):
@@ -280,7 +280,7 @@ class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def name(self):
         """Return the camera and rule names."""
-        return self._coordinator.get_device_name() + " " + self._rule_name
+        return self._rule_name
 
     @property
     def unique_id(self):
@@ -336,7 +336,7 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def name(self):
         """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + self._name
+        return self._name
 
     @property
     def unique_id(self):
@@ -382,7 +382,7 @@ class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def name(self):
         """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " Alarm Output"
+        return "Alarm Output"
 
     @property
     def unique_id(self):
@@ -411,7 +411,7 @@ class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def name(self):
         """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " Privacy Mode"
+        return "Privacy Mode"
 
     @property
     def unique_id(self):

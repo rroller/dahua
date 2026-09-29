@@ -372,8 +372,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         )
         self._coordinator = coordinator
         self._name = (
-            f"{config_entry.title} {display_name}"
-            if display_name else f"{config_entry.title} {stream_name}"
+            display_name if display_name else stream_name
         )
         suffix = unique_suffix or stream_name
         self._unique_id = coordinator.get_serial_number() + "_" + suffix

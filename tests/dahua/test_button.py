@@ -169,8 +169,11 @@ def test_the_two_buttons_do_not_collide():
 
 
 def test_the_names():
-    assert _button(DahuaRebootButton).name == "Front Door Reboot"
-    assert _button(DahuaOpenDoorButton).name == "Front Door Open Door"
+    # `has_entity_name` is True, so an entity states only its own half and
+    # Home Assistant prefixes the device. The rendered name is unchanged;
+    # what this asserts is that the entity is no longer composing it.
+    assert _button(DahuaRebootButton).name == "Reboot"
+    assert _button(DahuaOpenDoorButton).name == "Open Door"
 
 
 def test_reboot_is_a_restart_button_under_config():

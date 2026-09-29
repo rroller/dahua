@@ -60,7 +60,7 @@ class DahuaDoorbellEvent(DahuaEventDrivenEntity, EventEntity):
 
     @property
     def name(self):
-        return self._coordinator.get_device_name() + " Doorbell"
+        return "Doorbell"
 
     @property
     def unique_id(self):

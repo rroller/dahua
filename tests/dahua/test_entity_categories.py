@@ -113,10 +113,17 @@ def test_the_sensors_do_not_collide():
     assert all(i.startswith("SERIAL1_4_") for i in ids)
 
 
-def test_the_sensors_are_named_after_the_device():
+def test_the_sensors_do_not_repeat_the_device_name():
+    """These asserted the name started with "Garage ", which was right while the
+    entity composed the whole thing itself. `has_entity_name` moved that job to
+    Home Assistant, which prefixes the device, so an entity still carrying the
+    prefix would render it twice -- and a doubled string raises nothing, which is
+    why this is asserted rather than assumed."""
     c = _coordinator()
     for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor, DahuaProfileSensor):
-        assert _sensor(cls, c).name.startswith("Garage "), cls.__name__
+        name = _sensor(cls, c).name
+        assert name, cls.__name__
+        assert "Garage" not in name, cls.__name__
 
 
 # --- the profile sensor is gated on the capability -------------------------------
