@@ -26,11 +26,17 @@ from custom_components.dahua import migrate
 
 
 class _Entry:
-    def __init__(self, entry_id, address, channel, title=None, port=None):
+    def __init__(self, entry_id, address, channel, title=None, port=None,
+                 data=None, options=None):
         self.entry_id = entry_id
         self.data = {"address": address, "channel": channel}
+        self.data.update(data or {})
         if port is not None:
             self.data["port"] = port
+        # A real ConfigEntry always has both. This fake had only `data`, which is
+        # exactly why nothing here noticed that the migration read only `data`:
+        # the thing it dropped was not modelled.
+        self.options = dict(options or {})
         self.title = title or entry_id
         self.subentries = {}
 
@@ -506,3 +512,119 @@ async def test_a_card_raised_for_a_mixed_case_hostname_is_withdrawn(world):
     await migrate.async_merge_channel_entries(world.hass)
 
     assert world.deleted_issues == ["siblings_remain_NVR.local"]
+
+
+# --- what each channel is configured with, not what it was added with -------
+#
+# A subentry's data is where a merged recorder keeps one channel's own answers,
+# and `channel_option` reads it *before* the entry's options. Copying only
+# `entry.data` therefore did more than fail to carry a later change: it made the
+# add-time value shadow it permanently, for every key stored in both. A channel
+# switched from VideoMotion to SmartMotionHuman in Configure went back to
+# VideoMotion at migration, and the entry's options could no longer correct it.
+#
+# Reported by alpha520098 on #825, who identified the key set as well.
+
+def _recorder(monkeypatch, world, *, e0_options=None, e1_options=None,
+              e0_data=None, e1_data=None):
+    """Rebuild the two channels of the recorder with data and options of my own."""
+    world.entries[0] = _Entry("e0", "192.168.0.213", 0, "Channel 0",
+                              data=e0_data, options=e0_options)
+    world.entries[1] = _Entry("e1", "192.168.0.213", "1", "Channel 1",
+                              data=e1_data, options=e1_options)
+    world.hass.config_entries._entries = list(world.entries)
+    return world
+
+
+def _subentries(world):
+    """channel -> the subentry data the merge built for it."""
+    survivor = world.hass.config_entries._entries[0]
+    return {str(s.data.get("channel")): s.data
+            for s in survivor.subentries.values()}
+
+
+async def test_a_changed_event_selection_survives_the_merge(monkeypatch, world):
+    """The reported case. The user picked SmartMotionHuman in Configure, which is
+    stored in options; the list in data is whatever the camera was added with.
+    """
+    _recorder(monkeypatch, world,
+              e1_data={"events": ["VideoMotion"]},
+              e1_options={"events": ["SmartMotionHuman"]})
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert _subentries(world)["1"]["events"] == ["SmartMotionHuman"], (
+        "the channel went back to the events it was added with")
+
+
+async def test_an_empty_event_selection_survives_the_merge(monkeypatch, world):
+    """Choosing nothing is a choice, and it is the one a falsy check loses. The
+    channel wanted no events and would have been given nine back.
+    """
+    _recorder(monkeypatch, world,
+              e1_data={"events": ["VideoMotion", "AlarmLocal"]},
+              e1_options={"events": []})
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert _subentries(world)["1"]["events"] == []
+
+
+async def test_the_surviving_channel_keeps_its_own_settings_too(monkeypatch, world):
+    """The survivor gets a subentry like every other channel, so its own options
+    have to be carried into it. Before this, its subentry shadowed them with its
+    add-time data exactly as the others did, which is easy to miss because the
+    survivor is also the entry whose options are still there.
+    """
+    _recorder(monkeypatch, world,
+              e0_data={"events": ["VideoMotion"]},
+              e0_options={"events": ["FaceDetection"]})
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert _subentries(world)["0"]["events"] == ["FaceDetection"]
+
+
+async def test_a_per_channel_toggle_survives(monkeypatch, world):
+    """Not only events. `manual_siren` exists because one camera on a recorder has
+    the hardware and the others do not, so losing it is losing the siren.
+    """
+    _recorder(monkeypatch, world,
+              e1_options={"manual_siren": True, "authorized_plates": "AB12CDE"})
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    carried = _subentries(world)["1"]
+    assert carried["manual_siren"] is True
+    assert carried["authorized_plates"] == "AB12CDE"
+
+
+async def test_a_host_wide_option_is_not_frozen_onto_a_channel(monkeypatch, world):
+    """The other half of the fix. Copying every option would put host settings in
+    each subentry, where `channel_option` reads them before the entry's, so
+    changing the host's poll interval afterwards would leave every channel on the
+    value it had at migration.
+    """
+    _recorder(monkeypatch, world,
+              e1_options={"scan_interval": 45, "events": ["VideoMotion"]})
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    carried = _subentries(world)["1"]
+    assert "scan_interval" not in carried, (
+        "a host-wide option was pinned onto the channel")
+    assert carried["events"] == ["VideoMotion"]
+
+
+async def test_an_entry_with_no_options_is_unchanged(monkeypatch, world):
+    """The common case, and the one that must not be disturbed: a recorder nobody
+    has reconfigured migrates exactly as it did before.
+    """
+    _recorder(monkeypatch, world,
+              e1_data={"events": ["VideoMotion"], "name": "Channel 1"})
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    carried = _subentries(world)["1"]
+    assert carried["events"] == ["VideoMotion"]
+    assert carried["name"] == "Channel 1"
