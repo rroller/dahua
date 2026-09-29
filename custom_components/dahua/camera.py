@@ -529,6 +529,11 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             await self._coordinator.client.async_set_night_switch_mode(channel, mode)
         else:
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
+        # The profile decides which Lighting row every light command writes to,
+        # and the poll is what reads it back. Without this the next light
+        # command in the same poll window is written to the row the camera is
+        # not rendering from, where the device accepts and ignores it.
+        await self._coordinator.async_refresh()
 
     async def async_adjustfocus(self, focus: str, zoom: str):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set zoom and focus """
@@ -576,6 +581,17 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
     async def async_vto_open_door(self, door_id: int):
         """ Handles the service call from SERVICE_VTO_OPEN_DOOR """
+        # The service is offered on every camera entity, and the Open Door
+        # button is only created on a doorbell; aimed at anything else the CGI
+        # endpoint is not there and the user gets a raw HTTP error. The sibling
+        # cancel-call service says which device it is for, so this one does too.
+        if not self._coordinator.is_doorbell():
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="open_door_needs_a_doorbell",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()},
+            )
         await self._coordinator.client.async_access_control_open_door(door_id)
 
     async def async_vto_cancel_call(self):
