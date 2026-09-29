@@ -57,12 +57,18 @@ _UNSET = object()
 
 
 class _Coordinator:
-    def __init__(self, *, data=_UNSET, initialized=True):
+    def __init__(self, *, data=_UNSET, initialized=True, channel=0,
+                 events=("VideoMotion",)):
         self.client = _Client()
         # A sentinel, so a test can express "data is None" - the state a
         # coordinator is in before its first successful refresh.
         self.data = {"table.Foo": "1"} if data is _UNSET else data
         self.initialized = initialized
+        # Both parameterised so a test can build two channels that differ.
+        # They were fixed, which is why nothing could tell the entry's
+        # fallback event list from the one a channel is actually using.
+        self._channel = channel
+        self._events = list(events)
         self.last_update_success = True
         self.last_update_success_time = None
         self.last_exception = None
@@ -103,7 +109,7 @@ class _Coordinator:
         return SERIAL
 
     def get_channel(self):
-        return 0
+        return self._channel
 
     def get_channel_number(self):
         return 1
@@ -124,7 +130,7 @@ class _Coordinator:
         return "NearLight"
 
     def get_event_list(self):
-        return ["VideoMotion"]
+        return list(self._events)
 
     def is_doorbell(self):
         return False
@@ -281,8 +287,38 @@ async def test_effective_options_are_reported_not_just_stored_ones(hass):
 
     result = await async_get_config_entry_diagnostics(hass, entry)
 
-    assert result["entry"]["resolved_events"] == ["VideoMotion"]
+    # "entry_level_events", not "resolved": since #827 an entry owns many
+    # channels and each can carry its own list, so this is the fallback rather
+    # than what any channel is using. The per-channel answer is asserted
+    # against channels[].events.configured below.
+    assert result["entry"]["entry_level_events"] == ["VideoMotion"]
     assert result["entry"]["resolved_scan_interval_seconds"] == 120
+
+
+async def test_a_channels_own_event_list_is_reported_next_to_the_entrys(hass):
+    """The two can differ, and the old name did not admit it.
+
+    `resolved_events` read as "the events in force". Since #827 an entry owns many
+    channels and each can carry its own list, so that value is the fallback a
+    channel uses when it has none of its own. What a channel actually subscribes to
+    is `channels[].events.configured`, which is the field #728 has been asked for
+    three times. Reporting the first as the second is the kind of mislabel that gets
+    believed during triage.
+    """
+    entry = _entry(hass)   # the entry's own option is ["VideoMotion"]
+    entry.runtime_data = {
+        0: _Coordinator(channel=0, events=["VideoMotion"]),
+        5: _Coordinator(channel=5, events=["CrossLineDetection", "SmartMotionHuman"]),
+    }
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["entry"]["entry_level_events"] == ["VideoMotion"]
+    per_channel = {block["channel"]: block["events"]["configured"]
+                   for block in result["channels"]}
+    assert per_channel[0] == ["VideoMotion"]
+    assert per_channel[5] == ["CrossLineDetection", "SmartMotionHuman"], \
+        "a channel's own list is not the entry's"
 
 
 async def test_every_capability_flag_is_represented(hass):
