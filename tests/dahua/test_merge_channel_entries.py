@@ -27,7 +27,7 @@ from custom_components.dahua import migrate
 
 class _Entry:
     def __init__(self, entry_id, address, channel, title=None, port=None,
-                 data=None, options=None):
+                 data=None, options=None, disabled_by=None):
         self.entry_id = entry_id
         self.data = {"address": address, "channel": channel}
         self.data.update(data or {})
@@ -37,6 +37,9 @@ class _Entry:
         # exactly why nothing here noticed that the migration read only `data`:
         # the thing it dropped was not modelled.
         self.options = dict(options or {})
+        # Also always present on a real ConfigEntry, and also not modelled here
+        # before: a disabled entry was merged like any other.
+        self.disabled_by = disabled_by
         self.title = title or entry_id
         self.subentries = {}
 
@@ -628,3 +631,118 @@ async def test_an_entry_with_no_options_is_unchanged(monkeypatch, world):
     carried = _subentries(world)["1"]
     assert carried["events"] == ["VideoMotion"]
     assert carried["name"] == "Channel 1"
+
+
+# --- an entry somebody switched off stays switched off ----------------------
+#
+# Disabling an entry is how a channel whose camera has gone gets parked without
+# throwing its history away. Nothing in the merge looked at `disabled_by`, and
+# `async_entries` returns disabled entries like any other, so both of these
+# followed:
+#
+#   * a disabled channel was folded into the enabled survivor and started
+#     polling again, which is the opposite of what the user asked for;
+#   * the survivor is `ordered[0]`, the lowest channel, so a disabled channel 0
+#     *became* the survivor. Every other channel's entities move onto an entry
+#     Home Assistant never sets up, and the entries they came from are then
+#     removed. The whole recorder goes dark on upgrade.
+#
+# Home Assistant does not stop either: async_update_entity_platform checks that
+# the entity is unloaded and that a config entry was named, and nothing about
+# whether the entry it is moving to is disabled.
+
+async def test_a_disabled_channel_is_left_alone(world):
+    """A host that really does merge, with one disabled channel among the others.
+
+    It keeps its own entry, its entities and its history. Folding it in would move
+    its entities onto the enabled survivor, so a camera the user switched off would
+    start polling again with nothing said about it.
+    """
+    world.entries[1] = _Entry("e1", "192.168.0.213", "1", "Channel 1",
+                              disabled_by="user")
+    world.entries.append(_Entry("e2", "192.168.0.213", "2", "Channel 2"))
+    world.entities._owned["e2"] = [SimpleNamespace(entity_id="sensor.d")]
+    world.devices._owned["e2"] = [SimpleNamespace(id="d2")]
+    world.hass.config_entries._entries = list(world.entries)
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    # The merge did happen, so this is not passing on an empty run.
+    assert ("remove", "e2") in world.log, world.log
+    assert ("remove", "e1") not in world.log, "a disabled entry was removed"
+    moved = [step for step in world.log
+             if step[0] == "entity" and step[1] in ("sensor.b", "sensor.c")]
+    assert not moved, (
+        "a disabled channel's entities were moved off its entry: %s" % moved)
+
+
+async def test_a_disabled_lowest_channel_never_becomes_the_survivor(world):
+    """The one that takes a recorder down. Channel 0 disabled, channels 1 and 2
+    enabled: nothing may be moved onto e0, because Home Assistant does not set up
+    a disabled entry and the entries the entities came from are removed afterwards.
+    """
+    world.entries[0] = _Entry("e0", "192.168.0.213", 0, "Channel 0",
+                              disabled_by="user")
+    world.entries.append(_Entry("e2", "192.168.0.213", "2", "Channel 2"))
+    world.entities._owned["e2"] = [SimpleNamespace(entity_id="sensor.d")]
+    world.devices._owned["e2"] = [SimpleNamespace(id="d2")]
+    world.hass.config_entries._entries = list(world.entries)
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    onto_disabled = [step for step in world.log
+                     if step[0] in ("entity", "device") and step[2] == "e0"]
+    assert not onto_disabled, (
+        "entities were moved onto a disabled entry, which Home Assistant never "
+        "sets up: %s" % onto_disabled)
+    # And the merge still happened, onto an entry that is actually enabled.
+    survivor = next(e for e in world.hass.config_entries._entries
+                    if e.entry_id == "e1")
+    assert survivor.disabled_by is None
+    assert survivor.subentries, "nothing merged at all"
+
+
+async def test_the_enabled_channels_still_merge_around_it(world):
+    """The fix must not stop the merge happening. Channel 0 disabled, 1 and 2
+    enabled, so those two become one entry and the disabled one stays beside them.
+    """
+    world.entries[0] = _Entry("e0", "192.168.0.213", 0, "Channel 0",
+                              disabled_by="user")
+    world.entries.append(_Entry("e2", "192.168.0.213", "2", "Channel 2"))
+    world.entities._owned["e2"] = [SimpleNamespace(entity_id="sensor.d")]
+    world.devices._owned["e2"] = [SimpleNamespace(id="d2")]
+    world.hass.config_entries._entries = list(world.entries)
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    survivor = next(e for e in world.hass.config_entries._entries
+                    if e.entry_id == "e1")
+    assert survivor.subentries, "the enabled channels did not merge"
+    assert ("remove", "e2") in world.log
+
+
+async def test_a_host_whose_only_other_entry_is_disabled_does_nothing(world):
+    """One enabled channel plus one disabled is not a recorder worth merging, and
+    it must not write a backup or a warning on every startup for ever.
+    """
+    world.entries[1] = _Entry("e1", "192.168.0.213", "1", "Channel 1",
+                              disabled_by="user")
+    world.hass.config_entries._entries = list(world.entries)
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert world.log == [], world.log
+
+
+async def test_a_host_with_every_entry_disabled_does_nothing(world):
+    """Nothing to merge and nothing that could be set up afterwards."""
+    for index, entry in enumerate(world.entries):
+        if entry.entry_id in ("e0", "e1"):
+            world.entries[index] = _Entry(
+                entry.entry_id, "192.168.0.213", entry.data["channel"],
+                entry.title, disabled_by="user")
+    world.hass.config_entries._entries = list(world.entries)
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert world.log == [], world.log
