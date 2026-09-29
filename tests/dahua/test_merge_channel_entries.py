@@ -306,3 +306,131 @@ async def test_no_host_is_touched_if_the_backup_cannot_be_written(world,
     await migrate.async_merge_channel_entries(world.hass)
 
     assert world.log == []
+
+
+# --- the second count check, and the removal guard --------------------------
+#
+# There are two count checks, and the tests above only reach the first.
+#
+#   line 230  before any device is touched -- the one that PREVENTS the loss
+#   line 255  after the device moves -- belt and braces, which can only REPORT it
+#
+# A failed entity move trips the first and returns, so everything after it was
+# unreached: the second check, and the per-entry guard on removal. Those are the last
+# things standing between a partly-done merge and a removal that takes entities with it,
+# and what they exist for is documented in the source as measured fact -- 232 entities
+# sent to deleted_entities on a real install.
+#
+# The fakes deliberately do not model Home Assistant's delete-on-move cascade, because
+# modelling it would only test the model. These two simulate the *result* of it, which is
+# the only way to reach code whose precondition the earlier check normally prevents.
+
+
+async def test_an_entity_lost_while_devices_move_stops_the_removal(world,
+                                                                   monkeypatch):
+    """The second check. Every entity moved, so the first check passed and the device
+    moves went ahead; then an entity is gone. Nothing may be removed after that, because
+    the old entries are the only place those entities can still be."""
+    real = world.devices.async_update_device
+
+    def lose_an_entity(device_id, **kwargs):
+        result = real(device_id, **kwargs)
+        rows = world.entities._owned.get("e0")
+        if rows:
+            rows.pop()          # what the cascade looks like from outside
+        return result
+
+    monkeypatch.setattr(world.devices, "async_update_device", lose_an_entity)
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert not [step for step in world.log if step[0] == "remove"], (
+        "removed an entry after losing an entity, so the entities have nowhere left")
+    assert any(step[0] == "device" for step in world.log), (
+        "the device moves never happened, so this reached the earlier check instead")
+
+
+async def test_an_entry_still_owning_something_at_removal_is_kept(world,
+                                                                  monkeypatch):
+    """The per-entry guard, which the first check normally makes unreachable. Both counts
+    add up here and one old entry still owns a row, so that entry is kept and the others
+    are still removed: an incomplete merge is recoverable, a removed entry is not."""
+    real = world.devices.async_update_device
+    added = []
+
+    def strand_a_row(device_id, **kwargs):
+        result = real(device_id, **kwargs)
+        if not added:
+            added.append(1)
+            world.entities._owned.setdefault("e1", []).append(
+                SimpleNamespace(entity_id="sensor.stranded"))
+        return result
+
+    monkeypatch.setattr(world.devices, "async_update_device", strand_a_row)
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    removed = [step[1] for step in world.log if step[0] == "remove"]
+    assert "e1" not in removed, "removed an entry that still owned an entity"
+    assert [r.entity_id for r in world.entities.rows_for("e1")] == ["sensor.stranded"]
+
+
+# --- the backup itself ------------------------------------------------------
+
+def test_the_backup_copies_the_registries_it_finds(tmp_path):
+    """Named files only, and only the ones that exist: a fresh install has no
+    core.restore_state, and a missing file is not a reason to refuse to migrate."""
+    import os
+
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    (storage / migrate.BACKED_UP[0]).write_text("first")
+    hass = SimpleNamespace(
+        config=SimpleNamespace(path=lambda *p: str(tmp_path.joinpath(*p))))
+
+    target = migrate._backup(hass)
+
+    assert target is not None
+    assert os.path.exists(os.path.join(target, migrate.BACKED_UP[0]))
+
+
+def test_a_backup_that_copied_nothing_is_no_backup(tmp_path):
+    """An empty directory is not a way back, and the caller treats None as "do not
+    migrate"."""
+    (tmp_path / ".storage").mkdir()
+    hass = SimpleNamespace(
+        config=SimpleNamespace(path=lambda *p: str(tmp_path.joinpath(*p))))
+
+    assert migrate._backup(hass) is None
+
+
+def test_a_backup_that_cannot_be_written_is_no_backup(tmp_path, monkeypatch):
+    """A full or read-only disk must read as "no backup" rather than as an exception out
+    of setup, and the caller then leaves every entry alone."""
+    import shutil
+
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    (storage / migrate.BACKED_UP[0]).write_text("first")
+    monkeypatch.setattr(shutil, "copy2",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    hass = SimpleNamespace(
+        config=SimpleNamespace(path=lambda *p: str(tmp_path.joinpath(*p))))
+
+    assert migrate._backup(hass) is None
+
+
+# --- reading the channel out of an entry ------------------------------------
+
+def test_a_channel_stored_as_a_string_is_a_number():
+    """The add flow writes it as a string for extra channels and leaves it absent for the
+    first, so both shapes are in the wild."""
+    assert migrate._channel_of(_Entry("e", "10.0.0.1", "3")) == 3
+    assert migrate._channel_of(_Entry("e", "10.0.0.1", 3)) == 3
+
+
+def test_a_channel_that_is_not_a_number_reads_as_zero():
+    """A hand-edited .storage can hold anything, and raising here would take setup down
+    before the migration could decide not to run."""
+    assert migrate._channel_of(_Entry("e", "10.0.0.1", "not a number")) == 0
+    assert migrate._channel_of(_Entry("e", "10.0.0.1", None)) == 0
