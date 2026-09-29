@@ -21,23 +21,35 @@ from custom_components.dahua.illuminator_restore import IlluminatorRestoreStore
 
 
 class _Store:
-    """Records what was written, so a save can be observed without a filesystem."""
+    """Records what was written, and answers the read-back with what it holds."""
 
-    def __init__(self):
+    def __init__(self, on_disk=None):
         self.saved = []
+        self._on_disk = dict(on_disk or {})
 
     async def async_save(self, data):
         self.saved.append(data)
+        self._on_disk = dict(data.get("modes") or {})
 
     async def async_load(self):
-        raise AssertionError("_data was set, so the store should not be read")
+        return {"modes": dict(self._on_disk)}
 
 
-def _store(data):
+def _store(data, on_disk=None):
+    """The real object with its Store replaced.
+
+    `_async_load_locked` returns `self._data` whenever it is already set, so setting it
+    directly runs the real methods without Home Assistant storage. `_new_store` is
+    replaced too, because `async_remove` verifies the write by reading back through a
+    fresh Store: `on_disk` is what that read comes back with, defaulting to whatever the
+    save just wrote.
+    """
     store = object.__new__(IlluminatorRestoreStore)
     store._lock = asyncio.Lock()
     store._data = dict(data)
-    store._store = _Store()
+    backing = _Store(data if on_disk is None else on_disk)
+    store._store = backing
+    store._new_store = lambda: backing
     return store
 
 
@@ -77,33 +89,59 @@ async def test_a_key_whose_parts_are_not_numbers_is_skipped():
     assert await store.async_keys() == [(6, 7)]
 
 
-# --- clearing one ------------------------------------------------------------
+# --- removing one ------------------------------------------------------------
 
-async def test_clearing_a_key_removes_it_and_writes_the_rest():
+async def test_removing_a_key_writes_the_rest():
     store = _store({"0:1": "Auto", "2:3": "Off"})
 
-    await store.async_clear(0, 1)
+    await store.async_remove(0, 1)
 
     assert store._store.saved == [{"modes": {"2:3": "Off"}}]
 
 
-async def test_clearing_something_that_is_not_there_writes_nothing():
+async def test_removing_something_that_is_not_there_writes_nothing():
     """It returns before saving. Writing an unchanged copy would be a pointless atomic
     replacement of the one file that must not be lost, on every poll that found nothing
     to restore."""
     store = _store({"2:3": "Off"})
 
-    await store.async_clear(0, 1)
+    await store.async_remove(0, 1)
 
     assert store._store.saved == [], "rewrote the file with no change to make"
     assert store._data == {"2:3": "Off"}
 
 
-async def test_clearing_does_not_disturb_the_other_channels():
+async def test_removing_one_does_not_disturb_the_other_channels():
     """A recorder has one of these per channel and profile, and they are restored
     independently."""
     store = _store({"0:1": "Auto", "0:2": "Off", "1:1": "Auto"})
 
-    await store.async_clear(0, 2)
+    await store.async_remove(0, 2)
 
     assert store._store.saved == [{"modes": {"0:1": "Auto", "1:1": "Auto"}}]
+
+
+async def test_the_removal_is_verified_against_what_landed_on_disk():
+    """`async_remove` does not trust the save. It reads back through a fresh Store and
+    raises if the key is still there, because this is the only copy of the camera's
+    pre-takeover setting and a write that silently did not land would lose it while
+    looking like it had been dealt with."""
+    store = _store({"0:1": "Auto"}, on_disk={"0:1": "Auto"})
+
+    async def _save_nothing(data):
+        store._store.saved.append(data)      # recorded, but never reaches the disk
+
+    store._store.async_save = _save_nothing
+
+    with pytest.raises(RuntimeError):
+        await store.async_remove(0, 1)
+
+
+async def test_a_verified_removal_updates_what_is_held_in_memory():
+    """The in-memory copy is what later reads use, so it has to follow the disk rather
+    than be left stale until something reloads."""
+    store = _store({"0:1": "Auto", "2:3": "Off"})
+
+    await store.async_remove(0, 1)
+
+    assert store._data == {"2:3": "Off"}
