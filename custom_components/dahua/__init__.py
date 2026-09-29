@@ -444,6 +444,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
                 # This channel's own settings. Empty for a single camera, which
                 # is what keeps channel_option identical to entry.options there.
                 channel_config=config if _subentry_id else None,
+                # Which subentry this channel is, so the platforms can file its
+                # entities under it. None for a single camera, which is also what
+                # async_add_entities wants when an entry has no subentries.
+                subentry_id=_subentry_id,
             ))
 
         # Concurrently, because a 64 channel recorder doing these one at a time

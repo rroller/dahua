@@ -57,7 +57,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
         if coordinator.is_amcrest_doorbell():
             entities.append(AmcrestRingLight(coordinator, entry))
 
-        async_add_entities(entities)
+        async_add_entities(
+            entities, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaInfraredLight(DahuaBaseEntity, LightEntity):

@@ -109,7 +109,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
                             unique_suffix=f"{unique_prefix}{stream_name}",
                         )
                     )
-            async_add_entities(entities)
+            async_add_entities(
+                entities, config_subentry_id=coordinator.subentry_id)
         else:
             max_streams = coordinator.get_max_streams()
             # Note the stream_index is 0 based. The main stream is index 0
@@ -121,7 +122,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
                             stream_index,
                             config_entry,
                         )
-                    ]
+                    ],
+                    config_subentry_id=coordinator.subentry_id,
                 )
 
     # Registered once for the platform rather than once per channel:
