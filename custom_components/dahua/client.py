@@ -383,6 +383,13 @@ def _cache_lifetime(url: str) -> int:
     """How long this URL's answer stays good for."""
     if "name=VideoAnalyseRule" in url:
         return HOST_CACHE_TTL_SECONDS
+    if "name=VideoInMode" in url:
+        # The active day/night profile is live state, not a setting: the camera
+        # flips it on its own schedule, and every light read and write addresses
+        # the Lighting row it names. Held for five minutes, a command issued in
+        # that window goes to the row the camera is not rendering from, where
+        # the device accepts and ignores it -- the #582/#605/#689 shape.
+        return HOST_CACHE_TTL_SECONDS
     return CONFIG_CACHE_TTL_SECONDS if CONFIG_READ_MARKER in url else HOST_CACHE_TTL_SECONDS
 
 
@@ -1460,9 +1467,35 @@ class DahuaClient:
         for attempt in (1, 2):
             try:
                 holder = await self._shared_rpc2()
+                login_task = getattr(holder, "task", None)
                 try:
                     params = await holder.client.get_config({"name": name})
                 except Rpc2MethodRefused as exc:
+                    if rpc2_refusal_is_a_stale_login(exc) and attempt == 1:
+                        # The shared login went stale under us -- a reboot of
+                        # the device is enough to do it. Drop it so the next
+                        # pass logs in again. Without this the refusal reached
+                        # _request, which read it as "does not serve this
+                        # table" and stopped asking RPC2 for it for the life of
+                        # the process. Another caller may already have replaced
+                        # the login, so only tear down the one we were holding.
+                        # Everything here goes through getattr because tests
+                        # hand this method a stand-in holder.
+                        if getattr(holder, "task", None) is login_task:
+                            holder.task = None
+                            rpc2_holder_client = getattr(holder, "client", None)
+                            if rpc2_holder_client is not None:
+                                rpc2_holder_client._session_id = None
+                                ptz_objects = getattr(
+                                    rpc2_holder_client, "_ptz_objects", None)
+                                if ptz_objects is not None:
+                                    ptz_objects.clear()
+                            keepalive = getattr(holder, "keepalive", None)
+                            holder.keepalive = None
+                            if keepalive is not None and not keepalive.done():
+                                keepalive.cancel()
+                                await asyncio.gather(keepalive, return_exceptions=True)
+                        continue
                     # Only a refusal of the table read can establish absence;
                     # a failed login or expired session must still propagate.
                     if allow_missing and exc.code in RPC2_TABLE_ABSENT_CODES:
@@ -1807,12 +1840,31 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=LightGlobal[0].Enable"
         return await self.get(url)
 
-    async def async_get_floodlightmode(self) -> dict:
-        """ async_get_config_floodlightmode gets floodlight mode """
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=FloodLightMode.Mode"
+    async def async_get_floodlightmode(self) -> int:
+        """ async_get_floodlightmode gets the floodlight mode as its number.
+
+        1 motion activation, 2 manual, 3 schedule, 4 PIR. The endpoint answers
+        a config table, so the mode is pulled out of whichever single key this
+        firmware used; a malformed or refused answer reports 2 (manual), which
+        is the mode the light entity itself writes while it is on.
+        """
         try:
-            return await self.async_get_config("FloodLightMode.Mode")
-        except aiohttp.ClientResponseError as e:
+            config = await self.async_get_config("FloodLightMode.Mode")
+        except aiohttp.ClientResponseError:
+            return 2
+        if isinstance(config, dict):
+            if "FloodLightMode.Mode" in config:
+                config = config["FloodLightMode.Mode"]
+            elif len(config) == 1:
+                config = next(iter(config.values()))
+            else:
+                for key, value in config.items():
+                    if key.endswith(".Mode"):
+                        config = value
+                        break
+        try:
+            return int(str(config).strip())
+        except (TypeError, ValueError):
             return 2
 
     async def async_set_floodlightmode(self, mode: int) -> dict:
@@ -3138,17 +3190,28 @@ class DahuaClient:
                     # the attempt on every read, but one that merely did not
                     # answer in time should not lose the transport for good.
                     if isinstance(rpc2_exception, Rpc2MethodRefused):
-                        # The device spoke RPC2 and declined this table. Ask
-                        # CGI for it from now on, and keep the transport for
-                        # everything else -- writing the host off here is what
-                        # put a working device back on a login per call.
-                        _RPC2_TABLE_UNAVAILABLE.add(
-                            (self._rpc2_key(), match.group(1)))
-                        _LOGGER.debug(
-                            "%s does not serve %s over RPC2, using CGI for that "
-                            "table; RPC2 is still in use for the rest",
-                            self._address, match.group(1),
-                        )
+                        if rpc2_refusal_is_a_stale_login(rpc2_exception):
+                            # An expired session is not this table's verdict.
+                            # _rpc2_get_config already re-logged in once, so
+                            # fall through to CGI for this read without writing
+                            # the table -- or the transport -- off for good.
+                            _LOGGER.debug(
+                                "RPC2 session for %s was stale reading %s; using "
+                                "CGI for this one",
+                                self._address, match.group(1), exc_info=True,
+                            )
+                        else:
+                            # The device spoke RPC2 and declined this table. Ask
+                            # CGI for it from now on, and keep the transport for
+                            # everything else -- writing the host off here is what
+                            # put a working device back on a login per call.
+                            _RPC2_TABLE_UNAVAILABLE.add(
+                                (self._rpc2_key(), match.group(1)))
+                            _LOGGER.debug(
+                                "%s does not serve %s over RPC2, using CGI for that "
+                                "table; RPC2 is still in use for the rest",
+                                self._address, match.group(1),
+                            )
                     elif not rpc2_failure_is_permanent(rpc2_exception):
                         # Falls through to the CGI path below, like any other
                         # failure here, but without writing the host off.
@@ -3207,8 +3270,9 @@ class DahuaClient:
                             # RemoteDevice, a table only a recorder has. A fallback has to
                             # be invisible when it cannot help, so the original 404 is
                             # what comes back.
-                            _RPC2_TABLE_UNAVAILABLE.add(
-                                (self._rpc2_key(), config_read.group(1)))
+                            if not rpc2_refusal_is_a_stale_login(rpc2_refusal):
+                                _RPC2_TABLE_UNAVAILABLE.add(
+                                    (self._rpc2_key(), config_read.group(1)))
                             _LOGGER.debug(
                                 "%s serves %s over neither CGI nor RPC2 (%s); reporting "
                                 "the original %s",

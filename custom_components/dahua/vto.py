@@ -178,6 +178,28 @@ class DahuaVTOClient(asyncio.Protocol):
         if not self.disconnected.done():
             self.disconnected.set_result(True)
 
+    def close(self) -> None:
+        """Drop the connection and stop the keep-alive.
+
+        Cancelling the coordinator's stream task is not enough: that task is
+        parked on ``await self.disconnected`` and cancelling a task does not
+        close an asyncio transport. Without this the socket to port 5000 stays
+        open with its event subscription, the keep-alive keeps rescheduling
+        itself on every reply, and the doorbell keeps pushing events into an
+        entry Home Assistant has already unloaded -- once per reload.
+        """
+        if self._keep_alive_handle is not None:
+            self._keep_alive_handle.cancel()
+            self._keep_alive_handle = None
+        transport = self.transport
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("Failed to close the VTO transport", exc_info=True)
+        if not self.disconnected.done():
+            self.disconnected.set_result(True)
+
     def send(self, action, handler, params=None):
         if params is None:
             params = {}

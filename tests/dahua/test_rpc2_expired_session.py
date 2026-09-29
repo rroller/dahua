@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
 
 from custom_components.dahua import client as client_module
@@ -32,6 +33,12 @@ class FakeRpc2:
 
     async def request(self, **kwargs):
         return {"result": True}
+
+    async def get_config(self, params):
+        type(self).calls.append(("get_config", self._session_id, params["name"]))
+        if type(self).failures:
+            raise type(self).failures.pop(0)
+        return {"table": [{"Enable": True}]}
 
     async def _call(self, method, *args):
         type(self).calls.append((method, self._session_id, args))
@@ -140,3 +147,51 @@ async def test_refusal_exposes_response_fields():
     assert caught.value.code == 287637504
     assert caught.value.message == "session is out of date!"
     assert "code=287637504" in str(caught.value)
+
+
+# --- the config-read path, which decides the transport -------------------------
+
+async def test_an_expired_login_on_a_config_read_is_renewed(rpc2_client):
+    """Without the retry the refusal reached _request, which read it as "does
+    not serve this table" and stopped asking RPC2 for it for good."""
+    FakeRpc2.failures = [EXPIRED]
+
+    result = await rpc2_client._rpc2_get_config("MotionDetect")
+
+    assert FakeRpc2.logins == 2
+    assert [call[1] for call in FakeRpc2.calls] == ["session-1", "session-2"]
+    assert result == {"table.MotionDetect[0].Enable": "true"}
+
+
+async def test_a_config_read_retries_a_stale_login_only_once(rpc2_client):
+    FakeRpc2.failures = [EXPIRED, EXPIRED]
+
+    with pytest.raises(Rpc2MethodRefused):
+        await rpc2_client._rpc2_get_config("MotionDetect")
+
+    assert FakeRpc2.logins == 2
+
+
+async def test_a_non_json_answer_is_not_a_permanent_verdict():
+    """A device serving an HTML error page for one read is not a device that
+    does not speak RPC2; two of them used to write the host off for good."""
+    from custom_components.dahua.client import rpc2_failure_is_permanent
+
+    class _Response:
+        async def text(self):
+            return "<html>503 Service Unavailable</html>"
+
+    class _Session:
+        async def post(self, url, json):
+            return _Response()
+
+    rpc2 = object.__new__(DahuaRpc2Client)
+    rpc2._session = _Session()
+    rpc2._session_id = "session"
+    rpc2._id = 0
+    rpc2._base = "http://camera"
+
+    with pytest.raises(aiohttp.ClientConnectionError) as caught:
+        await rpc2.request(method="configManager.getConfig", params={"name": "x"})
+
+    assert rpc2_failure_is_permanent(caught.value) is False
