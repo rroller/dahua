@@ -28,7 +28,6 @@ Two limits, both deliberate:
 import ast
 import asyncio
 import io
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -358,14 +357,11 @@ def test_setup_calls_the_migration():
     So this reads the source instead: `async_setup_entry` must contain a call to
     `async_migrate_synthesised_unique_id`. Static, but it fails for the one mutation the
     tests above cannot see, and it names the function so a rename cannot slip past."""
-    source = io.open(
-        Path(__file__).resolve().parents[2]
-        / "custom_components" / "dahua" / "__init__.py", encoding="utf-8").read()
-    tree = ast.parse(source)
+    # async_setup_entry has not moved, and this passed through the split for
+    # that reason alone rather than because it was asking the right question.
+    from .integration_source import definition
 
-    setup = next(node for node in tree.body
-                 if isinstance(node, ast.AsyncFunctionDef)
-                 and node.name == "async_setup_entry")
+    setup = definition("async_setup_entry")
     called = {ast.unparse(node.func) for node in ast.walk(setup)
               if isinstance(node, ast.Call)}
 

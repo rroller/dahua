@@ -41,9 +41,12 @@ def test_the_map_above_covers_every_issue_the_code_raises():
     channel_not_added left it untested here and every test in this file still passed.
     Deriving the set from the source makes the drift impossible instead.
     """
-    source = ""
-    for name in ("config_flow.py", "__init__.py", "repairs.py"):
-        source += (TRANSLATIONS.parent / name).read_text(encoding="utf-8")
+    # Every module, not the three that happened to raise an issue when this
+    # was written. Two of them moved to host.py and this reported them as
+    # being in the map but not the code, which is exactly backwards.
+    from .integration_source import source as integration_source
+
+    source = integration_source()
 
     raised = set(re.findall(r'translation_key="([a-z_]+)"', source))
 
