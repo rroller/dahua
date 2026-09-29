@@ -447,3 +447,179 @@ def test_the_slow_cycle_warning_says_the_rate():
 def test_the_idle_interval_keeps_real_margin():
     """6s against an 11s measured event leaves five seconds; 8s left three."""
     assert client_module.RPC2_EVENT_IDLE_POLL_SECONDS <= 6
+
+
+# --- an expired login, which is the normal case on a quiet camera -------------
+#
+# The RPC2 session times out on idle. On a device with no CGI this poll is the only
+# path events have, so a refusal meaning "your session is gone" has to end in a new
+# login and a new attach rather than a closed stream: the subscription belongs to the
+# login, so a recovered session polling the old SID would ask about something the
+# device has forgotten.
+
+SESSION_EXPIRED = client_module.RPC2_SESSION_EXPIRED_CODE
+
+
+class _RefusingFirst(_FakeRpc2Client):
+    """Refuses the first `times` getEventIndexes calls with `refusal`, then behaves.
+
+    Optionally swaps the holder's login task on the way, which is how another caller
+    having already re-logged-in is simulated.
+    """
+
+    def __init__(self, script, refusal, times=1, holder_to_steal=None):
+        super().__init__(script)
+        self._refusal = refusal
+        self._times = times
+        self._raised = 0
+        self._holder_to_steal = holder_to_steal
+
+    async def request(self, method, params=None, object_id=None, **kwargs):
+        if method == "eventManager.getEventIndexes" and self._raised < self._times:
+            self._raised += 1
+            if self._holder_to_steal is not None:
+                self._holder_to_steal.task = object()
+            raise self._refusal()
+        return await super().request(method, params, object_id, **kwargs)
+
+
+def _client_and_holder(monkeypatch, fake, address="cam"):
+    """Like _client, but hands back the holder so the login drop can be observed."""
+    client = DahuaClient("u", "p", address, 80, 554, object())
+    holder = _FakeHolder(fake)
+    holder.relogins = 0
+
+    async def _shared(self):
+        # The real one logs in again when the task has been dropped, and the poller
+        # recognises a new login by that object's identity. A fake that handed the
+        # same None back for ever would make the re-attach look like it never fires.
+        if holder.task is None:
+            holder.task = object()
+            holder.relogins += 1
+        return holder
+
+    monkeypatch.setattr(DahuaClient, "_shared_rpc2", _shared)
+    monkeypatch.setattr(client_module, "RPC2_EVENT_POLL_SECONDS", 0)
+    monkeypatch.setattr(client_module, "RPC2_EVENT_MAX_REQUESTS_PER_SECOND", 1000)
+    return client, holder
+
+
+def _expired():
+    return Rpc2MethodRefused("expired", code=SESSION_EXPIRED,
+                             message="Component error: session invalid!")
+
+
+async def test_an_expired_login_does_not_end_the_poll(monkeypatch):
+    """The whole point. A session expiry is routine on a camera nobody walks past, and
+    ending the stream for it would stop events until something reloaded the entry."""
+    fake = _RefusingFirst([{"VideoMotion": [0]}], _expired)
+    client, holder = _client_and_holder(monkeypatch, fake)
+    received, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert fake.asked, "the poll never got past the refusal"
+    assert received, "no events after recovering from the expiry"
+
+
+async def test_an_expired_login_is_dropped_so_the_next_cycle_logs_in(monkeypatch):
+    """`task` is what the registry uses to decide whether to log in again, and the
+    session id is cleared with it."""
+    fake = _RefusingFirst([{"VideoMotion": [0]}], _expired)
+    client, holder = _client_and_holder(monkeypatch, fake)
+    original = holder.task
+    _received, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert holder.task is not original, "the expired login was kept"
+    assert holder.relogins == 1, (
+        "logged in %d time(s); the expired session was reused"
+        % holder.relogins)
+
+
+async def test_a_new_login_gets_a_new_attach(monkeypatch):
+    """The subscription belongs to the login. Without re-attaching, a recovered
+    session polls a SID the device has already forgotten."""
+    fake = _RefusingFirst([{"VideoMotion": [0]}], _expired)
+    client, _ = _client_and_holder(monkeypatch, fake)
+    _received, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert fake.attaches >= 2, (
+        "attached %d time(s); the recovered login reused the old subscription"
+        % fake.attaches)
+
+
+async def test_a_session_refusal_is_recognised_by_what_the_device_says(monkeypatch):
+    """Some firmware says the session is out of date in words rather than with the
+    documented code. Both paths used to disagree about this, so the same device
+    recovered on one and had its event stream closed on the other."""
+    def _in_words():
+        return Rpc2MethodRefused("stale", code=268632064,
+                                 message="Component error: session out of date")
+
+    fake = _RefusingFirst([{"VideoMotion": [0]}], _in_words)
+    client, holder = _client_and_holder(monkeypatch, fake)
+    _received, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert holder.relogins == 1, (
+        "a session problem stated in words was not recognised, so no new login")
+
+
+async def test_an_expired_login_is_not_counted_against_the_code(monkeypatch):
+    """A code is dropped after enough consecutive refusals, on the grounds that the
+    device does not know it. A session expiry is not evidence of that, so it must not
+    accumulate: on a camera quiet enough to expire the session repeatedly, the code
+    would otherwise be dropped for good."""
+    limit = client_module.RPC2_EVENT_REFUSALS_BEFORE_DROPPING
+    fake = _RefusingFirst([{"VideoMotion": [0]}], _expired, times=limit + 2)
+    client, _ = _client_and_holder(monkeypatch, fake)
+    _received, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert fake.asked, (
+        "VideoMotion was dropped after %d session expiries, so a quiet camera loses "
+        "the event it was watching for" % (limit + 2))
+
+
+async def test_a_refusal_that_is_not_a_session_problem_closes_the_stream(monkeypatch):
+    """The gate has to still close. A device refusing the attach outright is not
+    something a new login fixes, and the caller's backoff is the right place for it."""
+    class _RefusingAttach(_FakeRpc2Client):
+        async def request(self, method, params=None, object_id=None, **kwargs):
+            if method == "eventManager.attach":
+                raise Rpc2MethodRefused("no", code=268632064,
+                                        message="InterfaceNotFound")
+            return await super().request(method, params, object_id, **kwargs)
+
+    client, _ = _client_and_holder(monkeypatch, _RefusingAttach([{}]))
+    _received, on_receive = _collect()
+
+    with pytest.raises(EventStreamClosed):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+
+async def test_a_login_another_caller_already_replaced_is_left_alone(monkeypatch):
+    """Only the login that failed is dropped. Channels of one recorder share this
+    session, so nulling whatever is there now would throw away a fresh login somebody
+    else just paid for, and the next cycle would pay for another."""
+    fake = _RefusingFirst([{"VideoMotion": [0]}], _expired)
+    client, holder = _client_and_holder(monkeypatch, fake)
+    fake._holder_to_steal = holder
+    _received, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
+
+    assert holder.relogins == 0, (
+        "dropped a login this cycle had not failed on, so the replacement was wasted")

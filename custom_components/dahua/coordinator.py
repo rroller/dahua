@@ -379,6 +379,20 @@ RECENT_EVENT_COUNT = 10
 # 9 is documented by myhomeiot/DahuaVTO as the failed counterpart.
 DOORBELL_STATE_EVENTS = {8: "DoorUnlocked", 9: "DoorUnlockFailed"}
 
+# BackKeyLight States that are known, documented above, and simply not a ring.
+#
+# These were warned about as though nobody had ever seen them, which is the
+# opposite of what the warning is for: it exists to surface a doorbell reporting
+# its ring as a number we cannot read, and a number we can already name is not
+# that. #872 is a VTO2311R-WP reporting 5 during the call teardown -- after
+# HungupPhone, Hangup and IgnoreInvite, immediately before idle -- on a press
+# that had already raised the sensor from States 1 and 2. Nothing was missed and
+# the reporter was asked for it anyway.
+#
+# Deliberately not merged into DOORBELL_STATE_EVENTS: these raise no event of
+# their own. They are only reasons not to complain.
+DOORBELL_KNOWN_QUIET_STATES = frozenset({4, 5, 6, 7, 11})
+
 def doorbell_state(event: dict):
     """The BackKeyLight State as an int, or None if it did not say.
 
@@ -1603,9 +1617,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Logged once per state per device, because a doorbell reports its state
         on every call and a warning per ring would be worse than the bug.
         """
-        if numeric_state in DOORBELL_STATE_EVENTS or numeric_state == 0:
+        if (numeric_state in DOORBELL_STATE_EVENTS
+                or numeric_state in DOORBELL_KNOWN_QUIET_STATES
+                or numeric_state == 0):
             # 8 and 9 are the unlock results, handled separately; 0 is idle,
-            # which is the normal way a call ends.
+            # which is the normal way a call ends; and the quiet set is the
+            # documented states that are not rings, which there is nothing to
+            # report about.
             return
         # getattr, like the other per-coordinator state: plenty of tests build a
         # coordinator with object.__new__ and set only what they are about, and
@@ -1619,7 +1637,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         _LOGGER.warning(
             "%s reported doorbell call state %r, which this integration does "
             "not recognise, so no button press was raised. Known states are "
-            "1 and 2 for ringing, 8 and 9 for unlock, 0 for idle. If the "
+            "1 and 2 for ringing, 8 and 9 for unlock, 0 for idle, and "
+            "4, 5, 6, 7 and 11 for call handling that is not a ring. If the "
             "doorbell was ringing when this appeared, please report this state "
             "number at %s so it can be added",
             self.get_device_name(), raw_state, ISSUE_URL,
