@@ -71,8 +71,6 @@ NAMED_ELSEWHERE = {
     # The rule's own name, read off the device. User data, not a string this
     # integration can translate.
     "DahuaIVSRuleSwitch",
-    # One name per event code, about thirty of them behind a NAME_OVERRIDES map.
-    "DahuaEventSensor",
     # The stream's name, from the client's own to_stream_name.
     "DahuaCamera",
 }
@@ -133,6 +131,21 @@ def _keys_in_code():
     return found
 
 
+def _owned_by_the_event_sensor_file(pair):
+    """The 45 event sensor keys, which this file cannot see and does not own.
+
+    They are derived from the event code in `__init__`, so there is no literal
+    to find. test_event_sensor_names_are_translated.py checks them against the
+    derivation and against every code the platform can produce, which is more
+    than this scan could do.
+
+    Subtraction rather than importing binary_sensor, so this file stays pure ast
+    and json and keeps running without Home Assistant.
+    """
+    platform, _key = pair
+    return platform == "binary_sensor" and pair not in WAS
+
+
 def _names_in_file():
     data = json.load(io.open(PACKAGE / "translations" / "en.json", encoding="utf-8"))
     return {(platform, key): entry["name"]
@@ -154,7 +167,8 @@ def test_every_key_the_code_declares_has_an_english_name():
 
 def test_every_name_in_the_file_belongs_to_an_entity():
     """Dead strings read as coverage, and a translator spends real time on them."""
-    unused = sorted(set(_names_in_file()) - set(_keys_in_code()))
+    unused = sorted(pair for pair in set(_names_in_file()) - set(_keys_in_code())
+                    if not _owned_by_the_event_sensor_file(pair))
 
     assert not unused, "in en.json with nothing declaring it: %s" % unused
 
@@ -163,7 +177,8 @@ def test_the_names_are_what_the_properties_returned():
     """The change was meant to be invisible. Home Assistant composes
     "<device> <entity>" from has_entity_name either way, so a string that differs
     from the old property renames an entity that is already on a dashboard."""
-    names = _names_in_file()
+    names = {pair: text for pair, text in _names_in_file().items()
+             if not _owned_by_the_event_sensor_file(pair)}
 
     assert names == WAS, "renamed: %s" % sorted(
         key for key in set(names) | set(WAS) if names.get(key) != WAS.get(key))
