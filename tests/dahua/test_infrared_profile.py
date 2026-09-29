@@ -24,7 +24,10 @@ This is the #605 fault in the one lighting path #659 and #683 never touched.
 
 import pytest
 
+from unittest.mock import AsyncMock
+
 from custom_components.dahua import DahuaDataUpdateCoordinator, infrared_profile
+from custom_components.dahua.client import DahuaClient
 
 
 def _coordinator(channel, profile_mode, data):
@@ -117,3 +120,110 @@ def test_a_missing_row_does_not_raise():
 
     assert c.is_infrared_light_on() is False
     assert c.get_infrared_brightness() == 255, "the documented default when nothing is reported"
+
+
+# --- and the write, which is the half the docstring above is actually about ---
+#
+# Everything above is the read side: which profile the coordinator resolves, and reading
+# the mode and brightness out of it. The URL the write builds had no test at all, and
+# "every write went to a profile the camera is not rendering from, where the device
+# accepts it and nothing happens" is the write side of the same fault.
+#
+# That failure mode is the quiet kind: the request succeeds, the camera acknowledges it,
+# and the light does not change. Nothing surfaces to say why.
+
+
+def _client():
+    client = object.__new__(DahuaClient)
+    client.get = AsyncMock(return_value={})
+    return client
+
+
+async def _url(mode="Manual", brightness=50, channel=0, profile="0"):
+    client = _client()
+    await DahuaClient.async_set_lighting_v1_mode(
+        client, channel, mode, brightness, profile)
+    return client.get.await_args.args[0]
+
+
+async def test_the_write_goes_to_the_profile_it_was_given():
+    """The fault this file is about, from the writing end. A camera running night is
+    rendering from profile 1, and a write to 0 is accepted and does nothing."""
+    assert "Lighting[0][1].Mode=" in await _url(profile="1")
+
+
+async def test_a_camera_on_profile_zero_still_writes_to_zero():
+    """The common case has to keep working: most cameras run General and report one
+    profile."""
+    assert "Lighting[0][0].Mode=" in await _url(profile="0")
+
+
+async def test_the_brightness_goes_to_the_same_profile_as_the_mode():
+    """Both halves of the write are indexed, and splitting them across profiles would
+    set the mode on one and the brightness on another."""
+    url = await _url(profile="2", brightness=70)
+
+    assert "Lighting[0][2].Mode=" in url
+    assert "Lighting[0][2].MiddleLight[0].Light=70" in url
+
+
+async def test_the_channel_is_the_one_asked_for():
+    assert "Lighting[3][1].Mode=" in await _url(channel=3, profile="1")
+
+
+# --- the mode the device will accept -----------------------------------------
+
+async def test_on_is_written_as_manual():
+    """The service takes On because that is what a person says; the API wants Manual."""
+    assert "Mode=Manual" in await _url(mode="On")
+
+
+async def test_lowercase_on_is_manual_too():
+    assert "Mode=Manual" in await _url(mode="on")
+
+
+async def test_auto_hands_control_back_to_the_camera():
+    assert "Mode=Auto" in await _url(mode="auto")
+
+
+async def test_off_stays_off():
+    assert "Mode=Off" in await _url(mode="off")
+
+
+async def test_the_first_character_is_capitalised_for_the_device():
+    """Dahua wants the capital, and the service schema accepts either, so the client is
+    where the two are reconciled."""
+    assert "Mode=Manual" in await _url(mode="manual")
+
+
+# --- the on/off wrapper the light entity uses -------------------------------
+
+async def test_turning_the_light_on_writes_manual_to_the_live_profile():
+    client = _client()
+
+    await DahuaClient.async_set_lighting_v1(client, 0, True, 40, "1")
+
+    url = client.get.await_args.args[0]
+    assert "Lighting[0][1].Mode=Manual" in url
+    assert "Lighting[0][1].MiddleLight[0].Light=40" in url
+
+
+async def test_turning_the_light_off_writes_off_not_auto():
+    """Off is not automatic. It leaves the camera's own illumination disabled, which is
+    the documented behaviour of the switch and the reason the mode service exists."""
+    client = _client()
+
+    await DahuaClient.async_set_lighting_v1(client, 0, False, 40, "1")
+
+    assert "Lighting[0][1].Mode=Off" in client.get.await_args.args[0]
+
+
+async def test_the_wrapper_does_not_lose_the_profile():
+    """It has a default of "0", so a caller that forgets to pass one silently writes to
+    day. The light entity passes the live profile, and this is what says the wrapper
+    carries it through rather than dropping it."""
+    client = _client()
+
+    await DahuaClient.async_set_lighting_v1(client, 2, True, 100, "3")
+
+    assert "Lighting[2][3].Mode=Manual" in client.get.await_args.args[0]
