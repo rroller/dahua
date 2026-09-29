@@ -57,10 +57,7 @@ class DahuaDoorbellEvent(DahuaEventDrivenEntity, EventEntity):
 
     _attr_device_class = EventDeviceClass.DOORBELL
     _attr_event_types = [EVENT_RING]
-
-    @property
-    def name(self):
-        return "Doorbell"
+    _attr_translation_key = "doorbell"
 
     @property
     def unique_id(self):

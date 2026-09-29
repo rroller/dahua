@@ -235,6 +235,8 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
 class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEntity):
     """Binary sensor that turns on when an authorized vehicle license plate is recognized."""
 
+    _attr_translation_key = "authorized_vehicle"
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
         super().__init__(coordinator, entry)
         self._attr_device_class = BinarySensorDeviceClass.PRESENCE
@@ -245,11 +247,6 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
         self._last_matched_plate_data: dict = {}
         self._last_matched_time: int | None = None
         self._unsub_timer = None
-
-    @property
-    def name(self):
-        """Return the name of the binary sensor."""
-        return "Authorized Vehicle"
 
     @property
     def unique_id(self):

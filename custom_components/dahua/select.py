@@ -103,11 +103,12 @@ async def _async_preset_ids(coordinator):
 class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
     """Allow one to turn the doorbell light on/off/strobe."""
 
+    _attr_translation_key = "security_light"
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         SelectEntity.__init__(self)
         self._coordinator = coordinator
-        self._attr_name = "Security Light"
         self._attr_unique_id = f"{coordinator.get_serial_number()}_security_light"
         self._attr_options = ["Off", "On", "Strobe"]
 
@@ -126,16 +127,14 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        return self._attr_name
-
-    @property
     def unique_id(self):
         return self._attr_unique_id
 
 
 class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
     """Select a camera preset position."""
+
+    _attr_translation_key = "preset_position"
 
     def __init__(
         self, coordinator: DahuaDataUpdateCoordinator, config_entry,
@@ -145,7 +144,6 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
         SelectEntity.__init__(self)
         self._coordinator = coordinator
         self._rpc2_channel = rpc2_channel
-        self._attr_name = "Preset Position"
         suffix = "1_preset_position" if rpc2_channel == 1 else "preset_position"
         self._attr_unique_id = f"{coordinator.get_serial_number()}_{suffix}"
         if preset_ids is None:
@@ -177,10 +175,6 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        return self._attr_name
-
-    @property
     def unique_id(self):
         return self._attr_unique_id
 
@@ -194,15 +188,13 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
     then renders black and white at night, being the reported case.
     """
 
+    _attr_translation_key = "day_night_mode"
+
     _attr_options = ["Color", "Auto", "BlackWhite"]
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
         super().__init__(coordinator, config_entry)
         self._coordinator = coordinator
-
-    @property
-    def name(self):
-        return "Day/Night Mode"
 
     @property
     def unique_id(self):

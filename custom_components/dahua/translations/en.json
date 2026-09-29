@@ -138,6 +138,74 @@
             }
         }
     },
+    "entity": {
+        "binary_sensor": {
+            "authorized_vehicle": {
+                "name": "Authorized Vehicle"
+            }
+        },
+        "event": {
+            "doorbell": {
+                "name": "Doorbell"
+            }
+        },
+        "button": {
+            "reboot": {
+                "name": "Reboot"
+            },
+            "open_door": {
+                "name": "Open Door"
+            },
+            "cancel_call": {
+                "name": "Cancel Call"
+            }
+        },
+        "select": {
+            "security_light": {
+                "name": "Security Light"
+            },
+            "preset_position": {
+                "name": "Preset Position"
+            },
+            "day_night_mode": {
+                "name": "Day/Night Mode"
+            }
+        },
+        "sensor": {
+            "firmware_version": {
+                "name": "Firmware Version"
+            },
+            "serial_number": {
+                "name": "Serial Number"
+            },
+            "profile": {
+                "name": "Profile"
+            },
+            "license_plate": {
+                "name": "License Plate"
+            }
+        },
+        "switch": {
+            "motion_detection": {
+                "name": "Motion Detection"
+            },
+            "disarming": {
+                "name": "Disarming"
+            },
+            "event_notifications": {
+                "name": "Event Notifications"
+            },
+            "smart_motion_detection": {
+                "name": "Smart Motion Detection"
+            },
+            "alarm_output": {
+                "name": "Alarm Output"
+            },
+            "privacy_mode": {
+                "name": "Privacy Mode"
+            }
+        }
+    },
     "issues": {
         "channel_not_added": {
             "title": "Channel {channel} on {address} was not added",

@@ -191,12 +191,17 @@ def test_every_switch_has_its_own_unique_id():
     assert all(i.startswith("SERIAL1_") for i in ids)
 
 
-def test_no_switch_repeats_the_device_name():
-    """Was "is named after the device". `has_entity_name` makes Home Assistant
-    prefix the device, so a switch that still carried the prefix would render it
-    twice. Every switch must still have a name, which is the other half of this."""
+def test_every_switch_is_named_and_none_repeats_the_device():
+    """Four of these name themselves through translations/en.json now. The siren
+    still has its name handed in by the platform, because there can be more than
+    one and they are told apart by index, so it keeps the older check: a name,
+    and not the device's, which `has_entity_name` would then render twice."""
     c = _Coordinator()
     for cls in ALL:
+        key = getattr(cls, "_attr_translation_key", None)
+        if key is not None:
+            assert key, cls.__name__
+            continue
         name = _switch(cls, c).name
         assert name, cls.__name__
         assert "Garage" not in name, cls.__name__

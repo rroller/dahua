@@ -168,12 +168,14 @@ def test_the_two_buttons_do_not_collide():
     assert _button(DahuaRebootButton, c).unique_id != _button(DahuaOpenDoorButton, c).unique_id
 
 
-def test_the_names():
-    # `has_entity_name` is True, so an entity states only its own half and
-    # Home Assistant prefixes the device. The rendered name is unchanged;
-    # what this asserts is that the entity is no longer composing it.
-    assert _button(DahuaRebootButton).name == "Reboot"
-    assert _button(DahuaOpenDoorButton).name == "Open Door"
+def test_the_names_come_from_the_translation_file():
+    # These asserted `.name`, which read the string straight off the class.
+    # `entity-translations` moved it to translations/en.json, so off a
+    # platform there is nothing to read and `.name` is UNDEFINED. The strings
+    # are pinned in test_entity_names_come_from_translations.py against what
+    # these properties used to return; what belongs here is the key.
+    assert DahuaRebootButton._attr_translation_key == "reboot"
+    assert DahuaOpenDoorButton._attr_translation_key == "open_door"
 
 
 def test_reboot_is_a_restart_button_under_config():
