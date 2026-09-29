@@ -48,7 +48,12 @@ def test_the_map_above_covers_every_issue_the_code_raises():
 
     source = integration_source()
 
-    raised = set(re.findall(r'translation_key="([a-z_]+)"', source))
+    # Not preceded by a word character, so `_attr_translation_key="x"` on an
+    # entity is not mistaken for an issue. Today's entities write that with
+    # spaces around the `=` and would slip past this pattern by luck rather than
+    # by design, and scanning the whole package is what brings them within reach
+    # of it at all.
+    raised = set(re.findall(r'(?<!\w)translation_key="([a-z_]+)"', source))
 
     assert raised == set(ISSUE_PLACEHOLDERS), (
         "in the code but not the map: %s; in the map but not the code: %s"
