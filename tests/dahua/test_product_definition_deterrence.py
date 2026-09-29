@@ -12,6 +12,8 @@ from custom_components.dahua.rpc2 import DahuaRpc2Client
 from custom_components.dahua.diagnostics import _capabilities_block
 from tests.dahua.test_direct_rpc2_deterrence import coordinator
 
+from . import adds_entities
+
 RED_BLUE = {
     "LinkingDetail": {
         "FilckerLighting": {"Support": True, "LightType": ["RedBlueLight"]}
@@ -499,7 +501,7 @@ async def test_entity_creation_uses_host_class_not_channel(
     await module.async_setup_entry(
         SimpleNamespace(data={}),
         SimpleNamespace(entry_id="entry", runtime_data={0: c}),
-        added.extend,
+        adds_entities(added),
     )
     assert ("deterrence" in added) is expected
 

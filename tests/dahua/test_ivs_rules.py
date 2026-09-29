@@ -13,6 +13,8 @@ from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.ivs import ivs_rule_index, ivs_rules_for_channel
 from custom_components.dahua.switch import DahuaIVSRuleSwitch, async_setup_entry
 
+from . import adds_entities
+
 
 def row(index, rule_id, enabled="true", channel=2, kind="Normal", name="Line"):
     prefix = f"table.VideoAnalyseRule[{channel}][{index}]"
@@ -175,7 +177,7 @@ class TestIVSActions:
             await async_setup_entry(
                 hass,
                 SimpleNamespace(entry_id="entry", runtime_data={0: c}),
-                added.extend)
+                adds_entities(added))
         rules = [s for s in added if isinstance(s, DahuaIVSRuleSwitch)]
         self.assertEqual(len(rules), 2)
         self.assertEqual(len({s.unique_id for s in rules}), 2)

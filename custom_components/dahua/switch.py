@@ -56,7 +56,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             DahuaIVSRuleSwitch(coordinator, entry, rule)
             for rule in coordinator.get_ivs_rules()
         )
-        async_add_devices(devices)
+        async_add_devices(
+            devices, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):

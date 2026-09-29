@@ -169,7 +169,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         sensors.append(DahuaAuthorizedVehicleBinarySensor(coordinator, entry))
 
         if sensors:
-            async_add_devices(sensors)
+            async_add_devices(
+                sensors, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):

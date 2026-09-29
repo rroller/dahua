@@ -25,6 +25,8 @@ import pytest
 
 from custom_components.dahua import camera as camera_module
 
+from . import adds_entities
+
 
 class _Client:
     @staticmethod
@@ -42,6 +44,11 @@ class _Client:
 
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, model="IPC-HDW1234", max_streams=2, channel=0, number=1,
                  infrared=False, illuminator=False):
         self.client = _Client()
@@ -121,7 +128,7 @@ def setup(monkeypatch):
         entry = _Entry({i: c for i, c in enumerate(coordinators)})
         added = []
         await camera_module.async_setup_entry(
-            None, entry, lambda entities: added.extend(entities))
+            None, entry, adds_entities(added))
         return added
 
     run.built = built
@@ -234,7 +241,7 @@ async def test_an_entry_with_nothing_set_up_still_registers_its_services(setup):
     added = []
 
     await camera_module.async_setup_entry(
-        None, entry, lambda entities: added.extend(entities))
+        None, entry, adds_entities(added))
 
     assert added == []
     assert setup.built == []
