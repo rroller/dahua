@@ -482,12 +482,29 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
 CAPABILITY_REFUSED = (400, 404, 501)
 
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
+
+    # Declared on the class, not only assigned in __init__, because a great many
+    # tests build a coordinator with object.__new__ and set only the attributes
+    # they are about. channel_option reads this, and those tests reach it through
+    # configured_area_name and the authorized plate list, so without a default
+    # they fail on the attribute rather than on anything they are testing.
+    _channel_config: dict = {}
+
     """Class to manage fetching data from the API."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, events: list, address: str, port: int, rtsp_port: int,
                  username: str, password: str, name: str, channel: int,
-                 use_https: bool = None) -> None:
-        """Initialize the coordinator."""
+                 use_https: bool = None, channel_config: dict = None) -> None:
+        """Initialize the coordinator.
+
+        `channel_config` is this channel's own settings, which is a subentry's
+        data on a merged recorder and None for a single camera (#827). It matters
+        because several options were per entry, and an entry was a channel: a
+        recorder where one camera has a siren and the rest do not would otherwise
+        have had `manual_siren` applied to every channel at once the moment its
+        entries were merged. See `channel_option`.
+        """
+        self._channel_config = dict(channel_config or {})
         # Self signed certs are used over HTTPS so we'll disable SSL verification.
         # connector_owner=False keeps the shared pool alive when this session closes.
         self._session = ClientSession(
@@ -523,9 +540,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_rpc2_siren = False
         self._supports_rpc2_security_light = False
         self._alarm_output_slots = 0
-        self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
-        self._manual_siren = entry.options.get(CONF_MANUAL_SIREN, False)
-        self._manual_security_light = entry.options.get(CONF_MANUAL_SECURITY_LIGHT, False)
+        # Read off the local `entry` rather than through channel_option, because
+        # that reads self.config_entry and DataUpdateCoordinator does not set it
+        # until super().__init__ further down. The precedence is the same one
+        # channel_option applies: this channel's own answer, then the entry's.
+        def _channel_first(key, default=None):
+            if key in self._channel_config:
+                return self._channel_config[key]
+            return entry.options.get(key, default)
+
+        self._nvr_active_deterrence = _channel_first(
+            CONF_NVR_ACTIVE_DETERRENCE, False)
+        self._manual_siren = _channel_first(CONF_MANUAL_SIREN, False)
+        self._manual_security_light = _channel_first(
+            CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._ivs_rules = []
@@ -844,7 +872,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # 0-indexed and reset channel_number accordingly. Users on cameras where this
                 # heuristic gets it wrong (HTTP snapshot at 0 succeeds but RTSP only streams
                 # on channel=1) can disable it via the integration options.
-                auto_detect = self.config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True)
+                auto_detect = self.channel_option(CONF_AUTO_DETECT_CHANNEL, True)
                 if auto_detect:
                     # Asked once for the device and shared, and a device that does
                     # not answer leaves this alone rather than renumbering the
@@ -2179,6 +2207,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return self._serial_number
 
+    def channel_option(self, key: str, default=None):
+        """One channel's setting, preferring its own over the entry's.
+
+        A single camera has no channel config, so this is exactly
+        `entry.options.get(key, default)` and nothing changes for it.
+
+        On a merged recorder the channel's subentry wins. That distinction is the
+        whole reason this exists: `manual_siren`, `manual_security_light` and
+        `nvr_active_deterrence` are per channel by nature -- they exist because
+        one camera on a recorder has the hardware and the others do not -- and they
+        were read from the entry's options back when an entry *was* a channel.
+        Merging the entries without this would have quietly applied one channel's
+        answer to all 64.
+        """
+        if key in self._channel_config:
+            return self._channel_config[key]
+        return self.config_entry.options.get(key, default)
+
     def get_serial_number(self) -> str:
         """ returns the device serial number. This is unique per device """
         if self._channel > 0:
@@ -2211,7 +2257,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         after setup. Chosen while adding a recorder so that ten channels do not
         all arrive unfiled.
         """
-        return self.config_entry.options.get(
+        return self.channel_option(
             CONF_AREA, self.config_entry.data.get(CONF_AREA)) or None
 
     def configured_area_name(self):
@@ -2231,7 +2277,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_authorized_plates(self) -> list[str]:
         """Return the list of configured authorized license plates (uppercase & normalized)."""
-        raw = self.config_entry.options.get(
+        raw = self.channel_option(
             CONF_AUTHORIZED_PLATES,
             self.config_entry.data.get(CONF_AUTHORIZED_PLATES, ""),
         )
@@ -2240,7 +2286,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_authorized_hold_time(self) -> int:
         """Return the duration in seconds an authorized vehicle binary sensor stays active."""
         try:
-            return int(self.config_entry.options.get(
+            return int(self.channel_option(
                 CONF_AUTHORIZED_HOLD_TIME,
                 self.config_entry.data.get(
                     CONF_AUTHORIZED_HOLD_TIME, DEFAULT_AUTHORIZED_HOLD_TIME
