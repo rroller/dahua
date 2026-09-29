@@ -5,10 +5,12 @@ device card. Without it `entry.supports_remove_device` is False and there is no
 button, so removing one camera meant going and finding its config entry -- which on a
 recorder means finding the right one of sixteen.
 
-But it must say no to the device the entry currently creates. One entry is one channel
-is one device, and the identifier is derived from the serial the device reports, so
-Home Assistant would delete the row and the next reload would put it straight back.
-A button that appears to do nothing is worse than no button.
+But it must say no to every device the entry currently creates, and since #827 that
+is one per channel rather than one per entry. The identifier is derived from the
+serial each channel reports, so Home Assistant would delete the row and the next
+reload would put it straight back. A button that appears to do nothing is worse than
+no button, and taking a live device deletes its entities from the registry along
+with whatever the user had set on them.
 
 The case it says yes to is real. A camera that answered with a synthesised identity
 and later reported its real serial leaves the old row behind: #583 has two device rows
@@ -35,16 +37,23 @@ def _device(*identifiers):
     return SimpleNamespace(identifiers=set(identifiers))
 
 
-def _entry(entry_id="e1", serial=SERIAL, loaded=True):
-    """An entry carrying its coordinator, or an unloaded one carrying none.
+def _entry(entry_id="e1", serial=SERIAL, loaded=True, serials=None):
+    """An entry carrying its coordinators, or an unloaded one carrying none.
 
     `serial` and `loaded` describe the entry rather than Home Assistant, which is
     what moving off hass.data makes obvious: an unloaded entry is one with no
     runtime_data at all, because Home Assistant deletes the attribute.
+
+    `serials` is the #827 shape: one coordinator per channel. This fake only ever
+    built one, which is why nothing noticed that the hook was reading the first
+    coordinator and calling every other channel's live device stale.
     """
     entry = SimpleNamespace(entry_id=entry_id)
     if loaded:
-        entry.runtime_data = {0: SimpleNamespace(get_serial_number=lambda: serial)}
+        wanted = serials if serials is not None else [serial]
+        entry.runtime_data = {
+            channel: SimpleNamespace(get_serial_number=(lambda s=s: s))
+            for channel, s in enumerate(wanted)}
     return entry
 
 
@@ -88,11 +97,49 @@ async def test_a_row_from_an_earlier_identity_can_be_removed():
     assert allowed is True
 
 
-async def test_another_channels_row_can_be_removed_from_this_entry():
-    """Each channel has its own entry, so a row for a different channel is not this
-    entry's to keep alive."""
+async def test_a_channel_this_entry_does_not_own_can_be_removed():
+    """A single camera entry owns one channel, so a row for another one is not
+    its to keep alive. This used to be titled "another channel's row", which was
+    right while every channel had its own entry and became wrong when #827 gave
+    one entry all of them."""
     allowed = await async_remove_config_entry_device(
         _hass(), _entry(serial=SERIAL + "_3"), _device((DOMAIN, SERIAL + "_4")))
+
+    assert allowed is True
+
+
+# --- and on a merged recorder, every channel is live -------------------------
+
+RECORDER = [SERIAL, SERIAL + "_1", SERIAL + "_3", SERIAL + "_9"]
+
+
+@pytest.mark.parametrize("serial", RECORDER)
+async def test_no_channel_of_a_merged_recorder_can_be_removed(serial):
+    """The regression #827 introduced. The hook read the first coordinator's
+    serial, so on a ten channel recorder nine live devices were offered a Delete
+    button. Taking one deletes its entities from the registry, and the next reload
+    brings the device back looking as though the button did nothing."""
+    allowed = await async_remove_config_entry_device(
+        _hass(), _entry(serials=RECORDER), _device((DOMAIN, serial)))
+
+    assert allowed is False, "%s is a live channel of this entry" % serial
+
+
+async def test_a_merged_recorder_still_gives_up_a_stale_row():
+    """The other half: widening the check must not make everything unremovable,
+    or #583's duplicate row becomes permanent again."""
+    allowed = await async_remove_config_entry_device(
+        _hass(), _entry(serials=RECORDER),
+        _device((DOMAIN, "4f3a9c8ecafe4f3a9c8ecafe4f3a9c8e")))
+
+    assert allowed is True
+
+
+async def test_a_channel_the_recorder_no_longer_has_can_be_removed():
+    """A channel deselected, or a camera unplugged from the recorder, leaves a
+    row behind. That is the case the button exists for on a recorder."""
+    allowed = await async_remove_config_entry_device(
+        _hass(), _entry(serials=RECORDER), _device((DOMAIN, SERIAL + "_7")))
 
     assert allowed is True
 

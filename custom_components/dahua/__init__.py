@@ -685,11 +685,17 @@ async def async_remove_config_entry_device(
     camera meant finding its config entry instead -- which on a recorder means
     finding the right one of sixteen.
 
-    One entry is one channel is one device, and the identifier is derived from the
-    serial the device reports (`serial`, or `serial_N` above channel 0). So the device
-    this entry *currently* creates must not be removable: Home Assistant would delete
-    the row and the next reload would put it straight back, which looks like the
-    button did nothing.
+    An entry owns one device per channel, and each identifier is derived from the
+    serial that channel reports (`serial`, or `serial_N` above channel 0). So none of
+    the devices this entry *currently* creates may be removable: Home Assistant would
+    delete the row and the next reload would put it straight back, which looks like
+    the button did nothing.
+
+    Every channel, not the first one. This read
+    `next(iter(channels.values())).get_serial_number()` while an entry was one
+    channel, and #827 made an entry own all of them. On a ten channel recorder that
+    offered a Delete button on nine live devices, and taking one deletes its entities
+    from the registry along with whatever the user had set on them.
 
     A device whose identifier is not the one this entry now produces is stale, and
     that really happens. A camera that answered with a synthesised identity and later
@@ -705,9 +711,9 @@ async def async_remove_config_entry_device(
     if not channels:
         return False
 
-    current = next(iter(channels.values())).get_serial_number()
+    live = {coordinator.get_serial_number() for coordinator in channels.values()}
     return not any(
-        domain == DOMAIN and value == current for domain, value in device.identifiers
+        domain == DOMAIN and value in live for domain, value in device.identifiers
     )
 
 
