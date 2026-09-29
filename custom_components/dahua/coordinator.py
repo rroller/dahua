@@ -708,8 +708,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Stop anything we need to stop """
         await _release_host_stream(self)
         if self._vto_task is not None:
-            self._vto_task.cancel()
+            task = self._vto_task
             self._vto_task = None
+            # Close the transport before cancelling: the task is parked on
+            # `await protocol.disconnected`, and cancelling a task does not
+            # close an asyncio transport. Leaving it open leaks the socket to
+            # port 5000, its event subscription and its keep-alive for an entry
+            # that no longer exists, once per reload.
+            client = getattr(self, "_vto_client", None)
+            if client is not None:
+                client.close()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         await self._close_session()
 
     async def _close_session(self) -> None:
@@ -1155,7 +1165,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get preset position", exc_info=exception)
-                    return None
+                    # The preset select reads this key. Carrying the last value
+                    # stops a refusal from resetting the select to "0".
+                    previous = (getattr(self, "data", None) or {}).get(
+                        "status.PresetID"
+                    )
+                    if previous is None:
+                        return None
+                    return {"status.PresetID": previous}
 
             # Figure out which APIs we need to call and then fan out and gather the results
             # Motion detection state is read by the camera entity as well as
@@ -2744,7 +2761,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             else:
                 _LOGGER.debug("%s still refuses coaxial status over RPC2 (%s)",
                               self._address, refused)
-            return None
+            return self._previous_coaxial_status()
         except ClientResponseError as error:
             if error.status not in CAPABILITY_REFUSED:
                 raise
@@ -2761,7 +2778,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug(
                     "%s still refuses coaxial status for channel %s (HTTP %s)",
                     self._address, channel, error.status)
-            return None
+            return self._previous_coaxial_status()
+
+    def _previous_coaxial_status(self) -> dict | None:
+        """The last siren and white light reading, so a refusal holds it.
+
+        The entities reading these say they keep their last value on a refusal,
+        but the poll builds its data from scratch and the gather drops a None,
+        so without this the siren switch read "off" for that cycle while the
+        device was on. Only this read's own keys are carried, never every
+        status key, or a stale value would overwrite a fresh one from another
+        coroutine in the same gather. None when there is nothing to hold, which
+        is what the gather already skips.
+        """
+        previous = getattr(self, "data", None) or {}
+        keys = ("status.status.Speaker", "status.status.WhiteLight",
+                "status.Speaker", "status.WhiteLight")
+        carried = {key: previous[key] for key in keys if key in previous}
+        return carried or None
 
     async def _async_fetch_privacy_mode(self) -> dict:
         """ Poll the privacy mode state, keeping the last known value on failure """
