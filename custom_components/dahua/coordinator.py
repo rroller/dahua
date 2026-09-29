@@ -29,7 +29,8 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import dahua_utils
-from .client import DahuaClient
+from .client import DahuaClient, rpc2_refusal_is_a_stale_login
+from .rpc2 import Rpc2MethodRefused
 from .const import (
     CAMERA,
     CONF_AREA,
@@ -1158,15 +1159,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
             if self.supports_alarm_output() and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_alarm_output_state()))
-            # The siren switch and the security light both read this one.
+            # The siren switch and the security light both read this one, over
+            # RPC2 on a direct camera and over CGI otherwise. Both go through
+            # _async_coaxial_status, because a device that refuses this must not
+            # take the whole entry offline, and the RPC2 branch used to call the
+            # client directly and did exactly that (#848).
+            #
+            # The two conditions stay as they were: reads_coaxial_status explains
+            # why the RPC2 branch keeps its own.
+            coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
             if self.uses_rpc2_deterrence() and self._wanted_by(LIGHT, SWITCH):
                 coros.append(asyncio.ensure_future(
-                    self.client.async_get_coaxial_control_io_status_rpc2()
+                    self._async_coaxial_status(coaxial_channel)
                 ))
             elif self._supports_coaxial_control and self.reads_coaxial_status():
-                coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
-                # Wrapped, because a device that refuses this must not take the whole
-                # entry offline. See _async_coaxial_status.
                 coros.append(
                     asyncio.ensure_future(
                         self._async_coaxial_status(coaxial_channel)
@@ -2669,9 +2675,41 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         so a capability the user may rely on must not be switched off for the life of the
         process by one bad answer. What changes is that a refusal costs a stale reading
         rather than a failed poll, and says so once rather than every two minutes.
+
+        Covers the RPC2 transport as well as CGI, and did not (#848). An RPC2
+        refusal raises Rpc2MethodRefused rather than ClientResponseError, so it
+        missed the clause below, escaped the gather and became UpdateFailed on
+        the first refresh: an AD410 answering CoaxialControlIO.getStatus with
+        "Method not found!" never finished setup at all. Two reporters, two
+        different codes, and a third device answering "Authority:check failure",
+        which is measured to mean no such method rather than a permission.
+
+        A stale login is re-raised rather than swallowed. That one is worth
+        recovering from, and treating it as "this device has no siren" would
+        silently drop a capability the device does have.
         """
         try:
+            if self.uses_rpc2_deterrence():
+                return await self.client.async_get_coaxial_control_io_status_rpc2()
             return await self.client.async_get_coaxial_control_io_status(channel)
+        except Rpc2MethodRefused as refused:
+            if rpc2_refusal_is_a_stale_login(refused):
+                # The login, not the capability. Let it out so the session is
+                # rebuilt rather than swallowing it as "no such method".
+                raise
+            target = (self.client.device_key, "rpc2")
+            if target not in _CAPABILITY_REFUSALS_REPORTED:
+                _CAPABILITY_REFUSALS_REPORTED.add(target)
+                _LOGGER.warning(
+                    "%s refused the siren and white light state over RPC2 (%s). "
+                    "That is this device saying it does not serve that call, not a "
+                    "fault, so those entities will hold their last value and the "
+                    "rest of this camera is unaffected. Reported once per device",
+                    self._address, refused)
+            else:
+                _LOGGER.debug("%s still refuses coaxial status over RPC2 (%s)",
+                              self._address, refused)
+            return None
         except ClientResponseError as error:
             if error.status not in CAPABILITY_REFUSED:
                 raise
