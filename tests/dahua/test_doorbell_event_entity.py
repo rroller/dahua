@@ -27,7 +27,8 @@ class _Coordinator:
     def __init__(self, doorbell=True, timestamp=0):
         self._doorbell = doorbell
         self._timestamp = timestamp
-        self.listeners = {}
+        self._channel = 0
+        self._dahua_event_listeners = {}
 
     def is_doorbell(self):
         return self._doorbell
@@ -44,8 +45,11 @@ class _Coordinator:
     def event_is_momentary(self, name):
         return False
 
-    def add_dahua_event_listener(self, name, listener):
-        self.listeners.setdefault(name, []).append(listener)
+    # The real one. It returns the callback that undoes the subscription, which
+    # the entity hands to `async_on_remove`, and a stand-in returning None would
+    # be accepted in silence.
+    add_dahua_event_listener = DahuaDataUpdateCoordinator.add_dahua_event_listener
+    get_event_key = DahuaDataUpdateCoordinator.get_event_key
 
 
 @pytest.fixture(autouse=True)
@@ -184,3 +188,87 @@ def test_listeners_for_different_events_stay_separate():
     c.add_dahua_event_listener("VideoMotion", lambda: None)
 
     assert len(c._dahua_event_listeners) == 2
+
+
+# --- and the thing that lets one of them leave -------------------------------
+
+def _coordinator_with_listeners():
+    c = object.__new__(DahuaDataUpdateCoordinator)
+    c._channel = 0
+    c._dahua_event_listeners = {}
+    return c
+
+
+def test_removing_one_listener_leaves_the_other():
+    """Two entities can want one event, so one going away must not take the
+    other's subscription with it."""
+    c = _coordinator_with_listeners()
+    called = []
+    drop_first = c.add_dahua_event_listener("DoorbellPressed",
+                                            lambda: called.append("sensor"))
+    c.add_dahua_event_listener("DoorbellPressed", lambda: called.append("event"))
+
+    drop_first()
+
+    for listener in c._dahua_event_listeners[c.get_event_key("DoorbellPressed")]:
+        listener()
+    assert called == ["event"]
+
+
+def test_the_key_goes_when_its_last_listener_does():
+    """Not tidiness. Two places read whether a key has listeners to decide
+    behaviour: `_dispatch_event` skips a code nothing listens for, and
+    `translate_event_code` decides whether to report CrossLineDetection alongside
+    the SmartMotion translation. Both read the key, and an empty list is still a
+    key, so leaving one behind answers yes on behalf of an entity that is gone."""
+    c = _coordinator_with_listeners()
+    drop = c.add_dahua_event_listener("DoorbellPressed", lambda: None)
+
+    drop()
+
+    assert c._dahua_event_listeners == {}
+
+
+def test_removing_twice_is_harmless():
+    """Home Assistant drains its own on-remove list, and an entity that is
+    removed during setup can be removed again. Raising the second time would turn
+    that into a traceback in the log."""
+    c = _coordinator_with_listeners()
+    drop = c.add_dahua_event_listener("DoorbellPressed", lambda: None)
+
+    drop()
+    drop()
+
+    assert c._dahua_event_listeners == {}
+
+
+def test_removing_twice_is_harmless_while_another_listener_remains():
+    """The case the test above cannot see. With the key already gone the second
+    call returns at the first line, so it passes whether or not the removal itself
+    is careful. Leave a sibling behind and the key survives, so the second call
+    reaches the list and a bare `list.remove` raises ValueError.
+
+    Found by mutation: deleting the membership check left the test above green."""
+    c = _coordinator_with_listeners()
+    kept = lambda: None                                      # noqa: E731
+    drop = c.add_dahua_event_listener("DoorbellPressed", lambda: None)
+    c.add_dahua_event_listener("DoorbellPressed", kept)
+
+    drop()
+    drop()
+
+    assert c._dahua_event_listeners[c.get_event_key("DoorbellPressed")] == [kept]
+
+
+def test_a_plate_listener_can_be_dropped_too():
+    """Same API, same omission: the authorized vehicle sensor had no way to stop
+    being called either."""
+    c = object.__new__(DahuaDataUpdateCoordinator)
+    c._plate_listeners = []
+    kept = lambda: None                                      # noqa: E731
+    drop = c.add_plate_listener(lambda: None)
+    c.add_plate_listener(kept)
+
+    drop()
+
+    assert c._plate_listeners == [kept]

@@ -77,9 +77,9 @@ class DahuaDoorbellEvent(DahuaEventDrivenEntity, EventEntity):
             self.async_write_ha_state()
 
     async def async_added_to_hass(self):
-        """Listen for the press."""
-        self._coordinator.add_dahua_event_listener(
-            DOORBELL_PRESSED, self._async_doorbell_pressed)
+        """Listen for the press, and stop listening when removed."""
+        self.async_on_remove(self._coordinator.add_dahua_event_listener(
+            DOORBELL_PRESSED, self._async_doorbell_pressed))
 
     @property
     def should_poll(self) -> bool:
