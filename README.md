@@ -615,7 +615,7 @@ Sensor |  Description |
 :------------ | :------------ |
 Motion | A sensor that turns on when the camera detects motion
 Button Pressed | A sensor that turns on when a doorbell button is pressed
-Authorized Vehicle | Turns on when the camera's ANPR recognises a plate you have listed as authorized, and stays on for the hold time you set. Attributes carry the plate that matched and what the camera reported about the vehicle. Only created on cameras that report ANPR
+Authorized Vehicle | Turns on when the camera's ANPR recognises a plate you have listed as authorized, and stays on for the hold time you set. Attributes carry the plate that matched and what the camera reported about the vehicle. Created on every camera and every channel of a recorder, so it existing does not mean that camera can read plates: it stays off unless the camera reports one and it is on your list
 Others | A binary senor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
 
 ## Sensors
@@ -783,7 +783,7 @@ Option | Default | Description
 Seconds between device polls | 30 | How often the device is asked for the state of its settings. The minimum is 10. Events do not use this: they arrive on a separate connection and are unaffected by a longer interval. See [How data is updated](#how-data-is-updated)
 Camera, Switch, Light, Select, Binary sensor, Button, Sensor, Event | on | Which platforms this entry creates. These also stop the requests that exist only to feed a platform, so turning one off reduces how much the device is asked, not just how many entities you see
 Read configuration over one RPC2 session per device | off | Reads settings over a single logged in RPC2 session instead of a separate authenticated HTTP call each. Far fewer lines in the device's own log. Off by default because not every firmware serves RPC2; leave it off if unsure, and see [Reducing entries in your device's log](#reducing-entries-in-your-devices-log)
-Authorized license plates | empty | A comma separated list, for example `ABC1234, XYZ5678`. Naming plates here creates the Authorized Vehicle binary sensor, which turns on only for these. Needs a camera that reports ANPR
+Authorized license plates | empty | A comma separated list, for example `ABC1234, XYZ5678`. The Authorized Vehicle binary sensor exists either way; this is what it matches against, so while the list is empty it never turns on. Needs a camera that reports ANPR to turn on at all
 Authorized vehicle hold time | 60 seconds | How long the Authorized Vehicle sensor stays on after a plate it recognises. It also resumes correctly across a restart, so a car recognised just before a reload does not lose the remaining time
 Area | unset | Moves this device into a Home Assistant area
 

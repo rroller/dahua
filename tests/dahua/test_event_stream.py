@@ -292,3 +292,128 @@ async def test_oversized_content_length_falls_back_to_next_boundary():
     assert len(got) == 2
     assert first_payload in got[0]
     assert second_payload in got[1]
+
+
+# --- a device with no CGI event path at all ----------------------------------
+#
+# An SL300 answers 404 to every /cgi-bin/ path it has, eventManager.cgi included, so
+# the multipart stream this integration normally attaches to does not exist on it. The
+# subscription is not failed: it is made over RPC2 instead, which is the only transport
+# such a device has. Without this its binary sensors could never move, whatever the
+# vendor app showed.
+#
+# The fallback is the one place these two transports meet, and it was uncovered.
+
+
+class _RecordingSession(_EndingSession):
+    """Remembers the URL asked for, and whether the response was closed."""
+
+    def __init__(self, status=200, chunks=()):
+        super().__init__(status=status, chunks=chunks)
+        self.urls = []
+        self.closed = 0
+
+    async def request(self, method, url, headers=None, **kwargs):
+        self.urls.append(url)
+        self.requested = True
+        session = self
+
+        class _Recording(_EndingResponse):
+            def close(self):
+                session.closed += 1
+
+        return _Recording(self.status, self.chunks)
+
+
+def _polled(monkeypatch):
+    """Record the RPC2 poller being used in place of the CGI stream."""
+    calls = []
+
+    async def _poll(self, on_receive, events, channel):
+        calls.append((list(events), channel))
+
+    monkeypatch.setattr(DahuaClient, "_stream_events_rpc2", _poll)
+    return calls
+
+
+async def test_a_404_subscribes_over_rpc2_instead_of_failing(monkeypatch):
+    calls = _polled(monkeypatch)
+    client = DahuaClient("u", "p", "d", 80, 554, _RecordingSession(status=404))
+
+    await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+
+    assert calls == [(["VideoMotion"], 0)], (
+        "the subscription was not made over RPC2: %s" % (calls,))
+
+
+async def test_a_501_does_the_same(monkeypatch):
+    """The other status in EVENT_CGI_ABSENT. Asserted rather than assumed, because a
+    device answering 501 is as unable to serve the stream as one answering 404."""
+    calls = _polled(monkeypatch)
+    client = DahuaClient("u", "p", "d", 80, 554, _RecordingSession(status=501))
+
+    await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+
+    assert calls, "a 501 was treated as a real error rather than an absent endpoint"
+
+
+async def test_the_refused_response_is_closed_before_falling_back(monkeypatch):
+    """Closed explicitly rather than left to the finally, because returning through
+    the finally would skip the poller entirely. So the close and the fallback both
+    have to happen, and this is what says the connection is not leaked for the life
+    of the poll."""
+    _polled(monkeypatch)
+    session = _RecordingSession(status=404)
+    client = DahuaClient("u", "p", "d", 80, 554, session)
+
+    await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+
+    assert session.closed >= 1, "the refused response was never closed"
+
+
+async def test_a_real_http_error_does_not_fall_back(monkeypatch):
+    """The gate has to still close. A 401 means the credentials are wrong, and quietly
+    moving to another transport would hide that behind a device that simply reports
+    nothing."""
+    calls = _polled(monkeypatch)
+    client = DahuaClient("u", "p", "d", 80, 554, _RecordingSession(status=401))
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+
+    assert calls == [], "a 401 was answered by changing transport"
+
+
+async def test_every_selected_code_reaches_the_poller(monkeypatch):
+    """The fallback passes the caller's selection through. Dropping to All here would
+    subscribe to everything on a device the user had narrowed deliberately."""
+    calls = _polled(monkeypatch)
+    client = DahuaClient("u", "p", "d", 80, 554, _RecordingSession(status=404))
+
+    await client.stream_events(
+        lambda data, channel: None, ["VideoMotion", "CrossLineDetection"], 3)
+
+    assert calls == [(["VideoMotion", "CrossLineDetection"], 3)]
+
+
+async def test_several_codes_are_asked_for_as_one_comma_separated_list():
+    """The CGI subscription takes them in one bracketed list, so this is what the
+    device is actually asked before any of the above matters."""
+    session = _RecordingSession(chunks=[])
+    client = DahuaClient("u", "p", "d", 80, 554, session)
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(
+            lambda data, channel: None, ["VideoMotion", "AlarmLocal"], 0)
+
+    assert "codes=[VideoMotion,AlarmLocal]" in session.urls[0], session.urls
+
+
+async def test_all_is_sent_as_the_word_rather_than_a_list():
+    session = _RecordingSession(chunks=[])
+    client = DahuaClient("u", "p", "d", 80, 554, session)
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: None, ["All"], 0)
+
+    assert "codes=[All]" in session.urls[0], session.urls
