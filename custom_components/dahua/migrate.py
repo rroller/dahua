@@ -58,6 +58,7 @@ from homeassistant.helpers import issue_registry as ir
 
 from . import ISSUE_SIBLINGS_REMAIN
 from .const import CONF_ADDRESS, CONF_CHANNEL, CONF_PORT, DOMAIN
+from .host import normalize_address
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -279,6 +280,7 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
         return
 
     removed = 0
+    removed_hosts = set()
     for entry in ordered[1:]:
         left = er.async_entries_for_config_entry(entities, entry.entry_id)
         if left:
@@ -291,8 +293,13 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
             continue
         await hass.config_entries.async_remove(entry.entry_id)
         removed += 1
+        # The address as the removal hook spelled it, not the lowercased group
+        # key: normalize_address keeps the case, and the issue id is built from
+        # its own normalization. Deleting the lowercased id left a mixed-case
+        # host's card standing.
+        removed_hosts.add(normalize_address(entry.data.get(CONF_ADDRESS)))
 
-    if removed:
+    for removed_host in removed_hosts:
         # These removals are the merge's, not the user's, but each one runs the
         # same removal hook a manual deletion does. That hook sees the surviving
         # entry as a sibling and raises the "more Dahua entries still use
@@ -300,7 +307,7 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
         # is the recorder this merge has just finished creating. Nothing is left
         # to offer, so the card it just raised is withdrawn.
         ir.async_delete_issue(
-            hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(address))
+            hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(removed_host))
 
     _LOGGER.warning(
         "%s is now one Dahua entry with %d channels: %d entities moved and %d "

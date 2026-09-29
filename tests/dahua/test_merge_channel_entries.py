@@ -492,3 +492,17 @@ async def test_the_siblings_card_the_removals_raised_is_withdrawn(world):
     await migrate.async_merge_channel_entries(world.hass)
 
     assert world.deleted_issues == ["siblings_remain_192.168.0.213"]
+
+
+async def test_a_card_raised_for_a_mixed_case_hostname_is_withdrawn(world):
+    """The removal hook keys its card by normalize_address, which keeps the
+    case, while the merge groups by a lowercased address. Deleting the
+    lowercased id left a host configured as NVR.local with its card standing,
+    still offering to delete the recorder the merge had just created."""
+    for entry in world.entries:
+        if entry.data["address"] == "192.168.0.213":
+            entry.data["address"] = "NVR.local"
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert world.deleted_issues == ["siblings_remain_NVR.local"]
