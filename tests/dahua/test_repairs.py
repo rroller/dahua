@@ -17,6 +17,7 @@ from custom_components.dahua import (
 )
 from custom_components.dahua.const import DOMAIN
 from custom_components.dahua.repairs import (
+    RELOAD_STAGGER_SECONDS,
     RemoveSiblingsRepairFlow,
     SwitchToHttpsRepairFlow,
     async_create_fix_flow,
@@ -378,6 +379,10 @@ async def test_the_removals_are_staggered(hass, monkeypatch):
     async def _record(seconds):
         waits.append(seconds)
 
+    # `repairs.asyncio` is the asyncio module itself, so this patch is global and
+    # catches sleeps from anywhere -- Home Assistant's own removal path does a
+    # `sleep(0)`. Count the stagger's own value rather than every call, which is the
+    # tighter assertion anyway: it fails if the delay is changed to zero.
     monkeypatch.setattr("custom_components.dahua.repairs.asyncio.sleep", _record)
     for i in range(4):
         _entry(hass, channel=i)
@@ -387,8 +392,11 @@ async def test_the_removals_are_staggered(hass, monkeypatch):
     await flow.async_step_confirm({})
     await hass.async_block_till_done()
 
-    assert len(waits) == 4, "removed %d entries with %d pauses" % (4, len(waits))
-    assert all(wait > 0 for wait in waits)
+    staggers = [wait for wait in waits if wait == RELOAD_STAGGER_SECONDS]
+    assert len(staggers) == 4, (
+        "expected one %ss pause per entry removed, saw %s"
+        % (RELOAD_STAGGER_SECONDS, waits))
+    assert RELOAD_STAGGER_SECONDS > 0
 
 
 async def test_a_flow_whose_entries_are_already_gone_withdraws_the_card(hass):
