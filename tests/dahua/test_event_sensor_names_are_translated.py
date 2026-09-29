@@ -121,6 +121,23 @@ def test_no_two_codes_share_a_slug():
     assert len(set(slugs)) == len(slugs), "collision among %s" % sorted(slugs)
 
 
+def test_every_event_sensor_icon_belongs_to_a_code_this_ships():
+    """The icons moved to icons.json with the names, and their keys are the
+    same derived slugs. Nothing else can check this: the icons test scans class
+    bodies and these keys are built at construction, so an icon under a slug no
+    event code produces would sit there unread."""
+    import json as _json
+
+    icons = _json.load(io.open(PACKAGE / "icons.json", encoding="utf-8"))
+    keys = set(icons["entity"].get("binary_sensor", {}))
+    from_codes = {event_translation_key(code) for code in TRANSLATED_EVENTS}
+
+    # authorized_vehicle is a class of its own, not an event sensor.
+    orphans = sorted(keys - from_codes - {"authorized_vehicle"})
+
+    assert not orphans, "icons under a slug no event code produces: %s" % orphans
+
+
 def test_every_slug_is_a_valid_translation_key():
     """Home Assistant's own validator wants a slug. A key with a capital or a space
     is not an error: the lookup simply never matches."""
