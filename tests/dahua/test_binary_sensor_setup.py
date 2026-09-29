@@ -21,6 +21,11 @@ from custom_components.dahua import binary_sensor as bs
 
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, events=(), doorbell=False, channel=0):
         self._events = list(events)
         self._doorbell = doorbell

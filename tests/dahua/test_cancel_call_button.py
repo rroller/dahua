@@ -136,6 +136,11 @@ async def test_the_handler_does_not_leak_on_timeout_either():
 # --- the button -------------------------------------------------------------
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, doorbell=True, vto_client=None):
         self._doorbell = doorbell
         self._vto = vto_client

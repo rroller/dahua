@@ -42,6 +42,11 @@ class _Client:
 
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, model="IPC-HDW1234", max_streams=2, channel=0, number=1,
                  infrared=False, illuminator=False):
         self.client = _Client()

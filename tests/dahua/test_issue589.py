@@ -42,6 +42,10 @@ class _FakeClient:
 
 
 class _FakeCoordinator:
+    # Read by camera.async_setup_entry when it files the entities under the
+    # channel's subentry. None is a single camera.
+    subentry_id = None
+
     def __init__(self, model="DH-SDT4E425-4F-GB-A-PV1"):
         self.client = _FakeClient()
         self._model = model

@@ -60,6 +60,9 @@ def test_the_siren_is_left_as_a_control():
 
 def _coordinator():
     c = SimpleNamespace(
+        # The platforms file entities under the channel's subentry, so they
+        # read this on every entity they add.
+        subentry_id=None,
         get_device_name=lambda: "Garage",
         get_serial_number=lambda: "SERIAL1_4",   # channel-suffixed entity key
         get_device_serial_number=lambda: "SERIAL1",  # what the device reports

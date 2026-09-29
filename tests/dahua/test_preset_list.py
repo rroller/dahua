@@ -199,6 +199,8 @@ def _setup_coordinator(answer, day_night=False):
         return answer
 
     return SimpleNamespace(
+        # Read by select.async_setup_entry when it files the entities.
+        subentry_id=None,
         client=SimpleNamespace(async_get_ptz_presets=get_presets),
         get_channel_number=lambda: 1,
         get_model=lambda: "IPC-HFW3449E-S-IL",

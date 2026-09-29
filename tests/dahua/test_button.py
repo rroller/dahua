@@ -31,6 +31,11 @@ class _Client:
 
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, doorbell=False, channel=0):
         self.client = _Client()
         self._doorbell = doorbell

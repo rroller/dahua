@@ -29,6 +29,11 @@ class _Client:
 
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     # The real rule rather than a copy of it. switch.py now asks the coordinator whether
     # to create the siren, because the poll needs the same answer to decide whether to
     # fetch the status that entity reads, and a hand-written second copy here would be
