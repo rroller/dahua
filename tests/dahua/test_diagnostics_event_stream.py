@@ -187,10 +187,14 @@ def test_a_stream_that_has_no_task_yet_is_not_running():
 
 # --- what the device was actually asked for -------------------------------
 
-def test_the_attached_events_are_the_union_the_device_was_asked_for():
+def test_the_attached_events_are_the_union_across_the_channels():
     """A code that is not in here cannot arrive, whatever this entry has configured.
     The union is across every channel on the host, so one channel's selection explains
-    another channel's missing sensor."""
+    another channel's missing sensor.
+
+    It is the selection, not necessarily the wire request: a union wider than any one
+    channel's list is sent as codes=[All] and filtered locally, which `subscribed_as`
+    reports. See test_the_dump_says_what_was_subscribed.py."""
     dahua._HOST_STREAMS[ADDRESS] = _stream(
         _events=frozenset({"VideoMotion", "AlarmLocal", "CrossRegionDetection"}))
 

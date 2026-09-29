@@ -141,15 +141,16 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
         return self._coordinator.get_last_plate_data()
 
     async def async_added_to_hass(self):
-        """Connect to dispatcher listening for entity data notifications.
+        """Listen for a plate, and stop listening when removed.
 
-        The removal matters: without it the coordinator keeps calling a removed
-        entity's schedule_update_ha_state on every recognised plate, which is
-        what add_plate_listener's returned callback exists for.
+        The remover has to be kept. add_plate_listener returns it for exactly this
+        reason, and the authorized vehicle sensor next door uses it; this caller was
+        missed. Without it the callback outlives the entity, so every reload leaves
+        another dead one in the list and each ANPR plate then logs "Error calling plate
+        listener" once per reload the entry has ever had.
         """
         self.async_on_remove(
-            self._coordinator.add_plate_listener(self.schedule_update_ha_state)
-        )
+            self._coordinator.add_plate_listener(self.schedule_update_ha_state))
 
     @property
     def should_poll(self) -> bool:
