@@ -142,6 +142,7 @@ from .host import (  # noqa: F401  pylint: disable=unused-import
 from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     CAPABILITY_REFUSED,
     DAY_NIGHT_NAMES,
+    DOORBELL_KNOWN_QUIET_STATES,
     DOORBELL_RINGING_STATES,
     DOORBELL_STATE_EVENTS,
     DahuaDataUpdateCoordinator,
@@ -274,6 +275,39 @@ def get_configured_use_https(entry: ConfigEntry):
     return True if entry.data.get(CONF_USE_HTTPS) else None
 
 
+# The connection belongs to the device, not to the channel, and every writer
+# after setup -- reauth, reconfigure, the HTTPS repair, the discovery heal --
+# updates `entry.data`. A merged recorder's coordinators are built from subentry
+# data, and each subentry kept its own copy from the add flow, so the entry's
+# values are overlaid in channel_configs. Without that, the reload after a
+# successful reauth rebuilt every coordinator from the stale copy: the new
+# password was accepted, written to the entry, and then ignored, so reauth
+# started again forever and the device accumulated failed logins it locks out for.
+CONNECTION_KEYS = (
+    CONF_ADDRESS,
+    CONF_PORT,
+    CONF_RTSP_PORT,
+    CONF_USERNAME,
+    CONF_PASSWORD,
+    CONF_USE_HTTPS,
+)
+
+
+def subentries_share_one_connection(configs: list) -> bool:
+    """Whether these channel configs all describe the same device.
+
+    A merged recorder's subentries all carry the connection they were added
+    with. The old address-only migration could merge two devices that share an
+    address on different ports into one entry, though, and that entry's
+    subentries disagree about the connection. Only one can be enforced, and
+    enforcing the entry's would point the other device's channels and entities
+    at the wrong box, so an entry like that keeps each channel's own.
+    """
+    seen = {tuple((key, config.get(key)) for key in CONNECTION_KEYS)
+            for config in configs}
+    return len(seen) <= 1
+
+
 def channel_configs(entry: DahuaConfigEntry) -> list:
     """(subentry_id, config) for every channel this entry owns.
 
@@ -297,8 +331,19 @@ def channel_configs(entry: DahuaConfigEntry) -> list:
     and nothing to stop it at unload.
     """
     if entry.subentries:
-        pairs = [(subentry_id, dict(subentry.data))
-                 for subentry_id, subentry in entry.subentries.items()]
+        subentries = [(subentry_id, dict(subentry.data))
+                      for subentry_id, subentry in entry.subentries.items()]
+        # The entry's connection is only authoritative when its channels agree
+        # about what they are connected to. An entry the old address-only
+        # migration built from two devices on one address disagrees with itself,
+        # and one connection cannot describe both.
+        if subentries_share_one_connection([config for _, config in subentries]):
+            connection = {key: entry.data[key] for key in CONNECTION_KEYS
+                          if key in entry.data}
+            pairs = [(subentry_id, {**config, **connection})
+                     for subentry_id, config in subentries]
+        else:
+            pairs = subentries
     else:
         pairs = [(None, dict(entry.data))]
 

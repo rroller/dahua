@@ -76,7 +76,11 @@ PARALLEL_UPDATES = 1
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
-    for coordinator in entry_coordinators(config_entry).values():
+    # Listed once: the capability checks further down need every channel, not
+    # whichever one the loop below happened to leave behind.
+    coordinators = list(entry_coordinators(config_entry).values())
+
+    for coordinator in coordinators:
         if is_sdt4e425(coordinator.get_model()):
             # This physical camera exposes two sensors. Preserve RRoller's native
             # Main/Sub/Sub_2 creation for each media channel from one config entry.
@@ -287,7 +291,15 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     )
 
     # Exposes a service to enable setting the cameras infrared light to Auto, Manual, and Off along with the brightness
-    if coordinator.supports_infrared_light():
+    #
+    # `any`, not the loop variable. Entity services are registered once for the
+    # whole platform, so a recorder asking the last channel it happened to iterate
+    # decided this for every channel: a recorder whose channel 0 has an
+    # illuminator and whose last channel does not lost the service for all of
+    # them. And an entry with no channels -- what entry_coordinators returns for a
+    # setup that failed or one being torn down -- left `coordinator` unbound and
+    # raised UnboundLocalError here, taking the platform's other services with it.
+    if any(c.supports_infrared_light() for c in coordinators):
         # "async_set_infrared_mode" is the method called upon calling the service. Defined below in DahuaCamera class
         platform.async_register_entity_service(
             SERVICE_SET_INFRARED_MODE,
@@ -300,7 +312,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
 
     # The light entity can only say on or off. Off is not the same as automatic,
     # and without this there is no way back to the camera's own behaviour.
-    if coordinator.supports_illuminator():
+    if any(c.supports_illuminator() for c in coordinators):
         platform.async_register_entity_service(
             SERVICE_SET_ILLUMINATOR_MODE,
             {
@@ -388,6 +400,29 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     def unique_id(self):
         """Return the entity unique ID."""
         return self._unique_id
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Only the main stream is enabled to begin with.
+
+        Every stream the device can serve gets an entity, whether or not it is
+        enabled on the device, because which ones exist cannot be known without
+        asking and asking costs a request per channel. Most people watch one stream
+        per camera, so on an eleven channel recorder serving three streams each that
+        was thirty three camera entities to go and delete by hand -- which the README
+        said to do, in as many words.
+
+        Created but not enabled is the difference: the entity is still listed, and
+        anyone pointing a card at a sub stream turns it on once. Derived from the
+        stream index rather than stored in `_attr_entity_registry_enabled_default`,
+        so there is one place it can be wrong and it can be read off an instance
+        without the entity machinery.
+
+        This is consulted only when an entity is first registered, so nothing that
+        already exists changes: an existing sub stream camera stays exactly as its
+        owner left it.
+        """
+        return self._stream_index == 0
 
     async def async_camera_image(self, width: int | None = None, height: int | None = None):
         """Return a still image response from the camera, or None if it refused.
@@ -517,6 +552,11 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             await self._coordinator.client.async_set_night_switch_mode(channel, mode)
         else:
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
+        # The profile decides which Lighting row every light command writes to,
+        # and the poll is what reads it back. Without this the next light
+        # command in the same poll window is written to the row the camera is
+        # not rendering from, where the device accepts and ignores it.
+        await self._coordinator.async_refresh()
 
     async def async_adjustfocus(self, focus: str, zoom: str):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set zoom and focus """
@@ -564,6 +604,19 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
     async def async_vto_open_door(self, door_id: int):
         """ Handles the service call from SERVICE_VTO_OPEN_DOOR """
+        # The service is offered on every camera entity, and the Open Door
+        # button is only created on a doorbell; aimed at anything else the CGI
+        # endpoint is not there and the user gets a raw HTTP error. The sibling
+        # cancel-call service says which device it is for, so this one does too.
+        # getattr because tests build stand-in coordinators without the method.
+        is_doorbell = getattr(self._coordinator, "is_doorbell", None)
+        if is_doorbell is not None and not is_doorbell():
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="open_door_needs_a_doorbell",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()},
+            )
         await self._coordinator.client.async_access_control_open_door(door_id)
 
     async def async_vto_cancel_call(self):

@@ -4,6 +4,8 @@ import pytest
 from custom_components.dahua import binary_sensor as bs
 from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 from custom_components.dahua.binary_sensor import (
+    DEFAULT_PULSE_HOLD_SECONDS,
+    MOMENTARY_EVENT_HOLD_SECONDS,
     DahuaEventSensor,
     DahuaAuthorizedVehicleBinarySensor,
 )
@@ -12,7 +14,6 @@ from custom_components.dahua.const import (
     MOTION_SENSOR_DEVICE_CLASS,
     SAFETY_DEVICE_CLASS,
     SOUND_DEVICE_CLASS,
-    VOLUME_HIGH_ICON,
 )
 
 
@@ -137,8 +138,14 @@ def test_device_class_mapping(sensor, event_name, expected):
     assert sensor(event_name).device_class == expected
 
 
-def test_audio_events_get_the_volume_icon(sensor):
-    assert sensor("AudioMutation").icon == VOLUME_HIGH_ICON
+def test_no_event_sensor_chooses_an_icon_in_code(sensor):
+    """The audio events' volume glyph moved to icons.json, keyed on the same
+    slug as their name and their unique id.
+
+    Asserted as None rather than deleted, because `Entity.icon` returns
+    `_attr_icon` whenever it is set and would then win over the file silently.
+    The glyph itself is pinned in test_entity_icons_come_from_icons_json.py."""
+    assert sensor("AudioMutation").icon is None
     assert sensor("VideoMotion").icon is None
 
 
@@ -278,4 +285,436 @@ def test_authorized_vehicle_sensor_state_and_attributes():
     # Expired hold time
     c._last_plate_timestamp = int(time.time()) - 120
     assert s.is_on is False
+
+
+# --- the event sensor's own timer --------------------------------------------
+#
+# test_momentary_sensors.py covers what `is_on` and `_hold` decide. What decides
+# whether anybody ever asks them again is `_async_event_fired`, and that had nothing
+# on it: `is_on` going false on its own is not enough, because nothing would look
+# again and the sensor would keep showing on until some unrelated event wrote to it.
+
+@pytest.fixture
+async def event_sensor(hass, monkeypatch):
+    """A real event sensor with hass attached and its state writes counted."""
+    writes = []
+    monkeypatch.setattr(bs.DahuaBaseEntity, "__init__", lambda self, c, e: None)
+    monkeypatch.setattr(bs.BinarySensorEntity, "__init__", lambda self: None)
+    monkeypatch.setattr(
+        DahuaEventSensor, "schedule_update_ha_state",
+        lambda self, force_refresh=False: writes.append(1), raising=False)
+
+    def build(event_name, coordinator):
+        s = DahuaEventSensor(coordinator, object(), event_name)
+        s.hass = hass
+        return s
+
+    build.writes = writes
+    return build
+
+
+async def test_a_momentary_event_arms_a_timer_to_look_again(event_sensor):
+    """A doorbell press has no Stop coming, so the sensor has to be asked again once
+    the hold is up. The timer is the only thing that makes that happen."""
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = int(time.time())
+
+    s._async_event_fired()
+
+    assert event_sensor.writes, "Home Assistant was not told the state changed"
+    assert s._unsub_timer is not None, "nothing will ever ask this sensor again"
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_an_ordinary_event_arms_no_timer(event_sensor):
+    """Motion sends a Start and a Stop. Clearing it on a timer would end motion
+    detection early for everybody, which is far worse than the bug the hold fixes."""
+    c = _Coordinator()
+    s = event_sensor("VideoMotion", c)
+    await s.async_added_to_hass()
+    c.timestamps["VideoMotion"] = int(time.time())
+
+    s._async_event_fired()
+
+    assert event_sensor.writes, "the state was not written"
+    assert s._unsub_timer is None, "gave motion a hold it must not have"
+
+
+async def test_a_code_the_device_pulses_gets_the_default_hold(event_sensor):
+    """Whether a code is momentary is learned from the first event rather than known
+    at setup, so a code not on the explicit list still gets a timer once the device
+    has pulsed it."""
+    c = _Coordinator()
+    c.event_is_momentary = lambda name: True
+    s = event_sensor("CrossLineDetection", c)
+    await s.async_added_to_hass()
+    c.timestamps["CrossLineDetection"] = int(time.time())
+
+    s._async_event_fired()
+
+    assert s._hold() == DEFAULT_PULSE_HOLD_SECONDS
+    assert s._unsub_timer is not None
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_a_stop_does_not_arm_a_hold(event_sensor):
+    """A Stop clears the timestamp. Arming a hold on the way down would schedule a
+    wake-up for a sensor that is already off, and on a device that sends Start/Stop
+    pairs that is one stray timer per event."""
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = 0
+
+    s._async_event_fired()
+
+    assert event_sensor.writes, "the Stop was not shown"
+    assert s._unsub_timer is None, "armed a timer for an event that had ended"
+
+
+async def test_a_second_press_replaces_the_timer_rather_than_adding_one(event_sensor):
+    """Otherwise the first timer still fires and clears the sensor while the second
+    press should still be holding it on."""
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = int(time.time())
+    s._async_event_fired()
+    first = s._unsub_timer
+
+    c.timestamps["DoorbellPressed"] = int(time.time())
+    s._async_event_fired()
+
+    assert s._unsub_timer is not first, "re-used the spent timer handle"
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_the_expired_hold_clears_its_handle_and_asks_again(event_sensor):
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = int(time.time())
+    s._async_event_fired()
+    # Held deliberately: _async_hold_expired drops the handle without calling it,
+    # which is right for a timer that has fired but leaves a real one scheduled here.
+    cancel = s._unsub_timer
+    before = len(event_sensor.writes)
+
+    s._async_hold_expired()
+
+    assert s._unsub_timer is None
+    assert len(event_sensor.writes) > before, "the hold expired without telling anyone"
+    cancel()
+
+
+async def test_removal_cancels_a_pending_hold(event_sensor):
+    """A timer left running fires into an entity Home Assistant has already removed."""
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = int(time.time())
+    s._async_event_fired()
+    assert s._unsub_timer is not None
+
+    await s.async_will_remove_from_hass()
+
+    assert s._unsub_timer is None
+
+
+async def test_removal_is_safe_when_no_hold_is_pending(event_sensor):
+    c = _Coordinator()
+    s = event_sensor("VideoMotion", c)
+    await s.async_added_to_hass()
+
+    await s.async_will_remove_from_hass()
+
+    assert s._unsub_timer is None
+
+
+async def test_the_explicit_list_is_used_without_asking_the_device(event_sensor):
+    """Both rules apply to a doorbell press once the device has pulsed it, and today
+    they happen to give the same five seconds -- so comparing the numbers would prove
+    nothing. What the precedence actually means is that the explicit entry is taken
+    without consulting `event_is_momentary` at all, which is what this checks. If the
+    two values ever diverge, this is already testing the right thing."""
+    asked = []
+    c = _Coordinator()
+    c.event_is_momentary = lambda name: asked.append(name) or True
+    s = event_sensor("DoorbellPressed", c)
+
+    hold = s._hold()
+
+    assert hold == MOMENTARY_EVENT_HOLD_SECONDS["DoorbellPressed"]
+    assert asked == [], "consulted the device for a code that is on the explicit list"
+
+
+async def test_a_code_on_neither_list_waits_for_a_stop(event_sensor):
+    """The default. An event the device sends Start/Stop for has no hold at all, and
+    `None` is what says so -- not a zero, which would read as an expired hold."""
+    c = _Coordinator()
+    s = event_sensor("VideoMotion", c)
+
+    assert s._hold() is None
+
+
+# --- the authorized vehicle sensor when it is actually running ---------------
+#
+# Everything above reads properties off a constructed object. `async_added_to_hass`
+# is the largest untested block in this module: it subscribes to plate updates and,
+# separately, restores the sensor's state after a reload. A recorder is reloaded
+# whenever any of its options change, so that restore path runs often.
+
+@pytest.fixture
+async def vehicle(hass, monkeypatch):
+    """A real authorized-vehicle sensor, attached to a real hass.
+
+    Async because `hass` is: the only other fixture in this suite that depends on it
+    is async too, and that is the shape known to work here.
+
+    Only `schedule_update_ha_state` is stubbed -- the entity is not registered with a
+    platform, so the real one has nothing to write to. Calls are counted on the
+    fixture itself, because "did it tell Home Assistant" is one of the things worth
+    asserting, and hanging an attribute off an HA entity is asking for trouble.
+    """
+    writes = []
+    monkeypatch.setattr(
+        DahuaAuthorizedVehicleBinarySensor, "schedule_update_ha_state",
+        lambda self, force_refresh=False: writes.append(1), raising=False)
+
+    def build(coordinator):
+        s = DahuaAuthorizedVehicleBinarySensor(coordinator, object())
+        s.hass = hass
+        return s
+
+    build.writes = writes
+    return build
+
+
+async def test_an_authorized_plate_turns_the_sensor_on_and_arms_the_auto_off(vehicle):
+    c = _Coordinator()
+    s = vehicle(c)
+    await s.async_added_to_hass()
+    assert c._plate_listeners, "never subscribed, so the rest proves nothing"
+
+    c._last_plate = "ABC1234"
+    c._last_plate_data = {"vehicle_brand": "Volkswagen", "direction": "Approach"}
+    c._last_plate_timestamp = int(time.time())
+    c._plate_listeners[0]()
+
+    assert s.is_on is True
+    assert s._last_matched_plate == "ABC1234"
+    assert s._last_matched_plate_data["vehicle_brand"] == "Volkswagen"
+    assert s._unsub_timer is not None, "nothing will ever turn this off"
+    assert vehicle.writes, "Home Assistant was not told the state changed"
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_the_matched_plate_data_is_copied_not_referenced(vehicle):
+    """The sensor keeps what matched so the attributes still describe that vehicle
+    after the coordinator has moved on to the next plate. Holding the coordinator's
+    own dict would make the attributes change under the user."""
+    c = _Coordinator()
+    s = vehicle(c)
+    await s.async_added_to_hass()
+    c._last_plate = "ABC1234"
+    c._last_plate_data = {"vehicle_brand": "Volkswagen"}
+    c._last_plate_timestamp = int(time.time())
+    c._plate_listeners[0]()
+
+    c._last_plate_data["vehicle_brand"] = "Something else entirely"
+
+    assert s._last_matched_plate_data["vehicle_brand"] == "Volkswagen"
+    assert s.extra_state_attributes["last_matched_brand"] == "Volkswagen"
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_an_unauthorized_plate_does_not_turn_it_on_but_still_refreshes(vehicle):
+    """A plate that is not on the list must not raise the sensor. It does still write
+    state, because the attributes carry the authorized list and the hold time and a
+    reader looking at the card should see current values."""
+    c = _Coordinator()
+    s = vehicle(c)
+    await s.async_added_to_hass()
+
+    c._last_plate = "UNKNOWN99"
+    c._last_plate_timestamp = int(time.time())
+    c._plate_listeners[0]()
+
+    assert s.is_on is False
+    assert s._unsub_timer is None, "armed a timer for a plate it did not match"
+    assert s._last_matched_plate is None
+    assert vehicle.writes, "an unauthorized plate left the card stale"
+
+
+async def test_a_second_authorized_plate_does_not_leave_two_timers(vehicle):
+    """The second match cancels the first timer before arming its own. Without that
+    the earlier one still fires and clears the sensor while the later plate should
+    still be holding it on."""
+    c = _Coordinator()
+    s = vehicle(c)
+    await s.async_added_to_hass()
+    c._last_plate = "ABC1234"
+    c._last_plate_timestamp = int(time.time())
+    c._plate_listeners[0]()
+    first = s._unsub_timer
+
+    c._last_plate = "XYZ5678"
+    c._last_plate_timestamp = int(time.time())
+    c._plate_listeners[0]()
+
+    assert s._unsub_timer is not first, "re-used the old timer handle"
+    assert s._last_matched_plate == "XYZ5678"
+
+    await s.async_will_remove_from_hass()
+
+
+# --- restoring state across a reload ----------------------------------------
+
+async def test_a_plate_seen_just_before_a_reload_is_still_on_afterwards(vehicle):
+    """The reason the recheck exists. A recorder reloads whenever an option changes,
+    and a vehicle recognised seconds earlier should not be forgotten because of it."""
+    c = _Coordinator()
+    c._last_plate = "ABC1234"
+    c._last_plate_data = {"vehicle_brand": "Volkswagen"}
+    c._last_plate_timestamp = int(time.time()) - 5
+    s = vehicle(c)
+
+    await s.async_added_to_hass()
+
+    assert s.is_on is True
+    assert s._last_matched_plate == "ABC1234"
+    assert s._unsub_timer is not None
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_the_restored_hold_runs_from_when_the_plate_was_seen(vehicle):
+    """Not from when the reload happened. Measuring the hold from now would extend it
+    by however long the sensor was off, so every reload would keep the sensor on for
+    a further full hold -- and on a recorder whose options are being adjusted, that
+    stacks up."""
+    c = _Coordinator()
+    seen_at = int(time.time()) - 50          # 50s ago, hold is 60s
+    c._last_plate = "ABC1234"
+    c._last_plate_timestamp = seen_at
+    s = vehicle(c)
+
+    await s.async_added_to_hass()
+
+    # 10s of hold left, not 60. Compared against the plate's own timestamp rather
+    # than against now, which is the whole point.
+    assert s._active_until == seen_at + 60
+    assert s._active_until - time.time() < 15, "the hold was restarted, not resumed"
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_a_plate_older_than_the_hold_does_not_come_back_on(vehicle):
+    c = _Coordinator()
+    c._last_plate = "ABC1234"
+    c._last_plate_timestamp = int(time.time()) - 120     # hold is 60
+    s = vehicle(c)
+
+    await s.async_added_to_hass()
+
+    assert s.is_on is False
+    assert s._unsub_timer is None
+    assert s._last_matched_plate is None
+
+
+async def test_an_unauthorized_recent_plate_does_not_come_back_on(vehicle):
+    c = _Coordinator()
+    c._last_plate = "UNKNOWN99"
+    c._last_plate_timestamp = int(time.time())
+    s = vehicle(c)
+
+    await s.async_added_to_hass()
+
+    assert s.is_on is False
+    assert s._unsub_timer is None
+
+
+async def test_a_fresh_install_with_no_plate_yet_restores_nothing(vehicle):
+    """The timestamp guard. Without it a zero timestamp is compared against the hold
+    and, on a coordinator that has never seen a plate, `is_plate_authorized` decides
+    the outcome of an event that never happened."""
+    c = _Coordinator()
+    assert c._last_plate_timestamp == 0
+    s = vehicle(c)
+
+    await s.async_added_to_hass()
+
+    assert s.is_on is False
+    assert s._unsub_timer is None
+
+
+# --- letting go -------------------------------------------------------------
+
+async def test_the_auto_off_clears_its_own_handle(vehicle):
+    """`_unsub_timer` is what the next match cancels and what removal cancels. A fired
+    timer that leaves its handle behind would have both calling a spent callback."""
+    c = _Coordinator()
+    s = vehicle(c)
+    await s.async_added_to_hass()
+    c._last_plate = "ABC1234"
+    c._last_plate_timestamp = int(time.time())
+    c._plate_listeners[0]()
+    assert s._unsub_timer is not None
+    # Held on to deliberately: _async_auto_off drops the handle without calling it,
+    # which is right when the timer has just fired but leaves a real one scheduled
+    # here. Cancelling it keeps the test from tripping the lingering-timer check.
+    cancel = s._unsub_timer
+
+    s._async_auto_off()
+
+    assert s._unsub_timer is None
+    assert vehicle.writes
+    cancel()
+
+
+async def test_removal_stops_the_plate_subscription(vehicle):
+    """Same fault this sensor had before #842: the callback outlived the entity."""
+    c = _Coordinator()
+    s = vehicle(c)
+    await s.async_added_to_hass()
+    assert c._plate_listeners
+
+    assert s._on_remove, "registered nothing to undo the subscription"
+    for undo in list(s._on_remove):
+        undo()
+
+    assert c._plate_listeners == [], "the callback outlived the entity"
+
+
+async def test_removal_cancels_a_pending_auto_off(vehicle):
+    """A timer left running after removal fires into an entity Home Assistant has
+    already taken away."""
+    c = _Coordinator()
+    s = vehicle(c)
+    await s.async_added_to_hass()
+    c._last_plate = "ABC1234"
+    c._last_plate_timestamp = int(time.time())
+    c._plate_listeners[0]()
+    assert s._unsub_timer is not None
+
+    await s.async_will_remove_from_hass()
+
+    assert s._unsub_timer is None
+
+
+async def test_removal_is_safe_with_no_timer_pending(vehicle):
+    c = _Coordinator()
+    s = vehicle(c)
+    await s.async_added_to_hass()
+
+    await s.async_will_remove_from_hass()
+
+    assert s._unsub_timer is None
 

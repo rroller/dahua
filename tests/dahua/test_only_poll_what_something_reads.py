@@ -205,9 +205,23 @@ def test_the_platform_asks_the_coordinator_rather_than_repeating_the_rule(module
         "%s still spells out the recorder rule itself" % module)
 
 
-def test_the_poll_gates_the_fetch_on_the_shared_rule():
-    """Driving the real poll needs the whole of Home Assistant, so this reads the source:
-    the coaxial branch must be gated on `reads_coaxial_status`, not on `_wanted_by`."""
+def test_the_poll_gates_each_coaxial_fetch_on_its_own_rule():
+    """Driving the real poll needs the whole of Home Assistant, so this reads the source.
+
+    Two branches read this: RPC2 on a direct camera and CGI otherwise. Both go
+    through `_async_coaxial_status` since #848, where the RPC2 one calling the client
+    directly meant a "Method not found!" refusal failed the entry's first refresh and
+    left it in setup_retry. This asserted `len(gates) == 1` before that, which is why
+    the fix turned it red.
+
+    What matters is unchanged. The CGI branch is gated on `reads_coaxial_status`, the
+    rule the entities share, rather than on `_wanted_by` written out again: that is
+    the fix for a recorder answering this endpoint about 7,900 times a day for a value
+    no entity displayed. The RPC2 branch keeps its own gate, which
+    `reads_coaxial_status` explains in its docstring -- `uses_rpc2_deterrence` is
+    already False unless a speaker or light was detected or manually enabled, so it
+    cannot fetch for nothing.
+    """
     import ast
 
     from .integration_source import definition
@@ -221,6 +235,17 @@ def test_the_poll_gates_the_fetch_on_the_shared_rule():
         if isinstance(node, ast.If)
         and any("_async_coaxial_status" in ast.unparse(stmt) for stmt in node.body)]
 
-    assert len(gates) == 1, "expected one coaxial branch, found %s" % gates
-    assert "self.reads_coaxial_status()" in gates[0], (
-        "the coaxial fetch is not gated on the shared rule: %s" % gates[0])
+    assert len(gates) == 2, (
+        "expected the RPC2 and the CGI branch, both through the wrapper: %s" % gates)
+
+    cgi = [gate for gate in gates if "reads_coaxial_status" in gate]
+    rpc2 = [gate for gate in gates if "uses_rpc2_deterrence" in gate]
+
+    assert len(cgi) == 1, (
+        "no branch is gated on the shared rule, so the CGI fetch is back to asking "
+        "for a value nothing reads: %s" % gates)
+    assert len(rpc2) == 1, (
+        "the RPC2 branch is not gated on uses_rpc2_deterrence: %s" % gates)
+    assert "_wanted_by" not in cgi[0], (
+        "the CGI branch spells the platform rule out again instead of delegating to "
+        "reads_coaxial_status, which is how the two drifted apart before: %s" % cgi[0])

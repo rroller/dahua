@@ -1,7 +1,7 @@
 """Switch platform for dahua."""
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
@@ -279,6 +279,8 @@ class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua siren switch class. Used to enable or disable camera built in sirens"""
 
+    _attr_device_class = SwitchDeviceClass.SWITCH
+
     def __init__(self, coordinator, entry, *, translation_key):
         """`translation_key` rather than a name, and keyword only.
 
@@ -338,6 +340,7 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
     """Switch for a physical alarm/relay output."""
 
+    _attr_device_class = SwitchDeviceClass.SWITCH
     _attr_translation_key = "alarm_output"
 
     def __init__(self, coordinator, entry, output: int):
@@ -368,6 +371,7 @@ class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua privacy mode switch class. Used to enable or disable the lens privacy mask"""
 
+    _attr_device_class = SwitchDeviceClass.SWITCH
     _attr_translation_key = "privacy_mode"
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument

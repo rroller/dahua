@@ -33,6 +33,7 @@ from aiohttp import ClientResponseError
 
 import custom_components.dahua as dahua
 from custom_components.dahua import CAPABILITY_REFUSED
+from custom_components.dahua.rpc2 import Rpc2MethodRefused
 
 ADDRESS = "192.168.0.213"
 DEVICE = "192.168.0.213:80"
@@ -50,8 +51,12 @@ def _refusal(status):
     return ClientResponseError(None, None, status=status, message="Bad Request")
 
 
-def _coordinator(raises=None, returns=None):
-    """Just enough coordinator for the wrapper, which is all it touches."""
+def _coordinator(raises=None, returns=None, over_rpc2=False):
+    """Just enough coordinator for the wrapper, which is all it touches.
+
+    `over_rpc2` is the direct-camera transport. The fake had only the CGI call, so
+    nothing here could reach the branch that was taking entries offline in #848.
+    """
     calls = []
 
     async def async_get_coaxial_control_io_status(channel):
@@ -60,14 +65,25 @@ def _coordinator(raises=None, returns=None):
             raise raises
         return returns
 
+    async def async_get_coaxial_control_io_status_rpc2():
+        calls.append("rpc2")
+        if raises is not None:
+            raise raises
+        return returns
+
     coordinator = SimpleNamespace(
         _address=ADDRESS,
+        uses_rpc2_deterrence=lambda: over_rpc2,
         client=SimpleNamespace(
             device_key=DEVICE,
-            async_get_coaxial_control_io_status=async_get_coaxial_control_io_status),
+            async_get_coaxial_control_io_status=async_get_coaxial_control_io_status,
+            async_get_coaxial_control_io_status_rpc2=(
+                async_get_coaxial_control_io_status_rpc2)),
         _calls=calls)
     coordinator._async_coaxial_status = (
         dahua.DahuaDataUpdateCoordinator._async_coaxial_status.__get__(coordinator))
+    coordinator._previous_coaxial_status = (
+        dahua.DahuaDataUpdateCoordinator._previous_coaxial_status.__get__(coordinator))
     return coordinator
 
 
@@ -86,6 +102,37 @@ async def test_the_400_this_recorder_actually_sends_is_covered():
     """Named on its own because 400 is the one measured here, and the pair already used
     for the CGI endpoints is (404, 501), which would have missed it."""
     assert 400 in CAPABILITY_REFUSED
+
+
+async def test_a_refusal_holds_the_last_reading_instead_of_reading_off():
+    """The entities say they hold their last value, and the poll used to make that
+    false: it builds its data from scratch, so a refused read left the keys out and
+    the siren switch read "off" while the device was on."""
+    coordinator = _coordinator(raises=_refusal(400))
+    coordinator.data = {
+        "status.status.Speaker": "On",
+        "status.status.WhiteLight": "Off",
+        "status.PresetID": "3",
+    }
+
+    result = await coordinator._async_coaxial_status(12)
+
+    assert result == {"status.status.Speaker": "On",
+                      "status.status.WhiteLight": "Off"}
+    assert "status.PresetID" not in result, (
+        "another read's fresh value would have been overwritten with a stale one")
+
+
+async def test_an_rpc2_refusal_holds_the_last_reading_too():
+    coordinator = _coordinator(
+        over_rpc2=True,
+        raises=Rpc2MethodRefused("refused", code=268894210,
+                                 message="Method not found!"))
+    coordinator.data = {"status.Speaker": "On"}
+
+    result = await coordinator._async_coaxial_status(1)
+
+    assert result == {"status.Speaker": "On"}
 
 
 async def test_a_reading_is_passed_through_when_the_device_answers():
@@ -193,15 +240,101 @@ def test_the_poll_reads_the_status_through_the_wrapper():
 
     update = definition("_async_update_data")
 
-    gathered = "\n".join(
-        ast.unparse(node) for node in ast.walk(update)
-        if isinstance(node, ast.Call)
-        and ast.unparse(node.func).endswith("coros.append"))
+    appends = [node for node in ast.walk(update)
+               if isinstance(node, ast.Call)
+               and ast.unparse(node.func).endswith("coros.append")]
+    gathered = "\n".join(ast.unparse(node) for node in appends)
 
     assert "self._async_coaxial_status" in gathered, (
         "the poll does not gather through the wrapper, so a refusal still fails the entry")
-    assert "async_get_coaxial_control_io_status(" not in gathered, (
-        "the gather still calls the client directly, so the wrapper is bypassed")
+
+    # By the *name* of every gathered call, not by searching the text for one
+    # spelling. This read `"async_get_coaxial_control_io_status(" not in gathered`,
+    # and the RPC2 call is `async_get_coaxial_control_io_status_rpc2(`, so the open
+    # paren let it straight past the guard written to catch it (#848).
+    called = set()
+    for append in appends:
+        for node in ast.walk(append):
+            if isinstance(node, ast.Call):
+                func = node.func
+                called.add(func.attr if isinstance(func, ast.Attribute)
+                           else getattr(func, "id", ""))
+    direct = sorted(name for name in called
+                    if name.startswith("async_get_coaxial_control_io_status"))
+
+    assert not direct, (
+        "the gather calls the client directly, so the wrapper is bypassed: %s" % direct)
+
+
+# --- the RPC2 transport, which #848 was about --------------------------------
+#
+# An AD410 answers CoaxialControlIO.getStatus with "Method not found!". The refusal
+# raises Rpc2MethodRefused rather than ClientResponseError, so it missed the one
+# except clause, escaped the gather, and became UpdateFailed on the *first* refresh:
+# the entry never finished setup at all, on two reporters' AD410s and on a third
+# person's cameras answering "Authority:check failure".
+
+
+@pytest.mark.parametrize("code,message", [
+    (268894210, "Method not found!"),          # velocibear and gabberpocky, AD410
+    (285278249, "Authority:check failure."),   # glenowen, DH-IPC-PDW3849
+])
+async def test_an_rpc2_refusal_yields_no_data_instead_of_raising(code, message):
+    """Both measured codes. "Authority:check failure" is not a permission problem:
+    configManager answers it for a table name that does not exist, so it means the
+    same thing as "Method not found" for our purposes."""
+    coordinator = _coordinator(
+        over_rpc2=True,
+        raises=Rpc2MethodRefused("refused", code=code, message=message))
+
+    assert await coordinator._async_coaxial_status(1) is None
+
+
+async def test_the_rpc2_transport_is_the_one_asked():
+    """Or the fix would read the CGI endpoint on a camera that has no CGI path for
+    this, which is a different failure wearing the same green tests."""
+    coordinator = _coordinator(over_rpc2=True, returns={"a": "b"})
+
+    assert await coordinator._async_coaxial_status(1) == {"a": "b"}
+    assert coordinator._calls == ["rpc2"]
+
+
+async def test_a_stale_login_still_raises():
+    """Worth letting out. The session is rebuilt when it propagates, and swallowing
+    it as "this device has no siren" would drop a capability the device does have."""
+    coordinator = _coordinator(
+        over_rpc2=True,
+        raises=Rpc2MethodRefused("refused", code=287637504,
+                                 message="session is out of date"))
+
+    with pytest.raises(Rpc2MethodRefused):
+        await coordinator._async_coaxial_status(1)
+
+
+async def test_an_rpc2_refusal_is_reported_once_per_device():
+    coordinator = _coordinator(
+        over_rpc2=True,
+        raises=Rpc2MethodRefused("refused", code=268894210,
+                                 message="Method not found!"))
+
+    await coordinator._async_coaxial_status(1)
+    await coordinator._async_coaxial_status(1)
+
+    assert (DEVICE, "rpc2") in dahua._CAPABILITY_REFUSALS_REPORTED
+
+
+async def test_an_rpc2_refusal_does_not_stop_it_asking():
+    """Same reasoning as the CGI path: a refusal costs a reading, not the capability."""
+    coordinator = _coordinator(
+        over_rpc2=True,
+        raises=Rpc2MethodRefused("refused", code=268894210,
+                                 message="Method not found!"))
+
+    await coordinator._async_coaxial_status(1)
+    await coordinator._async_coaxial_status(1)
+    await coordinator._async_coaxial_status(1)
+
+    assert coordinator._calls == ["rpc2", "rpc2", "rpc2"]
 
 
 # --- and the reported-once state is forgotten with the host -----------------

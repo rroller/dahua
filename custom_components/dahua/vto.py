@@ -178,6 +178,28 @@ class DahuaVTOClient(asyncio.Protocol):
         if not self.disconnected.done():
             self.disconnected.set_result(True)
 
+    def close(self) -> None:
+        """Drop the connection and stop the keep-alive.
+
+        Cancelling the coordinator's stream task is not enough: that task is
+        parked on ``await self.disconnected`` and cancelling a task does not
+        close an asyncio transport. Without this the socket to port 5000 stays
+        open with its event subscription, the keep-alive keeps rescheduling
+        itself on every reply, and the doorbell keeps pushing events into an
+        entry Home Assistant has already unloaded -- once per reload.
+        """
+        if self._keep_alive_handle is not None:
+            self._keep_alive_handle.cancel()
+            self._keep_alive_handle = None
+        transport = self.transport
+        if transport is not None:
+            try:
+                transport.close()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("Failed to close the VTO transport", exc_info=True)
+        if not self.disconnected.done():
+            self.disconnected.set_result(True)
+
     def send(self, action, handler, params=None):
         if params is None:
             params = {}
@@ -456,7 +478,21 @@ class DahuaVTOClient(asyncio.Protocol):
             # Another example
             # \x00\x00\x00DHIP\x8c-\x96{\x08\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00{"id":8,"method":"client.notifyEventStream","params":{"SID":513,"eventList":[{"Action":"State","Code":"VideoMotionInfo","Data":[{"Id":0,"Region":[4194303,4194303,4128767,3997695,3801087,3801087,3932159,3407871,3932159,3932158,3932156,3735548,3678204,2101244,2047,2097663,3146239,524799],"RegionName":"Region1","State":"Active","Threshold":54}],"Index":0}]},"session":1722306858}\n
 
-            data = str(response)
+            # Decoded, not `str(response)`. `data_received` slices `self.buffer`,
+            # which is bytes, so `str()` gives the *repr*: a UTF-8 byte becomes the
+            # four characters backslash, x and two hex digits. `\x` is not a valid
+            # JSON escape, so raw_decode refuses the object and extract_json_objects
+            # moves past it. One u-umlaut in a card holder's name dropped the whole
+            # event, in silence. ASCII survived by accident, the repr of ASCII bytes
+            # being the same characters, which is why this held up for so long.
+            #
+            # errors="replace" is required rather than defensive: the DHIP header in
+            # front of every frame is binary and not valid UTF-8, so a strict decode
+            # would raise on every packet.
+            if isinstance(response, (bytes, bytearray)):
+                data = response.decode("utf-8", errors="replace")
+            else:
+                data = str(response)
 
             jsons = DahuaVTOClient.extract_json_objects(data)
             for j in jsons:

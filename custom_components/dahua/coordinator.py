@@ -29,7 +29,8 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import dahua_utils
-from .client import DahuaClient
+from .client import DahuaClient, rpc2_refusal_is_a_stale_login
+from .rpc2 import Rpc2MethodRefused
 from .const import (
     CAMERA,
     CONF_AREA,
@@ -378,6 +379,20 @@ RECENT_EVENT_COUNT = 10
 # 9 is documented by myhomeiot/DahuaVTO as the failed counterpart.
 DOORBELL_STATE_EVENTS = {8: "DoorUnlocked", 9: "DoorUnlockFailed"}
 
+# BackKeyLight States that are known, documented above, and simply not a ring.
+#
+# These were warned about as though nobody had ever seen them, which is the
+# opposite of what the warning is for: it exists to surface a doorbell reporting
+# its ring as a number we cannot read, and a number we can already name is not
+# that. #872 is a VTO2311R-WP reporting 5 during the call teardown -- after
+# HungupPhone, Hangup and IgnoreInvite, immediately before idle -- on a press
+# that had already raised the sensor from States 1 and 2. Nothing was missed and
+# the reporter was asked for it anyway.
+#
+# Deliberately not merged into DOORBELL_STATE_EVENTS: these raise no event of
+# their own. They are only reasons not to complain.
+DOORBELL_KNOWN_QUIET_STATES = frozenset({4, 5, 6, 7, 11})
+
 def doorbell_state(event: dict):
     """The BackKeyLight State as an int, or None if it did not say.
 
@@ -489,6 +504,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # configured_area_name and the authorized plate list, so without a default
     # they fail on the attribute rather than on anything they are testing.
     _channel_config: dict = {}
+
+    # Same reason, and None rather than {} because a dict here would be one dict
+    # shared by every coordinator in the process: eleven channels of a recorder
+    # would pool their counts and the field would name no channel in particular.
+    _events_without_listener: dict = None
 
     """Class to manage fetching data from the API."""
 
@@ -688,8 +708,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ Stop anything we need to stop """
         await _release_host_stream(self)
         if self._vto_task is not None:
-            self._vto_task.cancel()
+            task = self._vto_task
             self._vto_task = None
+            # Close the transport before cancelling: the task is parked on
+            # `await protocol.disconnected`, and cancelling a task does not
+            # close an asyncio transport. Leaving it open leaks the socket to
+            # port 5000, its event subscription and its keep-alive for an entry
+            # that no longer exists, once per reload.
+            client = getattr(self, "_vto_client", None)
+            if client is not None:
+                client.close()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         await self._close_session()
 
     async def _close_session(self) -> None:
@@ -1143,7 +1173,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get preset position", exc_info=exception)
-                    return None
+                    # The preset select reads this key. Carrying the last value
+                    # stops a refusal from resetting the select to "0".
+                    previous = (getattr(self, "data", None) or {}).get(
+                        "status.PresetID"
+                    )
+                    if previous is None:
+                        return None
+                    return {"status.PresetID": previous}
 
             # Figure out which APIs we need to call and then fan out and gather the results
             # Motion detection state is read by the camera entity as well as
@@ -1166,15 +1203,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_event_notifications()))
             if self.supports_alarm_output() and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self.client.async_get_alarm_output_state()))
-            # The siren switch and the security light both read this one.
+            # The siren switch and the security light both read this one, over
+            # RPC2 on a direct camera and over CGI otherwise. Both go through
+            # _async_coaxial_status, because a device that refuses this must not
+            # take the whole entry offline, and the RPC2 branch used to call the
+            # client directly and did exactly that (#848).
+            #
+            # The two conditions stay as they were: reads_coaxial_status explains
+            # why the RPC2 branch keeps its own.
+            coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
             if self.uses_rpc2_deterrence() and self._wanted_by(LIGHT, SWITCH):
                 coros.append(asyncio.ensure_future(
-                    self.client.async_get_coaxial_control_io_status_rpc2()
+                    self._async_coaxial_status(coaxial_channel)
                 ))
             elif self._supports_coaxial_control and self.reads_coaxial_status():
-                coaxial_channel = self._channel_number if self.uses_recorder_deterrence() else 1
-                # Wrapped, because a device that refuses this must not take the whole
-                # entry offline. See _async_coaxial_status.
                 coros.append(
                     asyncio.ensure_future(
                         self._async_coaxial_status(coaxial_channel)
@@ -1451,6 +1493,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             listeners = self._dahua_event_listeners.get(event_key)
             if not listeners:
+                # The event arrived, was decided to belong to this channel, and
+                # updates nothing. Worth counting rather than dropping in silence:
+                # the timestamp a binary sensor reads is written below this line, so
+                # a sensor that exists while its key is absent here is a sensor that
+                # can never move, and from the outside that is indistinguishable
+                # from the device having stopped sending. It is the reading #825 has
+                # been unable to get: the event reaches the bus either way.
+                counts = self._events_without_listener
+                if counts is None:
+                    counts = self._events_without_listener = {}
+                counts[event_key] = counts.get(event_key, 0) + 1
                 continue
 
             if action == "Start":
@@ -1644,9 +1697,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Logged once per state per device, because a doorbell reports its state
         on every call and a warning per ring would be worse than the bug.
         """
-        if numeric_state in DOORBELL_STATE_EVENTS or numeric_state == 0:
+        if (numeric_state in DOORBELL_STATE_EVENTS
+                or numeric_state in DOORBELL_KNOWN_QUIET_STATES
+                or numeric_state == 0):
             # 8 and 9 are the unlock results, handled separately; 0 is idle,
-            # which is the normal way a call ends.
+            # which is the normal way a call ends; and the quiet set is the
+            # documented states that are not rings, which there is nothing to
+            # report about.
             return
         # getattr, like the other per-coordinator state: plenty of tests build a
         # coordinator with object.__new__ and set only what they are about, and
@@ -1660,7 +1717,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         _LOGGER.warning(
             "%s reported doorbell call state %r, which this integration does "
             "not recognise, so no button press was raised. Known states are "
-            "1 and 2 for ringing, 8 and 9 for unlock, 0 for idle. If the "
+            "1 and 2 for ringing, 8 and 9 for unlock, 0 for idle, and "
+            "4, 5, 6, 7 and 11 for call handling that is not a ring. If the "
             "doorbell was ringing when this appeared, please report this state "
             "number at %s so it can be added",
             self.get_device_name(), raw_state, ISSUE_URL,
@@ -2716,9 +2774,41 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         so a capability the user may rely on must not be switched off for the life of the
         process by one bad answer. What changes is that a refusal costs a stale reading
         rather than a failed poll, and says so once rather than every two minutes.
+
+        Covers the RPC2 transport as well as CGI, and did not (#848). An RPC2
+        refusal raises Rpc2MethodRefused rather than ClientResponseError, so it
+        missed the clause below, escaped the gather and became UpdateFailed on
+        the first refresh: an AD410 answering CoaxialControlIO.getStatus with
+        "Method not found!" never finished setup at all. Two reporters, two
+        different codes, and a third device answering "Authority:check failure",
+        which is measured to mean no such method rather than a permission.
+
+        A stale login is re-raised rather than swallowed. That one is worth
+        recovering from, and treating it as "this device has no siren" would
+        silently drop a capability the device does have.
         """
         try:
+            if self.uses_rpc2_deterrence():
+                return await self.client.async_get_coaxial_control_io_status_rpc2()
             return await self.client.async_get_coaxial_control_io_status(channel)
+        except Rpc2MethodRefused as refused:
+            if rpc2_refusal_is_a_stale_login(refused):
+                # The login, not the capability. Let it out so the session is
+                # rebuilt rather than swallowing it as "no such method".
+                raise
+            target = (self.client.device_key, "rpc2")
+            if target not in _CAPABILITY_REFUSALS_REPORTED:
+                _CAPABILITY_REFUSALS_REPORTED.add(target)
+                _LOGGER.warning(
+                    "%s refused the siren and white light state over RPC2 (%s). "
+                    "That is this device saying it does not serve that call, not a "
+                    "fault, so those entities will hold their last value and the "
+                    "rest of this camera is unaffected. Reported once per device",
+                    self._address, refused)
+            else:
+                _LOGGER.debug("%s still refuses coaxial status over RPC2 (%s)",
+                              self._address, refused)
+            return self._previous_coaxial_status()
         except ClientResponseError as error:
             if error.status not in CAPABILITY_REFUSED:
                 raise
@@ -2735,7 +2825,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug(
                     "%s still refuses coaxial status for channel %s (HTTP %s)",
                     self._address, channel, error.status)
-            return None
+            return self._previous_coaxial_status()
+
+    def _previous_coaxial_status(self) -> dict | None:
+        """The last siren and white light reading, so a refusal holds it.
+
+        The entities reading these say they keep their last value on a refusal,
+        but the poll builds its data from scratch and the gather drops a None,
+        so without this the siren switch read "off" for that cycle while the
+        device was on. Only this read's own keys are carried, never every
+        status key, or a stale value would overwrite a fresh one from another
+        coroutine in the same gather. None when there is nothing to hold, which
+        is what the gather already skips.
+        """
+        previous = getattr(self, "data", None) or {}
+        keys = ("status.status.Speaker", "status.status.WhiteLight",
+                "status.Speaker", "status.WhiteLight")
+        carried = {key: previous[key] for key in keys if key in previous}
+        return carried or None
 
     async def _async_fetch_privacy_mode(self) -> dict:
         """ Poll the privacy mode state, keeping the last known value on failure """
