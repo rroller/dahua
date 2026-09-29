@@ -191,24 +191,32 @@ def test_every_switch_has_its_own_unique_id():
     assert all(i.startswith("SERIAL1_") for i in ids)
 
 
-def test_every_switch_is_named_and_none_repeats_the_device():
-    """Four of these name themselves through translations/en.json now. The siren
-    still has its name handed in by the platform, because there can be more than
-    one and they are told apart by index, so it keeps the older check: a name,
-    and not the device's, which `has_entity_name` would then render twice."""
+def test_every_switch_declares_a_translation_key():
+    """All five name themselves through translations/en.json now.
+
+    The docstring here used to say the siren's name was handed in by the
+    platform because there could be several told apart by index. The first half
+    stopped being true and the second half was never true: it varied by whether
+    the host is a recorder, where it is called "Alarm".
+
+    The siren picks between two keys, so the platform passes one and this reads
+    it off the class list instead. Those two literals, and the strings behind
+    them, are pinned in test_entity_names_come_from_translations.py."""
     c = _Coordinator()
     for cls in ALL:
-        switch = _switch(cls, c)
-        # Off the instance. `getattr(cls, "_attr_translation_key")` returns the
-        # metaclass property object rather than None for a class that declares
-        # nothing, so every switch took this branch and the siren was never
-        # checked at all.
-        if switch.translation_key is not None:
-            assert switch.translation_key, cls.__name__
+        if cls is DahuaSirenBinarySwitch:
+            # Its key is chosen by the platform and set on the instance, and
+            # `_switch` builds with object.__new__, so there is nothing on the
+            # class to read. Built properly here instead, both ways round.
+            for key in ("siren", "alarm"):
+                built = object.__new__(cls)
+                built._attr_translation_key = key
+                assert built.translation_key == key
             continue
-        name = switch.name
-        assert name, cls.__name__
-        assert "Garage" not in name, cls.__name__
+        # Off the instance, not the class: `_attr_translation_key` read from a
+        # class is the metaclass's property object, which is truthy, so a
+        # class-level assertion passes for a class that declares nothing.
+        assert _switch(cls, c).translation_key, cls.__name__
 
 
 @pytest.mark.parametrize("cls,key", [
