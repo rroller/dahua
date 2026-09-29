@@ -188,15 +188,10 @@ def test_the_poll_reads_the_status_through_the_wrapper():
     its failure is already handled where it sits. Only what goes into the gather has to be
     wrapped, because only the gather's result is what the entry depends on."""
     import ast
-    import io
-    from pathlib import Path
 
-    source = io.open(
-        Path(__file__).resolve().parents[2]
-        / "custom_components" / "dahua" / "__init__.py", encoding="utf-8").read()
-    update = next(
-        node for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_async_update_data")
+    from .integration_source import definition
+
+    update = definition("_async_update_data")
 
     gathered = "\n".join(
         ast.unparse(node) for node in ast.walk(update)

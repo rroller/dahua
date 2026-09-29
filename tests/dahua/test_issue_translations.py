@@ -33,6 +33,14 @@ def _placeholders(text: str) -> set:
     return set(re.findall(r"\{(\w+)\}", text))
 
 
+# How the code says "raise this issue". The lookbehind keeps an entity's
+# `_attr_translation_key` out of it, which matters now that the scan below covers
+# every module rather than the three that happened to raise an issue when it was
+# written. Compiled once here so the control test exercises this pattern and not a
+# copy of it.
+ISSUE_KEY = re.compile(r'(?<!\w)translation_key="([a-z_]+)"')
+
+
 def test_the_map_above_covers_every_issue_the_code_raises():
     """ISSUE_PLACEHOLDERS is hand written, and everything else in this file is
     parametrized over it, so an issue missing from it is not checked at all.
@@ -41,16 +49,39 @@ def test_the_map_above_covers_every_issue_the_code_raises():
     channel_not_added left it untested here and every test in this file still passed.
     Deriving the set from the source makes the drift impossible instead.
     """
-    source = ""
-    for name in ("config_flow.py", "__init__.py", "repairs.py"):
-        source += (TRANSLATIONS.parent / name).read_text(encoding="utf-8")
+    # Every module, not the three that happened to raise an issue when this
+    # was written. Two of them moved to host.py and this reported them as
+    # being in the map but not the code, which is exactly backwards.
+    from .integration_source import source as integration_source
 
-    raised = set(re.findall(r'translation_key="([a-z_]+)"', source))
+    source = integration_source()
+
+    raised = set(ISSUE_KEY.findall(source))
 
     assert raised == set(ISSUE_PLACEHOLDERS), (
         "in the code but not the map: %s; in the map but not the code: %s"
         % (sorted(raised - set(ISSUE_PLACEHOLDERS)),
            sorted(set(ISSUE_PLACEHOLDERS) - raised)))
+
+
+def test_the_pattern_does_not_collect_an_entitys_translation_key():
+    """`_attr_translation_key` is a different thing that reads the same.
+
+    The lookbehind is what keeps them apart, and without a control it is a
+    character nobody would miss if it went. Entities happen to write theirs with
+    spaces around the `=`, so they slip past by luck rather than by design, and
+    widening the scan above from three files to the whole package is what brought
+    them within reach of this pattern in the first place.
+    """
+    sample = (
+        'ir.async_create_issue(hass, DOMAIN, key, translation_key="device_unreachable")\n'
+        '_attr_translation_key="firmware_version"\n'
+        '    _attr_translation_key = "serial_number"\n'
+    )
+
+    assert set(ISSUE_KEY.findall(sample)) == {"device_unreachable"}
+    assert "firmware_version" in re.findall(r'translation_key="([a-z_]+)"', sample), \
+        "the sample no longer reproduces what the lookbehind is for"
 
 
 @pytest.mark.parametrize("key", sorted(ISSUE_PLACEHOLDERS))
