@@ -941,10 +941,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._supports_event_notifications = False
                 _LOGGER.debug("Device supports event notifications=%s", self._supports_event_notifications)
 
-                await self._async_probe_cloud_upgrade()
-                _LOGGER.debug(
-                    "Device supports cloud upgrade=%s", self._supports_cloud_upgrade
-                )
+                if self._wanted_by(UPDATE):
+                    await self._async_probe_cloud_upgrade()
+                    _LOGGER.debug(
+                        "Device supports cloud upgrade=%s",
+                        self._supports_cloud_upgrade,
+                    )
 
                 # PTZ position readback. The SDT4E425 PTZ sensor is controllable,
                 # but firmware V3.200.0000027.6.R returns HTTP 400 for CGI getStatus.
@@ -1251,11 +1253,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     version = cloud_upgrade_version(info)
                     if version is not None:
                         self._cloud_firmware_version = version
-                    self._cloud_upgrade_checked_at = time.monotonic()
                 except Exception:  # pylint: disable=broad-except
                     _LOGGER.debug(
                         "Could not read the cloud upgrade record", exc_info=True
                     )
+                finally:
+                    # Stamped whether or not the read worked: a device that
+                    # starts refusing stays on the last known answer for the
+                    # refresh interval instead of being retried every poll.
+                    self._cloud_upgrade_checked_at = time.monotonic()
 
             if (getattr(self, "_supports_lighting_scheme_illuminator", False)
                     and self._wanted_by(LIGHT)):

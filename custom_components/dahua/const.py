@@ -91,8 +91,8 @@ DEFAULT_SCAN_INTERVAL = 30
 MIN_SCAN_INTERVAL = 10
 # How long a read of the device's cloud upgrade record is reused. The device
 # only rewrites that record after its own OTA check (daily by default), so the
-# informational update entity does not need it re-read on every poll -- and on
-# an NVR every channel shares the same host-wide record.
+# informational update entity does not need it re-read on every poll. The
+# record is host-wide, but the reuse is per channel that reads it.
 FIRMWARE_UPGRADE_REFRESH_SECONDS = 6 * 60 * 60
 
 STARTUP_MESSAGE = f"""

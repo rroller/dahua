@@ -8,6 +8,7 @@ Dahua firmware strings, which Home Assistant's own ``AwesomeVersion`` cannot do
 reads a raised comparison as "an update is available".
 """
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -16,12 +17,13 @@ from homeassistant.components.update import UpdateEntityFeature
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua import entity as entity_module
 from custom_components.dahua import update as update_module
+from custom_components.dahua.const import FIRMWARE_UPGRADE_REFRESH_SECONDS
 from custom_components.dahua.dahua_utils import (
     clean_firmware_version,
     cloud_upgrade_version,
     firmware_is_newer,
 )
-from custom_components.dahua.rpc2 import DahuaRpc2Client
+from custom_components.dahua.rpc2 import DahuaRpc2Client, Rpc2MethodRefused
 from custom_components.dahua.update import DahuaFirmwareUpdateEntity
 
 # --- reading the two version strings -----------------------------------------
@@ -122,7 +124,7 @@ def _coordinator(
 
 
 def _setup(coordinator):
-    hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
+    hass = type("H", (), {"data": {}})()
     # One entry owns one coordinator per channel, and setup walks them all.
     entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
     added = []
@@ -241,6 +243,47 @@ async def test_a_probe_refusal_is_recorded_rather_than_raised():
 
     assert coordinator.supports_cloud_upgrade() is False
     assert coordinator._probe_refusals["cloud_upgrade"]["error"] == "ConnectionError"
+
+
+async def test_an_rpc2_refusal_is_recorded_as_an_answer():
+    """Rpc2MethodRefused carries a code, not a status, and it is still the
+    device answering: this firmware does not serve the table."""
+    coordinator = _probe_coordinator(
+        _ProbeClient(
+            error=Rpc2MethodRefused(
+                "Dahua RPC2 method configManager.getConfig returned result=false",
+                code=268959743,
+                message="Unknown error",
+            )
+        )
+    )
+
+    await coordinator._async_probe_cloud_upgrade()
+
+    refusal = coordinator._probe_refusals["cloud_upgrade"]
+    assert coordinator.supports_cloud_upgrade() is False
+    assert refusal["answered"] is True
+    assert refusal["status"] == 268959743
+
+
+# --- the reuse window --------------------------------------------------------
+
+
+def test_the_record_is_reused_until_the_window_expires():
+    """The device rewrites it only after its own OTA check, so the answer is
+    reused for hours -- and read again once the window has passed."""
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+
+    coordinator._cloud_upgrade_checked_at = None
+    assert coordinator._cloud_upgrade_read_is_due() is True, "never read"
+
+    coordinator._cloud_upgrade_checked_at = time.monotonic()
+    assert coordinator._cloud_upgrade_read_is_due() is False, "just read"
+
+    coordinator._cloud_upgrade_checked_at = (
+        time.monotonic() - FIRMWARE_UPGRADE_REFRESH_SECONDS - 1
+    )
+    assert coordinator._cloud_upgrade_read_is_due() is True, "window passed"
 
 
 # --- the RPC2 read -----------------------------------------------------------

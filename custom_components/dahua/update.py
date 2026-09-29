@@ -13,6 +13,7 @@ answers one question: is there a newer firmware than the one running?
 """
 
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 
 from custom_components.dahua import entry_coordinators
@@ -41,6 +42,11 @@ class DahuaFirmwareUpdateEntity(DahuaBaseEntity, UpdateEntity):
     """The running firmware against the newest the device knows of."""
 
     _attr_translation_key = "firmware_update"
+
+    # Informational, not a control: it belongs under Diagnostics, like the
+    # firmware version sensor. (The base would infer this from the missing
+    # INSTALL feature; stated because it is a decision, not a side effect.)
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     # No install, no backup, no specific version: this reports and stops.
     _attr_supported_features = UpdateEntityFeature(0)

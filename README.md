@@ -652,7 +652,7 @@ Cancel Call | On a VTO (doorbell), hangs up a call in progress. Reports whether 
 ## Update
 Update |  Description |
 :------------ | :------------ |
-Firmware | Compares the firmware the device is running against the newest one its own cloud check found. Informational only: there is no install button, because a wrong or interrupted image bricks the camera, so flashing stays a deliberate act on the device's own web UI or app. The entity is only created on a device whose firmware serves the `_DHCloudUpgrade_` record; reading it is a local request, Home Assistant never contacts Dahua itself
+Firmware | Compares the firmware the device is running against the newest one its own cloud check found. Informational only: there is no install button, because a wrong or interrupted image bricks the camera, so flashing stays a deliberate act on the device's own web UI or app. The entity is only created on a device whose firmware serves the `_DHCloudUpgrade_` record and that record names a version; reading it is a local request, Home Assistant never contacts Dahua itself
 
 # Example automations
 
