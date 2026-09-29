@@ -168,6 +168,23 @@ async def async_merge_channel_entries(hass: HomeAssistant) -> None:
 
     by_host: dict[tuple[str, str], list] = {}
     for entry in entries:
+        if entry.disabled_by is not None:
+            # Left exactly as it is, and not counted towards whether this host
+            # needs merging. Disabling an entry is how somebody parks a channel
+            # whose camera has gone without throwing its history away, and
+            # folding it in would undo that in two different ways.
+            #
+            # It would be silently re-enabled: its entities would move onto the
+            # survivor, which is enabled, so a camera the user switched off starts
+            # polling again with nothing said.
+            #
+            # Worse, the survivor is the lowest channel and nothing here looked at
+            # `disabled_by`, so a disabled channel 0 *became* the survivor: every
+            # other channel's entities would be moved onto a disabled entry, which
+            # Home Assistant never sets up, and the other entries are then removed.
+            # A whole recorder goes dark on upgrade, and only the registry copies
+            # taken above are the way back.
+            continue
         address = _address_of(entry)
         if address:
             by_host.setdefault((address, _port_of(entry)), []).append(entry)
