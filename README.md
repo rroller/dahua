@@ -186,8 +186,12 @@ The last screen asks for a name and shows a **still from the channel you chose**
 channel number that is off by one is caught by looking rather than after the entry
 exists. A device that will not serve a snapshot simply shows no picture.
 
-NOTE: All streams will be added, even if not enabled in the camera. Just remove the
-ones you don't want.
+NOTE: An entity is added for every stream the device can serve, whether or not that
+stream is enabled on the device, because which ones exist cannot be known without
+asking and asking costs a request per channel. **Only the main stream is enabled to
+begin with.** The sub streams are listed but switched off, so if you want to point a
+card at one, enable it from the entity's own page. Nothing that already exists is
+affected by this: a sub stream camera you are already using stays exactly as it is.
 
 ![Dahua Setup](static/setup1.png)
 
