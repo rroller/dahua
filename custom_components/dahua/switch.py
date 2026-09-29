@@ -236,7 +236,15 @@ class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
                 self._channel, self._rule_id, enabled
             )
         except ValueError as err:
-            raise HomeAssistantError(str(err)) from err
+            # The reason is built in client.py, which resolves the rule just
+            # before writing, so it is carried through as a placeholder rather
+            # than replaced by a guess at what went wrong. It is still English
+            # until those messages get keys of their own.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="ivs_rule_write_failed",
+                translation_placeholders={"reason": str(err)},
+            ) from err
         await self._coordinator.async_refresh()
 
     async def async_turn_on(self, **kwargs):
