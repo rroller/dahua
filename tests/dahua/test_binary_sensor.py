@@ -4,6 +4,8 @@ import pytest
 from custom_components.dahua import binary_sensor as bs
 from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 from custom_components.dahua.binary_sensor import (
+    DEFAULT_PULSE_HOLD_SECONDS,
+    MOMENTARY_EVENT_HOLD_SECONDS,
     DahuaEventSensor,
     DahuaAuthorizedVehicleBinarySensor,
 )
@@ -283,6 +285,181 @@ def test_authorized_vehicle_sensor_state_and_attributes():
     # Expired hold time
     c._last_plate_timestamp = int(time.time()) - 120
     assert s.is_on is False
+
+
+# --- the event sensor's own timer --------------------------------------------
+#
+# test_momentary_sensors.py covers what `is_on` and `_hold` decide. What decides
+# whether anybody ever asks them again is `_async_event_fired`, and that had nothing
+# on it: `is_on` going false on its own is not enough, because nothing would look
+# again and the sensor would keep showing on until some unrelated event wrote to it.
+
+@pytest.fixture
+async def event_sensor(hass, monkeypatch):
+    """A real event sensor with hass attached and its state writes counted."""
+    writes = []
+    monkeypatch.setattr(bs.DahuaBaseEntity, "__init__", lambda self, c, e: None)
+    monkeypatch.setattr(bs.BinarySensorEntity, "__init__", lambda self: None)
+    monkeypatch.setattr(
+        DahuaEventSensor, "schedule_update_ha_state",
+        lambda self, force_refresh=False: writes.append(1), raising=False)
+
+    def build(event_name, coordinator):
+        s = DahuaEventSensor(coordinator, object(), event_name)
+        s.hass = hass
+        return s
+
+    build.writes = writes
+    return build
+
+
+async def test_a_momentary_event_arms_a_timer_to_look_again(event_sensor):
+    """A doorbell press has no Stop coming, so the sensor has to be asked again once
+    the hold is up. The timer is the only thing that makes that happen."""
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = int(time.time())
+
+    s._async_event_fired()
+
+    assert event_sensor.writes, "Home Assistant was not told the state changed"
+    assert s._unsub_timer is not None, "nothing will ever ask this sensor again"
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_an_ordinary_event_arms_no_timer(event_sensor):
+    """Motion sends a Start and a Stop. Clearing it on a timer would end motion
+    detection early for everybody, which is far worse than the bug the hold fixes."""
+    c = _Coordinator()
+    s = event_sensor("VideoMotion", c)
+    await s.async_added_to_hass()
+    c.timestamps["VideoMotion"] = int(time.time())
+
+    s._async_event_fired()
+
+    assert event_sensor.writes, "the state was not written"
+    assert s._unsub_timer is None, "gave motion a hold it must not have"
+
+
+async def test_a_code_the_device_pulses_gets_the_default_hold(event_sensor):
+    """Whether a code is momentary is learned from the first event rather than known
+    at setup, so a code not on the explicit list still gets a timer once the device
+    has pulsed it."""
+    c = _Coordinator()
+    c.event_is_momentary = lambda name: True
+    s = event_sensor("CrossLineDetection", c)
+    await s.async_added_to_hass()
+    c.timestamps["CrossLineDetection"] = int(time.time())
+
+    s._async_event_fired()
+
+    assert s._hold() == DEFAULT_PULSE_HOLD_SECONDS
+    assert s._unsub_timer is not None
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_a_stop_does_not_arm_a_hold(event_sensor):
+    """A Stop clears the timestamp. Arming a hold on the way down would schedule a
+    wake-up for a sensor that is already off, and on a device that sends Start/Stop
+    pairs that is one stray timer per event."""
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = 0
+
+    s._async_event_fired()
+
+    assert event_sensor.writes, "the Stop was not shown"
+    assert s._unsub_timer is None, "armed a timer for an event that had ended"
+
+
+async def test_a_second_press_replaces_the_timer_rather_than_adding_one(event_sensor):
+    """Otherwise the first timer still fires and clears the sensor while the second
+    press should still be holding it on."""
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = int(time.time())
+    s._async_event_fired()
+    first = s._unsub_timer
+
+    c.timestamps["DoorbellPressed"] = int(time.time())
+    s._async_event_fired()
+
+    assert s._unsub_timer is not first, "re-used the spent timer handle"
+
+    await s.async_will_remove_from_hass()
+
+
+async def test_the_expired_hold_clears_its_handle_and_asks_again(event_sensor):
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = int(time.time())
+    s._async_event_fired()
+    # Held deliberately: _async_hold_expired drops the handle without calling it,
+    # which is right for a timer that has fired but leaves a real one scheduled here.
+    cancel = s._unsub_timer
+    before = len(event_sensor.writes)
+
+    s._async_hold_expired()
+
+    assert s._unsub_timer is None
+    assert len(event_sensor.writes) > before, "the hold expired without telling anyone"
+    cancel()
+
+
+async def test_removal_cancels_a_pending_hold(event_sensor):
+    """A timer left running fires into an entity Home Assistant has already removed."""
+    c = _Coordinator()
+    s = event_sensor("DoorbellPressed", c)
+    await s.async_added_to_hass()
+    c.timestamps["DoorbellPressed"] = int(time.time())
+    s._async_event_fired()
+    assert s._unsub_timer is not None
+
+    await s.async_will_remove_from_hass()
+
+    assert s._unsub_timer is None
+
+
+async def test_removal_is_safe_when_no_hold_is_pending(event_sensor):
+    c = _Coordinator()
+    s = event_sensor("VideoMotion", c)
+    await s.async_added_to_hass()
+
+    await s.async_will_remove_from_hass()
+
+    assert s._unsub_timer is None
+
+
+async def test_the_explicit_list_is_used_without_asking_the_device(event_sensor):
+    """Both rules apply to a doorbell press once the device has pulsed it, and today
+    they happen to give the same five seconds -- so comparing the numbers would prove
+    nothing. What the precedence actually means is that the explicit entry is taken
+    without consulting `event_is_momentary` at all, which is what this checks. If the
+    two values ever diverge, this is already testing the right thing."""
+    asked = []
+    c = _Coordinator()
+    c.event_is_momentary = lambda name: asked.append(name) or True
+    s = event_sensor("DoorbellPressed", c)
+
+    hold = s._hold()
+
+    assert hold == MOMENTARY_EVENT_HOLD_SECONDS["DoorbellPressed"]
+    assert asked == [], "consulted the device for a code that is on the explicit list"
+
+
+async def test_a_code_on_neither_list_waits_for_a_stop(event_sensor):
+    """The default. An event the device sends Start/Stop for has no hold at all, and
+    `None` is what says so -- not a zero, which would read as an expired hold."""
+    c = _Coordinator()
+    s = event_sensor("VideoMotion", c)
+
+    assert s._hold() is None
 
 
 # --- the authorized vehicle sensor when it is actually running ---------------
