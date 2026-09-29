@@ -198,11 +198,15 @@ def test_every_switch_is_named_and_none_repeats_the_device():
     and not the device's, which `has_entity_name` would then render twice."""
     c = _Coordinator()
     for cls in ALL:
-        key = getattr(cls, "_attr_translation_key", None)
-        if key is not None:
-            assert key, cls.__name__
+        switch = _switch(cls, c)
+        # Off the instance. `getattr(cls, "_attr_translation_key")` returns the
+        # metaclass property object rather than None for a class that declares
+        # nothing, so every switch took this branch and the siren was never
+        # checked at all.
+        if switch.translation_key is not None:
+            assert switch.translation_key, cls.__name__
             continue
-        name = _switch(cls, c).name
+        name = switch.name
         assert name, cls.__name__
         assert "Garage" not in name, cls.__name__
 

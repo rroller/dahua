@@ -196,7 +196,7 @@ def test_authorized_vehicle_sensor_properties():
     # The name itself lives in translations/en.json now, and is pinned there
     # by test_entity_names_come_from_translations.py. The key is what this
     # entity is responsible for.
-    assert s._attr_translation_key == "authorized_vehicle"
+    assert s.translation_key == "authorized_vehicle"
     assert s.unique_id == "SERIAL1_authorized_vehicle"
     assert s.device_class == "presence"
     assert s.icon == "mdi:car-check"

@@ -174,8 +174,13 @@ def test_the_names_come_from_the_translation_file():
     # platform there is nothing to read and `.name` is UNDEFINED. The strings
     # are pinned in test_entity_names_come_from_translations.py against what
     # these properties used to return; what belongs here is the key.
-    assert DahuaRebootButton._attr_translation_key == "reboot"
-    assert DahuaOpenDoorButton._attr_translation_key == "open_door"
+    # On an instance, and through the public property. Home Assistant's
+    # CachedProperties metaclass turns every `_attr_x` in a class body into a
+    # property object and keeps the value under `__attr_x`, so reading
+    # `SomeEntity._attr_translation_key` off the class hands back the
+    # descriptor. Measured on 2026.9.3.
+    assert _button(DahuaRebootButton).translation_key == "reboot"
+    assert _button(DahuaOpenDoorButton).translation_key == "open_door"
 
 
 def test_reboot_is_a_restart_button_under_config():

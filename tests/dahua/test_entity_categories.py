@@ -123,8 +123,13 @@ def test_the_sensors_name_themselves_through_the_translation_file():
 
     The strings, and that they are unchanged from what the properties returned,
     are pinned in test_entity_names_come_from_translations.py."""
+    # Off an instance: `_attr_translation_key` read from the class is a
+    # property object, courtesy of the CachedProperties metaclass, and a
+    # property object is truthy. This assertion passed for a class that
+    # declared nothing at all until it was written this way.
+    c = _coordinator()
     for cls in (DahuaFirmwareVersionSensor, DahuaSerialNumberSensor, DahuaProfileSensor):
-        assert cls._attr_translation_key, cls.__name__
+        assert _sensor(cls, c).translation_key, cls.__name__
 
 
 # --- the profile sensor is gated on the capability -------------------------------
