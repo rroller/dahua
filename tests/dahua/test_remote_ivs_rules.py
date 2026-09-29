@@ -1,6 +1,16 @@
-"""NVR IVS writes preserve the complete channel table and stable rule IDs."""
+"""NVR IVS writes address one field, and resolve the rule ID every time.
+
+The write used to post the whole channel table back. A DHI-NVR5464 refuses that
+as too long, `errCode 287638033 "Request length error!"`, because one channel is
+9KB to 22KB of rules, so every switch on that recorder was inert. Addressing the
+field makes it 91 bytes and the same recorder accepts it.
+
+The fresh per-channel read stays, and matters more than before: it resolves the
+ID to an index, and that index is now what addresses the write.
+"""
 
 import asyncio
+import re
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -21,7 +31,14 @@ def rule(rule_id, enabled, name="IVS-1"):
     }
 
 
-async def test_remote_write_resolves_id_in_fresh_table_and_preserves_other_rules():
+async def test_remote_write_resolves_id_then_writes_only_that_field():
+    """Id 1 sits at index 1 here, so the resolved index is what must be addressed.
+
+    Sibling rules are now preserved by construction rather than by careful
+    copying: nothing but the one boolean is sent, so there is no table to get
+    wrong. The whole-table form this replaces is refused outright by a
+    DHI-NVR5464, which rejects the 9KB to 22KB body as too long.
+    """
     rpc = object.__new__(DahuaRpc2Client)
     current = [rule(2, True, "IVS-2"), rule(1, True)]
     rpc.async_get_remote_ivs_rules = AsyncMock(return_value=current)
@@ -33,8 +50,8 @@ async def test_remote_write_resolves_id_in_fresh_table_and_preserves_other_rules
     rpc.request.assert_awaited_once_with(
         method="configManager.setConfig",
         params={
-            "name": "RemoteVideoAnalyseRule",
-            "table": [current[0], {**current[1], "Enable": False}],
+            "name": "RemoteVideoAnalyseRule[10][1].Enable",
+            "table": False,
             "options": [], "channel": 10,
         },
     )
@@ -129,7 +146,14 @@ async def test_concurrent_remote_writes_to_one_channel_preserve_both_changes():
 
     async def request(*, method, params):
         assert method == "configManager.setConfig"
-        table[:] = deepcopy(params["table"])
+        # The device applies a single addressed field, so the fake must too.
+        # Under the old whole-table write this is where a second caller's change
+        # could be clobbered by a stale snapshot; the per-field write removes
+        # that class of race rather than relying on the lock alone.
+        addressed = re.fullmatch(
+            r"RemoteVideoAnalyseRule\[10\]\[(\d+)\]\.Enable", params["name"])
+        assert addressed, params["name"]
+        table[int(addressed[1])]["Enable"] = params["table"]
         return {"result": True}
 
     rpc.get_config = get_config

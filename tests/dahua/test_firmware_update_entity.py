@@ -123,7 +123,8 @@ def _coordinator(
 
 def _setup(coordinator):
     hass = type("H", (), {"data": {"dahua": {"e1": coordinator}}})()
-    entry = type("E", (), {"entry_id": "e1"})()
+    # One entry owns one coordinator per channel, and setup walks them all.
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
     added = []
     return hass, entry, added
 
@@ -168,10 +169,12 @@ def test_latest_version_is_what_the_cloud_record_named():
     assert entity.latest_version == "2.820.0000000.32.R"
 
 
-def test_the_entity_is_named_after_the_device():
+def test_the_entity_has_a_translatable_name():
+    """Home Assistant composes "<device> <entity>" from has_entity_name, so the
+    entity declares only its own half, which the language files can reach."""
     entity = _entity(_coordinator())
 
-    assert entity.name == "Front Door Firmware Update"
+    assert entity.translation_key == "firmware_update"
     assert entity.unique_id == "SERIAL1_firmware_update"
 
 

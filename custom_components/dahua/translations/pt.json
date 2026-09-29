@@ -43,13 +43,17 @@
     "options": {
         "step": {
             "user": {
-                "data": {
-                    "binary_sensor": "Ativar entidades Binary Sensor",
-                    "sensor": "Ativar entidades do tipo Sensor",
-                    "switch": "Ativar entidades do tipo Switch",
-                    "light": "Ativar entidades do tipo Light",
-                    "select": "Select enabled",
-                    "camera": "Ativar entidades do tipo Camera"
+                "sections": {
+                    "platforms": {
+                        "data": {
+                            "binary_sensor": "Ativar entidades Binary Sensor",
+                            "camera": "Ativar entidades do tipo Camera",
+                            "light": "Ativar entidades do tipo Light",
+                            "select": "Select enabled",
+                            "sensor": "Ativar entidades do tipo Sensor",
+                            "switch": "Ativar entidades do tipo Switch"
+                        }
+                    }
                 }
             }
         }

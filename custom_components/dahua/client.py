@@ -58,6 +58,14 @@ RPC2_EVENT_IDLE_AFTER_SECONDS = 120
 RPC2_EVENT_IDLE_POLL_SECONDS = 6
 # "session is out of date"; same code _direct_coaxial_rpc2 recovers from.
 RPC2_SESSION_EXPIRED_CODE = 287637504
+# How many cycles in a row a code has to be refused before the poll gives up on
+# it. One refusal used to be enough, and the refusal did not have to say the
+# device does not know the code -- a busy recorder, a request the device thought
+# too long, a login that had just gone stale, any of them cost that event type
+# for the life of the entry with only a debug line to say so. Three consecutive
+# cycles is a few seconds on any selection and distinguishes "will not" from
+# "not just now".
+RPC2_EVENT_REFUSALS_BEFORE_DROPPING = 3
 # The CGI stream proves the transport is alive with the heartbeat it asks the
 # device for. The RPC2 poll has no such thing to forward, and a quiet camera
 # would otherwise deliver nothing for a whole stream lifetime -- which
@@ -78,6 +86,29 @@ _HOST_LIMITS: dict = {}
 # must serialize the fresh read and write together, even if they use different
 # RPC2 sessions or credentials.
 _HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def rpc2_refusal_is_a_stale_login(refused) -> bool:
+    """Whether this refusal means the login is no good and a new one would help.
+
+    Three places had to decide this and they did not agree.
+    `_direct_coaxial_rpc2` matched the code *or* a message saying the session was
+    out of date, because it had met a device that said so in words. The RPC2 event
+    poll matched only the code, in both of its handlers -- so the same device,
+    refusing the same way, recovered on one path and had the refusal turned into a
+    closed event stream on the other.
+
+    Matching on the message rather than on a second code number is deliberate.
+    287637504 is the only session code that is documented anywhere; the numbers
+    circulating for other session states are not, and inventing one would make a
+    refusal that means something else entirely look like a session problem, which
+    spends a login and hides the real reason. What the device says about a session
+    is evidence. What its code number might have been is not.
+    """
+    if getattr(refused, "code", None) == RPC2_SESSION_EXPIRED_CODE:
+        return True
+    message = getattr(refused, "message", None)
+    return isinstance(message, str) and "session" in message.lower()
 
 
 def _remote_ivs_lock(device: str, channel: int) -> asyncio.Lock:
@@ -1378,11 +1409,7 @@ class DahuaClient:
             try:
                 return await getattr(holder.client, method)(0, *args)
             except Rpc2MethodRefused as exc:
-                expired = exc.code == 287637504 or (
-                    isinstance(exc.message, str)
-                    and "session is out of date" in exc.message.lower()
-                )
-                if attempt or not expired:
+                if attempt or not rpc2_refusal_is_a_stale_login(exc):
                     raise
                 # Another caller may already have replaced this login. Do not
                 # tear down the new one when an old in-flight request returns.
@@ -2832,6 +2859,21 @@ class DahuaClient:
                 self._address, code)
 
         attached_to = None
+        # How many cycles in a row each code has been refused. Consecutive, so a
+        # successful read clears it: a code refused once an hour is a device under
+        # load, not a device that does not know it.
+        #
+        # Local, so it lives for this stream lifetime, which is the same scope the
+        # `codes` list above has: a recycle rebuilds the selection and a code
+        # dropped in the last lifetime is asked for again in this one. That was
+        # already true before there was a count. The lifetime is
+        # EVENT_STREAM_MAX_LIFETIME_SECONDS (an hour) against a cycle of a couple
+        # of seconds, so a device that refuses a code every time still reaches the
+        # limit within the first few seconds of each lifetime. `active` is the one
+        # thing here that is deliberately inherited across a recycle, because an
+        # unpaid Stop is owed whoever takes over; a refusal count is not owed to
+        # anyone.
+        refusals: dict[str, int] = {}
         # When the device last had anything active, or None while it does. Only
         # a run of quiet cycles eases the rate off; one Start restores it.
         idle_since = None if active else time.monotonic()
@@ -2853,15 +2895,28 @@ class DahuaClient:
                     attached_to = login_task
 
                 started = time.monotonic()
+                answered = 0
                 for code in list(codes):
                     try:
                         response = await holder.client.request(
                             "eventManager.getEventIndexes", {"code": code})
                     except Rpc2MethodRefused as refused:
-                        if refused.code == RPC2_SESSION_EXPIRED_CODE:
+                        if rpc2_refusal_is_a_stale_login(refused):
                             raise
-                        # This device does not know this code. Asking again every
-                        # cycle for the life of the entry buys nothing.
+                        refusals[code] = refusals.get(code, 0) + 1
+                        if refusals[code] < RPC2_EVENT_REFUSALS_BEFORE_DROPPING:
+                            # Not yet. A refusal is not necessarily "I do not know
+                            # this code": a recorder with every channel competing
+                            # for it refuses plenty of things it will serve on the
+                            # next cycle, and dropping the code on the first one
+                            # lost that event type until Home Assistant restarted.
+                            _LOGGER.debug(
+                                "%s refused %s (%s); %d of %d before it is dropped",
+                                self._address, code, refused, refusals[code],
+                                RPC2_EVENT_REFUSALS_BEFORE_DROPPING)
+                            continue
+                        # Refused every cycle: this device does not know this code.
+                        # Asking again for the life of the entry buys nothing.
                         codes.remove(code)
                         # Dropping it means it can never be observed inactive
                         # again, so release anything it is still holding on the
@@ -2873,6 +2928,12 @@ class DahuaClient:
                             "%s does not report %s over RPC2 (%s); no longer polling it",
                             self._address, code, refused)
                         continue
+
+                    # Answered, so whatever it refused before was passing. Cleared
+                    # here rather than left to decay, or a code refused once per
+                    # hundred cycles would still reach the limit and be dropped.
+                    refusals.pop(code, None)
+                    answered += 1
 
                     indexes = set()
                     for raw in ((response.get("params") or {}).get("indexes") or []):
@@ -2893,10 +2954,18 @@ class DahuaClient:
                         "%s reports none of the selected event types over RPC2"
                         % self._address)
 
-                # Every code answered, so the transport is healthy even if the
+                # Something answered, so the transport is healthy even if the
                 # device is quiet. Say so, or a camera with nothing happening is
                 # indistinguishable from a dead stream and gets backed off.
-                on_receive(RPC2_EVENT_HEARTBEAT, channel)
+                #
+                # Guarded on something having answered, which used not to need
+                # saying: a refusal dropped the code there and then, so a cycle
+                # that got through the loop had by definition been answered. Now
+                # that a refusal is tolerated for a few cycles, a cycle where the
+                # device refused everything reaches here, and a heartbeat would
+                # report the transport healthy on the strength of that.
+                if answered:
+                    on_receive(RPC2_EVENT_HEARTBEAT, channel)
 
                 # Anything active means the fast cycle, immediately -- the point
                 # of easing off is to be cheap while nothing is happening, not to
@@ -2922,7 +2991,7 @@ class DahuaClient:
                 await asyncio.sleep(max(0.0, wait - (time.monotonic() - started)))
 
             except Rpc2MethodRefused as refused:
-                if refused.code != RPC2_SESSION_EXPIRED_CODE:
+                if not rpc2_refusal_is_a_stale_login(refused):
                     raise EventStreamClosed(
                         "RPC2 event poll on %s was refused: %s" % (self._address, refused)
                     ) from refused

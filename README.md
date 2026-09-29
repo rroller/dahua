@@ -9,6 +9,31 @@ Also exposes several services to enable/disable motion detection or set the text
 
 Why not use the Amcrest integration already provided by Home Assistant? The Amcrest integration is missing features that this integration provides and I want an integration that is branded as Dahua. Amcrest are rebranded Dahua cams. With this integration living outside of HA, it can be developed faster and released more often. HA has release schedules and rigerous review processes which I'm not ready for while developing this integration. Once this integration is mature I'd like to move it into HA directly.
 
+## What you can do with it
+
+- **Act on what the camera sees.** Motion, tripwire, intrusion, abandoned object,
+  human and vehicle detection and the rest arrive on the event bus and as binary
+  sensors, so an automation can notify you or turn on a light without polling
+  anything.
+- **Answer the door.** A doorbell press arrives as an `event` entity for "somebody
+  rang at 19:42" and as a binary sensor that holds for a few seconds for automations
+  to wait on, and there is a button and a service to release the lock.
+- **Sound the alarm.** On devices with the hardware, the siren, the red and blue
+  security light and a physical alarm output relay can all be switched from an
+  automation.
+- **Use the camera's own lights.** The white illuminator and the infrared light are
+  `light` entities, so the camera can light the drive on an automation and be handed
+  back to its own automatic mode afterwards.
+- **Stop it watching while you are home.** Motion detection, smart motion detection,
+  recording mode, privacy masks and the motorised lens cover are all switchable, so
+  presence can turn the cameras down rather than off.
+- **Open the gate for a car you know.** On cameras with ANPR, the recognised plate is
+  a sensor, and naming the plates you trust gives a binary sensor that turns on only
+  for those.
+- **Write on the video.** The channel title, the timestamp and free text overlays can
+  be set from an automation, which is how a temperature or a zone name gets burned
+  into the recording.
+
 ## Installation
 
 If you want live-streaming, make sure to add the following to your config.yaml:
@@ -192,6 +217,27 @@ Two cases the form cannot diagnose for you:
   recorder's address and channel number instead of trying to reach them directly.
 
 
+### Removing it
+
+1. In **Settings > Devices & services**, find **Dahua**
+2. Click the three dots beside the device and choose **Delete**
+3. Confirm
+
+One device is one config entry. A recorder is also one entry, holding one subentry per
+channel, so deleting the entry removes the whole recorder and every channel with it.
+To remove a single channel of a recorder, delete that channel rather than the entry.
+
+Nothing is left behind on the device. The integration only reads settings and holds an
+event connection, and deleting the entry ends both. Settings you changed from Home
+Assistant are the device's own settings and stay as you left them, so if you turned
+motion detection off, or left the illuminator on, put it back from the device's web UI
+or the Dahua app.
+
+To remove the integration itself, delete it in HACS, or delete the
+`custom_components/dahua` directory if you installed it by hand, and restart Home
+Assistant.
+
+
 # Known supported cameras
 This integration should word with most Dahua cameras and doorbells. It has been tested with very old and very new Dahua cameras.
 
@@ -200,9 +246,6 @@ Doorbells will have a binary sensor that captures the doorbell pressed event.
 * **Please let me know if you've tested with additional cameras**
 
 These devices are confirmed as working:
-
-## Dahua cameras
-
 
 ## Dahua cameras
 
@@ -268,6 +311,50 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | *IMOU* |
 | | IMOU C26EP-V2 | IMOU IPC-K46 | IMOU DB61i
 
+# Known limitations
+
+What this integration cannot do, as distinct from the bugs and firmware quirks under
+[Known Issues](#known-issues).
+
+- **Settings are polled, so a change made elsewhere is not instant.** Turning a light
+  on from the Dahua app appears in Home Assistant within one poll interval, 30 seconds
+  by default and 10 at the fastest. Events are pushed and are not affected by this.
+  See [How data is updated](#how-data-is-updated).
+- **The infrared and illuminator lights have three states, and a light entity has
+  two.** Switching either on takes the camera out of Auto, and while it is in Auto the
+  entity cannot report on or off because the camera does not say which it is. Use
+  `dahua.set_infrared_mode` or `dahua.set_illuminator_mode` to hand Auto back.
+- **A device with no local API cannot be used at all.** Cloud only Imou and Lechange
+  models, and some doorbells whose firmware moved to the vendor's app, serve no
+  `/cgi-bin/` API. ONVIF or the vendor's own integration is the route for those.
+- **Cameras on a recorder's own PoE ports are usually not reachable directly**, because
+  they sit on a private subnet Home Assistant cannot route to. Add them through the
+  recorder's address and channel number instead.
+- **Channels a recorder reaches over ONVIF cannot be driven**, and are not offered when
+  adding one. This integration speaks Dahua's own API and an ONVIF channel does not
+  answer it.
+- **Active deterrence through a recorder is undocumented and unreliable.** Whether an
+  NVR passes a siren or white light command through to the camera behind it varies by
+  model, and on some it accepts the command and does nothing at all. That is why those
+  entities are off by default rather than created automatically.
+- **A large configuration write can be refused on a recorder.** RPC2 answers
+  `Request length error!` to a big `setConfig`, and a recorder's IVS rule table can be
+  large enough to hit that, so an IVS rule switch may fail to toggle. Measured on one
+  recorder, where writes from 9KB upwards were refused. A single camera's table is far
+  smaller and is not affected.
+- **No triggers or conditions are provided.** Events reach the bus as
+  `dahua_event_received` and become binary sensors, and automations are written against
+  those. There are no integration specific trigger or condition types.
+- **The siren and the security light switch themselves off** after 10 to 15 seconds.
+  That is the device's own behaviour and cannot be extended from here.
+- **Recorders cap how many RTSP streams they serve at once**, often quite low, so
+  several cards watching several channels can fail where one channel works.
+- **Not every camera has every entity.** The illuminator, the security light, the
+  siren, smart motion detection, PTZ presets, ANPR and the motorised lens cover are
+  each created only on devices that report them. If one is missing and you know the
+  hardware is there, see the manual enable options under
+  [Channel options](#channel-options).
+
 # Known Issues
 
 * **A camera that shows a still image but never a moving stream is usually sending H.265.** Home Assistant handles H.264 reliably; an H.265 stream commonly gives a camera that is plainly online, with entities that populate and a picture that updates when you click it, and a live view that never plays. HomeKit will not play H.265 at all.
@@ -284,6 +371,43 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
   While the camera is in General mode this does nothing at all. But if the camera is ever switched to Day/Night profile management, the light comes on when that profile becomes active, looking as though it did so by itself. Home Assistant will report it as on and can turn it off — but only once you notice it.
 
   The integration deliberately does not correct this for you, because doing so would mean writing to a profile you are not currently using, on every camera, unprompted. To check for it and clear it by hand, see [Curl/HTTP commands](#curlhttp-commands).
+
+# How data is updated
+
+Two separate things happen, on two separate schedules, and most confusion about this
+integration comes from reading one as the other.
+
+**Events are pushed, and arrive as soon as the device sends them.** The integration holds a long
+lived connection to the device and the device writes to it when something happens.
+Motion, tripwire, a doorbell press and everything else in the Events section arrive
+this way. The poll interval has no effect on them at all.
+
+There are three of these connections, and which one a device gets depends on what it
+serves:
+
+| Transport | Used for | How it works |
+|---|---|---|
+| `eventManager.cgi` multipart stream | almost every camera and recorder | One HTTP connection the device streams event payloads down, held open for as long as the entry is loaded |
+| DHIP on TCP port 5000 | doorbells (VTO) | A separate binary protocol connection, which is also what carries a doorbell's card reader and call events |
+| RPC2 polling | firmware that serves no CGI at all | Some devices answer 404 to every `/cgi-bin/` path. RPC2 has no readable subscription, so the alarm state of each selected code is polled and its edges are turned into the same event payloads. This is the only transport that is not push |
+
+A connection that drops is reconnected with a backoff, so a camera that is unplugged
+is not contacted every few seconds for ever.
+
+**Settings are polled, every 30 seconds by default.** Whether motion detection is on,
+which lights are on, the day/night profile, the PTZ preset, the recording mode: these
+are the device's own configuration, and the only way to know they changed is to ask.
+That is what the poll interval is, it can be set per entry from 10 seconds upwards,
+and it is also why a change made in the Dahua app takes up to one interval to appear
+in Home Assistant.
+
+Turning a platform off stops the requests that exist only to feed it, so the poll gets
+cheaper as well as quieter. See [Reducing entries in your device's
+log](#reducing-entries-in-your-devices-log).
+
+Reads are shared and cached where the device allows it: channels of one recorder share
+a single host wide read rather than asking once each, and a device that stops answering
+is backed off rather than retried at the same rate.
 
 # Events
 Events are streamed from the device and fired on the Home Assistant event bus.
@@ -333,6 +457,64 @@ And that's it! You can enable debug logging (See at the end of this readme) to p
 as they fire. That can help you understand the events. Or you can HA and open Developer Tools -> Events -> and under
 "Listen to events" enter `dahua_event_received` and then click "Start Listening" and wait for events to fire (you might
 need to walk in front of your cam to make motion events fire, or press a button, etc)
+
+## An event on the bus does not mean a sensor will update
+
+These are two separate things, and reading one as the other has produced several
+issue reports where nothing was actually broken.
+
+**Every event that arrives is put on the bus, before anything else happens.** It is
+fired with the raw code the device sent, before any translation and before any sensor
+is considered. So if you see a code in `dahua_event_received`, the connection to the
+device and the event stream are working. That is all it proves.
+
+**A binary sensor only updates if you selected that event for that entry.** The
+sensors that exist come from the event list on the entry, and an event you did not
+select has no sensor and no listener, so nothing is written. (Doorbells are the one
+exception: they always get Doorbell Pressed, Invite, Door Status and Call No
+Answered, because almost everybody wants them.) Seeing
+`CrossRegionDetection` on the bus while a Smart Motion sensor stays off is exactly
+what a correctly working system looks like when `SmartMotionHuman` was not selected.
+
+To change the selection: **Settings, Devices and Services, Dahua, Configure**, on the
+entry you mean. Ticking boxes in the camera's own web interface does not affect which
+Home Assistant entities exist.
+
+### Smart Motion is derived from the IVS event
+
+Many cameras never send `SmartMotionHuman` at all. They send `CrossLineDetection` or
+`CrossRegionDetection` carrying an object type, and the integration fires the matching
+smart motion code as well:
+
+```
+Code: CrossRegionDetection
+data:
+  Object:
+    ObjectType: Human
+```
+
+becomes both `CrossRegionDetection` and `SmartMotionHuman`, so on such a camera
+`SmartMotionHuman` is the better sensor to use: it fires only for people, where the
+Cross Region one fires for anything that trips the rule. Both fire when both are
+selected. But the smart motion sensor only exists if you selected it, so on a camera
+sending the payload above you can see `CrossRegionDetection` on the bus all day and
+get nothing from Smart Motion until it is ticked.
+
+### Events are per channel
+
+On a recorder each channel is its own entry with its own event list, and an event
+updates the sensor belonging to the channel it came from. If channel 1 has
+`SmartMotionHuman` selected and channel 2 does not, motion on channel 2 appears on the
+bus and updates nothing.
+
+### A sensor that says "no longer being provided"
+
+If you deselect an event, its sensor is not created next time the entry loads, and
+Home Assistant leaves the old entity behind showing `unavailable` with "This entity is
+no longer being provided by the dahua integration". That is Home Assistant reporting
+an entity nothing owns any more, not a fault in the integration, and it will never
+update again. Either select the event again, or delete the entity from its own page.
+Reloading or restarting will not clear it.
 
 ## Example Code Events
 | Code | Description |
@@ -399,7 +581,11 @@ Service | Parameters | Description
 `dahua.vto_open_door` | `target`: camera.cam13_main <br /> `door_id`: The door ID to open, e.g.: 1 <br /> Opens a door via a VTO
 `dahua.vto_cancel_call` | `target`: camera.cam13_main <br />Cancels a call on a VTO device (Doorbell)
 `dahua.set_video_in_day_night_mode` | `target`: camera.cam13_main <br /> `config_type`: The config type: general, day, night <br /> `mode`: The mode: Auto, Color, BlackWhite. Note Auto is also known as Brightness by Dahua|Set the camera's Day/Night Mode. For example, Color, BlackWhite, or Auto
-`dahua.reboot` | `target`: camera.cam13_main <br />Reboots the device 
+`dahua.reboot` | `target`: camera.cam13_main <br />Reboots the device
+`dahua.set_illuminator_mode` | `target`: camera.cam13_main <br /> `mode`: Auto, On, Off <br /> `brightness`: 0 - 100 inclusive | Sets the illuminator (white light) mode. The light entity can only switch it on or off, and off is not the same as automatic, so this is how control is handed back to the camera with Auto
+`dahua.ptz_move` | `target`: camera.cam13_main <br /> `direction`: up, down, left, right, up_left, up_right, down_left, down_right, zoom_in, zoom_out <br /> `speed`: 1 - 8 <br /> `duration`: 0.1 - 10 seconds | Pans, tilts or zooms for a moment. The camera moves while the command runs and is stopped afterwards, so the duration is how far it travels
+`dahua.set_privacy_mode` | `target`: camera.cam13_main <br /> `enabled`: True to cover the lens, False to uncover it | Physically covers the lens on cameras with a motorised cover, so the camera sees nothing at all. Only cameras reporting a `LeLensMask` table have this; on any other camera the call fails. To blank part of the picture instead, use `dahua.set_privacy_masking`
+`dahua.get_overlay_text` | `target`: camera.cam13_main <br /> `group`: 0 - 100, default 0 | Returns the overlay text the camera is currently showing, for when it may have been changed on the camera rather than from Home Assistant. This one responds with data
 
 
 ## Camera
@@ -412,6 +598,9 @@ Motion | Enables or disables motion detection on the camera
 Siren | If the camera has a siren, will turn on the siren. Note, it seems sirens only stay on for 10 to 15 seconds before switching off
 Event Notifications | Enables or disables the device's event notifications
 Smart Motion Detection | If the device supports it, enables or disables smart motion detection (human and vehicle filtering rather than plain pixel motion). Only created on channels the device reports as supporting it
+IVS Rule | One switch per IVS rule the camera reports (tripwire, intrusion and so on), each keyed on the rule's own stable Dahua ID, so it is named after the rule as the device names it. Configuration entities
+Alarm Output | A physical alarm or relay output on the device, switched directly
+Privacy Mode | Covers the lens on cameras with a motorised cover. See `dahua.set_privacy_mode`
 Disarming Linkage | Newer firmwares introduce a "disarming" feature, accessible from the camera web UI under Event → One-click disarm / Disarming. When enabled, the disarm toggle suppresses the linkage actions configured in the Disarming section specifically, while leaving all other alarm linkage actions untouched. Detection remains fully active throughout. This allows one to turn it on/off.
 
 ## Lights
@@ -426,38 +615,198 @@ Sensor |  Description |
 :------------ | :------------ |
 Motion | A sensor that turns on when the camera detects motion
 Button Pressed | A sensor that turns on when a doorbell button is pressed
+Authorized Vehicle | Turns on when the camera's ANPR recognises a plate you have listed as authorized, and stays on for the hold time you set. Attributes carry the plate that matched and what the camera reported about the vehicle. Only created on cameras that report ANPR
 Others | A binary senor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
 
 ## Sensors
-Diagnostic sensors. Both report values already read during setup, so they cost no extra requests.
+Diagnostic sensors. These report values already read during setup or during the normal poll, so they cost no extra requests.
 
 Sensor |  Description |
 :------------ | :------------ |
 Firmware Version | The firmware the device reports. Also shown on the device page, but as a sensor it can be templated and compared — which is what makes "tell me when a camera is behind" possible
 Serial Number | The serial the device reports. On an NVR every channel reports the recorder's serial, because every channel is the same physical box
 License Plate | The last recognized license plate reported by the camera's ANPR/Traffic AI, including attributes for confidence, vehicle type, vehicle color, brand/logo, model/series, and direction
+Profile | Which day/night lighting profile the camera is using right now. Useful because a camera can change profile by itself, and the illuminator and infrared settings are stored per profile
+
+## Selects
+
+Select |  Description |
+:------------ | :------------ |
+Security Light | On a doorbell, sets the light to off, on, or strobe. A doorbell's light has three states rather than two, which is why it is a select and not a switch
+Preset Position | Moves a PTZ camera to one of its stored preset positions, and reports the one it is at. Only created on cameras that report presets
+Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dahua also calls Brightness). Readable as well as settable, which is what makes it possible to notice a camera that changed mode by itself, such as one reverting to Auto after a power cut and then rendering black and white at night
+
+## Event entities
+
+Entity |  Description |
+:------------ | :------------ |
+Doorbell | Home Assistant's own doorbell primitive, with the `doorbell` device class, which is what cards and other integrations built on it expect. It is momentary: it records that somebody rang and when. The Button Pressed binary sensor covers the other shape of the same fact, holding a state for a few seconds for an automation to wait on, so both exist and both are useful
 
 ## Buttons
 Button |  Description |
 :------------ | :------------ |
 Reboot | Reboots the device
 Open Door | On a VTO (doorbell), opens the door
+Cancel Call | On a VTO (doorbell), hangs up a call in progress. Reports whether the doorbell agreed, rather than always looking as though it worked
 
 ## Update
 Update |  Description |
 :------------ | :------------ |
 Firmware | Compares the firmware the device is running against the newest one its own cloud check found. Informational only: there is no install button, because a wrong or interrupted image bricks the camera, so flashing stays a deliberate act on the device's own web UI or app. The entity is only created on a device whose firmware serves the `_DHCloudUpgrade_` record; reading it is a local request, Home Assistant never contacts Dahua itself
 
+# Example automations
+
+Change the entity ids to your own. The event based ones use `dahua_event_received`,
+described under [Events](#events); `name` is the device name the integration reports,
+which is also in the event payload if you watch the bus.
+
+**Somebody rang the doorbell: notify a phone with a picture.**
+
+```yaml
+alias: Doorbell pressed
+trigger:
+  - platform: state
+    entity_id: event.front_door_doorbell
+action:
+  - service: camera.snapshot
+    target:
+      entity_id: camera.front_door_main
+    data:
+      filename: /config/www/doorbell.jpg
+  - service: notify.mobile_app_phone
+    data:
+      message: Somebody is at the front door
+      data:
+        image: /local/doorbell.jpg
+mode: single
+```
+
+**Light the drive on motion after dark, then hand the camera back its automatic
+mode.** Turning the illuminator on switches the camera out of Auto, so the last step
+is what stops it staying that way.
+
+```yaml
+alias: Drive light on motion
+trigger:
+  - platform: state
+    entity_id: binary_sensor.drive_motion_alarm
+    to: "on"
+condition:
+  - condition: state
+    entity_id: sun.sun
+    state: below_horizon
+action:
+  - service: light.turn_on
+    target:
+      entity_id: light.drive_illuminator
+  - delay: "00:02:00"
+  - service: dahua.set_illuminator_mode
+    target:
+      entity_id: camera.drive_main
+    data:
+      mode: Auto
+mode: restart
+```
+
+**Somebody crossed the tripwire out of hours: siren and flashers.** Both stop by
+themselves after 10 to 15 seconds, which is the device's own behaviour.
+
+```yaml
+alias: Tripwire deterrence
+trigger:
+  - platform: event
+    event_type: dahua_event_received
+    event_data:
+      name: Yard
+      Code: CrossLineDetection
+      action: Start
+condition:
+  - condition: time
+    after: "22:00:00"
+    before: "06:00:00"
+action:
+  - service: switch.turn_on
+    target:
+      entity_id: switch.yard_siren
+  - service: light.turn_on
+    target:
+      entity_id: light.yard_security
+mode: single
+```
+
+**A car you know arrives: open the gate.** Needs plates listed under Authorized
+license plates.
+
+```yaml
+alias: Open the gate for a known car
+trigger:
+  - platform: state
+    entity_id: binary_sensor.gate_authorized_vehicle
+    to: "on"
+action:
+  - service: dahua.vto_open_door
+    target:
+      entity_id: camera.gate_main
+    data:
+      door_id: 1
+mode: single
+```
+
+**Stop the cameras watching the house while somebody is home.**
+
+```yaml
+alias: Motion detection follows presence
+trigger:
+  - platform: state
+    entity_id: group.family
+action:
+  - service: "switch.turn_{{ 'off' if trigger.to_state.state == 'home' else 'on' }}"
+    target:
+      entity_id:
+        - switch.hall_motion
+        - switch.landing_motion
+mode: single
+```
+
 # Options
-Open the integration, find the device and choose **Configure**. Options apply to that entry only, so on an NVR each channel is configured separately.
+
+Settings live in two places, because a recorder is one config entry holding one
+subentry per channel.
+
+**For the device:** open the integration, find the device and choose **Configure**.
+
+**For one channel of a recorder:** open the device, find the channel and choose
+**Reconfigure**. Only the settings that genuinely differ per channel are here, because
+asking the same question once per channel on a 64 channel recorder would be its own
+kind of unusable. On a single camera there are no channels, so everything is on the
+Configure form.
+
+## Device options
 
 Option | Default | Description
 :------------ | :------------ | :------------
-Poll interval | 30 seconds | How often the device is asked for the state of its settings. Events do not use this — they arrive on a separate stream and are unaffected by a longer interval
-Camera, Switch, Light, Select, Binary sensor, Button, Sensor, Update | on | Which platforms this entry creates. These also stop the requests that exist only to feed a platform, so turning one off reduces how much the device is asked, not just how many entities you see
-Auto-detect channel | on | Some firmwares number channels from 0 and others from 1. Turn this off if the detection gets it wrong on your camera
-Events | motion and the common smart-detection events | Which of the device's events become binary sensors. Most of the rest do nothing on most cameras, and each one selected adds an entity. An empty selection is honoured, which turns the event stream off for this entry. If you want an event that is not listed, open an issue
-Enable NVR active deterrence controls | off | Adds Warning Light and Alarm entities for a camera behind an NVR. Off by default because whether the NVR relays these commands varies by model — on some it accepts them and does nothing
+Seconds between device polls | 30 | How often the device is asked for the state of its settings. The minimum is 10. Events do not use this: they arrive on a separate connection and are unaffected by a longer interval. See [How data is updated](#how-data-is-updated)
+Camera, Switch, Light, Select, Binary sensor, Button, Sensor, Event, Update | on | Which platforms this entry creates. These also stop the requests that exist only to feed a platform, so turning one off reduces how much the device is asked, not just how many entities you see
+Read configuration over one RPC2 session per device | off | Reads settings over a single logged in RPC2 session instead of a separate authenticated HTTP call each. Far fewer lines in the device's own log. Off by default because not every firmware serves RPC2; leave it off if unsure, and see [Reducing entries in your device's log](#reducing-entries-in-your-devices-log)
+Authorized license plates | empty | A comma separated list, for example `ABC1234, XYZ5678`. Naming plates here creates the Authorized Vehicle binary sensor, which turns on only for these. Needs a camera that reports ANPR
+Authorized vehicle hold time | 60 seconds | How long the Authorized Vehicle sensor stays on after a plate it recognises. It also resumes correctly across a restart, so a car recognised just before a reload does not lose the remaining time
+Area | unset | Moves this device into a Home Assistant area
+
+## Channel options
+
+On a single camera these are on the Configure form above. On a recorder they belong to
+one channel and are edited by reconfiguring it.
+
+Option | Default | Description
+:------------ | :------------ | :------------
+Name | the channel's name | What this channel is called
+Area | unset | Moves this channel into an area. A channel does not inherit the recorder's area, so channels can be filed by room
+Events to subscribe to | motion and the common smart-detection events | Which of the device's events become binary sensors. Most of the rest do nothing on most cameras, and each one selected adds an entity. An empty selection is honoured, which turns the event connection off for this channel. If you want an event that is not listed, open an issue
+Auto-detect channel index | on | Some firmwares number channels from 0 and others from 1. Turn this off if the detection gets it wrong on your camera
+Enable NVR active deterrence controls | off | Adds Warning Light and Alarm entities for a camera behind an NVR. Off by default because whether the NVR relays these commands varies by model: on some it accepts them and does nothing
+Manually enable Siren entity | off | Turn this on if the camera has a working siren and the integration did not create the Siren entity
+Manually enable Security Light entity | off | Turn this on if the camera has a working security light and the integration did not create the Security Light entity
+Don't open the two-way audio channel when streaming | off | Stops the RTSP backchannel being opened. Turn it on if a doorbell gets stuck in a call when Home Assistant streams it, or if talkback in the Dahua or Amcrest app stops working. It also disables talking from Home Assistant
 
 ## Reducing entries in your device's log
 Dahua devices write a line to their own log for every login, and each request the integration makes is a separate HTTP call with its own authentication. Fewer calls therefore means fewer log entries. Three things help, in order of effect:

@@ -15,36 +15,35 @@ answers one question: is there a newer firmware than the one running?
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
 from homeassistant.core import HomeAssistant
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import entry_coordinators
 
-from .const import DOMAIN
 from .dahua_utils import clean_firmware_version, firmware_is_newer
 from .entity import DahuaBaseEntity
+
+# Nothing here sends a command; every value comes from the coordinator.
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the update platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    for coordinator in entry_coordinators(entry).values():
+        # No curated table and no separate cloud call: the entity exists only
+        # where the device answered the cloud OTA record read at setup. On a
+        # device that did not, an update entity could only ever read "unknown",
+        # which is worse than no entity at all (the profile sensor's rule).
+        if not coordinator.supports_cloud_upgrade():
+            continue
 
-    # No curated table and no separate cloud call: the entity exists only where
-    # the device answered the cloud OTA record read at setup. On a device that
-    # did not, an update entity could only ever read "unknown", which is worse
-    # than no entity at all (the same reasoning as the profile sensor gate).
-    if not coordinator.supports_cloud_upgrade():
-        return
-
-    async_add_devices([DahuaFirmwareUpdateEntity(coordinator, entry)])
+        async_add_devices([DahuaFirmwareUpdateEntity(coordinator, entry)])
 
 
 class DahuaFirmwareUpdateEntity(DahuaBaseEntity, UpdateEntity):
     """The running firmware against the newest the device knows of."""
 
+    _attr_translation_key = "firmware_update"
+
     # No install, no backup, no specific version: this reports and stops.
     _attr_supported_features = UpdateEntityFeature(0)
-
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Firmware Update"
 
     @property
     def unique_id(self):

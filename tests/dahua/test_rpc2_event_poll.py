@@ -24,9 +24,14 @@ class _StopPoll(Exception):
 class _FakeRpc2Client:
     """Serves a scripted answer per cycle for eventManager.getEventIndexes."""
 
-    def __init__(self, script, refuse=()):
+    def __init__(self, script, refuse=(), refuse_for=None):
         self._script = script
         self._refuse = set(refuse)
+        # code -> how many of the first requests for it to refuse. A device that
+        # refuses and then answers could not be expressed before, which is the
+        # shape the poller used to lose a code to for good.
+        self._refuse_for = dict(refuse_for or {})
+        self._refused = {}
         self._served = {}
         self.attaches = 0
         self.asked = []
@@ -41,6 +46,11 @@ class _FakeRpc2Client:
         code = params["code"]
         if code in self._refuse:
             raise Rpc2MethodRefused("refused", code=268632064, message="InterfaceNotFound")
+
+        if self._refused.get(code, 0) < self._refuse_for.get(code, 0):
+            self._refused[code] = self._refused.get(code, 0) + 1
+            raise Rpc2MethodRefused("busy", code=287638033,
+                                    message="Request length error!")
 
         cycle = self._served.get(code, 0)
         self._served[code] = cycle + 1
@@ -102,6 +112,28 @@ async def test_idle_cycle_still_reports_transport_activity(monkeypatch):
     assert all(data == client_module.RPC2_EVENT_HEARTBEAT for data, _ in received)
     # One per successful cycle, not one per code.
     assert len(received) == 2
+
+
+async def test_a_cycle_that_answered_nothing_reports_no_activity(monkeypatch):
+    """The heartbeat means the transport is healthy, so it has to be earned.
+
+    It used not to need guarding: a refusal dropped the code there and then, so
+    any cycle that got as far as the heartbeat had been answered by definition.
+    Now that a refusal is tolerated for a few cycles, a cycle where the device
+    refused everything reaches it -- and reporting the transport healthy on the
+    strength of that is how a stream nothing is coming out of stays un-recycled.
+    """
+    fake = _FakeRpc2Client([{"VideoMotion": []}] * 3,
+                           refuse_for={"VideoMotion": 2})
+    received, on_receive = _collect()
+
+    with pytest.raises(_StopPoll):
+        await _client(monkeypatch, fake)._stream_events_rpc2(
+            on_receive, ["VideoMotion"], 0)
+
+    # Two refused cycles, then three answered ones before the script runs out.
+    assert len(received) == 3, \
+        "a cycle in which the device refused everything sent a heartbeat"
 
 
 async def test_active_event_emits_start_then_stop(monkeypatch):
@@ -177,8 +209,10 @@ async def test_a_code_the_device_refuses_is_dropped_and_cleared(monkeypatch):
             _collect()[1], ["SmartMotionHuman"], 0)
 
     # Now the device refuses that code, so it is dropped from the poll -- and the
-    # Start it is still holding has to be released on the way.
-    second = _FakeRpc2Client([{"VideoMotion": []}], refuse={"SmartMotionHuman"})
+    # Start it is still holding has to be released on the way. It takes
+    # RPC2_EVENT_REFUSALS_BEFORE_DROPPING cycles to get there now, so the script
+    # has to keep the other code answering for at least that many.
+    second = _FakeRpc2Client([{"VideoMotion": []}] * 4, refuse={"SmartMotionHuman"})
     received, on_receive = _collect()
     with pytest.raises(_StopPoll):
         await _client(monkeypatch, second)._stream_events_rpc2(
@@ -186,6 +220,69 @@ async def test_a_code_the_device_refuses_is_dropped_and_cleared(monkeypatch):
 
     events = [e for data, _ in received for e in parse_event(data.decode())]
     assert ("SmartMotionHuman", "Stop") in [(e["Code"], e["action"]) for e in events]
+
+
+async def test_a_code_refused_once_is_asked_again(monkeypatch):
+    """A refusal is not a statement that the device does not know the code.
+
+    A recorder with sixteen channels competing for it refuses plenty of things it
+    serves on the next cycle, and this used to cost that event type for the life
+    of the entry -- with a debug line as the only record. #823 is where the
+    refusal reasons started being kept; this is one of them mattering.
+    """
+    fake = _FakeRpc2Client([{"VideoMotion": []}] * 3,
+                           refuse_for={"VideoMotion": 1})
+    with pytest.raises(_StopPoll):
+        await _client(monkeypatch, fake)._stream_events_rpc2(
+            _collect()[1], ["VideoMotion"], 0)
+
+    assert fake.asked, "the code was dropped on its first refusal"
+
+
+async def test_a_transient_refusal_does_not_cost_the_event(monkeypatch):
+    """The point of it: the event still arrives once the device answers."""
+    fake = _FakeRpc2Client([{"VideoMotion": [0]}] * 3,
+                           refuse_for={"VideoMotion": 2})
+    received, on_receive = _collect()
+    with pytest.raises(_StopPoll):
+        await _client(monkeypatch, fake)._stream_events_rpc2(
+            on_receive, ["VideoMotion"], 0)
+
+    events = [(e["Code"], e["action"])
+              for data, _ in received for e in parse_event(data.decode())]
+    assert ("VideoMotion", "Start") in events
+
+
+async def test_a_success_between_refusals_starts_the_count_again(monkeypatch):
+    """Consecutive, not cumulative. A code refused once in a while is a device
+    under load, and totting those up would eventually drop a code that works.
+
+    `refuse_for` cannot express refusing every other time, hence the wrapper. The
+    discriminating assertion is the `_StopPoll`: counting cumulatively drops the
+    code on the third refusal, which empties the selection and raises
+    EventStreamClosed instead, so this test would not reach the script's end.
+    """
+    monkeypatch.setattr(client_module, "RPC2_EVENT_REFUSALS_BEFORE_DROPPING", 2)
+    fake = _FakeRpc2Client([{"VideoMotion": []}] * 6)
+
+    calls = {"n": 0}
+    inner = fake.request
+
+    async def alternating(method, params=None, **kwargs):
+        if method == "eventManager.getEventIndexes":
+            calls["n"] += 1
+            if calls["n"] % 2:
+                raise Rpc2MethodRefused("busy", code=287638033,
+                                        message="Request length error!")
+        return await inner(method, params, **kwargs)
+
+    fake.request = alternating
+    with pytest.raises(_StopPoll):
+        await _client(monkeypatch, fake)._stream_events_rpc2(
+            _collect()[1], ["VideoMotion"], 0)
+
+    assert calls["n"] > 4, \
+        "the code was dropped despite answering between refusals"
 
 
 async def test_no_pollable_codes_ends_the_stream(monkeypatch):

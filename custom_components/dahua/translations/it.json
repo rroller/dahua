@@ -43,13 +43,17 @@
     "options": {
         "step": {
             "user": {
-                "data": {
-                    "binary_sensor": "Binary sensor abilitato",
-                    "sensor": "Sensore abilitato",
-                    "switch": "Switch abilitato",
-                    "light": "Luce abilitata",
-                    "select": "Select abilitato",
-                    "camera": "Telecamera abilitata"
+                "sections": {
+                    "platforms": {
+                        "data": {
+                            "binary_sensor": "Binary sensor abilitato",
+                            "camera": "Telecamera abilitata",
+                            "light": "Luce abilitata",
+                            "select": "Select abilitato",
+                            "sensor": "Sensore abilitato",
+                            "switch": "Switch abilitato"
+                        }
+                    }
                 }
             }
         }

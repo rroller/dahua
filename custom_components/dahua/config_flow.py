@@ -9,6 +9,7 @@ from aiohttp import (ClientConnectorError, ClientResponseError, ClientSession,
                      ClientSSLError, TCPConnector)
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.data_entry_flow import section
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
@@ -18,10 +19,11 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
 from . import dahua_utils
-from . import (ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp,
+from . import (ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp, entry_coordinators,
                is_synthesised_identity)
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
+from .migrate import CHANNEL_SUBENTRY
 from .flow_preview import async_drop_preview, async_store_preview, preview_url
 from .const import (
     CONF_PASSWORD,
@@ -834,37 +836,50 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if self.init_info is not None:
                 self.init_info.update(user_input)
-                self._queue_extra_channels()
                 return self.async_create_entry(
                     title=self.init_info["name"],
                     data=self.init_info,
+                    subentries=self._channel_subentries(),
                 )
 
         return await self._show_config_form_name(user_input or self.init_info)
 
-    def _queue_extra_channels(self) -> None:
-        """Start a flow for each additional channel the user ticked.
+    def _channel_subentries(self) -> list:
+        """One subentry per channel the user chose, primary included.
 
-        Creating this entry ends this flow, so the rest go through their own.
-        Each sets its own unique_id and aborts if that channel is already
-        configured, so this cannot add the same channel twice.
+        This used to start a separate config flow per extra channel, so a 64
+        channel recorder became 64 config entries and removing it meant 64
+        deletions (#827). One entry with a subentry each is the shape Home
+        Assistant expects of a hub, and the shape its own delete button
+        understands.
+
+        The primary is a subentry too, rather than living only in the entry's
+        data. Setup reads channels from the subentries when there are any, so
+        leaving the primary out would have brought up every channel except the
+        one the user actually started from.
         """
-        for index in self._extra_channels:
+        subentries = []
+        for index in [self.init_info[CONF_CHANNEL]] + list(self._extra_channels):
             data = dict(self.init_info)
             data[CONF_CHANNEL] = index
-            data[CONF_NAME] = self._found_channels.get(
-                index, "Channel {0}".format(index + 1))
-            # Every extra channel inherits init_info, which carries the
-            # *primary's* area. Without the pop, ticking one area for the
-            # recorder itself would silently file every other channel there too.
-            area = self._channel_areas.get(index)
-            if area:
-                data[CONF_AREA] = area
-            else:
-                data.pop(CONF_AREA, None)
-            self.hass.async_create_task(
-                self.hass.config_entries.flow.async_init(
-                    DOMAIN, context={"source": "import"}, data=data))
+            if index != self.init_info[CONF_CHANNEL]:
+                data[CONF_NAME] = self._found_channels.get(
+                    index, "Channel {0}".format(index + 1))
+                # Every channel inherits init_info, which carries the *primary's*
+                # area. Without this, ticking one area for the recorder itself
+                # would silently file every other channel there too.
+                area = self._channel_areas.get(index)
+                if area:
+                    data[CONF_AREA] = area
+                else:
+                    data.pop(CONF_AREA, None)
+            subentries.append(ConfigSubentryData(
+                data=data,
+                subentry_type=CHANNEL_SUBENTRY,
+                title=data[CONF_NAME],
+                unique_id="%s_%s" % (data[CONF_ADDRESS], index),
+            ))
+        return subentries
 
     async def async_step_reauth(self, entry_data):
         """Handle reauthentication when credentials become invalid."""
@@ -939,6 +954,18 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry):
         return DahuaOptionsFlowHandler()
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(cls, config_entry) -> dict:
+        """Let a channel be reconfigured on its own.
+
+        Without this the settings that belong to one channel would be unreachable
+        after it was added, which would be a step backwards from an entry per
+        channel: each of those had its own options screen. Home Assistant renders
+        this as a Configure button on the channel itself.
+        """
+        return {CHANNEL_SUBENTRY: DahuaChannelSubentryFlow}
 
     async def async_step_reconfigure(self, user_input=None):
         """Change an existing entry's connection settings.
@@ -1354,8 +1381,8 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             CONF_AREA, self.config_entry.data.get(CONF_AREA))
         if not area_id or area_id == stored:
             return
-        coordinator = self.hass.data.get(DOMAIN, {}).get(
-            self.config_entry.entry_id)
+        channels = entry_coordinators(self.config_entry)
+        coordinator = next(iter(channels.values()), None)
         if coordinator is None:
             # Not loaded, so there is no device to move yet. The option is still
             # stored, and the config flow's suggested_area applies whenever the
@@ -1371,4 +1398,67 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
         """Update config entry options."""
         return self.async_create_entry(
             title=self.config_entry.data.get(CONF_USERNAME), data=self.options
+        )
+
+
+class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
+    """Change the settings that belong to one channel of a recorder.
+
+    These used to live in the channel's own config entry options, because a
+    channel *was* an entry. #827 merged the entries, so they live on the channel's
+    subentry and this is how they are edited.
+
+    Only the genuinely per channel ones are here. Anything host wide -- the poll
+    interval, whether to use RPC2, which platforms to create -- stays on the entry
+    and is edited from its Configure button, because asking the same question once
+    per channel on a 64 channel recorder would be its own kind of unusable.
+    """
+
+    async def async_step_reconfigure(self, user_input=None):
+        """Show and save one channel's settings."""
+        subentry = self._get_reconfigure_subentry()
+        data = dict(subentry.data)
+
+        if user_input is not None:
+            # An area of "" means "no area", which is a real answer and different
+            # from not having been asked, so it is stored rather than dropped.
+            merged = {**data, **user_input}
+            return self.async_update_and_abort(
+                self._get_entry(),
+                subentry,
+                data=merged,
+                title=merged.get(CONF_NAME) or subentry.title,
+            )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema({
+                vol.Required(CONF_NAME,
+                             default=data.get(CONF_NAME, subentry.title)): str,
+                vol.Optional(CONF_AREA,
+                             default=data.get(CONF_AREA) or ""):
+                    selector.AreaSelector(),
+                vol.Optional(
+                    CONF_EVENTS,
+                    default=data.get(CONF_EVENTS, DEFAULT_EVENTS)):
+                    cv.multi_select(ALL_EVENTS),
+                vol.Required(
+                    CONF_AUTO_DETECT_CHANNEL,
+                    default=data.get(CONF_AUTO_DETECT_CHANNEL, True)): bool,
+                vol.Required(
+                    CONF_NVR_ACTIVE_DETERRENCE,
+                    default=data.get(CONF_NVR_ACTIVE_DETERRENCE, False)): bool,
+                vol.Required(CONF_MANUAL_SIREN,
+                             default=data.get(CONF_MANUAL_SIREN, False)): bool,
+                vol.Required(
+                    CONF_MANUAL_SECURITY_LIGHT,
+                    default=data.get(CONF_MANUAL_SECURITY_LIGHT, False)): bool,
+                vol.Required(
+                    CONF_DISABLE_BACKCHANNEL,
+                    default=data.get(CONF_DISABLE_BACKCHANNEL, False)): bool,
+            }),
+            description_placeholders={
+                "channel": str(data.get(CONF_CHANNEL, 0)),
+                "name": subentry.title,
+            },
         )
