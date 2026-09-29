@@ -12,6 +12,7 @@ from homeassistant.helpers import entity_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
+from custom_components.dahua import dahua_utils
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.model_profiles import is_sdt4e425
 from custom_components.dahua.vto import CancelCallRefused
