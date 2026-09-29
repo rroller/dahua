@@ -1600,7 +1600,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # listening.
             if not isinstance(data, dict):
                 data = {}
-            object_type = data.get("Object", {}).get("ObjectType", "").lower()
+            # `or {}` rather than a default, because the key being present with a
+            # null is not the same as the key being absent: `.get("Object", {})`
+            # returns None for `"Object": null` and the next `.get` raises. The
+            # device does send nulls -- `"Track": None` is in this module's own
+            # example payload -- and a CrossLine event that detected no object is
+            # exactly when it would. Same reasoning as the isinstance guard above,
+            # which #475 added for the other half of this.
+            object_type = (data.get("Object") or {}).get("ObjectType", "")
+            object_type = (object_type or "").lower()
             codes = []
 
             # Always include the original CrossLine/CrossRegion if a listener exists
