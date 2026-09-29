@@ -88,6 +88,24 @@ _HOST_LIMITS: dict = {}
 _HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 
 
+def _describe_client_error(exception) -> str:
+    """The shortest thing that says whether asking again could ever work.
+
+    An aiohttp.ClientResponseError carries the status the device answered with, and
+    that is the only part of it worth a log line: 400 and 404 mean this device does
+    not serve the request, 500 and a refused connection mean it might next time.
+
+    Anything else is named by its class rather than its text. A connector error's
+    str() is a paragraph containing the host, the port and sometimes a certificate,
+    and the URL is already on the line.
+    """
+    status = getattr(exception, "status", None)
+    if status is not None:
+        message = getattr(exception, "message", "") or ""
+        return "HTTP %s%s" % (status, " %s" % message if message else "")
+    return type(exception).__name__
+
+
 def rpc2_refusal_is_a_stale_login(refused) -> bool:
     """Whether this refusal means the login is no good and a new one would help.
 
@@ -3307,7 +3325,15 @@ class DahuaClient:
             _LOGGER.warning("TypeError fetching information from %s", url)
             raise exception
         except (aiohttp.ClientError, socket.gaierror) as exception:
-            _LOGGER.debug("ClientError fetching information from %s", url)
+            # With the status, because that is the whole question when a reporter's
+            # debug log shows one of these repeating. A 400 or a 404 means the device
+            # does not serve this and never will, so asking every poll is waste; a
+            # 500 or a refused connection is a device having a bad day and asking
+            # again is right. The line named neither, so #832's log could not tell
+            # them apart and the next step was another round trip to the reporter.
+            _LOGGER.debug(
+                "ClientError fetching information from %s: %s", url,
+                _describe_client_error(exception))
             raise exception
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.warning("Exception fetching information from %s", url)
