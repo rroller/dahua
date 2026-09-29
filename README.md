@@ -291,6 +291,8 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 :------------ | :------------ | :------------ | :------------- | :-------------
 | *Amcrest* |
 | | | | Amcrest IP5M-T1179E | Amcrest IPC-Color4K-T
+| *EmpireTech* |
+| | | IPC-Color4M-TZ | | PTZ3E10X-T180 <sup>†</sup>
 | *IMOU* |
 | | IMOU IPC-A26Z / Ranger Pro Z | | IMOU DB61i
 | | IMOU IPC-C26E-V2 <sup>*</sup> |
@@ -301,6 +303,8 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | | | | Lorex LNE8964AB
 
 <sup>*</sup> partial support
+
+<sup>†</sup> dual-sensor camera with an 8 MP overview channel and a 4 MP PTZ channel
 
 ## Doorbell cameras
 
