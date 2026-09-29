@@ -306,9 +306,20 @@ def _stream_block(coordinator) -> dict[str, Any]:
     return {
         "registered": True,
         "task_running": bool(task) and not task.done(),
-        # The union across every channel on this host, which is what the device was
-        # actually asked to send. A code missing here cannot arrive.
+        # The union of what the channels on this host selected. A code missing
+        # here cannot arrive, whatever one channel has configured.
         "attached_events": sorted(getattr(stream, "_events", ()) or ()),
+        # And what was put on the wire, which is not always the same list.
+        # Sharing one stream makes the request the union across channels, and
+        # some firmware answers codes=[All] but goes silent on a long explicit
+        # list, so a union wider than any single channel's own selection is sent
+        # as [All] and filtered again locally. Reporting only the union then
+        # described a request the device never received, which is the field
+        # somebody would have to reconcile against a packet capture to doubt.
+        "subscribed_as": (
+            ["All"] if getattr(stream, "_using_all_events", False)
+            else sorted(getattr(stream, "_events", ()) or ())
+        ),
         "received_data": bool(getattr(stream, "_received_data", False)),
         "last_attach_failed": bool(getattr(stream, "_failing", False)),
         "consecutive_failures": getattr(stream, "_consecutive_failures", 0),
@@ -409,6 +420,15 @@ def _events_block(coordinator) -> dict[str, Any]:
         # Listener keys are "<EventName>-<channel>". On an NVR, listeners for
         # channel 3 while events arrive with index 0 is the channel-offset bug.
         "listener_keys": sorted(getattr(coordinator, "_dahua_event_listeners", {})),
+        # The same keys, for events that arrived and found no listener there.
+        # Counted rather than logged because the failure is a non-event: the
+        # dispatch continues, the event still reaches the HA bus, and only the
+        # sensor stays where it was. A reporter watching the bus sees events
+        # arriving and a sensor that never moves, and has had no way to tell
+        # that apart from a device that stopped sending.
+        "arrived_with_no_listener": dict(
+            getattr(coordinator, "_events_without_listener", None) or {}
+        ),
         # Ages, not epochs. A motion event 21600 seconds old is a binary sensor
         # that has been on for six hours because no Stop action ever arrived.
         "timestamp_age_seconds": {

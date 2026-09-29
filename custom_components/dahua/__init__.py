@@ -142,6 +142,7 @@ from .host import (  # noqa: F401  pylint: disable=unused-import
 from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     CAPABILITY_REFUSED,
     DAY_NIGHT_NAMES,
+    DOORBELL_KNOWN_QUIET_STATES,
     DOORBELL_RINGING_STATES,
     DOORBELL_STATE_EVENTS,
     DahuaDataUpdateCoordinator,

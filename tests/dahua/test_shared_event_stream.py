@@ -563,3 +563,60 @@ def test_a_bare_stream_dispatches_as_it_did_before(hass):
     bare.on_receive(b"Code=VideoMotion;action=Start;index=0\r\n", 0)
 
     assert [event["Code"] for event in only.handled] == ["VideoMotion"]
+
+
+# --- an index the device did not send as a number ----------------------------
+
+MOTION_BAD_INDEX = (
+    b"--myboundary\n"
+    b"Content-Type: text/plain\n"
+    b"Content-Length: 44\n"
+    b"\n"
+    b"Code=VideoMotion;action=Start;index=Channel1\n"
+)
+
+
+async def test_an_index_that_is_not_a_number_falls_back_to_channel_zero(hass):
+    """A device that puts something other than a number in `index` must not take the
+    dispatch down with it. Everything on that stream shares this one call, so one
+    malformed event would cost every channel of the host its events for that read.
+
+    Zero rather than dropped, because an event with an index nobody can read is still an
+    event, and channel 0 is the one every host has.
+    """
+    stream = _host_stream(hass, ADDRESS)
+    on_zero = _Coordinator(0, ["VideoMotion"])
+    stream.register(on_zero)
+    await _settle()
+
+    stream.on_receive(MOTION_BAD_INDEX, 0)
+
+    assert on_zero.handled, "a non-numeric index cost channel 0 its event"
+
+
+# One read can carry several events, so the fallback has to be per event rather
+# than per read: the bad one must not take its neighbours with it.
+BAD_INDEX_THEN_GOOD = MOTION_BAD_INDEX + (
+    b"--myboundary\n"
+    b"Content-Type: text/plain\n"
+    b"Content-Length: 39\n"
+    b"\n"
+    b"Code=CrossLineDetection;action=Start;index=0\n"
+)
+
+
+async def test_a_malformed_index_does_not_cost_the_next_event_in_the_same_read(hass):
+    """One frame, two events, the first unreadable.
+
+    The parse is shared across the whole host, so a per-read failure would be a
+    host-wide outage triggered by whichever device sends the odd index.
+    """
+    stream = _host_stream(hass, ADDRESS)
+    on_zero = _Coordinator(0, ["VideoMotion", "CrossLineDetection"])
+    stream.register(on_zero)
+    await _settle()
+
+    stream.on_receive(BAD_INDEX_THEN_GOOD, 0)
+
+    codes = [event["Code"] for event in on_zero.handled]
+    assert codes == ["VideoMotion", "CrossLineDetection"], codes

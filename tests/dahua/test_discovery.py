@@ -325,3 +325,127 @@ def test_a_serial_that_merely_starts_the_same_does_not_match():
 
 def test_nothing_configured_matches_nothing():
     assert _handler([])._async_entries_for_serial("SER123") == []
+
+
+# --- the rest of "a device that will not answer costs nothing" ----------------
+#
+# async_probe never raises; it returns {} for anything it cannot make sense of. That is
+# deliberate, because this only ever *adds* information to a discovery or a form. Three
+# of those paths had no test, and each of them is something else being on UDP 37810 or
+# the network saying no.
+
+
+def _framed(body: bytes) -> bytes:
+    """A reply with the right DHIP header and an arbitrary body."""
+    return b"\x20\x00\x00\x00DHIP" + b"\x00" * 24 + body
+
+
+def _answering(monkeypatch, payload):
+    """A device that sends `payload` as soon as the probe goes out."""
+    transport = _SilentTransport()
+
+    async def _endpoint(factory, remote_addr=None):
+        protocol = factory()
+        protocol.datagram_received(payload, ("10.0.0.5", 37810))
+        return transport, None
+
+    monkeypatch.setattr(asyncio.get_running_loop(),
+                        "create_datagram_endpoint", _endpoint)
+    return transport
+
+
+async def test_a_reply_whose_json_is_truncated_is_not_a_device(monkeypatch):
+    """The header is right, so the framing check passes and the JSON is what fails. A
+    half-sent datagram is the ordinary way that happens."""
+    _answering(monkeypatch, _framed(b'{"method": "client.notifyDevInfo", "par'))
+
+    assert await discovery.async_probe("10.0.0.5", timeout=1) == {}
+
+
+async def test_a_reply_that_is_valid_json_but_not_an_object_is_not_a_device(monkeypatch):
+    """`json.loads` is happy with a list or a bare string, and `.get` is not."""
+    _answering(monkeypatch, _framed(b'["not", "an", "object"]'))
+
+    assert await discovery.async_probe("10.0.0.5", timeout=1) == {}
+
+
+def test_a_body_with_no_json_object_in_it_is_not_a_device():
+    """Asserted on `parse_reply` directly rather than through `async_probe`, which
+    catches everything and returns {} whatever happened inside it.
+
+    These are rejected by the `raw.find(b"{") < 0` check rather than by the type check
+    below it, which is worth naming because the two are easy to confuse: a JSON array or
+    a bare number contains no brace at all, so the parser never gets as far as asking
+    what type it decoded.
+    """
+    assert discovery.parse_reply(_framed(b'["not", "an", "object"]')) == {}
+    assert discovery.parse_reply(_framed(b'"a bare string"')) == {}
+    assert discovery.parse_reply(_framed(b'42')) == {}
+    assert discovery.parse_reply(b"") == {}
+
+
+def test_the_parser_rejects_a_truncated_body_without_raising():
+    assert discovery.parse_reply(_framed(b'{"params": {"deviceInf')) == {}
+
+
+def test_the_parser_wants_the_dhip_header():
+    """No header means this is not a Dahua reply at all, whatever the body says."""
+    assert discovery.parse_reply(b'{"params": {"deviceInfo": {"serialNo": "X"}}}') == {}
+
+
+async def test_an_icmp_port_unreachable_is_an_answer_not_a_failure(monkeypatch):
+    """It arrives at the protocol's `error_received` rather than as a raised OSError,
+    which is a different path from test_an_unreachable_host_is_not_an_error above. It
+    means "nothing is serving discovery here", which is ordinary."""
+    transport = _SilentTransport()
+
+    async def _endpoint(factory, remote_addr=None):
+        protocol = factory()
+        protocol.error_received(ConnectionRefusedError("port unreachable"))
+        return transport, None
+
+    monkeypatch.setattr(asyncio.get_running_loop(),
+                        "create_datagram_endpoint", _endpoint)
+
+    assert await discovery.async_probe("10.0.0.5", timeout=1) == {}
+    assert transport.closed, "the socket was left open"
+
+
+async def test_the_protocol_reports_a_refusal_rather_than_letting_it_time_out():
+    """Asserted on the protocol directly, for the same reason as the parser above: a
+    refusal that is never reported still ends as {} once the timeout expires, so going
+    through async_probe cannot tell the two apart. What differs is how long the caller
+    waits, and discovery runs while somebody is looking at a form."""
+    future = asyncio.get_running_loop().create_future()
+    protocol = discovery._ProbeProtocol(future)
+
+    protocol.error_received(ConnectionRefusedError("port unreachable"))
+
+    assert future.done(), "the refusal was not reported, so the probe waits it out"
+    with pytest.raises(ConnectionRefusedError):
+        future.result()
+
+
+async def test_a_second_refusal_does_not_raise_on_a_settled_future():
+    """Two ICMP replies to one probe is ordinary, and setting a result twice is an
+    InvalidStateError inside a transport callback."""
+    future = asyncio.get_running_loop().create_future()
+    protocol = discovery._ProbeProtocol(future)
+
+    protocol.error_received(ConnectionRefusedError("first"))
+    protocol.error_received(ConnectionRefusedError("second"))
+
+    assert future.done()
+    future.exception()
+
+
+async def test_a_failure_that_is_not_a_network_error_still_costs_nothing(monkeypatch):
+    """The broad except. Discovery runs on a DHCP lease renewal, so whatever goes wrong
+    in here must not surface to the user as a problem with their camera."""
+    async def _endpoint(factory, remote_addr=None):
+        raise RuntimeError("something entirely unexpected")
+
+    monkeypatch.setattr(asyncio.get_running_loop(),
+                        "create_datagram_endpoint", _endpoint)
+
+    assert await discovery.async_probe("10.0.0.5", timeout=1) == {}
