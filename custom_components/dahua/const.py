@@ -8,9 +8,6 @@ ISSUE_URL = "https://github.com/rroller/dahua/issues"
 
 # Icons - https://materialdesignicons.com/
 ICON = "mdi:format-quote-close"
-SECURITY_LIGHT_ICON = "mdi:alarm-light-outline"
-SIREN_ICON = "mdi:bullhorn"
-INFRARED_ICON = "mdi:weather-night"
 VOLUME_HIGH_ICON = "mdi:volume-high"
 
 # Device classes - https://www.home-assistant.io/integrations/binary_sensor/#device-class

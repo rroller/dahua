@@ -5,6 +5,17 @@
                 "default": "mdi:car-check"
             }
         },
+        "light": {
+            "infrared": {
+                "default": "mdi:weather-night"
+            },
+            "security_light": {
+                "default": "mdi:alarm-light-outline"
+            },
+            "warning_light": {
+                "default": "mdi:alarm-light-outline"
+            }
+        },
         "select": {
             "day_night_mode": {
                 "default": "mdi:theme-light-dark"
@@ -19,6 +30,9 @@
             }
         },
         "switch": {
+            "alarm": {
+                "default": "mdi:bullhorn"
+            },
             "alarm_output": {
                 "default": "mdi:alarm-light"
             },
@@ -33,6 +47,9 @@
             },
             "privacy_mode": {
                 "default": "mdi:shield-lock"
+            },
+            "siren": {
+                "default": "mdi:bullhorn"
             },
             "smart_motion_detection": {
                 "default": "mdi:motion-sensor"

@@ -5,7 +5,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
-from .const import DOMAIN, SIREN_ICON
+from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .client import SIREN_TYPE
 
@@ -236,7 +236,15 @@ class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
                 self._channel, self._rule_id, enabled
             )
         except ValueError as err:
-            raise HomeAssistantError(str(err)) from err
+            # The reason is built in client.py, which resolves the rule just
+            # before writing, so it is carried through as a placeholder rather
+            # than replaced by a guess at what went wrong. It is still English
+            # until those messages get keys of their own.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="ivs_rule_write_failed",
+                translation_placeholders={"reason": str(err)},
+            ) from err
         await self._coordinator.async_refresh()
 
     async def async_turn_on(self, **kwargs):
@@ -317,11 +325,6 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_siren"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return SIREN_ICON
 
     @property
     def is_on(self):

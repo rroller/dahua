@@ -4,6 +4,7 @@ None of the behavioural tests can see that, because creating an issue does not
 resolve its text. These are plain file assertions.
 """
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -33,12 +34,29 @@ def _placeholders(text: str) -> set:
     return set(re.findall(r"\{(\w+)\}", text))
 
 
-# How the code says "raise this issue". The lookbehind keeps an entity's
-# `_attr_translation_key` out of it, which matters now that the scan below covers
-# every module rather than the three that happened to raise an issue when it was
-# written. Compiled once here so the control test exercises this pattern and not a
-# copy of it.
-ISSUE_KEY = re.compile(r'(?<!\w)translation_key="([a-z_]+)"')
+# An issue key is one handed to `async_create_issue`. Read from the call rather
+# than matched in the text: this was a regex with a lookbehind to keep an entity's
+# `_attr_translation_key` out, which worked until `HomeAssistantError` learnt
+# translation keys and four exception messages were reported as issues the code
+# raises with no strings for them. A pattern cannot tell those apart. The callee
+# can.
+ISSUE_RAISER = "async_create_issue"
+
+
+def issue_keys_in(source: str) -> set:
+    """Literal translation keys passed to async_create_issue in one module."""
+    keys = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name != ISSUE_RAISER:
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "translation_key" and isinstance(keyword.value, ast.Constant):
+                keys.add(keyword.value.value)
+    return keys
 
 
 def test_the_map_above_covers_every_issue_the_code_raises():
@@ -49,14 +67,14 @@ def test_the_map_above_covers_every_issue_the_code_raises():
     channel_not_added left it untested here and every test in this file still passed.
     Deriving the set from the source makes the drift impossible instead.
     """
-    # Every module, not the three that happened to raise an issue when this
-    # was written. Two of them moved to host.py and this reported them as
-    # being in the map but not the code, which is exactly backwards.
-    from .integration_source import source as integration_source
+    # Every module, not the three that happened to raise an issue when this was
+    # written. Two of them moved to host.py and this reported them as being in the
+    # map but not the code, which is exactly backwards.
+    from .integration_source import modules
 
-    source = integration_source()
-
-    raised = set(ISSUE_KEY.findall(source))
+    raised = set()
+    for text in modules().values():
+        raised |= issue_keys_in(text)
 
     assert raised == set(ISSUE_PLACEHOLDERS), (
         "in the code but not the map: %s; in the map but not the code: %s"
@@ -64,24 +82,30 @@ def test_the_map_above_covers_every_issue_the_code_raises():
            sorted(set(ISSUE_PLACEHOLDERS) - raised)))
 
 
-def test_the_pattern_does_not_collect_an_entitys_translation_key():
-    """`_attr_translation_key` is a different thing that reads the same.
+def test_only_a_created_issue_counts_as_an_issue():
+    """Three unrelated things pass `translation_key=` and they read identically.
 
-    The lookbehind is what keeps them apart, and without a control it is a
-    character nobody would miss if it went. Entities happen to write theirs with
-    spaces around the `=`, so they slip past by luck rather than by design, and
-    widening the scan above from three files to the whole package is what brought
-    them within reach of this pattern in the first place.
+    An entity is handed the key the platform chose, a HomeAssistantError names a
+    message, and only `async_create_issue` raises a repair. The regex this replaced
+    could not tell them apart, and the day HomeAssistantError learnt translation
+    keys it reported four exception messages as issues with no strings. So the
+    control is all three kinds at once.
     """
     sample = (
         'ir.async_create_issue(hass, DOMAIN, key, translation_key="device_unreachable")\n'
-        '_attr_translation_key="firmware_version"\n'
-        '    _attr_translation_key = "serial_number"\n'
+        'raise HomeAssistantError(translation_domain=DOMAIN,\n'
+        '                         translation_key="cancel_call_refused")\n'
+        'DahuaSirenBinarySwitch(c, e, translation_key="siren")\n'
+        '_attr_translation_key = "firmware_version"\n'
     )
 
-    assert set(ISSUE_KEY.findall(sample)) == {"device_unreachable"}
-    assert "firmware_version" in re.findall(r'translation_key="([a-z_]+)"', sample), \
-        "the sample no longer reproduces what the lookbehind is for"
+    assert issue_keys_in(sample) == {"device_unreachable"}
+    # And the sample really does carry the other three kinds, or this proves
+    # nothing. Named rather than counted: the first version of this line asserted
+    # a count I worked out by hand, and got it wrong.
+    for confusable in ("cancel_call_refused", "siren", "firmware_version"):
+        assert confusable in sample
+        assert confusable not in issue_keys_in(sample)
 
 
 @pytest.mark.parametrize("key", sorted(ISSUE_PLACEHOLDERS))
