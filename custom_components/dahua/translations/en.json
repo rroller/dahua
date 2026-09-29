@@ -140,6 +140,141 @@
     },
     "entity": {
         "binary_sensor": {
+            "alarm_local": {
+                "name": "Alarm Local"
+            },
+            "alarm_output": {
+                "name": "Alarm Output"
+            },
+            "audio_anomaly": {
+                "name": "Audio Anomaly"
+            },
+            "audio_mutation": {
+                "name": "Audio Mutation"
+            },
+            "button_pressed": {
+                "name": "Button Pressed"
+            },
+            "call_no_answered": {
+                "name": "Call No Answered"
+            },
+            "cross_line_alarm": {
+                "name": "Cross Line Alarm"
+            },
+            "cross_region_detection": {
+                "name": "Cross Region Detection"
+            },
+            "crowd_detection": {
+                "name": "Crowd Detection"
+            },
+            "door_status": {
+                "name": "Door Status"
+            },
+            "face_detection": {
+                "name": "Face Detection"
+            },
+            "face_recognition": {
+                "name": "Face Recognition"
+            },
+            "fire_warning": {
+                "name": "Fire Warning"
+            },
+            "fire_warning_info": {
+                "name": "Fire Warning Info"
+            },
+            "heat_imaging_temper": {
+                "name": "Heat Imaging Temper"
+            },
+            "human_trait": {
+                "name": "Human Trait"
+            },
+            "intelli_frame": {
+                "name": "Intelli Frame"
+            },
+            "inter_video_access": {
+                "name": "Inter Video Access"
+            },
+            "invite": {
+                "name": "Invite"
+            },
+            "left_detection": {
+                "name": "Left Detection"
+            },
+            "mdresult": {
+                "name": "MDResult"
+            },
+            "motion_alarm": {
+                "name": "Motion Alarm"
+            },
+            "move_detection": {
+                "name": "Move Detection"
+            },
+            "new_file": {
+                "name": "New File"
+            },
+            "ntpadjust_time": {
+                "name": "NTPAdjust Time"
+            },
+            "object_placement_detection": {
+                "name": "Object Placement Detection"
+            },
+            "object_removal_detection": {
+                "name": "Object Removal Detection"
+            },
+            "parking_detection": {
+                "name": "Parking Detection"
+            },
+            "rioter_detection": {
+                "name": "Rioter Detection"
+            },
+            "smart_motion_human": {
+                "name": "Smart Motion Human"
+            },
+            "smart_motion_vehicle": {
+                "name": "Smart Motion Vehicle"
+            },
+            "storage_failure": {
+                "name": "Storage Failure"
+            },
+            "storage_low_space": {
+                "name": "Storage Low Space"
+            },
+            "storage_not_exist": {
+                "name": "Storage Not Exist"
+            },
+            "taken_away_detection": {
+                "name": "Taken Away Detection"
+            },
+            "time_change": {
+                "name": "Time Change"
+            },
+            "traffic": {
+                "name": "Traffic"
+            },
+            "traffic_junction": {
+                "name": "Traffic Junction"
+            },
+            "traffic_snapshot": {
+                "name": "Traffic Snapshot"
+            },
+            "video_abnormal_detection": {
+                "name": "Video Abnormal Detection"
+            },
+            "video_blind": {
+                "name": "Video Blind"
+            },
+            "video_loss": {
+                "name": "Video Loss"
+            },
+            "video_motion_info": {
+                "name": "Video Motion Info"
+            },
+            "video_un_focus": {
+                "name": "Video Un Focus"
+            },
+            "wander_detection": {
+                "name": "Wander Detection"
+            },
             "authorized_vehicle": {
                 "name": "Authorized Vehicle"
             }

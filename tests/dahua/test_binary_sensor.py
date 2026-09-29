@@ -90,11 +90,13 @@ def sensor(monkeypatch):
     ("AlarmLocal", "Alarm Local"),
     ("StorageNotExist", "Storage Not Exist"),
 ])
-def test_camel_case_events_become_readable_names(sensor, event_name, expected):
-    # `has_entity_name` is True, so an entity states only its own half and
-    # Home Assistant prefixes the device. The rendered name is unchanged;
-    # what this asserts is that the entity is no longer composing it.
-    assert sensor(event_name).name == expected
+def test_camel_case_events_become_readable_keys(sensor, event_name, expected):
+    """The name itself is in translations/en.json now, and
+    test_event_sensor_names_are_translated.py compares the whole file against
+    the derivation. What this still pins is that the key an entity declares is
+    the slug of the name it used to return, because that slug is also its unique
+    id suffix: if it drifted, every one of these sensors would be renamed."""
+    assert sensor(event_name).translation_key == expected.lower().replace(" ", "_")
 
 
 @pytest.mark.parametrize("event_name,expected", [
@@ -103,18 +105,22 @@ def test_camel_case_events_become_readable_names(sensor, event_name, expected):
     ("DoorbellPressed", "Button Pressed"),
 ])
 def test_overridden_names_win_over_the_derived_one(sensor, event_name, expected):
-    # `has_entity_name` is True, so an entity states only its own half and
-    # Home Assistant prefixes the device. The rendered name is unchanged;
-    # what this asserts is that the entity is no longer composing it.
-    assert sensor(event_name).name == expected
+    """Same three overrides, reached through the key they produce."""
+    assert sensor(event_name).translation_key == expected.lower().replace(" ", "_")
 
 
-def test_consecutive_capitals_are_not_split(sensor):
-    """IVS must not become I V S."""
-    # `has_entity_name` is True, so an entity states only its own half and
-    # Home Assistant prefixes the device. The rendered name is unchanged;
-    # what this asserts is that the entity is no longer composing it.
-    assert sensor("IVS").name == "IVS"
+def test_a_code_with_no_string_keeps_the_derived_english_name(sensor):
+    """IVS must not become I V S, and it is also the fallback in action.
+
+    `get_event_list` reads the config entry, so a hand edited .storage can name
+    a code this ships no string for. IVS is exactly that: not in ALL_EVENTS and
+    not one of the four a doorbell adds, so it keeps the derived name rather
+    than ending up with no name of its own. Which is what makes this the test
+    that the fallback is real and not just written down."""
+    built = sensor("IVS")
+
+    assert built.name == "IVS"
+    assert built.translation_key is None
 
 
 # --- device classes and icons ----------------------------------------------
