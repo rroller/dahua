@@ -322,6 +322,7 @@ class DahuaIVSRuleBinarySensor(DahuaEventSensor):
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, rule: dict):
         super().__init__(coordinator, entry, f"IVSRule_{rule['id']}")
         self._name = rule["name"]
+        self._attr_name = rule["name"]
         self._unique_id = f"{coordinator.get_serial_number()}_ivs_rule_{rule['id']}"
         self._rule_id = rule["id"]
         self._rule_type = rule.get("type")
