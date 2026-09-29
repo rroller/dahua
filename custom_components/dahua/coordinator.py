@@ -715,7 +715,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # close an asyncio transport. Leaving it open leaks the socket to
             # port 5000, its event subscription and its keep-alive for an entry
             # that no longer exists, once per reload.
-            client = self._vto_client
+            client = getattr(self, "_vto_client", None)
             if client is not None:
                 client.close()
             task.cancel()

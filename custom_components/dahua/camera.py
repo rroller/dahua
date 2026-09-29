@@ -608,7 +608,9 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         # button is only created on a doorbell; aimed at anything else the CGI
         # endpoint is not there and the user gets a raw HTTP error. The sibling
         # cancel-call service says which device it is for, so this one does too.
-        if not self._coordinator.is_doorbell():
+        # getattr because tests build stand-in coordinators without the method.
+        is_doorbell = getattr(self._coordinator, "is_doorbell", None)
+        if is_doorbell is not None and not is_doorbell():
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="open_door_needs_a_doorbell",
