@@ -5,9 +5,11 @@ import pytest
 from custom_components.dahua.client import SECURITY_LIGHT_TYPE, SIREN_TYPE
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.switch import (
+    DahuaAlarmOutputSwitch,
     DahuaDisarmingEventNotificationsLinkageBinarySwitch,
     DahuaDisarmingLinkageBinarySwitch,
     DahuaMotionDetectionBinarySwitch,
+    DahuaPrivacyModeBinarySwitch,
     DahuaSirenBinarySwitch,
     DahuaSmartMotionDetectionBinarySwitch,
 )
@@ -75,10 +77,13 @@ class _Coordinator:
         return self._amcrest
 
     def supports_privacy_mode(self):
-        return False
+        return self.states.get("has_privacy_mode", False)
 
     def supports_alarm_output(self):
-        return False
+        return self.states.get("has_alarm_output", False)
+
+    def is_alarm_output_on(self):
+        return self.states.get("alarm_output", False)
 
     def is_motion_detection_enabled(self):
         return self.states.get("motion", False)
@@ -306,3 +311,192 @@ async def test_the_disarming_switches_follow_what_the_device_answered():
     assert "disarming" not in added
     assert "notifications" not in added
     assert coordinator.client.calls == []
+
+
+# --- the alarm output relay ---------------------------------------------------
+#
+# A physical relay rather than a setting, so what it writes matters more than most:
+# AlarmOut.Mode=1 forces it on and Mode=2 forces it off. Its three methods had no tests.
+
+async def test_the_alarm_output_forces_on_and_off():
+    c = _Coordinator()
+    s = _switch(DahuaAlarmOutputSwitch, c)
+    s._output = 0
+
+    await s.async_turn_on()
+    await s.async_turn_off()
+
+    assert c.client.calls == [
+        ("async_set_alarm_output_state", 0, True),
+        ("async_set_alarm_output_state", 0, False),
+    ]
+
+
+async def test_the_alarm_output_refreshes_so_the_state_is_read_back():
+    """It reports the physical state from alarm.cgi, so without the refresh the entity
+    shows the old one until the next poll."""
+    c = _Coordinator()
+    s = _switch(DahuaAlarmOutputSwitch, c)
+    s._output = 0
+
+    await s.async_turn_on()
+
+    assert c.refreshed == 1
+
+
+async def test_the_alarm_output_writes_the_output_it_was_given():
+    """A device with more than one relay gets an entity each, so the index cannot be
+    assumed to be zero."""
+    c = _Coordinator()
+    s = _switch(DahuaAlarmOutputSwitch, c)
+    s._output = 2
+
+    await s.async_turn_on()
+
+    assert c.client.calls == [("async_set_alarm_output_state", 2, True)]
+
+
+def test_two_alarm_outputs_do_not_share_an_entity():
+    """The index is in the unique id. Without it a second relay would claim the entity
+    belonging to the first, which is the shape of #850."""
+    c = _Coordinator()
+    first = _switch(DahuaAlarmOutputSwitch, c)
+    second = _switch(DahuaAlarmOutputSwitch, c)
+    first._output, second._output = 0, 1
+
+    assert first.unique_id != second.unique_id
+    assert first.unique_id.endswith("_alarm_output_0")
+    assert second.unique_id.endswith("_alarm_output_1")
+
+
+def test_the_alarm_output_reports_the_physical_state():
+    c = _Coordinator()
+    s = _switch(DahuaAlarmOutputSwitch, c)
+    s._output = 0
+
+    assert s.is_on is False
+    c.states["alarm_output"] = True
+    assert s.is_on is True
+
+
+# --- privacy mode -------------------------------------------------------------
+
+async def test_privacy_mode_covers_and_uncovers_the_lens():
+    """This one moves a motorised cover, so it is the only switch here whose off state
+    the camera cannot see past."""
+    c = _Coordinator()
+    s = _switch(DahuaPrivacyModeBinarySwitch, c)
+
+    await s.async_turn_on()
+    await s.async_turn_off()
+
+    assert c.client.calls == [
+        ("async_set_privacy_mode", True),
+        ("async_set_privacy_mode", False),
+    ]
+    assert c.refreshed == 2
+
+
+# --- the siren, built the way the platform builds it --------------------------
+
+def test_the_siren_takes_its_key_from_the_platform():
+    """Called Alarm on a recorder and Siren otherwise, which the platform decides. The
+    test above reads the key off a class; this one builds a siren properly."""
+    c = _Coordinator()
+
+    siren = DahuaSirenBinarySwitch(c, object(), translation_key="alarm")
+
+    assert siren.translation_key == "alarm"
+
+
+def test_the_siren_key_must_be_passed_by_name():
+    """Keyword only on purpose: a call site still passing the old display name
+    positionally would set a translation key that is not a slug and would then never
+    match, silently. This makes it fail loudly instead."""
+    c = _Coordinator()
+
+    with pytest.raises(TypeError):
+        DahuaSirenBinarySwitch(c, object(), "Siren")
+
+
+def test_the_siren_reports_what_the_coordinator_read():
+    c = _Coordinator()
+    s = _switch(DahuaSirenBinarySwitch, c)
+
+    assert s.is_on is False
+    c.states["siren"] = True
+    assert s.is_on is True
+
+
+# --- which switches setup creates --------------------------------------------
+#
+# The two tests above about setup are there because it must not talk to the device. These
+# are about the decision it makes: three of the appends had no test, so three switches
+# were only ever built by hand.
+
+async def _added_for(coordinator):
+    """Run the real platform setup with every entity replaced by its name."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from custom_components.dahua import switch as switch_module
+
+    for name in ("supports_siren", "supports_smart_motion_detection",
+                 "supports_disarming_linkage"):
+        if not hasattr(coordinator, name):
+            setattr(coordinator, name, lambda: False)
+
+    entry = SimpleNamespace(entry_id="e1", options={}, runtime_data={0: coordinator})
+    added = []
+    with patch.multiple(
+        switch_module,
+        DahuaMotionDetectionBinarySwitch=lambda *a, **k: "motion",
+        DahuaDisarmingLinkageBinarySwitch=lambda *a, **k: "disarming",
+        DahuaDisarmingEventNotificationsLinkageBinarySwitch=lambda *a, **k: "notifications",
+        DahuaSmartMotionDetectionBinarySwitch=lambda *a, **k: "smart",
+        DahuaPrivacyModeBinarySwitch=lambda *a, **k: "privacy",
+        DahuaAlarmOutputSwitch=lambda *a, **k: "alarm_output",
+    ):
+        await switch_module.async_setup_entry(
+            SimpleNamespace(data={}), entry, added.extend)
+    return added
+
+
+async def test_privacy_mode_is_only_offered_where_the_camera_has_a_cover():
+    """Only cameras reporting a LeLensMask table have one, and on any other the call
+    fails, so offering the switch would be offering something that cannot work."""
+    without = _Coordinator()
+    without.supports_smart_motion_detection = lambda: False
+    assert "privacy" not in await _added_for(without)
+
+    with_cover = _Coordinator()
+    with_cover.supports_smart_motion_detection = lambda: False
+    with_cover.states["has_privacy_mode"] = True
+    assert "privacy" in await _added_for(with_cover)
+
+
+async def test_the_alarm_output_is_only_offered_where_there_is_one():
+    without = _Coordinator()
+    without.supports_smart_motion_detection = lambda: False
+    assert "alarm_output" not in await _added_for(without)
+
+    with_relay = _Coordinator()
+    with_relay.supports_smart_motion_detection = lambda: False
+    with_relay.states["has_alarm_output"] = True
+    assert "alarm_output" in await _added_for(with_relay)
+
+
+async def test_smart_motion_is_offered_for_either_flavour():
+    """Dahua's own and Amcrest's are different APIs behind one switch, and a device needs
+    only one of them for the switch to be worth having."""
+    neither = _Coordinator()
+    neither.supports_smart_motion_detection = lambda: False
+    assert "smart" not in await _added_for(neither)
+
+    dahua = _Coordinator()
+    dahua.supports_smart_motion_detection = lambda: True
+    assert "smart" in await _added_for(dahua)
+
+    amcrest = _Coordinator(amcrest=True)
+    amcrest.supports_smart_motion_detection = lambda: False
+    assert "smart" in await _added_for(amcrest)
