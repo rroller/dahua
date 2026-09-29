@@ -65,7 +65,7 @@ def _coordinator(raises=None, returns=None, over_rpc2=False):
             raise raises
         return returns
 
-    async def async_get_coaxial_control_io_status_rpc2():
+    async def async_get_coaxial_control_io_status_rpc2(channel=0):
         calls.append("rpc2")
         if raises is not None:
             raise raises

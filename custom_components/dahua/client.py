@@ -1408,13 +1408,13 @@ class DahuaClient:
     # Direct-camera CoaxialControlIO RPC2 calls use channel 0, matching the
     # camera WebUI requests. Legacy CGI uses 1-based channel 1 for standalone
     # cameras; this protocol difference is intentional, not an off-by-one error.
-    async def _direct_coaxial_rpc2(self, method: str, *args):
+    async def _direct_coaxial_rpc2(self, method: str, *args, channel: int = 0):
         """Retry one direct-camera call after a confirmed expired RPC2 login."""
         for attempt in range(2):
             holder = await self._shared_rpc2()
             login_task = getattr(holder, "task", None)
             try:
-                return await getattr(holder.client, method)(0, *args)
+                return await getattr(holder.client, method)(channel, *args)
             except Rpc2MethodRefused as exc:
                 if attempt or not rpc2_refusal_is_a_stale_login(exc):
                     raise
@@ -1441,18 +1441,26 @@ class DahuaClient:
         """Probe a direct camera on channel zero, independently of config transport."""
         return await self._direct_coaxial_rpc2("get_coaxial_control_io_caps")
 
-    async def async_get_coaxial_control_io_status_rpc2(self) -> dict:
+    async def async_get_coaxial_control_io_status_rpc2(
+        self, channel: int = 0
+    ) -> dict:
         """Read direct-camera deterrence state in the coordinator's CGI shape."""
-        status = await self._direct_coaxial_rpc2("get_coaxial_control_io_status")
+        status = await self._direct_coaxial_rpc2(
+            "get_coaxial_control_io_status", channel=channel
+        )
         return {
             "status.Speaker": "On" if status.speaker else "Off",
             "status.WhiteLight": "On" if status.white_light else "Off",
         }
 
     async def async_set_coaxial_control_state_rpc2(
-        self, dahua_type: int, enabled: bool
+        self, dahua_type: int, enabled: bool, off_io: int = 2
     ) -> dict:
         """Write direct-camera deterrence on channel zero."""
+        if off_io != 2:
+            return await self._direct_coaxial_rpc2(
+                "set_coaxial_control_state", dahua_type, enabled, off_io
+            )
         return await self._direct_coaxial_rpc2(
             "set_coaxial_control_state", dahua_type, enabled
         )
@@ -2449,7 +2457,13 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
         return await self.get(url)
 
-    async def async_set_coaxial_control_state(self, channel: int, dahua_type: int, enabled: bool) -> dict:
+    async def async_set_coaxial_control_state(
+        self,
+        channel: int,
+        dahua_type: int,
+        enabled: bool,
+        off_io: int = 2,
+    ) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera.
 
@@ -2458,10 +2472,9 @@ class DahuaClient:
         NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
         """
 
-        # on = 1, off = 0
-        io = "1"
-        if not enabled:
-            io = "2"
+        # Most cameras use IO=2 to disable an output. Some models use IO=0;
+        # callers may provide that model-specific value with off_io.
+        io = 1 if enabled else off_io
 
         url = "/cgi-bin/coaxialControlIO.cgi?action=control&channel={channel}&info[0].Type={dahua_type}&info[0].IO={io}".format(
             channel=channel, dahua_type=dahua_type, io=io)
