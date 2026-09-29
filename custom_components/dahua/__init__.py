@@ -275,6 +275,24 @@ def get_configured_use_https(entry: ConfigEntry):
     return True if entry.data.get(CONF_USE_HTTPS) else None
 
 
+# The connection belongs to the device, not to the channel, and every writer
+# after setup -- reauth, reconfigure, the HTTPS repair, the discovery heal --
+# updates `entry.data`. A merged recorder's coordinators are built from subentry
+# data, and each subentry kept its own copy from the add flow, so the entry's
+# values are overlaid in channel_configs. Without that, the reload after a
+# successful reauth rebuilt every coordinator from the stale copy: the new
+# password was accepted, written to the entry, and then ignored, so reauth
+# started again forever and the device accumulated failed logins it locks out for.
+CONNECTION_KEYS = (
+    CONF_ADDRESS,
+    CONF_PORT,
+    CONF_RTSP_PORT,
+    CONF_USERNAME,
+    CONF_PASSWORD,
+    CONF_USE_HTTPS,
+)
+
+
 def channel_configs(entry: DahuaConfigEntry) -> list:
     """(subentry_id, config) for every channel this entry owns.
 
@@ -298,7 +316,9 @@ def channel_configs(entry: DahuaConfigEntry) -> list:
     and nothing to stop it at unload.
     """
     if entry.subentries:
-        pairs = [(subentry_id, dict(subentry.data))
+        connection = {key: entry.data[key] for key in CONNECTION_KEYS
+                      if key in entry.data}
+        pairs = [(subentry_id, {**dict(subentry.data), **connection})
                  for subentry_id, subentry in entry.subentries.items()]
     else:
         pairs = [(None, dict(entry.data))]
