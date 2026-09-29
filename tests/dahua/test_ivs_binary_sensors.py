@@ -153,6 +153,179 @@ def test_crossline_and_crossregion_keep_their_own_rules_and_smart_motion():
     ]
 
 
+def test_same_object_crossline_stop_clears_sibling_rules():
+    c = _coordinator()
+    sensors = {rule["id"]: _sensor(c, rule) for rule in c.get_ivs_rules()}
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    for rule_id in (17, 20):
+        c._dispatch_event(
+            {
+                "Code": "CrossLineDetection",
+                "data": {
+                    "Class": "Normal",
+                    "RuleID": rule_id,
+                    "Object": {"ObjectID": 89, "ObjectType": "Human"},
+                },
+            },
+            "Start",
+        )
+
+    assert sensors["17"].is_on
+    assert sensors["20"].is_on
+
+    c._dispatch_event(
+        {
+            "Code": "CrossLineDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 20,
+                "Object": {"ObjectID": 89, "ObjectType": "Human"},
+            },
+        },
+        "Stop",
+    )
+
+    assert not sensors["17"].is_on
+    assert not sensors["20"].is_on
+
+
+def test_same_object_crossregion_stop_does_not_clear_crossline_group():
+    c = _coordinator()
+    sensors = {rule["id"]: _sensor(c, rule) for rule in c.get_ivs_rules()}
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    c._dispatch_event(
+        {
+            "Code": "CrossRegionDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 8,
+                "Object": {"ObjectID": 89, "ObjectType": "Human"},
+            },
+        },
+        "Start",
+    )
+    c._dispatch_event(
+        {
+            "Code": "CrossLineDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 17,
+                "Object": {"ObjectID": 89, "ObjectType": "Human"},
+            },
+        },
+        "Start",
+    )
+
+    c._dispatch_event(
+        {
+            "Code": "CrossRegionDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 8,
+                "Object": {"ObjectID": 89, "ObjectType": "Human"},
+            },
+        },
+        "Stop",
+    )
+
+    assert not sensors["8"].is_on
+    assert sensors["17"].is_on
+
+
+def test_other_object_keeps_rule_active_after_first_object_stops():
+    c = _coordinator()
+    sensor = _sensor(c, next(rule for rule in c.get_ivs_rules() if rule["id"] == "17"))
+    c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    for object_id in (89, 90):
+        c._dispatch_event(
+            {
+                "Code": "CrossLineDetection",
+                "data": {
+                    "Class": "Normal",
+                    "RuleID": 17,
+                    "Object": {"ObjectID": object_id, "ObjectType": "Human"},
+                },
+            },
+            "Start",
+        )
+
+    c._dispatch_event(
+        {
+            "Code": "CrossLineDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 17,
+                "Object": {"ObjectID": 89, "ObjectType": "Human"},
+            },
+        },
+        "Stop",
+    )
+    assert sensor.is_on
+
+    c._dispatch_event(
+        {
+            "Code": "CrossLineDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 17,
+                "Object": {"ObjectID": 90, "ObjectType": "Human"},
+            },
+        },
+        "Stop",
+    )
+    assert not sensor.is_on
+
+
+def test_stay_detection_is_not_object_correlated():
+    c = _coordinator()
+    stay = _sensor(c, next(rule for rule in c.get_ivs_rules() if rule["id"] == "23"))
+    c.add_dahua_event_listener(stay._event_name, lambda: None)
+
+    c._dispatch_event(
+        {
+            "Code": "StayDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 23,
+                "Object": {"ObjectID": 89, "ObjectType": "Human"},
+            },
+        },
+        "Start",
+    )
+    assert stay.is_on
+
+    c._dispatch_event(
+        {
+            "Code": "CrossLineDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 17,
+                "Object": {"ObjectID": 89, "ObjectType": "Human"},
+            },
+        },
+        "Stop",
+    )
+    assert stay.is_on
+
+    c._dispatch_event(
+        {
+            "Code": "StayDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 23,
+                "Object": {"ObjectID": 89, "ObjectType": "Human"},
+            },
+        },
+        "Stop",
+    )
+    assert not stay.is_on
+
+
 def test_unknown_non_normal_and_malformed_events_do_not_change_rule_state():
     c = _coordinator()
     fired = []
