@@ -10,6 +10,7 @@ import pytest
 
 from custom_components.dahua import client as client_module
 from custom_components.dahua.client import DahuaClient
+from custom_components.dahua.rpc2 import Rpc2MethodRefused
 
 
 class _Resp:
@@ -268,3 +269,191 @@ async def test_a_refused_table_is_not_asked_for_again(monkeypatch):
             await client._request(url)
 
     assert asked == ["RemoteDevice"], asked
+
+
+# --- the other direction: RPC2 first, and what a failure there costs ---------
+#
+# Everything above is a device with no CGI, falling forward to RPC2. These are a device
+# already reading config over RPC2 whose RPC2 read fails. It is a three way decision and
+# the three outcomes are not interchangeable: two of them keep the transport and one
+# throws it away for the life of the process.
+
+MOTION_URL = "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"
+
+
+def _rpc2_read_raises(monkeypatch, exception):
+    """Make the RPC2 config read fail, leaving the decision under test isolated."""
+    async def _boom(self, table):
+        raise exception
+
+    monkeypatch.setattr(DahuaClient, "_rpc2_get_config", _boom)
+
+
+def _rpc2_client(monkeypatch, cgi_status=200, body="table.Enable=true"):
+    calls = _fake_cgi(monkeypatch, status=cgi_status, body=body)
+    client = DahuaClient("u", "p", "cam", 80, 554, object(), use_rpc2=True)
+    return client, calls
+
+
+async def test_a_table_the_device_declines_does_not_cost_the_transport(monkeypatch):
+    """`Rpc2MethodRefused` means the transport reached the device and the device said
+    no to this table. That is evidence RPC2 works here, so only the table is
+    remembered."""
+    client, calls = _rpc2_client(monkeypatch)
+    _rpc2_read_raises(monkeypatch, Rpc2MethodRefused("declined"))
+
+    await client._request(MOTION_URL)
+
+    assert (client._rpc2_key(), "MotionDetect") in client_module._RPC2_TABLE_UNAVAILABLE
+    assert client._rpc2_key() not in client_module._HOST_RPC2_UNAVAILABLE, (
+        "a declined table wrote the whole host off, which is what put a working "
+        "device back on a login per call")
+    assert calls, "the read was lost instead of falling through to CGI"
+
+
+async def test_one_timeout_does_not_cost_the_transport(monkeypatch):
+    """The fault rpc2_failure_is_permanent exists for. Nine reads timed out in one
+    second on a recorder that had been serving RPC2 for two hours and went on being
+    able to; every exception counting meant a login per call until a restart, silently,
+    because the CGI fallback works."""
+    client, calls = _rpc2_client(monkeypatch)
+    _rpc2_read_raises(monkeypatch, TimeoutError())
+
+    await client._request(MOTION_URL)
+
+    assert client._rpc2_key() not in client_module._HOST_RPC2_UNAVAILABLE
+    assert (client._rpc2_key(), "MotionDetect") not in (
+        client_module._RPC2_TABLE_UNAVAILABLE), (
+        "a timeout was recorded as the device refusing the table")
+    assert calls, "the read was lost instead of falling through to CGI"
+
+
+async def test_a_dropped_connection_does_not_cost_the_transport_either(monkeypatch):
+    """The other half of TRANSIENT_RPC2_FAILURES."""
+    client, calls = _rpc2_client(monkeypatch)
+    _rpc2_read_raises(monkeypatch, aiohttp.ClientConnectionError("reset"))
+
+    await client._request(MOTION_URL)
+
+    assert client._rpc2_key() not in client_module._HOST_RPC2_UNAVAILABLE
+    assert calls
+
+
+async def test_a_device_that_cannot_serve_rpc2_is_written_off(monkeypatch):
+    """The gate has to still close. A failure that is not transient and not a refusal
+    means this device does not speak RPC2, and it should not pay for the attempt on
+    every read from then on."""
+    client, calls = _rpc2_client(monkeypatch)
+    _rpc2_read_raises(monkeypatch, ValueError("not rpc2 at all"))
+
+    await client._request(MOTION_URL)
+
+    assert client._rpc2_key() in client_module._HOST_RPC2_UNAVAILABLE
+    assert calls
+
+
+async def test_a_refusal_is_checked_before_permanence(monkeypatch):
+    """Rpc2MethodRefused is a ConnectionError, so it is not in
+    TRANSIENT_RPC2_FAILURES and rpc2_failure_is_permanent says True about it. The
+    refusal branch is only correct because it is tested first, which makes the order
+    of those two checks load bearing rather than incidental."""
+    from custom_components.dahua.client import rpc2_failure_is_permanent
+
+    refusal = Rpc2MethodRefused("declined")
+    assert rpc2_failure_is_permanent(refusal) is True, (
+        "if this ever becomes False the ordering below stops mattering and this test "
+        "should be rewritten rather than deleted")
+
+    client, _ = _rpc2_client(monkeypatch)
+    _rpc2_read_raises(monkeypatch, refusal)
+
+    await client._request(MOTION_URL)
+
+    assert client._rpc2_key() not in client_module._HOST_RPC2_UNAVAILABLE, (
+        "the permanence check ran first and wrote the host off for a refusal")
+
+
+async def test_only_the_declined_table_goes_back_to_cgi(monkeypatch):
+    """The point of remembering the table rather than the host: everything else keeps
+    using RPC2. Without this the first declined table cost the device its transport."""
+    rpc2 = _FakeRpc2({"Lighting": [{"Mode": "Auto"}]})
+    calls = _fake_cgi(monkeypatch, status=200, body="table.Enable=true")
+    client = DahuaClient("u", "p", "cam", 80, 554, object(), use_rpc2=True)
+    holder = _Holder(rpc2)
+
+    async def _shared(self):
+        return holder
+
+    monkeypatch.setattr(DahuaClient, "_shared_rpc2", _shared)
+
+    real = DahuaClient._rpc2_get_config
+
+    async def _refuse_motion_only(self, table):
+        if table == "MotionDetect":
+            raise Rpc2MethodRefused("declined")
+        return await real(self, table)
+
+    monkeypatch.setattr(DahuaClient, "_rpc2_get_config", _refuse_motion_only)
+
+    await client._request(MOTION_URL)
+    cgi_after_refusal = len(calls)
+    await client._request(
+        "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting")
+
+    assert "Lighting" in rpc2.reads, "the other table stopped using RPC2 too"
+    assert len(calls) == cgi_after_refusal, (
+        "the Lighting read went to CGI as well, so the whole transport was lost")
+
+
+async def test_a_verified_read_never_goes_over_rpc2(monkeypatch):
+    """`verify_ok` is the credential check during setup. It has to reach the device's
+    HTTP API, because that is the thing being verified."""
+    # "OK" and nothing else: with verify_ok the body has to be exactly that, which is
+    # the credential check itself and worth saying out loud here.
+    client, calls = _rpc2_client(monkeypatch, body="OK")
+
+    # Recorded rather than raised: _request catches everything around the RPC2 read
+    # and falls through to CGI, so raising here would be swallowed and this test would
+    # pass whether or not RPC2 was tried.
+    attempts = []
+
+    async def _record(self, table):
+        attempts.append(table)
+        raise Rpc2MethodRefused("should not have been asked")
+
+    monkeypatch.setattr(DahuaClient, "_rpc2_get_config", _record)
+
+    await client._request(MOTION_URL, verify_ok=True)
+
+    assert attempts == [], "the credential check was attempted over RPC2"
+    assert calls, "nothing was asked of the device at all"
+
+
+async def test_a_verified_read_wants_ok_and_nothing_else(monkeypatch):
+    """The other half of verify_ok: a device that answers something other than OK has
+    not verified anything, so it must not read as success."""
+    client, _ = _rpc2_client(monkeypatch, body="Error: bad credentials")
+
+    with pytest.raises(Exception):
+        await client._request(MOTION_URL, verify_ok=True)
+
+
+async def test_the_ivs_rule_table_is_always_read_over_cgi(monkeypatch):
+    """Per rule writes use CGI array indexes, so the read that resolves them has to be
+    the CGI table even on a device that prefers RPC2. Reading it over RPC2 would hand
+    back indexes that do not match what the write uses."""
+    client, calls = _rpc2_client(monkeypatch)
+
+    attempts = []
+
+    async def _record(self, table):
+        attempts.append(table)
+        raise Rpc2MethodRefused("should not have been asked")
+
+    monkeypatch.setattr(DahuaClient, "_rpc2_get_config", _record)
+
+    await client._request(
+        "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule")
+
+    assert attempts == [], "VideoAnalyseRule was read over RPC2"
+    assert calls
