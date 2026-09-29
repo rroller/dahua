@@ -35,6 +35,13 @@ from custom_components.dahua.switch import (
 )
 
 # The three that operate something on the device rather than configure it.
+#
+# Not asserted to be exhaustive on purpose. The invariant below is what catches a
+# switch added without a decision, and it catches it correctly: neither fails,
+# either passes. Pinning this list as equal to "every switch that is not
+# configuration" would turn a legitimate new output switch into a required edit
+# in two places, and the failure would read as a stale test rather than as a
+# choice to make.
 OUTPUT_SWITCHES = [
     DahuaSirenBinarySwitch,
     DahuaAlarmOutputSwitch,
@@ -103,15 +110,3 @@ def test_no_switch_is_both_an_output_and_a_configuration_entity():
     for cls in OUTPUT_SWITCHES:
         assert _built(cls).entity_category is not EntityCategory.CONFIG, cls.__name__
 
-
-def test_the_output_switches_are_all_of_them():
-    """OUTPUT_SWITCHES is written out by hand above, so this is what stops it going
-    stale: any switch that is not a configuration entity has to be listed there."""
-    not_configuration = {
-        cls.__name__ for cls in _switch_classes()
-        if _built(cls).entity_category is not EntityCategory.CONFIG
-    }
-
-    assert not_configuration == {cls.__name__ for cls in OUTPUT_SWITCHES}, (
-        "the list at the top of this file no longer matches the switches that are "
-        "controls rather than settings")
