@@ -559,17 +559,6 @@ DOORBELL_RINGING_STATES = frozenset({1, 2})
 # rather than by a history.
 RECENT_EVENT_COUNT = 10
 
-# Dahua can emit Start for several rules hit by one tracked object, then emit
-# Stop for only one of those rules. The existing code-level CrossLine/CrossRegion
-# sensors hide this because any Stop clears the generic sensor, but a per-rule
-# sensor would otherwise remain on forever. Correlate only the two rule families
-# observed to behave this way; StayDetection remains strictly per-rule.
-IVS_OBJECT_CORRELATED_CODES = frozenset({
-    "CrossLineDetection",
-    "CrossRegionDetection",
-})
-
-
 # BackKeyLight State values that are not about ringing at all, and the event
 # each one deserves. Measured on a VTO2000A: opening the door through the
 # integration produces State 8 within a second, and no AccessControl event.
@@ -2505,71 +2494,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if index == self._channel:
                 self.handle_event(event)
 
-    @staticmethod
-    def _ivs_object_group_key(event: dict, data: dict):
-        """Return the event-type/object identity used to correlate IVS rules.
-
-        Real Dahua cameras can report several Normal IVS rule Starts for the
-        same tracked object but only one Stop. ObjectID is stable across those
-        rule events, while EventID is per rule, so the useful correlation key is
-        the raw IVS code plus ObjectID. Keeping the raw code in the key prevents
-        a CrossLine Stop from clearing CrossRegion rules for the same object.
-        """
-        raw_code = event.get("Code")
-        if raw_code not in IVS_OBJECT_CORRELATED_CODES or not isinstance(data, dict):
-            return None
-        obj = data.get("Object")
-        if not isinstance(obj, dict):
-            return None
-        object_id = obj.get("ObjectID")
-        if object_id is None:
-            return None
-        return (raw_code, str(object_id))
-
-    def _track_ivs_rule_object(self, group_key, rule_code: str) -> None:
-        """Remember that one per-rule sensor is active for this tracked object."""
-        groups = getattr(self, "_ivs_object_rule_groups", None)
-        if groups is None:
-            groups = self._ivs_object_rule_groups = {}
-        rule_groups = getattr(self, "_ivs_rule_object_groups", None)
-        if rule_groups is None:
-            rule_groups = self._ivs_rule_object_groups = {}
-
-        groups.setdefault(group_key, set()).add(rule_code)
-        rule_groups.setdefault(rule_code, set()).add(group_key)
-
-    def _finish_ivs_object_group(self, group_key, own_rule_code=None) -> list[str]:
-        """Return per-rule event codes that should clear for this object's Stop.
-
-        A Stop closes every same-type rule that was started by this ObjectID.
-        The reverse mapping keeps a rule on when a second ObjectID is still
-        active on that same rule.
-        """
-        groups = getattr(self, "_ivs_object_rule_groups", None)
-        if groups is None:
-            groups = self._ivs_object_rule_groups = {}
-        rule_groups = getattr(self, "_ivs_rule_object_groups", None)
-        if rule_groups is None:
-            rule_groups = self._ivs_rule_object_groups = {}
-
-        rules = set(groups.pop(group_key, ()))
-        if own_rule_code is not None:
-            # Preserve the old behaviour when HA started after the corresponding
-            # Start or otherwise has no object-tracking entry for this Stop.
-            rules.add(own_rule_code)
-
-        clear = []
-        for rule_code in rules:
-            active_groups = rule_groups.get(rule_code)
-            if active_groups is None:
-                clear.append(rule_code)
-                continue
-            active_groups.discard(group_key)
-            if not active_groups:
-                rule_groups.pop(rule_code, None)
-                clear.append(rule_code)
-        return clear
-
     def _dispatch_event(self, event: dict, action: str) -> None:
         """Apply one event to this channel's sensors, whichever stream it came from.
 
@@ -2583,28 +2507,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         codes = self.translate_event_code(event)
         data = event.get("data", event.get("Data", {}))
-        per_rule_code = None
-        object_group_key = None
         if isinstance(data, dict) and data.get("Class") == "Normal":
+            raw_code = event.get("Code")
             rule_id = data.get("RuleID")
             if rule_id is None:
                 rule_id = data.get("RuleId")
             if rule_id is not None and any(
                 rule["id"] == str(rule_id) for rule in self.get_ivs_rules()
             ):
-                per_rule_code = f"IVSRule_{rule_id}"
-                object_group_key = self._ivs_object_group_key(event, data)
-
-                if action == "Start" and object_group_key is not None:
-                    self._track_ivs_rule_object(object_group_key, per_rule_code)
-                    codes.append(per_rule_code)
-                elif action == "Stop" and object_group_key is not None:
-                    # Defer this rule's Stop until the whole same-object group
-                    # is resolved below. This lets one Dahua Stop clear sibling
-                    # rules whose Starts shared this ObjectID but got no Stop.
-                    pass
-                else:
-                    codes.append(per_rule_code)
+                codes.append(f"IVSRule_{rule_id}")
             else:
                 # Configuration IDs and event IDs are not proven equivalent on
                 # every NVR. Record the mismatch; never guess by name or index.
@@ -2617,25 +2528,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self._ivs_last_unmatched = {
                     "channel": self._channel, "reason": reason,
                     "rule_id": str(rule_id)[:80] if isinstance(rule_id, (str, int)) else None,
-                    "code": str(event.get("Code", ""))[:80],
+                    "code": str(raw_code or "")[:80],
                 }
                 if first:
                     _LOGGER.debug("Normal IVS event did not match a discovered rule: %s",
                                   self._ivs_last_unmatched)
 
-        # Some cameras send Start for several same-type rules hit by one
-        # ObjectID, then send Stop for only one of them. Clear the sibling
-        # per-rule sensors as one object group, while leaving a rule on if a
-        # different ObjectID is still active on it.
-        if action == "Stop":
-            if object_group_key is None and isinstance(data, dict):
-                object_group_key = self._ivs_object_group_key(event, data)
-            if object_group_key is not None:
-                for correlated_code in self._finish_ivs_object_group(
-                    object_group_key, per_rule_code
-                ):
-                    if correlated_code not in codes:
-                        codes.append(correlated_code)
+            # Real cameras can emit Start once for every matching rule of one
+            # event code, but only one Stop when that code becomes inactive.
+            # The generic sensors already follow that code-level state. Mirror
+            # the same semantics for per-rule sensors: a Stop for this code
+            # clears every discovered rule of that code on this channel.
+            if action == "Stop" and raw_code:
+                for rule in self.get_ivs_rules():
+                    if rule.get("type") != raw_code:
+                        continue
+                    rule_code = f"IVSRule_{rule['id']}"
+                    if rule_code not in codes:
+                        codes.append(rule_code)
 
         for code in codes:
             event_key = self.get_event_key(code)
