@@ -401,6 +401,29 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Return the entity unique ID."""
         return self._unique_id
 
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Only the main stream is enabled to begin with.
+
+        Every stream the device can serve gets an entity, whether or not it is
+        enabled on the device, because which ones exist cannot be known without
+        asking and asking costs a request per channel. Most people watch one stream
+        per camera, so on an eleven channel recorder serving three streams each that
+        was thirty three camera entities to go and delete by hand -- which the README
+        said to do, in as many words.
+
+        Created but not enabled is the difference: the entity is still listed, and
+        anyone pointing a card at a sub stream turns it on once. Derived from the
+        stream index rather than stored in `_attr_entity_registry_enabled_default`,
+        so there is one place it can be wrong and it can be read off an instance
+        without the entity machinery.
+
+        This is consulted only when an entity is first registered, so nothing that
+        already exists changes: an existing sub stream camera stays exactly as its
+        owner left it.
+        """
+        return self._stream_index == 0
+
     async def async_camera_image(self, width: int | None = None, height: int | None = None):
         """Return a still image response from the camera, or None if it refused.
 
