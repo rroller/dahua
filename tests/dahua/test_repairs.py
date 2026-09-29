@@ -220,6 +220,28 @@ async def test_the_probe_is_not_repeated_on_every_failure(hass, monkeypatch):
     assert len(calls) == 1
 
 
+async def test_a_host_with_no_entries_left_raises_nothing(hass, monkeypatch):
+    """The failures and the evaluation are not the same moment. Recording one
+    schedules `_async_evaluate_host` as a task, and an entry can be removed before
+    that task runs: a user deleting a camera that has been failing does exactly
+    that, and unloading the last entry for a host is the documented case.
+
+    Nothing to say about a host nobody has configured, so nothing is probed and no
+    card appears. The early return is also what keeps `entries[0]` below it from
+    being an IndexError on an empty list, which would surface as an unhandled task
+    exception rather than as anything a user could act on."""
+    calls = []
+    _probe(monkeypatch, True, calls)
+
+    for _ in range(UNREACHABLE_AFTER_FAILURES):
+        async_record_host_failure(hass, ADDRESS, "an-entry-that-is-gone")
+    await hass.async_block_till_done()
+
+    assert calls == [], "a host with no entries must not be probed"
+    assert _issue(hass, ISSUE_UNREACHABLE) is None
+    assert _issue(hass, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE) is None
+
+
 # --- the fix flow ----------------------------------------------------------
 
 async def test_the_fix_flow_switches_every_entry_for_the_host(hass, monkeypatch):
