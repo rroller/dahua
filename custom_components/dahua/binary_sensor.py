@@ -141,7 +141,7 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
     @property
     def name(self):
         """Return the name of the binary_sensor. Example: Cam14 Motion Alarm"""
-        return f"{self._device_name} {self._name}"
+        return self._name
 
     @property
     def device_class(self):
@@ -249,7 +249,7 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
     @property
     def name(self):
         """Return the name of the binary sensor."""
-        return f"{self._coordinator.get_device_name()} Authorized Vehicle"
+        return "Authorized Vehicle"
 
     @property
     def unique_id(self):

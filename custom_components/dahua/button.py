@@ -50,7 +50,7 @@ class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):
 
     @property
     def name(self):
-        return self._coordinator.get_device_name() + " Reboot"
+        return "Reboot"
 
     @property
     def unique_id(self):
@@ -71,7 +71,7 @@ class DahuaOpenDoorButton(DahuaBaseEntity, ButtonEntity):
 
     @property
     def name(self):
-        return self._coordinator.get_device_name() + " Open Door"
+        return "Open Door"
 
     @property
     def unique_id(self):
@@ -96,7 +96,7 @@ class DahuaCancelCallButton(DahuaBaseEntity, ButtonEntity):
 
     @property
     def name(self):
-        return self._coordinator.get_device_name() + " Cancel Call"
+        return "Cancel Call"
 
     @property
     def unique_id(self):

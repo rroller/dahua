@@ -762,6 +762,92 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
     return timedelta(seconds=max(seconds, MIN_SCAN_INTERVAL))
 
 
+def channel_configs(entry: DahuaConfigEntry) -> list:
+    """(subentry_id, config) for every channel this entry owns.
+
+    A merged recorder keeps one subentry per channel (#827). An entry with no
+    subentries is a single camera, or a recorder channel that predates the merge,
+    and its own `data` is that one channel -- so both shapes come out of here the
+    same way and setup has one path rather than two.
+
+    Sorted by channel so that runtime_data, and therefore every platform's
+    entities, comes out in channel order rather than in whatever order the
+    subentries happen to be stored.
+
+    The channel comes back as an int even where it was stored as a string. The
+    add flow wrote it as a string for extra channels and left it absent for the
+    first, so both shapes are in the wild, and `runtime_data` is keyed on it:
+    "3" and 3 are the same channel and two different keys.
+
+    One channel is returned once. Two subentries claiming the same channel would
+    otherwise each get a coordinator, only one of which ends up in
+    `runtime_data` -- leaving the other polling the device with nothing owning it
+    and nothing to stop it at unload.
+    """
+    if entry.subentries:
+        pairs = [(subentry_id, dict(subentry.data))
+                 for subentry_id, subentry in entry.subentries.items()]
+    else:
+        pairs = [(None, dict(entry.data))]
+
+    def channel_of(config):
+        try:
+            return int(config.get(CONF_CHANNEL, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    channels: dict[int, tuple] = {}
+    for subentry_id, config in pairs:
+        channel = channel_of(config)
+        if channel in channels:
+            _LOGGER.warning(
+                "Dahua entry %s has more than one channel %s; using the first "
+                "and ignoring the rest", entry.entry_id, channel)
+            continue
+        config[CONF_CHANNEL] = channel
+        channels[channel] = (subentry_id, config)
+
+    return [channels[channel] for channel in sorted(channels)]
+
+
+def events_for_channel(entry: DahuaConfigEntry, config: dict) -> list:
+    """The events one channel subscribes to.
+
+    A single channel entry keeps them where it always did, so
+    get_configured_events still decides for it. A channel of a merged recorder
+    keeps its own list in its subentry, which is what stops one channel's
+    selection becoming every channel's.
+    """
+    if not entry.subentries:
+        return get_configured_events(entry)
+    if CONF_EVENTS in config:
+        return list(config[CONF_EVENTS] or [])
+    return get_configured_events(entry)
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Run once for the integration, before any config entry is set up.
+
+    The only safe place for the channel merge (#827). Two reasons it cannot live
+    in `async_migrate_entry`: Home Assistant sets entries up concurrently, so a
+    per entry migration can run while another channel's entities are already
+    loaded, and `async_update_entity_platform` refuses an entity that is loaded.
+    Here, nothing is.
+
+    Never fails setup. A recorder that could not be merged is still perfectly
+    usable in the shape it is already in, so an exception here would take working
+    cameras offline to fix a papercut.
+    """
+    try:
+        from .migrate import async_merge_channel_entries
+        await async_merge_channel_entries(hass)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not merge the Dahua config entries. Every entry is left as it "
+            "was and the integration will set up normally")
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     """Set up this integration using UI."""
     global _STARTUP_LOGGED
@@ -778,34 +864,78 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         _LOGGER.debug("Could not re-identify %s from the network",
                       entry.data.get(CONF_ADDRESS), exc_info=True)
 
-    username = entry.data.get(CONF_USERNAME)
-    password = entry.data.get(CONF_PASSWORD)
-    address = entry.data.get(CONF_ADDRESS)
-    port = int(entry.data.get(CONF_PORT))
-    rtsp_port = int(entry.data.get(CONF_RTSP_PORT))
-    events = get_configured_events(entry)
-    name = entry.data.get(CONF_NAME)
-    channel = entry.data.get(CONF_CHANNEL, 0)
-    use_https = get_configured_use_https(entry)
-
-    coordinator = DahuaDataUpdateCoordinator(hass, entry=entry, events=events, address=address, port=port,
-                                             rtsp_port=rtsp_port, username=username, password=password, name=name,
-                                             channel=channel, use_https=use_https)
+    # One coordinator per channel. A single camera has one, a merged recorder has
+    # one per subentry (#827), and channel_configs hands back the same shape for
+    # both so there is a single path here.
+    built = []
+    coordinators = []
+    failures = []
     try:
-        await coordinator.async_config_entry_first_refresh()
-    except Exception:
-        # The coordinator opens a session and takes a reference on the host's
-        # shared connection pool in its constructor, and only async_stop gives
-        # them back. Nothing reaches async_stop unless the coordinator makes it
-        # into hass.data, which a failed setup never does -- so without this,
-        # every retry against a device that is not answering leaks one session
-        # and one reference, forever, and Home Assistant retries forever.
-        await coordinator.async_stop()
-        raise
+        for _subentry_id, config in channel_configs(entry):
+            built.append(DahuaDataUpdateCoordinator(
+                hass,
+                entry=entry,
+                events=events_for_channel(entry, config),
+                address=config.get(CONF_ADDRESS),
+                port=int(config.get(CONF_PORT)),
+                rtsp_port=int(config.get(CONF_RTSP_PORT)),
+                username=config.get(CONF_USERNAME),
+                password=config.get(CONF_PASSWORD),
+                name=config.get(CONF_NAME),
+                channel=config.get(CONF_CHANNEL, 0),
+                use_https=True if config.get(CONF_USE_HTTPS) else None,
+                # This channel's own settings. Empty for a single camera, which
+                # is what keeps channel_option identical to entry.options there.
+                channel_config=config if _subentry_id else None,
+            ))
+
+        # Concurrently, because a 64 channel recorder doing these one at a time
+        # would add minutes to startup. Not a thundering herd: every request still
+        # passes the host's MAX_CONCURRENT_REQUESTS_PER_HOST semaphore, so this
+        # changes how long the waiting takes rather than how hard the device is hit.
+        results = await asyncio.gather(
+            *[c.async_config_entry_first_refresh() for c in built],
+            return_exceptions=True)
+
+        for coordinator, result in zip(built, results):
+            if isinstance(result, BaseException):
+                failures.append((coordinator.get_channel(), result))
+            else:
+                coordinators.append(coordinator)
+
+        if not coordinators:
+            # Nothing came up, so the host is the problem rather than one channel.
+            # Raising is what gets Home Assistant to retry the whole entry.
+            raise failures[0][1]
+    finally:
+        # Every coordinator holds an aiohttp session and a reference on the host's
+        # shared connection pool from its constructor, and only async_stop gives
+        # them back. Unload can only stop the ones that reached runtime_data, so
+        # anything built and not adopted has to be given back here.
+        #
+        # In a finally rather than beside the failure branch, because the ways to
+        # leave this block are more numerous than they look: a refusal from one
+        # channel, a raise from int(port) on the next channel's config, or the
+        # re-raise above. Home Assistant retries a failed setup forever, so a leak
+        # here is not leaked once but once per retry for as long as the device is
+        # down, which on a 64 channel recorder is 64 at a time.
+        for coordinator in built:
+            if coordinator not in coordinators:
+                await coordinator.async_stop()
+
+    if failures:
+        # One bad channel must not take a recorder's other sixty three offline.
+        # Said once, with the channels named, because the alternative is a user
+        # wondering why one camera is missing and finding nothing in the log.
+        _LOGGER.warning(
+            "%s set up %d of %d channels. These did not answer and will be "
+            "retried on the next poll: %s",
+            entry.data.get(CONF_ADDRESS), len(coordinators),
+            len(built), ", ".join(str(channel) for channel, _ in failures))
 
     # Home Assistant's own place for per entry runtime state, and it clears the
     # attribute itself when the entry unloads, so there is nothing to pop.
-    entry.runtime_data = {coordinator.get_channel(): coordinator}
+    entry.runtime_data = {c.get_channel(): c for c in coordinators}
 
     # https://developers.home-assistant.io/docs/config_entries_index/
     # Forward every platform in one call. Home Assistant gathers them into
@@ -814,9 +944,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # to cover the sum of six platforms rather than the slowest one. A device
     # answering slowly could exhaust it and take the whole entry down with a
     # CancelledError -- see #513.
-    coordinator.platforms.extend(p for p in PLATFORMS if entry.options.get(p, True))
-    if coordinator.platforms:
-        await hass.config_entries.async_forward_entry_setups(entry, coordinator.platforms)
+    #
+    # The platform list is per entry, so it is the same for every channel and the
+    # forward happens once. Each coordinator still carries its own copy because
+    # unload reads it back off them.
+    wanted = [p for p in PLATFORMS if entry.options.get(p, True)]
+    for coordinator in coordinators:
+        coordinator.platforms.extend(wanted)
+    if wanted:
+        await hass.config_entries.async_forward_entry_setups(entry, wanted)
 
     # Wrapped, because unloading does not clear an entry's update listeners.
     # A plain add_update_listener leaves one behind on every reload, and then a
@@ -824,9 +960,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # against an NVR, exactly the burst that wedges it.
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
-    entry.async_on_unload(
-        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
-    )
+    # Every channel gets its own shutdown hook. A single one would have left the
+    # other channels' sessions and host pool references open on a Home Assistant
+    # stop, which is the leak async_stop exists to prevent.
+    for coordinator in coordinators:
+        entry.async_on_unload(
+            hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
+        )
 
     return True
 
@@ -1617,12 +1758,29 @@ async def _release_host_stream(coordinator) -> None:
 
 
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
+
+    # Declared on the class, not only assigned in __init__, because a great many
+    # tests build a coordinator with object.__new__ and set only the attributes
+    # they are about. channel_option reads this, and those tests reach it through
+    # configured_area_name and the authorized plate list, so without a default
+    # they fail on the attribute rather than on anything they are testing.
+    _channel_config: dict = {}
+
     """Class to manage fetching data from the API."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, events: list, address: str, port: int, rtsp_port: int,
                  username: str, password: str, name: str, channel: int,
-                 use_https: bool = None) -> None:
-        """Initialize the coordinator."""
+                 use_https: bool = None, channel_config: dict = None) -> None:
+        """Initialize the coordinator.
+
+        `channel_config` is this channel's own settings, which is a subentry's
+        data on a merged recorder and None for a single camera (#827). It matters
+        because several options were per entry, and an entry was a channel: a
+        recorder where one camera has a siren and the rest do not would otherwise
+        have had `manual_siren` applied to every channel at once the moment its
+        entries were merged. See `channel_option`.
+        """
+        self._channel_config = dict(channel_config or {})
         # Self signed certs are used over HTTPS so we'll disable SSL verification.
         # connector_owner=False keeps the shared pool alive when this session closes.
         self._session = ClientSession(
@@ -1658,9 +1816,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_rpc2_siren = False
         self._supports_rpc2_security_light = False
         self._alarm_output_slots = 0
-        self._nvr_active_deterrence = entry.options.get(CONF_NVR_ACTIVE_DETERRENCE, False)
-        self._manual_siren = entry.options.get(CONF_MANUAL_SIREN, False)
-        self._manual_security_light = entry.options.get(CONF_MANUAL_SECURITY_LIGHT, False)
+        # Read off the local `entry` rather than through channel_option, because
+        # that reads self.config_entry and DataUpdateCoordinator does not set it
+        # until super().__init__ further down. The precedence is the same one
+        # channel_option applies: this channel's own answer, then the entry's.
+        def _channel_first(key, default=None):
+            if key in self._channel_config:
+                return self._channel_config[key]
+            return entry.options.get(key, default)
+
+        self._nvr_active_deterrence = _channel_first(
+            CONF_NVR_ACTIVE_DETERRENCE, False)
+        self._manual_siren = _channel_first(CONF_MANUAL_SIREN, False)
+        self._manual_security_light = _channel_first(
+            CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._ivs_rules = []
@@ -1979,7 +2148,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # 0-indexed and reset channel_number accordingly. Users on cameras where this
                 # heuristic gets it wrong (HTTP snapshot at 0 succeeds but RTSP only streams
                 # on channel=1) can disable it via the integration options.
-                auto_detect = self.config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True)
+                auto_detect = self.channel_option(CONF_AUTO_DETECT_CHANNEL, True)
                 if auto_detect:
                     # Asked once for the device and shared, and a device that does
                     # not answer leaves this alone rather than renumbering the
@@ -3314,6 +3483,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return self._serial_number
 
+    def channel_option(self, key: str, default=None):
+        """One channel's setting, preferring its own over the entry's.
+
+        A single camera has no channel config, so this is exactly
+        `entry.options.get(key, default)` and nothing changes for it.
+
+        On a merged recorder the channel's subentry wins. That distinction is the
+        whole reason this exists: `manual_siren`, `manual_security_light` and
+        `nvr_active_deterrence` are per channel by nature -- they exist because
+        one camera on a recorder has the hardware and the others do not -- and they
+        were read from the entry's options back when an entry *was* a channel.
+        Merging the entries without this would have quietly applied one channel's
+        answer to all 64.
+        """
+        if key in self._channel_config:
+            return self._channel_config[key]
+        return self.config_entry.options.get(key, default)
+
     def get_serial_number(self) -> str:
         """ returns the device serial number. This is unique per device """
         if self._channel > 0:
@@ -3346,7 +3533,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         after setup. Chosen while adding a recorder so that ten channels do not
         all arrive unfiled.
         """
-        return self.config_entry.options.get(
+        return self.channel_option(
             CONF_AREA, self.config_entry.data.get(CONF_AREA)) or None
 
     def configured_area_name(self):
@@ -3366,7 +3553,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_authorized_plates(self) -> list[str]:
         """Return the list of configured authorized license plates (uppercase & normalized)."""
-        raw = self.config_entry.options.get(
+        raw = self.channel_option(
             CONF_AUTHORIZED_PLATES,
             self.config_entry.data.get(CONF_AUTHORIZED_PLATES, ""),
         )
@@ -3375,7 +3562,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_authorized_hold_time(self) -> int:
         """Return the duration in seconds an authorized vehicle binary sensor stays active."""
         try:
-            return int(self.config_entry.options.get(
+            return int(self.channel_option(
                 CONF_AUTHORIZED_HOLD_TIME,
                 self.config_entry.data.get(
                     CONF_AUTHORIZED_HOLD_TIME, DEFAULT_AUTHORIZED_HOLD_TIME
@@ -3947,6 +4134,11 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     # Read before anything else: Home Assistant clears the registry rows this
     # depends on as soon as this hook returns.
     dependents = _async_dependents(hass, entry.entry_id)
+    # Normally none: #827 merged each recorder onto one entry, so removing "the
+    # recorder" is one deletion and there is nothing left to offer. This is kept
+    # for the case that migration refused, where a host really does still have an
+    # entry per channel and the offer is the only thing that makes removing it
+    # bearable. Dormant rather than dead.
     siblings = _entries_for_address(hass, address) if address else []
 
     if address and not siblings:

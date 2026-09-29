@@ -16,6 +16,7 @@ a real eleven-channel install.
 """
 
 import pytest
+from types import SimpleNamespace
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua import binary_sensor as bs_module
@@ -112,6 +113,13 @@ class _Coordinator:
         self.client = _Client()
 
     get_serial_number = DahuaDataUpdateCoordinator.get_serial_number
+
+    # Borrowed the same way, because entity code now asks the coordinator for its
+    # channel's settings rather than reading the entry's options directly. A fake
+    # that answered differently would be testing the fake.
+    channel_option = DahuaDataUpdateCoordinator.channel_option
+    _channel_config: dict = {}
+    config_entry = SimpleNamespace(options={})
 
     def get_channel(self):
         return self._channel
