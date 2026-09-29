@@ -13,6 +13,13 @@ from .model_profiles import is_sdt4e425
 _LOGGER = logging.getLogger(__package__)
 
 
+# One at a time, because selecting a preset moves the camera and these devices are measurably intolerant of
+# concurrent requests: MAX_CONCURRENT_REQUESTS_PER_HOST is 2 for the same reason,
+# and the login storms behind #577 and #603 are what happens without it. A
+# coordinator does not help here, since it only centralises inbound reads and
+# leaves outbound actions uncontrolled.
+PARALLEL_UPDATES = 1
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup select platform."""
     for coordinator in entry_coordinators(entry).values():
@@ -96,11 +103,12 @@ async def _async_preset_ids(coordinator):
 class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
     """Allow one to turn the doorbell light on/off/strobe."""
 
+    _attr_translation_key = "security_light"
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         SelectEntity.__init__(self)
         self._coordinator = coordinator
-        self._attr_name = f"{coordinator.get_device_name()} Security Light"
         self._attr_unique_id = f"{coordinator.get_serial_number()}_security_light"
         self._attr_options = ["Off", "On", "Strobe"]
 
@@ -119,16 +127,14 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        return self._attr_name
-
-    @property
     def unique_id(self):
         return self._attr_unique_id
 
 
 class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
     """Select a camera preset position."""
+
+    _attr_translation_key = "preset_position"
 
     def __init__(
         self, coordinator: DahuaDataUpdateCoordinator, config_entry,
@@ -138,7 +144,6 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
         SelectEntity.__init__(self)
         self._coordinator = coordinator
         self._rpc2_channel = rpc2_channel
-        self._attr_name = f"{coordinator.get_device_name()} Preset Position"
         suffix = "1_preset_position" if rpc2_channel == 1 else "preset_position"
         self._attr_unique_id = f"{coordinator.get_serial_number()}_{suffix}"
         if preset_ids is None:
@@ -170,10 +175,6 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        return self._attr_name
-
-    @property
     def unique_id(self):
         return self._attr_unique_id
 
@@ -187,6 +188,8 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
     then renders black and white at night, being the reported case.
     """
 
+    _attr_translation_key = "day_night_mode"
+
     _attr_options = ["Color", "Auto", "BlackWhite"]
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
@@ -194,16 +197,8 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
         self._coordinator = coordinator
 
     @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Day/Night Mode"
-
-    @property
     def unique_id(self):
         return self._coordinator.get_serial_number() + "_day_night_mode"
-
-    @property
-    def icon(self):
-        return "mdi:theme-light-dark"
 
     @property
     def current_option(self):

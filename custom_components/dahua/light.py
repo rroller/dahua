@@ -24,30 +24,38 @@ from .client import SECURITY_LIGHT_TYPE
 _LOGGER = logging.getLogger(__name__)
 
 
+# One at a time, because every toggle is a write to the device and these devices are measurably intolerant of
+# concurrent requests: MAX_CONCURRENT_REQUESTS_PER_HOST is 2 for the same reason,
+# and the login storms behind #577 and #603 are what happens without it. A
+# coordinator does not help here, since it only centralises inbound reads and
+# leaves outbound actions uncontrolled.
+PARALLEL_UPDATES = 1
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     """Setup light platform."""
     for coordinator in entry_coordinators(entry).values():
         entities = []
         if coordinator.supports_infrared_light():
-            entities.append(DahuaInfraredLight(coordinator, entry, "Infrared"))
+            entities.append(DahuaInfraredLight(coordinator, entry))
 
         if coordinator.supports_illuminator():
-            entities.append(DahuaIlluminator(coordinator, entry, "Illuminator"))
+            entities.append(DahuaIlluminator(coordinator, entry))
 
         if coordinator.is_flood_light():
-            entities.append(FloodLight(coordinator, entry, "Flood Light"))
+            entities.append(FloodLight(coordinator, entry))
 
         # The rule lives on the coordinator because the poll needs the same answer to decide
         # whether to fetch the status this entity reads. The Amcrest doorbell exclusion is
         # part of it: its Security Light is a select built in select.py.
         if coordinator.creates_security_light_entity():
-            security_light_name = (
-                "Warning Light" if coordinator.uses_recorder_deterrence() else "Security Light"
-            )
-            entities.append(DahuaSecurityLight(coordinator, entry, security_light_name))
+            entities.append(DahuaSecurityLight(
+                coordinator, entry,
+                translation_key=("warning_light"
+                                 if coordinator.uses_recorder_deterrence()
+                                 else "security_light")))
 
         if coordinator.is_amcrest_doorbell():
-            entities.append(AmcrestRingLight(coordinator, entry, "Ring Light"))
+            entities.append(AmcrestRingLight(coordinator, entry))
 
         async_add_entities(entities)
 
@@ -55,15 +63,11 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
 class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
     """Representation of a Dahua infrared light (for cameras that have them)"""
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
-        super().__init__(coordinator, entry)
-        self._name = name
-        self._coordinator = coordinator
+    _attr_translation_key = "infrared"
 
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._coordinator = coordinator
 
     @property
     def unique_id(self):
@@ -130,9 +134,10 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
 class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     """Physical Dahua white-light illuminator."""
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
+    _attr_translation_key = "illuminator"
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
         super().__init__(coordinator, entry)
-        self._name = name
         self._coordinator = coordinator
         self._scheme_unreadable = False
         self._entry = entry
@@ -159,11 +164,6 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         # requested brightness is preserved while the entity remains loaded
         # and may also be recovered from persistent state.
         self._last_brightness = 255
-
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
 
     @property
     def unique_id(self):
@@ -1068,15 +1068,11 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 class AmcrestRingLight(DahuaBaseEntity, LightEntity):
     """Representation of a Amcrest ring light"""
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
-        super().__init__(coordinator, entry)
-        self._name = name
-        self._coordinator = coordinator
+    _attr_translation_key = "ring_light"
 
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._coordinator = coordinator
 
     @property
     def unique_id(self):
@@ -1120,15 +1116,11 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         with adjusting the 'White Light' brightness.
     """
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
-        super().__init__(coordinator, entry)
-        self._name = name
-        self._coordinator = coordinator
+    _attr_translation_key = "flood_light"
 
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._coordinator = coordinator
 
     @property
     def unique_id(self):
@@ -1207,15 +1199,20 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     The camera will only keep this light on for a few seconds before it automatically turns off.
     """
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, name):
-        super().__init__(coordinator, entry)
-        self._name = name
-        self._coordinator = coordinator
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, *,
+                 translation_key):
+        """`translation_key` rather than a name, and keyword only.
 
-    @property
-    def name(self):
-        """Return the name of the light."""
-        return self._coordinator.get_device_name() + " " + self._name
+        This light is called "Warning Light" on a recorder and "Security
+        Light" otherwise, which the platform decides.
+
+        Keyword only so a call site still passing the old display
+        name positionally fails with a TypeError instead of setting a
+        translation key that is not a slug and never matching.
+        """
+        super().__init__(coordinator, entry)
+        self._coordinator = coordinator
+        self._attr_translation_key = translation_key
 
     @property
     def unique_id(self):

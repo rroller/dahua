@@ -6,6 +6,7 @@ from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import dahua as dahua_module
+from custom_components.dahua import host as host_module
 from custom_components.dahua import (
     ISSUE_HTTP_DEAD_HTTPS_AVAILABLE,
     ISSUE_UNREACHABLE,
@@ -59,7 +60,11 @@ def _probe(monkeypatch, result, counter=None):
             counter.append((address, port))
         return result
 
-    monkeypatch.setattr(dahua_module, "_async_probe_tcp", fake)
+    # Patched on host.py, which is where _async_evaluate_host resolves it.
+    # Rebinding it on the package instead left the real probe running: these
+    # tests went on passing and the socket guard failed them at teardown,
+    # which is a good deal more polite than the alternative.
+    monkeypatch.setattr(host_module, "_async_probe_tcp", fake)
 
 
 def _issue(hass, template, address=ADDRESS):

@@ -191,10 +191,32 @@ def test_every_switch_has_its_own_unique_id():
     assert all(i.startswith("SERIAL1_") for i in ids)
 
 
-def test_every_switch_is_named_after_the_device():
+def test_every_switch_declares_a_translation_key():
+    """All five name themselves through translations/en.json now.
+
+    The docstring here used to say the siren's name was handed in by the
+    platform because there could be several told apart by index. The first half
+    stopped being true and the second half was never true: it varied by whether
+    the host is a recorder, where it is called "Alarm".
+
+    The siren picks between two keys, so the platform passes one and this reads
+    it off the class list instead. Those two literals, and the strings behind
+    them, are pinned in test_entity_names_come_from_translations.py."""
     c = _Coordinator()
     for cls in ALL:
-        assert _switch(cls, c).name.startswith("Garage "), cls.__name__
+        if cls is DahuaSirenBinarySwitch:
+            # Its key is chosen by the platform and set on the instance, and
+            # `_switch` builds with object.__new__, so there is nothing on the
+            # class to read. Built properly here instead, both ways round.
+            for key in ("siren", "alarm"):
+                built = object.__new__(cls)
+                built._attr_translation_key = key
+                assert built.translation_key == key
+            continue
+        # Off the instance, not the class: `_attr_translation_key` read from a
+        # class is the metaclass's property object, which is truthy, so a
+        # class-level assertion passes for a class that declares nothing.
+        assert _switch(cls, c).translation_key, cls.__name__
 
 
 @pytest.mark.parametrize("cls,key", [

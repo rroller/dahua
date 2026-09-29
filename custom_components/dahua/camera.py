@@ -65,6 +65,13 @@ PTZ_MOVE_CODES = {
 }
 
 
+# One at a time, because streams and PTZ actions and these devices are measurably intolerant of
+# concurrent requests: MAX_CONCURRENT_REQUESTS_PER_HOST is 2 for the same reason,
+# and the login storms behind #577 and #603 are what happens without it. A
+# coordinator does not help here, since it only centralises inbound reads and
+# leaves outbound actions uncontrolled.
+PARALLEL_UPDATES = 1
+
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
@@ -365,8 +372,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         )
         self._coordinator = coordinator
         self._name = (
-            f"{config_entry.title} {display_name}"
-            if display_name else f"{config_entry.title} {stream_name}"
+            display_name if display_name else stream_name
         )
         suffix = unique_suffix or stream_name
         self._unique_id = coordinator.get_serial_number() + "_" + suffix
@@ -374,7 +380,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         self._motion_status = False
         self._stream_source = rtsp_stream_source(
             coordinator.client.get_rtsp_stream_url(self._channel_number, stream_index),
-            config_entry.options.get(CONF_DISABLE_BACKCHANNEL, False),
+            coordinator.channel_option(CONF_DISABLE_BACKCHANNEL, False),
         )
 
     @property

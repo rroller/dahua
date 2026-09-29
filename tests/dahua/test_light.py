@@ -223,12 +223,16 @@ class _Coordinator:
         self.refreshed += 1
 
 
-def _light(cls, coordinator, name="Infrared"):
-    """Build the entity without Home Assistant's entity plumbing."""
+def _light(cls, coordinator):
+    """Build the entity without Home Assistant's entity plumbing.
+
+    It used to take a display name and set `_name`. These entities name
+    themselves through translations/en.json now, so nothing reads that and the
+    argument was doing nothing at 23 call sites.
+    """
     entity = object.__new__(cls)
     entity._coordinator = coordinator
     entity.coordinator = coordinator
-    entity._name = name
     # These unit tests bypass entity registration; observe state writes without
     # asking Home Assistant to publish an unregistered entity.
     entity.async_write_ha_state = Mock()
@@ -336,7 +340,7 @@ async def test_illuminator_passes_the_profile_mode_through():
     """Day/night handling rides on this argument and has regressed before."""
     c = _Coordinator(channel=2, profile_mode="1")
 
-    await _light(DahuaIlluminator, c, "Illuminator").async_turn_on(**{ATTR_BRIGHTNESS: 255})
+    await _light(DahuaIlluminator, c).async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
     assert c.client.v2 == [
         (2, True, 100, "1", 0, "NearLight")
@@ -346,7 +350,7 @@ async def test_illuminator_passes_the_profile_mode_through():
 
 async def test_illuminator_turn_off_keeps_the_profile_mode():
     c = _Coordinator(channel=2, profile_mode="0")
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     await light.async_turn_on()
     c._profile_mode = "1"
     await light.async_turn_off()
@@ -366,14 +370,14 @@ async def test_illuminator_writes_to_the_light_the_device_calls_white():
     c = _Coordinator(channel=2, profile_mode="0")
     c.illuminator_index = 1
 
-    await _light(DahuaIlluminator, c, "Illuminator").async_turn_on()
+    await _light(DahuaIlluminator, c).async_turn_on()
 
     assert c.client.v2[0][4] == 1, "the illuminator wrote to the wrong light"
 
 
 async def test_illuminator_uses_whatever_profile_mode_is_current():
     c = _Coordinator(profile_mode="2")
-    await _light(DahuaIlluminator, c, "Illuminator").async_turn_on()
+    await _light(DahuaIlluminator, c).async_turn_on()
     assert c.client.v2[0][3] == "2"
 
 
@@ -381,7 +385,7 @@ async def test_scheme_illuminator_uses_the_two_table_client_path():
     c = _Coordinator(channel=0, profile_mode="1", uses_scheme=True)
     c.illuminator_index = 1
 
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     assert light.is_on is False
 
     await light.async_turn_on(**{ATTR_BRIGHTNESS: 255})
@@ -400,7 +404,7 @@ async def test_scheme_illuminator_uses_the_two_table_client_path():
 
 async def test_scheme_illuminator_failed_write_preserves_entity_state(monkeypatch):
     c = _Coordinator(uses_scheme=True)
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
 
     async def fail_write(*_args):
         raise RuntimeError("camera rejected write")
@@ -427,7 +431,7 @@ def test_the_two_lights_do_not_share_a_unique_id():
     """A collision would merge two different lights into one entity."""
     c = _Coordinator()
     infrared = _light(DahuaInfraredLight, c).unique_id
-    illuminator = _light(DahuaIlluminator, c, "Illuminator").unique_id
+    illuminator = _light(DahuaIlluminator, c).unique_id
 
     assert infrared == "SERIAL1_infrared"
     assert illuminator == "SERIAL1_illuminator"
@@ -436,14 +440,17 @@ def test_the_two_lights_do_not_share_a_unique_id():
 
 def test_name_is_prefixed_with_the_device_name():
     c = _Coordinator()
-    assert _light(DahuaInfraredLight, c, "Infrared").name == "Front Door Infrared"
+    # The string itself lives in translations/en.json and is pinned there by
+    # test_entity_names_come_from_translations.py. What belongs here is that
+    # this light declares a key rather than composing a name.
+    assert _light(DahuaInfraredLight, c).translation_key == "infrared"
 
 
 # --- Smart Dual Light restore regressions -----------------------------------
 
 async def test_duplicate_off_preserves_restored_camera_configuration():
     c = _Coordinator()
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     await light.async_turn_off()
     assert c.client.operations == []
 
@@ -460,7 +467,7 @@ async def test_duplicate_off_preserves_restored_camera_configuration():
 
 async def test_brightness_update_keeps_original_profile_and_restore_snapshot():
     c = _Coordinator(channel=2, profile_mode="0")
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     await light.async_turn_on()
     c._profile_mode = "1"
     c.illuminator_index = 1
@@ -477,14 +484,14 @@ async def test_brightness_update_keeps_original_profile_and_restore_snapshot():
 @pytest.mark.parametrize("mode,brightness", [("Auto", 100), ("Off", 100), ("Manual", 42)])
 async def test_external_change_is_preserved_on_off_and_restart(restart, mode, brightness):
     c = _Coordinator()
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     await light.async_turn_on()
     c.client.light_mode = mode
     c.client.light_brightness = brightness
     c.client.operations.clear()
 
     if restart:
-        recovered_light = _light(DahuaIlluminator, c, "Illuminator")
+        recovered_light = _light(DahuaIlluminator, c)
         recovered_light._restore_store = light._restore_store
         assert await recovered_light._recover_persisted_override() is True
     else:
@@ -498,7 +505,7 @@ async def test_external_change_is_preserved_on_off_and_restart(restart, mode, br
 async def test_external_scheme_change_is_preserved_on_off():
     """A Web UI scheme change must not be replaced by HA's saved baseline."""
     c = _Coordinator()
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     await light.async_turn_on()
     c.client.scheme = "InfraredMode"
     c.client.operations.clear()
@@ -515,7 +522,7 @@ async def test_external_scheme_change_is_preserved_on_off():
 async def test_camera_reverting_scheme_to_baseline_still_restores_light():
     """A camera's own WhiteMode reversion must not block OFF cleanup."""
     c = _Coordinator()
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     await light.async_turn_on()
     c.client.scheme = "AIMode"
     c.client.operations.clear()
@@ -530,7 +537,7 @@ async def test_camera_reverting_scheme_to_baseline_still_restores_light():
 
 async def test_interrupted_restore_resumes_after_restart(monkeypatch):
     c = _Coordinator()
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     await light.async_turn_on()
     original_set = c.client.async_set_lighting_v2_raw
 
@@ -546,7 +553,7 @@ async def test_interrupted_restore_resumes_after_restart(monkeypatch):
     assert c.client.scheme == "InfraredMode"
 
     monkeypatch.setattr(c.client, "async_set_lighting_v2_raw", original_set)
-    recovered_light = _light(DahuaIlluminator, c, "Illuminator")
+    recovered_light = _light(DahuaIlluminator, c)
     recovered_light._restore_store = light._restore_store
     assert await recovered_light._recover_persisted_override() is True
     assert light._restore_store.data is None
@@ -558,7 +565,7 @@ async def test_interrupted_restore_resumes_after_restart(monkeypatch):
 async def test_illuminator_safe_restore_order():
     """WhiteLight must stay physically off while its original state is restored."""
     c = _Coordinator(channel=2, profile_mode="0")
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
 
     await light._restore_camera_lighting(
         (2, "0", "AIMode"),
@@ -579,7 +586,7 @@ async def test_persisted_recovery_restores_whitemode_baseline():
     c.client.scheme = "WhiteMode"
     c.client.light_brightness = dahua_utils.hass_brightness_to_dahua_brightness(180)
 
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     light._restore_store.data = {
         "active": True,
         "scheme_channel": 2,
@@ -614,7 +621,7 @@ async def test_persisted_recovery_refuses_unknown_scheme():
     c.client.scheme = "SomethingElse"
     c.client.light_brightness = dahua_utils.hass_brightness_to_dahua_brightness(200)
 
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     snapshot = {
         "active": True,
         "scheme_channel": 2,
@@ -645,7 +652,7 @@ async def test_persisted_recovery_clears_stale_snapshot():
     c.client.light_brightness = 88
     c.client.light_field = "NearLight"
 
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     light._restore_store.data = {
         "active": True,
         "scheme_channel": 2,
@@ -670,7 +677,7 @@ async def test_persisted_recovery_clears_stale_snapshot():
 async def test_restore_off_mode_preserves_saved_brightness():
     """Mode=Off must still restore the saved brightness value exactly."""
     c = _Coordinator(channel=2, profile_mode="0")
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
 
     await light._restore_camera_lighting(
         (2, "0", "WhiteMode"),
@@ -698,7 +705,7 @@ async def test_persisted_recovery_repairs_partially_restored_state():
     c.client.light_brightness = 100
     c.client.light_field = "NearLight"
 
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
     light._restore_store.data = {
         "active": True,
         "scheme_channel": 2,
@@ -733,7 +740,7 @@ async def test_persisted_recovery_repairs_partially_restored_state():
 async def test_reboot_recovery_failure_leaves_generation_for_retry(monkeypatch):
     """Failed reboot recovery must not consume the reboot generation."""
     c = _Coordinator(channel=2, profile_mode="0")
-    light = _light(DahuaIlluminator, c, "Illuminator")
+    light = _light(DahuaIlluminator, c)
 
     light._manual_on = True
     light._seen_reboot_generation = 0

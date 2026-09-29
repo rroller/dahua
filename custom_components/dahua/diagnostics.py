@@ -20,7 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntry
 
-from . import dahua_utils, entry_coordinator, entry_coordinators
+from . import dahua_utils, entry_coordinators
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
@@ -520,14 +520,19 @@ def _active_issues(hass: HomeAssistant) -> list[dict[str, Any]]:
     ]
 
 
-def _ivs_block(config_entry) -> dict:
-    """Include every channel; counters describe this coordinator's current run."""
+def _ivs_channel_block(coordinator) -> dict:
+    """Rule discovery and unmatched events for one channel."""
     return {
-        str(channel): {
-            "discovery": getattr(coordinator, "_ivs_discovery_diagnostics", {}),
-            "unmatched_event_counts": dict(getattr(coordinator, "_ivs_unmatched_counts", {})),
-            "last_unmatched_event": getattr(coordinator, "_ivs_last_unmatched", None),
-        }
+        "discovery": getattr(coordinator, "_ivs_discovery_diagnostics", {}),
+        "unmatched_event_counts": dict(getattr(coordinator, "_ivs_unmatched_counts", {})),
+        "last_unmatched_event": getattr(coordinator, "_ivs_last_unmatched", None),
+    }
+
+
+def _ivs_block(config_entry) -> dict:
+    """Keep the all-channel IVS summary at the top level."""
+    return {
+        str(channel): _ivs_channel_block(coordinator)
         for channel, coordinator in entry_coordinators(config_entry).items()
     }
 
@@ -535,17 +540,56 @@ def _ivs_block(config_entry) -> dict:
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, config_entry: ConfigEntry
 ) -> Mapping[str, Any]:
-    """Return diagnostics for a config entry."""
-    coordinator = entry_coordinator(config_entry)
+    """Return diagnostics for a config entry.
+
+    An entry can own several channels since #827, so `channels` is the
+    authoritative part for a recorder: one block per channel, in channel order.
+
+    The per channel keys are also kept at the top level, describing the first
+    channel. That is not tidy, and it is deliberate: every existing support
+    thread, every consumer and a good deal of this repo's own test suite reads
+    `result["capabilities"]` and friends, and a debug dump is the wrong place to
+    trade somebody's muscle memory for elegance. For a single camera, which is
+    most installs, the two are the same thing.
+    """
+    coordinators = [c for _channel, c in sorted(entry_coordinators(config_entry).items())]
+    if not coordinators:
+        # Asked for an entry that failed to set up. Say so rather than raising,
+        # because this is the dump somebody attaches to explain exactly that.
+        return {
+            "entry": _entry_block(config_entry),
+            "channels": [],
+            "ivs": {},
+            "note": "this entry has no channels set up, so there is nothing to "
+                    "report about the device",
+            "active_issues": _active_issues(hass),
+        }
+
+    def channel_block(coordinator):
+        return {
+            "channel": coordinator.get_channel(),
+            "coordinator": _coordinator_block(coordinator),
+            "device": _device_block(coordinator, config_entry),
+            "capabilities": _capabilities_block(coordinator),
+            "client": _client_block(coordinator, config_entry),
+            "events": _events_block(coordinator),
+            "ivs": _ivs_channel_block(coordinator),
+        }
+
+    first = coordinators[0]
     return {
         "entry": _entry_block(config_entry),
-        "coordinator": _coordinator_block(coordinator),
-        "device": _device_block(coordinator, config_entry),
-        "capabilities": _capabilities_block(coordinator),
-        "client": _client_block(coordinator, config_entry),
-        "events": _events_block(coordinator),
+        "channel_count": len(coordinators),
+        "channels": [channel_block(c) for c in coordinators],
+        # The first channel, repeated. See the docstring.
+        "coordinator": _coordinator_block(first),
+        "device": _device_block(first, config_entry),
+        "capabilities": _capabilities_block(first),
+        "client": _client_block(first, config_entry),
+        "events": _events_block(first),
         "ivs": _ivs_block(config_entry),
-        "host": _host_block(hass, coordinator, config_entry),
+        # Host wide, so it is reported once however many channels there are.
+        "host": _host_block(hass, first, config_entry),
         "active_issues": _active_issues(hass),
     }
 

@@ -13,12 +13,16 @@ this file. The alternative is a hand-maintained pairing, and that is exactly how
 issue placeholder map quietly stopped covering a new issue.
 """
 
+import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from custom_components.dahua.config_flow import (
+    CHANNEL_SUBENTRY,
+    DahuaChannelSubentryFlow,
     DahuaFlowHandler,
     OPTIONS_SECTION_PLATFORMS,
 )
@@ -226,3 +230,75 @@ def test_every_description_in_the_section_describes_a_toggle_in_it():
     orphans = described - _platform_labels()
 
     assert not orphans, "the section describes %s" % sorted(orphans)
+
+
+# --- the per channel form, which is a third place labels can go missing -------
+
+def _subentry_step(step="reconfigure", language="en"):
+    path = TRANSLATIONS / ("%s.json" % language)
+    body = json.loads(path.read_text(encoding="utf-8"))
+    return (body.get("config_subentries", {}).get(CHANNEL_SUBENTRY, {})
+            .get("step", {}).get(step, {}))
+
+
+def _subentry_schema_fields():
+    """The keys the per channel form offers.
+
+    The schema is built from no instance state beyond the subentry it is editing,
+    so a bare handler with a stub subentry is enough and this needs no Home
+    Assistant.
+    """
+    flow = DahuaChannelSubentryFlow()
+    flow._get_reconfigure_subentry = lambda: SimpleNamespace(
+        data={"channel": 3}, title="A channel")
+    result = asyncio.run(flow.async_step_reconfigure())
+    return {str(key) for key in result["data_schema"].schema}
+
+
+def test_every_field_on_the_channel_form_has_a_label():
+    """Read out of the frontend: a subentry field is looked up at
+    `config_subentries.<type>.step.<step>.data.<field>` and falls back to the raw
+    key, exactly as the other two forms do. So an unlabelled one appears to the
+    user as `nvr_active_deterrence`."""
+    missing = _subentry_schema_fields() - set(_subentry_step().get("data", {}))
+
+    assert not missing, "no label for %s on the channel form" % sorted(missing)
+
+
+def test_the_channel_form_labels_no_field_it_does_not_ask():
+    orphans = set(_subentry_step().get("data", {})) - _subentry_schema_fields()
+
+    assert not orphans, "the channel form labels %s, which it does not ask" % sorted(
+        orphans)
+
+
+def test_every_description_on_the_channel_form_describes_a_field_it_asks():
+    described = set(_subentry_step().get("data_description", {}))
+
+    orphans = described - _subentry_schema_fields()
+
+    assert not orphans, "describes %s" % sorted(orphans)
+
+
+def test_the_channel_form_has_a_title_and_a_description():
+    """A step with neither renders as the integration's name and nothing else,
+    which on a 64 channel recorder gives no clue which channel is being edited."""
+    step = _subentry_step()
+
+    assert step.get("title")
+    assert step.get("description")
+
+
+def test_a_setting_that_moved_onto_the_channel_kept_its_wording():
+    """These were on the options screen before #827 moved them per channel. A
+    setting acquiring a second name because it moved is how a user ends up unable
+    to find the thing a forum post told them to tick."""
+    channel = _subentry_step().get("data", {})
+    options = EN["options"]["step"]["user"].get("data", {})
+
+    shared = set(channel) & set(options)
+    assert shared, "expected some settings to be common to both forms"
+    for key in sorted(shared):
+        assert channel[key] == options[key], (
+            "%s is worded differently on the two forms: %r vs %r"
+            % (key, channel[key], options[key]))

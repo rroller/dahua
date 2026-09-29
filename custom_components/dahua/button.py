@@ -19,6 +19,13 @@ from .entity import DahuaBaseEntity
 _LOGGER = logging.getLogger(__package__)
 
 
+# One at a time, because reboot and door open are writes and these devices are measurably intolerant of
+# concurrent requests: MAX_CONCURRENT_REQUESTS_PER_HOST is 2 for the same reason,
+# and the login storms behind #577 and #603 are what happens without it. A
+# coordinator does not help here, since it only centralises inbound reads and
+# leaves outbound actions uncontrolled.
+PARALLEL_UPDATES = 1
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the button platform."""
     for coordinator in entry_coordinators(entry).values():
@@ -36,14 +43,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):
     """Reboots the device."""
 
+    _attr_translation_key = "reboot"
+
     _attr_device_class = ButtonDeviceClass.RESTART
     # Diagnostic would hide it from the device page controls; this is an action
     # the user takes deliberately, so it belongs with the configuration.
     _attr_entity_category = EntityCategory.CONFIG
-
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Reboot"
 
     @property
     def unique_id(self):
@@ -62,9 +67,7 @@ class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):
 class DahuaOpenDoorButton(DahuaBaseEntity, ButtonEntity):
     """Opens the door on a VTO."""
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Open Door"
+    _attr_translation_key = "open_door"
 
     @property
     def unique_id(self):
@@ -87,9 +90,7 @@ class DahuaCancelCallButton(DahuaBaseEntity, ButtonEntity):
     waits now, which is what makes a button honest.
     """
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Cancel Call"
+    _attr_translation_key = "cancel_call"
 
     @property
     def unique_id(self):

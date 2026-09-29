@@ -138,6 +138,100 @@
             }
         }
     },
+    "entity": {
+        "binary_sensor": {
+            "authorized_vehicle": {
+                "name": "Authorized Vehicle"
+            }
+        },
+        "event": {
+            "doorbell": {
+                "name": "Doorbell"
+            }
+        },
+        "button": {
+            "reboot": {
+                "name": "Reboot"
+            },
+            "open_door": {
+                "name": "Open Door"
+            },
+            "cancel_call": {
+                "name": "Cancel Call"
+            }
+        },
+        "light": {
+            "infrared": {
+                "name": "Infrared"
+            },
+            "illuminator": {
+                "name": "Illuminator"
+            },
+            "flood_light": {
+                "name": "Flood Light"
+            },
+            "ring_light": {
+                "name": "Ring Light"
+            },
+            "security_light": {
+                "name": "Security Light"
+            },
+            "warning_light": {
+                "name": "Warning Light"
+            }
+        },
+        "select": {
+            "security_light": {
+                "name": "Security Light"
+            },
+            "preset_position": {
+                "name": "Preset Position"
+            },
+            "day_night_mode": {
+                "name": "Day/Night Mode"
+            }
+        },
+        "sensor": {
+            "firmware_version": {
+                "name": "Firmware Version"
+            },
+            "serial_number": {
+                "name": "Serial Number"
+            },
+            "profile": {
+                "name": "Profile"
+            },
+            "license_plate": {
+                "name": "License Plate"
+            }
+        },
+        "switch": {
+            "motion_detection": {
+                "name": "Motion Detection"
+            },
+            "disarming": {
+                "name": "Disarming"
+            },
+            "event_notifications": {
+                "name": "Event Notifications"
+            },
+            "smart_motion_detection": {
+                "name": "Smart Motion Detection"
+            },
+            "alarm_output": {
+                "name": "Alarm Output"
+            },
+            "privacy_mode": {
+                "name": "Privacy Mode"
+            },
+            "siren": {
+                "name": "Siren"
+            },
+            "alarm": {
+                "name": "Alarm"
+            }
+        }
+    },
     "issues": {
         "channel_not_added": {
             "title": "Channel {channel} on {address} was not added",
@@ -177,6 +271,37 @@
                 "abort": {
                     "not_configured": "No Dahua configuration entries use {address} any more."
                 }
+            }
+        }
+    },
+    "config_subentries": {
+        "channel": {
+            "entry_type": "channel",
+            "initiate_flow": {
+                "user": "Add a channel"
+            },
+            "step": {
+                "reconfigure": {
+                    "title": "{name}",
+                    "description": "Settings for channel {channel} of this recorder. Anything that applies to the whole device, such as how often it is polled, is on the recorder's own Configure button instead.",
+                    "data": {
+                        "name": "Name",
+                        "area": "Area (moves this device to it)",
+                        "events": "Events to subscribe to",
+                        "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
+                        "nvr_active_deterrence": "Enable NVR active deterrence controls",
+                        "manual_siren": "Manually enable Siren entity",
+                        "manual_security_light": "Manually enable Security Light entity",
+                        "disable_backchannel": "Don't open the two-way audio channel when streaming (fixes a doorbell stuck in a call, or talkback in the Dahua/Amcrest app; disables talking from Home Assistant)"
+                    },
+                    "data_description": {
+                        "manual_security_light": "Enable this if your camera has a working security light, but the integration did not create the Security Light entity.",
+                        "manual_siren": "Enable this if your camera has a working siren, but the integration did not create the Siren entity."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "Channel updated"
             }
         }
     }

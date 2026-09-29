@@ -74,7 +74,7 @@ async def test_setup_creates_all_seven_normal_rules_including_stay():
     assert len(sensors) == 7
     assert len({s.unique_id for s in sensors}) == 7
     stay = next(s for s in sensors if s.extra_state_attributes["rule_id"] == "23")
-    assert stay.name == "Garden Stay Test"
+    assert stay.name == "Stay Test"
     assert stay.unique_id == "SERIAL_ivs_rule_23"
     assert stay.extra_state_attributes["rule_type"] == "StayDetection"
 

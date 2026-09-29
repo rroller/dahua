@@ -55,7 +55,18 @@ class _Coordinator:
 
 @pytest.fixture(autouse=True)
 def _skip_ha_plumbing(monkeypatch):
-    monkeypatch.setattr(button_module.DahuaBaseEntity, "__init__", lambda self, c, e: None)
+    """Skip Entity's own setup, but keep what the real __init__ stores.
+
+    This was a lambda that did nothing, which left every entity here with
+    no coordinator. Harmless while each test attached its own fake by
+    hand, and useless the moment a test wanted to ask the platform which
+    channel an entity ended up on: there was nothing to ask.
+    """
+    def _init(self, coordinator, config_entry):
+        self._coordinator = coordinator
+        self.config_entry = config_entry
+
+    monkeypatch.setattr(button_module.DahuaBaseEntity, "__init__", _init)
 
 
 def _button(cls, coordinator=None):
@@ -157,9 +168,19 @@ def test_the_two_buttons_do_not_collide():
     assert _button(DahuaRebootButton, c).unique_id != _button(DahuaOpenDoorButton, c).unique_id
 
 
-def test_the_names():
-    assert _button(DahuaRebootButton).name == "Front Door Reboot"
-    assert _button(DahuaOpenDoorButton).name == "Front Door Open Door"
+def test_the_names_come_from_the_translation_file():
+    # These asserted `.name`, which read the string straight off the class.
+    # `entity-translations` moved it to translations/en.json, so off a
+    # platform there is nothing to read and `.name` is UNDEFINED. The strings
+    # are pinned in test_entity_names_come_from_translations.py against what
+    # these properties used to return; what belongs here is the key.
+    # On an instance, and through the public property. Home Assistant's
+    # CachedProperties metaclass turns every `_attr_x` in a class body into a
+    # property object and keeps the value under `__attr_x`, so reading
+    # `SomeEntity._attr_translation_key` off the class hands back the
+    # descriptor. Measured on 2026.9.3.
+    assert _button(DahuaRebootButton).translation_key == "reboot"
+    assert _button(DahuaOpenDoorButton).translation_key == "open_door"
 
 
 def test_reboot_is_a_restart_button_under_config():
@@ -201,3 +222,51 @@ def test_the_new_platform_has_a_label_on_the_options_screen():
 
     for platform in PLATFORMS:
         assert platform in labels, "%s has no label on the options screen" % platform
+
+
+# --- several channels on one entry ------------------------------------------
+
+async def test_every_channel_on_the_entry_gets_its_own_buttons():
+    """The point of the loop, tested now rather than when #827 lands.
+
+    An entry owns one channel today, so every platform loop runs exactly once and
+    the change is invisible. That makes it the easy kind of refactor to get
+    subtly wrong: a loop that only ever executes once looks identical to code
+    that never loops. Constructing an entry with three channels is free and
+    proves the loop does what it exists for.
+    """
+    added = []
+    channels = {0: _Coordinator(doorbell=False),
+                1: _Coordinator(doorbell=True),
+                9: _Coordinator(doorbell=False)}
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": channels})()
+
+    await button_module.async_setup_entry(hass, entry, added.extend)
+
+    # One reboot button each, and the doorbell's two extras, in channel order.
+    assert [type(b).__name__ for b in added] == [
+        "DahuaRebootButton",
+        "DahuaRebootButton", "DahuaOpenDoorButton", "DahuaCancelCallButton",
+        "DahuaRebootButton",
+    ]
+
+
+async def test_each_button_belongs_to_its_own_channels_coordinator():
+    """Entities must not all end up pointing at the first channel, which is the
+    mistake a loop that reuses one variable invites."""
+    added = []
+    channels = {0: _Coordinator(doorbell=False), 1: _Coordinator(doorbell=False)}
+    hass = type("H", (), {"data": {}})()
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": channels})()
+
+    await button_module.async_setup_entry(hass, entry, added.extend)
+
+    # `_coordinator`, not CoordinatorEntity's public `coordinator`: the
+    # autouse fixture above stands in for DahuaBaseEntity.__init__, so
+    # CoordinatorEntity.__init__ never runs here and the public one is
+    # never set. Every other read in this file goes through `_coordinator`
+    # too, which is what the entities themselves use.
+    owners = [button._coordinator for button in added]
+    assert owners == [channels[0], channels[1]]
+    assert owners[0] is not owners[1]

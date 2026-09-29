@@ -2,6 +2,7 @@ import time
 import pytest
 
 from custom_components.dahua import binary_sensor as bs
+from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 from custom_components.dahua.binary_sensor import (
     DahuaEventSensor,
     DahuaAuthorizedVehicleBinarySensor,
@@ -16,9 +17,17 @@ from custom_components.dahua.const import (
 
 
 class _Coordinator:
+    # The real thing, not a stand-in. Both of these return the callback that
+    # undoes them, the entities hand that to `async_on_remove`, and a fake
+    # returning None would have been accepted without a word.
+    add_dahua_event_listener = DahuaDataUpdateCoordinator.add_dahua_event_listener
+    add_plate_listener = DahuaDataUpdateCoordinator.add_plate_listener
+    get_event_key = DahuaDataUpdateCoordinator.get_event_key
+
     def __init__(self):
         self.timestamps = {}
-        self.listeners = []
+        self._channel = 0
+        self._dahua_event_listeners = {}
         self._plate_listeners = []
         self._last_plate = "unknown"
         self._last_plate_data = {}
@@ -39,9 +48,6 @@ class _Coordinator:
         """No event here has arrived as a Pulse, so none clears itself."""
         return False
 
-    def add_dahua_event_listener(self, event_name, callback):
-        self.listeners.append((event_name, callback))
-
     def get_last_plate(self):
         return self._last_plate
 
@@ -60,8 +66,6 @@ class _Coordinator:
     def is_plate_authorized(self, plate):
         return plate in self._authorized_plates
 
-    def add_plate_listener(self, callback):
-        self._plate_listeners.append(callback)
 
 
 @pytest.fixture
@@ -87,7 +91,10 @@ def sensor(monkeypatch):
     ("StorageNotExist", "Storage Not Exist"),
 ])
 def test_camel_case_events_become_readable_names(sensor, event_name, expected):
-    assert sensor(event_name).name == "Front Door " + expected
+    # `has_entity_name` is True, so an entity states only its own half and
+    # Home Assistant prefixes the device. The rendered name is unchanged;
+    # what this asserts is that the entity is no longer composing it.
+    assert sensor(event_name).name == expected
 
 
 @pytest.mark.parametrize("event_name,expected", [
@@ -96,12 +103,18 @@ def test_camel_case_events_become_readable_names(sensor, event_name, expected):
     ("DoorbellPressed", "Button Pressed"),
 ])
 def test_overridden_names_win_over_the_derived_one(sensor, event_name, expected):
-    assert sensor(event_name).name == "Front Door " + expected
+    # `has_entity_name` is True, so an entity states only its own half and
+    # Home Assistant prefixes the device. The rendered name is unchanged;
+    # what this asserts is that the entity is no longer composing it.
+    assert sensor(event_name).name == expected
 
 
 def test_consecutive_capitals_are_not_split(sensor):
     """IVS must not become I V S."""
-    assert sensor("IVS").name == "Front Door IVS"
+    # `has_entity_name` is True, so an entity states only its own half and
+    # Home Assistant prefixes the device. The rendered name is unchanged;
+    # what this asserts is that the entity is no longer composing it.
+    assert sensor("IVS").name == "IVS"
 
 
 # --- device classes and icons ----------------------------------------------
@@ -171,7 +184,31 @@ async def test_it_subscribes_to_its_event_when_added(sensor):
 
     await s.async_added_to_hass()
 
-    assert [name for name, _ in c.listeners] == ["CrossLineDetection"]
+    assert list(c._dahua_event_listeners) == [c.get_event_key("CrossLineDetection")]
+
+
+async def test_it_stops_listening_when_it_is_removed(sensor):
+    """A removed entity that keeps its callback is not only untidy. Whether a
+    key has listeners decides whether `_dispatch_event` reports that code at
+    all, and whether `translate_event_code` reports CrossLineDetection
+    alongside the SmartMotion translation, so a ghost answers yes to both. And
+    nothing stops the callback reaching an entity Home Assistant has removed.
+
+    `_on_remove` is Home Assistant's own list, which it drains on removal.
+    Reaching into it is how this test removes the entity without a platform.
+    """
+    c = _Coordinator()
+    s = sensor("CrossLineDetection", c)
+
+    await s.async_added_to_hass()
+    assert c._dahua_event_listeners, "never subscribed, so this proves nothing"
+
+    assert s._on_remove, "registered nothing to undo the subscription"
+    for undo in list(s._on_remove):
+        undo()
+
+    assert c._dahua_event_listeners == {}, (
+        "the key outlived the entity, so the poll still thinks something reads it")
 
 
 def test_these_sensors_are_pushed_not_polled(sensor):
@@ -184,10 +221,18 @@ def test_authorized_vehicle_sensor_properties():
     c = _Coordinator()
     s = DahuaAuthorizedVehicleBinarySensor(c, object())
 
-    assert s.name == "Front Door Authorized Vehicle"
+    # The name itself lives in translations/en.json now, and is pinned there
+    # by test_entity_names_come_from_translations.py. The key is what this
+    # entity is responsible for.
+    assert s.translation_key == "authorized_vehicle"
     assert s.unique_id == "SERIAL1_authorized_vehicle"
     assert s.device_class == "presence"
-    assert s.icon == "mdi:car-check"
+    # The icon moved to icons.json with the name, and asserting it is None here
+    # rather than dropping the line: it has to *stay* gone, because
+    # `Entity.icon` returns `_attr_icon` whenever it is set and would then win
+    # over the file silently. mdi:car-check is pinned in
+    # test_entity_icons_come_from_icons_json.py.
+    assert s.icon is None
     assert s.should_poll is False
 
 

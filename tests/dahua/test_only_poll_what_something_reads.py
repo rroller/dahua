@@ -209,15 +209,10 @@ def test_the_poll_gates_the_fetch_on_the_shared_rule():
     """Driving the real poll needs the whole of Home Assistant, so this reads the source:
     the coaxial branch must be gated on `reads_coaxial_status`, not on `_wanted_by`."""
     import ast
-    import io
-    from pathlib import Path
 
-    source = io.open(
-        Path(__file__).resolve().parents[2]
-        / "custom_components" / "dahua" / "__init__.py", encoding="utf-8").read()
-    update = next(
-        node for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_async_update_data")
+    from .integration_source import definition
+
+    update = definition("_async_update_data")
 
     # An if/elif chain is nested `If` nodes, so the outer one contains the inner branch
     # too. The gate wanted is the branch whose own *body* makes the call.

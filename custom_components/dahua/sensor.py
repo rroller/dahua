@@ -23,6 +23,10 @@ PROFILE_NAMES = {
 }
 
 
+# A coordinator centralises the inbound reads, and nothing here sends a command,
+# so there is nothing to serialise: read only: every state comes from the coordinator.
+PARALLEL_UPDATES = 0
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
     for coordinator in entry_coordinators(entry).values():
@@ -50,11 +54,9 @@ class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
     is behind" possible.
     """
 
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "firmware_version"
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Firmware Version"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def unique_id(self):
@@ -77,11 +79,9 @@ class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
 class DahuaSerialNumberSensor(DahuaBaseEntity, SensorEntity):
     """The serial the device reports."""
 
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "serial_number"
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Serial Number"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def unique_id(self):
@@ -97,12 +97,9 @@ class DahuaSerialNumberSensor(DahuaBaseEntity, SensorEntity):
 class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
     """Sensor for the day/night lighting profile the camera is using right now."""
 
-    _attr_icon = "mdi:theme-light-dark"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "profile"
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Profile"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def unique_id(self):
@@ -124,14 +121,11 @@ class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
 class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
     """The last recognized license plate reported by the camera."""
 
+    _attr_translation_key = "license_plate"
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
         super().__init__(coordinator, entry)
-        self._attr_icon = "mdi:car-back"
         self._unique_id = f"{coordinator.get_serial_number()}_license_plate"
-
-    @property
-    def name(self):
-        return f"{self._coordinator.get_device_name()} License Plate"
 
     @property
     def unique_id(self):

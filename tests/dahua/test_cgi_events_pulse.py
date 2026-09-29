@@ -70,7 +70,10 @@ async def test_an_access_control_card_is_scanned_on_the_cgi_path():
     c = _coordinator()
     _listening(c, "AccessControl")
 
-    with patch("custom_components.dahua.async_scan_tag", new_callable=AsyncMock) as scan_tag:
+    # The coordinator resolves async_scan_tag in its own module, so patching
+    # the package rebound a name nothing reads and the real helper ran.
+    with patch("custom_components.dahua.coordinator.async_scan_tag",
+               new_callable=AsyncMock) as scan_tag:
         c.handle_event({"Code": "AccessControl", "action": "Pulse",
                         "Data": {"State": 1, "CardNo": "1234ABCD"}})
 

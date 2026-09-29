@@ -72,6 +72,10 @@ ICON_OVERRIDES = {
 }
 
 
+# A coordinator centralises the inbound reads, and nothing here sends a command,
+# so there is nothing to serialise: read only: every state comes from the coordinator.
+PARALLEL_UPDATES = 0
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
     for coordinator in entry_coordinators(entry).values():
@@ -140,7 +144,7 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
     @property
     def name(self):
         """Return the name of the binary_sensor. Example: Cam14 Motion Alarm"""
-        return f"{self._device_name} {self._name}"
+        return self._name
 
     @property
     def device_class(self):
@@ -189,7 +193,8 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
-        self._coordinator.add_dahua_event_listener(self._event_name, self._async_event_fired)
+        self.async_on_remove(self._coordinator.add_dahua_event_listener(
+            self._event_name, self._async_event_fired))
 
     @callback
     def _async_event_fired(self):
@@ -249,21 +254,17 @@ class DahuaIVSRuleBinarySensor(DahuaEventSensor):
 class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEntity):
     """Binary sensor that turns on when an authorized vehicle license plate is recognized."""
 
+    _attr_translation_key = "authorized_vehicle"
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
         super().__init__(coordinator, entry)
         self._attr_device_class = BinarySensorDeviceClass.PRESENCE
-        self._attr_icon = "mdi:car-check"
         self._unique_id = f"{coordinator.get_serial_number()}_authorized_vehicle"
         self._active_until: float = 0.0
         self._last_matched_plate: str | None = None
         self._last_matched_plate_data: dict = {}
         self._last_matched_time: int | None = None
         self._unsub_timer = None
-
-    @property
-    def name(self):
-        """Return the name of the binary sensor."""
-        return f"{self._coordinator.get_device_name()} Authorized Vehicle"
 
     @property
     def unique_id(self):
@@ -317,7 +318,7 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
                 )
             self.schedule_update_ha_state()
 
-        self._coordinator.add_plate_listener(_on_plate_update)
+        self.async_on_remove(self._coordinator.add_plate_listener(_on_plate_update))
 
         # Recheck state on startup/reload in case plate was recognized right before reload
         last_plate = self._coordinator.get_last_plate()
