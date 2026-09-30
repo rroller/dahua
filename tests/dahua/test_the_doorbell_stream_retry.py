@@ -267,10 +267,15 @@ async def test_cancellation_is_not_retried(retries, connections):
 async def test_a_wait_before_reconnecting_is_named(retries, connections, caplog):
     """The other spelling of the disconnect line. A user reading "reconnecting"
     and waiting two minutes has no way to tell that from a hang, so when there is
-    a delay it is said."""
-    retries.delay = 12
+    a delay it is said.
+
+    One second rather than a realistic sixty, because the loop really sleeps it.
+    The line is logged before the sleep, so the branch is exercised either way and
+    a realistic delay would only spend the suite's timeout budget.
+    """
+    retries.delay = 1
     connections(SILENT)
 
     await _run(_coordinator())
 
-    assert "12" in _warnings(caplog)[0], _warnings(caplog)
+    assert "in 1s" in _warnings(caplog)[0], _warnings(caplog)
