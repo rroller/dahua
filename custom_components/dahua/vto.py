@@ -108,7 +108,7 @@ class DahuaVTOClient(asyncio.Protocol):
             _LOGGER.error(f"Failed to handle message, error: {ex}, Line: {exc_tb.tb_lineno}")
 
     def data_received(self, data):
-        _LOGGER.debug(f"Event data {self.host}: '{data}'")
+        _LOGGER.debug("Event data %s: '%s'", self.host, data)
 
         # Whether this device has said anything at all on this connection --
         # a login reply, a keepAlive answer, an event. The reconnect decision
@@ -158,10 +158,10 @@ class DahuaVTOClient(asyncio.Protocol):
             _LOGGER.error(f"Failed to handle event, error: {ex}, Line: {exc_tb.tb_lineno}")
 
     def handle_default(self, message):
-        _LOGGER.info(f"Data received without handler: {message}")
+        _LOGGER.debug("Data received without handler: %s", message)
 
     def eof_received(self):
-        _LOGGER.info('Server sent EOF message')
+        _LOGGER.debug('Server sent EOF message')
 
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
@@ -305,7 +305,7 @@ class DahuaVTOClient(asyncio.Protocol):
         self.send(DAHUA_GLOBAL_LOGIN, handle_login, request_data)
 
     def attach_event_manager(self):
-        _LOGGER.info("Attach event manager")
+        _LOGGER.debug("Attach event manager")
 
         def handle_attach_event_manager(message):
             if message is None:
@@ -323,7 +323,7 @@ class DahuaVTOClient(asyncio.Protocol):
         self.send(DAHUA_EVENT_MANAGER_ATTACH, handle_attach_event_manager, request_data)
 
     def load_access_control(self):
-        _LOGGER.info("Get access control configuration")
+        _LOGGER.debug("Get access control configuration")
 
         def handle_access_control(message):
             if message is None:
@@ -339,7 +339,7 @@ class DahuaVTOClient(asyncio.Protocol):
                     if access_control == 'Local':
                         self.hold_time = item.get('UnlockReloadInterval')
 
-                        _LOGGER.info(f"Hold time: {self.hold_time}")
+                        _LOGGER.debug("Hold time: %s", self.hold_time)
 
         request_data = {
             "name": "AccessControl"
@@ -390,7 +390,7 @@ class DahuaVTOClient(asyncio.Protocol):
         return True
 
     def load_version(self):
-        _LOGGER.info("Get version")
+        _LOGGER.debug("Get version")
 
         def handle_version(message):
             if message is None:
@@ -404,12 +404,12 @@ class DahuaVTOClient(asyncio.Protocol):
             self.dahua_details[DAHUA_VERSION] = version
             self.dahua_details[DAHUA_BUILD_DATE] = build_date
 
-            _LOGGER.info(f"Version: {version}, Build Date: {build_date}")
+            _LOGGER.debug("Version: %s, Build Date: %s", version, build_date)
 
         self.send(DAHUA_MAGICBOX_GETSOFTWAREVERSION, handle_version)
 
     def load_device_type(self):
-        _LOGGER.info("Get device type")
+        _LOGGER.debug("Get device type")
 
         def handle_device_type(message):
             if message is None:
@@ -420,12 +420,12 @@ class DahuaVTOClient(asyncio.Protocol):
 
             self.dahua_details[DAHUA_DEVICE_TYPE] = device_type
 
-            _LOGGER.info(f"Device Type: {device_type}")
+            _LOGGER.debug("Device Type: %s", device_type)
 
         self.send(DAHUA_MAGICBOX_GETDEVICETYPE, handle_device_type)
 
     def load_serial_number(self):
-        _LOGGER.info("Get serial number")
+        _LOGGER.debug("Get serial number")
 
         def handle_serial_number(message):
             if message is None:
@@ -437,7 +437,7 @@ class DahuaVTOClient(asyncio.Protocol):
 
             self.dahua_details[DAHUA_SERIAL_NUMBER] = serial_number
 
-            _LOGGER.info(f"Serial Number: {serial_number}")
+            _LOGGER.debug("Serial Number: %s", serial_number)
 
         request_data = {
             "name": "T2UServer"

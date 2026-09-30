@@ -480,14 +480,30 @@ async def async_device_is_zero_indexed(client, device: str):
     return _HOST_CHANNEL_BASE[device]
 
 @callback
-def async_record_host_auth_refusal(address: str) -> int:
+def async_record_host_auth_refusal(address: str, source: str = "") -> int:
     """Note that this host refused the credentials, and say how often it has.
 
-    Keyed by host rather than by entry because the consequence is host-wide:
-    a Dahua box locks the source IP after repeated failed logins, so ten
-    channels of one NVR are ten entries renewing one lock. A per-entry count
-    would let the first entry to notice give up while the other nine kept the
-    lock alive, which is the bug one level up.
+    Held per host, because the consequence is host-wide: a Dahua box locks the
+    source IP after repeated failed logins, so a recorder's channels are many
+    pollers renewing one lock. Once the budget is spent everything on this host
+    stops, which is the point.
+
+    Counted per **source**, because that is the difference between a wrong
+    password and a bad moment. `source` is the config entry being refused, or
+    the event stream. The number returned is the highest any one source has
+    reached, so:
+
+    * twelve channels refused once each is **one**, not twelve. That is a
+      recorder having a moment, and it recovers on the next poll.
+    * one channel refused three times is **three**. Nothing has succeeded in
+      between, and a password that is wrong is wrong every time.
+
+    Counting requests instead of sources is what #729's sibling bug looked like
+    from a user's chair: a recorder briefly refused during a burst of motion,
+    twelve channels incremented one counter inside fourteen milliseconds, and
+    Home Assistant demanded a new password for credentials it had never had
+    trouble with. Measured on a live twelve channel NVR whose password was
+    correct throughout.
 
     Cleared by async_record_host_success, so this only ever counts refusals
     with nothing succeeding in between.
@@ -497,7 +513,11 @@ def async_record_host_auth_refusal(address: str) -> int:
         address,
         {"consecutive": 0, "since": time.time(), "entry_ids": set(), "last_probe": 0},
     )
-    state["auth_refusals"] = state.get("auth_refusals", 0) + 1
+    by_source = state.setdefault("auth_refusals_by_source", {})
+    by_source[source] = by_source.get(source, 0) + 1
+    # The host's number is the worst any one source has seen, so the budget is
+    # still spent once, host-wide, rather than once per channel.
+    state["auth_refusals"] = max(by_source.values())
     return state["auth_refusals"]
 
 @callback
@@ -573,6 +593,12 @@ class DahuaHostEventStream:
     # failing it. A default here is one line and cannot be half-applied.
     _using_all_events = False
 
+    # Whether a refusal has already pushed this stream onto codes=[All]. One
+    # attempt per stream: a device that refuses the explicit list and then refuses
+    # [All] as well has nothing left to try, and retrying both forever would
+    # double the requests at a device that is already saying no.
+    _tried_all_events = False
+
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         self._hass = hass
         self._address = address
@@ -639,6 +665,40 @@ class DahuaHostEventStream:
         self._restart_if_needed()
         return False
 
+    def _should_try_all_events(self, exception) -> bool:
+        """Whether a refused attach is worth one retry with codes=[All].
+
+        Some firmware serves the event stream perfectly and rejects a long
+        explicit code list. Measured by two reporters on two different cameras:
+        #728's IPC-HFW4300S-V2 answers 200 to `codes=[VideoMotion]` and 400 to the
+        nine-code list, and #832's Hero A1 answers 500 to the same nine.
+
+        The integration already knows how to subscribe with `[All]` and filter
+        locally, so the user's selection is unaffected either way. It just decided
+        to do that from a heuristic -- whether sharing one stream across channels
+        made the request longer than any single channel's list -- which can never
+        be true for a single camera, because the union of one list is that list.
+        Single cameras are exactly the devices old enough to refuse, which is why
+        this reads as "everyone with one camera" rather than as a firmware quirk.
+
+        So the device's own refusal is the signal, rather than a guess about what
+        it might refuse. 404 and 501 never arrive here: those mean no CGI event
+        path at all and are answered with the RPC2 poller further down.
+        """
+        if self._tried_all_events or self._using_all_events:
+            return False
+        if self._received_data:
+            # This device took the list: it attached and it talked. Whatever
+            # ended the socket afterwards, it was not a refusal of the request
+            # shape, and broadening a subscription that demonstrably works
+            # would be a change nobody asked for.
+            return False
+        if not self._events or "All" in self._events:
+            return False
+        status = getattr(exception, "status", None)
+        # Credentials are a different problem with its own budget above.
+        return status is not None and status != 401
+
     def _restart_if_needed(self) -> None:
         wanted = self._union()
         # Before #615, every channel attached with only its own event list.
@@ -650,6 +710,11 @@ class DahuaHostEventStream:
         use_all_events = bool(wanted) and len(wanted) > max(
             (len(c.events or ()) for c in self.coordinators), default=0
         )
+        # A device that refused an explicit list once will refuse the next one, so
+        # what it told us outlives a channel being added or removed. Recomputing
+        # the heuristic alone would drop the stream back onto a list already known
+        # to fail, and the only sign would be the events stopping again.
+        use_all_events = use_all_events or self._tried_all_events
         if (
             self._task is not None
             and not self._task.done()
@@ -730,13 +795,28 @@ class DahuaHostEventStream:
                 # success on this host, so a stream cannot reach the budget
                 # while anything here is still authenticating.
                 if isinstance(ex, ClientResponseError) and ex.status == 401:
-                    refusals = async_record_host_auth_refusal(self._address)
+                    refusals = async_record_host_auth_refusal(
+                        self._address, "event stream")
                     if refusals >= MAX_AUTH_REFUSALS:
                         _LOGGER.warning(
                             "Event stream for %s stopped: the device refused these credentials %d times. It will start again once the credentials are re-entered",
                             self._address, refusals,
                         )
                         return
+
+                if self._should_try_all_events(ex):
+                    # Straight back round rather than through the backoff: this is
+                    # not a device in trouble, it is one that wants the request put
+                    # a different way, and it has told us so.
+                    self._tried_all_events = True
+                    self._using_all_events = True
+                    _LOGGER.warning(
+                        "Event stream for %s refused a list of %d event codes with HTTP %s. Some firmware will not serve a long explicit list; subscribing to all events instead and filtering locally, which does not change which events reach Home Assistant",
+                        self._address, len(self._events),
+                        getattr(ex, "status", "?"),
+                    )
+                    continue
+
                 # Say it once per outage, not once per retry. Silence was the
                 # old behaviour and it is why these failures went unreported;
                 # a warning every sixty seconds forever is the other extreme.

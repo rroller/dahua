@@ -553,6 +553,19 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         if any(substring in model for substring in ['NVR4108HS', 'IPC-Color4K']):
             await self._coordinator.client.async_set_night_switch_mode(channel, mode)
         else:
+            # Say so before writing, rather than leaving #458 as "Unknown error".
+            # VideoInMode comes in three shapes and Config[0] only selects the profile
+            # in one of them, so on the other two this write is either refused by the
+            # device or accepted and ignored. The shape is read per channel from the
+            # last poll, because one recorder carries all three at once.
+            if not self._coordinator.video_profile_mode_is_writable():
+                _LOGGER.warning(
+                    "Setting the video profile on %s channel %s may not take effect: "
+                    "its VideoInMode is the %s shape, and this writes Config[0], which "
+                    "only selects the profile in the ordinary shape. See issue #458",
+                    self._coordinator.get_device_name(), channel,
+                    self._coordinator.describe_video_profile_shape(),
+                )
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
         # The profile decides which Lighting row every light command writes to,
         # and the poll is what reads it back. Without this the next light

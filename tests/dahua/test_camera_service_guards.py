@@ -32,6 +32,10 @@ def _camera(*, doorbell=False):
             async_access_control_open_door=AsyncMock(),
         ),
         get_model=lambda: "IPC-HDW5831R-ZE",
+        # The profile write asks whether Config[0] can select the profile on this
+        # channel before sending it. True keeps these tests about the refresh.
+        video_profile_mode_is_writable=lambda: True,
+        describe_video_profile_shape=lambda: "ordinary",
         is_doorbell=lambda: doorbell,
         get_device_name=lambda: "Front Door",
         async_refresh=AsyncMock(),

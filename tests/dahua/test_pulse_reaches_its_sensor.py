@@ -57,6 +57,40 @@ def _stamp(coordinator, code):
     return coordinator._dahua_event_timestamp.get(coordinator.get_event_key(code), 0)
 
 
+# --- an action nobody recognises -------------------------------------------
+
+
+def test_an_unrecognised_action_reaches_no_listener():
+    """`_dispatch_event` handles Start, Stop and Pulse. Anything else is skipped
+    before the listeners are called, which is the right answer: firing a sensor on
+    an action whose meaning is unknown would raise it and never lower it, because
+    the matching Stop would not be recognised either.
+    """
+    coordinator = _coordinator()
+    fired = _listening(coordinator, "VideoMotion")
+
+    coordinator._dispatch_event({"Code": "VideoMotion", "Action": "Nonsense"},
+                                "Nonsense")
+
+    assert fired == [], "a listener was called for an action nobody understands"
+    assert _stamp(coordinator, "VideoMotion") == 0
+
+
+def test_an_unrecognised_action_does_not_clear_a_running_event():
+    """It skips rather than writing 0. A Start followed by something unrecognised
+    must leave the sensor where it was, or an unknown action becomes a Stop."""
+    coordinator = _coordinator()
+    _listening(coordinator, "VideoMotion")
+    coordinator._dispatch_event({"Code": "VideoMotion", "Action": "Start"}, "Start")
+    running = _stamp(coordinator, "VideoMotion")
+    assert running > 0, "the fixture must start the event for this to mean anything"
+
+    coordinator._dispatch_event({"Code": "VideoMotion", "Action": "Nonsense"},
+                                "Nonsense")
+
+    assert _stamp(coordinator, "VideoMotion") == running
+
+
 # --- the bug --------------------------------------------------------------
 
 def test_a_pulse_with_no_state_raises_its_sensor():

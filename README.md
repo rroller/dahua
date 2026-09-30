@@ -43,6 +43,12 @@ ffmpeg:
 See [ffmpeg](https://www.home-assistant.io/integrations/ffmpeg/) and [stream](https://www.home-assistant.io/integrations/stream/).
 
 
+### Requirements
+
+Home Assistant **2026.8.0** or newer. HACS will not offer the integration on anything
+older, because a recorder's channels are stored as config **subentries** and that needs
+a recent Home Assistant.
+
 ### HACS install
 To install with [HACS](https://hacs.xyz/):
 
@@ -195,6 +201,40 @@ affected by this: a sub stream camera you are already using stays exactly as it 
 
 ![Dahua Setup](static/setup1.png)
 
+### Upgrading from a version before 1.0
+
+Earlier versions added **one config entry per channel**, so a sixteen channel recorder
+appeared as sixteen separate integrations. From 1.0 a recorder is **one entry with one
+subentry per channel**, which is what lets the channels share a single login and a single
+event connection instead of opening sixteen of each.
+
+The first start after upgrading merges them for you. Nothing needs to be re-added and
+entity ids are kept, so automations and dashboards continue to work.
+
+**A copy of the registries is saved first.** Before anything is changed, these three files
+are copied out of `.storage`:
+
+```
+core.config_entries
+core.device_registry
+core.entity_registry
+```
+
+into a new directory named for the time it ran:
+
+```
+/config/dahua-pre-merge-backup-20260930-142824
+```
+
+The path is written to the log as a warning, so searching the log for
+`dahua-pre-merge-backup` will find it. If the backup cannot be written the merge is **not
+attempted**, and the log says so.
+
+To go back, stop Home Assistant, copy those three files back into `/config/.storage`, and
+start it again. It has to be done with Home Assistant stopped, because it rewrites the
+files on shutdown. The merge cannot be undone from inside Home Assistant, so keep the
+directory until you are happy with the result.
+
 ### If it will not connect
 
 The error on the form names the cause where it can. What each one means:
@@ -220,6 +260,26 @@ Two cases the form cannot diagnose for you:
   as `10.1.1.x`, that Home Assistant cannot route to. Add them through the
   recorder's address and channel number instead of trying to reach them directly.
 
+
+### Diagnostics
+
+Every device page has **Download diagnostics** under the three dot menu. It is the most
+useful thing to attach to an issue, and it is worth looking at yourself first.
+
+Credentials are removed before the file is written: the username, the password, the serial
+number and the unique id are replaced with `**REDACTED**`, and any RTSP URL has its
+credentials swapped for `REDACTED` rather than being included and hidden.
+
+Three fields answer most "my sensors stopped working" questions, all under `events`:
+
+| field | what it tells you |
+| :------------ | :------------ |
+| `configured` | the event codes this channel actually subscribed to. If the code you expect is missing, the device was never asked for it |
+| `subscribed_as` | how the request went out: the list of codes, or `["All"]` if the device refused a list (see below) |
+| `arrived_with_no_listener` | events the device **did** send that nothing was listening for. A non-zero count here means the event is arriving and being dropped, which is a different problem from the device not sending it |
+
+Together they separate the three possibilities: never subscribed, subscribed but the
+device sent nothing, or sent and dropped.
 
 ### Removing it
 
@@ -305,6 +365,31 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 <sup>*</sup> partial support
 
 <sup>†</sup> dual-sensor camera with an 8 MP overview channel and a 4 MP PTZ channel
+
+## Models recognised for a siren or a security light
+
+The tables above are devices someone has confirmed working. This is a different and weaker
+claim: these are model names the integration **looks for by name** when it cannot detect a
+siren or a white security light any other way. If your model is here, the control should
+appear even when the device does not report the capability.
+
+| model | what it gets |
+| :------------ | :------------ |
+| anything containing `AS-PV` | siren and security light |
+| anything containing `L46N` | siren |
+| anything containing `TPC-BF1241` | siren |
+| anything starting `W452ASD` | siren |
+| `AD410`, `DB61I` | security light |
+| anything starting `IP8M-2796E` | security light |
+| anything starting `IPC-COLOR4M-TZ` | security light |
+| anything starting `PTZ3E10X-T180` | security light |
+
+Matching by model name is a fallback, not the first choice, and it is the wrong shape:
+it fails on a device that has the hardware and is not on the list. If yours is missing,
+say so on an issue and include the diagnostics download, which lists what was and was not
+detected under `supports_siren_sources` and
+`supports_security_light_sources`. The
+`manual_siren` and `manual_security_light` options force the control on in the meantime.
 
 ## Doorbell cameras
 
@@ -540,6 +625,25 @@ On a recorder each channel is its own entry with its own event list, and an even
 updates the sensor belonging to the channel it came from. If channel 1 has
 `SmartMotionHuman` selected and channel 2 does not, motion on channel 2 appears on the
 bus and updates nothing.
+
+### A device that will not accept a list of event codes
+
+Some firmware serves the event stream perfectly and refuses a long list of codes. Measured
+on two different cameras: an IPC-HFW4300S-V2 answers `codes=[VideoMotion]` with 200 and the
+same request carrying nine codes with **400**, and a Hero A1 answers **500** to those nine.
+
+When that happens the integration notices the refusal and asks again with `codes=[All]`,
+filtering locally instead. **Your event selection is unaffected**, because the filtering
+happens here rather than on the device. It is tried once per stream, and a warning naming
+the status is logged so you can see it happened.
+
+`subscribed_as` in the diagnostics says which form is in use. If it reads `["All"]` and you
+did not select every event, this is why.
+
+This was the cause of [#728](https://github.com/rroller/dahua/issues/728), which read as
+"everyone with a single camera" rather than as a firmware quirk: the workaround existed
+before, but it was chosen by guessing whether a request looked too long instead of waiting
+for the device to say so, and that guess can never be true for a single camera.
 
 ### A sensor that says "no longer being provided"
 

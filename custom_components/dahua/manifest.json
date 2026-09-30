@@ -27,5 +27,6 @@
   "documentation": "https://github.com/rroller/dahua",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/rroller/dahua/issues",
-  "version": "1.0.0-beta-13"
+  "quality_scale": "gold",
+  "version": "1.0.0-rc.1"
 }
