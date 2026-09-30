@@ -123,7 +123,12 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         `mode` is passed through as the device spells it, including a mode the
         device chose that this integration never writes.
         """
+        # Merged into the base's rather than returned alone. DahuaBaseEntity
+        # supplies `id` and `integration` here, and replacing the dict dropped
+        # both from every infrared light -- the shape of bug that reads as a
+        # working feature until somebody's template stops resolving.
         return {
+            **(super().extra_state_attributes or {}),
             "mode": self._coordinator.get_infrared_mode() or None,
             "brightness_level": self._coordinator.get_infrared_level(),
         }

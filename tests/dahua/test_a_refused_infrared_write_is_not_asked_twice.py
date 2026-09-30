@@ -192,7 +192,8 @@ async def test_the_select_goes_unavailable_and_the_light_does_not():
         await light.async_turn_on()
 
     assert select.available is False
-    assert light.extra_state_attributes == {"mode": "Auto", "brightness_level": 50}
+    attributes = light.extra_state_attributes
+    assert (attributes["mode"], attributes["brightness_level"]) == ("Auto", 50)
 
 
 async def test_the_select_refusing_teaches_the_light_too():

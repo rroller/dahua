@@ -191,6 +191,13 @@ class _Coordinator:
         self.refreshed = 0
         self.infrared_on = True
         self.infrared_brightness = 128
+        # CoordinatorEntity.available reads this, and DahuaBaseEntity does
+        # not override available -- only DahuaEventDrivenEntity does -- so
+        # the mode select's super().available is Home Assistant's own.
+        self.last_update_success = True
+        # DahuaBaseEntity.extra_state_attributes reads data.get("id"), and
+        # the infrared light adds to that dict rather than replacing it.
+        self.data = {"id": "7"}
         self.infrared_level = 50
         self.illuminator_on = False
         self.illuminator_brightness = 64
@@ -218,7 +225,7 @@ class _Coordinator:
         return "Front Door"
 
     def get_address(self):
-        """Read by DahuaBaseEntity.available, which the mode select builds on."""
+        """Read by CoordinatorEntity.available, which the mode select builds on."""
         return "192.168.0.213"
 
     def is_infrared_light_on(self):

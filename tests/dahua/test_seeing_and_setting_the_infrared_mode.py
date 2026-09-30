@@ -40,6 +40,10 @@ class _Coordinator:
         self._channel = channel
         self.refreshed = 0
         self.written = []
+        # CoordinatorEntity.available reads this, and DahuaBaseEntity does
+        # not override available -- only DahuaEventDrivenEntity does -- so
+        # the mode select's super().available is Home Assistant's own.
+        self.last_update_success = True
         self.client = self
 
     def get_channel(self):
@@ -52,7 +56,7 @@ class _Coordinator:
         return "Driveway"
 
     def get_address(self):
-        """DahuaBaseEntity.available reads it, and the select now builds on that."""
+        """CoordinatorEntity.available reads it, and the select now builds on that."""
         return "192.168.0.213"
 
     def get_infrared_profile(self):
@@ -178,7 +182,9 @@ def test_the_light_reports_the_mode_and_level_even_when_it_reads_off():
     light = _light(DahuaInfraredLight, coordinator)
 
     assert light.is_on is False
-    assert light.extra_state_attributes == {"mode": "Auto", "brightness_level": 50}
+    attributes = light.extra_state_attributes
+    assert attributes["mode"] == "Auto"
+    assert attributes["brightness_level"] == 50
 
 
 def test_a_mode_the_device_chose_is_named_on_the_light_even_though_the_select_cannot():
@@ -199,4 +205,22 @@ def test_a_channel_with_no_lighting_row_reports_nothing_rather_than_zero():
     coordinator.infrared_level = None
     light = _light(DahuaInfraredLight, coordinator)
 
-    assert light.extra_state_attributes == {"mode": None, "brightness_level": None}
+    attributes = light.extra_state_attributes
+    assert attributes["mode"] is None
+    assert attributes["brightness_level"] is None
+
+
+def test_the_attributes_the_base_entity_supplies_are_still_there():
+    """The regression this nearly shipped as. DahuaBaseEntity supplies `id` and
+    `integration` here, and returning a fresh dict dropped both from every
+    infrared light -- which reads as a working feature until somebody's template
+    stops resolving. Same family as #847: an observability field going dead and
+    then being believed."""
+    coordinator = _LightCoordinator()
+    light = _light(DahuaInfraredLight, coordinator)
+
+    attributes = light.extra_state_attributes
+
+    assert attributes["integration"] == "dahua"
+    assert attributes["id"] == "7", "the base reads coordinator.data['id']"
+    assert "mode" in attributes and "brightness_level" in attributes

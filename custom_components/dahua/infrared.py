@@ -64,7 +64,15 @@ _WRITE_REFUSED: set = set()
 
 
 def _key(coordinator) -> tuple:
-    return (coordinator.get_serial_number(), coordinator.get_channel())
+    """(address, channel), which is what the _HOST_* registries in client.py use.
+
+    Not the serial. `DahuaDataUpdateCoordinator._serial_number` is a bare
+    annotation until the device answers, so `get_serial_number()` raises
+    AttributeError on a coordinator whose setup did not finish -- and the unload
+    hook meets exactly those. That took `async_unload_entry` down with it, which
+    takes every reload with it. The address is assigned in `__init__`.
+    """
+    return (coordinator.get_address(), coordinator.get_channel())
 
 
 def infrared_write_is_refused(coordinator) -> bool:
