@@ -118,8 +118,21 @@ def _coordinator(hass, motion=None):
     return c
 
 
+def _response_error(status):
+    """An aiohttp error with enough of a request on it to be printable.
+
+    `describe_update_failure` is `str(exception)`, and aiohttp formats
+    `request_info.real_url` into that, so a `request_info` of None raises while
+    being described. The 401 path never reaches the describer, which is why only
+    the other status noticed.
+    """
+    return ClientResponseError(
+        request_info=SimpleNamespace(real_url="http://%s/cgi-bin/x.cgi" % ADDRESS),
+        history=(), status=status)
+
+
 def _401():
-    return ClientResponseError(request_info=None, history=(), status=401)
+    return _response_error(401)
 
 
 # --- a poll that worked -----------------------------------------------------
@@ -250,7 +263,7 @@ async def test_a_non_401_response_is_not_an_auth_failure(hass):
     device having a bad day must not empty the user's credentials dialog."""
     coordinator = _coordinator(
         hass,
-        motion=ClientResponseError(request_info=None, history=(), status=500))
+        motion=_response_error(500))
 
     for _ in range(MAX_AUTH_REFUSALS + 1):
         with pytest.raises(UpdateFailed) as caught:
