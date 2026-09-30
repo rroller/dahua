@@ -11,7 +11,7 @@ jobs:
     name: Tag matches manifest version
     steps:
       - name: Check out code from GitHub
-        uses: "actions/checkout@v5"
+        uses: "actions/checkout@v7"
 
       - name: Compare the tag with manifest.json
         run: |
