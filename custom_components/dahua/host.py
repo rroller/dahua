@@ -480,14 +480,30 @@ async def async_device_is_zero_indexed(client, device: str):
     return _HOST_CHANNEL_BASE[device]
 
 @callback
-def async_record_host_auth_refusal(address: str) -> int:
+def async_record_host_auth_refusal(address: str, source: str = "") -> int:
     """Note that this host refused the credentials, and say how often it has.
 
-    Keyed by host rather than by entry because the consequence is host-wide:
-    a Dahua box locks the source IP after repeated failed logins, so ten
-    channels of one NVR are ten entries renewing one lock. A per-entry count
-    would let the first entry to notice give up while the other nine kept the
-    lock alive, which is the bug one level up.
+    Held per host, because the consequence is host-wide: a Dahua box locks the
+    source IP after repeated failed logins, so a recorder's channels are many
+    pollers renewing one lock. Once the budget is spent everything on this host
+    stops, which is the point.
+
+    Counted per **source**, because that is the difference between a wrong
+    password and a bad moment. `source` is the config entry being refused, or
+    the event stream. The number returned is the highest any one source has
+    reached, so:
+
+    * twelve channels refused once each is **one**, not twelve. That is a
+      recorder having a moment, and it recovers on the next poll.
+    * one channel refused three times is **three**. Nothing has succeeded in
+      between, and a password that is wrong is wrong every time.
+
+    Counting requests instead of sources is what #729's sibling bug looked like
+    from a user's chair: a recorder briefly refused during a burst of motion,
+    twelve channels incremented one counter inside fourteen milliseconds, and
+    Home Assistant demanded a new password for credentials it had never had
+    trouble with. Measured on a live twelve channel NVR whose password was
+    correct throughout.
 
     Cleared by async_record_host_success, so this only ever counts refusals
     with nothing succeeding in between.
@@ -497,7 +513,11 @@ def async_record_host_auth_refusal(address: str) -> int:
         address,
         {"consecutive": 0, "since": time.time(), "entry_ids": set(), "last_probe": 0},
     )
-    state["auth_refusals"] = state.get("auth_refusals", 0) + 1
+    by_source = state.setdefault("auth_refusals_by_source", {})
+    by_source[source] = by_source.get(source, 0) + 1
+    # The host's number is the worst any one source has seen, so the budget is
+    # still spent once, host-wide, rather than once per channel.
+    state["auth_refusals"] = max(by_source.values())
     return state["auth_refusals"]
 
 @callback
@@ -775,7 +795,8 @@ class DahuaHostEventStream:
                 # success on this host, so a stream cannot reach the budget
                 # while anything here is still authenticating.
                 if isinstance(ex, ClientResponseError) and ex.status == 401:
-                    refusals = async_record_host_auth_refusal(self._address)
+                    refusals = async_record_host_auth_refusal(
+                        self._address, "event stream")
                     if refusals >= MAX_AUTH_REFUSALS:
                         _LOGGER.warning(
                             "Event stream for %s stopped: the device refused these credentials %d times. It will start again once the credentials are re-entered",

@@ -199,13 +199,16 @@ def _reconfigure_flow(monkeypatch, entries=()):
     monkeypatch.setattr(config_flow, "TCPConnector", lambda **kwargs: None)
 
     entry = SimpleNamespace(
-        entry_id="this", unique_id=SERIAL + "_3",
+        entry_id="this", unique_id=SERIAL + "_3", title="Front Door",
         data={"username": "u", "password": "p", "address": "10.0.0.5",
               "port": "80", "rtsp_port": "554", "channel": 3})
 
     seen = {}
     handler = DahuaFlowHandler()
     handler.hass = SimpleNamespace()
+    # Home Assistant hands a real flow a writable context; a handler built here
+    # inherits a read-only one, and the step fills title_placeholders in it.
+    handler.context = {}
     handler._get_reconfigure_entry = lambda: entry
     handler._async_current_entries = lambda: [entry, *entries]
 

@@ -837,7 +837,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         typed into the reauth dialog is refused along with everything else.
         That is the loop in #729: reauth asked for, reauth impossible.
         """
-        refusals = async_record_host_auth_refusal(self._address)
+        # Per entry, so a recorder's channels refusing in the same instant count
+        # once rather than once each.
+        refusals = async_record_host_auth_refusal(
+            self._address, self.config_entry.entry_id)
         if refusals < MAX_AUTH_REFUSALS:
             _LOGGER.debug(
                 "Authentication refused by %s (%d of %d). Not treating it as a wrong password yet",
@@ -2616,6 +2619,51 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if named == "day":
                 return "0"
         return config or "0"
+
+    def describe_video_profile_shape(self) -> str:
+        """Which of the three VideoInMode shapes this channel is in, by name.
+
+        `read_profile_mode` already tells these apart to decide which profile is live.
+        This says the same thing in a form a log line can use, because the shape also
+        decides whether `set_video_profile_mode` can work at all: that service writes
+        `VideoInMode[ch].Config[0]`, which only selects the profile in the ordinary
+        shape.
+
+        Measured on one DHI-NVR5464, all three shapes at once on different channels of
+        the same recorder, which is why this is read per channel and not per model:
+
+            ch0       Config[0]=0  ConfigEx=None   ordinary
+            ch1       Config[0]=0  ConfigEx=Day    the IL shape
+            ch9       Config[0]=2  ConfigEx=None   general profile management
+
+        Returns "ordinary", "general", "configex", or "unknown" when nothing has been
+        polled yet.
+        """
+        data = self.data or {}
+
+        def field(name):
+            return data.get(
+                "table.VideoInMode[{0}].{1}".format(self._channel, name))
+
+        config = field("Config[0]")
+        config_ex = field("ConfigEx")
+        if config is None and config_ex is None:
+            return "unknown"
+        if config == "2":
+            return "general"
+        if config_ex is not None and str(config_ex).strip().lower() in ("day", "night"):
+            return "configex"
+        return "ordinary"
+
+    def video_profile_mode_is_writable(self) -> bool:
+        """Whether writing Config[0] actually selects the profile on this channel.
+
+        True for the ordinary shape and for a channel nothing has been read from yet,
+        because refusing on an unknown is worse than trying: the write is what the
+        service has always done and some devices this has never been measured on may
+        well answer it.
+        """
+        return self.describe_video_profile_shape() in ("ordinary", "unknown")
 
     async def async_detect_lighting_support(self) -> bool:
         """Does this channel have an infrared light?
