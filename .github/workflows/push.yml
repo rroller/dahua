@@ -10,7 +10,7 @@ jobs:
     runs-on: "ubuntu-latest"
     name: Validate
     steps:
-        - uses: "actions/checkout@v2"
+        - uses: "actions/checkout@v5"
 
         - name: HACS validation
           uses: "hacs/action@main"
@@ -24,8 +24,8 @@ jobs:
     runs-on: "ubuntu-latest"
     name: Check style formatting
     steps:
-        - uses: "actions/checkout@v2"
-        - uses: "actions/setup-python@v1"
+        - uses: "actions/checkout@v5"
+        - uses: "actions/setup-python@v6"
           with:
             python-version: "3.x"
         - run: python3 -m pip install black
@@ -36,9 +36,9 @@ jobs:
     name: Run tests
     steps:
       - name: Check out code from GitHub
-        uses: "actions/checkout@v2"
+        uses: "actions/checkout@v5"
       - name: "Set up Python"
-        uses: actions/setup-python@v5.3.0
+        uses: actions/setup-python@v6
         with:
           python-version: "3.14"
           cache: "pip"
