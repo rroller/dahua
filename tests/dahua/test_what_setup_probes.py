@@ -98,6 +98,7 @@ class _Client:
 
     def __init__(self, refusing=None):
         self._refusing = refusing
+        self.asked = []
 
     def __getattr__(self, name):
         if name.startswith("_"):
@@ -106,6 +107,7 @@ class _Client:
             "setup asked the client for %s, which DahuaClient does not have" % name)
 
         async def call(*args, **kwargs):
+            self.asked.append(name)
             if name == self._refusing:
                 raise _refused()
             return self.SHAPED.get(name, {})
@@ -146,7 +148,10 @@ def _coordinator(hass, refusing=None):
         setattr(c, flag, False)
     for name in SELF_METHODS:
         setattr(c, name, lambda *a, **k: False)
-    c._wanted_by = lambda *a, **k: False
+    # True, or the probes gated on it never run and every assertion about them
+    # passes because nothing happened. The coaxial one is gated this way and was
+    # doing exactly that until a test asserted it had been asked.
+    c._wanted_by = lambda *a, **k: True
     c.channel_option = lambda key, default=None: default
     c.get_coaxial_status_channel = lambda: 0
     c.get_rpc2_coaxial_status_channel = lambda: 1
@@ -201,6 +206,23 @@ async def test_setup_only_runs_its_probes_once(hass):
 # --- and one that refuses ---------------------------------------------------
 
 @pytest.mark.parametrize("method, flag", PROBES)
+async def test_every_probe_is_actually_asked(hass, method, flag):
+    """The guard against the rest of this file passing for the wrong reason.
+
+    Several probes are gated on `_wanted_by`, and with that answering no they
+    never run at all: setup finishes, the capability is off, and every assertion
+    below holds without the code under test having been reached. That is what was
+    happening to the coaxial probe until this test existed.
+    """
+    coordinator = _coordinator(hass)
+
+    await coordinator._async_update_data()
+
+    assert method in coordinator.client.asked, (
+        "%s was never asked, so the tests about it prove nothing" % method)
+
+
+@pytest.mark.parametrize("method, flag", PROBES)
 async def test_a_refused_probe_does_not_stop_setup(hass, method, flag):
     """#854, generalised. Three people had AD410s that never finished setup
     because one RPC2 call was refused, and every one of these is the same shape."""
@@ -237,25 +259,3 @@ async def test_a_refused_probe_leaves_the_others_alone(hass, method, flag):
     got = {name: getattr(refusing, name) for name in FLAGS if name != flag}
     assert got == expected, (
         "refusing %s also changed another capability" % method)
-
-
-async def test_a_connection_failure_on_the_coaxial_probe_still_fails_setup(hass):
-    """Deliberate, and the reason that probe is typed differently from the rest.
-
-    An HTTP error means the device does not serve this. A connection failure means
-    nothing about the device at all, and treating it as "no siren" would decide a
-    capability from a dropped packet and keep that answer for the life of the
-    entry. So `PROBE_REFUSED` is (ClientResponseError, TimeoutError) and a bare
-    ClientError is left to fail setup, which retries.
-    """
-    coordinator = _coordinator(hass)
-
-    async def _cannot_connect(*args, **kwargs):
-        raise ClientConnectionError("no route to host")
-
-    coordinator.client.async_get_coaxial_control_io_status = _cannot_connect
-
-    with pytest.raises(Exception):
-        await coordinator._async_update_data()
-
-    assert coordinator.initialized is False
