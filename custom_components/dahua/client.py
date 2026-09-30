@@ -129,6 +129,32 @@ def rpc2_refusal_is_a_stale_login(refused) -> bool:
     return isinstance(message, str) and "session" in message.lower()
 
 
+async def drop_stale_rpc2_login(holder, login_task) -> None:
+    """Tear down the shared login we were holding, so the next use logs in again.
+
+    Another caller may already have replaced it while our request was in flight,
+    so the login we are dropping is identified by the task we started with. Do
+    not tear down its replacement: that turns one expiry into two.
+
+    Everything goes through getattr because three call sites hand this a
+    stand-in holder in the tests rather than a _SharedRpc2Session.
+    """
+    if getattr(holder, "task", None) is not login_task:
+        return
+    holder.task = None
+    client = getattr(holder, "client", None)
+    if client is not None:
+        client._session_id = None
+        ptz_objects = getattr(client, "_ptz_objects", None)
+        if ptz_objects is not None:
+            ptz_objects.clear()
+    keepalive = getattr(holder, "keepalive", None)
+    holder.keepalive = None
+    if keepalive is not None and not keepalive.done():
+        keepalive.cancel()
+        await asyncio.gather(keepalive, return_exceptions=True)
+
+
 def _remote_ivs_lock(device: str, channel: int) -> asyncio.Lock:
     key = (device, channel)
     lock = _HOST_REMOTE_IVS_LOCKS.get(key)
@@ -1080,8 +1106,8 @@ class DahuaClient:
             _LOGGER.debug(
                 "magicBox.cgi answered %s on %s; rebooting over RPC2",
                 cgi_error.status, self._address)
-            holder = await self._shared_rpc2()
-            await holder.client.request("magicBox.reboot")
+            await self._rpc2_shared_call(
+                lambda client: client.request("magicBox.reboot"))
             return {"result": True}
 
     async def get_max_extra_streams(self) -> int:
@@ -1233,8 +1259,8 @@ class DahuaClient:
     async def async_get_remote_ivs_rules(self, channel: int) -> dict:
         """Read an NVR channel's remote rules in the coordinator's flat shape."""
         async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
-            holder = await self._shared_rpc2()
-            table = await holder.client.async_get_remote_ivs_rules(channel)
+            table = await self._rpc2_shared_call(
+                lambda client: client.async_get_remote_ivs_rules(channel))
         return flatten_rpc2_config(
             "RemoteVideoAnalyseRule", table,
             f"table.RemoteVideoAnalyseRule[{channel}]",
@@ -1245,10 +1271,9 @@ class DahuaClient:
         """Write a remote rule through the shared authenticated RPC2 session."""
         async with asyncio.timeout(TIMEOUT_SECONDS):
             async with _remote_ivs_lock(self._device, channel), self._host_limit:
-                holder = await self._shared_rpc2()
-                await holder.client.async_set_remote_ivs_rule_by_id(
-                    channel, rule_id, enabled
-                )
+                await self._rpc2_shared_call(
+                    lambda client: client.async_set_remote_ivs_rule_by_id(
+                        channel, rule_id, enabled))
 
     async def async_set_ivs_rule_by_id(self, channel: int, rule_id: str, enabled: bool):
         """Resolve the rule just before writing, bypassing the shared read cache."""
@@ -1423,37 +1448,45 @@ class DahuaClient:
             holder.keepalive = asyncio.ensure_future(_rpc2_keepalive(holder, interval))
         return holder
 
+    async def _rpc2_shared_call(self, action):
+        """Run one call on the shared RPC2 session, retrying an expired login once.
+
+        The device gives a session a fixed lifetime -- measured at about half an
+        hour on a DHI-NVR5464-16P-EI, whatever the keepalive does -- so every
+        caller of the shared session meets an expired one sooner or later. Two of
+        the ten callers handled that, each with its own copy of the teardown, and
+        the eight that did not included the remote IVS read on the poll path: one
+        routine expiry there failed the refresh and took every entity on the host
+        unavailable until the next poll, twice an hour, for ever.
+
+        `action` is called with the RPC2 client and must be safe to run twice. A
+        refusal is the device declining to act, so nothing it refused happened.
+        """
+        for attempt in (1, 2):
+            holder = await self._shared_rpc2()
+            login_task = getattr(holder, "task", None)
+            try:
+                return await action(holder.client)
+            except Rpc2MethodRefused as exc:
+                if attempt == 2 or not rpc2_refusal_is_a_stale_login(exc):
+                    raise
+                await drop_stale_rpc2_login(holder, login_task)
+        raise RuntimeError("Dahua RPC2 shared call did not return")
+
     # Direct-camera CoaxialControlIO RPC2 calls use channel 0, matching the
     # camera WebUI requests. Legacy CGI uses 1-based channel 1 for standalone
     # cameras; this protocol difference is intentional, not an off-by-one error.
     async def _direct_coaxial_rpc2(self, method: str, *args, channel: int = 0):
         """Retry one direct-camera call after a confirmed expired RPC2 login."""
-        for attempt in range(2):
-            holder = await self._shared_rpc2()
-            login_task = getattr(holder, "task", None)
-            try:
-                return await getattr(holder.client, method)(channel, *args)
-            except Rpc2MethodRefused as exc:
-                if attempt or not rpc2_refusal_is_a_stale_login(exc):
-                    raise
-                # Another caller may already have replaced this login. Do not
-                # tear down the new one when an old in-flight request returns.
-                if holder.task is login_task:
-                    holder.task = None
-                    holder.client._session_id = None
-                    holder.client._ptz_objects.clear()
-                    keepalive = holder.keepalive
-                    holder.keepalive = None
-                    if keepalive is not None and not keepalive.done():
-                        keepalive.cancel()
-                        await asyncio.gather(keepalive, return_exceptions=True)
+        return await self._rpc2_shared_call(
+            lambda client: getattr(client, method)(channel, *args))
 
     async def async_get_product_definition_rpc2(
         self, name: str | None = None
     ) -> dict | list | None:
         """Read camera feature definitions using the existing shared RPC2 login."""
-        holder = await self._shared_rpc2()
-        return await holder.client.get_product_definition(name)
+        return await self._rpc2_shared_call(
+            lambda client: client.get_product_definition(name))
 
     async def async_get_coaxial_control_io_caps_rpc2(self) -> dict[str, bool]:
         """Probe a direct camera on channel zero, independently of config transport."""
@@ -1499,28 +1532,15 @@ class DahuaClient:
                 except Rpc2MethodRefused as exc:
                     if rpc2_refusal_is_a_stale_login(exc) and attempt == 1:
                         # The shared login went stale under us -- a reboot of
-                        # the device is enough to do it. Drop it so the next
-                        # pass logs in again. Without this the refusal reached
-                        # _request, which read it as "does not serve this
-                        # table" and stopped asking RPC2 for it for the life of
-                        # the process. Another caller may already have replaced
-                        # the login, so only tear down the one we were holding.
-                        # Everything here goes through getattr because tests
-                        # hand this method a stand-in holder.
-                        if getattr(holder, "task", None) is login_task:
-                            holder.task = None
-                            rpc2_holder_client = getattr(holder, "client", None)
-                            if rpc2_holder_client is not None:
-                                rpc2_holder_client._session_id = None
-                                ptz_objects = getattr(
-                                    rpc2_holder_client, "_ptz_objects", None)
-                                if ptz_objects is not None:
-                                    ptz_objects.clear()
-                            keepalive = getattr(holder, "keepalive", None)
-                            holder.keepalive = None
-                            if keepalive is not None and not keepalive.done():
-                                keepalive.cancel()
-                                await asyncio.gather(keepalive, return_exceptions=True)
+                        # the device is enough to do it, and so is the session
+                        # simply ageing out. Drop it so the next pass logs in
+                        # again. Without this the refusal reached _request,
+                        # which read it as "does not serve this table" and
+                        # stopped asking RPC2 for it for the life of the
+                        # process. This cannot go through _rpc2_shared_call:
+                        # allow_missing has to tell an absent table apart from
+                        # an expired session, and only this frame knows which.
+                        await drop_stale_rpc2_login(holder, login_task)
                         continue
                     # Only a refusal of the table read can establish absence;
                     # a failed login or expired session must still propagate.
@@ -1551,26 +1571,34 @@ class DahuaClient:
         The table is per channel on some tables and a bare object on others
         (MotionDetect is a one-element list on an SL300, General is an object), so
         both shapes are handled rather than assumed.
+
+        Read and write go inside one retryable action, not two. If the session
+        expires between them, the table in hand was read on a session that no
+        longer exists, so the retry has to read it again -- putting back a stale
+        table would undo whatever changed in between.
         """
-        holder = await self._shared_rpc2()
-        response = await holder.client.get_config({"name": name})
-        # This firmware returns the table at the top level; older ones nest it
-        # under params, and _rpc2_get_config reads it the same way.
-        table = response.get("table")
-        if table is None:
-            table = (response.get("params") or {}).get("table")
-        if isinstance(table, list):
-            if channel >= len(table):
+        async def read_modify_write(client):
+            response = await client.get_config({"name": name})
+            # This firmware returns the table at the top level; older ones nest it
+            # under params, and _rpc2_get_config reads it the same way.
+            table = response.get("table")
+            if table is None:
+                table = (response.get("params") or {}).get("table")
+            if isinstance(table, list):
+                if channel >= len(table):
+                    raise ConnectionError(
+                        "%s has no channel %d in its %s table (%d entries)"
+                        % (self._address, channel, name, len(table)))
+                table[channel][key] = value
+            elif isinstance(table, dict):
+                table[key] = value
+            else:
                 raise ConnectionError(
-                    "%s has no channel %d in its %s table (%d entries)"
-                    % (self._address, channel, name, len(table)))
-            table[channel][key] = value
-        elif isinstance(table, dict):
-            table[key] = value
-        else:
-            raise ConnectionError(
-                "%s returned no %s table to write to over RPC2" % (self._address, name))
-        await holder.client.set_configs([(name, table)])
+                    "%s returned no %s table to write to over RPC2"
+                    % (self._address, name))
+            await client.set_configs([(name, table)])
+
+        await self._rpc2_shared_call(read_modify_write)
         _LOGGER.debug("Set %s[%d].%s = %r over RPC2 on %s",
                       name, channel, key, value, self._address)
         return {"result": True}
@@ -1626,9 +1654,10 @@ class DahuaClient:
             restore_store = self._illuminator_restore_store
             if restore_store is None:
                 raise RuntimeError("Dahua illuminator recovery storage is unavailable")
-            holder = await self._shared_rpc2()
-            scheme_params = await holder.client.get_config({"name": "LightingScheme"})
-            lighting_params = await holder.client.get_config({"name": "Lighting_V2"})
+            scheme_params = await self._rpc2_shared_call(
+                lambda client: client.get_config({"name": "LightingScheme"}))
+            lighting_params = await self._rpc2_shared_call(
+                lambda client: client.get_config({"name": "Lighting_V2"}))
             profile = int(profile_mode)
             try:
                 current_mode = scheme_params["table"][channel][profile]["LightingMode"]
@@ -1649,10 +1678,14 @@ class DahuaClient:
                 # multicall may already have selected WhiteMode.
                 await restore_store.async_set(channel, profile, current_mode)
             clear_host_cache(self._device)
-            response = await holder.client.set_configs([
-                ("LightingScheme", scheme),
-                ("Lighting_V2", lighting),
-            ])
+            # Both tables are complete replacements already computed above, and
+            # this method holds _lighting_scheme_lock, so nothing here changes
+            # between a refused attempt and its retry.
+            response = await self._rpc2_shared_call(
+                lambda client: client.set_configs([
+                    ("LightingScheme", scheme),
+                    ("Lighting_V2", lighting),
+                ]))
             if not enabled:
                 await restore_store.async_remove(channel, profile)
                 if current_mode == "WhiteMode" and restore_mode is None:
@@ -1674,8 +1707,8 @@ class DahuaClient:
             keys = await restore_store.async_keys()
             if not keys:
                 return
-            holder = await self._shared_rpc2()
-            scheme_params = await holder.client.get_config({"name": "LightingScheme"})
+            scheme_params = await self._rpc2_shared_call(
+                lambda client: client.get_config({"name": "LightingScheme"}))
             for channel, profile in keys:
                 try:
                     current_mode = scheme_params["table"][channel][profile]["LightingMode"]
