@@ -206,6 +206,9 @@ def _reconfigure_flow(monkeypatch, entries=()):
     seen = {}
     handler = DahuaFlowHandler()
     handler.hass = SimpleNamespace()
+    # Home Assistant hands a real flow a writable context; a handler built here
+    # inherits a read-only one, and the step fills title_placeholders in it.
+    handler.context = {}
     handler._get_reconfigure_entry = lambda: entry
     handler._async_current_entries = lambda: [entry, *entries]
 

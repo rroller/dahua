@@ -896,11 +896,15 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         That is the card a user meets at the worst moment: their cameras have just
         stopped and the thing telling them so is an error about an error.
         """
-        data = entry.data if entry is not None else {}
+        data = (entry.data if entry is not None else None) or {}
+        # `or`, not a .get default: an entry carrying an explicit None would
+        # hand that straight through and leave the placeholder unfilled, which
+        # is the whole failure this exists to prevent.
+        address = data.get(CONF_ADDRESS) or ""
+        title = (entry.title if entry is not None else None) or ""
         self.context["title_placeholders"] = {
-            "name": (entry.title if entry is not None and entry.title
-                     else data.get(CONF_ADDRESS, "Dahua")),
-            "address": data.get(CONF_ADDRESS, ""),
+            "name": title or address or "Dahua",
+            "address": address,
         }
 
     async def async_step_reauth(self, entry_data):

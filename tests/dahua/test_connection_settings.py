@@ -98,6 +98,9 @@ def _schema_defaults(result):
 async def _shown_reconfigure_form(hass, entry):
     handler = DahuaFlowHandler()
     handler.hass = hass
+    # Home Assistant hands a real flow a writable context; a handler built here
+    # inherits a read-only one, and the step fills title_placeholders in it.
+    handler.context = {}
     handler._get_reconfigure_entry = lambda: entry
     return await handler.async_step_reconfigure()
 
