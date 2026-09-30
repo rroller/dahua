@@ -31,15 +31,18 @@ from custom_components.dahua.client import DahuaClient
 # Every question setup asks, and the capability it decides. Taken from the source:
 # each of these is one try block whose handler sets exactly this attribute.
 PROBES = [
-    ("async_get_coaxial_control_io_status", "_supports_coaxial_control"),
-    ("async_get_disarming_linkage", "_supports_disarming_linkage"),
-    ("async_get_event_notifications", "_supports_event_notifications"),
-    ("async_get_ptz_position", "_supports_ptz_position"),
-    ("async_get_smart_motion_detection", "_supports_smart_motion_detection"),
-    ("async_get_video_in_options", "_supports_day_night_color"),
-    ("async_get_lighting_v2", "_supports_lighting_v2"),
-    ("async_get_lighting_scheme", "_supports_lighting_scheme_illuminator"),
-    ("async_get_privacy_mode", "_supports_privacy_mode"),
+    ("async_get_coaxial_control_io_status", "_supports_coaxial_control", None),
+    ("async_get_disarming_linkage", "_supports_disarming_linkage", None),
+    ("async_get_event_notifications", "_supports_event_notifications", None),
+    ("async_get_ptz_position", "_supports_ptz_position", None),
+    ("async_get_smart_motion_detection", "_supports_smart_motion_detection", None),
+    ("async_get_video_in_options", "_supports_day_night_color", None),
+    ("async_get_lighting_v2", "_supports_lighting_v2", None),
+    # Gated on a model name whitelist, which is the bug class #570, #676 and
+    # #690 were all instances of. Named here so the probe actually runs.
+    ("async_get_lighting_scheme", "_supports_lighting_scheme_illuminator",
+     "IPC-COLOR4M-TZ"),
+    ("async_get_privacy_mode", "_supports_privacy_mode", None),
 ]
 
 
@@ -93,12 +96,12 @@ class _Client:
     SHAPED = {
         "get_max_extra_streams": 1,
         "get_software_version": {"version": "1.0"},
-        "get_device_type": {"type": "IPC-HFW1234"},
     }
 
-    def __init__(self, refusing=None):
+    def __init__(self, refusing=None, model="IPC-HFW1234"):
         self._refusing = refusing
         self.asked = []
+        self.SHAPED = dict(self.SHAPED, **{"get_device_type": {"type": model}})
 
     def __getattr__(self, name):
         if name.startswith("_"):
@@ -115,14 +118,14 @@ class _Client:
         return call
 
 
-def _coordinator(hass, refusing=None):
+def _coordinator(hass, refusing=None, model="IPC-HFW1234"):
     """A coordinator about to run its one-time initialisation.
 
     `refusing` names the one client call that fails. Everything else answers
     emptily, which is what a device that serves an endpoint and has nothing to
     report looks like.
     """
-    client = _Client(refusing)
+    client = _Client(refusing, model)
 
     c = object.__new__(DahuaDataUpdateCoordinator)
     c.hass = hass
@@ -205,8 +208,8 @@ async def test_setup_only_runs_its_probes_once(hass):
 
 # --- and one that refuses ---------------------------------------------------
 
-@pytest.mark.parametrize("method, flag", PROBES)
-async def test_every_probe_is_actually_asked(hass, method, flag):
+@pytest.mark.parametrize("method, flag, model", PROBES)
+async def test_every_probe_is_actually_asked(hass, method, flag, model):
     """The guard against the rest of this file passing for the wrong reason.
 
     Several probes are gated on `_wanted_by`, and with that answering no they
@@ -214,7 +217,7 @@ async def test_every_probe_is_actually_asked(hass, method, flag):
     below holds without the code under test having been reached. That is what was
     happening to the coaxial probe until this test existed.
     """
-    coordinator = _coordinator(hass)
+    coordinator = _coordinator(hass, model=model or "IPC-HFW1234")
 
     await coordinator._async_update_data()
 
@@ -222,11 +225,11 @@ async def test_every_probe_is_actually_asked(hass, method, flag):
         "%s was never asked, so the tests about it prove nothing" % method)
 
 
-@pytest.mark.parametrize("method, flag", PROBES)
-async def test_a_refused_probe_does_not_stop_setup(hass, method, flag):
+@pytest.mark.parametrize("method, flag, model", PROBES)
+async def test_a_refused_probe_does_not_stop_setup(hass, method, flag, model):
     """#854, generalised. Three people had AD410s that never finished setup
     because one RPC2 call was refused, and every one of these is the same shape."""
-    coordinator = _coordinator(hass, refusing=method)
+    coordinator = _coordinator(hass, refusing=method, model=model or "IPC-HFW1234")
 
     await coordinator._async_update_data()
 
@@ -234,26 +237,26 @@ async def test_a_refused_probe_does_not_stop_setup(hass, method, flag):
         "a refused %s stopped the device finishing setup" % method)
 
 
-@pytest.mark.parametrize("method, flag", PROBES)
-async def test_a_refused_probe_turns_its_own_capability_off(hass, method, flag):
-    coordinator = _coordinator(hass, refusing=method)
+@pytest.mark.parametrize("method, flag, model", PROBES)
+async def test_a_refused_probe_turns_its_own_capability_off(hass, method, flag, model):
+    coordinator = _coordinator(hass, refusing=method, model=model or "IPC-HFW1234")
 
     await coordinator._async_update_data()
 
     assert getattr(coordinator, flag) is False
 
 
-@pytest.mark.parametrize("method, flag", PROBES)
-async def test_a_refused_probe_leaves_the_others_alone(hass, method, flag):
+@pytest.mark.parametrize("method, flag, model", PROBES)
+async def test_a_refused_probe_leaves_the_others_alone(hass, method, flag, model):
     """The one a per-probe test would miss. They share a sequence, so a handler
     that reaches too far turns one refusal into several features disappearing, and
     nothing about that is visible in a log.
     """
-    answering = _coordinator(hass)
+    answering = _coordinator(hass, model=model or "IPC-HFW1234")
     await answering._async_update_data()
     expected = {name: getattr(answering, name) for name in FLAGS if name != flag}
 
-    refusing = _coordinator(hass, refusing=method)
+    refusing = _coordinator(hass, refusing=method, model=model or "IPC-HFW1234")
     await refusing._async_update_data()
 
     got = {name: getattr(refusing, name) for name in FLAGS if name != flag}
