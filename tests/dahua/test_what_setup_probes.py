@@ -26,6 +26,7 @@ from aiohttp import ClientConnectionError, ClientResponseError
 from types import SimpleNamespace
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua.client import DahuaClient
 
 # Every question setup asks, and the capability it decides. Taken from the source:
 # each of these is one try block whose handler sets exactly this attribute.
@@ -41,16 +42,6 @@ PROBES = [
     ("async_get_privacy_mode", "_supports_privacy_mode"),
 ]
 
-CLIENT_METHODS = (
-    "async_get_alarm_output_slots", "async_get_coaxial_control_io_status",
-    "async_get_config", "async_get_device_class", "async_get_disarming_linkage",
-    "async_get_event_notifications", "async_get_ivs_rules",
-    "async_get_lighting_scheme", "async_get_lighting_v2",
-    "async_get_machine_name", "async_get_privacy_mode",
-    "async_get_ptz_position", "async_get_remote_ivs_rules",
-    "async_get_smart_motion_detection", "async_get_system_info",
-    "async_get_video_in_options",
-)
 
 # What setup asks the coordinator about itself. Off, so the fan-out afterwards is
 # empty and each test is about the probe it names.
@@ -83,6 +74,45 @@ def _refused():
         history=(), status=400)
 
 
+class _Client:
+    """Answers anything the initialisation asks, and refuses one thing.
+
+    Generic rather than a list of methods, because a scan for `self.client.x()`
+    call sites misses attributes that are read rather than called and methods
+    reached any other way. Two CI runs went on finding one more of those, and the
+    list was never going to be provably complete.
+
+    Every name is still checked against the real `DahuaClient`, so a fake that
+    answers something the client does not have fails here rather than passing.
+    """
+
+    use_rpc2 = False
+    device_key = "10.0.0.5:80"
+
+    # The few answers that have to be a particular shape rather than empty.
+    SHAPED = {
+        "get_max_extra_streams": 1,
+        "get_software_version": {"version": "1.0"},
+        "get_device_type": {"type": "IPC-HFW1234"},
+    }
+
+    def __init__(self, refusing=None):
+        self._refusing = refusing
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        assert hasattr(DahuaClient, name), (
+            "setup asked the client for %s, which DahuaClient does not have" % name)
+
+        async def call(*args, **kwargs):
+            if name == self._refusing:
+                raise _refused()
+            return self.SHAPED.get(name, {})
+
+        return call
+
+
 def _coordinator(hass, refusing=None):
     """A coordinator about to run its one-time initialisation.
 
@@ -90,33 +120,7 @@ def _coordinator(hass, refusing=None):
     emptily, which is what a device that serves an endpoint and has nothing to
     report looks like.
     """
-    # `device_key` is read rather than called, which a scan for call sites
-    # does not find. It cost a CI run to notice.
-    client = SimpleNamespace(use_rpc2=False, device_key="10.0.0.5:80")
-
-    def _answer(name):
-        async def call(*args, **kwargs):
-            if name == refusing:
-                raise _refused()
-            return {}
-        return call
-
-    for name in CLIENT_METHODS:
-        setattr(client, name, _answer(name))
-
-    async def _streams(*a, **k):
-        if "get_max_extra_streams" == refusing:
-            raise _refused()
-        return 1
-    client.get_max_extra_streams = _streams
-
-    async def _version(*a, **k):
-        return {"version": "1.0"}
-    client.get_software_version = _version
-
-    async def _type(*a, **k):
-        return {"type": "IPC-HFW1234"}
-    client.get_device_type = _type
+    client = _Client(refusing)
 
     c = object.__new__(DahuaDataUpdateCoordinator)
     c.hass = hass
