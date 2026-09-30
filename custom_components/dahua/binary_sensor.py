@@ -340,6 +340,9 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
         """Return attributes including authorized plates, hold time, and last matched vehicle details."""
         plate_data = self._last_matched_plate_data or self._coordinator.get_last_plate_data() or {}
         return {
+            # On top of the base's, not instead of them: returning a fresh dict
+            # here dropped `id` and `integration` from this sensor.
+            **(super().extra_state_attributes or {}),
             "authorized_plates": self._coordinator.get_authorized_plates(),
             "hold_time_seconds": self._coordinator.get_authorized_hold_time(),
             "last_matched_plate": self._last_matched_plate,
