@@ -10,7 +10,7 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
 from .const import DOMAIN
 from .entity import DahuaBaseEntity, DahuaEventDrivenEntity
@@ -23,24 +23,28 @@ PROFILE_NAMES = {
 }
 
 
+# A coordinator centralises the inbound reads, and nothing here sends a command,
+# so there is nothing to serialise: read only: every state comes from the coordinator.
+PARALLEL_UPDATES = 0
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    for coordinator in entry_coordinators(entry).values():
+        sensors = [
+            DahuaFirmwareVersionSensor(coordinator, entry),
+            DahuaSerialNumberSensor(coordinator, entry),
+            DahuaLicensePlateSensor(coordinator, entry),
+        ]
 
-    sensors = [
-        DahuaFirmwareVersionSensor(coordinator, entry),
-        DahuaSerialNumberSensor(coordinator, entry),
-        DahuaLicensePlateSensor(coordinator, entry),
-    ]
+        # The profile is only ever read for devices that answered the Lighting
+        # probe. Adding the sensor unconditionally would show "Day" forever on a
+        # doorbell or a camera without selectable profiles, which is worse than
+        # no sensor at all (see #641 review).
+        if coordinator.supports_profile_mode():
+            sensors.append(DahuaProfileSensor(coordinator, entry))
 
-    # The profile is only ever read for devices that answered the Lighting
-    # probe. Adding the sensor unconditionally would show "Day" forever on a
-    # doorbell or a camera without selectable profiles, which is worse than
-    # no sensor at all (see #641 review).
-    if coordinator.supports_profile_mode():
-        sensors.append(DahuaProfileSensor(coordinator, entry))
-
-    async_add_devices(sensors)
+        async_add_devices(
+            sensors, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
@@ -51,11 +55,9 @@ class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
     is behind" possible.
     """
 
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "firmware_version"
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Firmware Version"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def unique_id(self):
@@ -78,11 +80,9 @@ class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
 class DahuaSerialNumberSensor(DahuaBaseEntity, SensorEntity):
     """The serial the device reports."""
 
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "serial_number"
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Serial Number"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def unique_id(self):
@@ -98,12 +98,9 @@ class DahuaSerialNumberSensor(DahuaBaseEntity, SensorEntity):
 class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
     """Sensor for the day/night lighting profile the camera is using right now."""
 
-    _attr_icon = "mdi:theme-light-dark"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_translation_key = "profile"
 
-    @property
-    def name(self):
-        return self._coordinator.get_device_name() + " Profile"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def unique_id(self):
@@ -125,14 +122,11 @@ class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
 class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
     """The last recognized license plate reported by the camera."""
 
+    _attr_translation_key = "license_plate"
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
         super().__init__(coordinator, entry)
-        self._attr_icon = "mdi:car-back"
         self._unique_id = f"{coordinator.get_serial_number()}_license_plate"
-
-    @property
-    def name(self):
-        return f"{self._coordinator.get_device_name()} License Plate"
 
     @property
     def unique_id(self):
@@ -148,8 +142,16 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
         return self._coordinator.get_last_plate_data()
 
     async def async_added_to_hass(self):
-        """Connect to dispatcher listening for entity data notifications."""
-        self._coordinator.add_plate_listener(self.schedule_update_ha_state)
+        """Listen for a plate, and stop listening when removed.
+
+        The remover has to be kept. add_plate_listener returns it for exactly this
+        reason, and the authorized vehicle sensor next door uses it; this caller was
+        missed. Without it the callback outlives the entity, so every reload leaves
+        another dead one in the list and each ANPR plate then logs "Error calling plate
+        listener" once per reload the entry has ever had.
+        """
+        self.async_on_remove(
+            self._coordinator.add_plate_listener(self.schedule_update_ha_state))
 
     @property
     def should_poll(self) -> bool:

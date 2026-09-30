@@ -1,58 +1,69 @@
 """Switch platform for dahua."""
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.components.switch import SwitchEntity
+from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.const import EntityCategory
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
-from .const import DOMAIN, DISARMING_ICON, MOTION_DETECTION_ICON, SIREN_ICON, BELL_ICON, PRIVACY_MODE_ICON
+from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .client import SIREN_TYPE
 
 
+# One at a time, because every toggle is a write to the device and these devices are measurably intolerant of
+# concurrent requests: MAX_CONCURRENT_REQUESTS_PER_HOST is 2 for the same reason,
+# and the login storms behind #577 and #603 are what happens without it. A
+# coordinator does not help here, since it only centralises inbound reads and
+# leaves outbound actions uncontrolled.
+PARALLEL_UPDATES = 1
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup sensor platform."""
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+    for coordinator in entry_coordinators(entry).values():
+        # I think most cameras have a motion sensor so we'll blindly add a switch for it
+        devices = [
+            DahuaMotionDetectionBinarySwitch(coordinator, entry),
+        ]
 
-    # I think most cameras have a motion sensor so we'll blindly add a switch for it
-    devices = [
-        DahuaMotionDetectionBinarySwitch(coordinator, entry),
-    ]
-
-    # But only some cams have a siren, very few do actually. The rule lives on the
-    # coordinator because the poll needs the same answer to decide whether to fetch the
-    # status this entity reads.
-    if coordinator.creates_siren_entity():
-        devices.append(
-            DahuaSirenBinarySwitch(
-                coordinator,
-                entry,
-                name="Alarm" if coordinator.uses_recorder_deterrence() else "Siren",
+        # But only some cams have a siren, very few do actually. The rule lives on the
+        # coordinator because the poll needs the same answer to decide whether to fetch the
+        # status this entity reads.
+        if coordinator.creates_siren_entity():
+            devices.append(
+                DahuaSirenBinarySwitch(
+                    coordinator,
+                    entry,
+                    translation_key=("alarm"
+                                     if coordinator.uses_recorder_deterrence()
+                                     else "siren"),
+                )
             )
+        if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
+            devices.append(DahuaSmartMotionDetectionBinarySwitch(coordinator, entry))
+        if coordinator.supports_privacy_mode():
+            devices.append(DahuaPrivacyModeBinarySwitch(coordinator, entry))
+        if coordinator.supports_alarm_output():
+            devices.append(DahuaAlarmOutputSwitch(coordinator, entry, output=0))
+
+        # The coordinator already asked the device this during setup and kept the
+        # answer. Asking again here put a network round trip inside platform setup,
+        # where a device that is slow to answer eats the entry's setup budget.
+        if coordinator.supports_disarming_linkage():
+            devices.append(DahuaDisarmingLinkageBinarySwitch(coordinator, entry))
+            devices.append(DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry))
+
+        devices.extend(
+            DahuaIVSRuleSwitch(coordinator, entry, rule)
+            for rule in coordinator.get_ivs_rules()
         )
-    if coordinator.supports_smart_motion_detection() or coordinator.supports_smart_motion_detection_amcrest():
-        devices.append(DahuaSmartMotionDetectionBinarySwitch(coordinator, entry))
-    if coordinator.supports_privacy_mode():
-        devices.append(DahuaPrivacyModeBinarySwitch(coordinator, entry))
-    if coordinator.supports_alarm_output():
-        devices.append(DahuaAlarmOutputSwitch(coordinator, entry, output=0))
-
-    # The coordinator already asked the device this during setup and kept the
-    # answer. Asking again here put a network round trip inside platform setup,
-    # where a device that is slow to answer eats the entry's setup budget.
-    if coordinator.supports_disarming_linkage():
-        devices.append(DahuaDisarmingLinkageBinarySwitch(coordinator, entry))
-        devices.append(DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry))
-
-    devices.extend(
-        DahuaIVSRuleSwitch(coordinator, entry, rule)
-        for rule in coordinator.get_ivs_rules()
-    )
-    async_add_devices(devices)
+        async_add_devices(
+            devices, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua motion detection switch class. Used to enable or disable motion detection"""
+
+    _attr_translation_key = "motion_detection"
 
     # Configuration, not a control: this changes how the camera behaves rather
     # than doing something now, so it belongs in the device page's configuration
@@ -74,22 +85,12 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + "Motion Detection"
-
-    @property
     def unique_id(self):
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_motion_detection"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return MOTION_DETECTION_ICON
 
     @property
     def is_on(self):
@@ -102,6 +103,8 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
 class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """will set the camera's disarming linkage (Event -> Disarming in the UI)"""
+
+    _attr_translation_key = "disarming"
 
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -119,11 +122,6 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + "Disarming"
-
-    @property
     def unique_id(self):
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be
@@ -131,11 +129,6 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
         https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_disarming"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return DISARMING_ICON
 
     @property
     def is_on(self):
@@ -147,6 +140,8 @@ class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
 
 class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """will set the camera's event notifications when device is disarmed (Event -> Disarming -> Event Notifications in the UI)"""
+
+    _attr_translation_key = "event_notifications"
 
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -164,11 +159,6 @@ class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, Switc
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + "Event Notifications"
-
-    @property
     def unique_id(self):
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be
@@ -176,11 +166,6 @@ class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, Switc
         https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_event_notifications"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return BELL_ICON
 
     @property
     def is_on(self):
@@ -191,6 +176,8 @@ class DahuaDisarmingEventNotificationsLinkageBinarySwitch(DahuaBaseEntity, Switc
 
 class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """Enables or disables the Smart Motion Detection option in the camera"""
+
+    _attr_translation_key = "smart_motion_detection"
 
     _attr_entity_category = EntityCategory.CONFIG
 
@@ -214,11 +201,6 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + "Smart Motion Detection"
-
-    @property
     def unique_id(self):
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be
@@ -226,11 +208,6 @@ class DahuaSmartMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_smart_motion_detection"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return MOTION_DETECTION_ICON
 
     @property
     def is_on(self):
@@ -260,7 +237,15 @@ class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
                 self._channel, self._rule_id, enabled
             )
         except ValueError as err:
-            raise HomeAssistantError(str(err)) from err
+            # The reason is built in client.py, which resolves the rule just
+            # before writing, so it is carried through as a placeholder rather
+            # than replaced by a guess at what went wrong. It is still English
+            # until those messages get keys of their own.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="ivs_rule_write_failed",
+                translation_placeholders={"reason": str(err)},
+            ) from err
         await self._coordinator.async_refresh()
 
     async def async_turn_on(self, **kwargs):
@@ -274,7 +259,7 @@ class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def name(self):
         """Return the camera and rule names."""
-        return self._coordinator.get_device_name() + " " + self._rule_name
+        return self._rule_name
 
     @property
     def unique_id(self):
@@ -295,11 +280,20 @@ class DahuaIVSRuleSwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua siren switch class. Used to enable or disable camera built in sirens"""
 
-    _name = "Siren"
+    _attr_device_class = SwitchDeviceClass.SWITCH
 
-    def __init__(self, coordinator, entry, name="Siren"):
+    def __init__(self, coordinator, entry, *, translation_key):
+        """`translation_key` rather than a name, and keyword only.
+
+        Called "Alarm" on a recorder and "Siren" otherwise, which the
+        platform decides.
+
+        Keyword only so a call site still passing the old display
+        name positionally fails with a TypeError instead of setting a
+        translation key that is not a slug and never matching.
+        """
         super().__init__(coordinator, entry)
-        self._name = name
+        self._attr_translation_key = translation_key
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable the camera's siren"""
@@ -328,22 +322,12 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " " + self._name
-
-    @property
     def unique_id(self):
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_siren"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return SIREN_ICON
 
     @property
     def is_on(self):
@@ -357,7 +341,8 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
     """Switch for a physical alarm/relay output."""
 
-    _attr_icon = "mdi:alarm-light"
+    _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_translation_key = "alarm_output"
 
     def __init__(self, coordinator, entry, output: int):
         super().__init__(coordinator, entry)
@@ -374,11 +359,6 @@ class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " Alarm Output"
-
-    @property
     def unique_id(self):
         """Return a stable unique ID for this alarm output."""
         return self._coordinator.get_serial_number() + "_alarm_output_" + str(self._output)
@@ -392,6 +372,9 @@ class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
 class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
     """dahua privacy mode switch class. Used to enable or disable the lens privacy mask"""
 
+    _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_translation_key = "privacy_mode"
+
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable privacy mode"""
         await self._coordinator.client.async_set_privacy_mode(True)
@@ -403,22 +386,12 @@ class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
         await self._coordinator.async_refresh()
 
     @property
-    def name(self):
-        """Return the name of the switch."""
-        return self._coordinator.get_device_name() + " Privacy Mode"
-
-    @property
     def unique_id(self):
         """
         A unique identifier for this entity. Needs to be unique within a platform (ie light.hue). Should not be configurable by the user or be changeable
         see https://developers.home-assistant.io/docs/entity_registry_index/#unique-id-requirements
         """
         return self._coordinator.get_serial_number() + "_privacy_mode"
-
-    @property
-    def icon(self):
-        """Return the icon of this switch."""
-        return PRIVACY_MODE_ICON
 
     @property
     def is_on(self):

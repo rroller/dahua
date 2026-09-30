@@ -13,6 +13,8 @@ from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.ivs import ivs_rule_index, ivs_rules_for_channel
 from custom_components.dahua.switch import DahuaIVSRuleSwitch, async_setup_entry
 
+from . import adds_entities
+
 
 def row(index, rule_id, enabled="true", channel=2, kind="Normal", name="Line"):
     prefix = f"table.VideoAnalyseRule[{channel}][{index}]"
@@ -94,6 +96,9 @@ class TestIVSDiscovery(TestCase):
     def test_read_cache_expires_before_next_default_poll(self):
         self.assertEqual(_cache_lifetime("/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule"), 5)
         self.assertEqual(_cache_lifetime("/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"), 300)
+        # The active day/night profile is live state, and every light command
+        # addresses the Lighting row it names.
+        self.assertEqual(_cache_lifetime("/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"), 5)
 
 
 class TestIVSActions:
@@ -163,13 +168,16 @@ class TestIVSActions:
                        "supports_smart_motion_detection_amcrest", "supports_privacy_mode",
                        "supports_alarm_output", "supports_disarming_linkage"):
             setattr(c, method, lambda: False)
-        hass = SimpleNamespace(data={DOMAIN: {"entry": c}})
+        hass = SimpleNamespace(data={})
         added = []
         def init(self, coord, entry):
             self._coordinator = coord
             self.coordinator = coord
         with patch.object(DahuaBaseEntity, "__init__", init):
-            await async_setup_entry(hass, SimpleNamespace(entry_id="entry"), added.extend)
+            await async_setup_entry(
+                hass,
+                SimpleNamespace(entry_id="entry", runtime_data={0: c}),
+                adds_entities(added))
         rules = [s for s in added if isinstance(s, DahuaIVSRuleSwitch)]
         self.assertEqual(len(rules), 2)
         self.assertEqual(len({s.unique_id for s in rules}), 2)

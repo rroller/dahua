@@ -58,6 +58,14 @@ RPC2_EVENT_IDLE_AFTER_SECONDS = 120
 RPC2_EVENT_IDLE_POLL_SECONDS = 6
 # "session is out of date"; same code _direct_coaxial_rpc2 recovers from.
 RPC2_SESSION_EXPIRED_CODE = 287637504
+# How many cycles in a row a code has to be refused before the poll gives up on
+# it. One refusal used to be enough, and the refusal did not have to say the
+# device does not know the code -- a busy recorder, a request the device thought
+# too long, a login that had just gone stale, any of them cost that event type
+# for the life of the entry with only a debug line to say so. Three consecutive
+# cycles is a few seconds on any selection and distinguishes "will not" from
+# "not just now".
+RPC2_EVENT_REFUSALS_BEFORE_DROPPING = 3
 # The CGI stream proves the transport is alive with the heartbeat it asks the
 # device for. The RPC2 poll has no such thing to forward, and a quiet camera
 # would otherwise deliver nothing for a whole stream lifetime -- which
@@ -78,6 +86,47 @@ _HOST_LIMITS: dict = {}
 # must serialize the fresh read and write together, even if they use different
 # RPC2 sessions or credentials.
 _HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _describe_client_error(exception) -> str:
+    """The shortest thing that says whether asking again could ever work.
+
+    An aiohttp.ClientResponseError carries the status the device answered with, and
+    that is the only part of it worth a log line: 400 and 404 mean this device does
+    not serve the request, 500 and a refused connection mean it might next time.
+
+    Anything else is named by its class rather than its text. A connector error's
+    str() is a paragraph containing the host, the port and sometimes a certificate,
+    and the URL is already on the line.
+    """
+    status = getattr(exception, "status", None)
+    if status is not None:
+        message = getattr(exception, "message", "") or ""
+        return "HTTP %s%s" % (status, " %s" % message if message else "")
+    return type(exception).__name__
+
+
+def rpc2_refusal_is_a_stale_login(refused) -> bool:
+    """Whether this refusal means the login is no good and a new one would help.
+
+    Three places had to decide this and they did not agree.
+    `_direct_coaxial_rpc2` matched the code *or* a message saying the session was
+    out of date, because it had met a device that said so in words. The RPC2 event
+    poll matched only the code, in both of its handlers -- so the same device,
+    refusing the same way, recovered on one path and had the refusal turned into a
+    closed event stream on the other.
+
+    Matching on the message rather than on a second code number is deliberate.
+    287637504 is the only session code that is documented anywhere; the numbers
+    circulating for other session states are not, and inventing one would make a
+    refusal that means something else entirely look like a session problem, which
+    spends a login and hides the real reason. What the device says about a session
+    is evidence. What its code number might have been is not.
+    """
+    if getattr(refused, "code", None) == RPC2_SESSION_EXPIRED_CODE:
+        return True
+    message = getattr(refused, "message", None)
+    return isinstance(message, str) and "session" in message.lower()
 
 
 def _remote_ivs_lock(device: str, channel: int) -> asyncio.Lock:
@@ -351,6 +400,13 @@ _HOST_CACHE: dict = {}
 def _cache_lifetime(url: str) -> int:
     """How long this URL's answer stays good for."""
     if "name=VideoAnalyseRule" in url:
+        return HOST_CACHE_TTL_SECONDS
+    if "name=VideoInMode" in url:
+        # The active day/night profile is live state, not a setting: the camera
+        # flips it on its own schedule, and every light read and write addresses
+        # the Lighting row it names. Held for five minutes, a command issued in
+        # that window goes to the row the camera is not rendering from, where
+        # the device accepts and ignores it -- the #582/#605/#689 shape.
         return HOST_CACHE_TTL_SECONDS
     return CONFIG_CACHE_TTL_SECONDS if CONFIG_READ_MARKER in url else HOST_CACHE_TTL_SECONDS
 
@@ -1370,19 +1426,15 @@ class DahuaClient:
     # Direct-camera CoaxialControlIO RPC2 calls use channel 0, matching the
     # camera WebUI requests. Legacy CGI uses 1-based channel 1 for standalone
     # cameras; this protocol difference is intentional, not an off-by-one error.
-    async def _direct_coaxial_rpc2(self, method: str, *args):
+    async def _direct_coaxial_rpc2(self, method: str, *args, channel: int = 0):
         """Retry one direct-camera call after a confirmed expired RPC2 login."""
         for attempt in range(2):
             holder = await self._shared_rpc2()
             login_task = getattr(holder, "task", None)
             try:
-                return await getattr(holder.client, method)(0, *args)
+                return await getattr(holder.client, method)(channel, *args)
             except Rpc2MethodRefused as exc:
-                expired = exc.code == 287637504 or (
-                    isinstance(exc.message, str)
-                    and "session is out of date" in exc.message.lower()
-                )
-                if attempt or not expired:
+                if attempt or not rpc2_refusal_is_a_stale_login(exc):
                     raise
                 # Another caller may already have replaced this login. Do not
                 # tear down the new one when an old in-flight request returns.
@@ -1407,18 +1459,26 @@ class DahuaClient:
         """Probe a direct camera on channel zero, independently of config transport."""
         return await self._direct_coaxial_rpc2("get_coaxial_control_io_caps")
 
-    async def async_get_coaxial_control_io_status_rpc2(self) -> dict:
+    async def async_get_coaxial_control_io_status_rpc2(
+        self, channel: int = 0
+    ) -> dict:
         """Read direct-camera deterrence state in the coordinator's CGI shape."""
-        status = await self._direct_coaxial_rpc2("get_coaxial_control_io_status")
+        status = await self._direct_coaxial_rpc2(
+            "get_coaxial_control_io_status", channel=channel
+        )
         return {
             "status.Speaker": "On" if status.speaker else "Off",
             "status.WhiteLight": "On" if status.white_light else "Off",
         }
 
     async def async_set_coaxial_control_state_rpc2(
-        self, dahua_type: int, enabled: bool
+        self, dahua_type: int, enabled: bool, off_io: int = 2
     ) -> dict:
         """Write direct-camera deterrence on channel zero."""
+        if off_io != 2:
+            return await self._direct_coaxial_rpc2(
+                "set_coaxial_control_state", dahua_type, enabled, off_io
+            )
         return await self._direct_coaxial_rpc2(
             "set_coaxial_control_state", dahua_type, enabled
         )
@@ -1433,9 +1493,35 @@ class DahuaClient:
         for attempt in (1, 2):
             try:
                 holder = await self._shared_rpc2()
+                login_task = getattr(holder, "task", None)
                 try:
                     params = await holder.client.get_config({"name": name})
                 except Rpc2MethodRefused as exc:
+                    if rpc2_refusal_is_a_stale_login(exc) and attempt == 1:
+                        # The shared login went stale under us -- a reboot of
+                        # the device is enough to do it. Drop it so the next
+                        # pass logs in again. Without this the refusal reached
+                        # _request, which read it as "does not serve this
+                        # table" and stopped asking RPC2 for it for the life of
+                        # the process. Another caller may already have replaced
+                        # the login, so only tear down the one we were holding.
+                        # Everything here goes through getattr because tests
+                        # hand this method a stand-in holder.
+                        if getattr(holder, "task", None) is login_task:
+                            holder.task = None
+                            rpc2_holder_client = getattr(holder, "client", None)
+                            if rpc2_holder_client is not None:
+                                rpc2_holder_client._session_id = None
+                                ptz_objects = getattr(
+                                    rpc2_holder_client, "_ptz_objects", None)
+                                if ptz_objects is not None:
+                                    ptz_objects.clear()
+                            keepalive = getattr(holder, "keepalive", None)
+                            holder.keepalive = None
+                            if keepalive is not None and not keepalive.done():
+                                keepalive.cancel()
+                                await asyncio.gather(keepalive, return_exceptions=True)
+                        continue
                     # Only a refusal of the table read can establish absence;
                     # a failed login or expired session must still propagate.
                     if allow_missing and exc.code in RPC2_TABLE_ABSENT_CODES:
@@ -1780,12 +1866,31 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=LightGlobal[0].Enable"
         return await self.get(url)
 
-    async def async_get_floodlightmode(self) -> dict:
-        """ async_get_config_floodlightmode gets floodlight mode """
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=FloodLightMode.Mode"
+    async def async_get_floodlightmode(self) -> int:
+        """ async_get_floodlightmode gets the floodlight mode as its number.
+
+        1 motion activation, 2 manual, 3 schedule, 4 PIR. The endpoint answers
+        a config table, so the mode is pulled out of whichever single key this
+        firmware used; a malformed or refused answer reports 2 (manual), which
+        is the mode the light entity itself writes while it is on.
+        """
         try:
-            return await self.async_get_config("FloodLightMode.Mode")
-        except aiohttp.ClientResponseError as e:
+            config = await self.async_get_config("FloodLightMode.Mode")
+        except aiohttp.ClientResponseError:
+            return 2
+        if isinstance(config, dict):
+            if "FloodLightMode.Mode" in config:
+                config = config["FloodLightMode.Mode"]
+            elif len(config) == 1:
+                config = next(iter(config.values()))
+            else:
+                for key, value in config.items():
+                    if key.endswith(".Mode"):
+                        config = value
+                        break
+        try:
+            return int(str(config).strip())
+        except (TypeError, ValueError):
             return 2
 
     async def async_set_floodlightmode(self, mode: int) -> dict:
@@ -2370,7 +2475,13 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
         return await self.get(url)
 
-    async def async_set_coaxial_control_state(self, channel: int, dahua_type: int, enabled: bool) -> dict:
+    async def async_set_coaxial_control_state(
+        self,
+        channel: int,
+        dahua_type: int,
+        enabled: bool,
+        off_io: int = 2,
+    ) -> dict:
         """
         async_set_lighting_v2 will turn on or off the white light on the camera.
 
@@ -2379,10 +2490,9 @@ class DahuaClient:
         NOTE: this is not the same as the infrared (IR) light. This is the white visible light on the camera
         """
 
-        # on = 1, off = 0
-        io = "1"
-        if not enabled:
-            io = "2"
+        # Most cameras use IO=2 to disable an output. Some models use IO=0;
+        # callers may provide that model-specific value with off_io.
+        io = 1 if enabled else off_io
 
         url = "/cgi-bin/coaxialControlIO.cgi?action=control&channel={channel}&info[0].Type={dahua_type}&info[0].IO={io}".format(
             channel=channel, dahua_type=dahua_type, io=io)
@@ -2823,6 +2933,21 @@ class DahuaClient:
                 self._address, code)
 
         attached_to = None
+        # How many cycles in a row each code has been refused. Consecutive, so a
+        # successful read clears it: a code refused once an hour is a device under
+        # load, not a device that does not know it.
+        #
+        # Local, so it lives for this stream lifetime, which is the same scope the
+        # `codes` list above has: a recycle rebuilds the selection and a code
+        # dropped in the last lifetime is asked for again in this one. That was
+        # already true before there was a count. The lifetime is
+        # EVENT_STREAM_MAX_LIFETIME_SECONDS (an hour) against a cycle of a couple
+        # of seconds, so a device that refuses a code every time still reaches the
+        # limit within the first few seconds of each lifetime. `active` is the one
+        # thing here that is deliberately inherited across a recycle, because an
+        # unpaid Stop is owed whoever takes over; a refusal count is not owed to
+        # anyone.
+        refusals: dict[str, int] = {}
         # When the device last had anything active, or None while it does. Only
         # a run of quiet cycles eases the rate off; one Start restores it.
         idle_since = None if active else time.monotonic()
@@ -2844,15 +2969,28 @@ class DahuaClient:
                     attached_to = login_task
 
                 started = time.monotonic()
+                answered = 0
                 for code in list(codes):
                     try:
                         response = await holder.client.request(
                             "eventManager.getEventIndexes", {"code": code})
                     except Rpc2MethodRefused as refused:
-                        if refused.code == RPC2_SESSION_EXPIRED_CODE:
+                        if rpc2_refusal_is_a_stale_login(refused):
                             raise
-                        # This device does not know this code. Asking again every
-                        # cycle for the life of the entry buys nothing.
+                        refusals[code] = refusals.get(code, 0) + 1
+                        if refusals[code] < RPC2_EVENT_REFUSALS_BEFORE_DROPPING:
+                            # Not yet. A refusal is not necessarily "I do not know
+                            # this code": a recorder with every channel competing
+                            # for it refuses plenty of things it will serve on the
+                            # next cycle, and dropping the code on the first one
+                            # lost that event type until Home Assistant restarted.
+                            _LOGGER.debug(
+                                "%s refused %s (%s); %d of %d before it is dropped",
+                                self._address, code, refused, refusals[code],
+                                RPC2_EVENT_REFUSALS_BEFORE_DROPPING)
+                            continue
+                        # Refused every cycle: this device does not know this code.
+                        # Asking again for the life of the entry buys nothing.
                         codes.remove(code)
                         # Dropping it means it can never be observed inactive
                         # again, so release anything it is still holding on the
@@ -2864,6 +3002,12 @@ class DahuaClient:
                             "%s does not report %s over RPC2 (%s); no longer polling it",
                             self._address, code, refused)
                         continue
+
+                    # Answered, so whatever it refused before was passing. Cleared
+                    # here rather than left to decay, or a code refused once per
+                    # hundred cycles would still reach the limit and be dropped.
+                    refusals.pop(code, None)
+                    answered += 1
 
                     indexes = set()
                     for raw in ((response.get("params") or {}).get("indexes") or []):
@@ -2884,10 +3028,18 @@ class DahuaClient:
                         "%s reports none of the selected event types over RPC2"
                         % self._address)
 
-                # Every code answered, so the transport is healthy even if the
+                # Something answered, so the transport is healthy even if the
                 # device is quiet. Say so, or a camera with nothing happening is
                 # indistinguishable from a dead stream and gets backed off.
-                on_receive(RPC2_EVENT_HEARTBEAT, channel)
+                #
+                # Guarded on something having answered, which used not to need
+                # saying: a refusal dropped the code there and then, so a cycle
+                # that got through the loop had by definition been answered. Now
+                # that a refusal is tolerated for a few cycles, a cycle where the
+                # device refused everything reaches here, and a heartbeat would
+                # report the transport healthy on the strength of that.
+                if answered:
+                    on_receive(RPC2_EVENT_HEARTBEAT, channel)
 
                 # Anything active means the fast cycle, immediately -- the point
                 # of easing off is to be cheap while nothing is happening, not to
@@ -2913,7 +3065,7 @@ class DahuaClient:
                 await asyncio.sleep(max(0.0, wait - (time.monotonic() - started)))
 
             except Rpc2MethodRefused as refused:
-                if refused.code != RPC2_SESSION_EXPIRED_CODE:
+                if not rpc2_refusal_is_a_stale_login(refused):
                     raise EventStreamClosed(
                         "RPC2 event poll on %s was refused: %s" % (self._address, refused)
                     ) from refused
@@ -3069,17 +3221,28 @@ class DahuaClient:
                     # the attempt on every read, but one that merely did not
                     # answer in time should not lose the transport for good.
                     if isinstance(rpc2_exception, Rpc2MethodRefused):
-                        # The device spoke RPC2 and declined this table. Ask
-                        # CGI for it from now on, and keep the transport for
-                        # everything else -- writing the host off here is what
-                        # put a working device back on a login per call.
-                        _RPC2_TABLE_UNAVAILABLE.add(
-                            (self._rpc2_key(), match.group(1)))
-                        _LOGGER.debug(
-                            "%s does not serve %s over RPC2, using CGI for that "
-                            "table; RPC2 is still in use for the rest",
-                            self._address, match.group(1),
-                        )
+                        if rpc2_refusal_is_a_stale_login(rpc2_exception):
+                            # An expired session is not this table's verdict.
+                            # _rpc2_get_config already re-logged in once, so
+                            # fall through to CGI for this read without writing
+                            # the table -- or the transport -- off for good.
+                            _LOGGER.debug(
+                                "RPC2 session for %s was stale reading %s; using "
+                                "CGI for this one",
+                                self._address, match.group(1), exc_info=True,
+                            )
+                        else:
+                            # The device spoke RPC2 and declined this table. Ask
+                            # CGI for it from now on, and keep the transport for
+                            # everything else -- writing the host off here is what
+                            # put a working device back on a login per call.
+                            _RPC2_TABLE_UNAVAILABLE.add(
+                                (self._rpc2_key(), match.group(1)))
+                            _LOGGER.debug(
+                                "%s does not serve %s over RPC2, using CGI for that "
+                                "table; RPC2 is still in use for the rest",
+                                self._address, match.group(1),
+                            )
                     elif not rpc2_failure_is_permanent(rpc2_exception):
                         # Falls through to the CGI path below, like any other
                         # failure here, but without writing the host off.
@@ -3138,8 +3301,9 @@ class DahuaClient:
                             # RemoteDevice, a table only a recorder has. A fallback has to
                             # be invisible when it cannot help, so the original 404 is
                             # what comes back.
-                            _RPC2_TABLE_UNAVAILABLE.add(
-                                (self._rpc2_key(), config_read.group(1)))
+                            if not rpc2_refusal_is_a_stale_login(rpc2_refusal):
+                                _RPC2_TABLE_UNAVAILABLE.add(
+                                    (self._rpc2_key(), config_read.group(1)))
                             _LOGGER.debug(
                                 "%s serves %s over neither CGI nor RPC2 (%s); reporting "
                                 "the original %s",
@@ -3161,7 +3325,15 @@ class DahuaClient:
             _LOGGER.warning("TypeError fetching information from %s", url)
             raise exception
         except (aiohttp.ClientError, socket.gaierror) as exception:
-            _LOGGER.debug("ClientError fetching information from %s", url)
+            # With the status, because that is the whole question when a reporter's
+            # debug log shows one of these repeating. A 400 or a 404 means the device
+            # does not serve this and never will, so asking every poll is waste; a
+            # 500 or a refused connection is a device having a bad day and asking
+            # again is right. The line named neither, so #832's log could not tell
+            # them apart and the next step was another round trip to the reporter.
+            _LOGGER.debug(
+                "ClientError fetching information from %s: %s", url,
+                _describe_client_error(exception))
             raise exception
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.warning("Exception fetching information from %s", url)

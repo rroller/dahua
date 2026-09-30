@@ -21,6 +21,7 @@ import pytest
 
 from custom_components.dahua import (
     DOORBELL_RINGING_STATES,
+    DOORBELL_KNOWN_QUIET_STATES,
     DOORBELL_STATE_EVENTS,
     DahuaDataUpdateCoordinator,
 )
@@ -121,3 +122,66 @@ def test_the_state_sets_do_not_overlap():
     assert not (DOORBELL_RINGING_STATES & set(DOORBELL_STATE_EVENTS))
     assert 0 not in DOORBELL_RINGING_STATES
     assert 0 not in DOORBELL_STATE_EVENTS
+
+
+# --- a state we can already name is not an unknown state ---------------------
+#
+# #872: a VTO2311R-WP reported 5 and the warning asked the reporter to tell us about it,
+# although the comment beside that code already documents 5 as "answered from the VTH".
+# Only 8, 9 and 0 were skipped, so every other documented value warned as though nobody
+# had ever seen it.
+#
+# The sequence in that report settles what 5 is. It arrives after HungupPhone, Hangup and
+# IgnoreInvite, immediately before idle, on a press that had already raised the sensor
+# from States 1 and 2. It is the call ending, not a ring anybody missed.
+
+
+@pytest.mark.parametrize("state", sorted(DOORBELL_KNOWN_QUIET_STATES))
+def test_a_documented_non_ringing_state_is_not_worth_reporting(state, caplog):
+    """The warning exists to surface a doorbell whose ring we cannot read. Asking about a
+    number we can name spends the reporter's time and teaches them to ignore it."""
+    c = _coordinator()
+
+    c._note_unknown_doorbell_state(state, str(state))
+
+    assert _complaints(caplog) == [], (
+        "asked about state %d, which is documented" % state)
+
+
+def test_a_state_nobody_has_identified_is_still_reported(caplog):
+    """The half that must not be lost. 3 and 12 are not in any documented set, so a
+    doorbell reporting its ring as one of those is exactly the case this is for."""
+    for state in (3, 12):
+        c = _coordinator()
+        c._note_unknown_doorbell_state(state, str(state))
+        assert _complaints(caplog), "went quiet about state %d" % state
+        caplog.clear()
+
+
+def test_the_quiet_states_raise_no_event_of_their_own():
+    """They are reasons not to complain, not events. Folding them into
+    DOORBELL_STATE_EVENTS would have each of them raise something on the bus."""
+    assert not (DOORBELL_KNOWN_QUIET_STATES & set(DOORBELL_STATE_EVENTS))
+
+
+def test_no_quiet_state_is_also_a_ring():
+    """If one were, it would be silently swallowed by the guard instead of raising the
+    button press, which is the bug this whole file exists to prevent."""
+    assert not (DOORBELL_KNOWN_QUIET_STATES & DOORBELL_RINGING_STATES)
+
+
+def test_the_state_five_from_872_is_covered():
+    """Named explicitly, so the issue this came from stays findable from the test."""
+    assert 5 in DOORBELL_KNOWN_QUIET_STATES
+
+
+def test_the_message_still_lists_what_is_known(caplog):
+    """The text names the states it knows, so adding some without saying so would make it
+    wrong in a way nobody would notice."""
+    c = _coordinator()
+
+    c._note_unknown_doorbell_state(3, "3")
+
+    message = _complaints(caplog)[0].getMessage()
+    for state in sorted(DOORBELL_KNOWN_QUIET_STATES):
+        assert str(state) in message, "the message does not mention %d" % state

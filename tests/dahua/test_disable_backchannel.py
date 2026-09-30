@@ -7,6 +7,7 @@ option adds go2rtc's #backchannel=0 to the stream source.
 
 from types import SimpleNamespace
 
+from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.camera import DahuaCamera, rtsp_stream_source
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -37,6 +38,15 @@ class _Client:
 class _Coordinator:
     client = _Client()
 
+    # Borrowed rather than reimplemented. What is under test is which
+    # answer the camera is handed, so a hand-written stand-in would pin
+    # the stand-in's precedence and pass however the real one behaved.
+    channel_option = DahuaDataUpdateCoordinator.channel_option
+
+    def __init__(self, config_entry=None, **channel):
+        self.config_entry = config_entry or _entry()
+        self._channel_config = dict(channel)
+
     def get_channel(self):
         return 0
 
@@ -51,8 +61,14 @@ def _entry(**options):
     return SimpleNamespace(title="Front Door", data={}, options=dict(options))
 
 
-async def _source(**options):
-    return await DahuaCamera(_Coordinator(), 0, _entry(**options)).stream_source()
+async def _source(channel=None, **options):
+    """The camera reads this off its coordinator now, not off the entry.
+
+    `options` are the entry's, `channel` the one channel's own.
+    """
+    entry = _entry(**options)
+    coordinator = _Coordinator(entry, **(channel or {}))
+    return await DahuaCamera(coordinator, 0, entry).stream_source()
 
 
 async def test_an_entry_without_the_option_keeps_the_backchannel():
@@ -63,6 +79,17 @@ async def test_an_entry_without_the_option_keeps_the_backchannel():
 async def test_the_option_reaches_the_camera_stream_source():
     assert await _source(disable_backchannel=True) == (
         "rtsp://host/cam?channel=1&subtype=0#backchannel=0"
+    )
+
+
+async def test_one_channels_answer_does_not_silence_another():
+    """#827 puts every channel of a recorder in one entry, so the entry's
+    options are shared and the channel's own answer has to win. Without
+    that, disabling the backchannel on one camera would take the talk
+    channel away from the doorbell next to it."""
+    assert await _source(channel={"disable_backchannel": False},
+                         disable_backchannel=True) == (
+        "rtsp://host/cam?channel=1&subtype=0"
     )
 
 

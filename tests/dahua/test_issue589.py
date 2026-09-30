@@ -11,6 +11,8 @@ from custom_components.dahua.const import DOMAIN
 from custom_components.dahua.model_profiles import is_sdt4e425
 from custom_components.dahua.rpc2 import DahuaRpc2Client
 
+from . import adds_entities
+
 
 class _FakeResponse:
     def __init__(self, payload):
@@ -42,6 +44,10 @@ class _FakeClient:
 
 
 class _FakeCoordinator:
+    # Read by camera.async_setup_entry when it files the entities under the
+    # channel's subentry. None is a single camera.
+    subentry_id = None
+
     def __init__(self, model="DH-SDT4E425-4F-GB-A-PV1"):
         self.client = _FakeClient()
         self._model = model
@@ -95,11 +101,12 @@ async def test_sdt4e425_creates_two_sensors_with_three_streams(monkeypatch):
     )
 
     coordinator = _FakeCoordinator()
-    hass = SimpleNamespace(data={DOMAIN: {"entry": coordinator}})
-    entry = SimpleNamespace(entry_id="entry", title="Camera")
+    hass = SimpleNamespace(data={})
+    entry = SimpleNamespace(entry_id="entry", title="Camera",
+                            runtime_data={0: coordinator})
     entities = []
 
-    await camera_platform.async_setup_entry(hass, entry, entities.extend)
+    await camera_platform.async_setup_entry(hass, entry, adds_entities(entities))
 
     assert [
         (
@@ -129,11 +136,12 @@ async def test_other_models_keep_native_stream_setup(monkeypatch):
     )
 
     coordinator = _FakeCoordinator(model="OTHER")
-    hass = SimpleNamespace(data={DOMAIN: {"entry": coordinator}})
-    entry = SimpleNamespace(entry_id="entry", title="Camera")
+    hass = SimpleNamespace(data={})
+    entry = SimpleNamespace(entry_id="entry", title="Camera",
+                            runtime_data={0: coordinator})
     entities = []
 
-    await camera_platform.async_setup_entry(hass, entry, entities.extend)
+    await camera_platform.async_setup_entry(hass, entry, adds_entities(entities))
 
     assert len(entities) == 3
     assert [entity.stream_index for entity in entities] == [0, 1, 2]

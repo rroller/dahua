@@ -52,13 +52,17 @@
     "options": {
         "step": {
             "user": {
-                "data": {
-                    "binary_sensor": "Sensor binario habilitado",
-                    "sensor": "Sensor habilitado",
-                    "switch": "Interruptor habilitado",
-                    "light": "Luz habilitada",
-                    "select": "Seleccionar habilitado",
-                    "camera": "Camara habilitada"
+                "sections": {
+                    "platforms": {
+                        "data": {
+                            "binary_sensor": "Sensor binario habilitado",
+                            "camera": "Camara habilitada",
+                            "light": "Luz habilitada",
+                            "select": "Seleccionar habilitado",
+                            "sensor": "Sensor habilitado",
+                            "switch": "Interruptor habilitado"
+                        }
+                    }
                 }
             }
         }

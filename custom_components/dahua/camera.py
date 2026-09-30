@@ -11,7 +11,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
+from custom_components.dahua import dahua_utils
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.model_profiles import is_sdt4e425
 from custom_components.dahua.vto import CancelCallRefused
@@ -65,53 +66,69 @@ PTZ_MOVE_CODES = {
 }
 
 
+# One at a time, because streams and PTZ actions and these devices are measurably intolerant of
+# concurrent requests: MAX_CONCURRENT_REQUESTS_PER_HOST is 2 for the same reason,
+# and the login storms behind #577 and #603 are what happens without it. A
+# coordinator does not help here, since it only centralises inbound reads and
+# leaves outbound actions uncontrolled.
+PARALLEL_UPDATES = 1
+
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
-    coordinator: DahuaDataUpdateCoordinator = hass.data[DOMAIN][config_entry.entry_id]
-    if is_sdt4e425(coordinator.get_model()):
-        # This physical camera exposes two sensors. Preserve RRoller's native
-        # Main/Sub/Sub_2 creation for each media channel from one config entry.
-        sensors = (
-            # logical channel, media channel, display name, unique-id prefix
-            (0, 1, "Panorama", ""),
-            (1, 2, "PTZ", "1_"),
-        )
-        entities = []
-        for logical_channel, media_channel, sensor_name, unique_prefix in sensors:
-            for stream_index in range(coordinator.get_max_streams()):
-                stream_name = coordinator.client.to_stream_name(stream_index)
-                display_name = (
-                    sensor_name
-                    if stream_index == 0
-                    else f"{sensor_name} {stream_name}"
-                )
-                entities.append(
-                    DahuaCamera(
-                        coordinator,
-                        stream_index,
-                        config_entry,
-                        logical_channel=logical_channel,
-                        media_channel=media_channel,
-                        display_name=display_name,
-                        unique_suffix=f"{unique_prefix}{stream_name}",
-                    )
-                )
-        async_add_entities(entities)
-    else:
-        max_streams = coordinator.get_max_streams()
-        # Note the stream_index is 0 based. The main stream is index 0
-        for stream_index in range(max_streams):
-            async_add_entities(
-                [
-                    DahuaCamera(
-                        coordinator,
-                        stream_index,
-                        config_entry,
-                    )
-                ]
-            )
+    # Listed once: the capability checks further down need every channel, not
+    # whichever one the loop below happened to leave behind.
+    coordinators = list(entry_coordinators(config_entry).values())
 
+    for coordinator in coordinators:
+        if is_sdt4e425(coordinator.get_model()):
+            # This physical camera exposes two sensors. Preserve RRoller's native
+            # Main/Sub/Sub_2 creation for each media channel from one config entry.
+            sensors = (
+                # logical channel, media channel, display name, unique-id prefix
+                (0, 1, "Panorama", ""),
+                (1, 2, "PTZ", "1_"),
+            )
+            entities = []
+            for logical_channel, media_channel, sensor_name, unique_prefix in sensors:
+                for stream_index in range(coordinator.get_max_streams()):
+                    stream_name = coordinator.client.to_stream_name(stream_index)
+                    display_name = (
+                        sensor_name
+                        if stream_index == 0
+                        else f"{sensor_name} {stream_name}"
+                    )
+                    entities.append(
+                        DahuaCamera(
+                            coordinator,
+                            stream_index,
+                            config_entry,
+                            logical_channel=logical_channel,
+                            media_channel=media_channel,
+                            display_name=display_name,
+                            unique_suffix=f"{unique_prefix}{stream_name}",
+                        )
+                    )
+            async_add_entities(
+                entities, config_subentry_id=coordinator.subentry_id)
+        else:
+            max_streams = coordinator.get_max_streams()
+            # Note the stream_index is 0 based. The main stream is index 0
+            for stream_index in range(max_streams):
+                async_add_entities(
+                    [
+                        DahuaCamera(
+                            coordinator,
+                            stream_index,
+                            config_entry,
+                        )
+                    ],
+                    config_subentry_id=coordinator.subentry_id,
+                )
+
+    # Registered once for the platform rather than once per channel:
+    # entity services are platform wide, and registering the same name
+    # twice raises. Note this sits outside the loop above.
     platform = entity_platform.async_get_current_platform()
 
     # https://developers.home-assistant.io/docs/dev_101_services/
@@ -276,7 +293,15 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     )
 
     # Exposes a service to enable setting the cameras infrared light to Auto, Manual, and Off along with the brightness
-    if coordinator.supports_infrared_light():
+    #
+    # `any`, not the loop variable. Entity services are registered once for the
+    # whole platform, so a recorder asking the last channel it happened to iterate
+    # decided this for every channel: a recorder whose channel 0 has an
+    # illuminator and whose last channel does not lost the service for all of
+    # them. And an entry with no channels -- what entry_coordinators returns for a
+    # setup that failed or one being torn down -- left `coordinator` unbound and
+    # raised UnboundLocalError here, taking the platform's other services with it.
+    if any(c.supports_infrared_light() for c in coordinators):
         # "async_set_infrared_mode" is the method called upon calling the service. Defined below in DahuaCamera class
         platform.async_register_entity_service(
             SERVICE_SET_INFRARED_MODE,
@@ -289,7 +314,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
 
     # The light entity can only say on or off. Off is not the same as automatic,
     # and without this there is no way back to the camera's own behaviour.
-    if coordinator.supports_illuminator():
+    if any(c.supports_illuminator() for c in coordinators):
         platform.async_register_entity_service(
             SERVICE_SET_ILLUMINATOR_MODE,
             {
@@ -362,8 +387,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         )
         self._coordinator = coordinator
         self._name = (
-            f"{config_entry.title} {display_name}"
-            if display_name else f"{config_entry.title} {stream_name}"
+            display_name if display_name else stream_name
         )
         suffix = unique_suffix or stream_name
         self._unique_id = coordinator.get_serial_number() + "_" + suffix
@@ -371,13 +395,36 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         self._motion_status = False
         self._stream_source = rtsp_stream_source(
             coordinator.client.get_rtsp_stream_url(self._channel_number, stream_index),
-            config_entry.options.get(CONF_DISABLE_BACKCHANNEL, False),
+            coordinator.channel_option(CONF_DISABLE_BACKCHANNEL, False),
         )
 
     @property
     def unique_id(self):
         """Return the entity unique ID."""
         return self._unique_id
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Only the main stream is enabled to begin with.
+
+        Every stream the device can serve gets an entity, whether or not it is
+        enabled on the device, because which ones exist cannot be known without
+        asking and asking costs a request per channel. Most people watch one stream
+        per camera, so on an eleven channel recorder serving three streams each that
+        was thirty three camera entities to go and delete by hand -- which the README
+        said to do, in as many words.
+
+        Created but not enabled is the difference: the entity is still listed, and
+        anyone pointing a card at a sub stream turns it on once. Derived from the
+        stream index rather than stored in `_attr_entity_registry_enabled_default`,
+        so there is one place it can be wrong and it can be read off an instance
+        without the entity machinery.
+
+        This is consulted only when an entity is first registered, so nothing that
+        already exists changes: an existing sub stream camera stays exactly as its
+        owner left it.
+        """
+        return self._stream_index == 0
 
     async def async_camera_image(self, width: int | None = None, height: int | None = None):
         """Return a still image response from the camera, or None if it refused.
@@ -507,6 +554,11 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             await self._coordinator.client.async_set_night_switch_mode(channel, mode)
         else:
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
+        # The profile decides which Lighting row every light command writes to,
+        # and the poll is what reads it back. Without this the next light
+        # command in the same poll window is written to the row the camera is
+        # not rendering from, where the device accepts and ignores it.
+        await self._coordinator.async_refresh()
 
     async def async_adjustfocus(self, focus: str, zoom: str):
         """ Handles the service call from SERVICE_SET_INFRARED_MODE to set zoom and focus """
@@ -554,6 +606,19 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
     async def async_vto_open_door(self, door_id: int):
         """ Handles the service call from SERVICE_VTO_OPEN_DOOR """
+        # The service is offered on every camera entity, and the Open Door
+        # button is only created on a doorbell; aimed at anything else the CGI
+        # endpoint is not there and the user gets a raw HTTP error. The sibling
+        # cancel-call service says which device it is for, so this one does too.
+        # getattr because tests build stand-in coordinators without the method.
+        is_doorbell = getattr(self._coordinator, "is_doorbell", None)
+        if is_doorbell is not None and not is_doorbell():
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="open_door_needs_a_doorbell",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()},
+            )
         await self._coordinator.client.async_access_control_open_door(door_id)
 
     async def async_vto_cancel_call(self):
@@ -566,15 +631,19 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         vto_client = self._coordinator.get_vto_client()
         if vto_client is None:
             raise HomeAssistantError(
-                "{0} has no doorbell connection to cancel a call on. This service "
-                "works on a VTO doorbell, once its event connection is up.".format(
-                    self._coordinator.get_device_name()
-                )
+                translation_domain=DOMAIN,
+                translation_key="no_vto_connection_for_service",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()},
             )
         try:
             await vto_client.cancel_call()
         except CancelCallRefused as refused:
-            raise HomeAssistantError(str(refused)) from refused
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="cancel_call_refused",
+                translation_placeholders={"reason": str(refused)},
+            ) from refused
 
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
         """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """

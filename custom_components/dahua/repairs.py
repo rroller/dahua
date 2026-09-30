@@ -1,5 +1,6 @@
 """Repair flows for Dahua."""
 import asyncio
+import logging
 
 import voluptuous as vol
 from homeassistant.components.repairs import ConfirmRepairFlow, RepairsFlow
@@ -7,6 +8,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 
 from .const import CONF_PORT, CONF_USE_HTTPS, DOMAIN
+
+_LOGGER: logging.Logger = logging.getLogger(__package__)
 
 # An NVR has one config entry per channel, and updating an entry triggers a
 # reload through the existing update listener. Reloading eleven at once is the
@@ -104,7 +107,33 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
             return self.async_abort(reason="not_configured")
 
         if user_input is not None:
+            # A merged recorder is never a leftover. This card offers to finish a
+            # deletion the user started, and the entries it is for are the other
+            # channels of a recorder that was never merged -- each owning its own
+            # channel's entities, which is exactly what the user is asking to be
+            # rid of. An entry with subentries is the opposite: one entry holding
+            # every channel of the host, so removing it deletes everything the
+            # recorder has.
+            #
+            # That happened. The #827 migration's own removals raised this card,
+            # and it is persistent, so it outlived the merge and then described the
+            # merged entry as a sibling to clean up. Confirming it deleted 232
+            # entities. The migration refuses to remove an entry that still owns
+            # what it is about to lose; this, the only irreversible action in the
+            # file, did not.
+            merged = [entry for entry in entries if entry.subentries]
+            if merged:
+                _LOGGER.error(
+                    "Not removing %s for %s: it holds every channel of the "
+                    "recorder on one entry, so it is not a leftover and removing "
+                    "it would delete every entity the recorder has. Remove it from "
+                    "the integrations page if that is really what you want",
+                    ", ".join(sorted(e.title or "untitled" for e in merged)),
+                    self._address)
+
             for entry in entries:
+                if entry.subentries:
+                    continue
                 await self.hass.config_entries.async_remove(entry.entry_id)
                 # Same reason the HTTPS flow staggers its reloads: a Dahua web
                 # server does not enjoy eleven simultaneous teardowns.
