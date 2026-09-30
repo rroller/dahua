@@ -573,6 +573,12 @@ class DahuaHostEventStream:
     # failing it. A default here is one line and cannot be half-applied.
     _using_all_events = False
 
+    # Whether a refusal has already pushed this stream onto codes=[All]. One
+    # attempt per stream: a device that refuses the explicit list and then refuses
+    # [All] as well has nothing left to try, and retrying both forever would
+    # double the requests at a device that is already saying no.
+    _tried_all_events = False
+
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         self._hass = hass
         self._address = address
@@ -639,6 +645,34 @@ class DahuaHostEventStream:
         self._restart_if_needed()
         return False
 
+    def _should_try_all_events(self, exception) -> bool:
+        """Whether a refused attach is worth one retry with codes=[All].
+
+        Some firmware serves the event stream perfectly and rejects a long
+        explicit code list. Measured by two reporters on two different cameras:
+        #728's IPC-HFW4300S-V2 answers 200 to `codes=[VideoMotion]` and 400 to the
+        nine-code list, and #832's Hero A1 answers 500 to the same nine.
+
+        The integration already knows how to subscribe with `[All]` and filter
+        locally, so the user's selection is unaffected either way. It just decided
+        to do that from a heuristic -- whether sharing one stream across channels
+        made the request longer than any single channel's list -- which can never
+        be true for a single camera, because the union of one list is that list.
+        Single cameras are exactly the devices old enough to refuse, which is why
+        this reads as "everyone with one camera" rather than as a firmware quirk.
+
+        So the device's own refusal is the signal, rather than a guess about what
+        it might refuse. 404 and 501 never arrive here: those mean no CGI event
+        path at all and are answered with the RPC2 poller further down.
+        """
+        if self._tried_all_events or self._using_all_events:
+            return False
+        if not self._events or "All" in self._events:
+            return False
+        status = getattr(exception, "status", None)
+        # Credentials are a different problem with its own budget above.
+        return status is not None and status != 401
+
     def _restart_if_needed(self) -> None:
         wanted = self._union()
         # Before #615, every channel attached with only its own event list.
@@ -650,6 +684,11 @@ class DahuaHostEventStream:
         use_all_events = bool(wanted) and len(wanted) > max(
             (len(c.events or ()) for c in self.coordinators), default=0
         )
+        # A device that refused an explicit list once will refuse the next one, so
+        # what it told us outlives a channel being added or removed. Recomputing
+        # the heuristic alone would drop the stream back onto a list already known
+        # to fail, and the only sign would be the events stopping again.
+        use_all_events = use_all_events or self._tried_all_events
         if (
             self._task is not None
             and not self._task.done()
@@ -737,6 +776,20 @@ class DahuaHostEventStream:
                             self._address, refusals,
                         )
                         return
+
+                if self._should_try_all_events(ex):
+                    # Straight back round rather than through the backoff: this is
+                    # not a device in trouble, it is one that wants the request put
+                    # a different way, and it has told us so.
+                    self._tried_all_events = True
+                    self._using_all_events = True
+                    _LOGGER.warning(
+                        "Event stream for %s refused a list of %d event codes with HTTP %s. Some firmware will not serve a long explicit list; subscribing to all events instead and filtering locally, which does not change which events reach Home Assistant",
+                        self._address, len(self._events),
+                        getattr(ex, "status", "?"),
+                    )
+                    continue
+
                 # Say it once per outage, not once per retry. Silence was the
                 # old behaviour and it is why these failures went unreported;
                 # a warning every sixty seconds forever is the other extreme.
