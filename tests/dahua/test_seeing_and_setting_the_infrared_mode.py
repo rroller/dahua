@@ -44,6 +44,9 @@ class _Coordinator:
         # not override available -- only DahuaEventDrivenEntity does -- so
         # the mode select's super().available is Home Assistant's own.
         self.last_update_success = True
+        # Latent rather than failing today: nothing here reads the select's
+        # attributes, but it inherits DahuaBaseEntity's, which read data["id"].
+        self.data = {"id": 7}
         self.client = self
 
     def get_channel(self):

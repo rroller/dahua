@@ -35,6 +35,9 @@ class _Coordinator:
         self._last_plate_timestamp = 0
         self._authorized_plates = ["ABC1234", "XYZ5678"]
         self._authorized_hold_time = 60
+        # DahuaBaseEntity.extra_state_attributes reads data.get("id"), and the
+        # authorized vehicle sensor adds to that dict rather than replacing it.
+        self.data = {"id": 7}
 
     def get_serial_number(self):
         return "SERIAL1"
