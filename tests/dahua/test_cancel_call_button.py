@@ -34,6 +34,8 @@ from custom_components.dahua.button import (
 )
 from custom_components.dahua.vto import CancelCallRefused, DahuaVTOClient
 
+from . import adds_entities
+
 
 class _Transport:
     def __init__(self):
@@ -136,6 +138,11 @@ async def test_the_handler_does_not_leak_on_timeout_either():
 # --- the button -------------------------------------------------------------
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, doorbell=True, vto_client=None):
         self._doorbell = doorbell
         self._vto = vto_client
@@ -173,7 +180,7 @@ async def test_only_a_doorbell_gets_one():
     coordinator = _Coordinator(doorbell=True)
     hass = type("H", (), {"data": {}})()
     await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), added.extend)
+                          "runtime_data": {0: coordinator}})(), adds_entities(added))
 
     assert any(isinstance(b, DahuaCancelCallButton) for b in added)
 
@@ -183,7 +190,7 @@ async def test_a_camera_does_not():
     coordinator = _Coordinator(doorbell=False)
     hass = type("H", (), {"data": {}})()
     await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), added.extend)
+                          "runtime_data": {0: coordinator}})(), adds_entities(added))
 
     assert not any(isinstance(b, DahuaCancelCallButton) for b in added)
     assert any(isinstance(b, DahuaRebootButton) for b in added)

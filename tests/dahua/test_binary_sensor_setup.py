@@ -19,8 +19,15 @@ import pytest
 
 from custom_components.dahua import binary_sensor as bs
 
+from . import adds_entities
+
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, events=(), doorbell=False, channel=0):
         self._events = list(events)
         self._doorbell = doorbell
@@ -64,7 +71,7 @@ def setup(monkeypatch):
     async def run(*coordinators):
         added = []
         await bs.async_setup_entry(
-            None, _Entry(coordinators), lambda entities: added.extend(entities))
+            None, _Entry(coordinators), adds_entities(added))
         return added
 
     run.built = built
@@ -156,7 +163,7 @@ async def test_an_entry_with_nothing_set_up_adds_nothing(setup):
     added = []
 
     await bs.async_setup_entry(
-        None, _Entry([]), lambda entities: added.extend(entities))
+        None, _Entry([]), adds_entities(added))
 
     assert added == []
     assert setup.built == []

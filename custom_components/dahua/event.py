@@ -38,7 +38,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         # Only a doorbell has a button to press. On anything else this entity would
         # sit at unknown for ever, which is worse than not offering it.
         if coordinator.is_doorbell():
-            async_add_devices([DahuaDoorbellEvent(coordinator, entry)])
+            async_add_devices(
+                [DahuaDoorbellEvent(coordinator, entry)],
+                config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaDoorbellEvent(DahuaEventDrivenEntity, EventEntity):

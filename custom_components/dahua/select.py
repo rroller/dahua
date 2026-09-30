@@ -62,7 +62,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.supports_day_night_color():
             devices.append(DahuaDayNightModeSelect(coordinator, entry))
 
-        async_add_devices(devices)
+        async_add_devices(
+            devices, config_subentry_id=coordinator.subentry_id)
 
 
 

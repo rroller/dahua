@@ -505,6 +505,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # they fail on the attribute rather than on anything they are testing.
     _channel_config: dict = {}
 
+    # Which subentry of the entry this channel is, or None for a single camera.
+    # Declared on the class for the same reason as the line above: a great many
+    # tests build a coordinator with object.__new__, and the platforms read this
+    # on every entity they add.
+    subentry_id: str = None
+
     # Same reason, and None rather than {} because a dict here would be one dict
     # shared by every coordinator in the process: eleven channels of a recorder
     # would pool their counts and the field would name no channel in particular.
@@ -514,7 +520,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, events: list, address: str, port: int, rtsp_port: int,
                  username: str, password: str, name: str, channel: int,
-                 use_https: bool = None, channel_config: dict = None) -> None:
+                 use_https: bool = None, channel_config: dict = None,
+                 subentry_id: str = None) -> None:
         """Initialize the coordinator.
 
         `channel_config` is this channel's own settings, which is a subentry's
@@ -525,6 +532,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         entries were merged. See `channel_option`.
         """
         self._channel_config = dict(channel_config or {})
+        self.subentry_id = subentry_id
         # Self signed certs are used over HTTPS so we'll disable SSL verification.
         # connector_owner=False keeps the shared pool alive when this session closes.
         self._session = ClientSession(
@@ -1639,7 +1647,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # listening.
             if not isinstance(data, dict):
                 data = {}
-            object_type = data.get("Object", {}).get("ObjectType", "").lower()
+            # `or {}` rather than a default, because the key being present with a
+            # null is not the same as the key being absent: `.get("Object", {})`
+            # returns None for `"Object": null` and the next `.get` raises. The
+            # device does send nulls -- `"Track": None` is in this module's own
+            # example payload -- and a CrossLine event that detected no object is
+            # exactly when it would. Same reasoning as the isinstance guard above,
+            # which #475 added for the other half of this.
+            object_type = (data.get("Object") or {}).get("ObjectType", "")
+            object_type = (object_type or "").lower()
             codes = []
 
             # Always include the original CrossLine/CrossRegion if a listener exists

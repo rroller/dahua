@@ -22,8 +22,15 @@ from custom_components.dahua import event as event_module
 from custom_components.dahua.const import EVENT, PLATFORMS
 from custom_components.dahua.event import DahuaDoorbellEvent, async_setup_entry
 
+from . import adds_entities
+
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, doorbell=True, timestamp=0):
         self._doorbell = doorbell
         self._timestamp = timestamp
@@ -78,7 +85,7 @@ async def test_a_doorbell_gets_one():
     coordinator = _Coordinator(doorbell=True)
     hass = type("H", (), {"data": {}})()
     await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), added.extend)
+                          "runtime_data": {0: coordinator}})(), adds_entities(added))
 
     assert len(added) == 1
     assert isinstance(added[0], DahuaDoorbellEvent)
@@ -90,7 +97,7 @@ async def test_a_camera_does_not():
     coordinator = _Coordinator(doorbell=False)
     hass = type("H", (), {"data": {}})()
     await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), added.extend)
+                          "runtime_data": {0: coordinator}})(), adds_entities(added))
 
     assert added == []
 

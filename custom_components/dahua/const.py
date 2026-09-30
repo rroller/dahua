@@ -59,6 +59,29 @@ CONF_DISABLE_BACKCHANNEL = "disable_backchannel"
 CONF_AUTHORIZED_PLATES = "authorized_plates"
 CONF_AUTHORIZED_HOLD_TIME = "authorized_hold_time"
 
+# Settings that belong to one channel rather than to the host.
+#
+# `channel_option` reads a channel's own answer before the entry's, and a merged
+# recorder's channel keeps its answer in its subentry's data. So this is the set of
+# keys the #827 migration has to carry across: a key that belongs here and is left
+# behind reverts to whatever was stored when the camera was added, and a key that
+# does not belong here would be frozen per channel instead of following the host.
+#
+# test_channel_options_survive_the_merge.py scans the package for every key read
+# through channel_option, _channel_first or events_for_channel and fails if one is
+# missing from here, so a new per-channel option cannot be added without it.
+CHANNEL_OPTION_KEYS = frozenset({
+    CONF_AREA,
+    CONF_AUTHORIZED_HOLD_TIME,
+    CONF_AUTHORIZED_PLATES,
+    CONF_AUTO_DETECT_CHANNEL,
+    CONF_DISABLE_BACKCHANNEL,
+    CONF_EVENTS,
+    CONF_MANUAL_SECURITY_LIGHT,
+    CONF_MANUAL_SIREN,
+    CONF_NVR_ACTIVE_DETERRENCE,
+})
+
 # Events
 EVENT_DAHUA_ANPR_RECOGNIZED = "dahua_anpr_recognized"
 

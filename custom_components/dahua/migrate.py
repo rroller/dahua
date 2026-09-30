@@ -57,7 +57,8 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 from . import ISSUE_SIBLINGS_REMAIN
-from .const import CONF_ADDRESS, CONF_CHANNEL, CONF_PORT, DOMAIN
+from .const import (CHANNEL_OPTION_KEYS, CONF_ADDRESS, CONF_CHANNEL, CONF_PORT,
+                    DOMAIN)
 from .host import normalize_address
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
@@ -73,6 +74,30 @@ BACKED_UP = (
 # look identical, and so a subentry reconfigure flow can be registered for
 # one type rather than two.
 CHANNEL_SUBENTRY = "channel"
+
+
+def _channel_settings(entry) -> dict:
+    """What this channel is actually configured with, not what it was added with.
+
+    A subentry's data is where a merged recorder keeps one channel's own answers,
+    and `channel_option` reads it before the entry's options. Copying only
+    `entry.data` therefore did not just fail to carry the user's later changes: it
+    made the add-time value *shadow* them, permanently, for every key stored in
+    both. A channel whose events were changed from VideoMotion to SmartMotionHuman
+    in Configure went back to VideoMotion at migration and could not be corrected
+    through the entry's options again, and an empty selection was lost the same way.
+
+    Only the per-channel keys are overlaid. A host-wide option left here would be
+    frozen onto each channel instead of continuing to follow the host.
+
+    Reported by alpha520098 on #825, who also identified the key set.
+    """
+    settings = dict(entry.data)
+    settings.update({
+        key: value for key, value in (entry.options or {}).items()
+        if key in CHANNEL_OPTION_KEYS
+    })
+    return settings
 
 
 def _channel_of(entry) -> int:
@@ -143,6 +168,23 @@ async def async_merge_channel_entries(hass: HomeAssistant) -> None:
 
     by_host: dict[tuple[str, str], list] = {}
     for entry in entries:
+        if entry.disabled_by is not None:
+            # Left exactly as it is, and not counted towards whether this host
+            # needs merging. Disabling an entry is how somebody parks a channel
+            # whose camera has gone without throwing its history away, and
+            # folding it in would undo that in two different ways.
+            #
+            # It would be silently re-enabled: its entities would move onto the
+            # survivor, which is enabled, so a camera the user switched off starts
+            # polling again with nothing said.
+            #
+            # Worse, the survivor is the lowest channel and nothing here looked at
+            # `disabled_by`, so a disabled channel 0 *became* the survivor: every
+            # other channel's entities would be moved onto a disabled entry, which
+            # Home Assistant never sets up, and the other entries are then removed.
+            # A whole recorder goes dark on upgrade, and only the registry copies
+            # taken above are the way back.
+            continue
         address = _address_of(entry)
         if address:
             by_host.setdefault((address, _port_of(entry)), []).append(entry)
@@ -207,7 +249,7 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
             subentry_for[entry.entry_id] = existing[unique_id]
             continue
         subentry = ConfigSubentry(
-            data=dict(entry.data),
+            data=_channel_settings(entry),
             subentry_type=CHANNEL_SUBENTRY,
             title=entry.title or "Channel %d" % channel,
             unique_id=unique_id,

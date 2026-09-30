@@ -37,7 +37,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             buttons.append(DahuaOpenDoorButton(coordinator, entry))
             buttons.append(DahuaCancelCallButton(coordinator, entry))
 
-        async_add_devices(buttons)
+        async_add_devices(
+            buttons, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):
