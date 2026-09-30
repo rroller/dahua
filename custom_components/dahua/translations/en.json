@@ -324,6 +324,14 @@
             },
             "day_night_mode": {
                 "name": "Day/Night Mode"
+            },
+            "infrared_mode": {
+                "name": "Infrared Mode",
+                "state": {
+                    "auto": "Auto",
+                    "manual": "Manual",
+                    "off": "Off"
+                }
             }
         },
         "sensor": {

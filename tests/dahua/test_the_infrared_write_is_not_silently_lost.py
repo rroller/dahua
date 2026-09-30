@@ -83,7 +83,8 @@ async def test_a_refused_write_is_reported_not_swallowed(enabled):
     assert caught.value.translation_placeholders["device"] == "Front Door"
     # The write was attempted. A guard that never called the device would also
     # raise, and would pass this test without the fix being the reason.
-    assert coordinator.client.v1 == [(6, enabled, 100, "1")]
+    assert coordinator.client.v1 == [
+        (6, "Manual" if enabled else "Off", 100, "1")]
 
 
 @pytest.mark.parametrize("error", [

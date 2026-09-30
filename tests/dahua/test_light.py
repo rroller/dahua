@@ -33,8 +33,9 @@ class _Client:
         self.light_brightness = 64
         self.light_field = "NearLight"
 
-    async def async_set_lighting_v1(self, channel, enabled, brightness, profile_mode="0"):
-        self.v1.append((channel, enabled, brightness, profile_mode))
+    async def async_set_lighting_v1_mode(self, channel, mode, brightness,
+                                         profile_mode="0"):
+        self.v1.append((channel, mode, brightness, profile_mode))
         if self.v1_refuses is not None:
             raise self.v1_refuses
         # A device that takes the write reports the new mode on the next poll.
@@ -42,7 +43,12 @@ class _Client:
         # passes it on answers 200 and keeps reporting the old one, which is the
         # case v1_ignores models.
         if not self.v1_ignores:
-            self.infrared_mode = "Manual" if enabled else "Off"
+            self.infrared_mode = mode
+
+    async def async_set_lighting_v1(self, channel, enabled, brightness, profile_mode="0"):
+        """What the real client does with it: on is Manual, off is Off."""
+        await self.async_set_lighting_v1_mode(
+            channel, "Manual" if enabled else "Off", brightness, profile_mode)
 
     async def async_get_lighting_scheme_mode(self, channel, profile_mode):
         return self.scheme
@@ -185,6 +191,7 @@ class _Coordinator:
         self.refreshed = 0
         self.infrared_on = True
         self.infrared_brightness = 128
+        self.infrared_level = 50
         self.illuminator_on = False
         self.illuminator_brightness = 64
         # Which light this device calls the white one; 0 on most models.
@@ -219,6 +226,10 @@ class _Coordinator:
 
     def get_infrared_brightness(self):
         return self.infrared_brightness
+
+    def get_infrared_level(self):
+        """The device's own 0..100 scale, which is readable whatever the mode."""
+        return self.infrared_level
 
     def is_illuminator_on(self):
         return self.illuminator_on
@@ -320,7 +331,7 @@ async def test_infrared_turn_on_sends_the_channel_and_brightness():
     c = _Coordinator(channel=3)
     await _light(DahuaInfraredLight, c).async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
-    assert c.client.v1 == [(3, True, 100, "1")], (
+    assert c.client.v1 == [(3, "Manual", 100, "1")], (
         "the write must name the profile the camera is using, not 0")
     assert c.client.v2 == [], "the infrared light must not use the v2 API"
     assert c.refreshed == 1
@@ -331,8 +342,8 @@ async def test_infrared_turn_off_sends_enabled_false():
     await _light(DahuaInfraredLight, c).async_turn_off()
 
     assert len(c.client.v1) == 1
-    channel, enabled, _, profile = c.client.v1[0]
-    assert (channel, enabled) == (3, False)
+    channel, mode, _, profile = c.client.v1[0]
+    assert (channel, mode) == (3, "Off")
     assert profile == "1", "turning off must reach the same profile as turning on"
 
 
