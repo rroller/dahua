@@ -216,7 +216,7 @@ async def test_a_failure_with_no_status_is_not_a_refusal():
 
 # --- and it has to outlive a channel change ---------------------------------
 
-def test_what_the_device_said_survives_the_heuristic():
+async def test_what_the_device_said_survives_the_heuristic():
     """`_restart_if_needed` recomputes the old guess whenever channels change. On
     its own that would drop the stream back onto a list already known to fail, and
     the only sign would be the events stopping again."""
@@ -229,3 +229,7 @@ def test_what_the_device_said_survives_the_heuristic():
     stream._restart_if_needed()
 
     assert stream._using_all_events is True
+    # It ends by starting the stream, which is why this test needs a loop and
+    # why the task has to be put away again: a lingering one fails the suite.
+    stream._task.cancel()
+    await asyncio.gather(stream._task, return_exceptions=True)
