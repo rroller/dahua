@@ -837,7 +837,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         typed into the reauth dialog is refused along with everything else.
         That is the loop in #729: reauth asked for, reauth impossible.
         """
-        refusals = async_record_host_auth_refusal(self._address)
+        # Per entry, so a recorder's channels refusing in the same instant count
+        # once rather than once each.
+        refusals = async_record_host_auth_refusal(
+            self._address, self.config_entry.entry_id)
         if refusals < MAX_AUTH_REFUSALS:
             _LOGGER.debug(
                 "Authentication refused by %s (%d of %d). Not treating it as a wrong password yet",
