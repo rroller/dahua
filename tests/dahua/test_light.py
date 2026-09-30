@@ -20,6 +20,13 @@ class _Client:
         self.scheme_writes = []
         self.operations = []
 
+        # How the device answers an infrared write: normally it takes it. Set
+        # v1_refuses to an exception to model a refusal, or v1_ignores to model
+        # the 200 that changes nothing.
+        self.v1_refuses = None
+        self.v1_ignores = False
+        self.infrared_mode = "Auto"
+
         # Default camera state used by the existing illuminator tests.
         self.scheme = "AIMode"
         self.light_mode = "Manual"
@@ -28,6 +35,14 @@ class _Client:
 
     async def async_set_lighting_v1(self, channel, enabled, brightness, profile_mode="0"):
         self.v1.append((channel, enabled, brightness, profile_mode))
+        if self.v1_refuses is not None:
+            raise self.v1_refuses
+        # A device that takes the write reports the new mode on the next poll.
+        # A recorder that accepts the request for a remote camera and never
+        # passes it on answers 200 and keeps reporting the old one, which is the
+        # case v1_ignores models.
+        if not self.v1_ignores:
+            self.infrared_mode = "Manual" if enabled else "Off"
 
     async def async_get_lighting_scheme_mode(self, channel, profile_mode):
         return self.scheme
@@ -197,6 +212,10 @@ class _Coordinator:
 
     def is_infrared_light_on(self):
         return self.infrared_on
+
+    def get_infrared_mode(self):
+        """What the device reports now, which is how a write is checked."""
+        return self.client.infrared_mode
 
     def get_infrared_brightness(self):
         return self.infrared_brightness

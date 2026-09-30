@@ -6,6 +6,31 @@ import logging
 import re
 
 
+def describe_write_refusal(exception) -> str:
+    """A short phrase naming why a device would not take a write.
+
+    Written because the two ways a recorder declines a lighting write both
+    reached the user as something unreadable. `str()` on an
+    aiohttp.ClientResponseError is the whole request URL --
+    "403, message='Forbidden', url='http://.../configManager.cgi?action=setConfig
+    &Lighting%5B6%5D%5B0%5D.Mode=Manual'" -- which is a request, not a reason.
+    And `str()` on a timeout is empty, so formatting one gives a blank where the
+    cause should be.
+
+    The status is the part that distinguishes them: measured on a
+    DHI-NVR5464-16P-EI, 403 is a channel whose lighting the recorder will not
+    write, and 400 is a table it does not serve at all. So name the status when
+    there is one, and the class name when there is not.
+
+    Duck-typed on `status` rather than checking the class, so this module keeps
+    importing nothing but the standard library.
+    """
+    status = getattr(exception, "status", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        return ("HTTP %d %s" % (status, getattr(exception, "message", "") or "")).strip()
+    return str(exception).strip() or type(exception).__name__
+
+
 def dahua_brightness_to_hass_brightness(bri_str: str) -> int:
     """
     Converts a dahua brightness (which is 0 to 100 inclusive) and converts it to what HASS
