@@ -54,6 +54,7 @@ from custom_components.dahua.switch import (
     DahuaSirenBinarySwitch,
     DahuaSmartMotionDetectionBinarySwitch,
 )
+from custom_components.dahua.update import DahuaFirmwareUpdateEntity
 
 SERIAL = "4L03CB4PAZC9E8F"
 
@@ -199,6 +200,8 @@ GOLDEN_SUFFIXES = [
     ("_1_preset_position",
      lambda c: DahuaCameraPresetPositionSelect(c, _Entry(), rpc2_channel=1)),
     ("_day_night_mode", lambda c: DahuaDayNightModeSelect(c, _Entry())),
+    # update.py
+    ("_firmware_update", lambda c: _bare(DahuaFirmwareUpdateEntity, c)),
 ]
 
 
@@ -247,6 +250,7 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_preset_position",
         "4L03CB4PAZC9E8F_2_1_preset_position",
         "4L03CB4PAZC9E8F_2_day_night_mode",
+        "4L03CB4PAZC9E8F_2_firmware_update",
     }
 
 

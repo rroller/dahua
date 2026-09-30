@@ -1455,6 +1455,15 @@ class DahuaClient:
         holder = await self._shared_rpc2()
         return await holder.client.get_product_definition(name)
 
+    async def async_get_cloud_upgrade_info(self) -> dict:
+        """Read the firmware the device's own cloud check last found, over RPC2.
+
+        Local to the device -- no Dahua server is contacted from here. Raises
+        if the firmware serves no ``_DHCloudUpgrade_`` table.
+        """
+        holder = await self._shared_rpc2()
+        return await holder.client.get_cloud_upgrade_info()
+
     async def async_get_coaxial_control_io_caps_rpc2(self) -> dict[str, bool]:
         """Probe a direct camera on channel zero, independently of config transport."""
         return await self._direct_coaxial_rpc2("get_coaxial_control_io_caps")

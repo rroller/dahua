@@ -276,6 +276,24 @@ class DahuaRpc2Client:
         response = await self.request(method="configManager.getConfig", params=params)
         return response['params']
 
+    async def get_cloud_upgrade_info(self) -> dict:
+        """Read the device's cached cloud-upgrade record.
+
+        The firmware keeps what its own OTA check last found in the
+        ``_DHCloudUpgrade_`` config table, so reading it is local: nothing here
+        contacts Dahua. A device whose firmware has no such table refuses the
+        read, which is how its absence is established.
+        """
+        if not self._session_id:
+            await self.login()
+        params = await self.get_config({"name": "_DHCloudUpgrade_"})
+        table = params.get("table")
+        if not isinstance(table, list) or not table or not isinstance(table[0], dict):
+            raise ValueError(
+                "Dahua RPC2 response is missing the _DHCloudUpgrade_ table"
+            )
+        return table[0]
+
     async def async_get_remote_ivs_rules(self, channel: int) -> list[dict]:
         """Read the complete rule table for one zero-based NVR channel."""
         if not self._session_id:

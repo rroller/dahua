@@ -20,7 +20,7 @@ PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 
 # Platforms whose entities only ever read. Their state arrives through the
 # coordinator, so there is nothing to serialise.
-READ_ONLY = {"binary_sensor", "sensor", "event"}
+READ_ONLY = {"binary_sensor", "sensor", "event", "update"}
 
 # Platforms that send a command to the device: a toggle, a preset, a reboot, a
 # stream. These are the ones the limit exists for.

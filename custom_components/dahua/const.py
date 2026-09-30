@@ -24,7 +24,18 @@ SELECT = "select"
 BUTTON = "button"
 SENSOR = "sensor"
 EVENT = "event"
-PLATFORMS = [BINARY_SENSOR, SWITCH, LIGHT, CAMERA, SELECT, BUTTON, SENSOR, EVENT]
+UPDATE = "update"
+PLATFORMS = [
+    BINARY_SENSOR,
+    SWITCH,
+    LIGHT,
+    CAMERA,
+    SELECT,
+    BUTTON,
+    SENSOR,
+    EVENT,
+    UPDATE,
+]
 
 
 # Configuration and options
@@ -101,6 +112,11 @@ DEFAULT_SCAN_INTERVAL = 30
 # Below this the polling costs more than it tells you, especially on an NVR
 # where every channel is a separate entry against the same host.
 MIN_SCAN_INTERVAL = 10
+# How long a read of the device's cloud upgrade record is reused. The device
+# only rewrites that record after its own OTA check (daily by default), so the
+# informational update entity does not need it re-read on every poll. The
+# record is host-wide, but the reuse is per channel that reads it.
+FIRMWARE_UPGRADE_REFRESH_SECONDS = 6 * 60 * 60
 
 STARTUP_MESSAGE = f"""
 -------------------------------------------------------------------

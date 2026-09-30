@@ -23,7 +23,7 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 
 PLATFORMS = ("binary_sensor", "button", "camera", "event", "light", "select",
-             "sensor", "switch")
+             "sensor", "switch", "update")
 
 # The mdi name each entity's code produced before it moved. Home Assistant shows
 # the same glyph either way, so a difference here is a changed icon on a

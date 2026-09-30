@@ -29,7 +29,7 @@ PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 # The files that define entities. entity.py holds the base and is where the flag
 # lives, so it is checked separately below.
 PLATFORMS = ["binary_sensor", "button", "camera", "event", "light", "select",
-             "sensor", "switch"]
+             "sensor", "switch", "update"]
 
 # Ways the device's name can be reached from an entity.
 DEVICE_NAME = re.compile(

@@ -29,7 +29,7 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 
 PLATFORMS = ("binary_sensor", "button", "camera", "event", "light", "select",
-             "sensor", "switch")
+             "sensor", "switch", "update")
 
 # What each entity's `name` property returned before it was translated. The whole
 # point of the change was that Home Assistant composes "<device> <entity>" either
@@ -47,6 +47,7 @@ WAS = {
     ("sensor", "serial_number"): "Serial Number",
     ("sensor", "profile"): "Profile",
     ("sensor", "license_plate"): "License Plate",
+    ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
     ("switch", "disarming"): "Disarming",
     ("switch", "event_notifications"): "Event Notifications",
