@@ -206,6 +206,55 @@ async def test_setup_only_runs_its_probes_once(hass):
     assert asked == [], "the capability probes ran again on the second poll"
 
 
+# --- a capability that worked and then stopped -------------------------------
+
+
+async def test_a_ptz_read_that_starts_failing_keeps_the_last_preset(hass):
+    """The preset select reads `status.PresetID`, and a camera that refuses the read on
+    one poll should not reset the select to "0".
+
+    This is the second poll, not the probe: the probe decides whether the camera has PTZ
+    at all, and this is what happens afterwards when a camera that said yes stops
+    answering. Some firmware drops this API intermittently, and dropping the value with
+    it would make the select flicker between the real preset and nothing.
+    """
+    coordinator = _coordinator(hass)
+    await coordinator._async_update_data()
+    coordinator.data = {"status.PresetID": "3"}
+
+    coordinator.client._refusing = "async_get_ptz_position"
+    result = await coordinator._async_update_data()
+
+    assert result.get("status.PresetID") == "3", (
+        "a refused read dropped the preset the select is showing")
+
+
+async def test_a_ptz_read_that_fails_with_nothing_remembered_says_nothing(hass):
+    """With no previous value there is nothing to carry, and inventing one would make
+    the select claim a preset the camera never reported."""
+    coordinator = _coordinator(hass)
+    await coordinator._async_update_data()
+    coordinator.data = {}
+
+    coordinator.client._refusing = "async_get_ptz_position"
+    result = await coordinator._async_update_data()
+
+    assert "status.PresetID" not in result, result.get("status.PresetID")
+
+
+async def test_a_refused_ptz_read_does_not_fail_the_poll(hass):
+    """The whole point. This runs inside the fan-out that gathers every per-poll read,
+    so an exception here would take the rest of the poll with it and leave every entity
+    on the channel unavailable over one optional API."""
+    coordinator = _coordinator(hass)
+    await coordinator._async_update_data()
+
+    coordinator.client._refusing = "async_get_ptz_position"
+    result = await coordinator._async_update_data()
+
+    assert isinstance(result, dict), "the poll did not complete"
+
+
 # --- and one that refuses ---------------------------------------------------
 
 @pytest.mark.parametrize("method, flag, model", PROBES)
