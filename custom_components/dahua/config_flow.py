@@ -881,9 +881,32 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             ))
         return subentries
 
+    @callback
+    def _set_flow_title(self, entry) -> None:
+        """Fill the placeholders `config.flow_title` needs, from an existing entry.
+
+        `flow_title` is "{name} ({address})", and Home Assistant renders it on the card
+        that appears in the integrations list when a flow wants attention. It is filled
+        from `context["title_placeholders"]`, which only the DHCP discovery step was
+        setting.
+
+        A flow started from an existing entry therefore rendered the title with nothing
+        to substitute, and the frontend showed
+        `Translation [formatjs Error: MISSING_VALUE ...]` where the device name belongs.
+        That is the card a user meets at the worst moment: their cameras have just
+        stopped and the thing telling them so is an error about an error.
+        """
+        data = entry.data if entry is not None else {}
+        self.context["title_placeholders"] = {
+            "name": (entry.title if entry is not None and entry.title
+                     else data.get(CONF_ADDRESS, "Dahua")),
+            "address": data.get(CONF_ADDRESS, ""),
+        }
+
     async def async_step_reauth(self, entry_data):
         """Handle reauthentication when credentials become invalid."""
         self._reauth_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        self._set_flow_title(self._reauth_entry)
         return await self._show_reauth_form()
 
     async def async_step_reauth_confirm(self, user_input=None):
@@ -974,6 +997,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """
         self._errors = {}
         entry = self._get_reconfigure_entry()
+        self._set_flow_title(entry)
 
         if user_input is not None:
             data, error = await self._test_credentials(
