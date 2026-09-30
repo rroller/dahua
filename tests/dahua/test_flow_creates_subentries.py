@@ -38,12 +38,26 @@ def _flow(extra=(), found=None, areas=None, primary=None):
 
 # --- what gets created ------------------------------------------------------
 
-def test_a_single_camera_gets_one_channel():
-    subentries = _flow()._channel_subentries()
+def test_a_single_camera_gets_no_subentries_at_all():
+    """A camera is not a hub with one member.
 
-    assert len(subentries) == 1
-    assert subentries[0]["data"]["channel"] == 0
-    assert subentries[0]["subentry_type"] == CHANNEL_SUBENTRY
+    It used to get one, and Home Assistant renders subentry ownership by nesting
+    the device underneath -- so a standalone camera read as a recorder that
+    happens to have one channel (#830, @roalvesrj). An entry with no subentries
+    is the shape `channel_configs()` already handles, and the shape every single
+    camera upgrading from 0.9.x already has.
+    """
+    assert _flow()._channel_subentries() == []
+
+
+def test_a_recorder_with_one_chosen_channel_still_gets_both():
+    """The boundary. One extra channel means two subentries, not one: the primary
+    has to be there too or setup brings up every channel except the one the user
+    started from."""
+    subentries = _flow(extra=[1])._channel_subentries()
+
+    assert [s["data"]["channel"] for s in subentries] == [0, 1]
+    assert {s["subentry_type"] for s in subentries} == {CHANNEL_SUBENTRY}
 
 
 def test_a_recorder_gets_one_channel_each():

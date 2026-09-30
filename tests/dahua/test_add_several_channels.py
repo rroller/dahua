@@ -360,16 +360,20 @@ def test_queueing_does_not_mutate_the_first_entrys_data():
     assert flow.init_info[CONF_NAME] == "Front"
 
 
-def test_nothing_chosen_makes_only_the_primary():
-    """A single camera is one channel, and it is still a subentry: setup reads
-    channels from the subentries whenever there are any, so leaving the primary
-    out would bring up nothing at all."""
+def test_nothing_chosen_makes_no_subentries():
+    """A single camera is a camera, not a hub with one member.
+
+    It used to get one subentry for the primary, on the reasoning that setup reads
+    channels from the subentries whenever there are any. That reasoning holds for
+    a recorder and not for one camera: with no subentries at all,
+    `channel_configs()` takes its single-channel branch on the entry's own data.
+    What the subentry bought was Home Assistant nesting the camera's device
+    underneath it, which read as a recorder with one channel (#830).
+    """
     flow = _flow()
     flow._extra_channels = []
 
-    subentries = flow._channel_subentries()
-
-    assert [s["data"][CONF_CHANNEL] for s in subentries] == [0]
+    assert flow._channel_subentries() == []
 
 
 # --- the step that actually creates the extra entries ------------------------

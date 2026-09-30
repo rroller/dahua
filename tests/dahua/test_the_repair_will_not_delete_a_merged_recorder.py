@@ -135,6 +135,36 @@ async def test_a_merged_entry_is_kept_while_its_unmerged_siblings_go(hass):
     assert hass.config_entries.async_get_entry(stray.entry_id) is None
 
 
+async def test_a_camera_that_holds_one_channel_is_a_leftover_however_it_is_shaped(hass):
+    """The case the guard's wording changed for.
+
+    It used to ask `if entry.subentries`, which was a proxy for "holds many
+    channels". The add flow gave even a single camera a subentry of its own for a
+    while, so a camera added in that window read as a merged recorder and was
+    protected from a card the user had explicitly asked for -- while the same
+    camera added before or after it was removed. Counting the channels says what
+    the guard has always meant, and gives all three the same answer.
+    """
+    one_subentry = _entry(hass, channel=7, title="Front Door")
+    hass.config_entries.async_add_subentry(one_subentry, ConfigSubentry(
+        data={"channel": 7, "name": "Front Door"},
+        subentry_type=CHANNEL_SUBENTRY,
+        title="Front Door",
+        unique_id=f"{ADDRESS}-7",
+    ))
+    assert one_subentry.subentries, "the shape under test needs its subentry"
+
+    flat = _entry(hass, channel=8, title="Side Gate")
+    assert not flat.subentries
+
+    await _flow(hass).async_step_confirm({})
+    await hass.async_block_till_done()
+
+    assert hass.config_entries.async_get_entry(one_subentry.entry_id) is None, (
+        "a one channel entry was protected because of how it was shaped")
+    assert hass.config_entries.async_get_entry(flat.entry_id) is None
+
+
 async def test_the_form_still_does_nothing_until_the_button_is_pressed(hass):
     """Opening the card must remain harmless. That is the only reason this was
     recoverable at all: the registry copies the merge writes before it touches
