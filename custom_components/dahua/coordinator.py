@@ -1462,6 +1462,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 rule["id"] == str(rule_id) for rule in self.get_ivs_rules()
             ):
                 codes.append(f"IVSRule_{rule_id}")
+                if action == "Start" and raw_code:
+                    # Remember which rules this code actually lit, so the Stop
+                    # below clears exactly those rather than trusting that the
+                    # configured Type is spelled like the event Code.
+                    active = getattr(self, "_ivs_active_rules", None)
+                    if active is None:
+                        active = self._ivs_active_rules = {}
+                    active.setdefault(raw_code, set()).add(str(rule_id))
             else:
                 # Configuration IDs and event IDs are not proven equivalent on
                 # every NVR. Record the mismatch; never guess by name or index.
@@ -1480,9 +1488,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug("Normal IVS event did not match a discovered rule: %s",
                                   self._ivs_last_unmatched)
 
-        # A camera can send several rule Starts but only one Stop for the code.
-        # Clear every rule of that code even when the Stop has no usable data.
+        # Dahua sends one Start per rule but a single Stop for the whole event
+        # code, and that Stop names only one rule (the first Start's EventID):
+        #   Start RuleID=9 EventID=10161
+        #   Start RuleID=7 EventID=10163
+        #   Start RuleID=8 EventID=10165
+        #   Stop  RuleID=9 EventID=10161
+        # So a Stop means "this code is now inactive", not "this rule ended".
+        # Clear every rule that code lit, even when the Stop has no usable data.
         if action == "Stop" and raw_code:
+            active = getattr(self, "_ivs_active_rules", None) or {}
+            for rule_id in sorted(active.pop(raw_code, ())):
+                rule_code = f"IVSRule_{rule_id}"
+                if rule_code not in codes:
+                    codes.append(rule_code)
+            # Fallback for state lost across a reload: match by configured Type.
             for rule in self.get_ivs_rules():
                 if rule.get("type") != raw_code:
                     continue

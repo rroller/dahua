@@ -500,9 +500,11 @@ To activate a per-rule sensor, a Start must carry `Class=Normal` and a matching
 `RuleId` or `RuleID`. The integration does not guess a match from the rule name
 or array position. NVR configuration IDs and event IDs still need comparison on
 real hardware; a discovered entity alone does not prove that its event IDs match.
-A Stop clears all active rules with the same event Code on that channel: some
-cameras emit several rule Starts but only one Stop. This also handles a Stop
-without usable rule data. Pulse events use the existing short hold before clearing.
+A Stop clears all active rules with the same event Code on that channel: Dahua
+emits one Start per rule but a single Stop for the whole code, and that Stop
+names only one rule. The integration clears the rules that code actually lit,
+falling back to the rules' configured Type after a reload. This also handles a
+Stop without usable rule data. Pulse events use the existing short hold before clearing.
 
 The downloaded diagnostics contain an `ivs` section for every configured channel:
 the setup read source, discovered count, skipped row indexes and reasons, and

@@ -449,3 +449,45 @@ def test_unmatched_diagnostics_are_bounded_and_do_not_guess(caplog):
     assert "Name" not in block["9"]["last_unmatched_event"]
     assert len([r for r in caplog.records if "did not match" in r.message]) == 2
     assert c.get_event_timestamp("IVSRule_0") == 0
+
+
+def test_stop_clears_rules_lit_by_start_even_if_configured_type_differs():
+    """The Stop must not depend on the configured Type matching the event Code."""
+    table = _rules()
+    table.update(row(10, "30", channel=0, name="No Type"))  # no .Type in the config
+    c = _coordinator(table)
+    sensors = {rule["id"]: _sensor(c, rule) for rule in c.get_ivs_rules()}
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    for rule_id in (23, 30):
+        c._dispatch_event(
+            {"Code": "StayDetection", "data": {"Class": "Normal", "RuleID": rule_id}},
+            "Start",
+        )
+    assert sensors["23"].is_on and sensors["30"].is_on
+
+    c._dispatch_event({"Code": "StayDetection"}, "Stop")
+    assert not sensors["23"].is_on
+    assert not sensors["30"].is_on
+
+
+def test_stop_tracking_is_consumed_and_a_later_cycle_works():
+    c = _coordinator()
+    sensors = {rule["id"]: _sensor(c, rule) for rule in c.get_ivs_rules()}
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+    start = {"Code": "CrossLineDetection", "data": {"Class": "Normal", "RuleID": 5}}
+    stop = {"Code": "CrossLineDetection"}
+
+    c._dispatch_event(start, "Start")
+    c._dispatch_event(stop, "Stop")
+    assert not sensors["5"].is_on
+    assert c._ivs_active_rules == {}
+
+    # A second Stop with nothing lit changes nothing, and the next Start still lights it.
+    c._dispatch_event(stop, "Stop")
+    c._dispatch_event(start, "Start")
+    assert sensors["5"].is_on
+    c._dispatch_event(stop, "Stop")
+    assert not sensors["5"].is_on
