@@ -193,7 +193,7 @@ def test_manual_is_always_offered(monkeypatch):
 
 # --- and whether the control is created at all (#525) ------------------------
 
-def _setup_coordinator(answer, day_night=False):
+def _setup_coordinator(answer, day_night=False, infrared=False):
     """A coordinator complete enough to drive select.async_setup_entry."""
     async def get_presets(channel):
         if isinstance(answer, Exception):
@@ -211,15 +211,16 @@ def _setup_coordinator(answer, day_night=False):
         is_amcrest_doorbell=lambda: False,
         supports_security_light=lambda: False,
         supports_day_night_color=lambda: day_night,
+        supports_infrared_light=lambda: infrared,
     )
 
 
-async def _added(monkeypatch, answer, day_night=False):
+async def _added(monkeypatch, answer, day_night=False, infrared=False):
     import custom_components.dahua.select as select_module
 
     monkeypatch.setattr(select_module.DahuaBaseEntity, "__init__",
                         lambda self, coordinator, config_entry: None)
-    coordinator = _setup_coordinator(answer, day_night)
+    coordinator = _setup_coordinator(answer, day_night, infrared)
     hass = type("H", (), {"data": {}})()
     entry = type("E", (), {"entry_id": "e1",
                            "runtime_data": {0: coordinator}})()
@@ -261,3 +262,11 @@ async def test_skipping_it_does_not_cost_the_camera_its_other_entities(monkeypat
     early would take Day/Night with it."""
     assert await _added(monkeypatch, {}, day_night=True) == [
         "DahuaDayNightModeSelect"]
+
+
+async def test_the_infrared_mode_control_is_offered_only_where_there_is_one(monkeypatch):
+    """An -AS-PV has no infrared emitter, so a mode dropdown for one is a control
+    that can only ever fail. Gated on the same capability the light entity is."""
+    assert await _added(monkeypatch, {}, infrared=True) == [
+        "DahuaInfraredModeSelect"]
+    assert await _added(monkeypatch, {}, infrared=False) == []

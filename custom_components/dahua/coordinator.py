@@ -2488,6 +2488,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ returns true if the infrared light is on """
         return self.get_infrared_mode() == "Manual"
 
+    def get_infrared_level(self):
+        """The infrared level on the device's own 0..100 scale, or None.
+
+        Home Assistant publishes a light's `brightness` only while that light is
+        on, and this light is on only when the mode is `Manual`. A camera on
+        `Auto` is illuminating at this level and reads off, so the level has to be
+        readable separately or it cannot be shown at all.
+
+        None rather than a number when the channel reports none, so the attribute
+        says "not known" instead of claiming the emitter is at zero.
+        """
+        level = self.data.get(
+            "table.Lighting[{0}][{1}].MiddleLight[0].Light".format(
+                self._channel, self.get_infrared_profile()))
+        if level is None or level == "":
+            return None
+        try:
+            return int(level)
+        except (TypeError, ValueError):
+            return None
+
     def get_infrared_brightness(self) -> int:
         """Return the brightness of this light, as reported by the camera itself, between 0..255 inclusive"""
 
