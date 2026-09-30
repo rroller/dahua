@@ -64,8 +64,11 @@ class _Attaches:
         if isinstance(answer, BaseException):
             raise answer
         if answer == "talks":
+            # Delivers, then ends. A live stream would stay open, but the loop
+            # only moves on when an attach finishes, so holding it open here
+            # means the test never reaches its next scripted attach.
             on_receive(b"Heartbeat", 0)
-        await asyncio.Event().wait()
+        return
 
 
 def _stream(client, events=NINE_CODES, **kwargs):
