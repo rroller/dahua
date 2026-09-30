@@ -217,6 +217,10 @@ class _Coordinator:
     def get_device_name(self):
         return "Front Door"
 
+    def get_address(self):
+        """Read by DahuaBaseEntity.available, which the mode select builds on."""
+        return "192.168.0.213"
+
     def is_infrared_light_on(self):
         return self.infrared_on
 

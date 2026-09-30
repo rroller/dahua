@@ -9,7 +9,8 @@ from . import dahua_utils
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .infrared import (
-    MODE_BY_OPTION, OPTION_BY_MODE, async_write_infrared_mode)
+    MODE_BY_OPTION, OPTION_BY_MODE, async_write_infrared_mode,
+    infrared_write_is_refused)
 from .model_profiles import is_sdt4e425
 
 _LOGGER = logging.getLogger(__package__)
@@ -164,6 +165,23 @@ class DahuaInfraredModeSelect(DahuaBaseEntity, SelectEntity):
     @property
     def unique_id(self):
         return self._coordinator.get_serial_number() + "_infrared_mode"
+
+    @property
+    def available(self) -> bool:
+        """Unavailable once the device has refused a write outright.
+
+        This entity exists only to write. A recorder that answers
+        `Authority:check failure` to every `Lighting` write -- measured on a
+        DHI-NVR5464-16P-EI, on every channel and over both transports -- gives it
+        nothing to do, and a dropdown that always throws is worse than no
+        dropdown.
+
+        The light entity stays available on purpose: its `mode` and
+        `brightness_level` are read off the same table and are correct, so the
+        reading half of this is still useful where the writing half is not.
+        """
+        return (super().available
+                and not infrared_write_is_refused(self._coordinator))
 
     @property
     def current_option(self):

@@ -51,6 +51,10 @@ class _Coordinator:
     def get_device_name(self):
         return "Driveway"
 
+    def get_address(self):
+        """DahuaBaseEntity.available reads it, and the select now builds on that."""
+        return "192.168.0.213"
+
     def get_infrared_profile(self):
         return "0"
 
