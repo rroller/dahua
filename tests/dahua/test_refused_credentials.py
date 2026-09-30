@@ -190,10 +190,16 @@ def test_a_different_host_keeps_its_own_count():
 # --- the event stream stops too ---------------------------------------------
 
 async def test_the_event_stream_stops_once_the_budget_is_gone():
-    """It backs off to ten minutes at most, well inside the half hour lock."""
+    """It backs off to ten minutes at most, well inside the half hour lock.
+
+    The budget is spent here by a channel's polls, which is how it happens: the polls
+    run every interval and the stream only notices when its socket next fails. The
+    count is per source and shared per host, so a stream stops because of refusals it
+    never saw itself. That is the whole point of keeping it per host.
+    """
     _clean()
-    for _ in range(MAX_AUTH_REFUSALS - 1):
-        async_record_host_auth_refusal("10.0.0.5")
+    for _ in range(MAX_AUTH_REFUSALS):
+        async_record_host_auth_refusal("10.0.0.5", "a channel")
 
     stream = object.__new__(DahuaHostEventStream)
     stream._address = "10.0.0.5"
