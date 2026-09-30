@@ -22,6 +22,7 @@ oversight.
 """
 
 import pytest
+from aiohttp import ClientConnectionError, ClientResponseError
 from types import SimpleNamespace
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -68,8 +69,18 @@ FLAGS = (
 )
 
 
-class _Refused(Exception):
-    """What a device that does not serve an endpoint answers with."""
+def _refused():
+    """What a device that does not serve an endpoint answers with.
+
+    An HTTP error response, which is what the handlers catch: they are typed
+    `PROBE_REFUSED = (ClientResponseError, TimeoutError)` and
+    `PROBE_FAILED = (ClientError, TimeoutError)`, not bare `Exception`. Raising
+    something else here would escape to the outer handler and make every one of
+    these report that a refusal stops setup, which is not what the code does.
+    """
+    return ClientResponseError(
+        request_info=SimpleNamespace(real_url="http://10.0.0.5/cgi-bin/x.cgi"),
+        history=(), status=400)
 
 
 def _coordinator(hass, refusing=None):
@@ -79,12 +90,14 @@ def _coordinator(hass, refusing=None):
     emptily, which is what a device that serves an endpoint and has nothing to
     report looks like.
     """
-    client = SimpleNamespace(use_rpc2=False)
+    # `device_key` is read rather than called, which a scan for call sites
+    # does not find. It cost a CI run to notice.
+    client = SimpleNamespace(use_rpc2=False, device_key="10.0.0.5:80")
 
     def _answer(name):
         async def call(*args, **kwargs):
             if name == refusing:
-                raise _Refused(name)
+                raise _refused()
             return {}
         return call
 
@@ -93,7 +106,7 @@ def _coordinator(hass, refusing=None):
 
     async def _streams(*a, **k):
         if "get_max_extra_streams" == refusing:
-            raise _Refused("get_max_extra_streams")
+            raise _refused()
         return 1
     client.get_max_extra_streams = _streams
 
@@ -220,3 +233,25 @@ async def test_a_refused_probe_leaves_the_others_alone(hass, method, flag):
     got = {name: getattr(refusing, name) for name in FLAGS if name != flag}
     assert got == expected, (
         "refusing %s also changed another capability" % method)
+
+
+async def test_a_connection_failure_on_the_coaxial_probe_still_fails_setup(hass):
+    """Deliberate, and the reason that probe is typed differently from the rest.
+
+    An HTTP error means the device does not serve this. A connection failure means
+    nothing about the device at all, and treating it as "no siren" would decide a
+    capability from a dropped packet and keep that answer for the life of the
+    entry. So `PROBE_REFUSED` is (ClientResponseError, TimeoutError) and a bare
+    ClientError is left to fail setup, which retries.
+    """
+    coordinator = _coordinator(hass)
+
+    async def _cannot_connect(*args, **kwargs):
+        raise ClientConnectionError("no route to host")
+
+    coordinator.client.async_get_coaxial_control_io_status = _cannot_connect
+
+    with pytest.raises(Exception):
+        await coordinator._async_update_data()
+
+    assert coordinator.initialized is False
