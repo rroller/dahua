@@ -27,6 +27,7 @@ from custom_components import dahua as dahua_module
 from custom_components.dahua import (
     ISSUE_REMOVAL_BROKE_THINGS,
     ISSUE_SIBLINGS_REMAIN,
+    _async_dependents,
     _describe_dependents,
     async_remove_entry,
 )
@@ -175,6 +176,76 @@ async def test_nothing_referenced_it_and_nothing_remains_is_silent(hass):
 
 
 # --- the wording ------------------------------------------------------------
+
+async def test_working_out_what_referenced_it_never_fails_the_removal(hass, monkeypatch):
+    """The search component is an `after_dependency`: available in practice, not
+    something to fail on. And this runs *after* Home Assistant has already deleted the
+    entry, so raising here cannot undo anything, it only loses the note.
+
+    `async_remove_entry`'s exceptions are logged and discarded, so a failure here would
+    be invisible except as a card that never appeared.
+    """
+    def _explodes(*args, **kwargs):
+        raise RuntimeError("the search component moved")
+
+    monkeypatch.setattr(
+        "homeassistant.helpers.entity.entity_sources", _explodes, raising=False)
+
+    assert _async_dependents(hass, "any-entry-id") == {}
+
+
+async def test_a_working_search_is_filtered_to_what_breaks_silently(hass, monkeypatch):
+    """The control, and the filtering.
+
+    Without this the test above would pass for a function that always returns nothing,
+    which is exactly the failure it is meant to rule out. It also pins which kinds are
+    reported: a dashboard card pointing at a missing entity says so on screen, an
+    automation just stops firing, so only the silent ones are listed.
+
+    Note that the guard tested above covers the search *call*. The filtering below it
+    sits outside the try, so this exercises a different few lines.
+    """
+    class _Searcher:
+        def __init__(self, hass, sources):
+            pass
+
+        def async_search(self, item_type, entry_id):
+            return {
+                "automation": {"automation.gate"},
+                "script": {"script.arm"},
+                "scene": {"scene.night"},
+                "group": {"group.cameras"},
+                "config_entry": {"something"},
+                "area": {"area.garden"},
+            }
+
+    monkeypatch.setattr(
+        "homeassistant.components.search.Searcher", _Searcher, raising=False)
+
+    answer = _async_dependents(hass, "an-entry")
+
+    assert answer == {
+        "automation": ["automation.gate"],
+        "script": ["script.arm"],
+        "scene": ["scene.night"],
+        "group": ["group.cameras"],
+    }, answer
+
+
+async def test_a_search_that_found_nothing_reports_nothing(hass, monkeypatch):
+    """An empty answer must not become a card saying something broke."""
+    class _Searcher:
+        def __init__(self, hass, sources):
+            pass
+
+        def async_search(self, item_type, entry_id):
+            return {"automation": set()}
+
+    monkeypatch.setattr(
+        "homeassistant.components.search.Searcher", _Searcher, raising=False)
+
+    assert _async_dependents(hass, "an-entry") == {}
+
 
 def test_one_of_a_kind_is_singular():
     assert _describe_dependents({"automation": ["a"]}) == "1 automation"
