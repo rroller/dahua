@@ -27,6 +27,15 @@ updates:
           - "*"
     commit-message:
       prefix: "ci"
-    labels:
-      - "dependencies"
+    # No `labels:` key, deliberately. Naming one here replaces Dependabot's
+    # defaults rather than adding to them, and a named label that the repository
+    # does not have is ignored -- which is what happened on the first run:
+    #
+    #   The following labels could not be found: `dependencies`.
+    #   Please create it before Dependabot can add it to a pull request.
+    #
+    # Left unset, Dependabot applies `dependencies` itself and, per its own
+    # documentation, "creates these default labels automatically, as necessary in
+    # your repository". So the label this was asking for arrives without anyone
+    # creating it by hand, which is the outcome the key was added for.
     open-pull-requests-limit: 2
