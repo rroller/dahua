@@ -2469,11 +2469,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """This channel's Day/Night mode by name, or None."""
         return day_night_color_name(self.data, self._channel)
 
-    def is_infrared_light_on(self) -> bool:
-        """ returns true if the infrared light is on """
+    def get_infrared_mode(self) -> str:
+        """This channel's infrared lighting mode, exactly as the device reports it.
+
+        `Manual`, `Auto` and `Off` are the three the integration writes. A device
+        may report others it chose itself -- a DHI-NVR5464-16P-EI answers
+        `ZoomPrio` on two of fifteen channels -- and those are passed through
+        rather than flattened, because a caller checking whether a write landed
+        has to be able to see that it did not.
+
+        Empty when this channel reports no lighting at all.
+        """
         return self.data.get(
             "table.Lighting[{0}][{1}].Mode".format(
-                self._channel, self.get_infrared_profile()), "") == "Manual"
+                self._channel, self.get_infrared_profile()), "")
+
+    def is_infrared_light_on(self) -> bool:
+        """ returns true if the infrared light is on """
+        return self.get_infrared_mode() == "Manual"
 
     def get_infrared_brightness(self) -> int:
         """Return the brightness of this light, as reported by the camera itself, between 0..255 inclusive"""

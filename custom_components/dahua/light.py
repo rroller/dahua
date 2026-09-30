@@ -7,7 +7,10 @@ See https://developers.home-assistant.io/docs/core/entity/light
 import asyncio
 import logging
 
+import aiohttp
+
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
@@ -108,23 +111,68 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         """Don't poll."""
         return False
 
+    async def _async_write_mode(self, enabled: bool, **kwargs) -> None:
+        """Write the mode and brightness, and say so when the device did not take it.
+
+        Two failures this used to pass off as success, both measured on a
+        DHI-NVR5464-16P-EI carrying twelve channels.
+
+        It can refuse the write outright. Two of ten channels answered
+        `HTTP 403 Forbidden` to
+        `setConfig&Lighting[6][0].Mode=Manual`, and the raw
+        `aiohttp.ClientResponseError` escaped to the frontend carrying the request
+        URL, while the integration logged the whole thing at debug -- so with
+        default logging nothing reached the log at all.
+
+        Or it can answer `200` and ignore the write. Channel 3 took four
+        `Mode=Manual` writes and stayed `Auto`; the refresh afterwards showed the
+        toggle springing back with nothing said about why. Reading the mode back
+        is the only way to tell that apart from a write that worked, because the
+        status code says the request was accepted, not that anything changed.
+        """
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
+            kwargs.get(ATTR_BRIGHTNESS))
+        channel = self._coordinator.get_channel()
+        try:
+            await self._coordinator.client.async_set_lighting_v1(
+                channel, enabled, dahua_brightness,
+                self._coordinator.get_infrared_profile())
+        except (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError) as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="infrared_write_refused",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": dahua_utils.describe_write_refusal(err),
+                },
+            ) from err
+
+        await self.coordinator.async_refresh()
+
+        # A recorder that proxies a remote camera can accept the request and
+        # never pass it on. Judged on the mode rather than on `is_on`, because a
+        # turn-off that was ignored leaves the channel on `Auto`, which is not
+        # `Manual` either -- so is_on would agree with the write that failed.
+        wanted = "Manual" if enabled else "Off"
+        reported = self._coordinator.get_infrared_mode()
+        if reported and reported != wanted:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="infrared_write_ignored",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "wanted": wanted,
+                    "reported": reported,
+                },
+            )
+
     async def async_turn_on(self, **kwargs):
         """Turn the light on with the current brightness"""
-        hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
-        channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(
-            channel, True, dahua_brightness, self._coordinator.get_infrared_profile())
-        await self.coordinator.async_refresh()
+        await self._async_write_mode(True, **kwargs)
 
     async def async_turn_off(self, **kwargs):
         """Turn the light off"""
-        hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
-        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(hass_brightness)
-        channel = self._coordinator.get_channel()
-        await self._coordinator.client.async_set_lighting_v1(
-            channel, False, dahua_brightness, self._coordinator.get_infrared_profile())
-        await self.coordinator.async_refresh()
+        await self._async_write_mode(False, **kwargs)
 
 
 class DahuaIlluminator(DahuaBaseEntity, LightEntity):
