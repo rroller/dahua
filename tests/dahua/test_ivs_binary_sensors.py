@@ -59,6 +59,9 @@ async def test_setup_creates_all_seven_normal_rules_including_stay():
     c.is_doorbell = lambda: False
     added = []
 
+    def add_devices(entities, **_kwargs):
+        added.extend(entities)
+
     def init(self, coord, entry):
         self._coordinator = coord
         self.coordinator = coord
@@ -67,7 +70,7 @@ async def test_setup_creates_all_seven_normal_rules_including_stay():
         await async_setup_entry(
             SimpleNamespace(data={DOMAIN: {"entry": c}}),
             SimpleNamespace(entry_id="entry", runtime_data={0: c}),
-            added.extend,
+            add_devices,
         )
 
     sensors = [s for s in added if isinstance(s, DahuaIVSRuleBinarySensor)]
@@ -329,12 +332,15 @@ async def test_nvr_setup_adds_rules_for_every_channel_with_distinct_identities()
     channels = {channel: _nvr(channel) for channel in (0, 9)}
     added = []
 
+    def add_devices(entities, **_kwargs):
+        added.extend(entities)
+
     def init(self, coord, entry):
         self._coordinator = self.coordinator = coord
 
     with patch.object(DahuaBaseEntity, "__init__", init):
         await async_setup_entry(
-            None, SimpleNamespace(runtime_data=channels), added.extend
+            None, SimpleNamespace(runtime_data=channels), add_devices
         )
     sensors = [s for s in added if isinstance(s, DahuaIVSRuleBinarySensor)]
     assert len(sensors) == 14
