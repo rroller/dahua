@@ -63,14 +63,27 @@ class _Client:
 
 
 class _Coordinator:
-    def __init__(self, model="IPC-HDW1234", vto_client=None):
+    def __init__(self, model="IPC-HDW1234", vto_client=None,
+                 profile_is_writable=True):
         self.client = _Client()
         self.refreshed = 0
         self.model = model
+        self.profile_is_writable = profile_is_writable
         self.vto_client = vto_client
 
     def get_model(self):
         return self.model
+
+    def video_profile_mode_is_writable(self):
+        """Whether writing Config[0] selects the profile on this channel.
+
+        Overridden per test where the point is the warning; True here so the
+        existing assertions stay about which call the service makes.
+        """
+        return self.profile_is_writable
+
+    def describe_video_profile_shape(self):
+        return "ordinary" if self.profile_is_writable else "general"
 
     def get_infrared_profile(self):
         return "0"
@@ -262,6 +275,41 @@ async def test_an_ordinary_camera_sets_the_video_profile_directly():
 
     assert camera._coordinator.client.only() == (
         "async_set_video_profile_mode", (LOGICAL, "night"), {})
+
+
+async def test_a_shape_that_cannot_select_the_profile_says_so(caplog):
+    """#458, which answered `Unknown error` from February 2025. VideoInMode comes in
+    three shapes and this writes Config[0], which selects the profile in one of them.
+
+    The write still goes out. Refusing it would be a behaviour change needing a device
+    in each shape to justify; saying why it may do nothing needs only the poll.
+    """
+    camera = _camera(profile_is_writable=False)
+
+    await camera.async_set_video_profile_mode("night")
+
+    assert camera._coordinator.client.only() == (
+        "async_set_video_profile_mode", (LOGICAL, "night"), {}), "the write was skipped"
+
+    said = [r.getMessage() for r in caplog.records
+            if r.levelname == "WARNING"
+            and r.name.startswith("custom_components.dahua")]
+    assert said, "nothing explained why the write may not take effect"
+    assert "general" in said[0], said
+    assert "#458" in said[0], said
+
+
+async def test_an_ordinary_shape_says_nothing(caplog):
+    """The control. A warning on every profile write would be noise, and would train
+    people to ignore the one that matters."""
+    camera = _camera()
+
+    await camera.async_set_video_profile_mode("night")
+
+    said = [r.getMessage() for r in caplog.records
+            if r.levelname == "WARNING"
+            and r.name.startswith("custom_components.dahua")]
+    assert said == [], said
 
 
 @pytest.mark.parametrize("model", [
