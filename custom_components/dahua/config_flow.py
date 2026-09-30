@@ -845,7 +845,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return await self._show_config_form_name(user_input or self.init_info)
 
     def _channel_subentries(self) -> list:
-        """One subentry per channel the user chose, primary included.
+        """One subentry per channel the user chose, primary included -- or none.
 
         This used to start a separate config flow per extra channel, so a 64
         channel recorder became 64 config entries and removing it meant 64
@@ -853,11 +853,31 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         Assistant expects of a hub, and the shape its own delete button
         understands.
 
-        The primary is a subentry too, rather than living only in the entry's
-        data. Setup reads channels from the subentries when there are any, so
-        leaving the primary out would have brought up every channel except the
-        one the user actually started from.
+        When there *are* extra channels the primary is a subentry too, rather
+        than living only in the entry's data. Setup reads channels from the
+        subentries whenever there are any, so leaving the primary out would bring
+        up every channel except the one the user started from.
+
+        **One channel gets no subentries at all**, which is the single-camera
+        shape rather than a hub with one member. Reported by @roalvesrj on #830:
+        a standalone IMOU came up with a `channel` subentry and its device nested
+        underneath, reading as a recorder that happens to have one channel. That
+        nesting is Home Assistant's own rendering of subentry ownership, so the
+        only way out of it is not to have the subentry.
+
+        Nothing is lost by it. `channel_configs()` already treats an entry with
+        no subentries as one channel described by its own `data`,
+        `events_for_channel()` has the matching branch, and every per-channel
+        setting the subentry flow edits is also on the entry's own Configure
+        form, which is what a single camera uses.
+
+        And the flat shape is what single cameras already have: the #827 merge
+        only groups entries that share a host (`if len(group) > 1`), so a lone
+        camera upgrading from 0.9.x was never touched. Before this, the same
+        camera looked different depending on when it was added.
         """
+        if not self._extra_channels:
+            return []
         subentries = []
         for index in [self.init_info[CONF_CHANNEL]] + list(self._extra_channels):
             data = dict(self.init_info)

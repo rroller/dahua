@@ -96,7 +96,8 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
 
     async def async_step_confirm(self, user_input: dict | None = None):
         # Imported here rather than at module scope to avoid a circular import.
-        from . import ISSUE_SIBLINGS_REMAIN, _entries_for_address
+        from . import (ISSUE_SIBLINGS_REMAIN, _entries_for_address,
+                       channel_configs)
 
         entries = _entries_for_address(self.hass, self._address)
         if not entries:
@@ -111,9 +112,8 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
             # deletion the user started, and the entries it is for are the other
             # channels of a recorder that was never merged -- each owning its own
             # channel's entities, which is exactly what the user is asking to be
-            # rid of. An entry with subentries is the opposite: one entry holding
-            # every channel of the host, so removing it deletes everything the
-            # recorder has.
+            # rid of. An entry holding *every* channel of the host is the
+            # opposite: removing it deletes everything the recorder has.
             #
             # That happened. The #827 migration's own removals raised this card,
             # and it is persistent, so it outlived the merge and then described the
@@ -121,7 +121,15 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
             # entities. The migration refuses to remove an entry that still owns
             # what it is about to lose; this, the only irreversible action in the
             # file, did not.
-            merged = [entry for entry in entries if entry.subentries]
+            #
+            # Counted rather than inferred from `entry.subentries`. That was a
+            # proxy for "holds many channels", and it stopped being one when a
+            # single camera stopped getting a subentry of its own: a camera added
+            # after that change would have read as a merged recorder and been
+            # protected from a card the user had asked for. Counting says what the
+            # guard has always meant, and is right under either shape.
+            merged = [entry for entry in entries
+                      if len(channel_configs(entry)) > 1]
             if merged:
                 _LOGGER.error(
                     "Not removing %s for %s: it holds every channel of the "
@@ -132,7 +140,7 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
                     self._address)
 
             for entry in entries:
-                if entry.subentries:
+                if len(channel_configs(entry)) > 1:
                     continue
                 await self.hass.config_entries.async_remove(entry.entry_id)
                 # Same reason the HTTPS flow staggers its reloads: a Dahua web
