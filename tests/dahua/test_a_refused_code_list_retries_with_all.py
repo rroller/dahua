@@ -21,6 +21,13 @@ as a firmware quirk.
 So the device's refusal is now the signal, rather than a guess about what it might
 refuse. Only 404 and 501 ever meant "no CGI event path"; every other status was retried
 for ever with the same list that had just failed.
+
+Nine mutations of the retry, eight caught. The ninth is **unreachable by design**:
+dropping `self._tried_all_events` from the predicate changes nothing, because
+`_using_all_events` is set in the same breath and the only thing that recomputes it
+(`_restart_if_needed`) ORs `_tried_all_events` back in. The two guards hold the same
+invariant from either end, so no test can tell them apart, and inventing one that
+appeared to would be asserting something the code does not decide.
 """
 
 import asyncio
@@ -71,6 +78,11 @@ class _Attaches:
         answer = self.script.pop(0)
         if isinstance(answer, BaseException):
             raise answer
+        if isinstance(answer, tuple):
+            # Talks, then the socket ends badly. The only way to reach the
+            # refusal decision with data already delivered.
+            on_receive(b"Heartbeat", 0)
+            raise answer[1]
         if answer == "talks":
             # Delivers, then ends. A live stream would stay open, but the loop
             # only moves on when an attach finishes, so holding it open here
@@ -174,14 +186,18 @@ async def test_it_is_tried_once_and_not_again():
 
 async def test_a_stream_that_was_working_is_not_switched():
     """The socket ending after the device has been talking is not a refusal, and
-    broadening a subscription that works would be a change nobody asked for."""
-    client = _Attaches("talks")
-    stream = _stream(client)
-    stream._received_data = True
+    broadening a subscription that works would be a change nobody asked for.
 
-    await _run(stream)
+    The failure has to arrive *after* the heartbeat, in the same attach. Setting
+    `_received_data` beforehand proves nothing, because `_async_run` clears it at
+    the top of every iteration -- which is how an earlier version of this test
+    passed without the decision it names ever being reached.
+    """
+    client = _Attaches(("talks", _refused(400)))
 
-    assert client.asked == [sorted(NINE_CODES)] * 2
+    await _run(_stream(client))
+
+    assert all(asked != ["All"] for asked in client.asked), client.asked
 
 
 async def test_a_credential_refusal_is_left_to_its_own_budget():

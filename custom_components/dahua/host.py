@@ -667,6 +667,12 @@ class DahuaHostEventStream:
         """
         if self._tried_all_events or self._using_all_events:
             return False
+        if self._received_data:
+            # This device took the list: it attached and it talked. Whatever
+            # ended the socket afterwards, it was not a refusal of the request
+            # shape, and broadening a subscription that demonstrably works
+            # would be a change nobody asked for.
+            return False
         if not self._events or "All" in self._events:
             return False
         status = getattr(exception, "status", None)
