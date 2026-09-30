@@ -256,9 +256,11 @@ async def _added_for(coordinator, cgi_presets=None):
 
 class _SetupCoordinator(_Coordinator):
     def __init__(self, amcrest=False, security_light=False, model="IPC-HDW1234",
-                 presets=(1, 2), preset_error=None, day_night_supported=False):
+                 presets=(1, 2), preset_error=None, day_night_supported=False,
+                 infrared_supported=False):
         super().__init__()
         self._day_night_supported = day_night_supported
+        self._infrared_supported = infrared_supported
         self._amcrest = amcrest
         self._security_light = security_light
         self._model = model
@@ -286,6 +288,9 @@ class _SetupCoordinator(_Coordinator):
 
     def supports_day_night_color(self):
         return self._day_night_supported
+
+    def supports_infrared_light(self):
+        return self._infrared_supported
 
 
 async def test_the_doorbell_light_select_needs_a_doorbell_with_one():
