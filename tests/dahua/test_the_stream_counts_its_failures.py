@@ -261,3 +261,33 @@ async def test_a_broadened_subscription_reattaches_as_All(retries):
     await _run(stream)
 
     assert client.attaches == [["All"], ["All"]]
+
+
+# --- and the same promise on the other branch --------------------------------
+
+async def test_an_outage_that_is_not_a_timeout_is_also_said_once(retries, caplog):
+    """The same guarantee as above, on the branch that carries ordinary outages.
+
+    A reset, a refused connection or a DNS failure lands in `except Exception`,
+    not in the timeout handler, and that path keeps its own `_failing` flag. Only
+    the timeout one was pinned, so turning this into a warning every retry for
+    ever changed real behaviour and no test noticed. Found by mutating the flag
+    and watching the suite stay green.
+    """
+    await _run(_stream(_Attaches(QUIET_ERROR, QUIET_ERROR, QUIET_ERROR)))
+
+    said = _warnings(caplog)
+    assert len(said) == 1, said
+    assert REASON in said[0], said
+
+
+async def test_a_second_non_timeout_outage_is_reported_again(retries, caplog):
+    """Recovery has to clear the flag on this path too, or a device that broke,
+    recovered and broke again is reported once and then stays quiet for ever.
+
+    The middle attach delivers before it ends, which is what clears the flag.
+    """
+    await _run(_stream(_Attaches(
+        QUIET_ERROR, TALKS_THEN_TIMEOUT, QUIET_ERROR)))
+
+    assert len(_warnings(caplog)) == 2, _warnings(caplog)
