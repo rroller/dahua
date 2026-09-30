@@ -199,7 +199,7 @@ def _reconfigure_flow(monkeypatch, entries=()):
     monkeypatch.setattr(config_flow, "TCPConnector", lambda **kwargs: None)
 
     entry = SimpleNamespace(
-        entry_id="this", unique_id=SERIAL + "_3",
+        entry_id="this", unique_id=SERIAL + "_3", title="Front Door",
         data={"username": "u", "password": "p", "address": "10.0.0.5",
               "port": "80", "rtsp_port": "554", "channel": 3})
 

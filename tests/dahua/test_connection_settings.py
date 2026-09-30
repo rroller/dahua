@@ -104,6 +104,7 @@ async def _shown_reconfigure_form(hass, entry):
 
 async def test_reconfigure_form_is_prefilled_from_the_entry(hass):
     entry = SimpleNamespace(
+        title="Front Door",
         data={
             "address": "192.168.0.210",
             "port": "8443",
@@ -128,6 +129,7 @@ async def test_reconfigure_form_is_prefilled_from_the_entry(hass):
 async def test_reconfigure_form_does_not_offer_credentials(hass):
     """Credentials belong to the reauth step, not here."""
     entry = SimpleNamespace(
+        title="Front Door",
         data={"address": "1.2.3.4", "port": "80", "rtsp_port": "554",
               "channel": 0, "username": "u", "password": "p"},
         options={},
