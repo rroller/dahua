@@ -45,6 +45,13 @@ def _refused(status):
         history=(), status=status)
 
 
+# Every attach and every backoff, in the order they happened. Counting attaches
+# cannot say whether the retry went through the backoff, because the delay is
+# computed at the bottom of each iteration and the refusal path `continue`s over
+# it: what distinguishes the two is whether a wait sits *between* two attaches.
+TIMELINE = []
+
+
 class _Attaches:
     """Records what each attach asked for, and answers as the script says.
 
@@ -58,6 +65,7 @@ class _Attaches:
 
     async def stream_events(self, on_receive, events, channel):
         self.asked.append(list(events))
+        TIMELINE.append(("asked", list(events)))
         if not self.script:
             raise asyncio.CancelledError
         answer = self.script.pop(0)
@@ -87,11 +95,19 @@ def _stream(client, events=NINE_CODES, **kwargs):
 
 @pytest.fixture(autouse=True)
 def _no_waiting(monkeypatch):
-    """The retry delay is a minute at the short end; the suite times out at nine."""
+    """The retry delay is a minute at the short end; the suite times out at nine.
+
+    Recorded as well as neutered, because whether the backoff was consulted at
+    all is the property `test_the_retry_is_immediate` is about.
+    """
     from custom_components.dahua import host as host_module
 
-    monkeypatch.setattr(host_module, "event_stream_retry_delay",
-                        lambda *args, **kwargs: 0)
+    def _delay(*args, **kwargs):
+        TIMELINE.append(("waited",))
+        return 0
+
+    TIMELINE.clear()
+    monkeypatch.setattr(host_module, "event_stream_retry_delay", _delay)
 
 
 async def _run(stream):
@@ -121,7 +137,8 @@ async def test_the_retry_is_immediate():
 
     await _run(_stream(client))
 
-    assert len(client.asked) == 2
+    assert TIMELINE[:2] == [("asked", sorted(NINE_CODES)), ("asked", ["All"])], (
+        "the retry went through the backoff: %r" % (TIMELINE,))
 
 
 async def test_it_says_what_it_did_and_why(caplog):
@@ -205,7 +222,6 @@ def test_what_the_device_said_survives_the_heuristic():
     the only sign would be the events stopping again."""
     client = _Attaches()
     stream = _stream(client, _tried_all_events=True, _task=None)
-    stream.coordinators = [SimpleNamespace(events=list(NINE_CODES))]
     stream._hass = SimpleNamespace()
     stream._by_channel = {0: [SimpleNamespace(
         events=list(NINE_CODES), get_channel=lambda: 0)]}
