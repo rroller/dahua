@@ -82,14 +82,23 @@ def test_a_smart_motion_code_nobody_wants_is_not_added():
         _crossline("Human")) == ["CrossLineDetection"]
 
 
-def test_with_nothing_listening_the_derived_code_is_still_returned():
+@pytest.mark.parametrize("object_type, derived", [
+    ("Human", "SmartMotionHuman"),
+    ("Vehicle", "SmartMotionVehicle"),
+])
+def test_with_nothing_listening_the_derived_code_is_still_returned(object_type, derived):
     """The branch that reads like a bug. Returning the derived code when nothing
     is listening gives the caller something to look up and discard, and is how the
-    function avoids returning an empty list."""
+    function avoids returning an empty list.
+
+    Both object types, because the two are separate copies of the same branch and
+    only the Human one was being exercised. A copy nothing reaches is a copy that
+    can be broken without a red test.
+    """
     coordinator = _coordinator()
 
     assert coordinator.translate_event_code(
-        _crossline("Human")) == ["SmartMotionHuman"]
+        _crossline(object_type)) == [derived]
 
 
 @pytest.mark.parametrize("object_type", ["Human", "human", "HUMAN"])
