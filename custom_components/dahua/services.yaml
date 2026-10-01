@@ -447,6 +447,22 @@ vto_cancel_call:
       integration: dahua
       domain: camera
 
+vto_call:
+  name: Call a room from a VTO
+  description: Rings an indoor monitor (VTH) from a VTO (Doorbell), as a press of its call button does
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    room:
+      name: Room
+      description: "The room number to ring, as set on the indoor monitor. 9901#0 is dialled as 9901, which rings that room's main monitor and its extensions"
+      example: "9901"
+      required: true
+      selector:
+        text:
+
 set_focus_zoom:
   name: Set the Dahua Focus and Zoom
   description: Sets the camera's focus and zoom

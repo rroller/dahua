@@ -692,6 +692,7 @@ Service | Parameters | Description
 `dahua.enable_ivs_rule` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `index`: The rule index <br /> enabled`: True to enable the IVS rule, False to disable the IVS rule | Enable or disable an IVS rule
 `dahua.vto_open_door` | `target`: camera.cam13_main <br /> `door_id`: The door ID to open, e.g.: 1 <br /> Opens a door via a VTO
 `dahua.vto_cancel_call` | `target`: camera.cam13_main <br />Cancels a call on a VTO device (Doorbell)
+`dahua.vto_call` | `target`: camera.cam13_main <br /> `room`: The room to ring, e.g.: 9901 | Rings an indoor monitor (VTH) from a VTO, as its call button does. `9901#0` is dialled as `9901`, which rings the main monitor and its extensions. Measured on a DHI-VTO2211G-WP-S2
 `dahua.set_video_in_day_night_mode` | `target`: camera.cam13_main <br /> `config_type`: The config type: general, day, night <br /> `mode`: The mode: Auto, Color, BlackWhite. Note Auto is also known as Brightness by Dahua|Set the camera's Day/Night Mode. For example, Color, BlackWhite, or Auto
 `dahua.reboot` | `target`: camera.cam13_main <br />Reboots the device
 `dahua.set_illuminator_mode` | `target`: camera.cam13_main <br /> `mode`: Auto, On, Off <br /> `brightness`: 0 - 100 inclusive | Sets the illuminator (white light) mode. The light entity can only switch it on or off, and off is not the same as automatic, so this is how control is handed back to the camera with Auto

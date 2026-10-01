@@ -15,6 +15,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinato
 from custom_components.dahua import dahua_utils
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.model_profiles import is_sdt4e425
+from custom_components.dahua.rpc2 import Rpc2MethodRefused
 from custom_components.dahua.vto import CancelCallRefused
 
 from .const import (
@@ -44,6 +45,7 @@ SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
 SERVICE_VTO_OPEN_DOOR = "vto_open_door"
 SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
+SERVICE_VTO_CALL = "vto_call"
 SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 SERVICE_REBOOT = "reboot"
 SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
@@ -236,6 +238,14 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         SERVICE_VTO_CANCEL_CALL,
         {},
         "async_vto_cancel_call"
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_VTO_CALL,
+        {
+            vol.Required("room"): vol.All(str, vol.Strip, vol.Length(min=1)),
+        },
+        "async_vto_call"
     )
 
     platform.async_register_entity_service(
@@ -656,6 +666,31 @@ class DahuaCamera(DahuaBaseEntity, Camera):
                 translation_domain=DOMAIN,
                 translation_key="cancel_call_refused",
                 translation_placeholders={"reason": str(refused)},
+            ) from refused
+
+    async def async_vto_call(self, room: str):
+        """ Handles the service call from SERVICE_VTO_CALL to ring a room from a VTO """
+        # Offered on every camera entity, like open door, and for the same reason
+        # it says so when aimed at something that is not a doorbell rather than
+        # leaving the user an RPC2 refusal from a camera that has no VideoTalkPhone.
+        is_doorbell = getattr(self._coordinator, "is_doorbell", None)
+        if is_doorbell is not None and not is_doorbell():
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="vto_call_needs_a_doorbell",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()},
+            )
+        try:
+            await self._coordinator.client.async_vto_call(room)
+        except Rpc2MethodRefused as refused:
+            # The device's own reason, code and message, is the useful part: a
+            # room it does not know and a login it will not take read the same
+            # from here otherwise.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="vto_call_refused",
+                translation_placeholders={"room": room, "reason": str(refused)},
             ) from refused
 
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
