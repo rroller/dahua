@@ -37,12 +37,13 @@ import pytest
 
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.dahua import infrared
+from custom_components.dahua import refusals
 from custom_components.dahua.infrared import (
+    CONTROL,
     forget_refused_infrared_writes,
     infrared_write_is_refused,
-    refusal_is_outright,
 )
+from custom_components.dahua.refusals import refusal_is_outright
 from custom_components.dahua.light import DahuaInfraredLight
 from custom_components.dahua.rpc2 import Rpc2MethodRefused
 from custom_components.dahua.select import DahuaInfraredModeSelect
@@ -77,32 +78,13 @@ def _select(coordinator):
     return entity
 
 
-# --- which failures are a refusal ---------------------------------------------
+# Which failures count as a refusal is decided in refusals.py and tested in
+# test_what_counts_as_a_device_refusing_outright.py, against the real module and
+# with a mutation sweep. One assertion stays here, so this file does not pass if
+# the infrared path stops agreeing with that decision.
 
-def test_the_status_this_recorder_answers_is_a_refusal():
+def test_the_status_this_recorder_answers_is_still_a_refusal():
     assert refusal_is_outright(_response_error(403)) is True
-
-
-def test_the_rpc2_code_for_the_same_answer_is_a_refusal():
-    assert refusal_is_outright(
-        Rpc2MethodRefused("no", code=285278249,
-                          message="Authority:check failure.")) is True
-
-
-@pytest.mark.parametrize("error", [
-    _response_error(500, "Internal Server Error"),
-    _response_error(400, "Bad Request"),
-    _response_error(401, "Unauthorized"),
-    asyncio.TimeoutError(),
-    aiohttp.ClientConnectionError("reset"),
-    Rpc2MethodRefused("stale", code=287637504, message="session is out of date!"),
-])
-def test_everything_else_is_not_a_refusal(error):
-    """A device that could not be reached, or that said something else, has not
-    said the write is impossible. 401 is the credentials -- reauth's job, and a
-    later write may well succeed. 287637504 is an expired session, which the
-    shared-login retry already handles."""
-    assert refusal_is_outright(error) is False
 
 
 # --- learning it once ---------------------------------------------------------
@@ -165,8 +147,8 @@ def test_what_was_learnt_is_forgotten_for_one_channel_at_a_time():
     other host pay a refusal again."""
     one = _Coordinator(channel=3)
     another = _Coordinator(channel=6)
-    infrared._WRITE_REFUSED.add(infrared._key(one))
-    infrared._WRITE_REFUSED.add(infrared._key(another))
+    refusals.remember(one, CONTROL, "refused")
+    refusals.remember(another, CONTROL, "refused")
 
     forget_refused_infrared_writes(one)
 
