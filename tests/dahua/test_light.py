@@ -28,6 +28,10 @@ class _Client:
         # the 200 that changes nothing.
         self.v1_refuses = None
         self.v1_ignores = False
+        # The Lighting_V2 path, which infrared reaches only after v1 refuses.
+        self.v2_modes = []
+        self.v2_refuses = None
+        self.v2_ignores = False
         self.infrared_mode = "Auto"
 
         # Default camera state used by the existing illuminator tests.
@@ -35,6 +39,17 @@ class _Client:
         self.light_mode = "Manual"
         self.light_brightness = 64
         self.light_field = "NearLight"
+
+    async def async_set_lighting_v2_mode(self, channel, mode, brightness,
+                                        profile_mode, light_index=0,
+                                        bank="MiddleLight"):
+        """The fallback path infrared takes once v1 has been refused."""
+        self.v2_modes.append((channel, mode, brightness, profile_mode,
+                              light_index, bank))
+        if self.v2_refuses is not None:
+            raise self.v2_refuses
+        if not self.v2_ignores:
+            self.infrared_mode = mode
 
     async def async_set_lighting_v1_mode(self, channel, mode, brightness,
                                          profile_mode="0", bank="MiddleLight"):

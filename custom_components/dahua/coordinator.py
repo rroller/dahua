@@ -29,6 +29,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import dahua_utils
+from . import refusals
 from .client import DahuaClient, rpc2_refusal_is_a_stale_login
 from .rpc2 import Rpc2MethodRefused
 from .const import (
@@ -241,6 +242,33 @@ def infrared_v2_row(data: dict, channel: int, profile_mode):
                         LIGHT_BRIGHTNESS_BANKS[0])
             return (profile, index, bank)
     return None
+
+
+def infrared_transport(v2_row, v1_refused: bool) -> str:
+    """Which lighting table to drive this channel's infrared through: "v1" or "v2".
+
+    v1 unless the device has refused it outright for this channel *and* serves a
+    v2 row to fall back to.
+
+    **The order matters and the obvious rule is wrong.** The first version of this
+    preferred v2 wherever a v2 row existed, which decides from what a device
+    *reports it has*. Measured on a DHI-NVR5464-16P-EI that is right -- v1 is
+    refused there and v2 works. But #647 carries a directly connected
+    IPC-T5442TM-AS-6mm reporting three v2 InfraredLight rows while its v1 table is
+    presumably accepted, and that issue's whole complaint is "the CGI values change
+    and the physical LEDs do not". Moving every camera that merely reports a v2 row
+    onto a table nobody has verified drives its emitter is that complaint, shipped.
+
+    Deciding from what the device *accepts* keeps every working camera where it is
+    and only moves the ones that have actually refused. It is also the shape this
+    codebase has arrived at independently three times -- `_HOST_CGI_CONFIG_ABSENT`,
+    `_RPC2_TABLE_UNAVAILABLE` and `refusals` all learn from a refusal rather than
+    from a claim -- while the fifteen capabilities still gated on a model string are
+    the recurring bug class (#570, #676, #690).
+    """
+    if v1_refused and v2_row is not None:
+        return "v2"
+    return "v1"
 
 
 SMART_MOTION_ROW = re.compile(r"^table\.SmartMotionDetect\[(\d+)\]")
@@ -2555,9 +2583,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         Empty when this channel reports no lighting at all.
         """
-        row = self.get_infrared_v2_row()
-        if row is not None:
-            profile, index, _bank = row
+        if self.infrared_uses_lighting_v2():
+            profile, index, _bank = self.get_infrared_v2_row()
             return self.data.get(
                 "table.Lighting_V2[{0}][{1}][{2}].Mode".format(
                     self._channel, profile, index), "")
@@ -2571,9 +2598,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_infrared_bank(self) -> str:
         """The brightness bank this channel's infrared emitter uses."""
-        row = self.get_infrared_v2_row()
-        if row is not None:
-            return row[2]
+        if self.infrared_uses_lighting_v2():
+            return self.get_infrared_v2_row()[2]
         return infrared_brightness_bank(
             self.data, self._channel, self.get_infrared_profile())
 
@@ -2587,8 +2613,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return infrared_v2_row(self.data, self._channel, self.get_profile_mode())
 
     def infrared_uses_lighting_v2(self) -> bool:
-        """Whether this channel's infrared is driven through Lighting_V2."""
-        return self.get_infrared_v2_row() is not None
+        """Whether this channel's infrared is driven through Lighting_V2.
+
+        Only once the v1 table has been refused for this channel, and only when the
+        device serves a v2 row to fall back to. See `infrared_transport` for why it
+        is not simply "v2 wherever a v2 row exists".
+        """
+        return infrared_transport(
+            self.get_infrared_v2_row(),
+            refusals.is_refused(self, refusals.INFRARED_V1)) == "v2"
 
     def get_infrared_level(self):
         """The infrared level on the device's own 0..100 scale, or None.
@@ -2601,9 +2634,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         None rather than a number when the channel reports none, so the attribute
         says "not known" instead of claiming the emitter is at zero.
         """
-        row = self.get_infrared_v2_row()
-        if row is not None:
-            profile, index, bank = row
+        if self.infrared_uses_lighting_v2():
+            profile, index, bank = self.get_infrared_v2_row()
             level = self.data.get(
                 "table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
                     self._channel, profile, index, bank))

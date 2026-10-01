@@ -1,4 +1,10 @@
-"""Where a channel has a Lighting_V2 row, the infrared emitter is driven through it.
+"""Finding this channel's infrared row in Lighting_V2, if it has one.
+
+Only the *finding*. Whether that row is used is a separate decision, made by
+`infrared_transport` and tested in
+test_which_lighting_table_drives_infrared.py -- v1 unless the device has refused
+it, never "v2 wherever a row exists". Keeping the two apart is what lets this file
+stay a pure table-shape test.
 
 The integration only ever wrote the v1 `Lighting` table for infrared. On a
 DHI-NVR5464-16P-EI that is refused, and the v2 table is not. Measured, with every
@@ -18,8 +24,9 @@ action:
     restore Mode=ZoomPrio  ->  row identical to before
 
 So that recorder's infrared **is** controllable, through the table nobody was
-using. Only two of its fifteen channels have a v2 row; the other thirteen keep the
-v1 path, where the refusal is real and #941 reports it.
+using -- but reached as a *fallback* after v1 refuses, not as a preference. Only two
+of its fifteen channels have a v2 row; the other thirteen keep the v1 path, where
+the refusal is real and #941 reports it.
 
 Three details the device forced, each with a test here:
 

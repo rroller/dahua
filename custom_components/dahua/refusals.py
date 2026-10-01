@@ -39,6 +39,17 @@ _LOGGER = logging.getLogger(__name__)
 #                     answers this where it used to work, so it is not permanent
 #                     and must not be remembered as if it were
 #   400, 500          the request or the device, not the capability
+# What is being operated, as stored in the key. Named rather than spelled out at
+# each call site so a typo cannot quietly create a second, never-matching entry.
+#
+# Infrared has two because it has two tables, and which one a channel accepts is
+# the thing being learnt: INFRARED_V1 is the `Lighting` table every device has
+# used until now, INFRARED_V2 the `Lighting_V2` fallback taken only once v1 has
+# been refused.
+INFRARED_V1 = "infrared"
+INFRARED_V2 = "infrared_v2"
+SIREN = "siren"
+
 REFUSED_STATUSES = frozenset({403})
 REFUSED_RPC2_CODES = frozenset({285278249, 268894210})
 
