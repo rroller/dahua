@@ -91,6 +91,10 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 # device down and Home Assistant retried it forever. See #594 and #631.
 PROBE_FAILED = (ClientError, TimeoutError)
 
+# Where an indoor monitor's camera links live in the poll's data: see
+# client.vth_camera_links for the shape.
+VTH_CAMERA_LINKS = "vth.camera_links"
+
 # The coaxial probe deliberately only treats an HTTP error response as "not
 # supported"; a connection failure there should still fail setup. Timeouts join
 # it for the reason above, without widening the rest.
@@ -1356,6 +1360,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Only the privacy mode switch reads this one.
             if self._supports_privacy_mode and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self._async_fetch_privacy_mode()))
+            # Only the camera-link selects of an indoor monitor read this one.
+            if self.is_indoor_monitor() and self._wanted_by(SELECT):
+                coros.append(asyncio.ensure_future(self._async_fetch_vth_camera_links()))
 
 
             # Gather results and update the data map
@@ -2033,6 +2040,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "XVR",
             "HCVR",
         }
+
+    def is_indoor_monitor(self) -> bool:
+        """Whether the device says it is an indoor monitor (VTH).
+
+        Only its own answer counts. No VTH has ever been recognised by model name
+        here, and the class is only "VTH" when the RPC2 identity said so.
+        """
+        device_class = getattr(self, "_device_class", "")
+        return isinstance(device_class, str) and device_class.strip().upper() == "VTH"
 
     def is_indoor_monitor_without_video(self) -> bool:
         """Whether this is an indoor monitor (VTH) that says it has no camera.
@@ -3113,6 +3129,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 "status.Speaker", "status.WhiteLight")
         carried = {key: previous[key] for key in keys if key in previous}
         return carried or None
+
+    async def _async_fetch_vth_camera_links(self) -> dict | None:
+        """Poll which camera each VTO's calls open on, keeping the last answer on failure.
+
+        Carried rather than dropped so one refused read does not empty the
+        select's options under the user, the same as the preset position.
+        """
+        try:
+            return {VTH_CAMERA_LINKS: await self.client.async_get_vth_camera_links()}
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug("Failed to fetch the VTH camera links", exc_info=exception)
+            previous = (getattr(self, "data", None) or {}).get(VTH_CAMERA_LINKS)
+            return None if previous is None else {VTH_CAMERA_LINKS: previous}
+
+    def get_vth_camera_links(self) -> dict | None:
+        """The links and cameras vth_camera_links describes, or None before a read."""
+        return (getattr(self, "data", None) or {}).get(VTH_CAMERA_LINKS)
 
     async def _async_fetch_privacy_mode(self) -> dict:
         """ Poll the privacy mode state, keeping the last known value on failure """

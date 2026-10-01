@@ -292,6 +292,11 @@ class _SetupCoordinator(_Coordinator):
     def supports_infrared_light(self):
         return self._infrared_supported
 
+    def is_indoor_monitor(self):
+        # A camera. The indoor monitor's camera-link selects are in
+        # test_vth_camera_link.py.
+        return False
+
 
 async def test_the_doorbell_light_select_needs_a_doorbell_with_one():
     assert "light" not in await _added_for(_SetupCoordinator())
