@@ -399,6 +399,12 @@
         },
         "open_door_needs_a_doorbell": {
             "message": "{device} is not a doorbell, so it has no door to open. This service works on a VTO."
+        },
+        "siren_already_refused": {
+            "message": "{device} has already refused to operate its siren, so Home Assistant did not ask again. Reload the integration entry to try again after changing anything on the device."
+        },
+        "siren_refused": {
+            "message": "{device} would not operate its siren: {reason}"
         }
     },
     "issues": {

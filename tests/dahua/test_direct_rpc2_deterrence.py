@@ -23,6 +23,10 @@ def coordinator(
 ):
     c = object.__new__(DahuaDataUpdateCoordinator)
     c.model = model
+    # Set because this builds the real coordinator rather than a double,
+    # and __init__ never runs. get_address() reads it, which every
+    # entity's `available` now does.
+    c._address = "192.168.0.213"
     c._channel = 0
     c._channel_number = 1
     c._nvr_active_deterrence = nvr

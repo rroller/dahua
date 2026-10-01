@@ -610,9 +610,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bo
     # the process, so that reloading an entry really does ask again -- which is
     # what the warning about a refused infrared write tells the user to do. Per
     # channel, so one recorder reloading does not cost every other host a refusal.
-    from .infrared import forget_refused_infrared_writes
+    from .refusals import forget as forget_refusals
     for coordinator in channels.values():
-        forget_refused_infrared_writes(coordinator)
+        forget_refusals(coordinator)
 
     # Every channel is stopped, and all of them are stopped even if one raises.
     # A coordinator that keeps its session and its host pool reference is the
