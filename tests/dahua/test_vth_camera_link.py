@@ -446,6 +446,7 @@ def _setup_double(links, indoor_monitor=True):
         supports_day_night_color=lambda: False,
         supports_infrared_light=lambda: False,
         is_indoor_monitor=lambda: indoor_monitor,
+        is_indoor_monitor_without_video=lambda: indoor_monitor,
         get_vth_camera_links=lambda: links,
         subentry_id=None,
         client=SimpleNamespace(async_get_ptz_presets=no_presets),

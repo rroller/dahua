@@ -297,6 +297,10 @@ class _SetupCoordinator(_Coordinator):
         # test_vth_camera_link.py.
         return False
 
+    def is_indoor_monitor_without_video(self):
+        # A camera; the indoor monitor is in test_preset_list.py.
+        return False
+
 
 async def test_the_doorbell_light_select_needs_a_doorbell_with_one():
     assert "light" not in await _added_for(_SetupCoordinator())
