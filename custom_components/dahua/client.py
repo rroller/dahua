@@ -364,6 +364,23 @@ def _digest_state(device: str, username: str) -> dict:
     return state
 
 
+def vto_call_number(room: str) -> str:
+    """The number a VTO dials for a room, from the room as a VTH shows it.
+
+    A villa VTH's own room is shown with a `#0` suffix for the main monitor and
+    `#1`, `#2` for its extensions. The VTO's web page dials the main monitor
+    without the suffix, and `9901` is what was measured on a DHI-VTO2211G-WP-S2:
+    it rang the main monitor and both extensions. `9901#0` itself was not dialled.
+
+    Only a trailing `#0` on an otherwise bare number is dropped. `9901#10` is a
+    different room, and apartment numbers such as `1#1#8001#100` are passed
+    through as they are, because nothing here has measured them.
+    """
+    room = str(room).strip()
+    match = re.fullmatch(r"(\d+)#0", room)
+    return match.group(1) if match else room
+
+
 def _overlay_text(*parts: str) -> str:
     """Join the lines of a title or overlay, each one safe to put in a URL.
 
@@ -2758,6 +2775,34 @@ class DahuaClient:
                     await rpc2.logout()
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.debug("RPC2 logout failed after openDoor", exc_info=True)
+
+    async def async_vto_call(self, room: str) -> dict:
+        """Ring a room from this VTO, over RPC2, in a session of its own.
+
+        There is no CGI route to try first: CallManager.cgi?action=startCall and
+        IntervideoManager.cgi both answer 501 on a DHI-VTO2211G-WP-S2 on
+        4.810.0000000.0.R, while RPC2 rings the room.
+
+        A private client and a logout afterwards, for the reason
+        _async_open_door_rpc2 gives. Logging out does not end the call: measured
+        on that VTO, the room kept ringing after global.logout, so this returns as
+        soon as the call has started rather than holding a session open for it.
+        """
+        number = vto_call_number(room)
+        session = self._rpc2_session()
+        rpc2 = DahuaRpc2Client(
+            self._username, self._password, self._address, self._port,
+            self._rtsp_port, session, self._use_https
+        )
+        try:
+            async with asyncio.timeout(TIMEOUT_SECONDS):
+                return await rpc2.async_vto_call(number)
+        finally:
+            try:
+                async with asyncio.timeout(5):
+                    await rpc2.logout()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("RPC2 logout failed after beginCall", exc_info=True)
 
     async def enable_motion_detection(self, channel: int, enabled: bool) -> dict:
         """Toggle motion detection, over CGI, falling back to RPC2 if it is absent.

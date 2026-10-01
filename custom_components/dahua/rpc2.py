@@ -439,6 +439,40 @@ class DahuaRpc2Client:
                 # than leaking the object, so this never raises.
                 _LOGGER.debug("accessControl.destroy failed", exc_info=True)
 
+    async def async_vto_call(self, number: str) -> dict:
+        """Ring a room from a VTO, the way the VTO's own web page does.
+
+        Read out of the web interface of a DHI-VTO2211G-WP-S2 on 4.810.0000000.0.R
+        (the phone icon under Device Setting) and replayed against it:
+
+            VideoTalkPhone.factory.instance   params null, result is the object
+            VideoTalkPhone.beginCall          on that object
+
+        `isTestCall: true` is added by that page to every call it makes. What it
+        changes is not known: with it, the main monitor and both extensions of the
+        room rang and showed the VTO's camera, the same as a press of the button.
+        The object id came back as a plain integer.
+
+        There is deliberately no destroy here, unlike openDoor. The web page
+        destroys this object only once the call is over (endCall, then destroy),
+        and destroying it straight after beginCall has not been tried: it may
+        well hang up the call this exists to start. The caller logs out instead,
+        which on that VTO left the call ringing.
+        """
+        if not self._session_id:
+            await self.login()
+        made = await self.request(
+            method="VideoTalkPhone.factory.instance", params=None)
+        object_id = made.get("result")
+        if isinstance(object_id, bool) or not isinstance(object_id, int) or object_id <= 0:
+            raise ConnectionError(
+                "Dahua RPC2 VideoTalkPhone.factory.instance returned no object")
+        return await self.request(
+            method="VideoTalkPhone.beginCall",
+            object_id=object_id,
+            params={"number": number, "type": "normal", "isTestCall": True},
+        )
+
     async def get_coaxial_control_io_status(self, channel: int) -> CoaxialControlIOStatus:
         """ async_get_coaxial_control_io_status returns the the current state of the speaker and white light. """
         response = await self.request(method="CoaxialControlIO.getStatus", params={"channel": channel})

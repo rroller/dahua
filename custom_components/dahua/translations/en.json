@@ -405,6 +405,12 @@
         },
         "siren_refused": {
             "message": "{device} would not operate its siren: {reason}"
+        },
+        "vto_call_needs_a_doorbell": {
+            "message": "{device} is not a doorbell, so it cannot ring a room. This service works on a VTO."
+        },
+        "vto_call_refused": {
+            "message": "The doorbell would not call room {room}: {reason}"
         }
     },
     "issues": {
