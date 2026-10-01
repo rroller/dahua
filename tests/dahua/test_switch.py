@@ -49,6 +49,9 @@ class _Coordinator:
         self._amcrest = amcrest
         self.refreshed = 0
         self.states = {}
+        # CoordinatorEntity.available reads this, and the siren switch now builds
+        # on super().available so it can go unavailable after a refusal (#942).
+        self.last_update_success = True
 
     def get_channel(self):
         return self._channel
@@ -76,6 +79,11 @@ class _Coordinator:
 
     def get_serial_number(self):
         return "SERIAL1"
+
+    def get_address(self):
+        """Read by CoordinatorEntity.available, which the siren now builds on, and
+        by refusals.key_for."""
+        return "192.168.0.213"
 
     def get_device_name(self):
         return "Garage"

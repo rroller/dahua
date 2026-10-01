@@ -1,13 +1,26 @@
 """Switch platform for dahua."""
+import asyncio
+
+import aiohttp
+
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
+from . import dahua_utils, refusals
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .client import SIREN_TYPE
+
+# What a device answers a siren write with when it cannot be reached, as opposed
+# to a bug here. Rpc2MethodRefused subclasses ConnectionError, so it is covered.
+SIREN_WRITE_FAILED = (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError)
+
+# Which control this is in refusals.py's store, so a device refusing its siren
+# does not silence its infrared on the same channel.
+SIREN_CONTROL = "siren"
 
 
 # One at a time, because every toggle is a write to the device and these devices are measurably intolerant of
@@ -295,31 +308,67 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         super().__init__(coordinator, entry)
         self._attr_translation_key = translation_key
 
+    @property
+    def available(self) -> bool:
+        """Unavailable once the device has refused to operate the siren.
+
+        An AD410 advertises a siren from two independent sources and then answers
+        `CoaxialControlIO.control` with `268894210, "Method not found!"` (#942).
+        The hardware is there -- it sounds from the Amcrest app -- but this call
+        is not how that device drives it, so the switch can only ever throw.
+        """
+        return (super().available
+                and not refusals.is_refused(self._coordinator, SIREN_CONTROL))
+
+    async def _async_set(self, enabled: bool) -> None:
+        """Sound or silence the siren, and say so when the device will not.
+
+        The refusal used to escape as a raw `Rpc2MethodRefused`, so the frontend
+        showed the method name and an error number, and every later press asked
+        again and was refused again.
+        """
+        if refusals.is_refused(self._coordinator, SIREN_CONTROL):
+            # Nothing is sent. The device has already said it cannot do this.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="siren_already_refused",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()},
+            )
+
+        channel = self._coordinator.get_channel()
+        try:
+            if self._coordinator.uses_recorder_deterrence():
+                await self._coordinator.client.async_set_nvr_coaxial_control_state(
+                    self._coordinator.get_channel_number(), SIREN_TYPE, enabled
+                )
+            elif self._coordinator.uses_rpc2_deterrence(SIREN_TYPE):
+                await self._coordinator.client.async_set_coaxial_control_state_rpc2(
+                    SIREN_TYPE, enabled)
+            else:
+                await self._coordinator.client.async_set_coaxial_control_state(
+                    channel, SIREN_TYPE, enabled)
+        except SIREN_WRITE_FAILED as err:
+            if refusals.refusal_is_outright(err):
+                refusals.remember(self._coordinator, SIREN_CONTROL,
+                                  dahua_utils.describe_write_refusal(err))
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="siren_refused",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": dahua_utils.describe_write_refusal(err),
+                },
+            ) from err
+        await self._coordinator.async_refresh()
+
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn on/enable the camera's siren"""
-        channel = self._coordinator.get_channel()
-        if self._coordinator.uses_recorder_deterrence():
-            await self._coordinator.client.async_set_nvr_coaxial_control_state(
-                self._coordinator.get_channel_number(), SIREN_TYPE, True
-            )
-        elif self._coordinator.uses_rpc2_deterrence(SIREN_TYPE):
-            await self._coordinator.client.async_set_coaxial_control_state_rpc2(SIREN_TYPE, True)
-        else:
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, True)
-        await self._coordinator.async_refresh()
+        await self._async_set(True)
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn off/disable camera siren"""
-        channel = self._coordinator.get_channel()
-        if self._coordinator.uses_recorder_deterrence():
-            await self._coordinator.client.async_set_nvr_coaxial_control_state(
-                self._coordinator.get_channel_number(), SIREN_TYPE, False
-            )
-        elif self._coordinator.uses_rpc2_deterrence(SIREN_TYPE):
-            await self._coordinator.client.async_set_coaxial_control_state_rpc2(SIREN_TYPE, False)
-        else:
-            await self._coordinator.client.async_set_coaxial_control_state(channel, SIREN_TYPE, False)
-        await self._coordinator.async_refresh()
+        await self._async_set(False)
 
     @property
     def unique_id(self):
