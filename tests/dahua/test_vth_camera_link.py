@@ -446,6 +446,7 @@ def _setup_double(links, indoor_monitor=True):
         supports_day_night_color=lambda: False,
         supports_infrared_light=lambda: False,
         is_indoor_monitor=lambda: indoor_monitor,
+        is_indoor_monitor_without_video=lambda: indoor_monitor,
         get_vth_camera_links=lambda: links,
         subentry_id=None,
         client=SimpleNamespace(async_get_ptz_presets=no_presets),
@@ -457,22 +458,6 @@ def _setup_double(links, indoor_monitor=True):
 # --- the poll asks only when something will read the answer ---------------------
 
 LINKS = "async_get_vth_camera_links"
-
-
-@pytest.fixture(autouse=True)
-def _no_failing_hosts():
-    """The poll withdraws a failing-host repair issue for its address when the host
-    answers, using the Home Assistant it was given -- a SimpleNamespace here. A test
-    elsewhere on the same worker that left 10.0.0.5 in _HOST_FAILURES therefore
-    failed these polls at random under `-n auto`. Emptied around each test, as
-    CONTRIBUTING asks for module-level state."""
-    from custom_components.dahua.host import _HOST_FAILURES
-
-    saved = dict(_HOST_FAILURES)
-    _HOST_FAILURES.clear()
-    yield
-    _HOST_FAILURES.clear()
-    _HOST_FAILURES.update(saved)
 
 
 async def _poll_calls(device_class, **options):

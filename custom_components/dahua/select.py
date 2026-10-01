@@ -46,6 +46,13 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
                     coordinator, entry, preset_ids=preset_ids, rpc2_channel=1
                 )
             )
+        elif coordinator.is_indoor_monitor_without_video():
+            # No camera, so no motor and no presets. Without this it reached
+            # the branch below: a VTH answers 404 to ptz.cgi, which is None,
+            # which keeps the ten-entry list for a device that has nothing to
+            # move.
+            _LOGGER.debug(
+                "Indoor monitor without a camera, so no Preset Position control")
         else:
             preset_ids = await _async_preset_ids(coordinator)
             if preset_ids == []:

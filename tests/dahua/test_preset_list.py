@@ -193,9 +193,12 @@ def test_manual_is_always_offered(monkeypatch):
 
 # --- and whether the control is created at all (#525) ------------------------
 
-def _setup_coordinator(answer, day_night=False, infrared=False):
+def _setup_coordinator(answer, day_night=False, infrared=False, no_video=False):
     """A coordinator complete enough to drive select.async_setup_entry."""
+    asked = []
+
     async def get_presets(channel):
+        asked.append(channel)
         if isinstance(answer, Exception):
             raise answer
         return answer
@@ -213,15 +216,19 @@ def _setup_coordinator(answer, day_night=False, infrared=False):
         supports_day_night_color=lambda: day_night,
         supports_infrared_light=lambda: infrared,
         is_indoor_monitor=lambda: False,
+        is_indoor_monitor_without_video=lambda: no_video,
+        asked_for_presets=asked,
     )
 
 
-async def _added(monkeypatch, answer, day_night=False, infrared=False):
+async def _added(monkeypatch, answer, day_night=False, infrared=False,
+                 no_video=False, coordinator=None):
     import custom_components.dahua.select as select_module
 
     monkeypatch.setattr(select_module.DahuaBaseEntity, "__init__",
                         lambda self, coordinator, config_entry: None)
-    coordinator = _setup_coordinator(answer, day_night, infrared)
+    if coordinator is None:
+        coordinator = _setup_coordinator(answer, day_night, infrared, no_video)
     hass = type("H", (), {"data": {}})()
     entry = type("E", (), {"entry_id": "e1",
                            "runtime_data": {0: coordinator}})()
@@ -271,3 +278,32 @@ async def test_the_infrared_mode_control_is_offered_only_where_there_is_one(monk
     assert await _added(monkeypatch, {}, infrared=True) == [
         "DahuaInfraredModeSelect"]
     assert await _added(monkeypatch, {}, infrared=False) == []
+
+
+# --- an indoor monitor without a camera -------------------------------------
+#
+# A VTH2421F-P has no camera (its own RemoteDevice entry says SupportVideo false)
+# and serves no CGI, so ptz.cgi answers 404. That is a refusal, which the branch
+# above deliberately answers with the ten-entry list -- a Preset Position control
+# for a device with nothing to move.
+
+async def test_an_indoor_monitor_without_a_camera_gets_no_preset_control(monkeypatch):
+    import aiohttp
+
+    refused = aiohttp.ClientResponseError(None, None, status=404)
+    assert await _added(monkeypatch, refused, no_video=True) == []
+
+
+async def test_it_is_not_even_asked_for_presets(monkeypatch):
+    import aiohttp
+
+    coordinator = _setup_coordinator(
+        aiohttp.ClientResponseError(None, None, status=404), no_video=True)
+    await _added(monkeypatch, None, coordinator=coordinator)
+
+    assert coordinator.asked_for_presets == []
+
+
+async def test_its_other_selects_are_unaffected(monkeypatch):
+    assert await _added(monkeypatch, RuntimeError("404"), day_night=True,
+                        no_video=True) == ["DahuaDayNightModeSelect"]

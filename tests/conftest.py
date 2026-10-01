@@ -55,6 +55,24 @@ def _clear_host_uptime():
 
 
 @pytest.fixture(autouse=True)
+def _clear_host_failures():
+    """Which hosts are failing is module state, keyed by address.
+
+    A successful poll withdraws the host's repair issues when its address is in
+    there, through the coordinator's `hass`. The poll doubles in
+    test_poll_skips_unused.py and test_ivs_rules.py use 10.0.0.5 and a
+    SimpleNamespace for `hass`, so a 10.0.0.5 left behind by another test on the
+    same worker failed their polls with "unhashable type: 'types.SimpleNamespace'",
+    at random under `-n auto`. Reproduced by seeding the address before a poll.
+    """
+    from custom_components import dahua as dahua_module
+
+    dahua_module._HOST_FAILURES.clear()
+    yield
+    dahua_module._HOST_FAILURES.clear()
+
+
+@pytest.fixture(autouse=True)
 async def _clear_shared_rpc2():
     """The RPC2 registry holds a login task and a keepalive task.
 
