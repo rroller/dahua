@@ -443,8 +443,56 @@ def _cache_lifetime(url: str) -> int:
 READ_ACTION_PREFIX = "action=get"
 
 
+class DahuaWriteDeclined(ConnectionError):
+    """The device answered a write with 200 and the word Error.
+
+    A ConnectionError subclass so the handlers that already catch one keep
+    working: an entity reporting "the device would not do that" is right about
+    this too. A distinct type because it means something narrower -- the request
+    arrived and was understood and declined, which is not a transport problem.
+    """
+
+
 def _is_read(url: str) -> bool:
     return READ_ACTION_PREFIX in url
+
+
+# What a Dahua CGI says when it declines a write while still answering 200.
+#
+# Measured on a DHI-NVR5464-16P-EI. The integration's own infrared write names
+# `MiddleLight[0].Light`, and channel 3 of that recorder has `NearLight` and
+# `FarLight` and no middle bank at all, so:
+#
+#     setConfig&Lighting[3][0].Mode=Auto&Lighting[3][0].MiddleLight[0].Light=50
+#       -> HTTP 200, body "Error"
+#     setConfig&Lighting[6][0].Mode=Auto&Lighting[6][0].MiddleLight[0].Light=50
+#       -> HTTP 403, body "Authority:check failure."   (channel 6 has the bank)
+#
+# So naming a field the device does not have is answered with a 200 and the word
+# Error, and every write method read that as success. That is why #937's report of
+# "accepted the change and did not make it" was real and why I was wrong to
+# retract it: I retested with `Mode` alone, which is not what the entity sends.
+WRITE_ERROR_BODY = "error"
+
+
+def write_was_declined(body: str) -> bool:
+    """Whether a 200 response body is the device declining the write.
+
+    Deliberately narrow. The existing `verify_ok` demands the body be exactly
+    "ok" and raises otherwise, which cannot be turned on for the 29 write methods
+    that currently check nothing: a device answering an empty body, or a body
+    carrying data, would start failing writes that work today. This only treats
+    the one word that means failure as failure, so it can never turn a working
+    write into a broken one.
+    """
+    if not isinstance(body, str):
+        return False
+    lines = body.strip().splitlines()
+    if not lines:
+        # An empty body is not a refusal. Several write endpoints answer with
+        # nothing at all and the write lands.
+        return False
+    return lines[0].strip().lower() == WRITE_ERROR_BODY
 
 
 def clear_host_cache(scope: str) -> None:
@@ -1936,13 +1984,15 @@ class DahuaClient:
         return await self.get(url)
 
     async def async_set_lighting_v1(self, channel: int, enabled: bool, brightness: int,
-                                    profile_mode="0") -> dict:
+                                    profile_mode="0",
+                                    bank: str = "MiddleLight") -> dict:
         """ async_get_lighting_v1 will turn the IR light (InfraRed light) on or off """
         # on = Manual, off = Off
         mode = "Manual"
         if not enabled:
             mode = "Off"
-        return await self.async_set_lighting_v1_mode(channel, mode, brightness, profile_mode)
+        return await self.async_set_lighting_v1_mode(
+            channel, mode, brightness, profile_mode, bank)
 
     async def async_set_lighting_v2_mode(self, channel: int, mode: str, brightness: int,
                                          profile_mode: str, light_index: int = 0,
@@ -1972,7 +2022,8 @@ class DahuaClient:
         return await self.get(url)
 
     async def async_set_lighting_v1_mode(self, channel: int, mode: str, brightness: int,
-                                         profile_mode="0") -> dict:
+                                         profile_mode="0",
+                                         bank: str = "MiddleLight") -> dict:
         """
         async_set_lighting_v1_mode will set IR light (InfraRed light) mode and brightness
         Mode should be one of: Manual, Off, or Auto
@@ -1988,10 +2039,16 @@ class DahuaClient:
         # channel's live profile, so writing to 0 wrote somewhere the state is
         # not read back from, and on a camera running night the camera is not
         # rendering from it either.
+        # The bank is the caller's, not a hardcoded MiddleLight. Measured on a
+        # DHI-NVR5464-16P-EI: channel 3 has NearLight and FarLight and no middle
+        # bank, so naming MiddleLight made the device answer 200 with the body
+        # "Error" -- accepted by every write method as success -- while channel 6
+        # of the same recorder has only MiddleLight.
         url = ("/cgi-bin/configManager.cgi?action=setConfig"
                "&Lighting[{channel}][{profile}].Mode={mode}"
-               "&Lighting[{channel}][{profile}].MiddleLight[0].Light={brightness}").format(
-            channel=channel, profile=profile_mode, mode=mode, brightness=brightness
+               "&Lighting[{channel}][{profile}].{bank}[0].Light={brightness}").format(
+            channel=channel, profile=profile_mode, mode=mode,
+            brightness=brightness, bank=bank
         )
         return await self.get(url)
 
@@ -3199,7 +3256,7 @@ class DahuaClient:
             # needed answered about the infrared control.
             _LOGGER.debug("Writing to %s: %s", self._address, url)
             clear_host_cache(self._device)
-            return await self._request(url, verify_ok)
+            return await self._request(url, verify_ok, reject_declined=True)
 
         # Credentials are part of the key: entries for one device may be
         # configured with different users, and a successful read is not
@@ -3228,7 +3285,8 @@ class DahuaClient:
 
         return dict(result)
 
-    async def _request(self, url: str, verify_ok=False, allow_rpc2=True) -> dict:
+    async def _request(self, url: str, verify_ok=False, allow_rpc2=True,
+                       reject_declined=False) -> dict:
         """Make the request. One caller per shared read reaches here."""
         # Per-rule camera writes use CGI array indexes. Resolve and poll that
         # same CGI table even when other config reads prefer RPC2.
@@ -3347,6 +3405,13 @@ class DahuaClient:
                     if verify_ok:
                         if data.lower().strip() != "ok":
                             raise Exception(data)
+                    if reject_declined and write_was_declined(data):
+                        # Set by get() for every write. A 200 carrying "Error" is
+                        # the device declining, and 29 write methods were reading
+                        # it as success -- see write_was_declined.
+                        raise DahuaWriteDeclined(
+                            "%s declined the write: %s"
+                            % (self._address, " ".join(data.split())[:120]))
                     return await self.parse_dahua_api_response(data)
                 finally:
                     if response is not None:

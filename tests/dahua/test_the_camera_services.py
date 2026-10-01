@@ -88,6 +88,14 @@ class _Coordinator:
     def get_infrared_profile(self):
         return "0"
 
+    def get_infrared_bank(self):
+        """The service passes it through, the same as the light entity does."""
+        return "MiddleLight"
+
+    def get_infrared_v2_row(self):
+        """None: this file's camera is a single camera on the v1 path."""
+        return None
+
     def get_profile_mode(self):
         return "1"
 
@@ -179,7 +187,7 @@ async def test_the_infrared_service_sends_the_infrared_profile():
     await camera.async_set_infrared_mode("Manual", 50)
 
     assert camera._coordinator.client.only() == (
-        "async_set_lighting_v1_mode", (LOGICAL, "Manual", 50, "0"), {})
+        "async_set_lighting_v1_mode", (LOGICAL, "Manual", 50, "0", "MiddleLight"), {})
     assert camera._coordinator.refreshed == 1
 
 

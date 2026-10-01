@@ -13,6 +13,9 @@ ATTR_BRIGHTNESS = "brightness"
 class _Client:
     def __init__(self):
         self.v1 = []
+        # Which brightness bank each write named. Hardcoded MiddleLight until a
+        # recorder turned up whose channel has only NearLight and FarLight.
+        self.v1_banks = []
         self.v2 = []
         self.v2_raw = []
         self.scheme_calls = []
@@ -25,6 +28,10 @@ class _Client:
         # the 200 that changes nothing.
         self.v1_refuses = None
         self.v1_ignores = False
+        # The Lighting_V2 path, which infrared reaches only after v1 refuses.
+        self.v2_modes = []
+        self.v2_refuses = None
+        self.v2_ignores = False
         self.infrared_mode = "Auto"
 
         # Default camera state used by the existing illuminator tests.
@@ -33,9 +40,21 @@ class _Client:
         self.light_brightness = 64
         self.light_field = "NearLight"
 
+    async def async_set_lighting_v2_mode(self, channel, mode, brightness,
+                                        profile_mode, light_index=0,
+                                        bank="MiddleLight"):
+        """The fallback path infrared takes once v1 has been refused."""
+        self.v2_modes.append((channel, mode, brightness, profile_mode,
+                              light_index, bank))
+        if self.v2_refuses is not None:
+            raise self.v2_refuses
+        if not self.v2_ignores:
+            self.infrared_mode = mode
+
     async def async_set_lighting_v1_mode(self, channel, mode, brightness,
-                                         profile_mode="0"):
+                                         profile_mode="0", bank="MiddleLight"):
         self.v1.append((channel, mode, brightness, profile_mode))
+        self.v1_banks.append(bank)
         if self.v1_refuses is not None:
             raise self.v1_refuses
         # A device that takes the write reports the new mode on the next poll.
@@ -45,10 +64,11 @@ class _Client:
         if not self.v1_ignores:
             self.infrared_mode = mode
 
-    async def async_set_lighting_v1(self, channel, enabled, brightness, profile_mode="0"):
+    async def async_set_lighting_v1(self, channel, enabled, brightness,
+                                    profile_mode="0", bank="MiddleLight"):
         """What the real client does with it: on is Manual, off is Off."""
         await self.async_set_lighting_v1_mode(
-            channel, "Manual" if enabled else "Off", brightness, profile_mode)
+            channel, "Manual" if enabled else "Off", brightness, profile_mode, bank)
 
     async def async_get_lighting_scheme_mode(self, channel, profile_mode):
         return self.scheme
@@ -199,6 +219,9 @@ class _Coordinator:
         # the infrared light adds to that dict rather than replacing it.
         self.data = {"id": "7"}
         self.infrared_level = 50
+        self.infrared_bank = "MiddleLight"
+        # None means the v1 Lighting path, which is what these tests assume.
+        self.infrared_v2_row = None
         self.illuminator_on = False
         self.illuminator_brightness = 64
         # Which light this device calls the white one; 0 on most models.
@@ -241,6 +264,16 @@ class _Coordinator:
     def get_infrared_level(self):
         """The device's own 0..100 scale, which is readable whatever the mode."""
         return self.infrared_level
+
+    def get_infrared_bank(self):
+        """Which brightness bank this channel's emitter uses."""
+        return self.infrared_bank
+
+    def get_infrared_v2_row(self):
+        """(profile, index, bank) when this channel drives infrared through
+        Lighting_V2, else None. None keeps the v1 path these tests were written
+        against; test_driving_infrared_through_lighting_v2.py covers the other."""
+        return self.infrared_v2_row
 
     def is_illuminator_on(self):
         return self.illuminator_on

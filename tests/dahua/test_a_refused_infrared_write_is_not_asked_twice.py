@@ -156,6 +156,125 @@ def test_what_was_learnt_is_forgotten_for_one_channel_at_a_time():
     assert infrared_write_is_refused(another), "the other channel was forgotten too"
 
 
+# --- and the fallback to Lighting_V2, which is the point of the whole store ----
+#
+# v1 is tried first for every device. Only an outright refusal reaches v2, and only
+# when the channel has a row there. See
+# test_which_lighting_table_drives_infrared.py for why the rule is not "v2 wherever
+# a row exists": #647 has a directly connected camera reporting three v2 rows whose
+# v1 table presumably works, and that issue is literally "the config changes and the
+# LEDs do not".
+
+V2_ROW = ("0", 0, "NearLight")
+
+
+async def test_v1_is_tried_first_even_when_a_v2_row_exists():
+    coordinator = _Coordinator(channel=11)
+    coordinator.infrared_v2_row = V2_ROW
+    light = _light(DahuaInfraredLight, coordinator)
+
+    await light.async_turn_on()
+
+    assert len(coordinator.client.v1) == 1, "v1 was not tried"
+    assert coordinator.client.v2_modes == [], "v2 was used while v1 was working"
+
+
+async def test_a_refused_v1_falls_through_to_v2_in_the_same_press():
+    """The recorder's case. Making the user press twice to discover the fallback
+    would read as the first press having done nothing."""
+    coordinator = _Coordinator(channel=11)
+    coordinator.infrared_v2_row = V2_ROW
+    coordinator.client.v1_refuses = _response_error(403)
+    light = _light(DahuaInfraredLight, coordinator)
+
+    await light.async_turn_on()
+
+    assert len(coordinator.client.v1) == 1
+    assert len(coordinator.client.v2_modes) == 1, "the fallback was not taken"
+    channel, mode, _brightness, profile, index, bank = coordinator.client.v2_modes[0]
+    assert (channel, mode, profile, index, bank) == (11, "Manual", "0", 0, "NearLight")
+
+
+async def test_once_v1_is_known_refused_it_is_not_tried_again():
+    coordinator = _Coordinator(channel=11)
+    coordinator.infrared_v2_row = V2_ROW
+    coordinator.client.v1_refuses = _response_error(403)
+    light = _light(DahuaInfraredLight, coordinator)
+
+    await light.async_turn_on()
+    await light.async_turn_off()
+
+    assert len(coordinator.client.v1) == 1, "v1 was asked again after refusing"
+    assert len(coordinator.client.v2_modes) == 2
+
+
+async def test_a_refused_v1_with_no_v2_row_still_reports_and_stops():
+    """Thirteen of that recorder's fifteen channels."""
+    coordinator = _Coordinator(channel=3)
+    coordinator.infrared_v2_row = None
+    coordinator.client.v1_refuses = _response_error(403)
+    light = _light(DahuaInfraredLight, coordinator)
+
+    with pytest.raises(HomeAssistantError) as first:
+        await light.async_turn_on()
+    assert first.value.translation_key == "infrared_write_refused"
+
+    with pytest.raises(HomeAssistantError) as second:
+        await light.async_turn_on()
+    assert second.value.translation_key == "infrared_write_already_refused"
+    assert len(coordinator.client.v1) == 1
+
+
+async def test_both_paths_refusing_is_what_takes_the_control_away():
+    """A channel with a v2 row is not "refused" while the fallback is untried --
+    reporting it so would remove a control that still had somewhere to go."""
+    coordinator = _Coordinator(channel=11)
+    coordinator.infrared_v2_row = V2_ROW
+    coordinator.client.v1_refuses = _response_error(403)
+    coordinator.client.v2_refuses = _response_error(403)
+    light = _light(DahuaInfraredLight, coordinator)
+
+    with pytest.raises(HomeAssistantError):
+        await light.async_turn_on()
+
+    assert infrared_write_is_refused(coordinator)
+    assert _select(coordinator).available is False
+
+    with pytest.raises(HomeAssistantError) as again:
+        await light.async_turn_on()
+    assert again.value.translation_key == "infrared_write_already_refused"
+    assert len(coordinator.client.v1) == 1
+    assert len(coordinator.client.v2_modes) == 1
+
+
+async def test_a_timeout_on_v1_does_not_burn_the_fallback():
+    """The regression that would hurt most. One blip must not move a camera onto a
+    table it may not honour, and must not spend the v2 attempt either."""
+    coordinator = _Coordinator(channel=11)
+    coordinator.infrared_v2_row = V2_ROW
+    coordinator.client.v1_refuses = asyncio.TimeoutError()
+    light = _light(DahuaInfraredLight, coordinator)
+
+    with pytest.raises(HomeAssistantError):
+        await light.async_turn_on()
+
+    assert coordinator.client.v2_modes == [], "a timeout reached the fallback"
+    assert not infrared_write_is_refused(coordinator)
+
+    coordinator.client.v1_refuses = None
+    await light.async_turn_on()
+    assert len(coordinator.client.v1) == 2
+    assert coordinator.client.v2_modes == []
+
+
+async def test_a_channel_with_a_v2_row_is_available_before_anything_is_tried():
+    coordinator = _Coordinator(channel=11)
+    coordinator.infrared_v2_row = V2_ROW
+
+    assert not infrared_write_is_refused(coordinator)
+    assert _select(coordinator).available is True
+
+
 # --- what the two entities do about it ----------------------------------------
 
 async def test_the_select_goes_unavailable_and_the_light_does_not():

@@ -43,7 +43,11 @@ def _client():
 async def _run(client, url, caplog):
     sent = []
 
-    async def _request(u, verify_ok=False, allow_rpc2=True):
+    async def _request(u, *args, **kwargs):
+        # **kwargs rather than the exact signature: this double exists to record
+        # the url, and get() has gained a keyword since it was written
+        # (reject_declined). A double whose job is to answer the call, not to
+        # inspect it, should not fail when the call grows an argument.
         sent.append(u)
         return {}
 

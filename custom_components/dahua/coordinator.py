@@ -29,6 +29,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import dahua_utils
+from . import refusals
 from .client import DahuaClient, rpc2_refusal_is_a_stale_login
 from .rpc2 import Rpc2MethodRefused
 from .const import (
@@ -143,6 +144,7 @@ def failure_backoff(base: timedelta, consecutive: int) -> timedelta:
 # same on every model. The device names each one in LightType, so it does not
 # have to be guessed.
 WHITE_LIGHT = "WhiteLight"
+INFRARED_LIGHT = "InfraredLight"
 
 MAX_LIGHTING_V2_LIGHTS = 4
 
@@ -172,6 +174,102 @@ def illuminator_brightness_bank(data: dict, channel: int, profile_mode, light_in
         if key in data:
             return bank
     return LIGHT_BRIGHTNESS_BANKS[0]
+
+def infrared_brightness_bank(data: dict, channel: int, profile) -> str:
+    """Which brightness bank this channel's infrared emitter really uses.
+
+    The v1 `Lighting` table has the same problem the v2 one had, and the fix for
+    v2 (#652, `illuminator_brightness_bank`) never reached it: `MiddleLight[0].Light`
+    was hardcoded in the write and in both readers.
+
+    Measured on a DHI-NVR5464-16P-EI, channel 3:
+
+        table.Lighting[3][0].FarLight[0].Light=50
+        table.Lighting[3][0].NearLight[0].Light=50
+        table.Lighting[3][0].Mode=Auto          <- and no MiddleLight at all
+
+    while channel 6 of the same recorder has MiddleLight and no other bank. So
+    naming the wrong one makes the device answer 200 with the body "Error", which
+    read as success, and makes the level read as nothing at all.
+
+    Falls back to MiddleLight when the device names none, which is what every
+    caller did before this existed.
+    """
+    for bank in LIGHT_BRIGHTNESS_BANKS:
+        key = "table.Lighting[{0}][{1}].{2}[0].Light".format(channel, profile, bank)
+        if key in data:
+            return bank
+    return LIGHT_BRIGHTNESS_BANKS[0]
+
+
+def infrared_v2_row(data: dict, channel: int, profile_mode):
+    """(profile, index, bank) for this channel's infrared emitter in Lighting_V2.
+
+    None when the device serves no such row, which is the signal to use the v1
+    `Lighting` table instead.
+
+    **Why this exists.** Measured on a DHI-NVR5464-16P-EI, with every write setting
+    a field to the value it already held:
+
+        Lighting_V2[11][0][0].Mode  (LightType=InfraredLight)   200 'OK'
+        Lighting_V2[1][0][0].Mode   (LightType=InfraredLight)   200 'OK'
+        Lighting[11][0].Mode                                    403 'Authority:check failure.'
+        Lighting[1][0].Mode                                     403 'Authority:check failure.'
+
+    and then with a real change, which is the part that settles it: v2
+    `Mode` moved `ZoomPrio` -> `Manual` and read back `Manual`. So on that recorder
+    the infrared emitter is writable through v2 and refused through v1, and the
+    integration only ever wrote v1. Twelve of its fifteen channels have no v2 row
+    and keep the old path, where the refusal is real.
+
+    The index is found by what the device calls the row rather than assumed,
+    exactly as `illuminator_light_index` does for the white light: channel 11
+    reports index 0 as `InfraredLight` and 1 as `WhiteLight`. The bank comes from
+    the row too -- channel 11's infrared carries `NearLight` and `FarLight` while
+    channel 1's carries `MiddleLight`.
+
+    The live profile is tried first and then 0, the same fallback
+    `infrared_profile` uses, because a device can serve nine profiles (channel 11
+    reports 0 through 8) and the poll only holds the one it reads.
+    """
+    for profile in dict.fromkeys([str(profile_mode), "0"]):
+        for index in range(MAX_LIGHTING_V2_LIGHTS):
+            base = "table.Lighting_V2[{0}][{1}][{2}].".format(channel, profile, index)
+            if data.get(base + "LightType") != INFRARED_LIGHT:
+                continue
+            bank = next((candidate for candidate in LIGHT_BRIGHTNESS_BANKS
+                         if base + candidate + "[0].Light" in data),
+                        LIGHT_BRIGHTNESS_BANKS[0])
+            return (profile, index, bank)
+    return None
+
+
+def infrared_transport(v2_row, v1_refused: bool) -> str:
+    """Which lighting table to drive this channel's infrared through: "v1" or "v2".
+
+    v1 unless the device has refused it outright for this channel *and* serves a
+    v2 row to fall back to.
+
+    **The order matters and the obvious rule is wrong.** The first version of this
+    preferred v2 wherever a v2 row existed, which decides from what a device
+    *reports it has*. Measured on a DHI-NVR5464-16P-EI that is right -- v1 is
+    refused there and v2 works. But #647 carries a directly connected
+    IPC-T5442TM-AS-6mm reporting three v2 InfraredLight rows while its v1 table is
+    presumably accepted, and that issue's whole complaint is "the CGI values change
+    and the physical LEDs do not". Moving every camera that merely reports a v2 row
+    onto a table nobody has verified drives its emitter is that complaint, shipped.
+
+    Deciding from what the device *accepts* keeps every working camera where it is
+    and only moves the ones that have actually refused. It is also the shape this
+    codebase has arrived at independently three times -- `_HOST_CGI_CONFIG_ABSENT`,
+    `_RPC2_TABLE_UNAVAILABLE` and `refusals` all learn from a refusal rather than
+    from a claim -- while the fifteen capabilities still gated on a model string are
+    the recurring bug class (#570, #676, #690).
+    """
+    if v1_refused and v2_row is not None:
+        return "v2"
+    return "v1"
+
 
 SMART_MOTION_ROW = re.compile(r"^table\.SmartMotionDetect\[(\d+)\]")
 
@@ -2478,8 +2576,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         rather than flattened, because a caller checking whether a write landed
         has to be able to see that it did not.
 
+        Read from Lighting_V2 when this channel has a row there, because that is
+        the table the write goes to and the two can disagree -- a channel can
+        report `ZoomPrio` in v2 and something else in v1. Reading one and writing
+        the other is how a control reports a state it is not setting.
+
         Empty when this channel reports no lighting at all.
         """
+        if self.infrared_uses_lighting_v2():
+            profile, index, _bank = self.get_infrared_v2_row()
+            return self.data.get(
+                "table.Lighting_V2[{0}][{1}][{2}].Mode".format(
+                    self._channel, profile, index), "")
         return self.data.get(
             "table.Lighting[{0}][{1}].Mode".format(
                 self._channel, self.get_infrared_profile()), "")
@@ -2487,6 +2595,44 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_infrared_light_on(self) -> bool:
         """ returns true if the infrared light is on """
         return self.get_infrared_mode() == "Manual"
+
+    def get_infrared_bank(self) -> str:
+        """The brightness bank this channel's infrared emitter uses."""
+        if self.infrared_uses_lighting_v2():
+            return self.get_infrared_v2_row()[2]
+        return infrared_brightness_bank(
+            self.data, self._channel, self.get_infrared_profile())
+
+    def get_infrared_v2_row(self):
+        """(profile, index, bank) for infrared in Lighting_V2, or None.
+
+        None means this channel has no v2 row and the v1 `Lighting` table is all
+        there is. On the recorder this was measured on, the channels that do have
+        one are writable through it while v1 is refused outright.
+        """
+        return infrared_v2_row(self.data, self._channel, self.get_profile_mode())
+
+    def infrared_uses_lighting_v2(self) -> bool:
+        """Whether this channel's infrared is driven through Lighting_V2.
+
+        Only once the v1 table has been refused for this channel, and only when the
+        device serves a v2 row to fall back to. See `infrared_transport` for why it
+        is not simply "v2 wherever a v2 row exists".
+        """
+        row = self.get_infrared_v2_row()
+        if row is None:
+            # No fallback exists, so the answer is v1 whatever the store says.
+            # Short-circuited rather than asked: this is the common case -- thirteen
+            # of the measured recorder's fifteen channels and every camera serving
+            # only the v1 table -- and asking would make a read of the mode depend
+            # on the refusal store, and through it on the device address. That is
+            # not hypothetical: it broke five tests in test_infrared_profile.py,
+            # which build the real coordinator with object.__new__ and never set
+            # _address, and it would equally affect any caller holding a
+            # half-constructed coordinator.
+            return False
+        return infrared_transport(
+            row, refusals.is_refused(self, refusals.INFRARED_V1)) == "v2"
 
     def get_infrared_level(self):
         """The infrared level on the device's own 0..100 scale, or None.
@@ -2499,9 +2645,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         None rather than a number when the channel reports none, so the attribute
         says "not known" instead of claiming the emitter is at zero.
         """
-        level = self.data.get(
-            "table.Lighting[{0}][{1}].MiddleLight[0].Light".format(
-                self._channel, self.get_infrared_profile()))
+        if self.infrared_uses_lighting_v2():
+            profile, index, bank = self.get_infrared_v2_row()
+            level = self.data.get(
+                "table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
+                    self._channel, profile, index, bank))
+        else:
+            level = self.data.get(
+                "table.Lighting[{0}][{1}].{2}[0].Light".format(
+                    self._channel, self.get_infrared_profile(),
+                    self.get_infrared_bank()))
         if level is None or level == "":
             return None
         try:
@@ -2512,10 +2665,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_infrared_brightness(self) -> int:
         """Return the brightness of this light, as reported by the camera itself, between 0..255 inclusive"""
 
-        bri = self.data.get(
-            "table.Lighting[{0}][{1}].MiddleLight[0].Light".format(
-                self._channel, self.get_infrared_profile()))
-        return dahua_utils.dahua_brightness_to_hass_brightness(bri)
+        level = self.get_infrared_level()
+        return dahua_utils.dahua_brightness_to_hass_brightness(
+            None if level is None else str(level))
 
     def get_illuminator_index(self) -> int:
         """The Lighting_V2 light index this device puts its white light on."""

@@ -20,7 +20,7 @@ SIREN_WRITE_FAILED = (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError
 
 # Which control this is in refusals.py's store, so a device refusing its siren
 # does not silence its infrared on the same channel.
-SIREN_CONTROL = "siren"
+SIREN_CONTROL = refusals.SIREN
 
 
 # One at a time, because every toggle is a write to the device and these devices are measurably intolerant of
