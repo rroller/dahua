@@ -13,6 +13,9 @@ ATTR_BRIGHTNESS = "brightness"
 class _Client:
     def __init__(self):
         self.v1 = []
+        # Which brightness bank each write named. Hardcoded MiddleLight until a
+        # recorder turned up whose channel has only NearLight and FarLight.
+        self.v1_banks = []
         self.v2 = []
         self.v2_raw = []
         self.scheme_calls = []
@@ -34,8 +37,9 @@ class _Client:
         self.light_field = "NearLight"
 
     async def async_set_lighting_v1_mode(self, channel, mode, brightness,
-                                         profile_mode="0"):
+                                         profile_mode="0", bank="MiddleLight"):
         self.v1.append((channel, mode, brightness, profile_mode))
+        self.v1_banks.append(bank)
         if self.v1_refuses is not None:
             raise self.v1_refuses
         # A device that takes the write reports the new mode on the next poll.
@@ -45,10 +49,11 @@ class _Client:
         if not self.v1_ignores:
             self.infrared_mode = mode
 
-    async def async_set_lighting_v1(self, channel, enabled, brightness, profile_mode="0"):
+    async def async_set_lighting_v1(self, channel, enabled, brightness,
+                                    profile_mode="0", bank="MiddleLight"):
         """What the real client does with it: on is Manual, off is Off."""
         await self.async_set_lighting_v1_mode(
-            channel, "Manual" if enabled else "Off", brightness, profile_mode)
+            channel, "Manual" if enabled else "Off", brightness, profile_mode, bank)
 
     async def async_get_lighting_scheme_mode(self, channel, profile_mode):
         return self.scheme
@@ -199,6 +204,7 @@ class _Coordinator:
         # the infrared light adds to that dict rather than replacing it.
         self.data = {"id": "7"}
         self.infrared_level = 50
+        self.infrared_bank = "MiddleLight"
         self.illuminator_on = False
         self.illuminator_brightness = 64
         # Which light this device calls the white one; 0 on most models.
@@ -241,6 +247,10 @@ class _Coordinator:
     def get_infrared_level(self):
         """The device's own 0..100 scale, which is readable whatever the mode."""
         return self.infrared_level
+
+    def get_infrared_bank(self):
+        """Which brightness bank this channel's emitter uses."""
+        return self.infrared_bank
 
     def is_illuminator_on(self):
         return self.illuminator_on

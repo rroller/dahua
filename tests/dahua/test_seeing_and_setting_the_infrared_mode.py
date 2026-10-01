@@ -34,12 +34,14 @@ class _Coordinator:
 
     subentry_id = None
 
-    def __init__(self, mode="Auto", level=50, channel=3):
+    def __init__(self, mode="Auto", level=50, channel=3, bank="MiddleLight"):
         self.mode = mode
         self.level = level
+        self.bank = bank
         self._channel = channel
         self.refreshed = 0
         self.written = []
+        self.banks = []
         # CoordinatorEntity.available reads this, and DahuaBaseEntity does
         # not override available -- only DahuaEventDrivenEntity does -- so
         # the mode select's super().available is Home Assistant's own.
@@ -71,9 +73,13 @@ class _Coordinator:
     def get_infrared_level(self):
         return self.level
 
+    def get_infrared_bank(self):
+        return self.bank
+
     async def async_set_lighting_v1_mode(self, channel, mode, brightness,
-                                         profile_mode="0"):
+                                         profile_mode="0", bank="MiddleLight"):
         self.written.append((channel, mode, brightness, profile_mode))
+        self.banks.append(bank)
         self.mode = mode
 
     async def async_refresh(self):

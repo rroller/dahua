@@ -74,7 +74,8 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
     try:
         await coordinator.client.async_set_lighting_v1_mode(
             coordinator.get_channel(), mode, brightness,
-            coordinator.get_infrared_profile())
+            coordinator.get_infrared_profile(),
+            coordinator.get_infrared_bank())
     except WRITE_FAILED as err:
         if refusals.refusal_is_outright(err):
             refusals.remember(coordinator, CONTROL,

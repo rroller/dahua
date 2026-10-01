@@ -173,6 +173,33 @@ def illuminator_brightness_bank(data: dict, channel: int, profile_mode, light_in
             return bank
     return LIGHT_BRIGHTNESS_BANKS[0]
 
+def infrared_brightness_bank(data: dict, channel: int, profile) -> str:
+    """Which brightness bank this channel's infrared emitter really uses.
+
+    The v1 `Lighting` table has the same problem the v2 one had, and the fix for
+    v2 (#652, `illuminator_brightness_bank`) never reached it: `MiddleLight[0].Light`
+    was hardcoded in the write and in both readers.
+
+    Measured on a DHI-NVR5464-16P-EI, channel 3:
+
+        table.Lighting[3][0].FarLight[0].Light=50
+        table.Lighting[3][0].NearLight[0].Light=50
+        table.Lighting[3][0].Mode=Auto          <- and no MiddleLight at all
+
+    while channel 6 of the same recorder has MiddleLight and no other bank. So
+    naming the wrong one makes the device answer 200 with the body "Error", which
+    read as success, and makes the level read as nothing at all.
+
+    Falls back to MiddleLight when the device names none, which is what every
+    caller did before this existed.
+    """
+    for bank in LIGHT_BRIGHTNESS_BANKS:
+        key = "table.Lighting[{0}][{1}].{2}[0].Light".format(channel, profile, bank)
+        if key in data:
+            return bank
+    return LIGHT_BRIGHTNESS_BANKS[0]
+
+
 SMART_MOTION_ROW = re.compile(r"^table\.SmartMotionDetect\[(\d+)\]")
 
 def smart_motion_row_indices(table) -> tuple:
@@ -2488,6 +2515,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """ returns true if the infrared light is on """
         return self.get_infrared_mode() == "Manual"
 
+    def get_infrared_bank(self) -> str:
+        """The brightness bank this channel's infrared emitter uses."""
+        return infrared_brightness_bank(
+            self.data, self._channel, self.get_infrared_profile())
+
     def get_infrared_level(self):
         """The infrared level on the device's own 0..100 scale, or None.
 
@@ -2500,8 +2532,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         says "not known" instead of claiming the emitter is at zero.
         """
         level = self.data.get(
-            "table.Lighting[{0}][{1}].MiddleLight[0].Light".format(
-                self._channel, self.get_infrared_profile()))
+            "table.Lighting[{0}][{1}].{2}[0].Light".format(
+                self._channel, self.get_infrared_profile(),
+                self.get_infrared_bank()))
         if level is None or level == "":
             return None
         try:
@@ -2513,8 +2546,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return the brightness of this light, as reported by the camera itself, between 0..255 inclusive"""
 
         bri = self.data.get(
-            "table.Lighting[{0}][{1}].MiddleLight[0].Light".format(
-                self._channel, self.get_infrared_profile()))
+            "table.Lighting[{0}][{1}].{2}[0].Light".format(
+                self._channel, self.get_infrared_profile(),
+                self.get_infrared_bank()))
         return dahua_utils.dahua_brightness_to_hass_brightness(bri)
 
     def get_illuminator_index(self) -> int:
