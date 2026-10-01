@@ -166,6 +166,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             sensors.append(DahuaEventSensor(coordinator, entry, "DoorStatus"))
             sensors.append(DahuaEventSensor(coordinator, entry, "CallNoAnswered"))
 
+        for rule in coordinator.get_ivs_rules():
+            sensors.append(DahuaIVSRuleBinarySensor(coordinator, entry, rule))
+
         sensors.append(DahuaAuthorizedVehicleBinarySensor(coordinator, entry))
 
         if sensors:
@@ -303,6 +306,22 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
         return False
 
 
+class DahuaIVSRuleBinarySensor(DahuaEventSensor):
+    """Track one normal IVS rule by its stable Dahua rule ID."""
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, rule: dict):
+        super().__init__(coordinator, entry, f"IVSRule_{rule['id']}")
+        self._name = rule["name"]
+        self._attr_name = rule["name"]
+        self._unique_id = f"{coordinator.get_serial_number()}_ivs_rule_{rule['id']}"
+        self._rule_id = rule["id"]
+        self._rule_type = rule.get("type")
+
+    @property
+    def extra_state_attributes(self):
+        return {"rule_id": self._rule_id, "rule_type": self._rule_type}
+
+
 class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEntity):
     """Binary sensor that turns on when an authorized vehicle license plate is recognized."""
 
@@ -406,4 +425,3 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
     def should_poll(self) -> bool:
         """Return False as entity pushes state updates."""
         return False
-

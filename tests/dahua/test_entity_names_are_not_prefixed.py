@@ -76,7 +76,11 @@ def test_every_entity_class_inherits_the_base():
         for match in re.finditer(r"^class (Dahua\w+)\(([^)]*)\)", _source(name),
                                  re.MULTILINE):
             classname, bases = match.groups()
-            if "DahuaBaseEntity" not in bases and "DahuaEventDrivenEntity" not in bases:
+            # DahuaEventSensor inherits DahuaEventDrivenEntity, and per-rule
+            # IVS sensors inherit DahuaEventSensor.
+            if not any(base in bases for base in (
+                "DahuaBaseEntity", "DahuaEventDrivenEntity", "DahuaEventSensor"
+            )):
                 offenders.append("%s.%s" % (name, classname))
 
     assert not offenders, "these do not inherit the base: %s" % offenders

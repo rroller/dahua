@@ -573,6 +573,32 @@ To change the selection: **Settings, Devices and Services, Dahua, Configure**, o
 entry you mean. Ticking boxes in the camera's own web interface does not affect which
 Home Assistant entities exist.
 
+### Per-rule IVS binary sensors
+
+Each complete `Class=Normal` rule with a unique Dahua ID creates a binary sensor,
+including rule types such as `StayDetection`. Discovery happens during setup;
+reload the integration after adding rules. Direct cameras use `VideoAnalyseRule`,
+and NVR channels use the per-channel `RemoteVideoAnalyseRule` read. Keep that read
+shape: some NVR firmware reports different IDs when reading the whole recorder.
+
+To activate a per-rule sensor, a Start must carry `Class=Normal` and a matching
+`RuleId` or `RuleID`. The integration does not guess a match from the rule name
+or array position. NVR configuration IDs and event IDs still need comparison on
+real hardware; a discovered entity alone does not prove that its event IDs match.
+A Stop clears all active rules with the same event Code on that channel: Dahua
+emits one Start per rule but a single Stop for the whole code, and that Stop
+names only one rule. The integration clears the rules that code actually lit,
+falling back to the rules' configured Type after a reload. This also handles a
+Stop without usable rule data. Pulse events use the existing short hold before clearing.
+
+The downloaded diagnostics contain an `ivs` section for every configured channel:
+the setup read source, discovered count, skipped row indexes and reasons, and
+unmatched event counts with the most recent channel/code/rule ID. Missing IDs,
+duplicate IDs, and invalid Enable values explain why rows were skipped. Read
+failures report the exception type. Counts cover the current coordinator lifetime.
+Debug logging records the discovery summary and the first unmatched event of each
+reason. These diagnostics use existing reads and do not make extra device requests.
+
 ### Smart Motion is derived from the IVS event
 
 Many cameras never send `SmartMotionHuman` at all. They send `CrossLineDetection` or
@@ -626,7 +652,8 @@ Home Assistant leaves the old entity behind showing `unavailable` with "This ent
 no longer being provided by the dahua integration". That is Home Assistant reporting
 an entity nothing owns any more, not a fault in the integration, and it will never
 update again. Either select the event again, or delete the entity from its own page.
-Reloading or restarting will not clear it.
+Reloading or restarting will not clear it. The same applies to a per-rule IVS
+sensor after its rule is deleted from the device.
 
 ## Example Code Events
 | Code | Description |
