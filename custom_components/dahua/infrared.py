@@ -72,10 +72,23 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
         )
 
     try:
-        await coordinator.client.async_set_lighting_v1_mode(
-            coordinator.get_channel(), mode, brightness,
-            coordinator.get_infrared_profile(),
-            coordinator.get_infrared_bank())
+        row = coordinator.get_infrared_v2_row()
+        if row is not None:
+            # This channel's infrared emitter has a Lighting_V2 row, and that is
+            # the table to drive it through. Measured on a DHI-NVR5464-16P-EI: a
+            # v2 Mode write moved ZoomPrio to Manual and read back Manual, while
+            # the v1 Lighting write for the same channel answers
+            # 403 Authority:check failure. Twelve of that recorder's fifteen
+            # channels have no v2 row and keep the v1 path, where the refusal is
+            # real and #941 reports it.
+            profile, index, bank = row
+            await coordinator.client.async_set_lighting_v2_mode(
+                coordinator.get_channel(), mode, brightness, profile, index, bank)
+        else:
+            await coordinator.client.async_set_lighting_v1_mode(
+                coordinator.get_channel(), mode, brightness,
+                coordinator.get_infrared_profile(),
+                coordinator.get_infrared_bank())
     except WRITE_FAILED as err:
         if refusals.refusal_is_outright(err):
             refusals.remember(coordinator, CONTROL,

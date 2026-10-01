@@ -92,6 +92,10 @@ class _Coordinator:
         """The service passes it through, the same as the light entity does."""
         return "MiddleLight"
 
+    def get_infrared_v2_row(self):
+        """None: this file's camera is a single camera on the v1 path."""
+        return None
+
     def get_profile_mode(self):
         return "1"
 

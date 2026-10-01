@@ -38,6 +38,7 @@ class _Coordinator:
         self.mode = mode
         self.level = level
         self.bank = bank
+        self.v2_row = None
         self._channel = channel
         self.refreshed = 0
         self.written = []
@@ -75,6 +76,9 @@ class _Coordinator:
 
     def get_infrared_bank(self):
         return self.bank
+
+    def get_infrared_v2_row(self):
+        return self.v2_row
 
     async def async_set_lighting_v1_mode(self, channel, mode, brightness,
                                          profile_mode="0", bank="MiddleLight"):

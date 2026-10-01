@@ -205,6 +205,8 @@ class _Coordinator:
         self.data = {"id": "7"}
         self.infrared_level = 50
         self.infrared_bank = "MiddleLight"
+        # None means the v1 Lighting path, which is what these tests assume.
+        self.infrared_v2_row = None
         self.illuminator_on = False
         self.illuminator_brightness = 64
         # Which light this device calls the white one; 0 on most models.
@@ -251,6 +253,12 @@ class _Coordinator:
     def get_infrared_bank(self):
         """Which brightness bank this channel's emitter uses."""
         return self.infrared_bank
+
+    def get_infrared_v2_row(self):
+        """(profile, index, bank) when this channel drives infrared through
+        Lighting_V2, else None. None keeps the v1 path these tests were written
+        against; test_driving_infrared_through_lighting_v2.py covers the other."""
+        return self.infrared_v2_row
 
     def is_illuminator_on(self):
         return self.illuminator_on
