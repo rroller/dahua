@@ -2619,9 +2619,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         device serves a v2 row to fall back to. See `infrared_transport` for why it
         is not simply "v2 wherever a v2 row exists".
         """
+        row = self.get_infrared_v2_row()
+        if row is None:
+            # No fallback exists, so the answer is v1 whatever the store says.
+            # Short-circuited rather than asked: this is the common case -- thirteen
+            # of the measured recorder's fifteen channels and every camera serving
+            # only the v1 table -- and asking would make a read of the mode depend
+            # on the refusal store, and through it on the device address. That is
+            # not hypothetical: it broke five tests in test_infrared_profile.py,
+            # which build the real coordinator with object.__new__ and never set
+            # _address, and it would equally affect any caller holding a
+            # half-constructed coordinator.
+            return False
         return infrared_transport(
-            self.get_infrared_v2_row(),
-            refusals.is_refused(self, refusals.INFRARED_V1)) == "v2"
+            row, refusals.is_refused(self, refusals.INFRARED_V1)) == "v2"
 
     def get_infrared_level(self):
         """The infrared level on the device's own 0..100 scale, or None.

@@ -38,6 +38,33 @@ def _coordinator(channel, profile_mode, data):
     return c
 
 
+def test_a_v1_only_channel_reads_its_mode_without_needing_the_address():
+    """Reading the mode must not depend on the refusal store, and through it on the
+    device address.
+
+    `infrared_uses_lighting_v2` asks the refusal store whether v1 has been refused,
+    which needs `get_address()`, which reads `_address`. This file builds the real
+    coordinator with `object.__new__` and never sets it -- as does any caller holding
+    a half-constructed one -- and five tests here broke the first time that read was
+    added. A channel with no v2 row has no fallback, so the answer is v1 whatever the
+    store says, and the question should not be asked at all.
+
+    `get_address` is made to raise rather than left unset, so this fails loudly if the
+    short-circuit is ever removed instead of depending on an attribute's absence.
+    """
+    coordinator = _coordinator(3, "0", dict(NVR))
+
+    def _explode():
+        raise AssertionError(
+            "the refusal store was consulted for a channel with no v2 row")
+
+    coordinator.get_address = _explode
+
+    assert coordinator.infrared_uses_lighting_v2() is False
+    assert coordinator.get_infrared_mode() == "Auto"
+    assert coordinator.get_infrared_level() == 50
+
+
 # The measured channel 3, whose profiles disagree.
 NVR = {
     "table.Lighting[3][0].Mode": "Auto",
