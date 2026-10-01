@@ -2034,6 +2034,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "HCVR",
         }
 
+    def is_indoor_monitor_without_video(self) -> bool:
+        """Whether this is an indoor monitor (VTH) that says it has no camera.
+
+        Such a device got the same set of camera entities as any other, for a
+        camera it does not have: a VTH2421F-P has none, and says so in its own
+        RemoteDevice entry (SupportVideo false). Some indoor monitors do have one, so the
+        class alone does not decide this; the device's own answer does, and no
+        answer leaves the cameras where they were.
+
+        Both halves come from the RPC2 identity a VTH is given when it has no
+        magicBox CGI, so nothing else can reach this.
+        """
+        device_class = getattr(self, "_device_class", "")
+        if not isinstance(device_class, str) or device_class.strip().upper() != "VTH":
+            return False
+        own_video = getattr(self.client, "vth_own_video", None)
+        return own_video is not None and own_video() is False
+
     def uses_recorder_deterrence(self) -> bool:
         """Use reported host class, falling back to legacy routing if unavailable."""
         device_class = getattr(self, "_device_class", "")

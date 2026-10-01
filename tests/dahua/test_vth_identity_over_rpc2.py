@@ -111,6 +111,8 @@ async def test_the_exact_questions_are_asked_once_for_all_three():
         ("magicBox.getDeviceClass", None),
         ("magicBox.getDeviceType", None),
         ("magicBox.getSoftwareVersion", None),
+        # Whether it has a camera of its own, see test_vth_without_video.py.
+        ("configManager.getConfig", {"name": "RemoteDevice"}),
     ]
 
 
