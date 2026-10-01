@@ -139,7 +139,16 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        return self._coordinator.get_last_plate_data()
+        """The plate's own fields, on top of what every entity here reports.
+
+        Returned alone until now, so `id` and `integration` were missing from this
+        sensor and only this one. Merged rather than replaced, and `or {}` because
+        get_last_plate_data returns None before the first plate.
+        """
+        return {
+            **(super().extra_state_attributes or {}),
+            **(self._coordinator.get_last_plate_data() or {}),
+        }
 
     async def async_added_to_hass(self):
         """Listen for a plate, and stop listening when removed.

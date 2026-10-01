@@ -379,6 +379,9 @@
         "cancel_call_refused": {
             "message": "The doorbell would not cancel the call: {reason}"
         },
+        "infrared_write_already_refused": {
+            "message": "{device} has already refused to change its infrared light, so Home Assistant did not ask again. Its mode and level are still read and shown. Reload the integration entry to try again after changing anything on the device."
+        },
         "infrared_write_ignored": {
             "message": "{device} accepted the infrared change and did not make it: asked for {wanted}, still reports {reported}. A recorder can answer OK for a camera it will not pass the setting on to."
         },

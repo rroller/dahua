@@ -18,13 +18,27 @@ Two different failures, neither of which reached the user:
    integration logged the whole thing at **debug**, so with default logging
    nothing reached the log at all.
 
-2. **Accepted and ignored.** Channel 3 answered `200` to all four writes and
-   `Lighting[3][0].Mode` was still `Auto` afterwards. The refresh then showed the
-   toggle springing back with nothing said about why.
+2. **Accepted and ignored.** Channel 3's four writes drew no error line at all,
+   and `Lighting[3][0].Mode` was still `Auto` afterwards.
 
-The status code says the request was accepted, not that anything changed, so
-reading the mode back is the only way to tell those apart from a write that
-worked. That read is judged on the **mode**, not on `is_on`: an ignored turn-off
+**Corrected after running the write test rather than reading a log.** Every
+channel refuses, over both transports:
+
+```
+CGI  setConfig&Lighting[3][0].Mode=Manual  HTTP 403  body "Authority:check failure."
+CGI  setConfig&Lighting[6][0].Mode=Manual  HTTP 403  body "Authority:check failure."
+RPC2 configManager.setConfig name=Lighting errCode 285278249 "Authority:check failure."
+```
+
+A 403 is swallowed nowhere on that path (`CONFIG_CGI_ABSENT = (404, 501)`), so the
+absence of an error really did mean a 2xx at the time, and the identical write
+refuses now. That is unexplained, so **case 2 is a guard against a shape nobody
+has reproduced**, not a fix for something measured. It is kept because a status
+code says the request was accepted and not that anything changed, and because
+`Authority:check failure` on a write is not obviously permanent -- but it should
+not be read as the settled behaviour of that channel.
+
+The read-back is judged on the **mode**, not on `is_on`: an ignored turn-off
 leaves the channel on `Auto`, which is not `Manual` either, so `is_on` would
 agree with the write that failed.
 """

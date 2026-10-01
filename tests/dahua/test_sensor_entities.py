@@ -156,7 +156,33 @@ def test_what_the_camera_said_about_the_vehicle_is_the_attributes():
     data = {"plate": "ABC1234", "vehicle_color": "Black", "confidence": 92}
     s = _sensor(DahuaLicensePlateSensor, _Coordinator(plate="ABC1234", plate_data=data))
 
-    assert s.extra_state_attributes == data
+    attrs = s.extra_state_attributes
+
+    assert {key: attrs[key] for key in data} == data
+    # On top of the base's rather than instead of them. This used to be an
+    # equality assertion, which is what let the sensor ship without `id` or
+    # `integration` while reading as fully covered.
+    assert attrs["integration"] == "dahua"
+    assert attrs["id"] == "7"
+
+
+def test_a_sensor_with_no_plate_yet_still_reports_the_base_attributes():
+    """The real coordinator returns None before the first plate, and `**None` is a
+    TypeError -- so the merge has to tolerate it.
+
+    `_plate_data` is set to None by hand because this file's double coerces it to
+    `{}` in its constructor, and `{}` merges fine. Testing against the double's
+    coercion rather than the shape production actually produces would pass
+    whatever the code did.
+    """
+    coordinator = _Coordinator()
+    coordinator._plate_data = None
+    assert coordinator.get_last_plate_data() is None, "the None path must be reached"
+
+    attrs = _sensor(DahuaLicensePlateSensor, coordinator).extra_state_attributes
+
+    assert attrs["integration"] == "dahua"
+    assert attrs["id"] == "7"
 
 
 def test_the_plate_sensor_is_pushed_not_polled():
