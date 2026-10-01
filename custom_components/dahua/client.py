@@ -364,6 +364,31 @@ def _digest_state(device: str, username: str) -> dict:
     return state
 
 
+def rpc2_software_version(params) -> str | None:
+    """magicBox.getSoftwareVersion's RPC2 answer, in the shape the CGI gives.
+
+    The CGI answers `version=4.800.0000000.1.R,build:2025-01-23`, and
+    get_build_date peels the date off after `build:`. RPC2 answers an object,
+    measured on a VTH2421F-P and a DHI-VTO2211G-WP-S2:
+
+        {"version": {"Build": "20250123", "BuildDate": "2025-01-23",
+                     "Version": "4.800.0000000.1.R", ...}}
+
+    Only that shape is read. Anything else is None, so the caller falls back
+    rather than showing a version made out of a guess.
+    """
+    version = params.get("version") if isinstance(params, dict) else None
+    if not isinstance(version, dict):
+        return None
+    number = version.get("Version")
+    if not isinstance(number, str) or not number.strip():
+        return None
+    build = version.get("BuildDate")
+    if isinstance(build, str) and build.strip():
+        return "{0},build:{1}".format(number.strip(), build.strip())
+    return number.strip()
+
+
 def vto_call_number(room: str) -> str:
     """The number a VTO dials for a room, from the room as a VTH shows it.
 
@@ -1090,6 +1115,61 @@ class DahuaClient:
             self._address, what, status,
         )
 
+    async def _vth_identity_over_rpc2(self) -> dict | None:
+        """A VTH's model, firmware and class over RPC2, or None for anything else.
+
+        An indoor monitor serves no CGI at all, so every identity question above
+        fell back and a VTH was reported as `Generic RTSP` on firmware `1.0`. It
+        does answer the same questions over RPC2. Measured on a VTH2421F-P on
+        4.800.0000000.1.R, which answers 404 to magicBox.cgi:
+
+            magicBox.getDeviceClass      {"type": "VTH"}
+            magicBox.getDeviceType       {"type": "VTH2421F-P"}
+            magicBox.getSoftwareVersion  {"version": {"Version": "4.800.0000000.1.R",
+                                                      "BuildDate": "2025-01-23", ...}}
+
+        getDeviceClass answers in `type`, where the CGI says `class`.
+
+        Only a device that says it is a VTH gets this identity. Every other
+        device whose CGI is absent keeps the fallback identity it has always
+        had, because which entities a device gets is decided from its model,
+        and an SL300 or a CGI-less VTO that has been running as `Generic RTSP`
+        must not change shape under its user (see
+        test_identity_fallback_is_reported.py). A VTH has never been supported,
+        so nobody depends on how it looked.
+
+        Asked once per client and remembered, including a None. Never raises:
+        this runs where the client used to give up, and giving up is still what
+        happens if RPC2 has no answer either.
+        """
+        # Self-initialising, like _identity_fallbacks: test doubles and older
+        # call paths build clients without going through __init__.
+        if getattr(self, "_vth_identity_asked", False):
+            return getattr(self, "_vth_identity", None)
+        self._vth_identity_asked = True
+        self._vth_identity = None
+        try:
+            device_class = await self._rpc2_shared_call(
+                lambda client: client.request("magicBox.getDeviceClass", params=None))
+            if ((device_class.get("params") or {}).get("type") or "").strip().upper() != "VTH":
+                return None
+            device_type = await self._rpc2_shared_call(
+                lambda client: client.request("magicBox.getDeviceType", params=None))
+            version = await self._rpc2_shared_call(
+                lambda client: client.request("magicBox.getSoftwareVersion", params=None))
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug("No VTH identity over RPC2 from %s", self._address, exc_info=True)
+            return None
+        model = ((device_type.get("params") or {}).get("type") or "").strip()
+        firmware = rpc2_software_version(version.get("params"))
+        if not model or not firmware:
+            return None
+        _LOGGER.info(
+            "%s has no magicBox CGI and is a VTH; read its identity over RPC2: %s, %s",
+            self._address, model, firmware)
+        self._vth_identity = {"type": model, "version": firmware, "class": "VTH"}
+        return self._vth_identity
+
     async def get_device_type(self) -> dict:
         """
         getDeviceType returns the device type. Example response:
@@ -1101,6 +1181,10 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getDeviceType")
         except aiohttp.ClientResponseError as e:
+            if e.status in self.CONFIG_CGI_ABSENT:
+                vth = await self._vth_identity_over_rpc2()
+                if vth:
+                    return {"type": vth["type"]}
             self._note_identity_fallback("getDeviceType", e)
             return {"type": "Generic RTSP"}
 
@@ -1122,7 +1206,14 @@ class DahuaClient:
         match. A device that has not implemented getDeviceClass is not thereby
         saying it is not a doorbell.
         """
-        result = await self.get("/cgi-bin/magicBox.cgi?action=getDeviceClass")
+        try:
+            result = await self.get("/cgi-bin/magicBox.cgi?action=getDeviceClass")
+        except aiohttp.ClientResponseError as e:
+            # A VTH answers this over RPC2 only. Anything else raises exactly
+            # as before, so the caller still records the refusal.
+            if e.status in self.CONFIG_CGI_ABSENT and await self._vth_identity_over_rpc2():
+                return "VTH"
+            raise
         return (result.get("class") or "").strip().upper()
 
     async def get_software_version(self) -> dict:
@@ -1133,6 +1224,10 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSoftwareVersion")
         except aiohttp.ClientResponseError as e:
+            if e.status in self.CONFIG_CGI_ABSENT:
+                vth = await self._vth_identity_over_rpc2()
+                if vth:
+                    return {"version": vth["version"]}
             self._note_identity_fallback("getSoftwareVersion", e)
             return {"version": "1.0"}
 
