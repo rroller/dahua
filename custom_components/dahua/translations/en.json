@@ -325,6 +325,12 @@
             "day_night_mode": {
                 "name": "Day/Night Mode"
             },
+            "vth_camera_link": {
+                "name": "Camera for {vto} calls",
+                "state": {
+                    "none": "None"
+                }
+            },
             "infrared_mode": {
                 "name": "Infrared Mode",
                 "state": {
@@ -405,6 +411,9 @@
         },
         "siren_refused": {
             "message": "{device} would not operate its siren: {reason}"
+        },
+        "vth_camera_link_ignored": {
+            "message": "{device} accepted {option} as the camera for {vto} calls, and does not report it afterwards. Nothing was changed."
         },
         "vto_call_needs_a_doorbell": {
             "message": "{device} is not a doorbell, so it cannot ring a room. This service works on a VTO."

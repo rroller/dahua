@@ -3,6 +3,8 @@ import logging
 
 from homeassistant.core import HomeAssistant
 from homeassistant.components.select import SelectEntity
+from homeassistant.const import EntityCategory
+from homeassistant.exceptions import HomeAssistantError
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
 from . import dahua_utils
@@ -67,6 +69,14 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 
         if coordinator.supports_infrared_light():
             devices.append(DahuaInfraredModeSelect(coordinator, entry))
+
+        # One per VTO the indoor monitor knows. Decided from the first poll's
+        # read, so a monitor that would not answer it gets none until the entry
+        # is reloaded, rather than a control with nothing to choose from.
+        if coordinator.is_indoor_monitor():
+            links = coordinator.get_vth_camera_links() or {}
+            for vto in links.get("vtos") or {}:
+                devices.append(DahuaVthCameraLinkSelect(coordinator, entry, vto))
 
         async_add_devices(
             devices, config_subentry_id=coordinator.subentry_id)
@@ -290,3 +300,98 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.client.async_set_video_in_day_night_mode(
             self._coordinator.get_channel(), "general", option)
         await self._coordinator.async_refresh()
+
+
+# The option for "no camera": the VTH shows the VTO's own picture. A slug, so
+# that Home Assistant can translate it; the cameras are named by the device and
+# shown as they are.
+NO_CAMERA = "none"
+
+
+class DahuaVthCameraLinkSelect(DahuaBaseEntity, SelectEntity):
+    """Which camera an indoor monitor (VTH) opens on when one VTO calls it.
+
+    The VTH manual describes this per VTO ("select an IPC, and when this VTO
+    calls, you will see the monitoring image from this IPC"), but on a
+    VTH2421F-P on 4.800.0000000.1.R the screen does not offer it. The setting is
+    in the VTH's VTOInfo table as LinkIPC, and setting it over RPC2 does what the
+    manual says, on the main monitor and both extensions: see
+    client.vth_camera_links.
+
+    Configuration rather than state, so EntityCategory.CONFIG. It is written
+    from automations as well as by hand: a second doorbell that is not wired to
+    the VTO can point the monitors at its own camera, ring them with vto_call,
+    and set this back.
+    """
+
+    _attr_translation_key = "vth_camera_link"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry, vto: str):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+        self._vto = vto
+        self._attr_translation_placeholders = {"vto": self._vto_entry().get("name") or vto}
+
+    @property
+    def unique_id(self):
+        return "{0}_camera_link_{1}".format(
+            self._coordinator.get_serial_number(), self._vto.lower())
+
+    def _links(self) -> dict:
+        return self._coordinator.get_vth_camera_links() or {}
+
+    def _vto_entry(self) -> dict:
+        return (self._links().get("vtos") or {}).get(self._vto) or {}
+
+    def _choices(self) -> dict:
+        """Option to camera slot key, with "none" for no camera.
+
+        A camera named like another, or named "none", is told apart by its key,
+        so every option maps to exactly one slot.
+        """
+        choices = {NO_CAMERA: ""}
+        for key, name in (self._links().get("cameras") or {}).items():
+            option = name
+            if option in choices or option.lower() == NO_CAMERA:
+                option = "{0} ({1})".format(name, key)
+            choices[option] = key
+        return choices
+
+    @property
+    def available(self) -> bool:
+        return super().available and bool(self._vto_entry())
+
+    @property
+    def options(self) -> list:
+        return list(self._choices())
+
+    @property
+    def current_option(self):
+        """The camera this VTO's calls open on, or None for one not in the list.
+
+        A LinkIPC naming a slot that is not a configured camera is not "none":
+        the VTH has something set, and reporting it as nothing would hide that.
+        """
+        link = self._vto_entry().get("link", "")
+        for option, key in self._choices().items():
+            if key == link:
+                return option
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        camera = self._choices().get(option)
+        if camera is None:
+            return
+        landed = await self._coordinator.client.async_set_vth_camera_link(self._vto, camera)
+        await self._coordinator.async_refresh()
+        if not landed:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="vth_camera_link_ignored",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "vto": self._vto_entry().get("name") or self._vto,
+                    "option": option,
+                },
+            )

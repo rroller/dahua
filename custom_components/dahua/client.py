@@ -389,6 +389,51 @@ def rpc2_software_version(params) -> str | None:
     return number.strip()
 
 
+def _configured(entry) -> bool:
+    """Whether a VTOInfo or VTHRemoteIPCInfo slot holds a device.
+
+    Both tables are fixed-size: a VTH2421F-P has 64 VTHRemoteIPCInfo slots, all
+    but the filled ones at 0.0.0.0.
+    """
+    return isinstance(entry, dict) and entry.get("Address") not in (None, "", "0.0.0.0")
+
+
+def vth_camera_links(vto_table, camera_table) -> dict:
+    """Which camera each VTO's calls open on, and which cameras there are to choose.
+
+    Read from two tables on the VTH. Measured on a VTH2421F-P on 4.800.0000000.1.R:
+
+        VTOInfo.Vto00            {"Address": "<vto>", "MachineAddress": "Main VTO",
+                                  "LinkIPC": "", ...}
+        VTHRemoteIPCInfo.Ipc32   {"Address": "<ipc>", "MachineAddress": "Front", ...}
+
+    LinkIPC names a camera by its slot key, "Ipc32", the same key RemoteDevice
+    uses. Setting it to "Ipc32" made the next call from that VTO open on Front
+    instead of the VTO's own picture, on the main monitor and both extensions.
+    On one extension LinkIPC was absent rather than empty, which reads as no
+    camera.
+
+    Only names and keys are kept. VTHRemoteIPCInfo also holds each camera's
+    login, and none of that leaves here.
+    """
+    if not isinstance(vto_table, dict) or not isinstance(camera_table, dict):
+        raise ValueError("Dahua RPC2 answered without the VTOInfo or VTHRemoteIPCInfo table")
+    vtos = {}
+    for key, entry in sorted(vto_table.items()):
+        if not _configured(entry):
+            continue
+        link = entry.get("LinkIPC")
+        vtos[key] = {
+            "name": str(entry.get("MachineAddress") or "").strip() or key,
+            "link": link if isinstance(link, str) else "",
+        }
+    cameras = {
+        key: str(entry.get("MachineAddress") or "").strip() or key
+        for key, entry in sorted(camera_table.items()) if _configured(entry)
+    }
+    return {"vtos": vtos, "cameras": cameras}
+
+
 def vto_call_number(room: str) -> str:
     """The number a VTO dials for a room, from the room as a VTH shows it.
 
@@ -1200,6 +1245,48 @@ class DahuaClient:
             return None
         support_video = local.get("SupportVideo")
         return support_video if isinstance(support_video, bool) else None
+
+    async def async_get_vth_camera_links(self) -> dict:
+        """This VTH's camera links, see vth_camera_links. Raises when it cannot read them."""
+        def table(response):
+            return (response.get("params") or {}).get("table")
+
+        vto_info = await self._rpc2_shared_call(
+            lambda client: client.request(
+                "configManager.getConfig", params={"name": "VTOInfo"}))
+        cameras = await self._rpc2_shared_call(
+            lambda client: client.request(
+                "configManager.getConfig", params={"name": "VTHRemoteIPCInfo"}))
+        return vth_camera_links(table(vto_info), table(cameras))
+
+    async def async_set_vth_camera_link(self, vto: str, camera: str) -> bool:
+        """Make calls from VTOInfo slot `vto` open on camera slot `camera`; "" for none.
+
+        The whole VTOInfo table is read and written back with only that slot's
+        LinkIPC changed, which is the write measured on a VTH2421F-P: answered
+        `result: true`, read back, and the next call opened on the camera.
+        Writing the original value back restored the table byte for byte.
+
+        Returns whether the value reads back, because a device answering OK to a
+        setConfig it ignored is a known shape here (#946). Safe to run twice, as
+        _rpc2_shared_call requires: it sets a value rather than toggling one.
+        """
+        async def write(client):
+            current = await client.request(
+                "configManager.getConfig", params={"name": "VTOInfo"})
+            table = (current.get("params") or {}).get("table")
+            if not isinstance(table, dict) or not isinstance(table.get(vto), dict):
+                raise ValueError("VTOInfo has no slot {0}".format(vto))
+            table[vto]["LinkIPC"] = camera
+            await client.request(
+                "configManager.setConfig",
+                params={"name": "VTOInfo", "table": table, "options": []})
+            check = await client.request(
+                "configManager.getConfig", params={"name": "VTOInfo"})
+            slot = ((check.get("params") or {}).get("table") or {}).get(vto)
+            return isinstance(slot, dict) and slot.get("LinkIPC", "") == camera
+
+        return await self._rpc2_shared_call(write)
 
     def vth_own_video(self) -> bool | None:
         """For a VTH identified over RPC2: whether it has a camera. None otherwise.

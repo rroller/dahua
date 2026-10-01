@@ -212,6 +212,7 @@ def _setup_coordinator(answer, day_night=False, infrared=False):
         supports_security_light=lambda: False,
         supports_day_night_color=lambda: day_night,
         supports_infrared_light=lambda: infrared,
+        is_indoor_monitor=lambda: False,
     )
 
 
