@@ -61,18 +61,22 @@ def refusal_is_outright(error) -> bool:
     of those means the call will never be accepted. Duck-typed on `status` and
     `code` so this module needs neither aiohttp nor rpc2 imported.
     """
-    # The code is read first, and only when it is absent is the status consulted.
-    # An Rpc2MethodRefused carries a code and no status, and a device can answer
-    # an HTTP 403 while the RPC2 layer reports a recoverable expired session --
-    # reading the status first would call that permanent.
-    code = getattr(error, "code", None)
-    if code is not None:
-        return code in REFUSED_RPC2_CODES
-    # No `isinstance(int) and not bool` dance here, unlike
-    # dahua_utils.describe_write_refusal where a bool would format as "HTTP 1".
-    # Membership is the whole test, and no non-integer -- True included -- can
-    # equal 403 or any of the codes above, so a guard would be unreachable.
-    return getattr(error, "status", None) in REFUSED_STATUSES
+    # `status` is read first, and `code` only when there is no status.
+    #
+    # The order matters and the obvious one is wrong. `aiohttp.ClientResponseError`
+    # carries a deprecated `code` attribute that aliases `status`, so reading
+    # `code` first sends every HTTP refusal to the RPC2 table -- a 403 looked up
+    # among the RPC2 numbers, found absent, and reported as not a refusal. An
+    # `Rpc2MethodRefused` has a `code` and no `status`, so checking `status` first
+    # separates them correctly.
+    #
+    # That is also why the test for this uses a real `ClientResponseError` rather
+    # than a stand-in: a hand-built one does not have aiohttp's alias, and the
+    # first version of this function passed every test with the order reversed.
+    status = getattr(error, "status", None)
+    if status is not None:
+        return status in REFUSED_STATUSES
+    return getattr(error, "code", None) in REFUSED_RPC2_CODES
 
 
 def key_for(coordinator, control: str) -> tuple:

@@ -17,9 +17,11 @@ testable without Home Assistant and the decision can be mutated.
 
 import asyncio
 
+import aiohttp
 import pytest
 
 from custom_components.dahua import refusals
+from custom_components.dahua.rpc2 import Rpc2MethodRefused
 from custom_components.dahua.refusals import (
     forget,
     is_refused,
@@ -118,14 +120,54 @@ def test_an_odd_value_in_either_field_is_not_a_refusal():
     assert refusal_is_outright(_Error("x", status=403.0)) is True
 
 
-def test_a_code_wins_over_a_status():
-    """An Rpc2MethodRefused subclasses ConnectionError and carries `code`; nothing
-    gives it a `status`. Reading the code first keeps the two apart rather than
-    having an RPC2 answer fall through to the HTTP table."""
-    both = _Error("refused", status=403, code=287637504)
+# --- against the real exceptions, because the stand-in lied -------------------
+#
+# The first version of refusal_is_outright read `code` before `status`, on the
+# reasoning that an Rpc2MethodRefused carries a code and nothing gives it a
+# status. Every test above passed. CI failed, because
+# `aiohttp.ClientResponseError` carries a **deprecated `code` attribute aliasing
+# `status`** -- so a 403 was looked up among the RPC2 numbers, found absent, and
+# reported as not a refusal. The hand-built `_Error` has no such alias, so it could
+# not show it.
+#
+# These three use the real classes. They are the ones that would have caught it.
 
-    assert refusal_is_outright(both) is False, (
-        "the RPC2 code says expired session, which is recoverable")
+def test_a_real_aiohttp_403_is_a_refusal():
+    error = aiohttp.ClientResponseError(
+        aiohttp.RequestInfo(
+            url="http://recorder/cgi-bin/configManager.cgi", method="GET",
+            headers=aiohttp.typedefs.CIMultiDict(),
+            real_url="http://recorder/cgi-bin/configManager.cgi"),
+        (), status=403, message="Forbidden")
+
+    assert refusal_is_outright(error) is True
+
+
+def test_a_real_aiohttp_500_is_not():
+    error = aiohttp.ClientResponseError(
+        aiohttp.RequestInfo(
+            url="http://recorder/cgi-bin/configManager.cgi", method="GET",
+            headers=aiohttp.typedefs.CIMultiDict(),
+            real_url="http://recorder/cgi-bin/configManager.cgi"),
+        (), status=500, message="Internal Server Error")
+
+    assert refusal_is_outright(error) is False
+
+
+@pytest.mark.parametrize("code,expected", [
+    (285278249, True),
+    (268894210, True),
+    (287637504, False),
+    (268959743, False),
+])
+def test_a_real_rpc2_refusal_is_judged_on_its_code(code, expected):
+    """It has a `code` and no `status`, which is what makes the order work."""
+    error = Rpc2MethodRefused("refused", code=code, message="whatever")
+
+    assert not hasattr(error, "status"), (
+        "if this ever grows a status, the order in refusal_is_outright needs "
+        "rereading")
+    assert refusal_is_outright(error) is expected
 
 
 # --- and what is remembered ----------------------------------------------------
