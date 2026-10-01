@@ -1167,8 +1167,48 @@ class DahuaClient:
         _LOGGER.info(
             "%s has no magicBox CGI and is a VTH; read its identity over RPC2: %s, %s",
             self._address, model, firmware)
-        self._vth_identity = {"type": model, "version": firmware, "class": "VTH"}
+        self._vth_identity = {"type": model, "version": firmware, "class": "VTH",
+                              "own_video": await self._vth_own_video()}
         return self._vth_identity
+
+    async def _vth_own_video(self) -> bool | None:
+        """Whether this VTH says it has a camera of its own, or None if it does not say.
+
+        Some indoor monitors have a camera and some do not, so the class alone
+        cannot decide whether camera entities make sense. The device's own entry
+        in its RemoteDevice table does. Measured on a VTH2421F-P, which has no
+        camera:
+
+            configManager.getConfig {"name": "RemoteDevice"}
+              table.Local0 = {"DeviceClass": "VTH", "SupportVideo": false,
+                              "VideoInputChannels": 1, ...}
+
+        VideoInputChannels is 1 there regardless, so only SupportVideo is read.
+        Only a real boolean counts; anything else is None, which changes nothing.
+        The table also lists the other devices with their credentials, so nothing
+        but that one flag is kept or logged.
+        """
+        try:
+            response = await self._rpc2_shared_call(
+                lambda client: client.request(
+                    "configManager.getConfig", params={"name": "RemoteDevice"}))
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug("No RemoteDevice table over RPC2 from %s", self._address)
+            return None
+        local = ((response.get("params") or {}).get("table") or {}).get("Local0")
+        if not isinstance(local, dict) or local.get("DeviceClass") != "VTH":
+            return None
+        support_video = local.get("SupportVideo")
+        return support_video if isinstance(support_video, bool) else None
+
+    def vth_own_video(self) -> bool | None:
+        """For a VTH identified over RPC2: whether it has a camera. None otherwise.
+
+        Only reports what the identity questions already found. It never asks
+        anything itself, so an ordinary camera is never sent to RPC2 by it.
+        """
+        vth = getattr(self, "_vth_identity", None)
+        return vth.get("own_video") if vth else None
 
     async def get_device_type(self) -> dict:
         """

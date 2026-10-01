@@ -83,6 +83,12 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     coordinators = list(entry_coordinators(config_entry).values())
 
     for coordinator in coordinators:
+        # An indoor monitor that says it has no camera gets no camera entities.
+        # getattr because the stand-in coordinators in the tests predate the
+        # question.
+        no_video = getattr(coordinator, "is_indoor_monitor_without_video", None)
+        if no_video is not None and no_video():
+            continue
         if is_sdt4e425(coordinator.get_model()):
             # This physical camera exposes two sensors. Preserve RRoller's native
             # Main/Sub/Sub_2 creation for each media channel from one config entry.
