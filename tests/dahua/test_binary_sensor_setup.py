@@ -28,16 +28,20 @@ class _Coordinator:
     # `async_add_entities` wants for an entry that has no subentries.
     subentry_id = None
 
-    def __init__(self, events=(), doorbell=False, channel=0):
+    def __init__(self, events=(), doorbell=False, channel=0, no_video=False):
         self._events = list(events)
         self._doorbell = doorbell
         self._channel = channel
+        self._no_video = no_video
 
     def get_event_list(self):
         return self._events
 
     def is_doorbell(self):
         return self._doorbell
+
+    def is_indoor_monitor_without_video(self):
+        return self._no_video
 
     def get_channel(self):
         return self._channel
@@ -164,3 +168,23 @@ async def test_an_entry_with_nothing_set_up_adds_nothing(setup):
 
     assert added == []
     assert setup.built == []
+
+
+# --- an indoor monitor without a camera ---------------------------------------
+#
+# Its event list comes back empty from the coordinator (see
+# test_vth_without_video.py); here, the vehicle sensor every camera gets.
+
+async def test_an_indoor_monitor_without_a_camera_gets_no_vehicle_sensor(setup):
+    """The one exception to "every camera gets one": a plate is read from a picture,
+    and a VTH that says it has no camera has none."""
+    await setup(_Coordinator(no_video=True))
+
+    assert _names(setup.built, "vehicle") == []
+
+
+async def test_a_camera_next_to_it_still_gets_one(setup):
+    camera = _Coordinator(channel=1)
+    await setup(_Coordinator(no_video=True), camera)
+
+    assert [c for k, _, c in setup.built if k == "vehicle"] == [camera]

@@ -33,10 +33,11 @@ PARALLEL_UPDATES = 1
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup sensor platform."""
     for coordinator in entry_coordinators(entry).values():
-        # I think most cameras have a motion sensor so we'll blindly add a switch for it
-        devices = [
-            DahuaMotionDetectionBinarySwitch(coordinator, entry),
-        ]
+        # I think most cameras have a motion sensor so we'll blindly add a switch for it.
+        # Not an indoor monitor without a camera: there is no picture to detect motion in.
+        devices = []
+        if not coordinator.is_indoor_monitor_without_video():
+            devices.append(DahuaMotionDetectionBinarySwitch(coordinator, entry))
 
         # But only some cams have a siren, very few do actually. The rule lives on the
         # coordinator because the poll needs the same answer to decide whether to fetch the

@@ -764,6 +764,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def async_start_event_listener(self):
         """ Starts the event listeners for IP cameras (this does not work for doorbells (VTO)) """
+        if self.is_indoor_monitor_without_video():
+            # None of the camera events exist on it: see get_event_list.
+            _LOGGER.debug(
+                "%s is an indoor monitor without a camera; no camera event stream",
+                self._address)
+            return
         if self.events is not None:
             # Join this host's stream rather than opening another one. The
             # device sends every channel's events down any stream, so one is
@@ -1295,7 +1301,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self.client.async_get_config_motion_detection()))
             # Only the preset position select reads this, and it is one of the
             # two per-poll calls the config cache does not cover.
-            if self._supports_day_night_color and self._wanted_by(SELECT):
+            if self.supports_day_night_color() and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(self.client.async_get_video_in_options()))
             if self._supports_ptz_position and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(_ptz_position()))
@@ -2041,6 +2047,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "HCVR",
         }
 
+    def reported_device_class(self) -> str:
+        """The class the device itself answered, folded, or "" if it did not answer.
+
+        Only its own answer: unlike is_doorbell, no model-name list stands in for
+        it, so callers that need certainty about what the device is can tell
+        "it said so" from "its model looks like it".
+        """
+        device_class = getattr(self, "_device_class", "")
+        return device_class.strip().upper() if isinstance(device_class, str) else ""
+
     def is_indoor_monitor(self) -> bool:
         """Whether the device says it is an indoor monitor (VTH).
 
@@ -2585,7 +2601,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         Returns the list of events selected when configuring the camera in Home Assistant. For example:
         [VideoMotion, VideoLoss, CrossLineDetection]
+
+        Empty for an indoor monitor without a camera. The add-device form offers
+        the camera events to every device, and a VTH2421F-P answered none of the
+        nine it was given over RPC2 (VideoMotion, CrossLineDetection, AlarmLocal,
+        VideoLoss, VideoBlind, AudioMutation, CrossRegionDetection,
+        SmartMotionHuman, SmartMotionVehicle): its event stream ended with
+        "reports none of the selected event types" and was retried for ever,
+        and each of those events got a sensor that could never change.
         """
+        if self.is_indoor_monitor_without_video():
+            return []
         return self.events
 
     def get_infrared_profile(self) -> str:
@@ -2594,8 +2620,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
 
     def supports_day_night_color(self) -> bool:
-        """True if this channel reported a Day/Night mode we understand."""
-        return self._supports_day_night_color
+        """True if this channel reported a Day/Night mode we understand.
+
+        Not on an indoor monitor without a camera. A VTH2421F-P has no camera
+        and still answers a VideoInOptions table with DayNightColor in it, so
+        the probe passed and it got a Day/Night select for an image it does
+        not have.
+        """
+        return (self._supports_day_night_color
+                and not self.is_indoor_monitor_without_video())
 
     def get_day_night_color(self):
         """This channel's Day/Night mode by name, or None."""

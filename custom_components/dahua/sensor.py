@@ -33,8 +33,11 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         sensors = [
             DahuaFirmwareVersionSensor(coordinator, entry),
             DahuaSerialNumberSensor(coordinator, entry),
-            DahuaLicensePlateSensor(coordinator, entry),
         ]
+        # A plate is read from a picture, which an indoor monitor without a
+        # camera does not have.
+        if not coordinator.is_indoor_monitor_without_video():
+            sensors.append(DahuaLicensePlateSensor(coordinator, entry))
 
         # The profile is only ever read for devices that answered the Lighting
         # probe. Adding the sensor unconditionally would show "Day" forever on a

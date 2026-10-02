@@ -465,6 +465,9 @@ async def _poll_calls(device_class, **options):
 
     c = poll_coordinator(**options)
     c._device_class = device_class
+    # The harness client answers every method as a coroutine; this one is a plain
+    # read of what the identity questions found.
+    c.client.vth_own_video = lambda: None
     await c._async_update_data()
     return c.client.calls
 

@@ -166,7 +166,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             sensors.append(DahuaEventSensor(coordinator, entry, "DoorStatus"))
             sensors.append(DahuaEventSensor(coordinator, entry, "CallNoAnswered"))
 
-        sensors.append(DahuaAuthorizedVehicleBinarySensor(coordinator, entry))
+        # Recognised from a plate, which an indoor monitor without a camera cannot read.
+        if not coordinator.is_indoor_monitor_without_video():
+            sensors.append(DahuaAuthorizedVehicleBinarySensor(coordinator, entry))
 
         if sensors:
             async_add_devices(
