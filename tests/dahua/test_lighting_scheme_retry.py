@@ -115,9 +115,16 @@ async def test_one_entity_refusing_does_not_silence_another():
 
 
 def _warnings(caplog):
-    """Warnings from this integration only, so another logger cannot fail these."""
+    """Warnings from this integration only, so another logger cannot fail these.
+
+    Matched by prefix, not equality. light.py takes its logger from `__name__`, so
+    records arrive as `custom_components.dahua.light`, while digest.py uses
+    `__package__` and arrives as `custom_components.dahua`. An equality check here
+    found nothing while the warning was being emitted perfectly well.
+    """
     return [r for r in caplog.records
-            if r.levelno >= logging.WARNING and r.name == "custom_components.dahua"]
+            if r.levelno >= logging.WARNING
+            and r.name.startswith("custom_components.dahua")]
 
 
 async def test_a_device_that_cannot_answer_says_so_once(caplog):
