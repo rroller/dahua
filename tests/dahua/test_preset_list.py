@@ -27,6 +27,8 @@ still accept GotoPreset -- the SDT4E425 is that shape.
 """
 from types import SimpleNamespace
 
+import pytest
+
 from custom_components.dahua import dahua_utils
 from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
@@ -193,7 +195,8 @@ def test_manual_is_always_offered(monkeypatch):
 
 # --- and whether the control is created at all (#525) ------------------------
 
-def _setup_coordinator(answer, day_night=False, infrared=False, no_video=False):
+def _setup_coordinator(answer, day_night=False, infrared=False, no_video=False,
+                       device_class="IPC"):
     """A coordinator complete enough to drive select.async_setup_entry."""
     asked = []
 
@@ -217,6 +220,7 @@ def _setup_coordinator(answer, day_night=False, infrared=False, no_video=False):
         supports_infrared_light=lambda: infrared,
         is_indoor_monitor=lambda: False,
         is_indoor_monitor_without_video=lambda: no_video,
+        reported_device_class=lambda: device_class,
         asked_for_presets=asked,
     )
 
@@ -307,3 +311,33 @@ async def test_it_is_not_even_asked_for_presets(monkeypatch):
 async def test_its_other_selects_are_unaffected(monkeypatch):
     assert await _added(monkeypatch, RuntimeError("404"), day_night=True,
                         no_video=True) == ["DahuaDayNightModeSelect"]
+
+
+# --- a VTO that will not list presets ------------------------------------------
+#
+# A DHI-VTO2211G-WP-S2 says class=VTO, refuses getPresets and the PTZ position probe
+# (400), and was given presets 1 to 10: the refusal path keeps them for cameras that
+# refuse the query but drive GotoPreset. A door station has no motor.
+
+async def test_a_vto_that_refuses_the_query_gets_no_preset_control(monkeypatch):
+    coordinator = _setup_coordinator(RuntimeError("400"), device_class="VTO")
+
+    assert await _added(monkeypatch, None, coordinator=coordinator) == []
+
+
+async def test_a_vto_that_does_list_presets_keeps_them(monkeypatch):
+    """Only the refusal is overruled. A device that answers with presets has them."""
+    coordinator = _setup_coordinator(_reply(1, 3), device_class="VTO")
+
+    assert await _added(monkeypatch, None, coordinator=coordinator) == [
+        "DahuaCameraPresetPositionSelect"]
+
+
+@pytest.mark.parametrize("device_class", ["", "IPC", "NVR", "VTOX"])
+async def test_anything_else_that_refuses_keeps_its_control(monkeypatch, device_class):
+    """Including a device that never said what it is: its model name alone is not
+    enough to take a control away. VTOX is the neighbouring-but-wrong answer."""
+    coordinator = _setup_coordinator(RuntimeError("400"), device_class=device_class)
+
+    assert await _added(monkeypatch, None, coordinator=coordinator) == [
+        "DahuaCameraPresetPositionSelect"]
