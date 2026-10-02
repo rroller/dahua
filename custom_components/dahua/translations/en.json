@@ -3,7 +3,7 @@
         "flow_title": "{name} ({address})",
         "step": {
             "user": {
-                "title": "Add Dahua Camera",
+                "title": "Add Dahua device",
                 "description": "Home Assistant talks to the device directly, so it needs an account on the device itself rather than a Dahua or Imou cloud login.",
                 "data": {
                     "username": "Username",
@@ -48,7 +48,7 @@
                 }
             },
             "reauth_confirm": {
-                "title": "Re-authenticate Dahua Camera",
+                "title": "Re-authenticate Dahua device",
                 "description": "The credentials for {name} are no longer valid. Please enter updated credentials.",
                 "data": {
                     "username": "Username",
@@ -56,7 +56,7 @@
                 }
             },
             "reconfigure": {
-                "title": "Dahua Camera Connection",
+                "title": "Dahua device connection",
                 "description": "Update how Home Assistant reaches this device. Credentials are unchanged; use re-authentication for those.",
                 "data": {
                     "address": "Address",
