@@ -31,6 +31,7 @@
             "unexpected_reply": "Algo respondeu, mas não uma câmera Dahua. Verifique a porta: a interface web e a API não são sempre a mesma.",
             "cgi_disabled": "Esse endereço serve páginas web, mas não a API Dahua. Em um dispositivo Dahua é quase sempre o serviço CGI desativado: ative-o em System, depois Security ou Safety, depois System Service, depois CGI, e tente de novo. Se o CGI já estiver ativo, verifique a porta, porque a interface web e a API não são sempre a mesma.",
             "https_available": "Nada respondeu nessa porta, mas o dispositivo está escutando na 443, então provavelmente serve HTTPS. Marque a opção HTTPS e use a porta 443.",
+            "https_redirect": "Este dispositivo redirecionou a conexão para HTTPS, então o usuário e a senha nunca foram verificados. Marque a opção HTTPS e use a porta 443.",
             "http_service_off": "O dispositivo está ligado e responde ao protocolo próprio da Dahua, mas nada serve HTTP nessa porta, então a integração não consegue alcançar sua API. O serviço web está quase certamente desativado: ative HTTP e CGI em System, depois Security ou Safety, depois System Service.",
             "unknown": "Não foi possível adicionar a câmera. O log do Home Assistant tem o motivo."
         },
