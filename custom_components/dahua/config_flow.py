@@ -170,6 +170,36 @@ def fallback_device_name(address: str, channel) -> str:
     return "Dahua camera at {0}".format(address)
 
 
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def redirected_to_https(exception: BaseException) -> bool:
+    """Whether this failure arrived only after the device redirected us to HTTPS.
+
+    A 401 at the end of a redirect chain is not a refused credential. With HTTPS
+    switched on, a DHI-NVR4108-8P-4KS2 answers the CGI endpoint on port 80 with
+
+        HTTP/1.1 302 Moved Temporarily
+        Location: https://192.168.178.54:443/cgi-bin/magicBox.cgi?action=getMachineName
+
+    aiohttp follows that, the digest exchange does not survive the change of scheme
+    and port, and the device answers the second request unauthenticated. The user is
+    then told the camera rejected their username and password, and because "auth" is
+    in TRANSPORT_WORKED the port and HTTPS fields stay hidden, which is the one place
+    they would have fixed it (#947).
+
+    Read from the exception rather than probed, because aiohttp already has it:
+    `raise_for_status` passes the response's redirect history, and `request_info`
+    carries the URL the last request actually went to.
+    """
+    history = getattr(exception, "history", None) or ()
+    if not any(getattr(response, "status", None) in REDIRECT_STATUSES
+               for response in history):
+        return False
+    url = getattr(getattr(exception, "request_info", None), "url", None)
+    return getattr(url, "scheme", None) == "https"
+
+
 def describe_setup_failure(exception: BaseException) -> str:
     """Which translation key explains why a device could not be added.
 
@@ -188,6 +218,11 @@ def describe_setup_failure(exception: BaseException) -> str:
         # all, and listing it as a credentials failure said the opposite of what the
         # other function documents.
         if exception.status == 401:
+            # Checked before "auth" because a 401 that only arrived after a
+            # redirect is not evidence about the credentials at all, and naming it
+            # auth is what hides the two fields that fix it.
+            if redirected_to_https(exception):
+                return "https_redirect"
             # Reachable only because get_machine_name and async_get_system_info
             # re-raise a 401 rather than synthesising an id from the refused
             # credentials. If either goes back to swallowing it, a wrong
