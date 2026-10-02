@@ -238,3 +238,108 @@ async def test_one_channel_without_video_does_not_take_the_others_cameras(setup)
     await setup(_Vth(True, max_streams=3), camera)
 
     assert [(c, index) for c, index in setup.built] == [(camera, 0), (camera, 1)]
+
+
+# --- and the camera features it does not have, measured on the hardware -------
+#
+# Added to Home Assistant, a VTH2421F-P (no camera) still got the camera events the
+# add-device form offers every device. It answered none of the nine over RPC2, so
+# its event stream ended with "reports none of the selected event types" and was
+# retried for ever, and each event got a sensor that could never change. It also
+# answers a VideoInOptions table, so it got a Day/Night select.
+
+CAMERA_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss",
+                 "VideoBlind", "AudioMutation", "CrossRegionDetection",
+                 "SmartMotionHuman", "SmartMotionVehicle"]
+
+
+def _monitor(device_class="VTH", own_video=False, day_night=True):
+    c = _coordinator(device_class, own_video)
+    c.events = list(CAMERA_EVENTS)
+    c._supports_day_night_color = day_night
+    c._address = "10.0.0.17"
+    return c
+
+
+def test_a_vth_without_a_camera_has_no_camera_events():
+    assert _monitor().get_event_list() == []
+
+
+@pytest.mark.parametrize("device_class, own_video", [
+    ("VTH", True), ("VTH", None), ("IPC", False), ("", False)])
+def test_everything_else_keeps_the_events_it_was_given(device_class, own_video):
+    assert _monitor(device_class, own_video).get_event_list() == CAMERA_EVENTS
+
+
+async def test_no_event_stream_is_started_for_it(monkeypatch):
+    from custom_components.dahua import coordinator as coordinator_module
+
+    registered = []
+    monkeypatch.setattr(coordinator_module, "_host_stream",
+                        lambda hass, address: type("S", (), {
+                            "register": staticmethod(registered.append)})())
+    monitor = _monitor()
+    monitor.hass = object()
+
+    await monitor.async_start_event_listener()
+
+    assert registered == []
+
+
+async def test_a_camera_still_starts_its_event_stream(monkeypatch):
+    from custom_components.dahua import coordinator as coordinator_module
+
+    registered = []
+    monkeypatch.setattr(coordinator_module, "_host_stream",
+                        lambda hass, address: type("S", (), {
+                            "register": staticmethod(registered.append)})())
+    camera = _monitor("IPC", False)
+    camera.hass = object()
+
+    await camera.async_start_event_listener()
+
+    assert registered == [camera]
+
+
+def test_a_vth_without_a_camera_has_no_day_night_mode():
+    assert not _monitor().supports_day_night_color()
+
+
+def test_a_vth_with_a_camera_keeps_it():
+    assert _monitor("VTH", True).supports_day_night_color()
+
+
+def test_a_camera_that_answered_the_probe_keeps_it():
+    assert _monitor("IPC", None).supports_day_night_color()
+
+
+@pytest.mark.parametrize("answer, expected", [
+    ("VTO", "VTO"), (" vto ", "VTO"), ("", ""), (None, "")])
+def test_the_reported_class_is_only_the_devices_own_answer(answer, expected):
+    c = object.__new__(DahuaDataUpdateCoordinator)
+    if answer is not None:
+        c._device_class = answer
+    assert c.reported_device_class() == expected
+
+
+DAY_NIGHT_READ = "async_get_video_in_options"
+
+
+async def _poll_calls(own_video):
+    from .test_poll_skips_unused import _coordinator as poll_coordinator
+
+    c = poll_coordinator()
+    c._device_class = "VTH"
+    c.client.vth_own_video = lambda: own_video
+    await c._async_update_data()
+    return c.client.calls
+
+
+async def test_the_poll_does_not_read_day_night_for_a_vth_without_a_camera():
+    """The poll asks the capability rather than the probe's raw answer, which the
+    VTH's VideoInOptions table passes."""
+    assert DAY_NIGHT_READ not in await _poll_calls(own_video=False)
+
+
+async def test_but_does_for_a_vth_with_one():
+    assert DAY_NIGHT_READ in await _poll_calls(own_video=True)

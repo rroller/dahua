@@ -301,6 +301,10 @@ class _SetupCoordinator(_Coordinator):
         # A camera; the indoor monitor is in test_preset_list.py.
         return False
 
+    def reported_device_class(self):
+        # What a camera answers; the VTO is in test_preset_list.py.
+        return "IPC"
+
 
 async def test_the_doorbell_light_select_needs_a_doorbell_with_one():
     assert "light" not in await _added_for(_SetupCoordinator())

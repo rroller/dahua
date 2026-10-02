@@ -94,6 +94,9 @@ class _Coordinator:
     def supports_privacy_mode(self):
         return self.states.get("has_privacy_mode", False)
 
+    def is_indoor_monitor_without_video(self):
+        return self.states.get("indoor_monitor_without_video", False)
+
     def supports_alarm_output(self):
         return self.states.get("has_alarm_output", False)
 
@@ -515,3 +518,35 @@ async def test_smart_motion_is_offered_for_either_flavour():
     amcrest = _Coordinator(amcrest=True)
     amcrest.supports_smart_motion_detection = lambda: False
     assert "smart" in await _added_for(amcrest)
+
+
+async def _switches_for(coordinator):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from custom_components.dahua import switch as switch_module
+
+    coordinator.supports_siren = lambda: False
+    coordinator.supports_smart_motion_detection = lambda: False
+    coordinator.supports_disarming_linkage = lambda: False
+    entry = SimpleNamespace(entry_id="e1", options={}, runtime_data={0: coordinator})
+    added = []
+    with patch.multiple(
+        switch_module,
+        DahuaMotionDetectionBinarySwitch=lambda *a, **k: "motion",
+    ):
+        await switch_module.async_setup_entry(
+            SimpleNamespace(data={}), entry, adds_entities(added))
+    return added
+
+
+async def test_an_indoor_monitor_without_a_camera_gets_no_motion_detection_switch():
+    """A VTH2421F-P has no camera: there is no picture to detect motion in."""
+    coordinator = _Coordinator()
+    coordinator.states["indoor_monitor_without_video"] = True
+
+    assert "motion" not in await _switches_for(coordinator)
+
+
+async def test_a_camera_still_gets_one():
+    assert "motion" in await _switches_for(_Coordinator())

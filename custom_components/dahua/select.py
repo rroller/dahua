@@ -66,6 +66,15 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
                 # Saving a preset and reloading the entry brings the control back.
                 _LOGGER.debug(
                     "Camera reports no presets, so no Preset Position control")
+            elif preset_ids is None and coordinator.reported_device_class() == "VTO":
+                # A refusal keeps the ten-entry list, for cameras that refuse the
+                # query but drive GotoPreset. A door station has no motor to
+                # drive: a DHI-VTO2211G-WP-S2, which says class=VTO, refuses
+                # both getPresets and the PTZ position probe (400) and was given
+                # presets 1 to 10. Decided on its own answer, not on is_doorbell,
+                # whose model-name list also matches devices that never said so.
+                _LOGGER.debug(
+                    "A VTO that will not list presets has none, so no Preset Position control")
             else:
                 devices.append(
                     DahuaCameraPresetPositionSelect(

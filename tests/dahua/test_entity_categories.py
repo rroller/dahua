@@ -139,9 +139,10 @@ def test_the_sensors_name_themselves_through_the_translation_file():
 
 # --- the profile sensor is gated on the capability -------------------------------
 
-def _setup_coordinator(profile_support):
+def _setup_coordinator(profile_support, no_video=False):
     c = _coordinator()
     c.supports_profile_mode = lambda: profile_support
+    c.is_indoor_monitor_without_video = lambda: no_video
     return c
 
 
@@ -173,3 +174,21 @@ async def test_the_diagnostic_sensors_are_always_added():
     names = [type(s).__name__ for s in added]
     assert "DahuaFirmwareVersionSensor" in names
     assert "DahuaSerialNumberSensor" in names
+
+
+async def test_an_indoor_monitor_without_a_camera_gets_no_license_plate_sensor():
+    """A plate is read from a picture. The diagnostic sensors stay."""
+    hass, entry, added = _setup(_setup_coordinator(profile_support=False, no_video=True))
+    await sensor_module.async_setup_entry(hass, entry, adds_entities(added))
+    names = [type(s).__name__ for s in added]
+
+    assert "DahuaLicensePlateSensor" not in names
+    assert "DahuaFirmwareVersionSensor" in names
+    assert "DahuaSerialNumberSensor" in names
+
+
+async def test_a_camera_still_gets_the_license_plate_sensor():
+    hass, entry, added = _setup(_setup_coordinator(profile_support=False))
+    await sensor_module.async_setup_entry(hass, entry, adds_entities(added))
+
+    assert "DahuaLicensePlateSensor" in [type(s).__name__ for s in added]

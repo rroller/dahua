@@ -401,8 +401,38 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | DHI-VTO2202F-P |
 | | DHI-VTO2211G-P |
 | | DHI-VTO3311Q-WP |
+| | DHI-VTO2211G-WP-S2 |
 | *IMOU* |
 | | IMOU C26EP-V2 | IMOU IPC-K46 | IMOU DB61i
+
+## Indoor monitors (VTH)
+
+Model | Firmware
+:------------ | :------------
+VTH2421F-P | 4.800.0000000.1.R
+
+Add an indoor monitor like any other device, by its address and an account on the
+monitor itself (usually the same as the VTO's). A VTH serves no CGI at all, so the
+integration identifies it over RPC2 and shows its real model and firmware.
+
+What it gets:
+
+- A **Camera for &lt;VTO&gt; calls** select for each VTO it knows: the camera its screen opens on
+  when that VTO calls. `none` is the VTO's own picture; the other options are the cameras in
+  the monitor's own camera list (Monitor > IPC on its screen). The monitor's screen has no
+  control for this on the measured firmware, though its manual describes it.
+- Reboot, firmware version and serial number.
+
+A monitor that reports it has no camera of its own (`SupportVideo` false in its
+`RemoteDevice` table, as on the VTH2421F-P) gets no camera entities, no camera event
+sensors, no event stream, no motion detection switch, no Day/Night select, no Preset
+Position, and no License Plate or Authorized Vehicle entities.
+
+The serial number shown is generated from the address and login, as for every device
+whose CGI does not answer, so that it stays stable; it is not the serial printed on the
+monitor.
+
+To ring a monitor, use [`dahua.vto_call`](#services) on the VTO, not on the monitor.
 
 # Known limitations
 
@@ -748,6 +778,7 @@ Select |  Description |
 Security Light | On a doorbell, sets the light to off, on, or strobe. A doorbell's light has three states rather than two, which is why it is a select and not a switch
 Preset Position | Moves a PTZ camera to one of its stored preset positions, and reports the one it is at. Only created on cameras that report presets
 Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dahua also calls Brightness). Readable as well as settable, which is what makes it possible to notice a camera that changed mode by itself, such as one reverting to Auto after a power cut and then rendering black and white at night
+Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
 
 ## Event entities
 
@@ -767,6 +798,46 @@ Cancel Call | On a VTO (doorbell), hangs up a call in progress. Reports whether 
 Change the entity ids to your own. The event based ones use `dahua_event_received`,
 described under [Events](#events); `name` is the device name the integration reports,
 which is also in the event payload if you watch the bus.
+
+**A second doorbell that is not wired to the VTO rings the indoor monitors, showing its own camera.**
+
+Here a KNX push button (`binary_sensor.gate_doorbell`) rings room 9901 through the VTO, and the
+monitors open the call on the gate camera instead of the VTO's picture. They are set back
+afterwards, so the VTO's own button still shows the VTO.
+
+```yaml
+alias: Gate doorbell rings the indoor monitors
+mode: single
+max_exceeded: silent
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.gate_doorbell
+    to: "on"
+actions:
+  - action: select.select_option
+    target:
+      entity_id:
+        - select.vth_hall_camera_for_main_vto_calls
+        - select.vth_upstairs_camera_for_main_vto_calls
+    data:
+      option: Gate
+    continue_on_error: true
+  - action: dahua.vto_call
+    target:
+      entity_id: camera.front_door_main
+    data:
+      room: "9901"
+    continue_on_error: true
+  - delay:
+      seconds: 90
+  - action: select.select_option
+    target:
+      entity_id:
+        - select.vth_hall_camera_for_main_vto_calls
+        - select.vth_upstairs_camera_for_main_vto_calls
+    data:
+      option: none
+```
 
 **Somebody rang the doorbell: notify a phone with a picture.**
 
