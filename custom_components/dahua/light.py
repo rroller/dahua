@@ -160,6 +160,11 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
     _attr_translation_key = "illuminator"
 
+    # Class level, not only set in __init__, because the tests here build this
+    # entity with object.__new__ and set the handful of attributes each one needs.
+    # A default on the class is one place rather than a getattr at every read.
+    _scheme_unreadable = False
+
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
         super().__init__(coordinator, entry)
         self._coordinator = coordinator
@@ -989,13 +994,36 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
                 dahua_brightness,
             )
 
+        # #654 added this check at light-command time. The call was lost in a later
+        # move and the method kept only its own tests, which call it directly, so
+        # nothing went red and the check has been dead in production since.
+        await self._warn_if_the_scheme_blocks_it(channel, profile_mode)
+
         self._manual_on = True
 
         await self._coordinator.async_refresh()
         self.async_write_ha_state()
 
     async def _warn_if_the_scheme_blocks_it(self, channel, profile_mode):
-        """Warn once when LightingScheme cannot be read or blocks white light."""
+        """Say something when the white light will not come on.
+
+        Two ways that happens, and until now neither reached the user.
+
+        The scheme reads a mode that stops the white light. That warning was here
+        and never fired, because nothing called this.
+
+        The scheme cannot be read at all. `scheme_blocking_white_light` treats an
+        absent scheme as not blocking, which is right for a camera that predates the
+        table and drives its white light from Lighting_V2 alone. It is wrong for a
+        camera reached through a recorder, where the scheme is on the camera and the
+        recorder does not serve it: measured on a DHI-NVR5464-16P-EI, where
+        `getConfig&name=LightingScheme` is 400 on every channel, the Lighting_V2
+        write is accepted and reads back `Manual`, and the emitter stays dark (#959).
+
+        Those two cases cannot be told apart from here, so the message says what was
+        and was not established rather than asserting the light is broken. Once per
+        entity, and only when somebody actually used the control.
+        """
         if self._scheme_unreadable:
             return
         try:
@@ -1005,6 +1033,14 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             _LOGGER.debug(
                 "LightingScheme is not readable on this device; the white light "
                 "scheme check is switched off for it", exc_info=True)
+            _LOGGER.warning(
+                "The white light on %s was set, but this device does not serve "
+                "LightingScheme, so whether the camera will use the white emitter "
+                "could not be checked. If the light does not come on, the camera is "
+                "choosing its own illumination; a directly connected camera can be "
+                "switched to white light in its own web interface.",
+                self._coordinator.get_device_name(),
+            )
             return
         blocking = scheme_blocking_white_light(data, channel, profile_mode)
         if blocking is not None:
