@@ -167,6 +167,44 @@ async def test_opening_a_door_is_three_calls_in_order():
                             "accessControl.destroy"]
 
 
+async def test_opening_a_door_logs_in_first_on_a_fresh_client():
+    """_async_open_door_rpc2 builds a private client with no session and nothing
+    logged it in, so the factory was asked without one. Asked after the login now."""
+    client = _rpc2({"accessControl.factory.instance": {"result": 9}}, session_id=None)
+    order = []
+
+    async def _login():
+        order.append("login")
+        client._session_id = "sess-new"
+
+    client.login = _login
+    original = client.request
+
+    async def _request(method, *args, **kwargs):
+        order.append(method)
+        return await original(method, *args, **kwargs)
+
+    client.request = _request
+
+    await client.async_open_door(0)
+
+    assert order[:2] == ["login", "accessControl.factory.instance"]
+
+
+async def test_opening_a_door_with_a_session_does_not_log_in_again():
+    client = _rpc2({"accessControl.factory.instance": {"result": 9}})
+    logins = []
+
+    async def _login():
+        logins.append(1)
+
+    client.login = _login
+
+    await client.async_open_door(0)
+
+    assert logins == []
+
+
 async def test_a_factory_that_returns_no_object_stops_before_the_door():
     """Calling openDoor on something that is not an object would either fail obscurely
     or, worse, act on whatever object that id happens to be."""

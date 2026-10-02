@@ -417,7 +417,15 @@ class DahuaRpc2Client:
         a doorbell is a real cost, and it must happen even when openDoor fails.
 
         `channel` is 0-based here, matching the factory's own convention.
+
+        The caller, _async_open_door_rpc2, hands this a fresh client of its own,
+        and nothing logged it in: the factory was asked without a session, which
+        a device refuses. Every other RPC2 action here logs in first when it has
+        no session (PTZ, vto_call), so this does too. Read from the code, not
+        tried on hardware: trying it opens a door.
         """
+        if not self._session_id:
+            await self.login()
         made = await self.request(
             method="accessControl.factory.instance", params={"channel": channel})
         object_id = made.get("result")
