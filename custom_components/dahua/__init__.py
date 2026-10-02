@@ -34,7 +34,6 @@ from .client import (
     DahuaClient,
     clear_host_cache,
 )
-from .model_profiles import is_sdt4e425
 from .ivs import ivs_rules_for_channel, ivs_rule_index
 
 from .const import (

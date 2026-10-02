@@ -2962,6 +2962,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         defaults off, and a user who turns it on has said what this entry is
         more directly than any model string does.
 
+        And the device's own answer counts for more than either. `getDeviceClass`
+        returns NVR, DVR, XVR or HCVR on a recorder that says nothing of the kind
+        in its model name, which is exactly the N843A8 case above, so asking it
+        removes the guess rather than adding another one. `uses_recorder_deterrence`
+        already preferred it for the deterrence entity; the remaining callers did
+        not, and on channel 0 of such a recorder that meant the IVS rules were read
+        from `VideoAnalyseRule` instead of `RemoteVideoAnalyseRule` and the
+        floodlight drove the camera coaxial path instead of the recorder one.
+
+        The model match stays as the fallback for a device that reports no class
+        at all, which is what every pre-RPC2 identity path leaves behind.
+
         This decides the control path as well as whether the entity exists --
         an NVR channel drives deterrence through coaxialControlIO on its own
         channel number, a camera through its channel index -- so the two have to
@@ -2969,6 +2981,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         write to the wrong place.
         """
         return (self._channel > 0
+                or self.is_recorder_host()
                 or "NVR" in self.model.upper()
                 or self._nvr_active_deterrence)
 
