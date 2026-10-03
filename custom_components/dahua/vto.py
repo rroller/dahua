@@ -407,7 +407,11 @@ class DahuaVTOClient(asyncio.Protocol):
                 return
 
             params = message.get("params")
-            version_details = params.get("version", {})
+            version_details = (
+                params.get("version", {}) if isinstance(params, dict) else {}
+            )
+            if not isinstance(version_details, dict):
+                version_details = {}
             build_date = version_details.get("BuildDate")
             version = version_details.get("Version")
 
@@ -426,7 +430,7 @@ class DahuaVTOClient(asyncio.Protocol):
                 return
 
             params = message.get("params")
-            device_type = params.get("type")
+            device_type = params.get("type") if isinstance(params, dict) else None
 
             self.dahua_details[DAHUA_DEVICE_TYPE] = device_type
 
@@ -441,9 +445,16 @@ class DahuaVTOClient(asyncio.Protocol):
             if message is None:
                 return
 
+            # A VTH returns the T2UServer table as a *list*, not the dict a VTO
+            # returns, so `table.get("UUID")` raised `'list' object has no
+            # attribute 'get'` -- the same shape #964 handled for AccessControl,
+            # in a handler it did not reach. data_received swallows the crash, so
+            # it was silent apart from a traceback on every login, and the serial
+            # read as None anyway. A monitor keeps no UUID here, so None is the
+            # right answer for it; guard the shape rather than assume a dict.
             params = message.get("params")
-            table = params.get("table", {})
-            serial_number = table.get("UUID")
+            table = params.get("table", {}) if isinstance(params, dict) else {}
+            serial_number = table.get("UUID") if isinstance(table, dict) else None
 
             self.dahua_details[DAHUA_SERIAL_NUMBER] = serial_number
 
