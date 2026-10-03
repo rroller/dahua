@@ -24,6 +24,8 @@ method name has reached CI here before.
 
 import pytest
 
+from homeassistant.exceptions import HomeAssistantError
+
 from custom_components.dahua.camera import DahuaCamera, PTZ_MOVE_CODES
 from custom_components.dahua.client import DahuaClient
 
@@ -285,26 +287,25 @@ async def test_an_ordinary_camera_sets_the_video_profile_directly():
         "async_set_video_profile_mode", (LOGICAL, "night"), {})
 
 
-async def test_a_shape_that_cannot_select_the_profile_says_so(caplog):
+async def test_a_shape_that_cannot_select_the_profile_is_refused():
     """#458, which answered `Unknown error` from February 2025. VideoInMode comes in
-    three shapes and this writes Config[0], which selects the profile in one of them.
+    three shapes and this writes Config[0], which selects the profile in only one.
 
-    The write still goes out. Refusing it would be a behaviour change needing a device
-    in each shape to justify; saying why it may do nothing needs only the poll.
+    This used to warn and write anyway, left as warn-not-refuse pending a device in
+    each shape to justify refusing. That evidence is now in: on the general shape a
+    DHI-NVR5464 accepts the write with 200 and keeps rendering the profile it was on,
+    and the #458 reporter's camera threw on it. So the service refuses with a reason
+    rather than sending a write that is ignored or errors -- and nothing is written.
     """
     camera = _camera(profile_is_writable=False)
 
-    await camera.async_set_video_profile_mode("night")
+    with pytest.raises(HomeAssistantError) as caught:
+        await camera.async_set_video_profile_mode("night")
 
-    assert camera._coordinator.client.only() == (
-        "async_set_video_profile_mode", (LOGICAL, "night"), {}), "the write was skipped"
-
-    said = [r.getMessage() for r in caplog.records
-            if r.levelname == "WARNING"
-            and r.name.startswith("custom_components.dahua")]
-    assert said, "nothing explained why the write may not take effect"
-    assert "general" in said[0], said
-    assert "#458" in said[0], said
+    assert camera._coordinator.client.calls == [], "a doomed write was sent anyway"
+    assert caught.value.translation_key == "video_profile_not_switchable"
+    assert caught.value.translation_placeholders == {
+        "device": "Front Door", "shape": "general"}
 
 
 async def test_an_ordinary_shape_says_nothing(caplog):
