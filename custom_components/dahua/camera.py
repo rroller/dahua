@@ -570,18 +570,22 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         if any(substring in model for substring in ['NVR4108HS', 'IPC-Color4K']):
             await self._coordinator.client.async_set_night_switch_mode(channel, mode)
         else:
-            # Say so before writing, rather than leaving #458 as "Unknown error".
-            # VideoInMode comes in three shapes and Config[0] only selects the profile
-            # in one of them, so on the other two this write is either refused by the
-            # device or accepted and ignored. The shape is read per channel from the
-            # last poll, because one recorder carries all three at once.
+            # VideoInMode comes in three shapes, and this writes Config[0], which only
+            # selects the profile in the ordinary one. On the IL (ConfigEx) and general
+            # (Config[0]=2) shapes the write does not switch the profile: the #458
+            # reporter's camera threw on it, and a recorder measured here accepted it
+            # with 200 and rendered from the profile it was already on. Either way the
+            # service cannot do what it says, so it refuses with a reason rather than
+            # firing a write that errors or is silently ignored. The shape is read per
+            # channel from the last poll, because one recorder carries all three at once.
             if not self._coordinator.video_profile_mode_is_writable():
-                _LOGGER.warning(
-                    "Setting the video profile on %s channel %s may not take effect: "
-                    "its VideoInMode is the %s shape, and this writes Config[0], which "
-                    "only selects the profile in the ordinary shape. See issue #458",
-                    self._coordinator.get_device_name(), channel,
-                    self._coordinator.describe_video_profile_shape(),
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="video_profile_not_switchable",
+                    translation_placeholders={
+                        "device": self._coordinator.get_device_name(),
+                        "shape": self._coordinator.describe_video_profile_shape(),
+                    },
                 )
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
         # The profile decides which Lighting row every light command writes to,
