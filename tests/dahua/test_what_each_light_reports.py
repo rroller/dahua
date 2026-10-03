@@ -64,6 +64,13 @@ class _Coordinator:
             return lambda *a, **k: self._capabilities.get(name, False)
         raise AttributeError(name)
 
+    def get_infrared_bank(self):
+        # A real bank by default, so the infrared light is dimmable here, which is
+        # what this file's DIMMABLE split expects. None (a doorbell, no brightness
+        # field) makes it on-off, which test_a_doorbell_infrared_is_on_off_only
+        # covers on its own.
+        return "MiddleLight"
+
     def get_serial_number(self):
         return "SERIAL1"
 
