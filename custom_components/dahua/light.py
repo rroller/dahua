@@ -85,14 +85,31 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
         return self._coordinator.is_infrared_light_on()
 
     @property
+    def _has_brightness(self) -> bool:
+        """Whether this device's infrared emitter has a brightness to set.
+
+        A doorbell's Lighting row is Mode only, with no brightness bank, so
+        get_infrared_bank reports None (#963). There is nothing to dim, and
+        advertising a slider that drives nothing is #966.
+        """
+        return self._coordinator.get_infrared_bank() is not None
+
+    @property
     def brightness(self):
-        """Return the brightness of this light between 0..255 inclusive"""
+        """Return the brightness of this light between 0..255 inclusive, or None
+        when the device has no brightness to report."""
+        if not self._has_brightness:
+            return None
         return self._coordinator.get_infrared_brightness()
 
     @property
     def color_mode(self) -> ColorMode | str | None:
-        """Return the color mode of the light."""
-        return ColorMode.BRIGHTNESS
+        """Return the color mode of the light.
+
+        On/off on a device with no brightness bank, dimmable otherwise, so Home
+        Assistant draws a slider only where there is something to set.
+        """
+        return ColorMode.BRIGHTNESS if self._has_brightness else ColorMode.ONOFF
 
     @property
     def supported_color_modes(self) -> set[str]:
