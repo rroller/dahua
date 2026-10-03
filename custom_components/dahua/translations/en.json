@@ -383,7 +383,9 @@
         }
     },
     "exceptions": {
-        "video_profile_not_switchable": "The day/night video profile on {device} cannot be switched from Home Assistant: its VideoInMode is the {shape} shape, where the profile is not selected by the field this writes. See issue #458.",
+        "video_profile_not_switchable": {
+            "message": "The day/night video profile on {device} cannot be switched from Home Assistant: its VideoInMode is the {shape} shape, where the profile is not selected by the field this writes. See issue #458."
+        },
         "cancel_call_refused": {
             "message": "The doorbell would not cancel the call: {reason}"
         },
