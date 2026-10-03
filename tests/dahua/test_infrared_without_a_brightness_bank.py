@@ -15,7 +15,8 @@ a real bank is unchanged.
 
 from unittest.mock import AsyncMock
 
-from custom_components.dahua import DahuaDataUpdateCoordinator, infrared_brightness_bank
+from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua.coordinator import infrared_brightness_bank
 from custom_components.dahua.client import DahuaClient
 
 
