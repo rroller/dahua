@@ -196,14 +196,18 @@ def infrared_brightness_bank(data: dict, channel: int, profile) -> str:
     naming the wrong one makes the device answer 200 with the body "Error", which
     read as success, and makes the level read as nothing at all.
 
-    Falls back to MiddleLight when the device names none, which is what every
-    caller did before this existed.
+    Returns None when the row has no brightness bank at all, which is a doorbell:
+    a VTO2000A and a VTO2202F serve Lighting[0][0] as Mode only, with no
+    MiddleLight/NearLight/FarLight field (measured; #963). Defaulting to
+    MiddleLight there sent the write a `MiddleLight[0].Light` term for a field the
+    row does not have, and the device threw on it. None means the caller writes the
+    mode alone.
     """
     for bank in LIGHT_BRIGHTNESS_BANKS:
         key = "table.Lighting[{0}][{1}].{2}[0].Light".format(channel, profile, bank)
         if key in data:
             return bank
-    return LIGHT_BRIGHTNESS_BANKS[0]
+    return None
 
 
 def infrared_v2_row(data: dict, channel: int, profile_mode):
@@ -2718,10 +2722,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 "table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
                     self._channel, profile, index, bank))
         else:
+            bank = self.get_infrared_bank()
+            if bank is None:
+                # A doorbell's infrared has no brightness bank, so there is no
+                # level to read. Returning None here says "not known" rather than
+                # reading a "Lighting[c][p].None[0].Light" key that cannot exist.
+                return None
             level = self.data.get(
                 "table.Lighting[{0}][{1}].{2}[0].Light".format(
-                    self._channel, self.get_infrared_profile(),
-                    self.get_infrared_bank()))
+                    self._channel, self.get_infrared_profile(), bank))
         if level is None or level == "":
             return None
         try:

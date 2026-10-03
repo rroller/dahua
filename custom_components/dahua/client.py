@@ -2262,7 +2262,7 @@ class DahuaClient:
 
     async def async_set_lighting_v1_mode(self, channel: int, mode: str, brightness: int,
                                          profile_mode="0",
-                                         bank: str = "MiddleLight") -> dict:
+                                         bank="MiddleLight") -> dict:
         """
         async_set_lighting_v1_mode will set IR light (InfraRed light) mode and brightness
         Mode should be one of: Manual, Off, or Auto
@@ -2284,11 +2284,18 @@ class DahuaClient:
         # "Error" -- accepted by every write method as success -- while channel 6
         # of the same recorder has only MiddleLight.
         url = ("/cgi-bin/configManager.cgi?action=setConfig"
-               "&Lighting[{channel}][{profile}].Mode={mode}"
-               "&Lighting[{channel}][{profile}].{bank}[0].Light={brightness}").format(
-            channel=channel, profile=profile_mode, mode=mode,
-            brightness=brightness, bank=bank
-        )
+               "&Lighting[{channel}][{profile}].Mode={mode}").format(
+            channel=channel, profile=profile_mode, mode=mode)
+
+        # Only write a brightness when the device has a bank to write it to. A
+        # doorbell's Lighting row is Mode only, and appending a MiddleLight term
+        # for a field it does not have is what the VTO2202F threw on (#963). bank
+        # is None exactly when the coordinator found no bank in the row.
+        if bank is not None:
+            url += ("&Lighting[{channel}][{profile}].{bank}[0].Light={brightness}"
+                    ).format(channel=channel, profile=profile_mode, bank=bank,
+                             brightness=brightness)
+
         return await self.get(url)
 
     async def async_goto_preset_position(self, channel: int, position: int) -> dict:
