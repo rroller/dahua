@@ -475,6 +475,16 @@
                 "user": "Add a channel"
             },
             "step": {
+                "user": {
+                    "title": "Add a channel",
+                    "description": "Add another channel of this recorder. The connection and host-wide settings come from the recorder; here you choose the channel index (0-based, as the recorder numbers them internally) and name it. Other per-channel settings can be changed afterwards from the channel's Configure button.",
+                    "data": {
+                        "channel": "Channel index (0-based)",
+                        "name": "Name",
+                        "area": "Area (moves this device to it)",
+                        "events": "Events to subscribe to"
+                    }
+                },
                 "reconfigure": {
                     "title": "{name}",
                     "description": "Settings for channel {channel} of this recorder. Anything that applies to the whole device, such as how often it is polled, is on the recorder's own Configure button instead.",
@@ -496,6 +506,9 @@
             },
             "abort": {
                 "reconfigure_successful": "Channel updated"
+            },
+            "error": {
+                "channel_already_added": "That channel is already added to this recorder. Pick a channel index that is not in use."
             }
         }
     }
