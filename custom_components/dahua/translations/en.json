@@ -87,7 +87,8 @@
             "ssl_error": "The secure connection failed. If the camera does not serve HTTPS, clear the HTTPS option; if it does, it is usually on port 443.",
             "unexpected_reply": "Something answered, but not a Dahua camera. Check the port — the web interface and the API are not always the same one.",
             "cgi_disabled": "That address is serving web pages, but not the Dahua API. On a Dahua device this is almost always the CGI service being switched off: turn it on under System, then Security or Safety, then System Service, then CGI, and try again. If CGI is already on, check the port, because the web interface and the API are not always the same one.",
-            "https_available": "Nothing answered on that port, but the device is listening on 443, so it is probably serving HTTPS. Tick the HTTPS option and use port 443.",
+            "vth_without_http": "This is an indoor monitor (VTH) that serves no web interface at all, only Dahua's own protocol, and it accepted that username and password there. The integration cannot add a monitor like this yet. Monitors that do serve HTTP, such as the VTH2421F-P, can be added.",
+        "https_available": "Nothing answered on that port, but the device is listening on 443, so it is probably serving HTTPS. Tick the HTTPS option and use port 443.",
             "https_redirect": "This device redirected the connection to HTTPS, so the username and password were never checked. Tick the HTTPS option and use port 443.",
             "http_service_off": "The device is switched on and answering Dahua's own protocol, but nothing is serving HTTP on that port, so the integration cannot reach its API. Its web service is most likely switched off: turn on HTTP and CGI under System, then Security or Safety, then System Service.",
             "unknown": "Could not add the camera. The Home Assistant log has the reason."

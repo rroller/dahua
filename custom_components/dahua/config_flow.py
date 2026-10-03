@@ -33,6 +33,7 @@ from . import (
 )
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
+from .dhip import DhipLoginRefused, async_dhip_session
 from .migrate import CHANNEL_SUBENTRY
 from .flow_preview import async_drop_preview, async_store_preview, preview_url
 from .const import (
@@ -366,6 +367,63 @@ async def async_refine_connection_failure(address: str, reason: str) -> str:
         if await _async_probe_tcp(address, port, FAILURE_PROBE_TIMEOUT_SECONDS):
             return "http_service_off"
 
+    return reason
+
+
+async def async_explain_http_service_off(
+    address: str, username: str, password: str, reason: str
+) -> str:
+    """Say which of two very different devices answered only on Dahua's own ports.
+
+    `http_service_off` tells the user to switch HTTP and CGI on. For a camera
+    with its web service off that is right. For an indoor monitor that serves no
+    HTTP at all it is a switch that does not exist: #949 measured a VTH5221D
+    (3.000.0012000.0.R) with only 5000 and 37777 open, where the login completes
+    over DHIP and nothing else does.
+
+    So the typed credentials are tried once over DHIP, which is the only login
+    this device can be given:
+
+    - refused: the credentials are wrong, which the HTTP failure could not show.
+    - accepted, and the device says it is a VTH: say what it is, and that the
+      integration cannot add one yet, instead of creating an entry whose setup and
+      polling are all HTTP and would never load.
+    - anything else: the original reason, unchanged.
+
+    One attempt only, and only on this path, where HTTP never got as far as a
+    login, so it is the first login these credentials have been offered and adds
+    nothing towards the device's lockout.
+    """
+    if reason != "http_service_off":
+        return reason
+    try:
+        async with async_dhip_session(address, username, password) as session:
+            reply = await session.call("magicBox.getDeviceClass")
+            device_class = (
+                str((reply.get("params") or {}).get("type") or "").strip().upper()
+            )
+            if not device_class:
+                # getDeviceClass is what a VTH2421F-P answers over RPC2; on the
+                # VTH5221D's 3.000 firmware only getDeviceType has been measured
+                # over DHIP ("VTH5221D"). Asked only when the class did not come
+                # back, so a device that says what it is is never second-guessed.
+                kind = await session.call("magicBox.getDeviceType")
+                model = (
+                    str((kind.get("params") or {}).get("type") or "").strip().upper()
+                )
+                if model.startswith("VTH"):
+                    device_class = "VTH"
+    except DhipLoginRefused:
+        return "auth"
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.debug(
+            "No DHIP login at %s to explain the missing HTTP service",
+            address,
+            exc_info=True,
+        )
+        return reason
+    if device_class == "VTH":
+        return "vth_without_http"
     return reason
 
 
@@ -1422,7 +1480,10 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 reason,
                 exc_info=exception,
             )
-            return None, await async_refine_connection_failure(address, reason)
+            reason = await async_refine_connection_failure(address, reason)
+            return None, await async_explain_http_service_off(
+                address, username, password, reason
+            )
         finally:
             await session.close()
 
