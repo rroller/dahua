@@ -1497,6 +1497,67 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
     per channel on a 64 channel recorder would be its own kind of unusable.
     """
 
+    async def async_step_user(self, user_input=None):
+        """Add a channel to an existing recorder.
+
+        `async_get_supported_subentry_types` registers this flow, so Home Assistant
+        shows an "Add a channel" button on a recorder, but the flow only implemented
+        reconfigure -- pressing the button raised "Handler DahuaChannelSubentryFlow
+        doesn't support step user" (#947). This adds the step.
+
+        A new channel is the same shape setup builds for an extra channel in
+        `_channel_subentries`: the recorder's connection and host-wide settings are
+        inherited from the parent entry, and only the channel index, the name, the
+        area and the event list are per channel. The channel index is 0-based, as
+        the add form itself asks for it. A channel that already has a subentry -- or
+        the primary channel on a single-camera entry that has none -- is refused
+        rather than duplicated.
+        """
+        entry = self._get_entry()
+        base = dict(entry.data)
+
+        taken = {sub.data.get(CONF_CHANNEL) for sub in entry.subentries.values()}
+        if not entry.subentries:
+            # A flat entry has no subentries; its one channel lives in the entry
+            # data, and adding a second is what turns it into a hub.
+            taken.add(base.get(CONF_CHANNEL, 0))
+        next_free = next(i for i in range(0, 256) if i not in taken)
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            channel = user_input[CONF_CHANNEL]
+            if channel in taken:
+                errors[CONF_CHANNEL] = "channel_already_added"
+            else:
+                data = {**base, CONF_CHANNEL: channel,
+                        CONF_NAME: user_input[CONF_NAME],
+                        CONF_EVENTS: user_input.get(CONF_EVENTS, DEFAULT_EVENTS)}
+                # "" means no area, which is a real answer; anything else moves the
+                # new channel's device into it rather than inheriting the primary's.
+                if user_input.get(CONF_AREA):
+                    data[CONF_AREA] = user_input[CONF_AREA]
+                else:
+                    data.pop(CONF_AREA, None)
+                return self.async_create_entry(
+                    title=user_input[CONF_NAME],
+                    data=data,
+                    unique_id="%s_%s" % (base.get(CONF_ADDRESS), channel),
+                )
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema({
+                vol.Required(CONF_CHANNEL, default=next_free): vol.All(
+                    vol.Coerce(int), vol.Range(min=0)),
+                vol.Required(CONF_NAME,
+                             default="Channel {0}".format(next_free + 1)): str,
+                vol.Optional(CONF_AREA, default=""): selector.AreaSelector(),
+                vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS):
+                    cv.multi_select(ALL_EVENTS),
+            }),
+            errors=errors,
+        )
+
     async def async_step_reconfigure(self, user_input=None):
         """Show and save one channel's settings."""
         subentry = self._get_reconfigure_subentry()
