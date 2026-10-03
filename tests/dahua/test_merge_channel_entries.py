@@ -106,6 +106,10 @@ class _Entities(_Registry):
         row = next(r for rows in self._owned.values() for r in rows
                    if r.entity_id == entity_id)
         self._move(row, new_config_entry_id)
+        # A real RegistryEntry carries config_subentry_id, and the #972 guard reads
+        # it to tell a finished recorder from a merge still in progress. Record it
+        # so a re-run sees the same shape Home Assistant would.
+        row.config_subentry_id = new_config_subentry_id
 
 
 class _Devices(_Registry):
@@ -115,6 +119,7 @@ class _Devices(_Registry):
         row = next(r for rows in self._owned.values() for r in rows
                    if r.id == device_id)
         self._move(row, new_config_entry_id)
+        row.config_subentry_id = new_config_subentry_id
 
 
 @pytest.fixture
@@ -746,3 +751,103 @@ async def test_a_host_with_every_entry_disabled_does_nothing(world):
     await migrate.async_merge_channel_entries(world.hass)
 
     assert world.log == [], world.log
+
+
+# --- #972: a host that already has a finished recorder must not be re-merged ----
+#
+# Re-merging reads a finished recorder as a single channel and moves every channel
+# it owns onto one subentry, discarding the rest. No entity is lost, so the count
+# guards do not catch it; the per-channel structure is destroyed. It arises when a
+# channel disabled at the first merge is re-enabled, leaving a finished recorder
+# beside a flat entry. These pin that the host is left untouched, while a merge
+# still in progress (subentries created, entities not yet spread) still completes.
+
+A = "192.168.0.213"
+
+
+def _sub(channel):
+    return _Subentry({"address": A, "channel": str(channel)}, migrate.CHANNEL_SUBENTRY,
+                     "Channel %s" % channel, "%s_%s" % (A, channel))
+
+
+def _row(entity_id, subentry):
+    return SimpleNamespace(entity_id=entity_id, config_subentry_id=subentry)
+
+
+async def test_a_finished_recorder_is_not_refolded_by_a_lower_re_enabled_channel(world):
+    """Flat channel 0 re-enabled beside a finished recorder (channels 1 and 2)."""
+    merged = world.entries[1]
+    merged.data["channel"] = "1"
+    s1, s2 = _sub(1), _sub(2)
+    merged.subentries = {s1.subentry_id: s1, s2.subentry_id: s2}
+    world.entities._owned["e1"] = [
+        _row("sensor.ch1", s1.subentry_id),
+        _row("sensor.ch2", s2.subentry_id),
+    ]
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert world.log == [], world.log
+    assert {r.config_subentry_id for r in world.entities.rows_for("e1")} == {
+        s1.subentry_id, s2.subentry_id}
+
+
+async def test_a_finished_recorder_is_not_refolded_when_it_is_the_survivor(world):
+    """Higher channel re-enabled: the finished recorder is channel 0 and would be
+    the survivor, so its own channels would collapse. The commoner trigger."""
+    merged = world.entries[0]
+    s0, s1, s2 = _sub(0), _sub(1), _sub(2)
+    merged.subentries = {s.subentry_id: s for s in (s0, s1, s2)}
+    world.entities._owned["e0"] = [
+        _row("sensor.ch0", s0.subentry_id),
+        _row("sensor.ch1", s1.subentry_id),
+        _row("sensor.ch2", s2.subentry_id),
+    ]
+    world.entries[1].data["channel"] = "5"  # the flat, re-enabled channel
+    world.entities._owned["e1"] = [_row("sensor.ch5", None)]
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert world.log == [], world.log
+    assert len({r.config_subentry_id for r in world.entities.rows_for("e0")}) == 3
+
+
+async def test_a_device_only_channel_still_marks_a_finished_recorder(world):
+    """A channel that registered a device but no entity: entity spread is one, so
+    the device spread is what has to catch it."""
+    merged = world.entries[0]
+    s0, s1 = _sub(0), _sub(1)
+    merged.subentries = {s0.subentry_id: s0, s1.subentry_id: s1}
+    world.entities._owned["e0"] = [_row("sensor.ch0", s0.subentry_id)]  # ch1: no entity
+    world.devices._owned["e0"] = [SimpleNamespace(id="d0", config_subentry_id=s0.subentry_id),
+                                  SimpleNamespace(id="d1", config_subentry_id=s1.subentry_id)]
+    world.entries[1].data["channel"] = "5"
+    world.entities._owned["e1"] = [_row("sensor.ch5", None)]
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert world.log == [], world.log
+
+
+async def test_a_merge_still_in_progress_is_re_entered_and_finished(world):
+    """The recovery path the guard must not break: subentries created, but the
+    survivor's entities are not yet spread (its own channel only), and the flat
+    leftovers still own theirs. This must complete, not be skipped."""
+    survivor = world.entries[0]
+    s0, s1, s2 = _sub(0), _sub(1), _sub(2)
+    survivor.subentries = {s.subentry_id: s for s in (s0, s1, s2)}
+    world.entities._owned["e0"] = [_row("sensor.ch0", s0.subentry_id)]  # spread == 1
+    # e1 (channel 1) still owns its entity, flat; add e2 (channel 2) likewise.
+    world.entities._owned["e1"] = [_row("sensor.ch1", None)]
+    e2 = _Entry("e2", A, "2", "Channel 2")
+    world.entries.append(e2)
+    world.hass.config_entries._entries.append(e2)
+    world.entities._owned["e2"] = [_row("sensor.ch2", None)]
+    world.devices._owned["e2"] = [SimpleNamespace(id="d2")]
+
+    await migrate.async_merge_channel_entries(world.hass)
+
+    assert ("remove", "e1") in world.log and ("remove", "e2") in world.log, world.log
+    landed = {r.entity_id: r.config_subentry_id
+              for r in world.entities.rows_for("e0")}
+    assert len(set(landed.values())) == 3, landed  # ch0, ch1, ch2 on distinct subentries
