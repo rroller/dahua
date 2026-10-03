@@ -304,6 +304,22 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
         """Return True if entity has to be polled for state.  False if entity pushes its state to HA"""
         return False
 
+    @property
+    def extra_state_attributes(self):
+        """Expose which rule tripped, its direction and the object type, when the
+        device sent them (#373). A tripwire sensor turning on says something
+        crossed a line; these say it was the driveway rule not the back gate, and
+        a person not a car, so an automation keyed on the sensor can act on it.
+
+        Empty until an event carries them, and layered on the base's id and
+        integration rather than replacing them, the way the authorized-vehicle
+        sensor does.
+        """
+        details = self._coordinator.get_event_details(self._event_name)
+        if not details:
+            return super().extra_state_attributes
+        return {**(super().extra_state_attributes or {}), **details}
+
 
 class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEntity):
     """Binary sensor that turns on when an authorized vehicle license plate is recognized."""
