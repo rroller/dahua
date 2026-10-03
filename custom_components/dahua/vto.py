@@ -329,11 +329,21 @@ class DahuaVTOClient(asyncio.Protocol):
             if message is None:
                 return
 
-            params = message.get("params")
+            params = message.get("params") or {}
             table = params.get("table")
 
-            if table is not None:
+            # A VTO returns AccessControl as a list of dicts, one per door. A
+            # VTH5221D with no door of its own returns a list whose entries are
+            # themselves lists, so item.get('AccessProtocol') raised 'list' object
+            # has no attribute 'get' and the whole packet's processing aborted
+            # (measured over DHIP, #949). Iterate only a list, and only the dict
+            # entries in it; any other shape means this device has no local access
+            # control to read, which is the right answer for a monitor.
+            if isinstance(table, list):
                 for item in table:
+                    if not isinstance(item, dict):
+                        continue
+
                     access_control = item.get('AccessProtocol')
 
                     if access_control == 'Local':
