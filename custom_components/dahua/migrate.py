@@ -134,6 +134,46 @@ def _subentry_unique_id(address: str, channel: int) -> str:
     return "%s_%d" % (address, channel)
 
 
+def _rows_span_multiple_subentries(rows) -> bool:
+    """Whether these registry rows sit across more than one subentry."""
+    seen = set()
+    for row in rows:
+        subentry_id = getattr(row, "config_subentry_id", None)
+        if subentry_id is not None:
+            seen.add(subentry_id)
+            if len(seen) > 1:
+                return True
+    return False
+
+
+def _has_finished_merging(entities, devices, entry) -> bool:
+    """Whether this entry is a recorder that has already *finished* merging.
+
+    This is the signal that separates a finished merge from one still in progress,
+    and getting it right is the whole of #972. Both have subentries, because they
+    are all created before any row moves, so the presence of subentries alone
+    cannot tell them apart. What differs is where the rows sit. A finished recorder
+    has them spread across a subentry per channel. A partial merge has them still
+    on the flat entries it has not folded in yet, so the entry that carries the
+    subentries holds rows under at most one of them.
+
+    Re-grouping a finished recorder is the bug: the merge reads it as one channel
+    and moves every channel's rows onto a single subentry. A partial merge, by
+    contrast, must be re-entered and finished, so it must *not* match here.
+
+    Both registries are checked: the entity spread catches every real recorder
+    (a working channel has entities), and the device spread closes the gap where a
+    channel registered a device but no entity. `config_subentry_id` is the field
+    on both a RegistryEntry and a DeviceEntry; read defensively so a registry that
+    does not carry it simply contributes nothing rather than raising.
+    """
+    return _rows_span_multiple_subentries(
+        er.async_entries_for_config_entry(entities, entry.entry_id)
+    ) or _rows_span_multiple_subentries(
+        dr.async_entries_for_config_entry(devices, entry.entry_id)
+    )
+
+
 def _backup(hass: HomeAssistant) -> str | None:
     """Copy the registries somewhere the user can find them. Blocking."""
     storage = hass.config.path(".storage")
@@ -189,8 +229,39 @@ async def async_merge_channel_entries(hass: HomeAssistant) -> None:
         if address:
             by_host.setdefault((address, _port_of(entry)), []).append(entry)
 
-    hosts = {host: group for host, group in by_host.items()
-             if len(group) > 1}
+    candidates = {host: group for host, group in by_host.items() if len(group) > 1}
+    if not candidates:
+        return
+
+    # Only a host with more than one entry can need merging, so the registries
+    # are read only now, not on the common no-op pass.
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    hosts = {}
+    for host, group in candidates.items():
+        if any(_has_finished_merging(entities, devices, entry) for entry in group):
+            # One of these entries has already finished merging: its entities are
+            # spread across a subentry per channel. The merge assumes one entry is
+            # one channel, so folding this host would move every one of that
+            # entry's channels onto a single subentry and discard the rest. No
+            # entity is lost, so the count guards would not catch it; only the
+            # per-channel structure is destroyed (#972). It arises when a channel
+            # disabled at the first merge is later re-enabled, leaving a finished
+            # recorder beside a flat entry for that channel. Leave the host as it
+            # is -- the entries still work, and this run takes no backup. A merge
+            # still in progress is deliberately not caught here: it has subentries
+            # too, but has not spread its entities across them yet, so it can be
+            # re-entered and finished.
+            _LOGGER.debug(
+                "Not merging %s: an entry here has already finished merging "
+                "(its entities span its subentries) and sits beside %d other "
+                "entr(y/ies). Re-merging would collapse its per-channel "
+                "structure, so it is left as it is",
+                host[0],
+                len(group) - 1,
+            )
+            continue
+        hosts[host] = group
     if not hosts:
         return
 
