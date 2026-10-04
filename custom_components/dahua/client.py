@@ -729,6 +729,83 @@ def flatten_rpc2_config(name: str, node, prefix: str = None) -> dict:
     return out
 
 
+def _storage_int(value) -> int:
+    """The byte counts arrive as strings like '1495797858304.000000'."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def parse_storage_disks(data: dict) -> list:
+    """Per physical disk, from storageDevice.cgi getDeviceAllInfo (#745).
+
+    The device answers with flat keys the CGI parser preserves verbatim:
+
+        list.info[0].Name=/dev/sda
+        list.info[0].State=Success
+        list.info[0].HealthDataFlag=0
+        list.info[0].Detail[0].IsError=false
+        list.info[0].Detail[0].TotalBytes=1495797858304.000000
+        list.info[0].Detail[0].UsedBytes=1495797858304.000000
+
+    Returns one dict per physical disk: name, state, health_flag, total and used
+    bytes summed across its partitions, has_error (any partition in error) and
+    healthy (State is Success and no partition reports an error).
+
+    SMART attributes -- temperature, reallocated sectors, health percentage --
+    are deliberately absent: they are not served by any getSmart* action over CGI
+    nor by any method in the RPC2 interface, measured on a DHI-NVR5464 and
+    confirmed against the reverse-engineered RPC reference, so the web UI's SMART
+    page reads them through the binary SDK rather than this API. This is the disk
+    health and capacity the HTTP API does expose, which is what #745 can act on.
+    """
+    disks = {}
+    for key, value in data.items():
+        if not key.startswith("list.info[") or "]" not in key:
+            continue
+        try:
+            index = int(key[len("list.info[") : key.index("]")])
+        except (ValueError, IndexError):
+            continue
+        rest = key[key.index("].") + 2 :] if "]." in key else ""
+        disk = disks.setdefault(
+            index,
+            {
+                "name": None,
+                "state": None,
+                "health_flag": None,
+                "total_bytes": 0,
+                "used_bytes": 0,
+                "has_error": False,
+            },
+        )
+        if rest == "Name":
+            disk["name"] = value
+        elif rest == "State":
+            disk["state"] = value
+        elif rest == "HealthDataFlag":
+            disk["health_flag"] = _storage_int(value)
+        elif rest.startswith("Detail[") and rest.endswith("].IsError"):
+            if str(value).lower() == "true":
+                disk["has_error"] = True
+        elif rest.startswith("Detail[") and rest.endswith("].TotalBytes"):
+            disk["total_bytes"] += _storage_int(value)
+        elif rest.startswith("Detail[") and rest.endswith("].UsedBytes"):
+            disk["used_bytes"] += _storage_int(value)
+
+    result = []
+    for index in sorted(disks):
+        disk = disks[index]
+        if not disk["name"]:
+            continue
+        disk["healthy"] = (
+            str(disk["state"]).lower() == "success" and not disk["has_error"]
+        )
+        result.append(disk)
+    return result
+
+
 SECURITY_LIGHT_TYPE = 1
 
 # VideoInOptions[channel].DayNightColor, the portable spelling of the Day/Night
@@ -1733,6 +1810,16 @@ class DahuaClient:
         table.SmartMotionDetect[0].Sensitivity=Middle
         """
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
+        return await self.get(url)
+
+    async def async_get_storage_device_info(self) -> dict:
+        """The recorder's disks: state, capacity and error flags (#745).
+
+        storageDevice.cgi getDeviceAllInfo is the only storage read the HTTP API
+        serves on the recorders measured; the SMART attribute table is not
+        reachable here. Parsed by parse_storage_disks.
+        """
+        url = "/cgi-bin/storageDevice.cgi?action=getDeviceAllInfo"
         return await self.get(url)
 
     async def async_get_ptz_position(self) -> dict:

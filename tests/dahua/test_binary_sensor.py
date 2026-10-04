@@ -8,6 +8,7 @@ from custom_components.dahua.binary_sensor import (
     MOMENTARY_EVENT_HOLD_SECONDS,
     DahuaEventSensor,
     DahuaAuthorizedVehicleBinarySensor,
+    DahuaDiskProblemBinarySensor,
 )
 from custom_components.dahua.const import (
     DOOR_DEVICE_CLASS,
@@ -41,6 +42,8 @@ class _Coordinator:
         # event code -> the last event's rule details, as the coordinator keeps
         # them for #373.
         self.event_details = {}
+        # recorder disks, as the coordinator keeps them for #745
+        self.storage_disks = []
 
     def get_serial_number(self):
         return "SERIAL1"
@@ -53,6 +56,9 @@ class _Coordinator:
 
     def get_event_details(self, event_name):
         return self.event_details.get(event_name, {})
+
+    def get_storage_disks(self):
+        return self.storage_disks
 
     def event_is_momentary(self, event_name):
         """No event here has arrived as a Pulse, so none clears itself."""
@@ -791,3 +797,60 @@ def test_a_sensor_without_details_keeps_only_the_base_attrs():
     assert "rule_name" not in attrs
     assert "object_type" not in attrs
     assert attrs["id"] == "7"
+
+
+# --- #745: a recorder's disk-health sensor ----------------------------------
+
+
+def _disk(name="/dev/sda", healthy=True, has_error=False, state="Success"):
+    return {
+        "name": name,
+        "state": state,
+        "healthy": healthy,
+        "total_bytes": 6_000_000_000,
+        "used_bytes": 5_000_000_000,
+        "has_error": has_error,
+        "health_flag": 0,
+    }
+
+
+def test_a_disk_problem_sensor_is_off_when_the_disk_is_healthy():
+    c = _Coordinator()
+    c.storage_disks = [_disk()]
+    s = DahuaDiskProblemBinarySensor(c, object(), "/dev/sda")
+
+    assert s.is_on is False
+    assert s.unique_id == "SERIAL1_disk_dev_sda"
+    attrs = s.extra_state_attributes
+    assert attrs["state"] == "Success"
+    assert attrs["total_gb"] == 6.0
+    assert attrs["partition_error"] is False
+    assert attrs["id"] == "7"  # base id preserved, not replaced
+
+
+def test_a_disk_problem_sensor_is_on_when_the_disk_is_unhealthy():
+    c = _Coordinator()
+    c.storage_disks = [_disk(healthy=False, has_error=True)]
+    s = DahuaDiskProblemBinarySensor(c, object(), "/dev/sda")
+
+    assert s.is_on is True
+    assert s.extra_state_attributes["partition_error"] is True
+
+
+def test_a_disk_no_longer_reported_reads_unknown():
+    c = _Coordinator()
+    c.storage_disks = []  # the disk has gone
+    s = DahuaDiskProblemBinarySensor(c, object(), "/dev/sda")
+
+    assert s.is_on is None
+    # the base attributes still resolve even with no disk
+    assert s.extra_state_attributes["id"] == "7"
+
+
+def test_a_disk_problem_sensor_is_diagnostic_and_off_by_default():
+    c = _Coordinator()
+    c.storage_disks = [_disk()]
+    s = DahuaDiskProblemBinarySensor(c, object(), "/dev/sda")
+
+    assert s.entity_registry_enabled_default is False
+    assert s.entity_category is not None

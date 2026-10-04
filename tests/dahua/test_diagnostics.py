@@ -133,6 +133,9 @@ class _Coordinator:
     def get_event_list(self):
         return list(self._events)
 
+    def get_storage_disks(self):
+        return []
+
     def is_doorbell(self):
         return False
 

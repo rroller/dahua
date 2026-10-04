@@ -37,6 +37,9 @@ class _Coordinator:
     def get_event_list(self):
         return self._events
 
+    def get_storage_disks(self):
+        return []
+
     def is_doorbell(self):
         return self._doorbell
 
