@@ -109,6 +109,6 @@ def test_the_request_failure_line_passes_the_description():
     source = "".join(modules().values())
 
     assert (
-        "_describe_client_error(exception))" in source
+        "_describe_client_error(exception)" in source
     ), "the ClientError debug line no longer reports what the device answered"
     assert "ClientError fetching information from %s: %s" in source
