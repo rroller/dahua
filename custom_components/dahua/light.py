@@ -1244,9 +1244,18 @@ class FloodLight(DahuaBaseEntity, LightEntity):
                 await self._coordinator.client.async_set_coaxial_control_state(
                     channel, SECURITY_LIGHT_TYPE, False
                 )
-            await self._coordinator.client.async_set_floodlightmode(
-                self._coordinator._floodlight_mode
-            )
+            # Only restore a mode turn_on actually captured. Without this, a
+            # turn_off with no turn_on this session -- the light already on when
+            # Home Assistant started, or switched on from the Amcrest app --
+            # wrote the seed default (manual) over whatever mode the camera was
+            # really in, so a schedule or PIR flood light was left stuck on
+            # manual. Cleared after restoring so a second turn_off cannot write
+            # a stale mode over one the user has since changed on the device.
+            if self._coordinator._floodlight_mode is not None:
+                await self._coordinator.client.async_set_floodlightmode(
+                    self._coordinator._floodlight_mode
+                )
+                self._coordinator._floodlight_mode = None
             await self._coordinator.async_refresh()
         else:
             channel = self._coordinator.get_channel()

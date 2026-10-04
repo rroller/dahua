@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from custom_components.dahua.client import DahuaClient
+from custom_components.dahua.client import DahuaClient, SECURITY_LIGHT_TYPE
 from custom_components.dahua.light import FloodLight
 
 
@@ -79,7 +79,7 @@ def _flood_light():
     coordinator = SimpleNamespace(
         client=_Client(),
         _supports_floodlightmode=True,
-        _floodlight_mode=2,
+        _floodlight_mode=None,
         get_channel=lambda: 0,
         is_nvr_channel=lambda: False,
         async_refresh=_never,
@@ -105,3 +105,40 @@ async def test_turning_off_sends_the_stored_mode_not_the_table():
     assert (
         coordinator.client.modes_set[-1] == 1
     ), "the mode is written as a number; a dict here goes into the URL"
+
+
+async def test_turning_off_without_a_prior_turn_on_does_not_clobber_the_mode():
+    """The light already on when Home Assistant started, or switched on from the
+    Amcrest app, then turned off from HA. Nothing captured the camera's real
+    mode (is_flood_light_on reads live device state, so HA shows it on and will
+    turn it off), and writing the seed default would leave a schedule or PIR
+    flood light stuck on manual for good. With no captured mode, turn_off writes
+    none; it only switches the light off.
+    """
+    entity, coordinator = _flood_light()
+    assert coordinator._floodlight_mode is None, "no turn_on has run this session"
+
+    await entity.async_turn_off()
+
+    assert coordinator.client.modes_set == [], "no mode written when none was captured"
+    assert coordinator.client.coaxial == [
+        (0, SECURITY_LIGHT_TYPE, False)
+    ], "the light is still turned off"
+
+
+async def test_a_restored_mode_is_cleared_so_a_second_off_writes_nothing():
+    """Once the captured mode has been put back, a further turn_off with no new
+    turn_on must not write it again over a mode the user may have changed on the
+    device since."""
+    entity, coordinator = _flood_light()
+
+    await entity.async_turn_on()  # captures 1, forces manual
+    await entity.async_turn_off()  # restores 1
+    assert coordinator._floodlight_mode is None
+
+    await entity.async_turn_off()  # nothing left to restore
+
+    assert coordinator.client.modes_set == [
+        2,
+        1,
+    ], "the second off wrote no further mode"
