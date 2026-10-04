@@ -12,6 +12,7 @@ ISSUE_URL = "https://github.com/rroller/dahua/issues"
 # Device classes - https://www.home-assistant.io/integrations/binary_sensor/#device-class
 MOTION_SENSOR_DEVICE_CLASS = "motion"
 SAFETY_DEVICE_CLASS = "safety"
+TAMPER_DEVICE_CLASS = "tamper"
 CONNECTIVITY_DEVICE_CLASS = "connectivity"
 SOUND_DEVICE_CLASS = "sound"
 DOOR_DEVICE_CLASS = "door"

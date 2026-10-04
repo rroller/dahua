@@ -14,6 +14,7 @@ from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
     DOMAIN,
     SAFETY_DEVICE_CLASS,
+    TAMPER_DEVICE_CLASS,
     CONNECTIVITY_DEVICE_CLASS,
     SOUND_DEVICE_CLASS,
     DOOR_DEVICE_CLASS,
@@ -149,7 +150,9 @@ DEVICE_CLASS_OVERRIDES = {
     "CrossLineDetection": MOTION_SENSOR_DEVICE_CLASS,
     "AlarmLocal": SAFETY_DEVICE_CLASS,
     "VideoLoss": SAFETY_DEVICE_CLASS,
-    "VideoBlind": SAFETY_DEVICE_CLASS,
+    # A blinded or obscured lens is tampering, which Home Assistant has a
+    # dedicated device class for; it used to share the generic "safety" class.
+    "VideoBlind": TAMPER_DEVICE_CLASS,
     "StorageNotExist": CONNECTIVITY_DEVICE_CLASS,
     "StorageFailure": CONNECTIVITY_DEVICE_CLASS,
     "StorageLowSpace": SAFETY_DEVICE_CLASS,
