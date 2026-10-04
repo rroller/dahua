@@ -50,6 +50,7 @@ from .const import (
     ISSUE_URL,
     LIGHT,
     MIN_SCAN_INTERVAL,
+    NUMBER,
     SELECT,
     SWITCH,
 )
@@ -1568,6 +1569,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self.client.async_get_light_global_enabled())
                 )
+            # Picture adjustments for the number platform (brightness, contrast,
+            # saturation, hue): one read per poll, only when those entities exist.
+            if self._wanted_by(NUMBER):
+                coros.append(asyncio.ensure_future(self.client.async_get_video_color()))
             # Lighting_V2 is the light platform's table -- except that the
             # Amcrest doorbell's "Security Light" is a *select*, and its
             # current_option reads table.Lighting_V2[0][0][1].Mode/.State. A
@@ -2381,6 +2386,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_storage_disks(self) -> list:
         """The recorder's disks, for the diagnostic disk sensors to read (#745)."""
         return list(self._storage_disks)
+
+    def get_video_color(self, field: str):
+        """A picture adjustment for this channel's general profile, or None.
+
+        Read from the poll's VideoColor table by the image-adjustment number
+        entities (brightness, contrast, saturation, hue).
+        """
+        raw = self.data.get(
+            "table.VideoColor[{0}][0].{1}".format(self.get_channel(), field)
+        )
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
     def reported_device_class(self) -> str:
         """The class the device itself answered, folded, or "" if it did not answer.
