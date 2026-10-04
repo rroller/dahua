@@ -55,6 +55,7 @@ WAS = {
     # to match. Listed because this table is asserted as equal to the file, which
     # is what makes a rename fail rather than pass quietly.
     ("select", "infrared_mode"): "Infrared Mode",
+    ("select", "smart_motion_sensitivity"): "Smart Motion Sensitivity",
     ("select", "vth_camera_link"): "Camera for {vto} calls",
     ("sensor", "firmware_version"): "Firmware Version",
     ("sensor", "serial_number"): "Serial Number",

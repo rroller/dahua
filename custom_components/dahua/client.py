@@ -1819,6 +1819,33 @@ class DahuaClient:
                 "SmartMotionDetect", channel, "Enable", bool(enabled)
             )
 
+    async def async_set_smart_motion_sensitivity(self, channel: int, sensitivity: str):
+        """Set this channel's smart motion sensitivity (Low, Middle or High).
+
+        The same per-channel SmartMotionDetect table and the same CGI-then-RPC2
+        fallback as the Enable write, so it is indexed by channel for the same
+        reason: writing [0] from every channel set one camera's value for all of
+        them. The field is a word on the wire; measured Sensitivity=Middle on a
+        DHI-NVR5464-16P-EI.
+        """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&SmartMotionDetect[{0}].Sensitivity={1}".format(
+            channel, sensitivity
+        )
+        try:
+            return await self.get(url, True)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting SmartMotionDetect "
+                "Sensitivity over RPC2",
+                cgi_error.status,
+                self._address,
+            )
+            return await self._rpc2_set_config_value(
+                "SmartMotionDetect", channel, "Sensitivity", sensitivity
+            )
+
     async def async_set_light_global_enabled(self, enabled: bool):
         """Turns the blue ring light on/off for Amcrest doorbells"""
         url = "/cgi-bin/configManager.cgi?action=setConfig&LightGlobal[0].Enable={0}".format(

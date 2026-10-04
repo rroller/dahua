@@ -96,6 +96,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.supports_infrared_light():
             devices.append(DahuaInfraredModeSelect(coordinator, entry))
 
+        # The non-Amcrest SmartMotionDetect path only: it carries a Sensitivity
+        # word, and supports_smart_motion_detection() is already the per-channel
+        # "this channel has a row" signal the enable switch uses.
+        if coordinator.supports_smart_motion_detection():
+            devices.append(DahuaSmartMotionSensitivitySelect(coordinator, entry))
+
         # One per VTO the indoor monitor knows. Decided from the first poll's
         # read, so a monitor that would not answer it gets none until the entry
         # is reloaded, rather than a control with nothing to choose from.
@@ -240,6 +246,42 @@ class DahuaInfraredModeSelect(DahuaBaseEntity, SelectEntity):
         await async_write_infrared_mode(
             self._coordinator, mode, 100 if level is None else level
         )
+
+
+class DahuaSmartMotionSensitivitySelect(DahuaBaseEntity, SelectEntity):
+    """How sensitive this channel's smart motion detection is.
+
+    Reolink and Tapo expose this; the enable switch could turn smart motion on
+    and off but nothing tuned it. The device stores a word (Low/Middle/High,
+    measured Middle on a DHI-NVR5464), written to the same per-channel
+    SmartMotionDetect row the switch writes, so it dodges the whole-table size
+    ceiling that blocks the NVR IVS writes.
+    """
+
+    _attr_translation_key = "smart_motion_sensitivity"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = ["Low", "Middle", "High"]
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_smart_motion_sensitivity"
+
+    @property
+    def current_option(self):
+        value = self._coordinator.get_smart_motion_sensitivity()
+        return value if value in self._attr_options else None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        await self._coordinator.client.async_set_smart_motion_sensitivity(
+            self._coordinator.get_channel(), option
+        )
+        await self._coordinator.async_refresh()
 
 
 class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
