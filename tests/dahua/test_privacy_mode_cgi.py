@@ -24,8 +24,10 @@ import pytest
 
 from custom_components.dahua.client import DahuaClient
 
-ENABLED = {"table.LeLensMask[0].Enable": "true",
-           "table.LeLensMask[0].TimeSection[0][0]": "0 00:00:00-24:00:00"}
+ENABLED = {
+    "table.LeLensMask[0].Enable": "true",
+    "table.LeLensMask[0].TimeSection[0][0]": "0 00:00:00-24:00:00",
+}
 DISABLED = {"table.LeLensMask[0].Enable": "false"}
 
 
@@ -56,6 +58,7 @@ class _Client(DahuaClient):
 
 # --- reading -----------------------------------------------------------------
 
+
 async def test_cgi_is_read_when_the_camera_has_the_table():
     assert await _Client(ENABLED).async_get_privacy_mode() is True
     assert await _Client(DISABLED).async_get_privacy_mode() is False
@@ -85,10 +88,17 @@ async def test_a_reply_without_the_key_falls_back_to_rpc2():
     assert client.rpc2_calls == ["privacy mode read"]
 
 
-@pytest.mark.parametrize("value,expected", [
-    ("true", True), ("TRUE", True), (" true ", True),
-    ("false", False), ("", False), ("0", False),
-])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("true", True),
+        ("TRUE", True),
+        (" true ", True),
+        ("false", False),
+        ("", False),
+        ("0", False),
+    ],
+)
 async def test_the_enabled_value_is_read_the_way_the_device_writes_it(value, expected):
     client = _Client({"table.LeLensMask[0].Enable": value})
 
@@ -97,13 +107,15 @@ async def test_the_enabled_value_is_read_the_way_the_device_writes_it(value, exp
 
 # --- writing -----------------------------------------------------------------
 
+
 async def test_the_write_goes_over_cgi_when_cgi_can_read_it():
     client = _Client(ENABLED)
 
     await client.async_set_privacy_mode(True)
 
     assert client.urls == [
-        "/cgi-bin/configManager.cgi?action=setConfig&LeLensMask[0].Enable=true"]
+        "/cgi-bin/configManager.cgi?action=setConfig&LeLensMask[0].Enable=true"
+    ]
     assert client.rpc2_calls == []
 
 
@@ -138,13 +150,15 @@ async def test_the_write_reaches_the_row_the_read_found():
     await client.async_set_privacy_mode(False)
 
     assert client.urls == [
-        "/cgi-bin/configManager.cgi?action=setConfig&LeLensMask[2].Enable=false"]
+        "/cgi-bin/configManager.cgi?action=setConfig&LeLensMask[2].Enable=false"
+    ]
 
 
 async def test_the_lowest_row_is_used_when_a_device_reports_several():
     """Not whichever key the dict happens to yield first."""
-    client = _Client({"table.LeLensMask[3].Enable": "false",
-                      "table.LeLensMask[1].Enable": "true"})
+    client = _Client(
+        {"table.LeLensMask[3].Enable": "false", "table.LeLensMask[1].Enable": "true"}
+    )
 
     assert await client.async_get_privacy_mode() is True
 
@@ -155,8 +169,10 @@ async def test_the_lowest_row_is_used_when_a_device_reports_several():
 
 async def test_a_table_without_an_enable_row_is_not_an_answer():
     """The device has the table but not the field, so nothing can be written."""
-    client = _Client({"table.LeLensMask[0].TimeSection[0][0]": "0 00:00:00-24:00:00"},
-                     rpc2_value=True)
+    client = _Client(
+        {"table.LeLensMask[0].TimeSection[0][0]": "0 00:00:00-24:00:00"},
+        rpc2_value=True,
+    )
 
     assert await client.async_get_privacy_mode() is True
     assert client.rpc2_calls == ["privacy mode read"]

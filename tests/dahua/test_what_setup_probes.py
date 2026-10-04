@@ -40,8 +40,11 @@ PROBES = [
     ("async_get_lighting_v2", "_supports_lighting_v2", None),
     # Gated on a model name whitelist, which is the bug class #570, #676 and
     # #690 were all instances of. Named here so the probe actually runs.
-    ("async_get_lighting_scheme", "_supports_lighting_scheme_illuminator",
-     "IPC-COLOR4M-TZ"),
+    (
+        "async_get_lighting_scheme",
+        "_supports_lighting_scheme_illuminator",
+        "IPC-COLOR4M-TZ",
+    ),
     ("async_get_privacy_mode", "_supports_privacy_mode", None),
 ]
 
@@ -49,17 +52,27 @@ PROBES = [
 # What setup asks the coordinator about itself. Off, so the fan-out afterwards is
 # empty and each test is about the probe it names.
 SELF_METHODS = (
-    "is_doorbell", "is_flood_light", "is_nvr_channel", "supports_floodlightmode",
-    "supports_infrared_light", "uses_rpc2_deterrence",
+    "is_doorbell",
+    "is_flood_light",
+    "is_nvr_channel",
+    "supports_floodlightmode",
+    "supports_infrared_light",
+    "uses_rpc2_deterrence",
 )
 
 FLAGS = (
-    "_supports_coaxial_control", "_supports_day_night_color",
-    "_supports_disarming_linkage", "_supports_event_notifications",
-    "_supports_floodlightmode", "_supports_lighting",
-    "_supports_lighting_scheme_illuminator", "_supports_lighting_v2",
-    "_supports_privacy_mode", "_supports_profile_mode",
-    "_supports_ptz_position", "_supports_smart_motion_detection",
+    "_supports_coaxial_control",
+    "_supports_day_night_color",
+    "_supports_disarming_linkage",
+    "_supports_event_notifications",
+    "_supports_floodlightmode",
+    "_supports_lighting",
+    "_supports_lighting_scheme_illuminator",
+    "_supports_lighting_v2",
+    "_supports_privacy_mode",
+    "_supports_profile_mode",
+    "_supports_ptz_position",
+    "_supports_smart_motion_detection",
 )
 
 
@@ -74,7 +87,9 @@ def _refused():
     """
     return ClientResponseError(
         request_info=SimpleNamespace(real_url="http://10.0.0.5/cgi-bin/x.cgi"),
-        history=(), status=400)
+        history=(),
+        status=400,
+    )
 
 
 class _Client:
@@ -107,7 +122,8 @@ class _Client:
         if name.startswith("_"):
             raise AttributeError(name)
         assert hasattr(DahuaClient, name), (
-            "setup asked the client for %s, which DahuaClient does not have" % name)
+            "setup asked the client for %s, which DahuaClient does not have" % name
+        )
 
         async def call(*args, **kwargs):
             self.asked.append(name)
@@ -165,6 +181,7 @@ def _coordinator(hass, refusing=None, model="IPC-HFW1234"):
 
     async def _nothing(*a, **k):
         return None
+
     c.async_start_event_listener = _nothing
     c.async_start_vto_event_listener = _nothing
     c.async_detect_lighting_support = _nothing
@@ -175,6 +192,7 @@ def _coordinator(hass, refusing=None, model="IPC-HFW1234"):
 
 
 # --- a device that answers everything ---------------------------------------
+
 
 async def test_setup_finishes(hass):
     """The control. Every assertion below is about a run that completed, so a
@@ -225,8 +243,9 @@ async def test_a_ptz_read_that_starts_failing_keeps_the_last_preset(hass):
     coordinator.client._refusing = "async_get_ptz_position"
     result = await coordinator._async_update_data()
 
-    assert result.get("status.PresetID") == "3", (
-        "a refused read dropped the preset the select is showing")
+    assert (
+        result.get("status.PresetID") == "3"
+    ), "a refused read dropped the preset the select is showing"
 
 
 async def test_a_ptz_read_that_fails_with_nothing_remembered_says_nothing(hass):
@@ -257,6 +276,7 @@ async def test_a_refused_ptz_read_does_not_fail_the_poll(hass):
 
 # --- and one that refuses ---------------------------------------------------
 
+
 @pytest.mark.parametrize("method, flag, model", PROBES)
 async def test_every_probe_is_actually_asked(hass, method, flag, model):
     """The guard against the rest of this file passing for the wrong reason.
@@ -271,7 +291,8 @@ async def test_every_probe_is_actually_asked(hass, method, flag, model):
     await coordinator._async_update_data()
 
     assert method in coordinator.client.asked, (
-        "%s was never asked, so the tests about it prove nothing" % method)
+        "%s was never asked, so the tests about it prove nothing" % method
+    )
 
 
 @pytest.mark.parametrize("method, flag, model", PROBES)
@@ -283,7 +304,8 @@ async def test_a_refused_probe_does_not_stop_setup(hass, method, flag, model):
     await coordinator._async_update_data()
 
     assert coordinator.initialized is True, (
-        "a refused %s stopped the device finishing setup" % method)
+        "a refused %s stopped the device finishing setup" % method
+    )
 
 
 @pytest.mark.parametrize("method, flag, model", PROBES)
@@ -309,5 +331,4 @@ async def test_a_refused_probe_leaves_the_others_alone(hass, method, flag, model
     await refusing._async_update_data()
 
     got = {name: getattr(refusing, name) for name in FLAGS if name != flag}
-    assert got == expected, (
-        "refusing %s also changed another capability" % method)
+    assert got == expected, "refusing %s also changed another capability" % method

@@ -16,8 +16,8 @@ from custom_components.dahua import (
     event_stream_retry_delay,
 )
 
-
 # --- the case this exists for -------------------------------------------------
+
 
 def test_a_short_stream_that_delivered_is_retried_soon():
     """Eight seconds of events then a close: reconnect now, not in a minute."""
@@ -33,12 +33,14 @@ def test_a_talking_device_never_escalates_however_often_it_hangs_up():
 
 def test_the_device_is_not_blinded_for_minutes_at_a_time():
     """The symptom being fixed: long gaps with no stream attached at all."""
-    worst = max(event_stream_retry_delay(8.0, n, received_data=True)
-                for n in range(1, 50))
+    worst = max(
+        event_stream_retry_delay(8.0, n, received_data=True) for n in range(1, 50)
+    )
     assert worst < 60, f"a working camera goes unwatched for {worst:.0f}s"
 
 
 # --- and the behaviour that must survive --------------------------------------
+
 
 def test_a_stream_that_said_nothing_still_backs_off():
     """The hot reconnect loop this backoff was added for is still prevented."""

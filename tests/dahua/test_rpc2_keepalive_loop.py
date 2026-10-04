@@ -39,8 +39,9 @@ class _Client:
         # A loop that has stopped stopping would ping for ever, so it is bounded here.
         # Reaching this is itself the failure, and the count is what the tests assert on.
         if len(self.calls) > 5:
-            raise RuntimeError("pinged %d times; the loop is not stopping"
-                               % len(self.calls))
+            raise RuntimeError(
+                "pinged %d times; the loop is not stopping" % len(self.calls)
+            )
         if self._fail_on is not None and len(self.calls) >= self._fail_on:
             raise self._failure
         return {"result": True}
@@ -55,6 +56,7 @@ class _Holder:
 
 # --- what it sends ------------------------------------------------------------
 
+
 async def test_it_asks_the_device_to_hold_the_session_open():
     """`active: False` is a keepalive rather than a command, and the timeout tells the
     device how long to keep the session for, so it has to match the interval this loop
@@ -64,7 +66,8 @@ async def test_it_asks_the_device_to_hold_the_session_open():
     await _rpc2_keepalive(holder, 0)
 
     assert holder.client.calls == [
-        ("global.keepAlive", {"timeout": 0, "active": False})]
+        ("global.keepAlive", {"timeout": 0, "active": False})
+    ]
 
 
 async def test_the_interval_is_not_hardcoded():
@@ -96,6 +99,7 @@ async def test_it_waits_before_the_first_ping():
 
 # --- when a ping fails --------------------------------------------------------
 
+
 async def test_a_failed_ping_drops_the_login():
     """Dropped rather than the holder itself: the entries still hold their references,
     and the next read logs in again."""
@@ -116,8 +120,9 @@ async def test_a_failed_ping_stops_the_loop():
 
     await _rpc2_keepalive(holder, 0)
 
-    assert len(client.calls) == 2, (
-        "kept pinging after a failure: %d calls" % len(client.calls))
+    assert len(client.calls) == 2, "kept pinging after a failure: %d calls" % len(
+        client.calls
+    )
 
 
 async def test_it_returns_rather_than_raising_so_nothing_reports_a_crash():
@@ -141,6 +146,7 @@ async def test_a_dropped_login_is_seen_as_needing_a_new_keepalive():
 
 
 # --- when it is cancelled -----------------------------------------------------
+
 
 async def test_cancelling_it_does_not_look_like_a_failed_ping():
     """Unloading an entry cancels this task, and that must not drop the login as a side
@@ -182,7 +188,9 @@ async def test_a_cancellation_during_a_ping_is_not_swallowed():
     with pytest.raises(asyncio.CancelledError):
         await _rpc2_keepalive(holder, 0)
 
-    assert len(client.calls) == 1, (
-        "the cancellation was swallowed and it pinged again: %d pings"
-        % len(client.calls))
+    assert (
+        len(client.calls) == 1
+    ), "the cancellation was swallowed and it pinged again: %d pings" % len(
+        client.calls
+    )
     assert holder.task is not None, "a cancellation mid-ping dropped the login"

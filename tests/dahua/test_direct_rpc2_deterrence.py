@@ -23,6 +23,10 @@ def coordinator(
 ):
     c = object.__new__(DahuaDataUpdateCoordinator)
     c.model = model
+    # Set because this builds the real coordinator rather than a double,
+    # and __init__ never runs. get_address() reads it, which every
+    # entity's `available` now does.
+    c._address = "192.168.0.213"
     c._channel = 0
     c._channel_number = 1
     c._nvr_active_deterrence = nvr
@@ -45,11 +49,21 @@ def coordinator(
 @pytest.mark.parametrize("speaker,light", [(1, 1), (0, 0), (1, 0), (0, 1)])
 async def test_caps_parse_and_independent_entity_gates(speaker, light):
     rpc = DahuaRpc2Client("u", "p", "camera", 80, 554, None)
-    rpc.request = AsyncMock(return_value={"result": True, "params": {"caps": {
-        "SupportControlSpeaker": speaker, "SupportControlLight": light,
-    }}})
+    rpc.request = AsyncMock(
+        return_value={
+            "result": True,
+            "params": {
+                "caps": {
+                    "SupportControlSpeaker": speaker,
+                    "SupportControlLight": light,
+                }
+            },
+        }
+    )
     caps = await rpc.get_coaxial_control_io_caps()
-    rpc.request.assert_awaited_once_with(method="CoaxialControlIO.getCaps", params={"channel": 0})
+    rpc.request.assert_awaited_once_with(
+        method="CoaxialControlIO.getCaps", params={"channel": 0}
+    )
     c = coordinator()
     c.client.async_get_coaxial_control_io_caps_rpc2.return_value = caps
     await c._async_probe_direct_deterrence()
@@ -59,8 +73,12 @@ async def test_caps_parse_and_independent_entity_gates(speaker, light):
     assert c.uses_rpc2_deterrence(1) is bool(light)
 
 
-@pytest.mark.parametrize("error", [TimeoutError(), ConnectionError(), ValueError(), KeyError()])
-@pytest.mark.parametrize("model,expected", [("IPC-HDW3849HP-AS-PV", True), ("OEM-IPC", False)])
+@pytest.mark.parametrize(
+    "error", [TimeoutError(), ConnectionError(), ValueError(), KeyError()]
+)
+@pytest.mark.parametrize(
+    "model,expected", [("IPC-HDW3849HP-AS-PV", True), ("OEM-IPC", False)]
+)
 async def test_probe_failure_keeps_model_fallback(error, model, expected):
     c = coordinator(model)
     c.client.async_get_coaxial_control_io_caps_rpc2.side_effect = error
@@ -70,11 +88,14 @@ async def test_probe_failure_keeps_model_fallback(error, model, expected):
     assert not c.uses_rpc2_deterrence()
 
 
-@pytest.mark.parametrize("model", ["TPC-BF1241-TB3F4-DW-S8-HW", "TPC-BF1241", "TPC-BF1241-OTHER"])
+@pytest.mark.parametrize(
+    "model", ["TPC-BF1241-TB3F4-DW-S8-HW", "TPC-BF1241", "TPC-BF1241-OTHER"]
+)
 async def test_thermal_zero_speaker_keeps_family_fallback(model):
     c = coordinator(model)
     c.client.async_get_coaxial_control_io_caps_rpc2.return_value = {
-        "SupportControlSpeaker": False, "SupportControlLight": True,
+        "SupportControlSpeaker": False,
+        "SupportControlLight": True,
     }
     await c._async_probe_direct_deterrence()
     assert c.supports_siren()
@@ -119,7 +140,9 @@ async def test_manual_overrides_independently_enable_direct_camera_entities(
             entity = object.__new__(entity_class)
             entity._coordinator = c
             await entity.async_turn_on()
-            c.client.async_set_coaxial_control_state_rpc2.assert_awaited_with(kind, True)
+            c.client.async_set_coaxial_control_state_rpc2.assert_awaited_with(
+                kind, True
+            )
     c.client.async_set_coaxial_control_state.assert_not_awaited()
 
 
@@ -138,7 +161,9 @@ def test_manual_override_does_not_enable_nvr_or_doorbell(model, channel, nvr):
 
 
 @pytest.mark.parametrize("on", [True, False])
-@pytest.mark.parametrize("entity_class,kind", [(DahuaSirenBinarySwitch, 2), (DahuaSecurityLight, 1)])
+@pytest.mark.parametrize(
+    "entity_class,kind", [(DahuaSirenBinarySwitch, 2), (DahuaSecurityLight, 1)]
+)
 @pytest.mark.parametrize("transport", ["rpc2", "legacy", "nvr"])
 async def test_entity_control_transport(entity_class, kind, on, transport):
     c = coordinator(speaker=True, light=True, nvr=transport == "nvr")
@@ -155,7 +180,9 @@ async def test_entity_control_transport(entity_class, kind, on, transport):
         c.client.async_set_coaxial_control_state.assert_awaited_once_with(0, kind, on)
         c.client.async_set_coaxial_control_state_rpc2.assert_not_awaited()
     else:
-        c.client.async_set_nvr_coaxial_control_state.assert_awaited_once_with(1, kind, on)
+        c.client.async_set_nvr_coaxial_control_state.assert_awaited_once_with(
+            1, kind, on
+        )
         c.client.async_set_coaxial_control_state_rpc2.assert_not_awaited()
 
 
@@ -165,26 +192,45 @@ async def test_rpc2_control_payload(kind, on):
     rpc = DahuaRpc2Client("u", "p", "camera", 80, 554, None)
     rpc.request = AsyncMock(return_value={"result": True})
     await rpc.set_coaxial_control_state(0, kind, on)
-    rpc.request.assert_awaited_once_with(method="CoaxialControlIO.control", params={
-        "channel": 0, "info": [{"Type": kind, "IO": 1 if on else 2, "TriggerMode": 2}],
-    })
+    rpc.request.assert_awaited_once_with(
+        method="CoaxialControlIO.control",
+        params={
+            "channel": 0,
+            "info": [{"Type": kind, "IO": 1 if on else 2, "TriggerMode": 2}],
+        },
+    )
 
 
-@pytest.mark.parametrize("speaker,light", [("On", "Off"), ("Off", "On"), ("Off", "Off")])
+@pytest.mark.parametrize(
+    "speaker,light", [("On", "Off"), ("Off", "On"), ("Off", "Off")]
+)
 async def test_status_parsed_and_flattened(speaker, light):
     rpc = DahuaRpc2Client("u", "p", "camera", 80, 554, None)
-    rpc.request = AsyncMock(return_value={"result": True, "params": {"status": {
-        "Speaker": speaker, "WhiteLight": light,
-    }}})
+    rpc.request = AsyncMock(
+        return_value={
+            "result": True,
+            "params": {
+                "status": {
+                    "Speaker": speaker,
+                    "WhiteLight": light,
+                }
+            },
+        }
+    )
     client = DahuaClient("u", "p", "camera", 80, 554, None)
     client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc))
     assert await client.async_get_coaxial_control_io_status_rpc2() == {
-        "status.Speaker": speaker, "status.WhiteLight": light,
+        "status.Speaker": speaker,
+        "status.WhiteLight": light,
     }
-    rpc.request.assert_awaited_once_with(method="CoaxialControlIO.getStatus", params={"channel": 0})
+    rpc.request.assert_awaited_once_with(
+        method="CoaxialControlIO.getStatus", params={"channel": 0}
+    )
 
 
-@pytest.mark.parametrize("caps", [{}, {"SupportControlSpeaker": "0", "SupportControlLight": "1"}])
+@pytest.mark.parametrize(
+    "caps", [{}, {"SupportControlSpeaker": "0", "SupportControlLight": "1"}]
+)
 async def test_missing_and_string_capabilities(caps):
     rpc = DahuaRpc2Client("u", "p", "camera", 80, 554, None)
     rpc.request = AsyncMock(return_value={"params": {"caps": caps}})
@@ -205,12 +251,18 @@ async def test_malformed_caps_rejected(params):
 async def test_setup_caches_caps_and_poll_uses_selected_status(speaker, light):
     client = _Client()
     client.use_rpc2 = False
-    client.async_get_coaxial_control_io_caps_rpc2 = AsyncMock(return_value={
-        "SupportControlSpeaker": speaker, "SupportControlLight": light,
-    })
-    client.async_get_coaxial_control_io_status_rpc2 = AsyncMock(return_value={
-        "status.Speaker": "On", "status.WhiteLight": "Off",
-    })
+    client.async_get_coaxial_control_io_caps_rpc2 = AsyncMock(
+        return_value={
+            "SupportControlSpeaker": speaker,
+            "SupportControlLight": light,
+        }
+    )
+    client.async_get_coaxial_control_io_status_rpc2 = AsyncMock(
+        return_value={
+            "status.Speaker": "On",
+            "status.WhiteLight": "Off",
+        }
+    )
     c = _coordinator(client)
     first = await c._async_update_data()
     await c._async_update_data()
@@ -228,12 +280,18 @@ async def test_setup_caches_caps_and_poll_uses_selected_status(speaker, light):
 async def test_rpc2_security_light_skips_lighting_v2_fallback():
     client = _Client()
     client.use_rpc2 = False
-    client.async_get_coaxial_control_io_caps_rpc2 = AsyncMock(return_value={
-        "SupportControlSpeaker": False, "SupportControlLight": True,
-    })
-    client.async_get_coaxial_control_io_status_rpc2 = AsyncMock(return_value={
-        "status.Speaker": "Off", "status.WhiteLight": "On",
-    })
+    client.async_get_coaxial_control_io_caps_rpc2 = AsyncMock(
+        return_value={
+            "SupportControlSpeaker": False,
+            "SupportControlLight": True,
+        }
+    )
+    client.async_get_coaxial_control_io_status_rpc2 = AsyncMock(
+        return_value={
+            "status.Speaker": "Off",
+            "status.WhiteLight": "On",
+        }
+    )
     client.async_get_lighting_v2 = AsyncMock(side_effect=TimeoutError)
     c = _coordinator(client)
 
@@ -251,8 +309,10 @@ async def test_rpc2_security_light_skips_lighting_v2_fallback():
 
 
 async def test_client_caps_and_control_fix_channel_zero():
-    rpc = SimpleNamespace(get_coaxial_control_io_caps=AsyncMock(return_value={}),
-                          set_coaxial_control_state=AsyncMock())
+    rpc = SimpleNamespace(
+        get_coaxial_control_io_caps=AsyncMock(return_value={}),
+        set_coaxial_control_state=AsyncMock(),
+    )
     client = DahuaClient("u", "p", "camera", 80, 554, None)
     client._shared_rpc2 = AsyncMock(return_value=SimpleNamespace(client=rpc))
     await client.async_get_coaxial_control_io_caps_rpc2()
@@ -286,12 +346,18 @@ async def test_nonzero_direct_camera_polls_rpc2(device_class):
     client = _Client()
     client.use_rpc2 = False
     client.async_get_device_class = AsyncMock(return_value=device_class)
-    client.async_get_coaxial_control_io_caps_rpc2 = AsyncMock(return_value={
-        "SupportControlSpeaker": True, "SupportControlLight": True,
-    })
-    client.async_get_coaxial_control_io_status_rpc2 = AsyncMock(return_value={
-        "status.Speaker": "On", "status.WhiteLight": "Off",
-    })
+    client.async_get_coaxial_control_io_caps_rpc2 = AsyncMock(
+        return_value={
+            "SupportControlSpeaker": True,
+            "SupportControlLight": True,
+        }
+    )
+    client.async_get_coaxial_control_io_status_rpc2 = AsyncMock(
+        return_value={
+            "status.Speaker": "On",
+            "status.WhiteLight": "Off",
+        }
+    )
     c = _coordinator(client)
     c._channel = 1
     c._channel_number = 2

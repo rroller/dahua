@@ -1,8 +1,10 @@
 """This component provides basic support for Dahua IP cameras."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import voluptuous as vol
 from aiohttp import ClientError
 
@@ -15,6 +17,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinato
 from custom_components.dahua import dahua_utils
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.model_profiles import is_sdt4e425
+from custom_components.dahua.rpc2 import Rpc2MethodRefused
 from custom_components.dahua.vto import CancelCallRefused
 
 from .const import (
@@ -44,10 +47,20 @@ SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
 SERVICE_VTO_OPEN_DOOR = "vto_open_door"
 SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
+SERVICE_VTO_CALL = "vto_call"
 SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 SERVICE_REBOOT = "reboot"
 SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
 SERVICE_GET_OVERLAY_TEXT = "get_overlay_text"
+SERVICE_GET_CHANNEL_TITLE = "get_channel_title"
+SERVICE_GET_CONFIG = "get_config"
+
+# What a configManager config name may contain. A name goes straight into the
+# getConfig URL, so this keeps it from smuggling in another CGI parameter (an
+# "&action=setConfig..." tail, say); the brackets and dots are for indexed names
+# like "Lighting[0][0]". Anchored so the whole name matches, not just its start,
+# and used as the service schema so an invalid name is refused before any call.
+_CONFIG_NAME = re.compile(r"\A[A-Za-z0-9_.\[\]]+\Z")
 SERVICE_PTZ_MOVE = "ptz_move"
 
 # What ptz.cgi calls each direction. The eight compass moves plus the two
@@ -73,6 +86,7 @@ PTZ_MOVE_CODES = {
 # leaves outbound actions uncontrolled.
 PARALLEL_UPDATES = 1
 
+
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
@@ -81,6 +95,12 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     coordinators = list(entry_coordinators(config_entry).values())
 
     for coordinator in coordinators:
+        # An indoor monitor that says it has no camera gets no camera entities.
+        # getattr because the stand-in coordinators in the tests predate the
+        # question.
+        no_video = getattr(coordinator, "is_indoor_monitor_without_video", None)
+        if no_video is not None and no_video():
+            continue
         if is_sdt4e425(coordinator.get_model()):
             # This physical camera exposes two sensors. Preserve RRoller's native
             # Main/Sub/Sub_2 creation for each media channel from one config entry.
@@ -109,8 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
                             unique_suffix=f"{unique_prefix}{stream_name}",
                         )
                     )
-            async_add_entities(
-                entities, config_subentry_id=coordinator.subentry_id)
+            async_add_entities(entities, config_subentry_id=coordinator.subentry_id)
         else:
             max_streams = coordinator.get_max_streams()
             # Note the stream_index is 0 based. The main stream is index 0
@@ -142,9 +161,10 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
                     "day",
                     "Night",
                     "night",
-                ])
+                ]
+            )
         },
-        "async_set_video_profile_mode"
+        "async_set_video_profile_mode",
     )
 
     platform.async_register_entity_service(
@@ -153,7 +173,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("focus", default=""): str,
             vol.Required("zoom", default=""): str,
         },
-        "async_adjustfocus"
+        "async_adjustfocus",
     )
 
     platform.async_register_entity_service(
@@ -162,7 +182,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("index", default=0): int,
             vol.Required("enabled", default=False): bool,
         },
-        "async_set_privacy_masking"
+        "async_set_privacy_masking",
     )
 
     platform.async_register_entity_service(
@@ -170,7 +190,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         {
             vol.Required("enabled", default=False): bool,
         },
-        "async_set_privacy_mode"
+        "async_set_privacy_mode",
     )
 
     platform.async_register_entity_service(
@@ -178,7 +198,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         {
             vol.Required("enabled", default=True): bool,
         },
-        "async_set_enable_channel_title"
+        "async_set_enable_channel_title",
     )
 
     platform.async_register_entity_service(
@@ -186,7 +206,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         {
             vol.Required("enabled", default=True): bool,
         },
-        "async_set_enable_time_overlay"
+        "async_set_enable_time_overlay",
     )
 
     platform.async_register_entity_service(
@@ -195,7 +215,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("group", default=1): int,
             vol.Required("enabled", default=False): bool,
         },
-        "async_set_enable_text_overlay"
+        "async_set_enable_text_overlay",
     )
 
     platform.async_register_entity_service(
@@ -204,7 +224,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("group", default=0): int,
             vol.Required("enabled", default=False): bool,
         },
-        "async_set_enable_custom_overlay"
+        "async_set_enable_custom_overlay",
     )
 
     platform.async_register_entity_service(
@@ -212,7 +232,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         {
             vol.Required("enabled", default=True): bool,
         },
-        "async_set_enable_all_ivs_rules"
+        "async_set_enable_all_ivs_rules",
     )
 
     platform.async_register_entity_service(
@@ -221,7 +241,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("index", default=1): int,
             vol.Required("enabled", default=True): bool,
         },
-        "async_enable_ivs_rule"
+        "async_enable_ivs_rule",
     )
 
     platform.async_register_entity_service(
@@ -229,13 +249,19 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         {
             vol.Required("door_id", default=1): int,
         },
-        "async_vto_open_door"
+        "async_vto_open_door",
     )
 
     platform.async_register_entity_service(
-        SERVICE_VTO_CANCEL_CALL,
-        {},
-        "async_vto_cancel_call"
+        SERVICE_VTO_CANCEL_CALL, {}, "async_vto_cancel_call"
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_VTO_CALL,
+        {
+            vol.Required("room"): vol.All(str, vol.Strip, vol.Length(min=1)),
+        },
+        "async_vto_call",
     )
 
     platform.async_register_entity_service(
@@ -244,7 +270,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Optional("text1", default=""): str,
             vol.Optional("text2", default=""): str,
         },
-        "async_set_service_set_channel_title"
+        "async_set_service_set_channel_title",
     )
     platform.async_register_entity_service(
         SERVICE_SET_TEXT_OVERLAY,
@@ -255,7 +281,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Optional("text3", default=""): str,
             vol.Optional("text4", default=""): str,
         },
-        "async_set_service_set_text_overlay"
+        "async_set_service_set_text_overlay",
     )
 
     platform.async_register_entity_service(
@@ -265,31 +291,51 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Optional("text1", default=""): str,
             vol.Optional("text2", default=""): str,
         },
-        "async_set_service_set_custom_overlay"
+        "async_set_service_set_custom_overlay",
     )
 
     platform.async_register_entity_service(
         SERVICE_SET_DAY_NIGHT_MODE,
         {
-            vol.Required("config_type"): vol.In(["general", "General", "day", "Day", "night", "Night", "0", "1", "2"]),
-            vol.Required("mode"): vol.In(["color", "Color", "brightness", "Brightness", "blackwhite", "BlackWhite",
-                                          "Auto", "auto"])
+            vol.Required("config_type"): vol.In(
+                ["general", "General", "day", "Day", "night", "Night", "0", "1", "2"]
+            ),
+            vol.Required("mode"): vol.In(
+                [
+                    "color",
+                    "Color",
+                    "brightness",
+                    "Brightness",
+                    "blackwhite",
+                    "BlackWhite",
+                    "Auto",
+                    "auto",
+                ]
+            ),
         },
-        "async_set_video_in_day_night_mode"
+        "async_set_video_in_day_night_mode",
     )
 
-    platform.async_register_entity_service(
-        SERVICE_REBOOT,
-        {},
-        "async_reboot"
-    )
+    platform.async_register_entity_service(SERVICE_REBOOT, {}, "async_reboot")
 
     platform.async_register_entity_service(
         SERVICE_SET_RECORD_MODE,
         {
-            vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto", "0", "1", "2", ])
+            vol.Required("mode"): vol.In(
+                [
+                    "On",
+                    "on",
+                    "Off",
+                    "off",
+                    "Auto",
+                    "auto",
+                    "0",
+                    "1",
+                    "2",
+                ]
+            )
         },
-        "async_set_record_mode"
+        "async_set_record_mode",
     )
 
     # Exposes a service to enable setting the cameras infrared light to Auto, Manual, and Off along with the brightness
@@ -306,10 +352,14 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         platform.async_register_entity_service(
             SERVICE_SET_INFRARED_MODE,
             {
-                vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto"]),
-                vol.Optional('brightness', default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+                vol.Required("mode"): vol.In(
+                    ["On", "on", "Off", "off", "Auto", "auto"]
+                ),
+                vol.Optional("brightness", default=100): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=100)
+                ),
             },
-            "async_set_infrared_mode"
+            "async_set_infrared_mode",
         )
 
     # The light entity can only say on or off. Off is not the same as automatic,
@@ -318,41 +368,65 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         platform.async_register_entity_service(
             SERVICE_SET_ILLUMINATOR_MODE,
             {
-                vol.Required("mode"): vol.In(["On", "on", "Off", "off", "Auto", "auto"]),
-                vol.Optional('brightness', default=100): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+                vol.Required("mode"): vol.In(
+                    ["On", "on", "Off", "off", "Auto", "auto"]
+                ),
+                vol.Optional("brightness", default=100): vol.All(
+                    vol.Coerce(int), vol.Range(min=0, max=100)
+                ),
             },
-            "async_set_illuminator_mode"
+            "async_set_illuminator_mode",
         )
 
     platform.async_register_entity_service(
         SERVICE_PTZ_MOVE,
         {
-            vol.Required('direction'): vol.In(sorted(PTZ_MOVE_CODES)),
-            vol.Optional('speed', default=4):
-                vol.All(vol.Coerce(int), vol.Range(min=1, max=8)),
-            vol.Optional('duration', default=0.5):
-                vol.All(vol.Coerce(float), vol.Range(min=0.1, max=10)),
+            vol.Required("direction"): vol.In(sorted(PTZ_MOVE_CODES)),
+            vol.Optional("speed", default=4): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=8)
+            ),
+            vol.Optional("duration", default=0.5): vol.All(
+                vol.Coerce(float), vol.Range(min=0.1, max=10)
+            ),
         },
-        "async_ptz_move"
+        "async_ptz_move",
     )
 
     platform.async_register_entity_service(
         SERVICE_GET_OVERLAY_TEXT,
         {
-            vol.Optional('group', default=0):
-                vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+            vol.Optional("group", default=0): vol.All(
+                vol.Coerce(int), vol.Range(min=0, max=100)
+            ),
         },
         "async_get_overlay_text",
         supports_response=SupportsResponse.ONLY,
     )
 
     platform.async_register_entity_service(
+        SERVICE_GET_CHANNEL_TITLE,
+        {},
+        "async_get_channel_title",
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_GET_CONFIG,
+        {vol.Required("name"): vol.All(str, vol.Match(_CONFIG_NAME))},
+        "async_get_config_service",
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    platform.async_register_entity_service(
         SERVICE_GOTO_PRESET_POSITION,
         {
-            vol.Required('position', default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=10)),
+            vol.Required("position", default=1): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=10)
+            ),
         },
-        "async_goto_preset_position"
+        "async_goto_preset_position",
     )
+
 
 def rtsp_stream_source(url: str, disable_backchannel: bool) -> str:
     """The RTSP URL handed to Home Assistant's stream consumers.
@@ -371,9 +445,15 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     """An implementation of a Dahua IP camera."""
 
     def __init__(
-        self, coordinator: DahuaDataUpdateCoordinator, stream_index: int, config_entry,
-        *, logical_channel: int | None = None, media_channel: int | None = None,
-        display_name: str | None = None, unique_suffix: str | None = None,
+        self,
+        coordinator: DahuaDataUpdateCoordinator,
+        stream_index: int,
+        config_entry,
+        *,
+        logical_channel: int | None = None,
+        media_channel: int | None = None,
+        display_name: str | None = None,
+        unique_suffix: str | None = None,
     ):
         """Initialize the Dahua camera."""
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
@@ -386,9 +466,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             coordinator.get_channel_number() if media_channel is None else media_channel
         )
         self._coordinator = coordinator
-        self._name = (
-            display_name if display_name else stream_name
-        )
+        self._name = display_name if display_name else stream_name
         suffix = unique_suffix or stream_name
         self._unique_id = coordinator.get_serial_number() + "_" + suffix
         self._stream_index = stream_index
@@ -426,7 +504,9 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """
         return self._stream_index == 0
 
-    async def async_camera_image(self, width: int | None = None, height: int | None = None):
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ):
         """Return a still image response from the camera, or None if it refused.
 
         These devices refuse a snapshot under load, and a recorder refuses more
@@ -444,7 +524,9 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         because a bug in here should not be quietly turned into a blank frame.
         """
         try:
-            return await self._coordinator.client.async_get_snapshot(self._channel_number)
+            return await self._coordinator.client.async_get_snapshot(
+                self._channel_number
+            )
         except (ClientError, TimeoutError, asyncio.TimeoutError) as error:
             _LOGGER.debug("%s: could not fetch a snapshot: %s", self._name, error)
             return None
@@ -470,7 +552,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             await self._coordinator.client.enable_motion_detection(channel, True)
             await self._coordinator.async_refresh()
         except TypeError:
-            _LOGGER.debug("Failed enabling motion detection on '%s'. Is it supported by the device?", self._name)
+            _LOGGER.debug(
+                "Failed enabling motion detection on '%s'. Is it supported by the device?",
+                self._name,
+            )
 
     async def async_disable_motion_detection(self):
         """Disable motion detection."""
@@ -479,7 +564,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             await self._coordinator.client.enable_motion_detection(channel, False)
             await self._coordinator.async_refresh()
         except TypeError:
-            _LOGGER.debug("Failed disabling motion detection on '%s'. Is it supported by the device?", self._name)
+            _LOGGER.debug(
+                "Failed disabling motion detection on '%s'. Is it supported by the device?",
+                self._name,
+            )
 
     @property
     def name(self):
@@ -487,10 +575,15 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         return self._name
 
     async def async_set_infrared_mode(self, mode: str, brightness: int):
-        """ Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness """
+        """Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness"""
         channel = self._logical_channel
         await self._coordinator.client.async_set_lighting_v1_mode(
-            channel, mode, brightness, self._coordinator.get_infrared_profile())
+            channel,
+            mode,
+            brightness,
+            self._coordinator.get_infrared_profile(),
+            self._coordinator.get_infrared_bank(),
+        )
         await self._coordinator.async_refresh()
 
     async def async_set_illuminator_mode(self, mode: str, brightness: int):
@@ -501,7 +594,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """
         channel = self._logical_channel
         await self._coordinator.client.async_set_lighting_v2_mode(
-            channel, mode, brightness, self._coordinator.get_profile_mode(),
+            channel,
+            mode,
+            brightness,
+            self._coordinator.get_profile_mode(),
             self._coordinator.get_illuminator_index(),
             self._coordinator.get_illuminator_bank(),
         )
@@ -517,7 +613,8 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """
         code = PTZ_MOVE_CODES[direction]
         await self._coordinator.client.async_ptz_move(
-            self._channel_number, code, speed, duration)
+            self._channel_number, code, speed, duration
+        )
         await self._coordinator.async_refresh()
 
     async def async_goto_preset_position(self, position: int):
@@ -530,41 +627,47 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         await self._coordinator.async_refresh()
 
     async def async_set_video_in_day_night_mode(self, config_type: str, mode: str):
-        """ Handles the service call from SERVICE_SET_DAY_NIGHT_MODE to set the day/night color mode """
+        """Handles the service call from SERVICE_SET_DAY_NIGHT_MODE to set the day/night color mode"""
         channel = self._logical_channel
-        await self._coordinator.client.async_set_video_in_day_night_mode(channel, config_type, mode)
+        await self._coordinator.client.async_set_video_in_day_night_mode(
+            channel, config_type, mode
+        )
         await self._coordinator.async_refresh()
 
     async def async_reboot(self):
-        """ Handles the service call from SERVICE_REBOOT to reboot the device """
+        """Handles the service call from SERVICE_REBOOT to reboot the device"""
         await self._coordinator.client.reboot()
 
     async def async_set_record_mode(self, mode: str):
-        """ Handles the service call from SERVICE_SET_RECORD_MODE to set the record mode """
+        """Handles the service call from SERVICE_SET_RECORD_MODE to set the record mode"""
         channel = self._logical_channel
         await self._coordinator.client.async_set_record_mode(channel, mode)
         await self._coordinator.async_refresh()
 
     async def async_set_video_profile_mode(self, mode: str):
-        """ Handles the service call from SERVICE_SET_VIDEO_PROFILE_MODE to set profile mode to day/night """
+        """Handles the service call from SERVICE_SET_VIDEO_PROFILE_MODE to set profile mode to day/night"""
         channel = self._logical_channel
         model = self._coordinator.get_model()
         # Some NVRs like the Lorex DHI-NVR4108HS-8P-4KS2 change the day/night mode through a switch
-        if any(substring in model for substring in ['NVR4108HS', 'IPC-Color4K']):
+        if any(substring in model for substring in ["NVR4108HS", "IPC-Color4K"]):
             await self._coordinator.client.async_set_night_switch_mode(channel, mode)
         else:
-            # Say so before writing, rather than leaving #458 as "Unknown error".
-            # VideoInMode comes in three shapes and Config[0] only selects the profile
-            # in one of them, so on the other two this write is either refused by the
-            # device or accepted and ignored. The shape is read per channel from the
-            # last poll, because one recorder carries all three at once.
+            # VideoInMode comes in three shapes, and this writes Config[0], which only
+            # selects the profile in the ordinary one. On the IL (ConfigEx) and general
+            # (Config[0]=2) shapes the write does not switch the profile: the #458
+            # reporter's camera threw on it, and a recorder measured here accepted it
+            # with 200 and rendered from the profile it was already on. Either way the
+            # service cannot do what it says, so it refuses with a reason rather than
+            # firing a write that errors or is silently ignored. The shape is read per
+            # channel from the last poll, because one recorder carries all three at once.
             if not self._coordinator.video_profile_mode_is_writable():
-                _LOGGER.warning(
-                    "Setting the video profile on %s channel %s may not take effect: "
-                    "its VideoInMode is the %s shape, and this writes Config[0], which "
-                    "only selects the profile in the ordinary shape. See issue #458",
-                    self._coordinator.get_device_name(), channel,
-                    self._coordinator.describe_video_profile_shape(),
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="video_profile_not_switchable",
+                    translation_placeholders={
+                        "device": self._coordinator.get_device_name(),
+                        "shape": self._coordinator.describe_video_profile_shape(),
+                    },
                 )
             await self._coordinator.client.async_set_video_profile_mode(channel, mode)
         # The profile decides which Lighting row every light command writes to,
@@ -574,51 +677,55 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         await self._coordinator.async_refresh()
 
     async def async_adjustfocus(self, focus: str, zoom: str):
-        """ Handles the service call from SERVICE_SET_INFRARED_MODE to set zoom and focus """
+        """Handles the service call from SERVICE_SET_INFRARED_MODE to set zoom and focus"""
         await self._coordinator.client.async_adjustfocus_v1(focus, zoom)
         await self._coordinator.async_refresh()
 
     async def async_set_privacy_masking(self, index: int, enabled: bool):
-        """ Handles the service call from SERVICE_SET_PRIVACY_MASKING to control the privacy masking """
+        """Handles the service call from SERVICE_SET_PRIVACY_MASKING to control the privacy masking"""
         await self._coordinator.client.async_setprivacymask(index, enabled)
 
     async def async_set_privacy_mode(self, enabled: bool):
-        """ Handles the service call from SERVICE_SET_PRIVACY_MODE to control the lens privacy mask """
+        """Handles the service call from SERVICE_SET_PRIVACY_MODE to control the lens privacy mask"""
         await self._coordinator.client.async_set_privacy_mode(enabled)
         await self._coordinator.async_refresh()
 
     async def async_set_enable_channel_title(self, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE """
+        """Handles the service call from SERVICE_ENABLE_CHANNEL_TITLE"""
         channel = self._logical_channel
         await self._coordinator.client.async_enable_channel_title(channel, enabled)
 
     async def async_set_enable_time_overlay(self, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_TIME_OVERLAY  """
+        """Handles the service call from SERVICE_ENABLE_TIME_OVERLAY"""
         channel = self._logical_channel
         await self._coordinator.client.async_enable_time_overlay(channel, enabled)
 
     async def async_set_enable_text_overlay(self, group: int, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_TEXT_OVERLAY """
+        """Handles the service call from SERVICE_ENABLE_TEXT_OVERLAY"""
         channel = self._logical_channel
-        await self._coordinator.client.async_enable_text_overlay(channel, group, enabled)
+        await self._coordinator.client.async_enable_text_overlay(
+            channel, group, enabled
+        )
 
     async def async_set_enable_custom_overlay(self, group: int, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_CUSTOM_OVERLAY """
+        """Handles the service call from SERVICE_ENABLE_CUSTOM_OVERLAY"""
         channel = self._logical_channel
-        await self._coordinator.client.async_enable_custom_overlay(channel, group, enabled)
+        await self._coordinator.client.async_enable_custom_overlay(
+            channel, group, enabled
+        )
 
     async def async_set_enable_all_ivs_rules(self, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_ALL_IVS_RULES """
+        """Handles the service call from SERVICE_ENABLE_ALL_IVS_RULES"""
         channel = self._logical_channel
         await self._coordinator.client.async_set_all_ivs_rules(channel, enabled)
 
     async def async_enable_ivs_rule(self, index: int, enabled: bool):
-        """ Handles the service call from SERVICE_ENABLE_IVS_RULE """
+        """Handles the service call from SERVICE_ENABLE_IVS_RULE"""
         channel = self._logical_channel
         await self._coordinator.client.async_set_ivs_rule(channel, index, enabled)
 
     async def async_vto_open_door(self, door_id: int):
-        """ Handles the service call from SERVICE_VTO_OPEN_DOOR """
+        """Handles the service call from SERVICE_VTO_OPEN_DOOR"""
         # The service is offered on every camera entity, and the Open Door
         # button is only created on a doorbell; aimed at anything else the CGI
         # endpoint is not there and the user gets a raw HTTP error. The sibling
@@ -630,12 +737,13 @@ class DahuaCamera(DahuaBaseEntity, Camera):
                 translation_domain=DOMAIN,
                 translation_key="open_door_needs_a_doorbell",
                 translation_placeholders={
-                    "device": self._coordinator.get_device_name()},
+                    "device": self._coordinator.get_device_name()
+                },
             )
         await self._coordinator.client.async_access_control_open_door(door_id)
 
     async def async_vto_cancel_call(self):
-        """ Handles the service call from SERVICE_VTO_CANCEL_CALL to cancel VTO calls """
+        """Handles the service call from SERVICE_VTO_CANCEL_CALL to cancel VTO calls"""
         # The service is offered on every camera entity, and only a doorbell
         # ever has a VTO client: on anything else this is None, and so was the
         # error -- AttributeError on NoneType, with a traceback and no clue that
@@ -647,7 +755,8 @@ class DahuaCamera(DahuaBaseEntity, Camera):
                 translation_domain=DOMAIN,
                 translation_key="no_vto_connection_for_service",
                 translation_placeholders={
-                    "device": self._coordinator.get_device_name()},
+                    "device": self._coordinator.get_device_name()
+                },
             )
         try:
             await vto_client.cancel_call()
@@ -658,10 +767,38 @@ class DahuaCamera(DahuaBaseEntity, Camera):
                 translation_placeholders={"reason": str(refused)},
             ) from refused
 
+    async def async_vto_call(self, room: str):
+        """Handles the service call from SERVICE_VTO_CALL to ring a room from a VTO"""
+        # Offered on every camera entity, like open door, and for the same reason
+        # it says so when aimed at something that is not a doorbell rather than
+        # leaving the user an RPC2 refusal from a camera that has no VideoTalkPhone.
+        is_doorbell = getattr(self._coordinator, "is_doorbell", None)
+        if is_doorbell is not None and not is_doorbell():
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="vto_call_needs_a_doorbell",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name()
+                },
+            )
+        try:
+            await self._coordinator.client.async_vto_call(room)
+        except Rpc2MethodRefused as refused:
+            # The device's own reason, code and message, is the useful part: a
+            # room it does not know and a login it will not take read the same
+            # from here otherwise.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="vto_call_refused",
+                translation_placeholders={"room": room, "reason": str(refused)},
+            ) from refused
+
     async def async_set_service_set_channel_title(self, text1: str, text2: str):
-        """ Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night """
+        """Handles the service call from SERVICE_SET_CHANNEL_TITLE to set profile mode to day/night"""
         channel = self._logical_channel
-        await self._coordinator.client.async_set_service_set_channel_title(channel, text1, text2)
+        await self._coordinator.client.async_set_service_set_channel_title(
+            channel, text1, text2
+        )
 
     async def async_get_overlay_text(self, group: int) -> dict:
         """Read back the overlay text this camera is showing.
@@ -679,21 +816,67 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         channel = self._logical_channel
         data = await self._coordinator.client.async_get_video_widget()
         return {
-            "text_overlay": dahua_utils.parse_overlay_lines(data.get(
-                "table.VideoWidget[{0}].CustomTitle[{1}].Text".format(
-                    channel, group))),
-            "custom_overlay": dahua_utils.parse_overlay_lines(data.get(
-                "table.VideoWidget[{0}].UserDefinedTitle[{1}].Text".format(
-                    channel, group))),
+            "text_overlay": dahua_utils.parse_overlay_lines(
+                data.get(
+                    "table.VideoWidget[{0}].CustomTitle[{1}].Text".format(
+                        channel, group
+                    )
+                )
+            ),
+            "custom_overlay": dahua_utils.parse_overlay_lines(
+                data.get(
+                    "table.VideoWidget[{0}].UserDefinedTitle[{1}].Text".format(
+                        channel, group
+                    )
+                )
+            ),
         }
 
-    async def async_set_service_set_text_overlay(self, group: int, text1: str, text2: str, text3: str,
-                                                 text4: str):
-        """ Handles the service call from SERVICE_SET_TEXT_OVERLAY to set profile mode to day/night """
-        channel = self._logical_channel
-        await self._coordinator.client.async_set_service_set_text_overlay(channel, group, text1, text2, text3, text4)
+    async def async_get_channel_title(self) -> dict:
+        """Read back this channel's title overlay.
 
-    async def async_set_service_set_custom_overlay(self, group: int, text1: str, text2: str):
-        """ Handles the service call from SERVICE_SET_CUSTOM_OVERLAY to set profile mode to day/night """
+        #980, the companion to set_channel_title the way get_overlay_text is to
+        the overlay setters. A separate service rather than another key on
+        get_overlay_text so #461's response shape does not change, and because
+        the title has no overlay group to pass. Reads the same ChannelTitle
+        table the add flow already reads, and returns "" rather than null for a
+        channel the device does not list, so a template can use it directly.
+        """
+        titles = dahua_utils.parse_channel_titles(
+            await self._coordinator.client.async_get_config("ChannelTitle")
+        )
+        return {"channel_title": titles.get(self._logical_channel, "")}
+
+    async def async_get_config_service(self, name: str) -> dict:
+        """Read any configuration table from the device, for diagnostics.
+
+        A deliberate read-only escape hatch: this integration wraps the common
+        config tables, but a device has many model-specific ones it does not,
+        and inspecting them meant enabling debug logging. getConfig cannot change
+        the device, so unlike an arbitrary-CGI passthrough this cannot be used to
+        write, which matters here -- several config writes on these devices are
+        irreversible or accepted-but-ignored.
+
+        The name is validated by the service schema (_CONFIG_NAME) before this
+        runs, because it goes straight into the getConfig URL and an unchecked
+        name could append another CGI parameter.
+        """
+        return {"config": await self._coordinator.client.async_get_config(name)}
+
+    async def async_set_service_set_text_overlay(
+        self, group: int, text1: str, text2: str, text3: str, text4: str
+    ):
+        """Handles the service call from SERVICE_SET_TEXT_OVERLAY to set profile mode to day/night"""
         channel = self._logical_channel
-        await self._coordinator.client.async_set_service_set_custom_overlay(channel, group, text1, text2)
+        await self._coordinator.client.async_set_service_set_text_overlay(
+            channel, group, text1, text2, text3, text4
+        )
+
+    async def async_set_service_set_custom_overlay(
+        self, group: int, text1: str, text2: str
+    ):
+        """Handles the service call from SERVICE_SET_CUSTOM_OVERLAY to set profile mode to day/night"""
+        channel = self._logical_channel
+        await self._coordinator.client.async_set_service_set_custom_overlay(
+            channel, group, text1, text2
+        )

@@ -10,6 +10,7 @@ Nothing here talks to the device. It only reports state the integration already
 holds, so it is safe to pull when the device is unreachable, which is exactly
 when someone will pull it.
 """
+
 import time
 from hashlib import sha256
 from typing import Any, Callable, Mapping
@@ -158,7 +159,8 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         # an HTTP error, and until now nothing recorded which call or why
         # (#583, #728, #767).
         "identity_fallbacks": dict(
-            getattr(coordinator.client, "_identity_fallbacks", {}) or {}),
+            getattr(coordinator.client, "_identity_fallbacks", {}) or {}
+        ),
         "channel_index": _safe(coordinator.get_channel),
         "channel_number": _safe(coordinator.get_channel_number),
         "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
@@ -261,7 +263,8 @@ def _client_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         # Basic challenge, and until #733 that read as a wrong password (#583).
         # A name, never a credential.
         "auth_scheme": (getattr(client, "_digest_state", None) or {}).get(
-            "scheme", "digest"),
+            "scheme", "digest"
+        ),
         "rpc2_session_active": getattr(client, "_rpc2_session_instance", None)
         is not None,
         "rtsp_url_shape": (
@@ -317,7 +320,8 @@ def _stream_block(coordinator) -> dict[str, Any]:
         # described a request the device never received, which is the field
         # somebody would have to reconcile against a packet capture to doubt.
         "subscribed_as": (
-            ["All"] if getattr(stream, "_using_all_events", False)
+            ["All"]
+            if getattr(stream, "_using_all_events", False)
             else sorted(getattr(stream, "_events", ()) or ())
         ),
         "received_data": bool(getattr(stream, "_received_data", False)),
@@ -454,23 +458,33 @@ def _recent_events_block(coordinator, now: int) -> list[dict[str, Any]]:
     out = []
     for row in remembered:
         captured = row.get("seconds_ago_at_capture") or now
-        out.append({
-            "seconds_ago": max(0, now - captured),
-            "event": _safe(lambda: dahua_utils.summarise_event(row.get("event")), {}),
-        })
+        out.append(
+            {
+                "seconds_ago": max(0, now - captured),
+                "event": _safe(
+                    lambda: dahua_utils.summarise_event(row.get("event")), {}
+                ),
+            }
+        )
     return out
 
 
-def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
+def _host_block(
+    hass: HomeAssistant, coordinator, config_entry: ConfigEntry
+) -> dict[str, Any]:
     """Per-host contention, which is invisible from a single entry today.
 
     An NVR gets one config entry per channel, so a report titled "my camera
     keeps dropping out" is often the sixth of eleven entries against one host.
     """
     from . import _HOST_CONNECTORS
-    from .client import (_HOST_LIMITS, _HOST_RPC2, _HOST_RPC2_UNAVAILABLE,
-                         _RPC2_TABLE_UNAVAILABLE,
-                         MAX_CONCURRENT_REQUESTS_PER_HOST)
+    from .client import (
+        _HOST_LIMITS,
+        _HOST_RPC2,
+        _HOST_RPC2_UNAVAILABLE,
+        _RPC2_TABLE_UNAVAILABLE,
+        MAX_CONCURRENT_REQUESTS_PER_HOST,
+    )
 
     address = config_entry.data.get(CONF_ADDRESS)
     client_address = getattr(coordinator.client, "_address", address)
@@ -492,7 +506,9 @@ def _host_block(hass: HomeAssistant, coordinator, config_entry: ConfigEntry) -> 
         "rpc2_session_open": rpc2 is not None,
         "rpc2_session_refcount": rpc2.refs if rpc2 is not None else 0,
         "rpc2_keepalive_running": bool(
-            rpc2 is not None and rpc2.keepalive is not None and not rpc2.keepalive.done()
+            rpc2 is not None
+            and rpc2.keepalive is not None
+            and not rpc2.keepalive.done()
         ),
         "rpc2_ruled_out_for_host": rpc2_key in _HOST_RPC2_UNAVAILABLE,
         # Which config tables this device answered and declined. Recorded
@@ -554,7 +570,9 @@ def _ivs_channel_block(coordinator) -> dict:
     """Rule discovery and unmatched events for one channel."""
     return {
         "discovery": getattr(coordinator, "_ivs_discovery_diagnostics", {}),
-        "unmatched_event_counts": dict(getattr(coordinator, "_ivs_unmatched_counts", {})),
+        "unmatched_event_counts": dict(
+            getattr(coordinator, "_ivs_unmatched_counts", {})
+        ),
         "last_unmatched_event": getattr(coordinator, "_ivs_last_unmatched", None),
     }
 
@@ -582,7 +600,9 @@ async def async_get_config_entry_diagnostics(
     trade somebody's muscle memory for elegance. For a single camera, which is
     most installs, the two are the same thing.
     """
-    coordinators = [c for _channel, c in sorted(entry_coordinators(config_entry).items())]
+    coordinators = [
+        c for _channel, c in sorted(entry_coordinators(config_entry).items())
+    ]
     if not coordinators:
         # Asked for an entry that failed to set up. Say so rather than raising,
         # because this is the dump somebody attaches to explain exactly that.
@@ -591,7 +611,7 @@ async def async_get_config_entry_diagnostics(
             "channels": [],
             "ivs": {},
             "note": "this entry has no channels set up, so there is nothing to "
-                    "report about the device",
+            "report about the device",
             "active_issues": _active_issues(hass),
         }
 

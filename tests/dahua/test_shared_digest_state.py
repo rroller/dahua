@@ -12,6 +12,7 @@ from custom_components.dahua.client import (
 
 from .test_digest import PASSWORD, USER, FakeSession, nc_of
 
+
 # Each client reads a *different* URL. Reads are shared per host by URL, so
 # eleven clients asking the same question would collapse to one request and
 # these tests would be measuring the read cache rather than the digest state.
@@ -41,6 +42,7 @@ def _probes(session):
 
 # --- the burst this exists to remove ---------------------------------------
 
+
 async def test_the_second_entry_does_not_re_probe():
     session = FakeSession()
     await _client(session).get(_url(0))
@@ -63,9 +65,9 @@ async def test_the_cold_start_burst_does_not_grow_with_the_channel_count():
 
     await asyncio.gather(*(c.get(_url(i)) for i, c in enumerate(clients)))
 
-    assert len(_probes(session)) <= MAX_CONCURRENT_REQUESTS_PER_HOST, (
-        "%d of 11 entries challenged the device" % len(_probes(session))
-    )
+    assert (
+        len(_probes(session)) <= MAX_CONCURRENT_REQUESTS_PER_HOST
+    ), "%d of 11 entries challenged the device" % len(_probes(session))
 
 
 async def test_thirty_entries_cost_no_more_probes_than_eleven():
@@ -92,6 +94,7 @@ async def test_every_caller_still_gets_its_answer():
 
 # --- what must not be shared ------------------------------------------------
 
+
 async def test_two_hosts_do_not_share_a_challenge():
     """A challenge is the device's, and a nonce from one is nothing to another."""
     a, b = _client(FakeSession()), _client(FakeSession(), "10.0.0.2")
@@ -116,6 +119,7 @@ async def test_a_trailing_slash_is_the_same_host():
 
 
 # --- the count, which is why the whole state is shared and not just the nonce
+
 
 async def test_the_count_keeps_rising_across_entries():
     """Digest asks for a strictly increasing nc per nonce. Eleven clients each
@@ -143,6 +147,7 @@ async def test_a_strict_device_accepts_every_entry():
 
 # --- recovery ---------------------------------------------------------------
 
+
 async def test_a_rotated_nonce_is_picked_up_once_for_the_whole_host():
     """When the device moves on, one entry absorbs the stale 401, not eleven."""
     session = FakeSession()
@@ -155,13 +160,13 @@ async def test_a_rotated_nonce_is_picked_up_once_for_the_whole_host():
     await asyncio.gather(*(c.get(_url(i)) for i, c in enumerate(clients)))
 
     after = session.requests[already_sent:]
-    stale = [r for r in after
-             if "nonce-1" in r["headers"].get("AUTHORIZATION", "")]
-    assert len(stale) <= MAX_CONCURRENT_REQUESTS_PER_HOST, (
-        "%d of 11 entries each rediscovered the new nonce" % len(stale)
-    )
-    assert all("nonce-2" in r["headers"].get("AUTHORIZATION", "")
-               for r in after[-11:]), "the host did not settle on the new nonce"
+    stale = [r for r in after if "nonce-1" in r["headers"].get("AUTHORIZATION", "")]
+    assert (
+        len(stale) <= MAX_CONCURRENT_REQUESTS_PER_HOST
+    ), "%d of 11 entries each rediscovered the new nonce" % len(stale)
+    assert all(
+        "nonce-2" in r["headers"].get("AUTHORIZATION", "") for r in after[-11:]
+    ), "the host did not settle on the new nonce"
 
 
 async def test_a_wrong_password_still_gives_up():

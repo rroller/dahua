@@ -39,8 +39,9 @@ async def test_cancelling_on_a_camera_says_what_is_wrong():
         await _camera(None).async_vto_cancel_call()
 
     assert err.value.translation_key == "no_vto_connection_for_service"
-    assert err.value.translation_placeholders == {"device": "Front Door"}, \
-        "the message would not name the entity"
+    assert err.value.translation_placeholders == {
+        "device": "Front Door"
+    }, "the message would not name the entity"
 
 
 async def test_it_is_not_an_attribute_error():
@@ -63,6 +64,7 @@ async def test_a_connected_doorbell_still_cancels():
 
 
 # --- the client the service is handed -----------------------------------------
+
 
 def _coordinator(vto_client):
     """A coordinator with only what get_vto_client reads."""
@@ -106,4 +108,3 @@ async def test_cancelling_between_reconnects_reads_as_an_error_not_a_crash():
 
     with pytest.raises(HomeAssistantError):
         await camera.async_vto_cancel_call()
-

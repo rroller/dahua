@@ -22,8 +22,7 @@ from custom_components.dahua.client import DEFAULT_EXTRA_STREAMS, DahuaClient
 
 
 def _error(status):
-    return aiohttp.ClientResponseError(
-        request_info=None, history=(), status=status)
+    return aiohttp.ClientResponseError(request_info=None, history=(), status=status)
 
 
 def _client(answer=None, password="p"):
@@ -47,6 +46,7 @@ def _client(answer=None, password="p"):
 
 
 # --- how many sub-streams a device has --------------------------------------
+
 
 async def test_the_stream_count_is_what_the_device_reports():
     client = _client({"table.MaxExtraStream": "2"})
@@ -88,6 +88,7 @@ async def test_an_absent_key_falls_back():
 
 # --- what each stream is called ---------------------------------------------
 
+
 def test_the_main_stream_is_called_main():
     assert DahuaClient.to_stream_name(0) == "Main"
 
@@ -106,11 +107,13 @@ def test_the_later_sub_streams_are_numbered(index, name):
 
 # --- who the device says it is ----------------------------------------------
 
+
 async def test_the_machine_name_is_passed_through():
     client = _client({"table.General.MachineName": "Cam4"})
 
     assert await client.async_get_machine_name() == {
-        "table.General.MachineName": "Cam4"}
+        "table.General.MachineName": "Cam4"
+    }
     assert client.identity_derived_from_credentials is False
 
 
@@ -169,13 +172,15 @@ async def test_changing_the_password_changes_the_identity():
 # Tested as it behaves rather than as it reads. See the PR for the consequence:
 # a 401 on this read is swallowed as "this camera has no lights".
 
+
 async def test_the_lighting_table_is_read_for_the_channel_and_profile():
     client = _client({"table.Lighting[0][1].Mode": "Auto"})
 
     await client.async_get_config_lighting(0, 1)
 
     assert client.asked == [
-        "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting[0][1]"]
+        "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting[0][1]"
+    ]
 
 
 async def test_a_device_without_a_lighting_table_reads_as_empty():

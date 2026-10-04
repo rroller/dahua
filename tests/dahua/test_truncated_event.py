@@ -25,17 +25,21 @@ from custom_components.dahua.dahua_utils import parse_event
 
 
 def _block(payload):
-    return ("--myboundary\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: 0\r\n\r\n"
-            "Code=CrossLineDetection;action=Start;index=1;data=" + payload + "\r\n")
+    return (
+        "--myboundary\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: 0\r\n\r\n"
+        "Code=CrossLineDetection;action=Start;index=1;data=" + payload + "\r\n"
+    )
 
 
-FULL = json.dumps({"Name": "Brievenbus", "RuleID": 5,
-                   "Object": {"ObjectType": "Human"}})
+FULL = json.dumps(
+    {"Name": "Brievenbus", "RuleID": 5, "Object": {"ObjectType": "Human"}}
+)
 
 
 # --- the good case still works ----------------------------------------------
+
 
 def test_a_whole_payload_is_parsed_into_a_dict():
     event = parse_event(_block(FULL))[0]
@@ -47,9 +51,10 @@ def test_a_whole_payload_is_parsed_into_a_dict():
 
 # --- and a truncated one no longer takes the stream with it -----------------
 
+
 def test_a_truncated_payload_is_left_as_text_not_dropped():
     """#475's own shape: the JSON stops partway through."""
-    event = parse_event(_block(FULL[:len(FULL) // 2]))[0]
+    event = parse_event(_block(FULL[: len(FULL) // 2]))[0]
 
     assert event["Code"] == "CrossLineDetection"
     assert isinstance(event["data"], str), "the raw text is kept, not discarded"
@@ -57,7 +62,7 @@ def test_a_truncated_payload_is_left_as_text_not_dropped():
 
 def test_reading_a_truncated_payload_the_way_the_handler_does():
     """What translate_event_code does, against what parse_event produced."""
-    event = parse_event(_block(FULL[:len(FULL) // 2]))[0]
+    event = parse_event(_block(FULL[: len(FULL) // 2]))[0]
 
     data = event.get("data", event.get("Data", {}))
     if not isinstance(data, dict):
@@ -69,7 +74,7 @@ def test_reading_a_truncated_payload_the_way_the_handler_does():
 
 def test_the_unguarded_version_is_what_raised():
     """Kept so the reason for the isinstance check cannot be optimised away."""
-    event = parse_event(_block(FULL[:len(FULL) // 2]))[0]
+    event = parse_event(_block(FULL[: len(FULL) // 2]))[0]
     data = event.get("data", event.get("Data", {}))
 
     try:

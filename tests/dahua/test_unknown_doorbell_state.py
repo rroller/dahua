@@ -15,6 +15,7 @@ What must not change: the state is still treated as not-ringing. This adds
 visibility, not new behaviour, because inventing a ring from a state nobody has
 identified would raise false presses on every device that reports it.
 """
+
 from types import SimpleNamespace
 
 import pytest
@@ -39,6 +40,7 @@ def _complaints(caplog):
 
 
 # --- the gap ----------------------------------------------------------------
+
 
 def test_an_unknown_state_is_reported(caplog):
     c = _coordinator()
@@ -70,6 +72,7 @@ def test_a_state_that_is_not_a_number_is_still_reported(caplog):
 
 # --- not once per ring ------------------------------------------------------
 
+
 def test_the_same_state_is_reported_only_once(caplog):
     """A doorbell reports its state on every call; a warning per ring would be
     worse than the bug."""
@@ -91,6 +94,7 @@ def test_a_different_state_is_reported_separately(caplog):
 
 
 # --- what must stay quiet ---------------------------------------------------
+
 
 def test_idle_is_not_worth_reporting(caplog):
     """0 is how a call normally ends. Complaining about it would fire on
@@ -145,7 +149,8 @@ def test_a_documented_non_ringing_state_is_not_worth_reporting(state, caplog):
     c._note_unknown_doorbell_state(state, str(state))
 
     assert _complaints(caplog) == [], (
-        "asked about state %d, which is documented" % state)
+        "asked about state %d, which is documented" % state
+    )
 
 
 def test_a_state_nobody_has_identified_is_still_reported(caplog):

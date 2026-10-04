@@ -45,8 +45,9 @@ def _coordinator(**attrs):
 
 def _wire(code="VideoMotion", action="Start", index="3"):
     """One event in the wire format the stream delivers."""
-    return ("Code=%s;action=%s;index=%s;data={}\r\n\r\n"
-            % (code, action, index)).encode("utf-8")
+    return (
+        "Code=%s;action=%s;index=%s;data={}\r\n\r\n" % (code, action, index)
+    ).encode("utf-8")
 
 
 # --- an event reaches only the channel it is for ------------------------------
@@ -119,7 +120,8 @@ def test_undecodable_bytes_do_not_raise():
     coordinator = _coordinator(_channel=0)
 
     coordinator.on_receive(
-        b"Code=VideoMotion;action=Start;index=0;data={}\xff\r\n\r\n", 0)
+        b"Code=VideoMotion;action=Start;index=0;data={}\xff\r\n\r\n", 0
+    )
 
     assert len(coordinator.handled) == 1
 
@@ -165,7 +167,8 @@ def released(monkeypatch):
 
 async def test_both_are_closed_and_the_connector_released(released):
     coordinator = _coordinator(
-        client=_Client(), _session=_Session(), _address="10.0.0.5")
+        client=_Client(), _session=_Session(), _address="10.0.0.5"
+    )
 
     await coordinator._close_session()
 
@@ -178,7 +181,8 @@ async def test_a_client_that_will_not_close_does_not_block_the_session(released)
     """The two are independent. An RPC2 session the device has already dropped is the
     normal case on teardown, and it must not leak the aiohttp session."""
     coordinator = _coordinator(
-        client=_Client(raises=True), _session=_Session(), _address="10.0.0.5")
+        client=_Client(raises=True), _session=_Session(), _address="10.0.0.5"
+    )
 
     await coordinator._close_session()
 
@@ -190,7 +194,8 @@ async def test_a_session_that_raises_on_close_still_releases_the_connector(relea
     """Why the release is in a `finally`. Leaking the connector leaks sockets on every
     reload, and a reload is exactly when this runs."""
     coordinator = _coordinator(
-        client=_Client(), _session=_Session(raises=True), _address="10.0.0.5")
+        client=_Client(), _session=_Session(raises=True), _address="10.0.0.5"
+    )
 
     await coordinator._close_session()
 
@@ -202,8 +207,7 @@ async def test_a_session_that_raises_leaves_the_reference_alone(released):
     so a raising close leaves the old session in place. Pinned so that changing it is
     a deliberate act, since a retry would then call close on it a second time."""
     session = _Session(raises=True)
-    coordinator = _coordinator(
-        client=_Client(), _session=session, _address="10.0.0.5")
+    coordinator = _coordinator(client=_Client(), _session=session, _address="10.0.0.5")
 
     await coordinator._close_session()
 

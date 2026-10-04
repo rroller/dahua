@@ -47,21 +47,22 @@ def _crossline(object_type=None, code="CrossLineDetection", key="data"):
 
 # --- the derived Smart Motion codes -----------------------------------------
 
+
 def test_a_human_reaches_a_smart_motion_sensor():
     """The case every missing-sensor report is about: the user selected
     SmartMotionHuman and nothing else, and the device only ever sends
     CrossLineDetection."""
     coordinator = _coordinator("SmartMotionHuman")
 
-    assert coordinator.translate_event_code(
-        _crossline("Human")) == ["SmartMotionHuman"]
+    assert coordinator.translate_event_code(_crossline("Human")) == ["SmartMotionHuman"]
 
 
 def test_a_vehicle_reaches_its_own_sensor():
     coordinator = _coordinator("SmartMotionVehicle")
 
-    assert coordinator.translate_event_code(
-        _crossline("Vehicle")) == ["SmartMotionVehicle"]
+    assert coordinator.translate_event_code(_crossline("Vehicle")) == [
+        "SmartMotionVehicle"
+    ]
 
 
 def test_both_fire_when_both_are_listened_for():
@@ -70,7 +71,9 @@ def test_both_fire_when_both_are_listened_for():
     coordinator = _coordinator("CrossLineDetection", "SmartMotionHuman")
 
     assert coordinator.translate_event_code(_crossline("Human")) == [
-        "CrossLineDetection", "SmartMotionHuman"]
+        "CrossLineDetection",
+        "SmartMotionHuman",
+    ]
 
 
 def test_a_smart_motion_code_nobody_wants_is_not_added():
@@ -78,15 +81,21 @@ def test_a_smart_motion_code_nobody_wants_is_not_added():
     `_dispatch_event` look up a sensor that does not exist on every event."""
     coordinator = _coordinator("CrossLineDetection")
 
-    assert coordinator.translate_event_code(
-        _crossline("Human")) == ["CrossLineDetection"]
+    assert coordinator.translate_event_code(_crossline("Human")) == [
+        "CrossLineDetection"
+    ]
 
 
-@pytest.mark.parametrize("object_type, derived", [
-    ("Human", "SmartMotionHuman"),
-    ("Vehicle", "SmartMotionVehicle"),
-])
-def test_with_nothing_listening_the_derived_code_is_still_returned(object_type, derived):
+@pytest.mark.parametrize(
+    "object_type, derived",
+    [
+        ("Human", "SmartMotionHuman"),
+        ("Vehicle", "SmartMotionVehicle"),
+    ],
+)
+def test_with_nothing_listening_the_derived_code_is_still_returned(
+    object_type, derived
+):
     """The branch that reads like a bug. Returning the derived code when nothing
     is listening gives the caller something to look up and discard, and is how the
     function avoids returning an empty list.
@@ -97,8 +106,7 @@ def test_with_nothing_listening_the_derived_code_is_still_returned(object_type, 
     """
     coordinator = _coordinator()
 
-    assert coordinator.translate_event_code(
-        _crossline(object_type)) == [derived]
+    assert coordinator.translate_event_code(_crossline(object_type)) == [derived]
 
 
 @pytest.mark.parametrize("object_type", ["Human", "human", "HUMAN"])
@@ -106,8 +114,9 @@ def test_the_object_type_is_matched_case_insensitively(object_type):
     """Firmware disagrees on the casing, and the comparison is against lowercase."""
     coordinator = _coordinator("SmartMotionHuman")
 
-    assert coordinator.translate_event_code(
-        _crossline(object_type)) == ["SmartMotionHuman"]
+    assert coordinator.translate_event_code(_crossline(object_type)) == [
+        "SmartMotionHuman"
+    ]
 
 
 def test_cross_region_translates_the_same_way():
@@ -117,8 +126,8 @@ def test_cross_region_translates_the_same_way():
     coordinator = _coordinator("SmartMotionVehicle")
 
     assert coordinator.translate_event_code(
-        _crossline("Vehicle", code="CrossRegionDetection")) == [
-            "SmartMotionVehicle"]
+        _crossline("Vehicle", code="CrossRegionDetection")
+    ) == ["SmartMotionVehicle"]
 
 
 def test_the_dhip_spelling_of_the_payload_is_read_too():
@@ -126,11 +135,13 @@ def test_the_dhip_spelling_of_the_payload_is_read_too():
     other transport would derive nothing at all if only one were read."""
     coordinator = _coordinator("SmartMotionHuman")
 
-    assert coordinator.translate_event_code(
-        _crossline("Human", key="Data")) == ["SmartMotionHuman"]
+    assert coordinator.translate_event_code(_crossline("Human", key="Data")) == [
+        "SmartMotionHuman"
+    ]
 
 
 # --- payloads that are not what they should be ------------------------------
+
 
 def test_an_event_with_a_null_object_is_not_a_crash():
     """The regression test. `"Object": null` is the key being present and empty,
@@ -140,8 +151,11 @@ def test_an_event_with_a_null_object_is_not_a_crash():
     every one of them rather than a dead stream.
     """
     coordinator = _coordinator("CrossLineDetection")
-    event = {"Code": "CrossLineDetection", "action": "Start",
-             "data": {"Object": None, "RuleId": 1}}
+    event = {
+        "Code": "CrossLineDetection",
+        "action": "Start",
+        "data": {"Object": None, "RuleId": 1},
+    }
 
     assert coordinator.translate_event_code(event) == ["CrossLineDetection"]
 
@@ -160,8 +174,11 @@ def test_a_truncated_payload_does_not_stop_the_dispatch():
     and `.get` on a string raises. A payload we could not read is a payload with no
     ObjectType, not a reason to stop listening."""
     coordinator = _coordinator("CrossLineDetection")
-    event = {"Code": "CrossLineDetection", "action": "Start",
-             "data": '{"Object": {"ObjectT'}
+    event = {
+        "Code": "CrossLineDetection",
+        "action": "Start",
+        "data": '{"Object": {"ObjectT',
+    }
 
     assert coordinator.translate_event_code(event) == ["CrossLineDetection"]
 
@@ -169,8 +186,11 @@ def test_a_truncated_payload_does_not_stop_the_dispatch():
 def test_an_object_type_of_null_is_not_a_crash_either():
     """The same shape one level down."""
     coordinator = _coordinator("CrossLineDetection")
-    event = {"Code": "CrossLineDetection", "action": "Start",
-             "data": {"Object": {"ObjectType": None}}}
+    event = {
+        "Code": "CrossLineDetection",
+        "action": "Start",
+        "data": {"Object": {"ObjectType": None}},
+    }
 
     assert coordinator.translate_event_code(event) == ["CrossLineDetection"]
 
@@ -181,11 +201,13 @@ def test_an_unrecognised_object_type_derives_nothing():
     event."""
     coordinator = _coordinator("CrossLineDetection")
 
-    assert coordinator.translate_event_code(
-        _crossline("Unknown")) == ["CrossLineDetection"]
+    assert coordinator.translate_event_code(_crossline("Unknown")) == [
+        "CrossLineDetection"
+    ]
 
 
 # --- the doorbell codes -----------------------------------------------------
+
 
 def test_a_vto_call_state_becomes_a_doorbell_press():
     coordinator = _coordinator()
@@ -209,7 +231,9 @@ def test_an_unlock_carries_its_own_code_as_well():
     event = {"Code": "BackKeyLight", "Action": "Pulse", "Data": {"State": 8}}
 
     assert coordinator.translate_event_code(event) == [
-        "DoorbellPressed", "DoorUnlocked"]
+        "DoorbellPressed",
+        "DoorUnlocked",
+    ]
 
 
 def test_a_failed_unlock_is_told_apart_from_a_successful_one():
@@ -217,7 +241,9 @@ def test_a_failed_unlock_is_told_apart_from_a_successful_one():
     event = {"Code": "BackKeyLight", "Action": "Pulse", "Data": {"State": 9}}
 
     assert coordinator.translate_event_code(event) == [
-        "DoorbellPressed", "DoorUnlockFailed"]
+        "DoorbellPressed",
+        "DoorUnlockFailed",
+    ]
 
 
 def test_a_call_state_with_nothing_extra_is_just_the_press():
@@ -229,6 +255,7 @@ def test_a_call_state_with_nothing_extra_is_just_the_press():
 
 
 # --- and everything else passes straight through ----------------------------
+
 
 @pytest.mark.parametrize("code", ["VideoMotion", "AlarmLocal", "FaceDetection"])
 def test_an_ordinary_code_is_returned_as_itself(code):

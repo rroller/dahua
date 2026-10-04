@@ -35,8 +35,8 @@ from custom_components.dahua.client import (
 
 SOS = bytes((0xFF, 0xDA))
 EOI = bytes((0xFF, 0xD9))
-QUANTISATION_TABLE = 0xDB      # length-bearing, and not ignorable
-PADDING = bytes((0xFF,))       # legal fill between markers
+QUANTISATION_TABLE = 0xDB  # length-bearing, and not ignorable
+PADDING = bytes((0xFF,))  # legal fill between markers
 
 
 def _segment(marker, payload, declared=None):
@@ -65,6 +65,7 @@ def _jpeg(*segments, scan=bytes((0x01, 0x02, 0x03))):
 
 # --- files that need nothing doing to them ----------------------------------
 
+
 def test_a_consistent_file_is_returned_unchanged():
     """The common case, and it must be exact: the same object back, not a rebuilt
     copy that happens to compare equal."""
@@ -86,6 +87,7 @@ def test_an_empty_answer_is_left_alone():
 
 
 # --- the reported fault -----------------------------------------------------
+
 
 def test_a_comment_that_lies_about_its_length_is_dropped():
     """#575 in miniature. The COM segment declares fewer bytes than it occupies,
@@ -140,6 +142,7 @@ def test_fill_bytes_are_skipped_rather_than_read_as_a_marker():
 
 
 # --- what it refuses to touch -----------------------------------------------
+
 
 def test_a_segment_that_is_not_ignorable_is_never_dropped():
     """A quantisation table is the image. Dropping one to make the header walk

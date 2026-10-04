@@ -80,8 +80,7 @@ def _rpc2_session(answer=None):
     real_client = client_module.DahuaRpc2Client
     real_keepalive = client_module._rpc2_keepalive
     _Rpc2.logins = 0
-    _Rpc2.answer = ({"params": {"keepAliveInterval": 60}}
-                    if answer is None else answer)
+    _Rpc2.answer = {"params": {"keepAliveInterval": 60}} if answer is None else answer
     client_module.DahuaRpc2Client = _Rpc2
     client_module._rpc2_keepalive = _keepalive
     client_module._HOST_RPC2.clear()
@@ -108,6 +107,7 @@ def _client(address=HOST, username="u"):
 
 
 # --- one login for the whole recorder ---------------------------------------
+
 
 async def test_the_first_read_logs_in():
     with _rpc2_session():
@@ -184,6 +184,7 @@ async def test_two_users_on_one_host_do_not_share_a_session():
 
 # --- when the login fails ---------------------------------------------------
 
+
 async def test_a_failed_login_is_raised():
     with _rpc2_session(answer=REFUSED):
         with pytest.raises(RuntimeError):
@@ -233,6 +234,7 @@ async def test_the_retry_after_a_failure_logs_in_again():
 
 # --- the keepalive that holds it open ---------------------------------------
 
+
 async def test_the_keepalive_interval_comes_from_the_device():
     """Minus a margin, so the ping lands before the device's own timeout rather
     than on it."""
@@ -247,7 +249,8 @@ async def test_a_device_that_does_not_say_gets_the_fallback():
         await _client()._shared_rpc2()
 
         assert started == [
-            RPC2_KEEPALIVE_FALLBACK_SECONDS - RPC2_KEEPALIVE_MARGIN_SECONDS]
+            RPC2_KEEPALIVE_FALLBACK_SECONDS - RPC2_KEEPALIVE_MARGIN_SECONDS
+        ]
 
 
 async def test_an_unreadable_interval_gets_the_fallback():
@@ -257,7 +260,8 @@ async def test_an_unreadable_interval_gets_the_fallback():
         await _client()._shared_rpc2()
 
         assert started == [
-            RPC2_KEEPALIVE_FALLBACK_SECONDS - RPC2_KEEPALIVE_MARGIN_SECONDS]
+            RPC2_KEEPALIVE_FALLBACK_SECONDS - RPC2_KEEPALIVE_MARGIN_SECONDS
+        ]
 
 
 async def test_a_very_short_interval_is_floored():

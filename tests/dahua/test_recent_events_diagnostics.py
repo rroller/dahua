@@ -19,6 +19,7 @@ unguarded exception takes every camera on the host down until it reconnects
 (#705, #706), so it only appends to a bounded deque. All the work that could go
 wrong happens when diagnostics is asked for.
 """
+
 from collections import deque
 
 from custom_components.dahua import (
@@ -34,6 +35,7 @@ def _coordinator():
 
 
 # --- the capture -------------------------------------------------------------
+
 
 def test_an_event_is_remembered():
     c = _coordinator()
@@ -100,13 +102,16 @@ def test_an_existing_buffer_is_reused():
 
 # --- what gets published -----------------------------------------------------
 
+
 def test_field_names_survive():
     """The whole point: the question is which field carries the answer."""
-    summary = dahua_utils.summarise_event({
-        "Code": "TrafficJunction",
-        "JunctionDirection": "Obverse",
-        "VehicleDirection": "Head",
-    })
+    summary = dahua_utils.summarise_event(
+        {
+            "Code": "TrafficJunction",
+            "JunctionDirection": "Obverse",
+            "VehicleDirection": "Head",
+        }
+    )
 
     assert sorted(summary) == ["Code", "JunctionDirection", "VehicleDirection"]
     assert summary["JunctionDirection"] == "Obverse"
@@ -121,7 +126,8 @@ def test_a_number_plate_does_not():
 
 def test_a_plate_nested_where_they_actually_arrive_does_not_either():
     summary = dahua_utils.summarise_event(
-        {"data": {"TrafficCar": {"PlateNumber": "AB12CDE", "Category": "Car"}}})
+        {"data": {"TrafficCar": {"PlateNumber": "AB12CDE", "Category": "Car"}}}
+    )
 
     car = summary["data"]["TrafficCar"]
     assert car["PlateNumber"] == "<redacted>"
@@ -129,13 +135,15 @@ def test_a_plate_nested_where_they_actually_arrive_does_not_either():
 
 
 def test_cards_users_and_credentials_do_not():
-    summary = dahua_utils.summarise_event({
-        "CardNo": "0099887766",
-        "UserID": "17",
-        "UserName": "Adrian",
-        "Password": "hunter2",
-        "Token": "abc",
-    })
+    summary = dahua_utils.summarise_event(
+        {
+            "CardNo": "0099887766",
+            "UserID": "17",
+            "UserName": "Adrian",
+            "Password": "hunter2",
+            "Token": "abc",
+        }
+    )
 
     assert set(summary.values()) == {"<redacted>"}
 
@@ -144,9 +152,11 @@ def test_the_underscore_spelling_is_caught_too():
     """The field list is spelled without separators and the lookup strips them,
     so one entry covers a device using either spelling. None of these three has
     an underscored entry of its own."""
-    for field, value in (("raw_plate", "AB12CDE"),
-                         ("card_no", "0099887766"),
-                         ("user_id", "17")):
+    for field, value in (
+        ("raw_plate", "AB12CDE"),
+        ("card_no", "0099887766"),
+        ("user_id", "17"),
+    ):
         assert dahua_utils.summarise_event({field: value})[field] == "<redacted>", field
 
 

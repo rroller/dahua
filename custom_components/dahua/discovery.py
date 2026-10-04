@@ -39,6 +39,7 @@ switched off, so a caller must treat {} as ordinary rather than as a fault.
 Nothing here sends credentials, so it cannot contribute to the login lockout that
 Dahua devices apply to repeated failed authentication.
 """
+
 import asyncio
 import json
 import logging
@@ -72,9 +73,19 @@ PROBE_TIMEOUT_SECONDS = 2.0
 
 # Only these are read out of the reply. The blob carries more, and taking all of it
 # into a config entry would be storing whatever a device felt like sending.
-_WANTED = ("SerialNo", "DeviceType", "DeviceClass", "Vendor", "Manufacturer",
-           "Version", "HttpPort", "Port", "MachineName", "VideoInputChannels",
-           "RemoteVideoInputChannels")
+_WANTED = (
+    "SerialNo",
+    "DeviceType",
+    "DeviceClass",
+    "Vendor",
+    "Manufacturer",
+    "Version",
+    "HttpPort",
+    "Port",
+    "MachineName",
+    "VideoInputChannels",
+    "RemoteVideoInputChannels",
+)
 
 
 def build_probe() -> bytes:
@@ -90,10 +101,12 @@ def build_probe() -> bytes:
     This mirrors the frame the device itself emits instead of relying on tolerance.
     """
     size = len(_PROBE_BODY)
-    header = (struct.pack("<I", _HEADER_SIZE)
-              + _DHIP_MAGIC
-              + bytes(8)
-              + struct.pack("<QQ", size, size))
+    header = (
+        struct.pack("<I", _HEADER_SIZE)
+        + _DHIP_MAGIC
+        + bytes(8)
+        + struct.pack("<QQ", size, size)
+    )
     return header + _PROBE_BODY
 
 
@@ -156,7 +169,8 @@ async def async_probe(address: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> d
     transport = None
     try:
         transport, _protocol = await loop.create_datagram_endpoint(
-            lambda: _ProbeProtocol(future), remote_addr=(address, DISCOVERY_PORT))
+            lambda: _ProbeProtocol(future), remote_addr=(address, DISCOVERY_PORT)
+        )
         transport.sendto(build_probe())
         raw = await asyncio.wait_for(future, timeout)
     except (asyncio.TimeoutError, OSError) as err:
@@ -170,6 +184,9 @@ async def async_probe(address: str, timeout: float = PROBE_TIMEOUT_SECONDS) -> d
             transport.close()
     info = parse_reply(raw)
     if info:
-        _LOGGER.debug("DHDiscover: %s identified itself as %s", address,
-                      info.get("DeviceType") or info.get("SerialNo"))
+        _LOGGER.debug(
+            "DHDiscover: %s identified itself as %s",
+            address,
+            info.get("DeviceType") or info.get("SerialNo"),
+        )
     return info

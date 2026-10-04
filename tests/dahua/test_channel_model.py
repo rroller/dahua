@@ -43,6 +43,7 @@ MINE = {
 
 # --- the recorders that answer -----------------------------------------------
 
+
 def test_the_doorbell_is_named():
     """The whole point: #690's B451AJ, which getSystemInfo cannot see."""
     assert remote_device_model(LOREX, 6) == "B451AJ"
@@ -59,11 +60,14 @@ def test_a_real_model_is_kept_even_where_its_neighbours_are_generic():
 
 def test_the_bracket_spelling_is_accepted_too():
     """Not measured anywhere yet; accepted in case firmware elsewhere uses it."""
-    assert remote_device_model({"table.RemoteDevice[3].DeviceType": "IPC-HDW3849"}, 3) \
+    assert (
+        remote_device_model({"table.RemoteDevice[3].DeviceType": "IPC-HDW3849"}, 3)
         == "IPC-HDW3849"
+    )
 
 
 # --- what must not be mistaken for a model ------------------------------------
+
 
 def test_a_class_of_device_is_not_a_model():
     """My recorder answers these for most channels."""
@@ -78,7 +82,9 @@ def test_an_empty_slot_is_not_a_model():
 def test_every_generic_value_is_rejected_however_it_is_cased():
     for generic in GENERIC_DEVICE_TYPES:
         for spelling in (generic, generic.upper(), generic.title(), " %s " % generic):
-            data = {"table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_2.DeviceType": spelling}
+            data = {
+                "table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_2.DeviceType": spelling
+            }
             assert remote_device_model(data, 2) is None, spelling
 
 
@@ -88,12 +94,15 @@ def test_a_channel_that_is_not_in_the_table_has_no_model():
 
 
 def test_whitespace_around_a_real_model_is_trimmed():
-    data = {"table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_2.DeviceType": "  B451AJ  "}
+    data = {
+        "table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_2.DeviceType": "  B451AJ  "
+    }
 
     assert remote_device_model(data, 2) == "B451AJ"
 
 
 # --- it runs during setup, so it must never raise -----------------------------
+
 
 def test_anything_that_is_not_a_table_is_no_model():
     assert remote_device_model(None, 0) is None

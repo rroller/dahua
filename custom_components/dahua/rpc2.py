@@ -3,6 +3,7 @@ Dahua RPC2 API Client
 
 Auth taken and modified and added to, from https://gist.github.com/gxfxyz/48072a72be3a169bc43549e676713201
 """
+
 import hashlib
 import json
 import logging
@@ -61,14 +62,14 @@ def refusal_reason(response: dict) -> tuple:
 
 class DahuaRpc2Client:
     def __init__(
-            self,
-            username: str,
-            password: str,
-            address: str,
-            port: int,
-            rtsp_port: int,
-            session: aiohttp.ClientSession,
-            use_https: bool = None
+        self,
+        username: str,
+        password: str,
+        address: str,
+        port: int,
+        rtsp_port: int,
+        session: aiohttp.ClientSession,
+        use_https: bool = None,
     ) -> None:
         self._username = username
         self._password = password
@@ -83,18 +84,26 @@ class DahuaRpc2Client:
         protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, address, port)
 
-    async def request(self, method, params=_PARAMS_UNSET, object_id=None, extra=None, url=None, verify_result=True):
+    async def request(
+        self,
+        method,
+        params=_PARAMS_UNSET,
+        object_id=None,
+        extra=None,
+        url=None,
+        verify_result=True,
+    ):
         """Make an RPC request."""
         self._id += 1
-        data = {'method': method, 'id': self._id}
+        data = {"method": method, "id": self._id}
         if params is not _PARAMS_UNSET:
-            data['params'] = params
+            data["params"] = params
         if object_id:
-            data['object'] = object_id
+            data["object"] = object_id
         if extra is not None:
             data.update(extra)
         if self._session_id:
-            data['session'] = self._session_id
+            data["session"] = self._session_id
         if not url:
             url = "{0}/RPC2".format(self._base)
 
@@ -110,7 +119,7 @@ class DahuaRpc2Client:
                 "Dahua RPC2 answered with a body that is not JSON"
             ) from error
 
-        if verify_result and resp_json['result'] is False:
+        if verify_result and resp_json["result"] is False:
             code, message = refusal_reason(resp_json)
             details = []
             if code is not None:
@@ -120,9 +129,7 @@ class DahuaRpc2Client:
                 details.append("message={0}".format(display_message[:200]))
             suffix = " ({0})".format(", ".join(details)) if details else ""
             raise Rpc2MethodRefused(
-                "Dahua RPC2 method {0} returned result=false{1}".format(
-                    method, suffix
-                ),
+                "Dahua RPC2 method {0} returned result=false{1}".format(method, suffix),
                 code=code,
                 message=message,
             )
@@ -140,40 +147,40 @@ class DahuaRpc2Client:
         self._session_id = None
         self._ptz_objects.clear()
         self._id = 0
-        url = '{0}/RPC2_Login'.format(self._base)
+        url = "{0}/RPC2_Login".format(self._base)
         method = "global.login"
-        params = {'userName': self._username,
-                  'password': "",
-                  'clientType': "Web5.0"}
+        params = {"userName": self._username, "password": "", "clientType": "Web5.0"}
         r = await self.request(
             method=method, params=params, url=url, verify_result=False
         )
 
-        self._session_id = r['session']
-        realm = r['params']['realm']
-        random = r['params']['random']
-        authority_type = r['params'].get('encryption') or "Default"
+        self._session_id = r["session"]
+        realm = r["params"]["realm"]
+        random = r["params"]["random"]
+        authority_type = r["params"].get("encryption") or "Default"
 
         # Password encryption algorithm. Reversed from rpcCore.getAuthByType
         pwd_phrase = self._username + ":" + realm + ":" + self._password
         if isinstance(pwd_phrase, unicode):
-            pwd_phrase = pwd_phrase.encode('utf-8')
+            pwd_phrase = pwd_phrase.encode("utf-8")
         pwd_hash = hashlib.md5(pwd_phrase).hexdigest().upper()
-        pass_phrase = self._username + ':' + random + ':' + pwd_hash
+        pass_phrase = self._username + ":" + random + ":" + pwd_hash
         if isinstance(pass_phrase, unicode):
-            pass_phrase = pass_phrase.encode('utf-8')
+            pass_phrase = pass_phrase.encode("utf-8")
         pass_hash = hashlib.md5(pass_phrase).hexdigest().upper()
 
         # login2: the real login
-        params = {'userName': self._username,
-                  'password': pass_hash,
-                  'clientType': "Web5.0",
-                  'realm': realm,
-                  'random': random,
-                  'passwordType': "Default",
-                  'authorityType': authority_type}
+        params = {
+            "userName": self._username,
+            "password": pass_hash,
+            "clientType": "Web5.0",
+            "realm": realm,
+            "random": random,
+            "passwordType": "Default",
+            "authorityType": authority_type,
+        }
         response = await self.request(method=method, params=params, url=url)
-        authenticated_session = response.get('session')
+        authenticated_session = response.get("session")
         if not isinstance(authenticated_session, str) or not authenticated_session:
             raise ConnectionError(
                 "Dahua RPC2 authenticated login response is missing session"
@@ -189,7 +196,7 @@ class DahuaRpc2Client:
             return True
         try:
             response = await self.request(method="global.logout")
-            if response['result'] is True:
+            if response["result"] is True:
                 _LOGGER.debug("RPC2 logout succeeded")
                 return True
             _LOGGER.debug("RPC2 logout reported result=false")
@@ -264,32 +271,41 @@ class DahuaRpc2Client:
     async def current_time(self):
         """Get the current time on the device."""
         response = await self.request(method="global.getCurrentTime")
-        return response['params']['time']
+        return response["params"]["time"]
 
     async def get_serial_number(self) -> str:
         """Gets the serial number of the device."""
         response = await self.request(method="magicBox.getSerialNo")
-        return response['params']['sn']
+        return response["params"]["sn"]
 
     async def get_config(self, params):
-        """Gets config for the supplied params """
+        """Gets config for the supplied params"""
         response = await self.request(method="configManager.getConfig", params=params)
-        return response['params']
+        return response["params"]
 
     async def async_get_remote_ivs_rules(self, channel: int) -> list[dict]:
         """Read the complete rule table for one zero-based NVR channel."""
         if not self._session_id:
             await self.login()
-        params = await self.get_config({
-            "name": "RemoteVideoAnalyseRule", "onlyLocal": False, "channel": channel,
-        })
+        params = await self.get_config(
+            {
+                "name": "RemoteVideoAnalyseRule",
+                "onlyLocal": False,
+                "channel": channel,
+            }
+        )
         table = params.get("table")
-        if not isinstance(table, list) or any(not isinstance(row, dict) for row in table):
-            raise ValueError("Dahua RPC2 response is missing RemoteVideoAnalyseRule table")
+        if not isinstance(table, list) or any(
+            not isinstance(row, dict) for row in table
+        ):
+            raise ValueError(
+                "Dahua RPC2 response is missing RemoteVideoAnalyseRule table"
+            )
         return table
 
     async def async_set_remote_ivs_rule_by_id(
-            self, channel: int, rule_id: str, enabled: bool) -> None:
+        self, channel: int, rule_id: str, enabled: bool
+    ) -> None:
         """Resolve the rule from a fresh read, then write that one field.
 
         Writing the whole table back is refused by at least one recorder. A
@@ -313,7 +329,8 @@ class DahuaRpc2Client:
 
         table = await self.async_get_remote_ivs_rules(channel)
         flat = flatten_rpc2_config(
-            "RemoteVideoAnalyseRule", table,
+            "RemoteVideoAnalyseRule",
+            table,
             f"table.RemoteVideoAnalyseRule[{channel}]",
         )
         index = ivs_rule_index(flat, channel, rule_id, "RemoteVideoAnalyseRule")
@@ -326,7 +343,8 @@ class DahuaRpc2Client:
             params={
                 "name": f"RemoteVideoAnalyseRule[{channel}][{index}].Enable",
                 "table": enabled,
-                "options": [], "channel": channel,
+                "options": [],
+                "channel": channel,
             },
         )
 
@@ -335,21 +353,24 @@ class DahuaRpc2Client:
         calls = []
         for name, table in configs:
             self._id += 1
-            calls.append({
-                "method": "configManager.setConfig",
-                "params": {"name": name, "table": table, "options": []},
-                "id": self._id,
-                "session": self._session_id,
-            })
+            calls.append(
+                {
+                    "method": "configManager.setConfig",
+                    "params": {"name": name, "table": table, "options": []},
+                    "id": self._id,
+                    "session": self._session_id,
+                }
+            )
         response = await self.request(method="system.multicall", params=calls)
         results = response.get("params")
         if (
-                not isinstance(results, list)
-                or len(results) != len(calls)
-                or any(
-                    not isinstance(result, dict) or result.get("result") is not True
-                    for result in results
-                )):
+            not isinstance(results, list)
+            or len(results) != len(calls)
+            or any(
+                not isinstance(result, dict) or result.get("result") is not True
+                for result in results
+            )
+        ):
             raise ConnectionError(
                 "Dahua RPC2 system.multicall did not confirm every config write"
             )
@@ -360,7 +381,9 @@ class DahuaRpc2Client:
         data = await self.get_config({"name": "General"})
         return data["table"]["MachineName"]
 
-    async def get_product_definition(self, name: str | None = None) -> dict | list | None:
+    async def get_product_definition(
+        self, name: str | None = None
+    ) -> dict | list | None:
         """Read one optional ProductDefinition block without inferring support."""
         response = await self.request(
             method="magicBox.getProductDefinition",
@@ -399,16 +422,19 @@ class DahuaRpc2Client:
             method="CoaxialControlIO.control",
             params={
                 "channel": channel,
-                "info": [{
-                    "Type": dahua_type,
-                    "IO": 1 if enabled else off_io,
-                    "TriggerMode": 2,
-                }],
+                "info": [
+                    {
+                        "Type": dahua_type,
+                        "IO": 1 if enabled else off_io,
+                        "TriggerMode": 2,
+                    }
+                ],
             },
         )
 
-    async def async_open_door(self, channel: int, door_index: int = 0,
-                             short_number: str = "HA") -> dict:
+    async def async_open_door(
+        self, channel: int, door_index: int = 0, short_number: str = "HA"
+    ) -> dict:
         """Open a door over RPC2, for VTOs with no accessControl CGI endpoint.
 
         Three calls, the way myhomeiot/DahuaVTO does it: an object from the
@@ -417,13 +443,27 @@ class DahuaRpc2Client:
         a doorbell is a real cost, and it must happen even when openDoor fails.
 
         `channel` is 0-based here, matching the factory's own convention.
+
+        The caller, _async_open_door_rpc2, hands this a fresh client of its own,
+        and nothing logged it in: the factory was asked without a session, which
+        a device refuses. Every other RPC2 action here logs in first when it has
+        no session (PTZ, vto_call), so this does too. Read from the code, not
+        tried on hardware: trying it opens a door.
         """
+        if not self._session_id:
+            await self.login()
         made = await self.request(
-            method="accessControl.factory.instance", params={"channel": channel})
+            method="accessControl.factory.instance", params={"channel": channel}
+        )
         object_id = made.get("result")
-        if isinstance(object_id, bool) or not isinstance(object_id, int) or object_id <= 0:
+        if (
+            isinstance(object_id, bool)
+            or not isinstance(object_id, int)
+            or object_id <= 0
+        ):
             raise ConnectionError(
-                "Dahua RPC2 accessControl.factory.instance returned no object")
+                "Dahua RPC2 accessControl.factory.instance returned no object"
+            )
         try:
             return await self.request(
                 method="accessControl.openDoor",
@@ -432,16 +472,61 @@ class DahuaRpc2Client:
             )
         finally:
             try:
-                await self.request(method="accessControl.destroy",
-                                   object_id=object_id, verify_result=False)
+                await self.request(
+                    method="accessControl.destroy",
+                    object_id=object_id,
+                    verify_result=False,
+                )
             except Exception:  # pylint: disable=broad-except
                 # Losing the door's result to a failed cleanup would be worse
                 # than leaking the object, so this never raises.
                 _LOGGER.debug("accessControl.destroy failed", exc_info=True)
 
-    async def get_coaxial_control_io_status(self, channel: int) -> CoaxialControlIOStatus:
-        """ async_get_coaxial_control_io_status returns the the current state of the speaker and white light. """
-        response = await self.request(method="CoaxialControlIO.getStatus", params={"channel": channel})
+    async def async_vto_call(self, number: str) -> dict:
+        """Ring a room from a VTO, the way the VTO's own web page does.
+
+        Read out of the web interface of a DHI-VTO2211G-WP-S2 on 4.810.0000000.0.R
+        (the phone icon under Device Setting) and replayed against it:
+
+            VideoTalkPhone.factory.instance   params null, result is the object
+            VideoTalkPhone.beginCall          on that object
+
+        `isTestCall: true` is added by that page to every call it makes. What it
+        changes is not known: with it, the main monitor and both extensions of the
+        room rang and showed the VTO's camera, the same as a press of the button.
+        The object id came back as a plain integer.
+
+        There is deliberately no destroy here, unlike openDoor. The web page
+        destroys this object only once the call is over (endCall, then destroy),
+        and destroying it straight after beginCall has not been tried: it may
+        well hang up the call this exists to start. The caller logs out instead,
+        which on that VTO left the call ringing.
+        """
+        if not self._session_id:
+            await self.login()
+        made = await self.request(method="VideoTalkPhone.factory.instance", params=None)
+        object_id = made.get("result")
+        if (
+            isinstance(object_id, bool)
+            or not isinstance(object_id, int)
+            or object_id <= 0
+        ):
+            raise ConnectionError(
+                "Dahua RPC2 VideoTalkPhone.factory.instance returned no object"
+            )
+        return await self.request(
+            method="VideoTalkPhone.beginCall",
+            object_id=object_id,
+            params={"number": number, "type": "normal", "isTestCall": True},
+        )
+
+    async def get_coaxial_control_io_status(
+        self, channel: int
+    ) -> CoaxialControlIOStatus:
+        """async_get_coaxial_control_io_status returns the the current state of the speaker and white light."""
+        response = await self.request(
+            method="CoaxialControlIO.getStatus", params={"channel": channel}
+        )
         return CoaxialControlIOStatus(api_response=response)
 
     async def _async_get_privacy_mode_table(self) -> list:
@@ -473,3 +558,82 @@ class DahuaRpc2Client:
             params={"name": "LeLensMask", "table": [entry], "options": []},
         )
         _LOGGER.debug("RPC2 LeLensMask set to Enable=%s", enabled)
+
+    async def async_find_recordings(
+        self,
+        channel: int,
+        start_time: str,
+        end_time: str,
+        max_results: int = 200,
+        types=("dav",),
+    ) -> list[dict]:
+        """List recorded files for a channel between two times, over RPC2.
+
+        The mediaFileFind object the device hands back is stateful and lives on
+        the device, so the shape is the same factory/action/destroy dance as
+        async_open_door, with the destroy in a finally for the same reason: the
+        object is the device's, and leaking finders on an NVR is a real cost.
+
+        `channel` is 0-based, which is what the finder's condition takes
+        (measured: condition.Channel 0 returned the device's channel 0). The
+        times are Dahua's own "YYYY-MM-DD HH:MM:SS" form. Returns the raw info
+        records (FilePath, StartTime, EndTime, Type, Length, Flags, ...), newest
+        first, capped at max_results so a month of continuous recording cannot
+        pull an unbounded list into a browse call.
+        """
+        if not self._session_id:
+            await self.login()
+        made = await self.request(method="mediaFileFind.factory.create")
+        object_id = made.get("result")
+        if (
+            isinstance(object_id, bool)
+            or not isinstance(object_id, int)
+            or object_id <= 0
+        ):
+            raise ConnectionError(
+                "Dahua RPC2 mediaFileFind.factory.create returned no object"
+            )
+        try:
+            await self.request(
+                method="mediaFileFind.findFile",
+                object_id=object_id,
+                params={
+                    "condition": {
+                        "Channel": channel,
+                        "Dirs": [],
+                        "Types": list(types),
+                        "Order": "Descent",
+                        "Flags": ["Timing", "Event", "Manual", "Marker"],
+                        "StartTime": start_time,
+                        "EndTime": end_time,
+                    }
+                },
+            )
+            records: list[dict] = []
+            while len(records) < max_results:
+                want = min(100, max_results - len(records))
+                # findNextFile returns result=false with no more files, which is
+                # the end of the list, not a device refusal; do not let that
+                # raise through request's verify_result.
+                got = await self.request(
+                    method="mediaFileFind.findNextFile",
+                    object_id=object_id,
+                    params={"count": want},
+                    verify_result=False,
+                )
+                params = got.get("params") or {}
+                infos = params.get("infos") or []
+                records.extend(info for info in infos if isinstance(info, dict))
+                if not infos or len(infos) < want:
+                    break
+            return records[:max_results]
+        finally:
+            for method in ("mediaFileFind.close", "mediaFileFind.destroy"):
+                try:
+                    await self.request(
+                        method=method, object_id=object_id, verify_result=False
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    # A failed cleanup must not lose the caller the records it
+                    # already has; leaking the finder is the lesser cost.
+                    _LOGGER.debug("RPC2 %s failed", method, exc_info=True)

@@ -19,6 +19,7 @@ A device that names no LightType keeps the behaviour it has always had. Only a
 device that lists its emitters and names no white one loses the entity, which is
 the only case where we know it was wrong.
 """
+
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
 
@@ -36,12 +37,14 @@ def _lighting(*types, channel=0, mode="Off"):
     data = {"table.Lighting_V2[{0}][0][0].Mode".format(channel): mode}
     for index, light in enumerate(types):
         if light is not None:
-            data["table.Lighting_V2[{0}][0][{1}].LightType".format(
-                channel, index)] = light
+            data["table.Lighting_V2[{0}][0][{1}].LightType".format(channel, index)] = (
+                light
+            )
     return data
 
 
 # --- the #540 case ----------------------------------------------------------
+
 
 def test_a_camera_whose_only_light_is_infrared_gets_no_illuminator():
     coordinator = _coordinator(_lighting("InfraredLight"))
@@ -56,6 +59,7 @@ def test_two_emitters_and_neither_is_white_still_gets_none():
 
 
 # --- what must keep working -------------------------------------------------
+
 
 def test_a_camera_that_names_a_white_light_keeps_it():
     coordinator = _coordinator(_lighting("WhiteLight"))
@@ -88,6 +92,7 @@ def test_no_lighting_row_at_all_is_still_no_illuminator():
 
 
 # --- the existing exclusions are untouched ----------------------------------
+
 
 def test_an_amcrest_doorbell_is_still_excluded():
     coordinator = _coordinator(_lighting("WhiteLight"), model="AD410")

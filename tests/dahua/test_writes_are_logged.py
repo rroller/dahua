@@ -43,7 +43,11 @@ def _client():
 async def _run(client, url, caplog):
     sent = []
 
-    async def _request(u, verify_ok=False, allow_rpc2=True):
+    async def _request(u, *args, **kwargs):
+        # **kwargs rather than the exact signature: this double exists to record
+        # the url, and get() has gained a keyword since it was written
+        # (reject_declined). A double whose job is to answer the call, not to
+        # inspect it, should not fail when the call grows an argument.
         sent.append(u)
         return {}
 
@@ -53,8 +57,10 @@ async def _run(client, url, caplog):
     return sent
 
 
-WRITE = ("/cgi-bin/configManager.cgi?action=setConfig"
-         "&Lighting[0][0].Mode=Manual&Lighting[0][0].MiddleLight[0].Light=50")
+WRITE = (
+    "/cgi-bin/configManager.cgi?action=setConfig"
+    "&Lighting[0][0].Mode=Manual&Lighting[0][0].MiddleLight[0].Light=50"
+)
 
 
 async def test_a_write_is_logged(caplog):
@@ -64,8 +70,9 @@ async def test_a_write_is_logged(caplog):
     sent = await _run(client, WRITE, caplog)
 
     assert sent == [WRITE]
-    assert any(WRITE in r.getMessage() for r in caplog.records), (
-        "the write was sent and left no trace in the log")
+    assert any(
+        WRITE in r.getMessage() for r in caplog.records
+    ), "the write was sent and left no trace in the log"
 
 
 async def test_the_log_names_the_device(caplog):
@@ -84,15 +91,19 @@ async def test_it_is_debug_not_warning(caplog):
 
     written = [r for r in caplog.records if "Writing to" in r.getMessage()]
     assert written, "no write log line at all"
-    assert all(r.levelno == logging.DEBUG for r in written), (
-        "a routine write must not be logged above debug")
+    assert all(
+        r.levelno == logging.DEBUG for r in written
+    ), "a routine write must not be logged above debug"
 
 
-@pytest.mark.parametrize("url", [
-    "/cgi-bin/magicBox.cgi?action=getSystemInfo",
-    "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting",
-    "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=1",
-])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/cgi-bin/magicBox.cgi?action=getSystemInfo",
+        "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting",
+        "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=1",
+    ],
+)
 async def test_reads_are_not_logged_as_writes(url, caplog):
     """Reads happen constantly; only writes are worth a line."""
     client = _client()

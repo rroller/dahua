@@ -1,14 +1,23 @@
 import time
 import re
 
-from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorDeviceClass
+from homeassistant.components.binary_sensor import (
+    BinarySensorEntity,
+    BinarySensorDeviceClass,
+)
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.event import async_call_later
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
 from .const import (
     MOTION_SENSOR_DEVICE_CLASS,
-    DOMAIN, SAFETY_DEVICE_CLASS, CONNECTIVITY_DEVICE_CLASS, SOUND_DEVICE_CLASS, DOOR_DEVICE_CLASS,
+    DOMAIN,
+    SAFETY_DEVICE_CLASS,
+    TAMPER_DEVICE_CLASS,
+    CONNECTIVITY_DEVICE_CLASS,
+    SOUND_DEVICE_CLASS,
+    DOOR_DEVICE_CLASS,
 )
 from .entity import DahuaBaseEntity, DahuaEventDrivenEntity
 
@@ -30,53 +39,55 @@ NAME_OVERRIDES = {
 # test_event_sensor_names_are_translated.py asserts this matches both the file and
 # the codes the platform can produce, so the fallback cannot be reached by adding
 # a code to ALL_EVENTS and forgetting the string.
-TRANSLATED_EVENTS = frozenset({
-    "VideoMotion",
-    "VideoLoss",
-    "AlarmLocal",
-    "CrossLineDetection",
-    "CrossRegionDetection",
-    "AudioMutation",
-    "SmartMotionHuman",
-    "SmartMotionVehicle",
-    "VideoBlind",
-    "AudioAnomaly",
-    "VideoMotionInfo",
-    "NewFile",
-    "IntelliFrame",
-    "LeftDetection",
-    "TakenAwayDetection",
-    "VideoAbnormalDetection",
-    "FaceDetection",
-    "FaceRecognition",
-    "HumanTrait",
-    "VideoUnFocus",
-    "WanderDetection",
-    "RioterDetection",
-    "ParkingDetection",
-    "MoveDetection",
-    "StorageNotExist",
-    "StorageFailure",
-    "StorageLowSpace",
-    "AlarmOutput",
-    "InterVideoAccess",
-    "NTPAdjustTime",
-    "TimeChange",
-    "MDResult",
-    "HeatImagingTemper",
-    "CrowdDetection",
-    "FireWarning",
-    "FireWarningInfo",
-    "ObjectPlacementDetection",
-    "ObjectRemovalDetection",
-    "Traffic",
-    "TrafficJunction",
-    "TrafficSnapshot",
-    "DoorbellPressed",
-    "Invite",
-    "DoorStatus",
-    "CallNoAnswered",
-})
+TRANSLATED_EVENTS = frozenset(
+    {
+        "VideoMotion",
+        "VideoLoss",
+        "AlarmLocal",
+        "CrossLineDetection",
+        "CrossRegionDetection",
+        "AudioMutation",
+        "SmartMotionHuman",
+        "SmartMotionVehicle",
+        "VideoBlind",
+        "AudioAnomaly",
+        "VideoMotionInfo",
+        "NewFile",
+        "IntelliFrame",
+        "LeftDetection",
+        "TakenAwayDetection",
+        "VideoAbnormalDetection",
+        "FaceDetection",
+        "FaceRecognition",
+        "HumanTrait",
+        "VideoUnFocus",
+        "WanderDetection",
+        "RioterDetection",
+        "ParkingDetection",
+        "MoveDetection",
+        "StorageNotExist",
+        "StorageFailure",
+        "StorageLowSpace",
+        "AlarmOutput",
+        "InterVideoAccess",
+        "NTPAdjustTime",
+        "TimeChange",
+        "MDResult",
+        "HeatImagingTemper",
+        "CrowdDetection",
+        "FireWarning",
+        "FireWarningInfo",
+        "ObjectPlacementDetection",
+        "ObjectRemovalDetection",
+        "Traffic",
+        "TrafficJunction",
+        "TrafficSnapshot",
+        "DoorbellPressed",
+        "Invite",
+        "DoorStatus",
+        "CallNoAnswered",
+    }
+)
 
 
 def event_display_name(event_name: str) -> str:
@@ -101,6 +112,7 @@ def event_translation_key(event_name: str) -> str:
     already have, so nothing has to be migrated and nothing moves.
     """
     return event_display_name(event_name).lower().replace(" ", "_")
+
 
 # Events that are a moment rather than a state, and how long to show them for.
 #
@@ -138,7 +150,9 @@ DEVICE_CLASS_OVERRIDES = {
     "CrossLineDetection": MOTION_SENSOR_DEVICE_CLASS,
     "AlarmLocal": SAFETY_DEVICE_CLASS,
     "VideoLoss": SAFETY_DEVICE_CLASS,
-    "VideoBlind": SAFETY_DEVICE_CLASS,
+    # A blinded or obscured lens is tampering, which Home Assistant has a
+    # dedicated device class for; it used to share the generic "safety" class.
+    "VideoBlind": TAMPER_DEVICE_CLASS,
     "StorageNotExist": CONNECTIVITY_DEVICE_CLASS,
     "StorageFailure": CONNECTIVITY_DEVICE_CLASS,
     "StorageLowSpace": SAFETY_DEVICE_CLASS,
@@ -151,6 +165,7 @@ DEVICE_CLASS_OVERRIDES = {
 # A coordinator centralises the inbound reads, and nothing here sends a command,
 # so there is nothing to serialise: read only: every state comes from the coordinator.
 PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
@@ -169,11 +184,20 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         for rule in coordinator.get_ivs_rules():
             sensors.append(DahuaIVSRuleBinarySensor(coordinator, entry, rule))
 
-        sensors.append(DahuaAuthorizedVehicleBinarySensor(coordinator, entry))
+        # Recognised from a plate, which an indoor monitor without a camera cannot read.
+        if not coordinator.is_indoor_monitor_without_video():
+            sensors.append(DahuaAuthorizedVehicleBinarySensor(coordinator, entry))
+
+        # One disk-health sensor per physical disk on a recorder. Disabled by
+        # default: it is diagnostic, and the read that feeds it is a logged login,
+        # so only someone who enables it pays for the refresh (#745).
+        for disk in coordinator.get_storage_disks():
+            sensors.append(
+                DahuaDiskProblemBinarySensor(coordinator, entry, disk["name"])
+            )
 
         if sensors:
-            async_add_devices(
-                sensors, config_subentry_id=coordinator.subentry_id)
+            async_add_devices(sensors, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
@@ -183,7 +207,9 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
     to the cammera to listen to events.
     """
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry, event_name: str):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, config_entry, event_name: str
+    ):
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         BinarySensorEntity.__init__(self)
 
@@ -196,7 +222,9 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
 
         self._coordinator = coordinator
         self._device_name = coordinator.get_device_name()
-        self._device_class = DEVICE_CLASS_OVERRIDES.get(event_name, MOTION_SENSOR_DEVICE_CLASS)
+        self._device_class = DEVICE_CLASS_OVERRIDES.get(
+            event_name, MOTION_SENSOR_DEVICE_CLASS
+        )
 
         self._name = event_display_name(event_name)
 
@@ -263,8 +291,11 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
-        self.async_on_remove(self._coordinator.add_dahua_event_listener(
-            self._event_name, self._async_event_fired))
+        self.async_on_remove(
+            self._coordinator.add_dahua_event_listener(
+                self._event_name, self._async_event_fired
+            )
+        )
 
     @callback
     def _async_event_fired(self):
@@ -286,7 +317,8 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
 
         if self._coordinator.get_event_timestamp(self._event_name) > 0:
             self._unsub_timer = async_call_later(
-                self.hass, hold, self._async_hold_expired)
+                self.hass, hold, self._async_hold_expired
+            )
 
     @callback
     def _async_hold_expired(self, _now=None):
@@ -305,6 +337,22 @@ class DahuaEventSensor(DahuaEventDrivenEntity, BinarySensorEntity):
         """Return True if entity has to be polled for state.  False if entity pushes its state to HA"""
         return False
 
+    @property
+    def extra_state_attributes(self):
+        """Expose which rule tripped, its direction and the object type, when the
+        device sent them (#373). A tripwire sensor turning on says something
+        crossed a line; these say it was the driveway rule not the back gate, and
+        a person not a car, so an automation keyed on the sensor can act on it.
+
+        Empty until an event carries them, and layered on the base's id and
+        integration rather than replacing them, the way the authorized-vehicle
+        sensor does.
+        """
+        details = self._coordinator.get_event_details(self._event_name)
+        if not details:
+            return super().extra_state_attributes
+        return {**(super().extra_state_attributes or {}), **details}
+
 
 class DahuaIVSRuleBinarySensor(DahuaEventSensor):
     """Track one normal IVS rule by its stable Dahua rule ID."""
@@ -319,7 +367,13 @@ class DahuaIVSRuleBinarySensor(DahuaEventSensor):
 
     @property
     def extra_state_attributes(self):
-        return {"rule_id": self._rule_id, "rule_type": self._rule_type}
+        return {
+            # On top of the base's, not instead of them: a fresh dict here would
+            # drop `id` and `integration` from every per-rule sensor.
+            **(super().extra_state_attributes or {}),
+            "rule_id": self._rule_id,
+            "rule_type": self._rule_type,
+        }
 
 
 class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEntity):
@@ -350,15 +404,24 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
         last_plate = self._coordinator.get_last_plate()
         last_time = self._coordinator.get_last_plate_timestamp()
         hold_time = self._coordinator.get_authorized_hold_time()
-        if self._coordinator.is_plate_authorized(last_plate) and (time.time() - last_time < hold_time):
+        if self._coordinator.is_plate_authorized(last_plate) and (
+            time.time() - last_time < hold_time
+        ):
             return True
         return False
 
     @property
     def extra_state_attributes(self):
         """Return attributes including authorized plates, hold time, and last matched vehicle details."""
-        plate_data = self._last_matched_plate_data or self._coordinator.get_last_plate_data() or {}
+        plate_data = (
+            self._last_matched_plate_data
+            or self._coordinator.get_last_plate_data()
+            or {}
+        )
         return {
+            # On top of the base's, not instead of them: returning a fresh dict
+            # here dropped `id` and `integration` from this sensor.
+            **(super().extra_state_attributes or {}),
             "authorized_plates": self._coordinator.get_authorized_plates(),
             "hold_time_seconds": self._coordinator.get_authorized_hold_time(),
             "last_matched_plate": self._last_matched_plate,
@@ -371,6 +434,7 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
 
     async def async_added_to_hass(self):
         """Connect to dispatcher listening for entity data notifications."""
+
         @callback
         def _on_plate_update():
             last_plate = self._coordinator.get_last_plate()
@@ -378,7 +442,9 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
                 hold_time = self._coordinator.get_authorized_hold_time()
                 self._active_until = time.time() + hold_time
                 self._last_matched_plate = last_plate
-                self._last_matched_plate_data = dict(self._coordinator.get_last_plate_data() or {})
+                self._last_matched_plate_data = dict(
+                    self._coordinator.get_last_plate_data() or {}
+                )
                 self._last_matched_time = self._coordinator.get_last_plate_timestamp()
 
                 if self._unsub_timer:
@@ -400,7 +466,9 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
             if elapsed < hold_time:
                 self._active_until = last_time + hold_time
                 self._last_matched_plate = last_plate
-                self._last_matched_plate_data = dict(self._coordinator.get_last_plate_data() or {})
+                self._last_matched_plate_data = dict(
+                    self._coordinator.get_last_plate_data() or {}
+                )
                 self._last_matched_time = last_time
                 self._unsub_timer = async_call_later(
                     self.hass, hold_time - elapsed, self._async_auto_off
@@ -422,3 +490,66 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
     def should_poll(self) -> bool:
         """Return False as entity pushes state updates."""
         return False
+
+
+class DahuaDiskProblemBinarySensor(DahuaBaseEntity, BinarySensorEntity):
+    """A recorder's disk health, as a diagnostic problem sensor (#745).
+
+    On when the disk's State is not Success or any partition reports an error.
+    Disabled by default: it is diagnostic, and the read that feeds it is a login
+    the device logs, so only someone who enables it pays for the refresh. Carries
+    capacity and state as attributes. SMART attributes (temperature, reallocated
+    sectors) are not served by the HTTP or RPC2 API, so this is the health the
+    device does report.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator, entry, disk_name):
+        DahuaBaseEntity.__init__(self, coordinator, entry)
+        BinarySensorEntity.__init__(self)
+        self._coordinator = coordinator
+        self._disk_name = disk_name
+        # /dev/sda -> dev_sda, so the id is stable and slug-shaped.
+        slug = disk_name.replace("/", "_").strip("_")
+        self._attr_unique_id = "%s_disk_%s" % (coordinator.get_serial_number(), slug)
+        self._attr_name = "Disk %s" % disk_name
+
+    def _disk(self):
+        for disk in self._coordinator.get_storage_disks():
+            if disk["name"] == self._disk_name:
+                return disk
+        return None
+
+    @property
+    def unique_id(self):
+        return self._attr_unique_id
+
+    @property
+    def is_on(self):
+        """True when the disk is unhealthy; None if it is no longer reported."""
+        disk = self._disk()
+        if disk is None:
+            return None
+        return not disk["healthy"]
+
+    @property
+    def should_poll(self) -> bool:
+        return False
+
+    @property
+    def extra_state_attributes(self):
+        disk = self._disk()
+        if disk is None:
+            return super().extra_state_attributes
+        return {
+            **(super().extra_state_attributes or {}),
+            "disk": disk["name"],
+            "state": disk["state"],
+            "total_gb": round(disk["total_bytes"] / 1_000_000_000, 1),
+            "used_gb": round(disk["used_bytes"] / 1_000_000_000, 1),
+            "partition_error": disk["has_error"],
+            "health_flag": disk["health_flag"],
+        }

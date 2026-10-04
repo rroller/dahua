@@ -178,6 +178,38 @@ enable_custom_overlay:
       selector:
         boolean:
 
+get_config:
+  name: Read a configuration table
+  description: >-
+    Returns a configuration table from the device, read-only, for diagnostics.
+    The integration wraps the common tables already; this reads any of the
+    model-specific ones it does not. It cannot change the device.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    name:
+      name: Config name
+      description: >-
+        The configManager config name, for example Encode, VideoColor or
+        Lighting[0][0].
+      required: true
+      example: Encode
+      selector:
+        text:
+
+get_channel_title:
+  name: Read the channel title
+  description: >-
+    Returns the channel title overlay the camera is currently showing. Useful
+    when the title may have been changed on the camera, the NVR or the app
+    rather than from Home Assistant.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+
 get_overlay_text:
   name: Read the text overlay
   description: >-
@@ -446,6 +478,22 @@ vto_cancel_call:
     entity:
       integration: dahua
       domain: camera
+
+vto_call:
+  name: Call a room from a VTO
+  description: Rings an indoor monitor (VTH) from a VTO (Doorbell), as a press of its call button does
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    room:
+      name: Room
+      description: "The room number to ring, as set on the indoor monitor. 9901#0 is dialled as 9901, which rings that room's main monitor and its extensions"
+      example: "9901"
+      required: true
+      selector:
+        text:
 
 set_focus_zoom:
   name: Set the Dahua Focus and Zoom

@@ -39,7 +39,9 @@ def _coordinator(table=None):
     c._channel = 0
     c._ivs_rules = ivs_rules_for_channel(table, 0)
     c._dahua_event_timestamp = {}
+    c._dahua_event_details = {}
     c._dahua_event_listeners = {}
+    c._storage_disks = []
     return c
 
 
@@ -178,6 +180,42 @@ def test_crossline_stop_clears_all_same_code_rules_on_channel():
     assert not sensors["20"].is_on
 
 
+def test_rule_sensors_coexist_with_latest_event_details():
+    """#849 independent states survive #974 keeping the latest rule attributes."""
+    c = _coordinator()
+    sensors = {rule["id"]: _sensor(c, rule) for rule in c.get_ivs_rules()}
+    c.add_dahua_event_listener("CrossLineDetection", lambda: None)
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    for rule_id, name in ((5, "Rule3"), (17, "Rule4")):
+        c._dispatch_event(
+            {
+                "Code": "CrossLineDetection",
+                "data": {
+                    "Class": "Normal",
+                    "RuleID": rule_id,
+                    "Name": name,
+                    "Direction": "LeftToRight",
+                    "Object": {"ObjectType": "Human"},
+                },
+            },
+            "Start",
+        )
+
+    assert sensors["5"].is_on and sensors["17"].is_on
+    assert c.get_event_details("CrossLineDetection") == {
+        "rule_name": "Rule4",
+        "rule_id": 17,
+        "direction": "LeftToRight",
+        "object_type": "Human",
+    }
+
+    c._dispatch_event({"Code": "CrossLineDetection"}, "Stop")
+    assert not sensors["5"].is_on and not sensors["17"].is_on
+    assert c.get_event_details("CrossLineDetection")["rule_name"] == "Rule4"
+
+
 def test_crossregion_stop_clears_crossregion_but_not_crossline():
     c = _coordinator()
     sensors = {rule["id"]: _sensor(c, rule) for rule in c.get_ivs_rules()}
@@ -248,7 +286,8 @@ def test_stay_stop_clears_all_same_code_rules_if_multiple_exist():
     c = _coordinator(table)
     sensors = {
         rule["id"]: _sensor(c, rule)
-        for rule in c.get_ivs_rules() if rule["type"] == "StayDetection"
+        for rule in c.get_ivs_rules()
+        if rule["type"] == "StayDetection"
     }
     for sensor in sensors.values():
         c.add_dahua_event_listener(sensor._event_name, lambda: None)
@@ -272,15 +311,18 @@ def test_stop_without_normal_data_clears_same_code_rules(stop_data):
     c = _coordinator()
     sensors = {
         rule["id"]: _sensor(c, rule)
-        for rule in c.get_ivs_rules() if rule["id"] in ("17", "20")
+        for rule in c.get_ivs_rules()
+        if rule["id"] in ("17", "20")
     }
     for sensor in sensors.values():
         c.add_dahua_event_listener(sensor._event_name, lambda: None)
 
     for rule_id in (17, 20):
         c._dispatch_event(
-            {"Code": "CrossLineDetection",
-             "data": {"Class": "Normal", "RuleID": rule_id}},
+            {
+                "Code": "CrossLineDetection",
+                "data": {"Class": "Normal", "RuleID": rule_id},
+            },
             "Start",
         )
     assert all(sensor.is_on for sensor in sensors.values())
@@ -491,3 +533,135 @@ def test_stop_tracking_is_consumed_and_a_later_cycle_works():
     assert sensors["5"].is_on
     c._dispatch_event(stop, "Stop")
     assert not sensors["5"].is_on
+
+
+def test_rule_sensor_keeps_base_attributes_and_event_details():
+    """Per-rule attributes sit on top of the base's and the latest event's.
+
+    A fresh dict here once dropped `id` and `integration` from every per-rule
+    sensor. The rule's own `rule_id` is the configured string and wins over the
+    event's, which the device sends as a number.
+    """
+    c = _coordinator()
+    c.data = {"id": "SERIAL"}
+    sensors = {rule["id"]: _sensor(c, rule) for rule in c.get_ivs_rules()}
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    c._dispatch_event(
+        {
+            "Code": "CrossLineDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 5,
+                "Name": "Rule3",
+                "Direction": "LeftToRight",
+                "Object": {"ObjectType": "Human"},
+            },
+        },
+        "Start",
+    )
+
+    attributes = sensors["5"].extra_state_attributes
+    assert attributes["id"] == "SERIAL"
+    assert attributes["integration"] == DOMAIN
+    assert attributes["rule_id"] == "5"
+    assert attributes["rule_type"] == "CrossLineDetection"
+    assert attributes["rule_name"] == "Rule3"
+    assert attributes["direction"] == "LeftToRight"
+    assert attributes["object_type"] == "Human"
+
+    # A rule no event has named yet still reports the base's keys and its own.
+    quiet = sensors["17"].extra_state_attributes
+    assert quiet["id"] == "SERIAL"
+    assert quiet["integration"] == DOMAIN
+    assert quiet["rule_id"] == "17"
+    assert "direction" not in quiet
+
+
+def test_stop_clears_both_tracked_rules_and_rules_known_only_by_type():
+    """A reload loses the tracking, so a rule lit before it is found by Type.
+
+    Rule 5 was lit before the reload and is known only from its configured Type.
+    Rule 17 was lit after it and is tracked. One Stop has to clear both.
+    """
+    c = _coordinator()
+    sensors = {rule["id"]: _sensor(c, rule) for rule in c.get_ivs_rules()}
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    # Lit before the reload: the sensor shows on, but nothing tracked it.
+    c._dahua_event_timestamp[c.get_event_key("IVSRule_5")] = 1
+    assert sensors["5"].is_on
+    assert getattr(c, "_ivs_active_rules", {}) == {}
+
+    c._dispatch_event(
+        {"Code": "CrossLineDetection", "data": {"Class": "Normal", "RuleID": 17}},
+        "Start",
+    )
+    assert c._ivs_active_rules == {"CrossLineDetection": {"17"}}
+    assert sensors["5"].is_on and sensors["17"].is_on
+
+    c._dispatch_event({"Code": "CrossLineDetection"}, "Stop")
+    assert not sensors["5"].is_on
+    assert not sensors["17"].is_on
+
+
+def test_stop_naming_one_rule_does_not_overwrite_the_other_rules_details():
+    """A batch Stop clears every rule of the code, but names only one of them.
+
+    Rule3 saw a person and Rule4 saw a vehicle. The Stop carries Rule3's data, so
+    it may refresh Rule3's attributes and must leave Rule4 showing its own.
+    """
+    c = _coordinator()
+    c.data = {"id": "SERIAL"}
+    sensors = {rule["id"]: _sensor(c, rule) for rule in c.get_ivs_rules()}
+    c.add_dahua_event_listener("CrossLineDetection", lambda: None)
+    for sensor in sensors.values():
+        c.add_dahua_event_listener(sensor._event_name, lambda: None)
+
+    for rule_id, name, direction, kind in (
+        (5, "Rule3", "LeftToRight", "Human"),
+        (17, "Rule4", "RightToLeft", "Vehicle"),
+    ):
+        c._dispatch_event(
+            {
+                "Code": "CrossLineDetection",
+                "data": {
+                    "Class": "Normal",
+                    "RuleID": rule_id,
+                    "Name": name,
+                    "Direction": direction,
+                    "Object": {"ObjectType": kind},
+                },
+            },
+            "Start",
+        )
+
+    c._dispatch_event(
+        {
+            "Code": "CrossLineDetection",
+            "data": {
+                "Class": "Normal",
+                "RuleID": 5,
+                "Name": "Rule3",
+                "Direction": "LeftToRight",
+                "Object": {"ObjectType": "Human"},
+            },
+        },
+        "Stop",
+    )
+
+    # Both are cleared, by the one Stop.
+    assert not sensors["5"].is_on and not sensors["17"].is_on
+
+    rule4 = sensors["17"].extra_state_attributes
+    assert rule4["rule_name"] == "Rule4"
+    assert rule4["direction"] == "RightToLeft"
+    assert rule4["object_type"] == "Vehicle"
+    assert rule4["rule_id"] == "17"
+
+    # The rule the Stop names still takes its details from it.
+    rule3 = sensors["5"].extra_state_attributes
+    assert rule3["rule_name"] == "Rule3"
+    assert rule3["object_type"] == "Human"

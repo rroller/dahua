@@ -3,7 +3,7 @@
         "flow_title": "{name} ({address})",
         "step": {
             "user": {
-                "title": "Add Dahua Camera",
+                "title": "Add Dahua device",
                 "description": "Home Assistant talks to the device directly, so it needs an account on the device itself rather than a Dahua or Imou cloud login.",
                 "data": {
                     "username": "Username",
@@ -48,7 +48,7 @@
                 }
             },
             "reauth_confirm": {
-                "title": "Re-authenticate Dahua Camera",
+                "title": "Re-authenticate Dahua device",
                 "description": "The credentials for {name} are no longer valid. Please enter updated credentials.",
                 "data": {
                     "username": "Username",
@@ -56,7 +56,7 @@
                 }
             },
             "reconfigure": {
-                "title": "Dahua Camera Connection",
+                "title": "Dahua device connection",
                 "description": "Update how Home Assistant reaches this device. Credentials are unchanged; use re-authentication for those.",
                 "data": {
                     "address": "Address",
@@ -87,7 +87,9 @@
             "ssl_error": "The secure connection failed. If the camera does not serve HTTPS, clear the HTTPS option; if it does, it is usually on port 443.",
             "unexpected_reply": "Something answered, but not a Dahua camera. Check the port — the web interface and the API are not always the same one.",
             "cgi_disabled": "That address is serving web pages, but not the Dahua API. On a Dahua device this is almost always the CGI service being switched off: turn it on under System, then Security or Safety, then System Service, then CGI, and try again. If CGI is already on, check the port, because the web interface and the API are not always the same one.",
-            "https_available": "Nothing answered on that port, but the device is listening on 443, so it is probably serving HTTPS. Tick the HTTPS option and use port 443.",
+            "vth_without_http": "This is an indoor monitor (VTH) that serves no web interface at all, only Dahua's own protocol, and it accepted that username and password there. The integration cannot add a monitor like this yet. Monitors that do serve HTTP, such as the VTH2421F-P, can be added.",
+        "https_available": "Nothing answered on that port, but the device is listening on 443, so it is probably serving HTTPS. Tick the HTTPS option and use port 443.",
+            "https_redirect": "This device redirected the connection to HTTPS, so the username and password were never checked. Tick the HTTPS option and use port 443.",
             "http_service_off": "The device is switched on and answering Dahua's own protocol, but nothing is serving HTTP on that port, so the integration cannot reach its API. Its web service is most likely switched off: turn on HTTP and CGI under System, then Security or Safety, then System Service.",
             "unknown": "Could not add the camera. The Home Assistant log has the reason."
         },
@@ -129,6 +131,7 @@
                             "camera": "Camera enabled",
                             "event": "Event enabled",
                             "light": "Light enabled",
+                            "number": "Number enabled",
                             "select": "Select enabled",
                             "sensor": "Sensor enabled",
                             "switch": "Switch enabled"
@@ -324,6 +327,23 @@
             },
             "day_night_mode": {
                 "name": "Day/Night Mode"
+            },
+            "smart_motion_sensitivity": {
+                "name": "Smart Motion Sensitivity"
+            },
+            "vth_camera_link": {
+                "name": "Camera for {vto} calls",
+                "state": {
+                    "none": "None"
+                }
+            },
+            "infrared_mode": {
+                "name": "Infrared Mode",
+                "state": {
+                    "auto": "Auto",
+                    "manual": "Manual",
+                    "off": "Off"
+                }
             }
         },
         "sensor": {
@@ -335,6 +355,9 @@
             },
             "profile": {
                 "name": "Profile"
+            },
+            "configured_channels": {
+                "name": "Configured Channels"
             },
             "license_plate": {
                 "name": "License Plate"
@@ -368,8 +391,20 @@
         }
     },
     "exceptions": {
+        "video_profile_not_switchable": {
+            "message": "The day/night video profile on {device} cannot be switched from Home Assistant: its VideoInMode is the {shape} shape, where the profile is not selected by the field this writes. See issue #458."
+        },
         "cancel_call_refused": {
             "message": "The doorbell would not cancel the call: {reason}"
+        },
+        "infrared_write_already_refused": {
+            "message": "{device} has already refused to change its infrared light, so Home Assistant did not ask again. Its mode and level are still read and shown. Reload the integration entry to try again after changing anything on the device."
+        },
+        "infrared_write_ignored": {
+            "message": "{device} accepted the infrared change and did not make it: asked for {wanted}, still reports {reported}. A recorder can answer OK for a camera it will not pass the setting on to."
+        },
+        "infrared_write_refused": {
+            "message": "{device} would not change its infrared light: {reason}"
         },
         "ivs_rule_write_failed": {
             "message": "Could not change that IVS rule: {reason}"
@@ -382,6 +417,21 @@
         },
         "open_door_needs_a_doorbell": {
             "message": "{device} is not a doorbell, so it has no door to open. This service works on a VTO."
+        },
+        "siren_already_refused": {
+            "message": "{device} has already refused to operate its siren, so Home Assistant did not ask again. Reload the integration entry to try again after changing anything on the device."
+        },
+        "siren_refused": {
+            "message": "{device} would not operate its siren: {reason}"
+        },
+        "vth_camera_link_ignored": {
+            "message": "{device} accepted {option} as the camera for {vto} calls, and does not report it afterwards. Nothing was changed."
+        },
+        "vto_call_needs_a_doorbell": {
+            "message": "{device} is not a doorbell, so it cannot ring a room. This service works on a VTO."
+        },
+        "vto_call_refused": {
+            "message": "The doorbell would not call room {room}: {reason}"
         }
     },
     "issues": {
@@ -433,6 +483,16 @@
                 "user": "Add a channel"
             },
             "step": {
+                "user": {
+                    "title": "Add a channel",
+                    "description": "Add another channel of this recorder. The connection and host-wide settings come from the recorder; here you choose the channel index (0-based, as the recorder numbers them internally) and name it. Other per-channel settings can be changed afterwards from the channel's Configure button.",
+                    "data": {
+                        "channel": "Channel index (0-based)",
+                        "name": "Name",
+                        "area": "Area (moves this device to it)",
+                        "events": "Events to subscribe to"
+                    }
+                },
                 "reconfigure": {
                     "title": "{name}",
                     "description": "Settings for channel {channel} of this recorder. Anything that applies to the whole device, such as how often it is polled, is on the recorder's own Configure button instead.",
@@ -454,6 +514,9 @@
             },
             "abort": {
                 "reconfigure_successful": "Channel updated"
+            },
+            "error": {
+                "channel_already_added": "That channel is already added to this recorder. Pick a channel index that is not in use."
             }
         }
     }

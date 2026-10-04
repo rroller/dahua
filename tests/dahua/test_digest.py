@@ -1,4 +1,5 @@
 """Tests for custom_components.dahua.digest."""
+
 import asyncio
 import hashlib
 import re
@@ -27,20 +28,32 @@ def _clean_host_digest_state():
 def _params(header: str) -> dict:
     """Parse the parameters out of an Authorization header."""
     body = header.partition(" ")[2]
-    return {m[0]: (m[1] or m[2])
-            for m in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', body)}
+    return {
+        m[0]: (m[1] or m[2]) for m in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', body)
+    }
 
 
 def _expected_response(method: str, params: dict, password: str) -> str:
     """Recompute the digest the client should have sent."""
+
     def h(value):
         return hashlib.md5(value.encode()).hexdigest()
 
     ha1 = h("%s:%s:%s" % (params.get("username", ""), REALM, password))
     ha2 = h("%s:%s" % (method, params.get("uri", "")))
     if params.get("qop"):
-        return h(":".join([ha1, params.get("nonce", ""), params.get("nc", ""),
-                           params.get("cnonce", ""), "auth", ha2]))
+        return h(
+            ":".join(
+                [
+                    ha1,
+                    params.get("nonce", ""),
+                    params.get("nc", ""),
+                    params.get("cnonce", ""),
+                    "auth",
+                    ha2,
+                ]
+            )
+        )
     return h("%s:%s:%s" % (ha1, params.get("nonce", ""), ha2))
 
 
@@ -72,8 +85,14 @@ class FakeSession:
     rather than each running to completion in one scheduler step.
     """
 
-    def __init__(self, password=PASSWORD, nonce="nonce-1", strict_nc=False, body="ok=1",
-                 strict_uri=False):
+    def __init__(
+        self,
+        password=PASSWORD,
+        nonce="nonce-1",
+        strict_nc=False,
+        body="ok=1",
+        strict_uri=False,
+    ):
         self.requests = []
         self.password = password
         self.nonce = nonce
@@ -103,7 +122,9 @@ class FakeSession:
         params = _params(auth)
         if params.get("nonce") != self.nonce:
             return FakeResponse(401, self._challenge(stale=True))
-        if params.get("response") != _expected_response(method.upper(), params, self.password):
+        if params.get("response") != _expected_response(
+            method.upper(), params, self.password
+        ):
             return FakeResponse(401, self._challenge())
         if self.strict_uri and params.get("uri") != URL(url).raw_path_qs:
             # Credentials were fine; the signature does not cover this request.
@@ -128,11 +149,15 @@ async def test_challenge_is_reused_across_requests():
     session = FakeSession()
     state = {}
 
-    first = await DigestAuth(USER, PASSWORD, session, state).request("GET", "http://d/one")
+    first = await DigestAuth(USER, PASSWORD, session, state).request(
+        "GET", "http://d/one"
+    )
     assert first.status == 200
     assert len(session.requests) == 2  # probe, then authenticated retry
 
-    second = await DigestAuth(USER, PASSWORD, session, state).request("GET", "http://d/two")
+    second = await DigestAuth(USER, PASSWORD, session, state).request(
+        "GET", "http://d/two"
+    )
     assert second.status == 200
     assert len(session.requests) == 3  # no second probe
     assert "AUTHORIZATION" in session.requests[2]["headers"]
@@ -169,7 +194,10 @@ async def test_nonce_count_increments_across_requests():
         await DigestAuth(USER, PASSWORD, session, state).request("GET", "http://d/x")
 
     assert [nc_of(r) for r in session.requests if nc_of(r)] == [
-        "00000001", "00000002", "00000003"]
+        "00000001",
+        "00000002",
+        "00000003",
+    ]
 
 
 async def test_concurrent_requests_get_distinct_nonce_counts():
@@ -180,10 +208,12 @@ async def test_concurrent_requests_get_distinct_nonce_counts():
     await DigestAuth(USER, PASSWORD, session, state).request("GET", "http://d/prime")
     before = len(session.requests)
 
-    results = await asyncio.gather(*[
-        DigestAuth(USER, PASSWORD, session, state).request("GET", "http://d/%d" % i)
-        for i in range(5)
-    ])
+    results = await asyncio.gather(
+        *[
+            DigestAuth(USER, PASSWORD, session, state).request("GET", "http://d/%d" % i)
+            for i in range(5)
+        ]
+    )
 
     assert [r.status for r in results] == [200] * 5
     counts = [nc_of(r) for r in session.requests[before:]]
@@ -200,7 +230,9 @@ async def test_out_of_order_nonce_count_recovers():
     state["last_nonce"] = ""
     state["nonce_count"] = 0
 
-    response = await DigestAuth(USER, PASSWORD, session, state).request("GET", "http://d/x")
+    response = await DigestAuth(USER, PASSWORD, session, state).request(
+        "GET", "http://d/x"
+    )
     assert response.status == 200
 
 
@@ -224,7 +256,9 @@ async def test_stale_challenge_is_refreshed_and_succeeds():
     session.nonce = "nonce-2"
     before = len(session.requests)
 
-    response = await DigestAuth(USER, PASSWORD, session, state).request("GET", "http://d/y")
+    response = await DigestAuth(USER, PASSWORD, session, state).request(
+        "GET", "http://d/y"
+    )
     assert response.status == 200
     assert state["challenge"]["nonce"] == "nonce-2"
     assert len(session.requests) - before == 2  # stale attempt, then success
@@ -235,7 +269,9 @@ async def test_unusable_cached_challenge_is_discarded():
     session = FakeSession()
     state = {"challenge": {"qop": "auth"}}  # no realm, no nonce
 
-    response = await DigestAuth(USER, PASSWORD, session, state).request("GET", "http://d/x")
+    response = await DigestAuth(USER, PASSWORD, session, state).request(
+        "GET", "http://d/x"
+    )
 
     assert response.status == 200
     assert state["challenge"]["nonce"] == session.nonce
@@ -243,8 +279,10 @@ async def test_unusable_cached_challenge_is_discarded():
 
 # --- the uri the header signs -------------------------------------------------
 
-INDEXED_WRITE = ("http://d/cgi-bin/configManager.cgi?action=setConfig"
-                 "&Lighting_V2[3][0][1].Mode=Manual&Lighting_V2[3][0][1].NearLight[0].Light=100")
+INDEXED_WRITE = (
+    "http://d/cgi-bin/configManager.cgi?action=setConfig"
+    "&Lighting_V2[3][0][1].Mode=Manual&Lighting_V2[3][0][1].NearLight[0].Light=100"
+)
 
 
 async def test_the_header_signs_the_uri_that_is_actually_sent():
@@ -255,7 +293,9 @@ async def test_the_header_signs_the_uri_that_is_actually_sent():
     """
     session = FakeSession(strict_uri=True)
 
-    response = await DigestAuth(USER, PASSWORD, session, {}).request("GET", INDEXED_WRITE)
+    response = await DigestAuth(USER, PASSWORD, session, {}).request(
+        "GET", INDEXED_WRITE
+    )
 
     assert response.status == 200, "the device refused a signature it could not verify"
 
@@ -280,7 +320,6 @@ async def test_a_url_without_brackets_is_unaffected():
     assert response.status == 200
     uri = _params(session.requests[-1]["headers"]["AUTHORIZATION"])["uri"]
     assert uri == "/cgi-bin/magicBox.cgi?action=getMachineName"
-
 
 
 # --- the RFC 7616 variations different firmware actually offers ----------------
@@ -331,8 +370,9 @@ def test_md5_sess_folds_the_nonce_into_ha1():
     wrong thing."""
     # With qop, because the client nonce only reaches the header when qop is offered
     # and the header is the only place a test can read it from.
-    auth = _auth({"realm": REALM, "nonce": "n1", "qop": "auth",
-                  "algorithm": "MD5-SESS"})
+    auth = _auth(
+        {"realm": REALM, "nonce": "n1", "qop": "auth", "algorithm": "MD5-SESS"}
+    )
 
     header = auth._build_digest_header("GET", DIGEST_URL)
     params = _params(header)
@@ -340,14 +380,17 @@ def test_md5_sess_folds_the_nonce_into_ha1():
     plain = _md5("%s:%s:%s" % (USER, REALM, PASSWORD))
     session_ha1 = _md5("%s:%s:%s" % (plain, "n1", params["cnonce"]))
     ha2 = _md5("%s:%s" % ("GET", params["uri"]))
-    expected = _md5(":".join([session_ha1, "n1", params["nc"], params["cnonce"],
-                              "auth", ha2]))
-    as_plain_md5 = _md5(":".join([plain, "n1", params["nc"], params["cnonce"],
-                                  "auth", ha2]))
+    expected = _md5(
+        ":".join([session_ha1, "n1", params["nc"], params["cnonce"], "auth", ha2])
+    )
+    as_plain_md5 = _md5(
+        ":".join([plain, "n1", params["nc"], params["cnonce"], "auth", ha2])
+    )
 
     assert params["response"] == expected
-    assert params["response"] != as_plain_md5, (
-        "signed as plain MD5, so the session nonce was ignored")
+    assert (
+        params["response"] != as_plain_md5
+    ), "signed as plain MD5, so the session nonce was ignored"
 
 
 def test_a_device_that_offers_no_qop_is_signed_the_older_way():
@@ -391,6 +434,7 @@ def test_a_device_offering_both_qops_is_accepted():
 
 
 # --- parsing what the device sent back ----------------------------------------
+
 
 def test_a_challenge_that_cannot_be_parsed_is_no_challenge():
     """A malformed www-authenticate has to read as "no digest offered" rather than

@@ -27,6 +27,7 @@ def _clean_host_failures():
     yield
     dahua_module._HOST_FAILURES.clear()
 
+
 COAXIAL = ("async_get_coaxial_control_io_status", "_supports_coaxial_control")
 
 # Every probe, for the timeout behaviour, which is uniform.
@@ -69,6 +70,7 @@ class _Client:
             if name in REQUIRED:
                 return REQUIRED[name]
             return {}
+
         return call
 
 
@@ -121,7 +123,9 @@ async def test_a_probe_that_times_out_does_not_fail_setup(method, flag):
 
     assert coordinator.initialized, f"{method} timing out failed the whole entry"
     if flag:
-        assert getattr(coordinator, flag) is False, f"{flag} should be off after a timeout"
+        assert (
+            getattr(coordinator, flag) is False
+        ), f"{flag} should be off after a timeout"
 
 
 # The coaxial probe is deliberately narrower than the rest: only an HTTP error
@@ -162,7 +166,9 @@ async def test_the_coaxial_probe_still_fails_setup_on_a_connection_error():
 
 async def test_every_probe_timing_out_at_once_still_sets_up():
     """A slow device fails every probe, and must still produce a usable entry."""
-    coordinator = _coordinator(_Client(failing=[m for m, _ in PROBES], error=TimeoutError))
+    coordinator = _coordinator(
+        _Client(failing=[m for m, _ in PROBES], error=TimeoutError)
+    )
 
     await coordinator._async_update_data()
 
@@ -171,7 +177,9 @@ async def test_every_probe_timing_out_at_once_still_sets_up():
 
 async def test_a_required_call_timing_out_still_fails_setup():
     """Not everything is a probe: without the system info there is no device."""
-    coordinator = _coordinator(_Client(failing=["async_get_system_info"], error=TimeoutError))
+    coordinator = _coordinator(
+        _Client(failing=["async_get_system_info"], error=TimeoutError)
+    )
 
     with pytest.raises(Exception):
         await coordinator._async_update_data()

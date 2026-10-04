@@ -24,8 +24,8 @@ Three states have to be told apart, and `Enable` alone tells two of them:
 The probe lives in the config flow; these pin the two decisions made from the
 table itself.
 """
-from custom_components.dahua import dahua_utils
 
+from custom_components.dahua import dahua_utils
 
 INFO = "table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_{0}.{1}"
 
@@ -49,6 +49,7 @@ def _the_real_recorder():
 
 # --- reading the table ------------------------------------------------------
 
+
 def test_every_slot_is_parsed():
     devices = dahua_utils.parse_remote_devices(_the_real_recorder())
 
@@ -71,24 +72,39 @@ def test_a_device_with_no_such_table_parses_to_nothing():
 
 
 def test_a_slot_missing_a_field_still_parses():
-    devices = dahua_utils.parse_remote_devices(
-        {INFO.format(3, "Enable"): "true"})
+    devices = dahua_utils.parse_remote_devices({INFO.format(3, "Enable"): "true"})
 
     assert devices[3] == {"enabled": True, "protocol": ""}
 
 
 # --- deciding what to offer -------------------------------------------------
 
+
 def test_the_real_recorder_offers_fourteen_of_sixteen():
     devices = dahua_utils.parse_remote_devices(_the_real_recorder())
 
     assert dahua_utils.channels_worth_offering(devices) == [
-        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        11,
+        12,
+        13,
+        14,
+    ]
 
 
 def test_a_switched_off_slot_is_never_offered():
     devices = dahua_utils.parse_remote_devices(
-        _recorder({0: (True, "Private"), 1: (False, "Private")}))
+        _recorder({0: (True, "Private"), 1: (False, "Private")})
+    )
 
     assert dahua_utils.channels_worth_offering(devices) == [0]
 
@@ -100,14 +116,16 @@ def test_an_onvif_channel_is_never_offered():
     could never work, so offering it is worse than leaving it out.
     """
     devices = dahua_utils.parse_remote_devices(
-        _recorder({0: (True, "Private"), 1: (True, "Onvif")}))
+        _recorder({0: (True, "Private"), 1: (True, "Onvif")})
+    )
 
     assert dahua_utils.channels_worth_offering(devices) == [0]
 
 
 def test_the_protocol_check_is_case_insensitive():
     devices = dahua_utils.parse_remote_devices(
-        _recorder({0: (True, "ONVIF"), 1: (True, "onvif")}))
+        _recorder({0: (True, "ONVIF"), 1: (True, "onvif")})
+    )
 
     assert dahua_utils.channels_worth_offering(devices) == []
 
@@ -118,11 +136,14 @@ def test_nothing_to_offer_is_an_empty_list_not_an_error():
 
 # --- labelling --------------------------------------------------------------
 
+
 def test_channel_titles_are_read_by_index():
-    titles = dahua_utils.parse_channel_titles({
-        "table.ChannelTitle[0].Name": "FRONT STREET",
-        "table.ChannelTitle[9].Name": "SIDE YARD",
-    })
+    titles = dahua_utils.parse_channel_titles(
+        {
+            "table.ChannelTitle[0].Name": "FRONT STREET",
+            "table.ChannelTitle[9].Name": "SIDE YARD",
+        }
+    )
 
     assert titles == {0: "FRONT STREET", 9: "SIDE YARD"}
 
@@ -134,18 +155,24 @@ def test_a_title_says_nothing_about_whether_a_camera_is_there():
     device, and `IPC` is a name somebody could choose deliberately. So titles
     are for labelling only, and nothing reads anything into them.
     """
-    titles = dahua_utils.parse_channel_titles({
-        "table.ChannelTitle[10].Name": "Channel11",
-        "table.ChannelTitle[11].Name": "IPC",
-        "table.ChannelTitle[14].Name": "Channel 1",
-    })
+    titles = dahua_utils.parse_channel_titles(
+        {
+            "table.ChannelTitle[10].Name": "Channel11",
+            "table.ChannelTitle[11].Name": "IPC",
+            "table.ChannelTitle[14].Name": "Channel 1",
+        }
+    )
 
     assert titles == {10: "Channel11", 11: "IPC", 14: "Channel 1"}
 
 
 def test_unrelated_keys_are_ignored():
-    assert dahua_utils.parse_channel_titles(
-        {"table.VideoWidget[0].CustomTitle[0].Text": "x"}) == {}
+    assert (
+        dahua_utils.parse_channel_titles(
+            {"table.VideoWidget[0].CustomTitle[0].Text": "x"}
+        )
+        == {}
+    )
 
 
 def test_no_titles_is_empty_not_an_error():
@@ -163,7 +190,8 @@ def test_a_slot_that_does_not_say_whether_it_is_enabled_is_not_offered():
     still add by hand.
     """
     devices = dahua_utils.parse_remote_devices(
-        {INFO.format(4, "ProtocolType"): "Private"})
+        {INFO.format(4, "ProtocolType"): "Private"}
+    )
 
     assert devices[4]["enabled"] is False
     assert dahua_utils.channels_worth_offering(devices) == []

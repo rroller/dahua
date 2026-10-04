@@ -38,6 +38,34 @@ def _coordinator(channel, profile_mode, data):
     return c
 
 
+def test_a_v1_only_channel_reads_its_mode_without_needing_the_address():
+    """Reading the mode must not depend on the refusal store, and through it on the
+    device address.
+
+    `infrared_uses_lighting_v2` asks the refusal store whether v1 has been refused,
+    which needs `get_address()`, which reads `_address`. This file builds the real
+    coordinator with `object.__new__` and never sets it -- as does any caller holding
+    a half-constructed one -- and five tests here broke the first time that read was
+    added. A channel with no v2 row has no fallback, so the answer is v1 whatever the
+    store says, and the question should not be asked at all.
+
+    `get_address` is made to raise rather than left unset, so this fails loudly if the
+    short-circuit is ever removed instead of depending on an attribute's absence.
+    """
+    coordinator = _coordinator(3, "0", dict(NVR))
+
+    def _explode():
+        raise AssertionError(
+            "the refusal store was consulted for a channel with no v2 row"
+        )
+
+    coordinator.get_address = _explode
+
+    assert coordinator.infrared_uses_lighting_v2() is False
+    assert coordinator.get_infrared_mode() == "Auto"
+    assert coordinator.get_infrared_level() == 50
+
+
 # The measured channel 3, whose profiles disagree.
 NVR = {
     "table.Lighting[3][0].Mode": "Auto",
@@ -56,6 +84,7 @@ SINGLE = {
 
 
 # --- picking the profile ------------------------------------------------------
+
 
 def test_the_live_profile_is_used_when_the_device_reports_it():
     assert infrared_profile(NVR, 3, "1") == "1"
@@ -93,6 +122,7 @@ def test_nothing_reported_is_profile_zero():
 
 # --- reading the state --------------------------------------------------------
 
+
 def test_the_light_is_read_from_the_live_profile():
     """Profile 1 is Manual; profile 0 is Auto. The camera is on 1."""
     assert _coordinator(3, "1", NVR).is_infrared_light_on() is True
@@ -119,7 +149,9 @@ def test_a_missing_row_does_not_raise():
     c = _coordinator(9, "1", {})
 
     assert c.is_infrared_light_on() is False
-    assert c.get_infrared_brightness() == 255, "the documented default when nothing is reported"
+    assert (
+        c.get_infrared_brightness() == 255
+    ), "the documented default when nothing is reported"
 
 
 # --- and the write, which is the half the docstring above is actually about ---
@@ -142,7 +174,8 @@ def _client():
 async def _url(mode="Manual", brightness=50, channel=0, profile="0"):
     client = _client()
     await DahuaClient.async_set_lighting_v1_mode(
-        client, channel, mode, brightness, profile)
+        client, channel, mode, brightness, profile
+    )
     return client.get.await_args.args[0]
 
 
@@ -173,6 +206,7 @@ async def test_the_channel_is_the_one_asked_for():
 
 # --- the mode the device will accept -----------------------------------------
 
+
 async def test_on_is_written_as_manual():
     """The service takes On because that is what a person says; the API wants Manual."""
     assert "Mode=Manual" in await _url(mode="On")
@@ -197,6 +231,7 @@ async def test_the_first_character_is_capitalised_for_the_device():
 
 
 # --- the on/off wrapper the light entity uses -------------------------------
+
 
 async def test_turning_the_light_on_writes_manual_to_the_live_profile():
     client = _client()

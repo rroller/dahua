@@ -28,12 +28,21 @@ PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 
 # The files that define entities. entity.py holds the base and is where the flag
 # lives, so it is checked separately below.
-PLATFORMS = ["binary_sensor", "button", "camera", "event", "light", "select",
-             "sensor", "switch"]
+PLATFORMS = [
+    "binary_sensor",
+    "button",
+    "camera",
+    "event",
+    "light",
+    "select",
+    "sensor",
+    "switch",
+]
 
 # Ways the device's name can be reached from an entity.
 DEVICE_NAME = re.compile(
-    r"get_device_name\(\)|self\._device_name|config_entry\.title|entry\.title")
+    r"get_device_name\(\)|self\._device_name|config_entry\.title|entry\.title"
+)
 
 
 def _source(name):
@@ -51,16 +60,15 @@ def _name_expressions(body):
     exactly the one that has to still work tomorrow.
     """
     found = []
-    for match in re.finditer(r"    def name\(self\)[^\n]*:\n((?:        .*\n)+)",
-                             body):
+    for match in re.finditer(r"    def name\(self\)[^\n]*:\n((?:        .*\n)+)", body):
         found.append(("name property", match.group(1)))
-    for match in re.finditer(r"^\s*self\._attr_name\s*=\s*(.+)$", body,
-                             re.MULTILINE):
+    for match in re.finditer(r"^\s*self\._attr_name\s*=\s*(.+)$", body, re.MULTILINE):
         found.append(("_attr_name", match.group(1)))
     return found
 
 
 # --- the flag ---------------------------------------------------------------
+
 
 def test_the_base_entity_sets_has_entity_name():
     """Once, on the class every entity inherits, rather than per platform where
@@ -73,20 +81,27 @@ def test_every_entity_class_inherits_the_base():
     silently keep the old behaviour."""
     offenders = []
     for name in PLATFORMS:
-        for match in re.finditer(r"^class (Dahua\w+)\(([^)]*)\)", _source(name),
-                                 re.MULTILINE):
+        for match in re.finditer(
+            r"^class (Dahua\w+)\(([^)]*)\)", _source(name), re.MULTILINE
+        ):
             classname, bases = match.groups()
             # DahuaEventSensor inherits DahuaEventDrivenEntity, and per-rule
             # IVS sensors inherit DahuaEventSensor.
-            if not any(base in bases for base in (
-                "DahuaBaseEntity", "DahuaEventDrivenEntity", "DahuaEventSensor"
-            )):
+            if not any(
+                base in bases
+                for base in (
+                    "DahuaBaseEntity",
+                    "DahuaEventDrivenEntity",
+                    "DahuaEventSensor",
+                )
+            ):
                 offenders.append("%s.%s" % (name, classname))
 
     assert not offenders, "these do not inherit the base: %s" % offenders
 
 
 # --- and the thing that breaks silently -------------------------------------
+
 
 @pytest.mark.parametrize("platform", PLATFORMS)
 def test_no_entity_name_includes_the_device_name(platform):
@@ -99,7 +114,8 @@ def test_no_entity_name_includes_the_device_name(platform):
 
     assert not offenders, (
         "%s.py composes the device name into an entity name, which Home Assistant "
-        "will then prefix again:\n  %s" % (platform, "\n  ".join(offenders)))
+        "will then prefix again:\n  %s" % (platform, "\n  ".join(offenders))
+    )
 
 
 def test_the_check_above_can_actually_see_a_prefix():
@@ -114,7 +130,9 @@ def test_it_also_sees_the_indirect_ways():
     """Three entities assign `_attr_name` in __init__, the binary sensors keep the
     device name in `_device_name`, and the camera used the config entry's title.
     All three were real and all three had to be found."""
-    for sample in ['self._attr_name = f"{coordinator.get_device_name()} X"',
-                   'return f"{self._device_name} {self._name}"',
-                   'f"{config_entry.title} {display_name}"']:
+    for sample in [
+        'self._attr_name = f"{coordinator.get_device_name()} X"',
+        'return f"{self._device_name} {self._name}"',
+        'f"{config_entry.title} {display_name}"',
+    ]:
         assert DEVICE_NAME.search(sample), sample

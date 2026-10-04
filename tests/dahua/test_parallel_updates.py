@@ -24,7 +24,7 @@ READ_ONLY = {"binary_sensor", "sensor", "event"}
 
 # Platforms that send a command to the device: a toggle, a preset, a reboot, a
 # stream. These are the ones the limit exists for.
-ACTING = {"camera", "switch", "light", "select", "button"}
+ACTING = {"camera", "switch", "light", "select", "button", "number"}
 
 
 def _declared(platform):
@@ -39,17 +39,20 @@ def test_the_platform_lists_above_are_the_platforms_that_ship():
     quietly stopped covering a new issue."""
     from custom_components.dahua.const import PLATFORMS
 
-    assert READ_ONLY | ACTING == set(PLATFORMS), (
-        "unlisted: %s; listed but not a platform: %s"
-        % (sorted(set(PLATFORMS) - (READ_ONLY | ACTING)),
-           sorted((READ_ONLY | ACTING) - set(PLATFORMS))))
+    assert READ_ONLY | ACTING == set(
+        PLATFORMS
+    ), "unlisted: %s; listed but not a platform: %s" % (
+        sorted(set(PLATFORMS) - (READ_ONLY | ACTING)),
+        sorted((READ_ONLY | ACTING) - set(PLATFORMS)),
+    )
 
 
 @pytest.mark.parametrize("platform", sorted(READ_ONLY | ACTING))
 def test_every_platform_declares_a_limit(platform):
     """Absent means Home Assistant picks, which is the thing the rule is about."""
     assert _declared(platform) is not None, (
-        "%s.py does not set PARALLEL_UPDATES" % platform)
+        "%s.py does not set PARALLEL_UPDATES" % platform
+    )
 
 
 @pytest.mark.parametrize("platform", sorted(READ_ONLY))

@@ -52,7 +52,9 @@ class _Client:
     async def async_set_nvr_coaxial_control_state(self, channel, dahua_type, enabled):
         self.nvr_coaxial.append((channel, dahua_type, enabled))
 
-    async def async_set_lighting_v2_for_flood_lights(self, channel, enabled, profile_mode):
+    async def async_set_lighting_v2_for_flood_lights(
+        self, channel, enabled, profile_mode
+    ):
         self.lighting_v2.append((channel, enabled, profile_mode))
 
 
@@ -87,13 +89,15 @@ async def test_a_direct_camera_uses_the_direct_call(turning_on):
     channel *number*.
     """
     entity, coordinator = _flood_light(
-        supports_floodlightmode=True, is_nvr_channel=False)
+        supports_floodlightmode=True, is_nvr_channel=False
+    )
 
     await (entity.async_turn_on() if turning_on else entity.async_turn_off())
 
     client = coordinator.client
     assert client.coaxial == [
-        (CHANNEL_INDEX, SECURITY_LIGHT_TYPE, turning_on)], client.coaxial
+        (CHANNEL_INDEX, SECURITY_LIGHT_TYPE, turning_on)
+    ], client.coaxial
     assert client.nvr_coaxial == [], "a direct camera must not use the recorder call"
 
 
@@ -103,13 +107,15 @@ async def test_a_direct_camera_uses_the_direct_call(turning_on):
 @pytest.mark.parametrize("turning_on", [True, False])
 async def test_an_nvr_channel_uses_the_recorder_call(turning_on):
     entity, coordinator = _flood_light(
-        supports_floodlightmode=True, is_nvr_channel=True)
+        supports_floodlightmode=True, is_nvr_channel=True
+    )
 
     await (entity.async_turn_on() if turning_on else entity.async_turn_off())
 
     client = coordinator.client
     assert client.nvr_coaxial == [
-        (CHANNEL_NUMBER, SECURITY_LIGHT_TYPE, turning_on)], client.nvr_coaxial
+        (CHANNEL_NUMBER, SECURITY_LIGHT_TYPE, turning_on)
+    ], client.nvr_coaxial
     assert client.coaxial == [], "a recorder channel must not use the direct call"
 
 
@@ -119,7 +125,8 @@ async def test_the_recorder_call_is_given_the_channel_number(turning_on):
     `get_channel_number()` is what the recorder calls the channel, and they differ by
     one: sending the index turns on the light of the camera next door."""
     entity, coordinator = _flood_light(
-        supports_floodlightmode=True, is_nvr_channel=True)
+        supports_floodlightmode=True, is_nvr_channel=True
+    )
 
     await (entity.async_turn_on() if turning_on else entity.async_turn_off())
 
@@ -134,13 +141,15 @@ async def test_the_recorder_call_is_given_the_channel_number(turning_on):
 @pytest.mark.parametrize("turning_on", [True, False])
 async def test_without_floodlightmode_it_writes_lighting_v2(turning_on):
     entity, coordinator = _flood_light(
-        supports_floodlightmode=False, is_nvr_channel=False)
+        supports_floodlightmode=False, is_nvr_channel=False
+    )
 
     await (entity.async_turn_on() if turning_on else entity.async_turn_off())
 
     client = coordinator.client
     assert client.lighting_v2 == [
-        (CHANNEL_INDEX, turning_on, PROFILE_MODE)], client.lighting_v2
+        (CHANNEL_INDEX, turning_on, PROFILE_MODE)
+    ], client.lighting_v2
 
 
 @pytest.mark.parametrize("turning_on", [True, False])
@@ -149,7 +158,8 @@ async def test_without_floodlightmode_nothing_coaxial_is_touched(turning_on):
     write to it is not reversible. A camera that does not report flood light mode
     must not have it poked speculatively."""
     entity, coordinator = _flood_light(
-        supports_floodlightmode=False, is_nvr_channel=False)
+        supports_floodlightmode=False, is_nvr_channel=False
+    )
 
     await (entity.async_turn_on() if turning_on else entity.async_turn_off())
 
@@ -164,7 +174,8 @@ async def test_the_lighting_v2_path_is_taken_even_on_a_recorder():
     recorder channel whose camera does not report the mode still writes the table.
     Reading the two branches as independent is the easy mistake here."""
     entity, coordinator = _flood_light(
-        supports_floodlightmode=False, is_nvr_channel=True)
+        supports_floodlightmode=False, is_nvr_channel=True
+    )
 
     await entity.async_turn_on()
 

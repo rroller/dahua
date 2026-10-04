@@ -22,11 +22,15 @@ from custom_components.dahua import illuminator_brightness_bank
 
 
 def _light(channel, profile, index, bank):
-    return {"table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
-        channel, profile, index, bank): "50"}
+    return {
+        "table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
+            channel, profile, index, bank
+        ): "50"
+    }
 
 
 # --- the models this exists for -----------------------------------------------
+
 
 def test_a_white_light_on_nearlight_is_found():
     """The IPC-HFW2449T-AS-IL layout: infrared on Middle, white on Near."""
@@ -42,10 +46,13 @@ def test_the_infrared_row_still_resolves_to_middlelight():
 
 
 def test_farlight_is_found_when_it_is_the_only_one():
-    assert illuminator_brightness_bank(_light(0, 0, 1, "FarLight"), 0, 0, 1) == "FarLight"
+    assert (
+        illuminator_brightness_bank(_light(0, 0, 1, "FarLight"), 0, 0, 1) == "FarLight"
+    )
 
 
 # --- and what must not change -------------------------------------------------
+
 
 def test_a_light_naming_no_bank_falls_back_to_middlelight():
     """A WhiteLight row with no bank at all, as one NVR reports."""
@@ -61,7 +68,10 @@ def test_middlelight_wins_when_a_light_exposes_several():
 
 def test_another_lights_bank_is_not_borrowed():
     """Index 0's bank must not answer for index 1."""
-    assert illuminator_brightness_bank(_light(0, 0, 0, "NearLight"), 0, 0, 1) == "MiddleLight"
+    assert (
+        illuminator_brightness_bank(_light(0, 0, 0, "NearLight"), 0, 0, 1)
+        == "MiddleLight"
+    )
 
 
 def test_another_channel_or_profile_is_not_borrowed():

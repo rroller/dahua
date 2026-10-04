@@ -36,8 +36,7 @@ class _ConfigEntries:
 
 
 def _entry(unique_id, address=OLD):
-    return SimpleNamespace(unique_id=unique_id,
-                           data={"address": address, "channel": 0})
+    return SimpleNamespace(unique_id=unique_id, data={"address": address, "channel": 0})
 
 
 def _handler(entries):
@@ -49,6 +48,7 @@ def _handler(entries):
 
 # --- the siblings ------------------------------------------------------------
 
+
 def test_a_recorders_other_channels_follow_it():
     """The whole point: fifteen entries left on a dead address is not a fix."""
     entries = [_entry(SERIAL), _entry(SERIAL + "_1"), _entry(SERIAL + "_2")]
@@ -57,7 +57,9 @@ def test_a_recorders_other_channels_follow_it():
     handler._async_heal_siblings(SERIAL, NEW)
 
     assert handler.hass.config_entries.updated == [
-        (SERIAL + "_1", NEW), (SERIAL + "_2", NEW)]
+        (SERIAL + "_1", NEW),
+        (SERIAL + "_2", NEW),
+    ]
 
 
 def test_the_matched_entry_is_left_to_updates():
@@ -132,8 +134,9 @@ def test_only_a_numeric_tail_counts_as_a_channel():
     handler._async_heal_siblings("ABC_XY", NEW)
 
     moved = [uid for uid, _addr in handler.hass.config_entries.updated]
-    assert moved == ["ABC_XY_1"], (
-        "ABC_9 belongs to serial ABC, which is a different device")
+    assert moved == [
+        "ABC_XY_1"
+    ], "ABC_9 belongs to serial ABC, which is a different device"
 
 
 def test_nothing_else_configured_is_no_work():
@@ -195,8 +198,9 @@ async def _driven(monkeypatch, entries):
     handler._abort_if_unique_id_configured = _abort
     handler.async_step_discover = _discover
 
-    await handler.async_step_user({"username": "u", "password": "p",
-                                   "address": NEW, "channel": 0})
+    await handler.async_step_user(
+        {"username": "u", "password": "p", "address": NEW, "channel": 0}
+    )
     seen["moved"] = list(handler.hass.config_entries.updated)
     return seen
 
@@ -205,8 +209,9 @@ async def test_the_add_form_heals_the_siblings_too(monkeypatch):
     """Driving the real step with a recorder's other channels present. Without
     this, a mutation removing the sibling call passes everything: the tests above
     call the helper directly, and the one below has no siblings to move."""
-    seen = await _driven(monkeypatch, [_entry(SERIAL), _entry(SERIAL + "_1"),
-                                       _entry(SERIAL + "_2")])
+    seen = await _driven(
+        monkeypatch, [_entry(SERIAL), _entry(SERIAL + "_1"), _entry(SERIAL + "_2")]
+    )
 
     assert seen["moved"] == [(SERIAL + "_1", NEW), (SERIAL + "_2", NEW)]
 
@@ -252,15 +257,18 @@ async def test_the_add_form_offers_the_new_address_to_the_abort(monkeypatch):
 
     handler.async_set_unique_id = _set_unique_id
     handler._abort_if_unique_id_configured = _abort
+
     async def _discover():
         return {"type": "progress"}
 
     handler.async_step_discover = _discover
 
-    await handler.async_step_user({"username": "u", "password": "p",
-                                   "address": NEW, "channel": 0})
+    await handler.async_step_user(
+        {"username": "u", "password": "p", "address": NEW, "channel": 0}
+    )
 
     assert seen["unique_id"] == SERIAL
     assert seen["updates"] == {"address": NEW}, (
         "the address just confirmed has to reach the abort, or the entry keeps the "
-        "old one")
+        "old one"
+    )

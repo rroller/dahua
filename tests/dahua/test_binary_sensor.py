@@ -8,12 +8,14 @@ from custom_components.dahua.binary_sensor import (
     MOMENTARY_EVENT_HOLD_SECONDS,
     DahuaEventSensor,
     DahuaAuthorizedVehicleBinarySensor,
+    DahuaDiskProblemBinarySensor,
 )
 from custom_components.dahua.const import (
     DOOR_DEVICE_CLASS,
     MOTION_SENSOR_DEVICE_CLASS,
     SAFETY_DEVICE_CLASS,
     SOUND_DEVICE_CLASS,
+    TAMPER_DEVICE_CLASS,
 )
 
 
@@ -35,6 +37,14 @@ class _Coordinator:
         self._last_plate_timestamp = 0
         self._authorized_plates = ["ABC1234", "XYZ5678"]
         self._authorized_hold_time = 60
+        # DahuaBaseEntity.extra_state_attributes reads data.get("id"), and the
+        # authorized vehicle sensor adds to that dict rather than replacing it.
+        self.data = {"id": 7}
+        # event code -> the last event's rule details, as the coordinator keeps
+        # them for #373.
+        self.event_details = {}
+        # recorder disks, as the coordinator keeps them for #745
+        self.storage_disks = []
 
     def get_serial_number(self):
         return "SERIAL1"
@@ -44,6 +54,12 @@ class _Coordinator:
 
     def get_event_timestamp(self, event_name):
         return self.timestamps.get(event_name, 0)
+
+    def get_event_details(self, event_name):
+        return self.event_details.get(event_name, {})
+
+    def get_storage_disks(self):
+        return self.storage_disks
 
     def event_is_momentary(self, event_name):
         """No event here has arrived as a Pulse, so none clears itself."""
@@ -68,7 +84,6 @@ class _Coordinator:
         return plate in self._authorized_plates
 
 
-
 @pytest.fixture
 def sensor(monkeypatch):
     """Build real sensors, skipping only Home Assistant's entity plumbing."""
@@ -83,14 +98,18 @@ def sensor(monkeypatch):
 
 # --- names are derived from the event code ---------------------------------
 
-@pytest.mark.parametrize("event_name,expected", [
-    ("SmartMotionHuman", "Smart Motion Human"),
-    ("SmartMotionVehicle", "Smart Motion Vehicle"),
-    ("CrossRegionDetection", "Cross Region Detection"),
-    ("AudioMutation", "Audio Mutation"),
-    ("AlarmLocal", "Alarm Local"),
-    ("StorageNotExist", "Storage Not Exist"),
-])
+
+@pytest.mark.parametrize(
+    "event_name,expected",
+    [
+        ("SmartMotionHuman", "Smart Motion Human"),
+        ("SmartMotionVehicle", "Smart Motion Vehicle"),
+        ("CrossRegionDetection", "Cross Region Detection"),
+        ("AudioMutation", "Audio Mutation"),
+        ("AlarmLocal", "Alarm Local"),
+        ("StorageNotExist", "Storage Not Exist"),
+    ],
+)
 def test_camel_case_events_become_readable_keys(sensor, event_name, expected):
     """The name itself is in translations/en.json now, and
     test_event_sensor_names_are_translated.py compares the whole file against
@@ -100,11 +119,14 @@ def test_camel_case_events_become_readable_keys(sensor, event_name, expected):
     assert sensor(event_name).translation_key == expected.lower().replace(" ", "_")
 
 
-@pytest.mark.parametrize("event_name,expected", [
-    ("VideoMotion", "Motion Alarm"),
-    ("CrossLineDetection", "Cross Line Alarm"),
-    ("DoorbellPressed", "Button Pressed"),
-])
+@pytest.mark.parametrize(
+    "event_name,expected",
+    [
+        ("VideoMotion", "Motion Alarm"),
+        ("CrossLineDetection", "Cross Line Alarm"),
+        ("DoorbellPressed", "Button Pressed"),
+    ],
+)
 def test_overridden_names_win_over_the_derived_one(sensor, event_name, expected):
     """Same three overrides, reached through the key they produce."""
     assert sensor(event_name).translation_key == expected.lower().replace(" ", "_")
@@ -126,14 +148,19 @@ def test_a_code_with_no_string_keeps_the_derived_english_name(sensor):
 
 # --- device classes and icons ----------------------------------------------
 
-@pytest.mark.parametrize("event_name,expected", [
-    ("VideoMotion", MOTION_SENSOR_DEVICE_CLASS),
-    ("AlarmLocal", SAFETY_DEVICE_CLASS),
-    ("VideoLoss", SAFETY_DEVICE_CLASS),
-    ("DoorStatus", DOOR_DEVICE_CLASS),
-    ("AudioMutation", SOUND_DEVICE_CLASS),
-    ("SmartMotionHuman", MOTION_SENSOR_DEVICE_CLASS),  # the fallback
-])
+
+@pytest.mark.parametrize(
+    "event_name,expected",
+    [
+        ("VideoMotion", MOTION_SENSOR_DEVICE_CLASS),
+        ("AlarmLocal", SAFETY_DEVICE_CLASS),
+        ("VideoLoss", SAFETY_DEVICE_CLASS),
+        ("VideoBlind", TAMPER_DEVICE_CLASS),
+        ("DoorStatus", DOOR_DEVICE_CLASS),
+        ("AudioMutation", SOUND_DEVICE_CLASS),
+        ("SmartMotionHuman", MOTION_SENSOR_DEVICE_CLASS),  # the fallback
+    ],
+)
 def test_device_class_mapping(sensor, event_name, expected):
     assert sensor(event_name).device_class == expected
 
@@ -151,6 +178,7 @@ def test_no_event_sensor_chooses_an_icon_in_code(sensor):
 
 # --- identity, including a back-compat case that must not be tidied away ---
 
+
 def test_video_motion_keeps_the_bare_serial_as_its_id(sensor):
     """Changing this orphans every existing motion sensor on upgrade."""
     assert sensor("VideoMotion").unique_id == "SERIAL1"
@@ -162,15 +190,24 @@ def test_other_events_get_a_suffixed_id(sensor):
 
 
 def test_ids_are_distinct_across_the_events_a_camera_reports(sensor):
-    events = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss",
-              "VideoBlind", "AudioMutation", "CrossRegionDetection",
-              "SmartMotionHuman", "SmartMotionVehicle"]
+    events = [
+        "VideoMotion",
+        "CrossLineDetection",
+        "AlarmLocal",
+        "VideoLoss",
+        "VideoBlind",
+        "AudioMutation",
+        "CrossRegionDetection",
+        "SmartMotionHuman",
+        "SmartMotionVehicle",
+    ]
     ids = [sensor(e).unique_id for e in events]
 
     assert len(set(ids)) == len(ids), "two events would share one entity: %s" % ids
 
 
 # --- state comes from the event stream, not polling ------------------------
+
 
 def test_is_on_follows_the_event_timestamp(sensor):
     c = _Coordinator()
@@ -220,8 +257,9 @@ async def test_it_stops_listening_when_it_is_removed(sensor):
     for undo in list(s._on_remove):
         undo()
 
-    assert c._dahua_event_listeners == {}, (
-        "the key outlived the entity, so the poll still thinks something reads it")
+    assert (
+        c._dahua_event_listeners == {}
+    ), "the key outlived the entity, so the poll still thinks something reads it"
 
 
 def test_these_sensors_are_pushed_not_polled(sensor):
@@ -229,6 +267,7 @@ def test_these_sensors_are_pushed_not_polled(sensor):
 
 
 # --- authorized vehicle sensor tests ---------------------------------------
+
 
 def test_authorized_vehicle_sensor_properties():
     c = _Coordinator()
@@ -294,6 +333,7 @@ def test_authorized_vehicle_sensor_state_and_attributes():
 # on it: `is_on` going false on its own is not enough, because nothing would look
 # again and the sensor would keep showing on until some unrelated event wrote to it.
 
+
 @pytest.fixture
 async def event_sensor(hass, monkeypatch):
     """A real event sensor with hass attached and its state writes counted."""
@@ -301,8 +341,11 @@ async def event_sensor(hass, monkeypatch):
     monkeypatch.setattr(bs.DahuaBaseEntity, "__init__", lambda self, c, e: None)
     monkeypatch.setattr(bs.BinarySensorEntity, "__init__", lambda self: None)
     monkeypatch.setattr(
-        DahuaEventSensor, "schedule_update_ha_state",
-        lambda self, force_refresh=False: writes.append(1), raising=False)
+        DahuaEventSensor,
+        "schedule_update_ha_state",
+        lambda self, force_refresh=False: writes.append(1),
+        raising=False,
+    )
 
     def build(event_name, coordinator):
         s = DahuaEventSensor(coordinator, object(), event_name)
@@ -469,6 +512,7 @@ async def test_a_code_on_neither_list_waits_for_a_stop(event_sensor):
 # separately, restores the sensor's state after a reload. A recorder is reloaded
 # whenever any of its options change, so that restore path runs often.
 
+
 @pytest.fixture
 async def vehicle(hass, monkeypatch):
     """A real authorized-vehicle sensor, attached to a real hass.
@@ -483,8 +527,11 @@ async def vehicle(hass, monkeypatch):
     """
     writes = []
     monkeypatch.setattr(
-        DahuaAuthorizedVehicleBinarySensor, "schedule_update_ha_state",
-        lambda self, force_refresh=False: writes.append(1), raising=False)
+        DahuaAuthorizedVehicleBinarySensor,
+        "schedule_update_ha_state",
+        lambda self, force_refresh=False: writes.append(1),
+        raising=False,
+    )
 
     def build(coordinator):
         s = DahuaAuthorizedVehicleBinarySensor(coordinator, object())
@@ -577,6 +624,7 @@ async def test_a_second_authorized_plate_does_not_leave_two_timers(vehicle):
 
 # --- restoring state across a reload ----------------------------------------
 
+
 async def test_a_plate_seen_just_before_a_reload_is_still_on_afterwards(vehicle):
     """The reason the recheck exists. A recorder reloads whenever an option changes,
     and a vehicle recognised seconds earlier should not be forgotten because of it."""
@@ -601,7 +649,7 @@ async def test_the_restored_hold_runs_from_when_the_plate_was_seen(vehicle):
     a further full hold -- and on a recorder whose options are being adjusted, that
     stacks up."""
     c = _Coordinator()
-    seen_at = int(time.time()) - 50          # 50s ago, hold is 60s
+    seen_at = int(time.time()) - 50  # 50s ago, hold is 60s
     c._last_plate = "ABC1234"
     c._last_plate_timestamp = seen_at
     s = vehicle(c)
@@ -619,7 +667,7 @@ async def test_the_restored_hold_runs_from_when_the_plate_was_seen(vehicle):
 async def test_a_plate_older_than_the_hold_does_not_come_back_on(vehicle):
     c = _Coordinator()
     c._last_plate = "ABC1234"
-    c._last_plate_timestamp = int(time.time()) - 120     # hold is 60
+    c._last_plate_timestamp = int(time.time()) - 120  # hold is 60
     s = vehicle(c)
 
     await s.async_added_to_hass()
@@ -656,6 +704,7 @@ async def test_a_fresh_install_with_no_plate_yet_restores_nothing(vehicle):
 
 
 # --- letting go -------------------------------------------------------------
+
 
 async def test_the_auto_off_clears_its_own_handle(vehicle):
     """`_unsub_timer` is what the next match cancels and what removal cancels. A fired
@@ -718,3 +767,92 @@ async def test_removal_is_safe_with_no_timer_pending(vehicle):
 
     assert s._unsub_timer is None
 
+
+# --- #373: an IVS/smart sensor exposes which rule tripped --------------------
+
+
+def test_an_ivs_sensor_exposes_the_rule_details_with_the_base_attrs():
+    """Built directly so the real base __init__ runs, the way the authorized
+    vehicle attribute test does, because the rule details are layered on the
+    base's id and integration rather than replacing them."""
+    c = _Coordinator()
+    c.event_details["CrossLineDetection"] = {
+        "rule_name": "Pool Entry",
+        "direction": "LeftToRight",
+        "object_type": "Human",
+    }
+    s = DahuaEventSensor(c, object(), "CrossLineDetection")
+
+    attrs = s.extra_state_attributes
+    assert attrs["rule_name"] == "Pool Entry"
+    assert attrs["direction"] == "LeftToRight"
+    assert attrs["object_type"] == "Human"
+    assert attrs["id"] == "7"
+    assert attrs["integration"] == "dahua"
+
+
+def test_a_sensor_without_details_keeps_only_the_base_attrs():
+    c = _Coordinator()
+    s = DahuaEventSensor(c, object(), "VideoMotion")
+
+    attrs = s.extra_state_attributes
+    assert "rule_name" not in attrs
+    assert "object_type" not in attrs
+    assert attrs["id"] == "7"
+
+
+# --- #745: a recorder's disk-health sensor ----------------------------------
+
+
+def _disk(name="/dev/sda", healthy=True, has_error=False, state="Success"):
+    return {
+        "name": name,
+        "state": state,
+        "healthy": healthy,
+        "total_bytes": 6_000_000_000,
+        "used_bytes": 5_000_000_000,
+        "has_error": has_error,
+        "health_flag": 0,
+    }
+
+
+def test_a_disk_problem_sensor_is_off_when_the_disk_is_healthy():
+    c = _Coordinator()
+    c.storage_disks = [_disk()]
+    s = DahuaDiskProblemBinarySensor(c, object(), "/dev/sda")
+
+    assert s.is_on is False
+    assert s.unique_id == "SERIAL1_disk_dev_sda"
+    attrs = s.extra_state_attributes
+    assert attrs["state"] == "Success"
+    assert attrs["total_gb"] == 6.0
+    assert attrs["partition_error"] is False
+    assert attrs["id"] == "7"  # base id preserved, not replaced
+
+
+def test_a_disk_problem_sensor_is_on_when_the_disk_is_unhealthy():
+    c = _Coordinator()
+    c.storage_disks = [_disk(healthy=False, has_error=True)]
+    s = DahuaDiskProblemBinarySensor(c, object(), "/dev/sda")
+
+    assert s.is_on is True
+    assert s.extra_state_attributes["partition_error"] is True
+
+
+def test_a_disk_no_longer_reported_reads_unknown():
+    c = _Coordinator()
+    c.storage_disks = []  # the disk has gone
+    s = DahuaDiskProblemBinarySensor(c, object(), "/dev/sda")
+
+    assert s.is_on is None
+    # the base attributes still resolve even with no disk
+    assert s.extra_state_attributes["id"] == "7"
+
+
+def test_a_disk_problem_sensor_is_diagnostic_and_off_by_default():
+    c = _Coordinator()
+    c.storage_disks = [_disk()]
+    s = DahuaDiskProblemBinarySensor(c, object(), "/dev/sda")
+
+    assert s.entity_registry_enabled_default is False
+    assert s.entity_category is not None

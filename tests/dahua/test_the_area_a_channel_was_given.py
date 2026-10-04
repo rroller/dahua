@@ -58,9 +58,12 @@ def registry(monkeypatch):
         return known.get(area_id)
 
     monkeypatch.setattr(
-        coordinator_module, "ar",
-        SimpleNamespace(async_get=lambda hass: SimpleNamespace(
-            async_get_area=async_get_area)))
+        coordinator_module,
+        "ar",
+        SimpleNamespace(
+            async_get=lambda hass: SimpleNamespace(async_get_area=async_get_area)
+        ),
+    )
     return SimpleNamespace(known=known, asked=asked)
 
 
@@ -113,7 +116,8 @@ def test_the_channel_beats_the_entry(registry):
     registry.known["own"] = SimpleNamespace(name="Side Gate")
     registry.known["entrys"] = SimpleNamespace(name="Everything Else")
     coordinator = _coordinator(
-        channel_config={CONF_AREA: "own"}, options={CONF_AREA: "entrys"})
+        channel_config={CONF_AREA: "own"}, options={CONF_AREA: "entrys"}
+    )
 
     assert coordinator.configured_area_name() == "Side Gate"
 
@@ -127,7 +131,8 @@ def test_the_entrys_options_are_used_when_the_channel_has_no_answer(registry):
     """
     registry.known["entrys"] = SimpleNamespace(name="Everything Else")
     coordinator = _coordinator(
-        channel_config={"something_else": True}, options={CONF_AREA: "entrys"})
+        channel_config={"something_else": True}, options={CONF_AREA: "entrys"}
+    )
 
     assert coordinator.configured_area_name() == "Everything Else"
 
@@ -143,7 +148,8 @@ def test_an_area_explicitly_cleared_on_a_channel_blocks_the_entrys_answer(regist
     """
     registry.known["entrys"] = SimpleNamespace(name="Everything Else")
     coordinator = _coordinator(
-        channel_config={CONF_AREA: None}, options={CONF_AREA: "entrys"})
+        channel_config={CONF_AREA: None}, options={CONF_AREA: "entrys"}
+    )
 
     assert coordinator.configured_area_name() is None
     assert registry.asked == [], "the entry's area was looked up anyway"
@@ -164,7 +170,8 @@ def test_a_recorder_channel_does_not_inherit_the_primary_channels_area(registry)
     channel config at all is what marks this case."""
     registry.known["primarys"] = SimpleNamespace(name="Primary Channel Area")
     coordinator = _coordinator(
-        channel_config={"something_else": True}, entry_data={CONF_AREA: "primarys"})
+        channel_config={"something_else": True}, entry_data={CONF_AREA: "primarys"}
+    )
 
     assert coordinator.configured_area_name() is None
     assert registry.asked == [], "the primary channel's area was looked up"

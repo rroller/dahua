@@ -64,8 +64,9 @@ class _Session:
         self.closed = True
 
 
-def _holder(*, refs=1, logout_raises=False, task="a-login", keepalive=None,
-            session=None):
+def _holder(
+    *, refs=1, logout_raises=False, task="a-login", keepalive=None, session=None
+):
     holder = object.__new__(client_module._SharedRpc2Session)
     holder.session = session if session is not None else _Session()
     holder.client = _Rpc2Client(logout_raises)
@@ -291,7 +292,7 @@ async def test_a_per_channel_table_is_written_at_its_channel():
 
     await client._rpc2_set_config_value("MotionDetect", 1, "Enable", "true")
 
-    (name, table), = written[0]
+    ((name, table),) = written[0]
     assert name == "MotionDetect"
     assert table[1]["Enable"] == "true"
     assert table[0]["Enable"] == "false", "the other channel was changed too"
@@ -304,7 +305,7 @@ async def test_a_bare_object_table_is_written_directly():
 
     await client._rpc2_set_config_value("General", 0, "MachineName", "new")
 
-    (_name, table), = written[0]
+    ((_name, table),) = written[0]
     assert table == {"MachineName": "new"}
 
 
@@ -315,7 +316,7 @@ async def test_a_table_nested_under_params_is_still_found():
 
     await client._rpc2_set_config_value("General", 0, "MachineName", "new")
 
-    (_name, table), = written[0]
+    ((_name, table),) = written[0]
     assert table == {"MachineName": "new"}
 
 
@@ -338,8 +339,9 @@ async def test_a_channel_the_table_does_not_have_raises():
 async def test_a_successful_write_reports_success():
     client, written = _writer({"table": {"MachineName": "old"}})
 
-    assert await client._rpc2_set_config_value(
-        "General", 0, "MachineName", "new") == {"result": True}
+    assert await client._rpc2_set_config_value("General", 0, "MachineName", "new") == {
+        "result": True
+    }
     assert len(written) == 1
 
 
@@ -349,7 +351,8 @@ async def test_a_successful_write_reports_success():
 @pytest.mark.parametrize("enabled", [True, False])
 def test_use_rpc2_surfaces_the_flag(enabled):
     """A property, not a method. Reading it off an instance is the only way to get the
-    value: off the class it is the descriptor, which is truthy whatever the flag says."""
+    value: off the class it is the descriptor, which is truthy whatever the flag says.
+    """
     client = object.__new__(DahuaClient)
     client._use_rpc2 = enabled
 

@@ -27,10 +27,13 @@ def _coordinator(channel=0):
 
 
 def _row(channel=0, **fields):
-    return {"table.VideoInMode[{0}].{1}".format(channel, k): v for k, v in fields.items()}
+    return {
+        "table.VideoInMode[{0}].{1}".format(channel, k): v for k, v in fields.items()
+    }
 
 
 # --- the two reported cameras -----------------------------------------------
+
 
 def test_general_profile_management_uses_profile_two():
     """#605: Config[0]=2 wins, even though ConfigEx says Day."""
@@ -39,7 +42,10 @@ def test_general_profile_management_uses_profile_two():
     assert _coordinator().read_profile_mode(data) == "2"
 
 
-@pytest.mark.parametrize("config_ex,expected", [("Day", "0"), ("Night", "1"), ("night", "1"), (" Night ", "1")])
+@pytest.mark.parametrize(
+    "config_ex,expected",
+    [("Day", "0"), ("Night", "1"), ("night", "1"), (" Night ", "1")],
+)
 def test_il_series_takes_the_profile_from_config_ex(config_ex, expected):
     """#582: Config[0] is a static 0 on these, so ConfigEx is what selects."""
     data = _row(**{"Config[0]": "0", "ConfigEx": config_ex})
@@ -48,6 +54,7 @@ def test_il_series_takes_the_profile_from_config_ex(config_ex, expected):
 
 
 # --- everything else --------------------------------------------------------
+
 
 @pytest.mark.parametrize("config", ["0", "1"])
 def test_a_camera_without_config_ex_uses_config(config):
@@ -63,6 +70,7 @@ def test_an_empty_config_falls_back_to_day():
 
 
 # --- the NVR row, which must survive all of the above ------------------------
+
 
 def test_a_channel_reads_its_own_row_not_channel_ones():
     """An NVR returns a row per channel; reading row 0 gave every channel
@@ -103,6 +111,7 @@ def test_general_mode_is_detected_from_this_channels_row():
 
 # --- values we do not recognise ---------------------------------------------
 
+
 @pytest.mark.parametrize("config_ex", ["Normal", "General", "Auto", "", "Daytime"])
 def test_an_unrecognised_config_ex_defers_to_config(config_ex):
     """Overriding a Config[0] that is probably right, for a string we cannot
@@ -113,6 +122,7 @@ def test_an_unrecognised_config_ex_defers_to_config(config_ex):
 
 
 # --- the shape a real NVR returns -------------------------------------------
+
 
 def test_the_measured_nvr_resolves_every_channel():
     """Measured on a DHI-NVR5464-16P-EI: Config[0] is 0 everywhere except one

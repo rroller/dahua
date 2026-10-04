@@ -37,7 +37,10 @@ def _camera(table=None, channel=0):
     camera._coordinator = SimpleNamespace(
         client=SimpleNamespace(
             async_get_video_widget=AsyncMock(
-                return_value=WIDGET if table is None else table)))
+                return_value=WIDGET if table is None else table
+            )
+        )
+    )
     return camera
 
 
@@ -91,8 +94,10 @@ async def test_nothing_set_reads_back_as_nothing_set():
 
 @pytest.mark.parametrize("value", ["", None])
 async def test_an_empty_value_is_no_lines(value):
-    result = await _camera(table={
-        "table.VideoWidget[0].CustomTitle[0].Text": value,
-    }).async_get_overlay_text(0)
+    result = await _camera(
+        table={
+            "table.VideoWidget[0].CustomTitle[0].Text": value,
+        }
+    ).async_get_overlay_text(0)
 
     assert result["text_overlay"] == []

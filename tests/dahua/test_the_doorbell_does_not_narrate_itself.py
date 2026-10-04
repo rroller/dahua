@@ -29,8 +29,12 @@ import ast
 import pathlib
 import re
 
-MODULE = (pathlib.Path(__file__).resolve().parents[2]
-          / "custom_components" / "dahua" / "vto.py")
+MODULE = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "custom_components"
+    / "dahua"
+    / "vto.py"
+)
 SOURCE = MODULE.read_text(encoding="utf-8")
 
 # Things that identify a device or its owner's network.
@@ -44,9 +48,11 @@ def _logging_calls():
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if (isinstance(func, ast.Attribute)
-                and isinstance(func.value, ast.Name)
-                and func.value.id == "_LOGGER"):
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "_LOGGER"
+        ):
             yield func.attr, node
 
 
@@ -57,7 +63,8 @@ def test_the_protocol_trace_is_at_debug():
     assert levels, "no logging calls found, so this test is checking nothing"
     assert "info" not in levels, (
         "vto.py logs at info again; the protocol trace belongs at debug because it "
-        "fires on every connection and reaches every doorbell owner's log")
+        "fires on every connection and reaches every doorbell owner's log"
+    )
 
 
 def test_no_identifier_is_logged_above_debug():
@@ -90,8 +97,7 @@ def test_the_debug_calls_do_not_build_strings_they_may_not_need():
         if isinstance(first, ast.JoinedStr):
             eager.append(ast.unparse(node)[:70])
 
-    assert not eager, (
-        "debug calls that build their message eagerly: %s" % eager)
+    assert not eager, "debug calls that build their message eagerly: %s" % eager
 
 
 def test_the_scan_would_notice_an_info_call():
@@ -102,9 +108,12 @@ def test_the_scan_would_notice_an_info_call():
     """
     found = list(_logging_calls())
 
-    assert len(found) > 5, "expected several logging calls in vto.py, found %d" % len(found)
-    assert {"debug", "error"} <= {level for level, _node in found}, (
-        "expected both debug and error calls; the scan may be missing some")
+    assert len(found) > 5, "expected several logging calls in vto.py, found %d" % len(
+        found
+    )
+    assert {"debug", "error"} <= {
+        level for level, _node in found
+    }, "expected both debug and error calls; the scan may be missing some"
 
 
 def test_every_logging_call_is_found_by_the_scan():
@@ -112,6 +121,9 @@ def test_every_logging_call_is_found_by_the_scan():
     the walk does not recognise cannot hide from all of this."""
     textual = len(re.findall(r"_LOGGER\.\w+\(", SOURCE))
 
-    assert len(list(_logging_calls())) == textual, (
-        "the AST scan found %d calls, the text shows %d"
-        % (len(list(_logging_calls())), textual))
+    assert (
+        len(list(_logging_calls())) == textual
+    ), "the AST scan found %d calls, the text shows %d" % (
+        len(list(_logging_calls())),
+        textual,
+    )

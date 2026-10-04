@@ -43,13 +43,15 @@ def _refusing_once(status=400):
         calls.append(url)
         if len(calls) == 1:
             raise aiohttp.ClientResponseError(
-                request_info=None, history=(), status=status, message="Bad Request")
+                request_info=None, history=(), status=status, message="Bad Request"
+            )
         return {}
 
     return get, calls
 
 
 # --- the disarming linkage ----------------------------------------------------
+
 
 async def test_disarming_linkage_writes_the_channel_indexed_key():
     client = _client()
@@ -83,6 +85,7 @@ async def test_a_camera_without_the_indexed_key_gets_the_plain_one():
 
 
 # --- event notifications, which mean the opposite -----------------------------
+
 
 async def test_enabling_notifications_disables_the_disable():
     """The key is DisableEventNotify, so turning notifications *on* writes false. Getting
@@ -126,6 +129,7 @@ async def test_the_fallback_keeps_the_inversion():
 
 # --- the coaxial control -------------------------------------------------------
 
+
 async def test_the_coaxial_control_turns_something_on_with_io_one():
     client = _client()
 
@@ -161,12 +165,23 @@ async def test_the_light_and_the_siren_are_different_types():
 
 # --- the record mode ----------------------------------------------------------
 
-@pytest.mark.parametrize("given,written", [
-    ("auto", "0"), ("Auto", "0"),
-    ("manual", "1"), ("Manual", "1"), ("on", "1"), ("On", "1"),
-    ("off", "2"), ("Off", "2"),
-])
-async def test_the_record_mode_names_map_to_the_numbers_the_device_wants(given, written):
+
+@pytest.mark.parametrize(
+    "given,written",
+    [
+        ("auto", "0"),
+        ("Auto", "0"),
+        ("manual", "1"),
+        ("Manual", "1"),
+        ("on", "1"),
+        ("On", "1"),
+        ("off", "2"),
+        ("Off", "2"),
+    ],
+)
+async def test_the_record_mode_names_map_to_the_numbers_the_device_wants(
+    given, written
+):
     """Three numbers behind six names, and "on" is a synonym for manual because that is
     what a person means by it."""
     client = _client()
@@ -185,6 +200,7 @@ async def test_the_record_mode_is_written_against_the_channel_asked_for():
 
 
 # --- all the IVS rules at once -------------------------------------------------
+
 
 async def test_only_the_rules_the_camera_has_are_written():
     """The table is read first, and a rule the camera does not hold is not written. Writing
@@ -278,5 +294,6 @@ async def test_a_rule_another_channel_has_is_not_written_to_this_one():
 
     await DahuaClient.async_set_all_ivs_rules(client, 1, False)
 
-    assert _urls(client) == [], (
-        "wrote a rule channel 1 does not have: %s" % _urls(client))
+    assert _urls(client) == [], "wrote a rule channel 1 does not have: %s" % _urls(
+        client
+    )

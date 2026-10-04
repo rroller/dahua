@@ -21,6 +21,7 @@ from custom_components.dahua.host import _async_probe_tcp
 
 async def _a_server(on_connect=None):
     """A real listener on a free port, and its port."""
+
     async def handle(reader, writer):
         if on_connect is not None:
             await on_connect(reader, writer)
@@ -83,13 +84,18 @@ async def test_a_host_that_never_answers_gives_up(monkeypatch):
     `sleep(0)` as one of the integration's (#857). It is safe here only because
     nothing else in this test opens a connection.
     """
+
     async def never(*args, **kwargs):
         await asyncio.Event().wait()
 
     monkeypatch.setattr(asyncio, "open_connection", never)
 
-    assert await asyncio.wait_for(
-        _async_probe_tcp("192.0.2.1", 443, timeout=0.2), timeout=5) is False
+    assert (
+        await asyncio.wait_for(
+            _async_probe_tcp("192.0.2.1", 443, timeout=0.2), timeout=5
+        )
+        is False
+    )
 
 
 async def test_a_refusal_is_an_answer_not_an_error(monkeypatch):
@@ -99,6 +105,7 @@ async def test_a_refusal_is_an_answer_not_an_error(monkeypatch):
     unhandled task exception in the log of a user whose only actual problem is a
     camera that is offline.
     """
+
     async def refuse(*args, **kwargs):
         raise OSError("connection refused")
 
@@ -112,6 +119,7 @@ async def test_a_socket_that_will_not_close_cleanly_still_answers(monkeypatch):
     while closing must not turn a successful probe into a failed one. It is reachable:
     `wait_closed` raises when the peer resets the connection.
     """
+
     class _Writer:
         def __init__(self):
             self.closed = False

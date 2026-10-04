@@ -95,11 +95,13 @@ def retries(monkeypatch):
     asked = []
 
     def fake(lived_seconds, consecutive_failures=0, received_data=False):
-        asked.append({
-            "lived": lived_seconds,
-            "failures": consecutive_failures,
-            "received_data": received_data,
-        })
+        asked.append(
+            {
+                "lived": lived_seconds,
+                "failures": consecutive_failures,
+                "received_data": received_data,
+            }
+        )
         return 0
 
     monkeypatch.setattr(host_module, "event_stream_retry_delay", fake)
@@ -109,9 +111,11 @@ def retries(monkeypatch):
 def _warnings(caplog):
     """This integration's warnings only. Asserting on every WARNING in the process
     would make these tests depend on what the harness logs."""
-    return [r.getMessage() for r in caplog.records
-            if r.levelname == "WARNING"
-            and r.name.startswith("custom_components.dahua")]
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and r.name.startswith("custom_components.dahua")
+    ]
 
 
 async def _run(stream):
@@ -120,6 +124,7 @@ async def _run(stream):
 
 
 # --- a working stream being recycled is not a failure -----------------------
+
 
 async def test_a_recycled_stream_is_not_counted_as_a_failure(retries):
     """The deliberate recycle. `wait_for` fires at the maximum lifetime on a stream
@@ -147,8 +152,9 @@ async def test_a_recycled_stream_says_nothing(retries, caplog):
 async def test_recycling_clears_a_failure_that_came_before_it(retries):
     """Recovery. The counter is cleared by the attach that works, not by a timer,
     so a device that comes back stops being backed off immediately."""
-    stream = _stream(_Attaches(TALKS_THEN_TIMEOUT),
-                     _consecutive_failures=4, _failing=True)
+    stream = _stream(
+        _Attaches(TALKS_THEN_TIMEOUT), _consecutive_failures=4, _failing=True
+    )
 
     await _run(stream)
 
@@ -157,6 +163,7 @@ async def test_recycling_clears_a_failure_that_came_before_it(retries):
 
 
 # --- a stream that attached and delivered nothing ---------------------------
+
 
 async def test_a_silent_attach_is_counted(retries):
     """The opposite case arriving as the same exception. Nothing was delivered, so
@@ -195,13 +202,13 @@ async def test_it_is_said_once_per_outage_not_once_per_retry(retries, caplog):
 async def test_a_second_outage_is_reported_again(retries, caplog):
     """Once per outage, so a device that broke, recovered and broke again is two
     reports rather than one. A flag that was never cleared would hide the second."""
-    await _run(_stream(_Attaches(
-        QUIET_TIMEOUT, TALKS_THEN_TIMEOUT, QUIET_TIMEOUT)))
+    await _run(_stream(_Attaches(QUIET_TIMEOUT, TALKS_THEN_TIMEOUT, QUIET_TIMEOUT)))
 
     assert len(_warnings(caplog)) == 2
 
 
 # --- a stream that ended some other way -------------------------------------
+
 
 async def test_a_stream_that_talked_and_then_died_does_not_climb(retries):
     """The socket ending is not the device refusing contact. It attached and it
@@ -236,6 +243,7 @@ async def test_the_failure_is_reported_with_its_cause(retries, caplog):
 
 # --- and what it attached with ----------------------------------------------
 
+
 async def test_the_reattach_asks_for_the_same_codes(retries):
     """The retry is a retry, not a renegotiation. A subscription that changed shape
     between attempts would make an intermittent failure impossible to reason about."""
@@ -265,6 +273,7 @@ async def test_a_broadened_subscription_reattaches_as_All(retries):
 
 # --- and the same promise on the other branch --------------------------------
 
+
 async def test_an_outage_that_is_not_a_timeout_is_also_said_once(retries, caplog):
     """The same guarantee as above, on the branch that carries ordinary outages.
 
@@ -287,7 +296,6 @@ async def test_a_second_non_timeout_outage_is_reported_again(retries, caplog):
 
     The middle attach delivers before it ends, which is what clears the flag.
     """
-    await _run(_stream(_Attaches(
-        QUIET_ERROR, TALKS_THEN_TIMEOUT, QUIET_ERROR)))
+    await _run(_stream(_Attaches(QUIET_ERROR, TALKS_THEN_TIMEOUT, QUIET_ERROR)))
 
     assert len(_warnings(caplog)) == 2, _warnings(caplog)

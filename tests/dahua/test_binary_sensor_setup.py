@@ -28,10 +28,11 @@ class _Coordinator:
     # `async_add_entities` wants for an entry that has no subentries.
     subentry_id = None
 
-    def __init__(self, events=(), doorbell=False, channel=0):
+    def __init__(self, events=(), doorbell=False, channel=0, no_video=False):
         self._events = list(events)
         self._doorbell = doorbell
         self._channel = channel
+        self._no_video = no_video
 
     def get_event_list(self):
         return self._events
@@ -39,8 +40,14 @@ class _Coordinator:
     def get_ivs_rules(self):
         return []
 
+    def get_storage_disks(self):
+        return []
+
     def is_doorbell(self):
         return self._doorbell
+
+    def is_indoor_monitor_without_video(self):
+        return self._no_video
 
     def get_channel(self):
         return self._channel
@@ -70,8 +77,7 @@ def setup(monkeypatch):
 
     async def run(*coordinators):
         added = []
-        await bs.async_setup_entry(
-            None, _Entry(coordinators), adds_entities(added))
+        await bs.async_setup_entry(None, _Entry(coordinators), adds_entities(added))
         return added
 
     run.built = built
@@ -84,12 +90,14 @@ def _names(built, kind="event"):
 
 # --- the claim the README got wrong -------------------------------------------
 
+
 async def test_every_camera_gets_an_authorized_vehicle_sensor(setup):
     """Unconditional. Not gated on ANPR, not gated on plates being configured."""
     await setup(_Coordinator())
 
-    assert _names(setup.built, "vehicle") == [None], (
-        "expected exactly one authorized vehicle sensor")
+    assert _names(setup.built, "vehicle") == [
+        None
+    ], "expected exactly one authorized vehicle sensor"
 
 
 async def test_every_channel_of_a_recorder_gets_one_too(setup):
@@ -101,6 +109,7 @@ async def test_every_channel_of_a_recorder_gets_one_too(setup):
 
 
 # --- the event sensors --------------------------------------------------------
+
 
 async def test_one_sensor_per_selected_event(setup):
     await setup(_Coordinator(events=["VideoMotion", "CrossLineDetection"]))
@@ -123,7 +132,12 @@ async def test_a_doorbell_gets_its_four_extra_sensors(setup):
     await setup(_Coordinator(events=["VideoMotion"], doorbell=True))
 
     assert _names(setup.built) == [
-        "VideoMotion", "DoorbellPressed", "Invite", "DoorStatus", "CallNoAnswered"]
+        "VideoMotion",
+        "DoorbellPressed",
+        "Invite",
+        "DoorStatus",
+        "CallNoAnswered",
+    ]
 
 
 async def test_a_camera_gets_none_of_the_doorbell_sensors(setup):
@@ -149,9 +163,12 @@ async def test_a_doorbell_event_already_selected_is_built_twice(setup):
 
 # --- the loop over an entry's channels ----------------------------------------
 
+
 async def test_each_channel_gets_its_own_sensors(setup):
-    await setup(_Coordinator(events=["VideoMotion"], channel=0),
-                _Coordinator(events=["AlarmLocal"], channel=1))
+    await setup(
+        _Coordinator(events=["VideoMotion"], channel=0),
+        _Coordinator(events=["AlarmLocal"], channel=1),
+    )
 
     assert _names(setup.built) == ["VideoMotion", "AlarmLocal"]
     assert len(_names(setup.built, "vehicle")) == 2
@@ -162,8 +179,28 @@ async def test_an_entry_with_nothing_set_up_adds_nothing(setup):
     being torn down, and this platform must not raise on it."""
     added = []
 
-    await bs.async_setup_entry(
-        None, _Entry([]), adds_entities(added))
+    await bs.async_setup_entry(None, _Entry([]), adds_entities(added))
 
     assert added == []
     assert setup.built == []
+
+
+# --- an indoor monitor without a camera ---------------------------------------
+#
+# Its event list comes back empty from the coordinator (see
+# test_vth_without_video.py); here, the vehicle sensor every camera gets.
+
+
+async def test_an_indoor_monitor_without_a_camera_gets_no_vehicle_sensor(setup):
+    """The one exception to "every camera gets one": a plate is read from a picture,
+    and a VTH that says it has no camera has none."""
+    await setup(_Coordinator(no_video=True))
+
+    assert _names(setup.built, "vehicle") == []
+
+
+async def test_a_camera_next_to_it_still_gets_one(setup):
+    camera = _Coordinator(channel=1)
+    await setup(_Coordinator(no_video=True), camera)
+
+    assert [c for k, _, c in setup.built if k == "vehicle"] == [camera]

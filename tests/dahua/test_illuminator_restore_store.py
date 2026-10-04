@@ -55,6 +55,7 @@ def _store(data, on_disk=None):
 
 # --- reading back the keys ----------------------------------------------------
 
+
 async def test_the_keys_come_back_as_channel_and_profile_numbers():
     """They are stored as "channel:profile" strings and used as a pair of ints."""
     store = _store({"0:1": "Auto", "3:2": "Off"})
@@ -90,6 +91,7 @@ async def test_a_key_whose_parts_are_not_numbers_is_skipped():
 
 
 # --- removing one ------------------------------------------------------------
+
 
 async def test_removing_a_key_writes_the_rest():
     store = _store({"0:1": "Auto", "2:3": "Off"})
@@ -129,7 +131,7 @@ async def test_the_removal_is_verified_against_what_landed_on_disk():
     store = _store({"0:1": "Auto"}, on_disk={"0:1": "Auto"})
 
     async def _save_nothing(data):
-        store._store.saved.append(data)      # recorded, but never reaches the disk
+        store._store.saved.append(data)  # recorded, but never reaches the disk
 
     store._store.async_save = _save_nothing
 

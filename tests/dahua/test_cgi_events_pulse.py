@@ -55,12 +55,12 @@ def _listening(c, code):
 
 # --- the CGI path: what it used to drop -------------------------------------
 
+
 def test_a_pulse_on_the_cgi_path_now_reaches_the_sensor():
     c = _coordinator()
     key = _listening(c, "AccessControl")
 
-    c.handle_event({"Code": "AccessControl", "action": "Pulse",
-                    "Data": {"State": 1}})
+    c.handle_event({"Code": "AccessControl", "action": "Pulse", "Data": {"State": 1}})
 
     assert c.fired == [key], "a Pulse event updated no sensor at all"
     assert c._dahua_event_timestamp[key] > 0
@@ -72,10 +72,16 @@ async def test_an_access_control_card_is_scanned_on_the_cgi_path():
 
     # The coordinator resolves async_scan_tag in its own module, so patching
     # the package rebound a name nothing reads and the real helper ran.
-    with patch("custom_components.dahua.coordinator.async_scan_tag",
-               new_callable=AsyncMock) as scan_tag:
-        c.handle_event({"Code": "AccessControl", "action": "Pulse",
-                        "Data": {"State": 1, "CardNo": "1234ABCD"}})
+    with patch(
+        "custom_components.dahua.coordinator.async_scan_tag", new_callable=AsyncMock
+    ) as scan_tag:
+        c.handle_event(
+            {
+                "Code": "AccessControl",
+                "action": "Pulse",
+                "Data": {"State": 1, "CardNo": "1234ABCD"},
+            }
+        )
 
         # Execute every coroutine queued by the fake Home Assistant scheduler.
         for coroutine in c.scanned:
@@ -91,14 +97,14 @@ def test_a_pulse_that_is_not_a_press_leaves_the_sensor_off():
     c = _coordinator()
     key = _listening(c, "AccessControl")
 
-    c.handle_event({"Code": "AccessControl", "action": "Pulse",
-                    "Data": {"State": 0}})
+    c.handle_event({"Code": "AccessControl", "action": "Pulse", "Data": {"State": 0}})
 
     assert c._dahua_event_timestamp[key] == 0
     assert c.fired == [key], "the entity is still told to re-read"
 
 
 # --- and what it must keep doing --------------------------------------------
+
 
 def test_start_and_stop_still_work_on_the_cgi_path():
     c = _coordinator()
@@ -122,18 +128,31 @@ def test_an_unconfigured_code_is_still_ignored():
 
 # --- the doorbell path must behave exactly as before ------------------------
 
+
 def test_the_doorbell_path_keeps_its_door_index_guard():
     """#488: only door 1 may write to the single Door Status sensor."""
     c = _coordinator()
     key = _listening(c, "DoorStatus")
 
-    c.on_receive_vto_event({"Code": "DoorStatus", "Action": "Pulse",
-                            "Data": {"Status": "Open"}, "Index": 1})
+    c.on_receive_vto_event(
+        {
+            "Code": "DoorStatus",
+            "Action": "Pulse",
+            "Data": {"Status": "Open"},
+            "Index": 1,
+        }
+    )
 
     assert c.fired == [], "door 2 wrote to door 1's sensor"
 
-    c.on_receive_vto_event({"Code": "DoorStatus", "Action": "Pulse",
-                            "Data": {"Status": "Open"}, "Index": 0})
+    c.on_receive_vto_event(
+        {
+            "Code": "DoorStatus",
+            "Action": "Pulse",
+            "Data": {"Status": "Open"},
+            "Index": 0,
+        }
+    )
 
     assert c.fired == [key]
     assert c._dahua_event_timestamp[key] > 0
@@ -143,7 +162,8 @@ def test_the_doorbell_path_still_reads_the_button_state():
     c = _coordinator()
     key = _listening(c, "DoorbellPressed")
 
-    c.on_receive_vto_event({"Code": "BackKeyLight", "Action": "Pulse",
-                            "Data": {"State": 1}})
+    c.on_receive_vto_event(
+        {"Code": "BackKeyLight", "Action": "Pulse", "Data": {"State": 1}}
+    )
 
     assert c._dahua_event_timestamp[key] > 0

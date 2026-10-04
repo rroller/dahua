@@ -24,8 +24,10 @@ import pytest
 from aiohttp import ClientResponseError
 
 from custom_components.dahua.client import DahuaClient, _is_login_refused
-from custom_components.dahua.config_flow import (describe_setup_failure,
-                                                 fallback_device_name)
+from custom_components.dahua.config_flow import (
+    describe_setup_failure,
+    fallback_device_name,
+)
 
 
 def _status(status):
@@ -44,6 +46,7 @@ def _client(exception):
 
 
 # --- the fallback is for a missing endpoint, not a refused login -------------
+
 
 @pytest.mark.parametrize("status", [404, 501, 400])
 async def test_a_device_without_magicbox_still_gets_an_id(status):
@@ -66,6 +69,7 @@ async def test_a_restricted_account_still_gets_an_id():
 
 
 # --- a refused login must not be turned into an identity --------------------
+
 
 async def test_a_refused_login_is_not_turned_into_an_id():
     client = _client(_status(401))
@@ -107,12 +111,14 @@ async def test_the_id_is_never_built_from_a_refused_password():
     except ClientResponseError:
         return  # refused, which is the point
 
-    assert result.get("name") != would_have_been, (
-        "added a camera with an id built from the password the device rejected")
+    assert (
+        result.get("name") != would_have_been
+    ), "added a camera with an id built from the password the device rejected"
     pytest.fail("a refused login was turned into %r" % result)
 
 
 # --- and the whole way out to what the user is told -------------------------
+
 
 def test_the_user_is_told_the_camera_rejected_the_login():
     """This is what makes the `auth` key reachable at all."""
@@ -165,7 +171,9 @@ def test_a_single_camera_is_not_called_channel_1():
 
 def test_a_channel_that_is_not_a_number_does_not_raise():
     """entry.data has carried strings here before now."""
-    assert fallback_device_name("10.0.0.5", "not a number") == "Dahua camera at 10.0.0.5"
+    assert (
+        fallback_device_name("10.0.0.5", "not a number") == "Dahua camera at 10.0.0.5"
+    )
     assert fallback_device_name("10.0.0.5", None) == "Dahua camera at 10.0.0.5"
 
 
@@ -220,12 +228,14 @@ async def test_the_flow_offers_the_readable_name_and_keeps_the_hashed_id(monkeyp
 
     handler = config_flow.DahuaFlowHandler()
     data, error = await handler._test_credentials(
-        "admin", "pw", "10.0.0.5", "80", "554", 3)
+        "admin", "pw", "10.0.0.5", "80", "554", 3
+    )
 
     assert error is None
     assert data["name"] == "Dahua camera at 10.0.0.5 channel 4"
-    assert data["serialNumber"] == hashed, (
-        "the unique_id must keep the hashed form; changing it orphans existing entries")
+    assert (
+        data["serialNumber"] == hashed
+    ), "the unique_id must keep the hashed form; changing it orphans existing entries"
 
 
 async def test_a_device_that_names_itself_is_left_alone(monkeypatch):
@@ -255,6 +265,7 @@ async def test_a_device_that_names_itself_is_left_alone(monkeypatch):
 
     handler = config_flow.DahuaFlowHandler()
     data, error = await handler._test_credentials(
-        "admin", "pw", "10.0.0.5", "80", "554", 3)
+        "admin", "pw", "10.0.0.5", "80", "554", 3
+    )
 
     assert data["name"] == "FrontDoorCam"

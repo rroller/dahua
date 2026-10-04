@@ -44,6 +44,7 @@ def test_numbers_become_strings():
 
 # --- nulls, which is where this could quietly break something ---------------
 
+
 def test_nulls_are_dropped_not_rendered():
     out = flatten_rpc2_config("X", {"Present": "yes", "Absent": None})
 
@@ -71,9 +72,12 @@ def test_an_empty_table_gives_nothing():
 
 def test_a_real_shape_round_trips():
     """The shape actually returned for a channel's motion detection."""
-    out = flatten_rpc2_config("MotionDetect", [
-        {"Enable": True, "EventHandler": {"Dejitter": 5, "PtzLink": None}},
-    ])
+    out = flatten_rpc2_config(
+        "MotionDetect",
+        [
+            {"Enable": True, "EventHandler": {"Dejitter": 5, "PtzLink": None}},
+        ],
+    )
 
     assert out == {
         "table.MotionDetect[0].Enable": "true",

@@ -32,6 +32,7 @@ through Home Assistant.** `ConfigEntry.async_remove` resolves the integration wi
 without that fixture the hook is never reached -- and the test asserting that a
 recorder's other channels keep their card passed for entirely the wrong reason.
 """
+
 import pytest
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -51,14 +52,18 @@ OTHER = "10.0.0.2"
 
 @pytest.fixture(autouse=True)
 def _clean_state():
-    for store in (dahua_module._HOST_FAILURES,
-                  dahua_module._HOST_UPTIME_STATE,
-                  dahua_module._HOST_UPTIME_LOCKS):
+    for store in (
+        dahua_module._HOST_FAILURES,
+        dahua_module._HOST_UPTIME_STATE,
+        dahua_module._HOST_UPTIME_LOCKS,
+    ):
         store.clear()
     yield
-    for store in (dahua_module._HOST_FAILURES,
-                  dahua_module._HOST_UPTIME_STATE,
-                  dahua_module._HOST_UPTIME_LOCKS):
+    for store in (
+        dahua_module._HOST_FAILURES,
+        dahua_module._HOST_UPTIME_STATE,
+        dahua_module._HOST_UPTIME_LOCKS,
+    ):
         store.clear()
 
 
@@ -67,9 +72,15 @@ def _entry(hass, *, address=ADDRESS, channel=0):
         domain=DOMAIN,
         title="Ch%d" % channel,
         unique_id="SERIAL_%d" % channel,
-        data={"username": "u", "password": "p", "address": address,
-              "port": "80", "rtsp_port": "554", "channel": channel,
-              "name": "Ch%d" % channel},
+        data={
+            "username": "u",
+            "password": "p",
+            "address": address,
+            "port": "80",
+            "rtsp_port": "554",
+            "channel": channel,
+            "name": "Ch%d" % channel,
+        },
     )
     entry.add_to_hass(hass)
     return entry
@@ -78,11 +89,19 @@ def _entry(hass, *, address=ADDRESS, channel=0):
 def _raise_both(hass, address=ADDRESS):
     for template in (ISSUE_UNREACHABLE, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE):
         ir.async_create_issue(
-            hass, DOMAIN, template.format(address),
-            is_fixable=False, severity=ir.IssueSeverity.WARNING,
+            hass,
+            DOMAIN,
+            template.format(address),
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
             translation_key="device_unreachable",
-            translation_placeholders={"address": address, "entries": "1",
-                                      "minutes": "5", "port": "80"})
+            translation_placeholders={
+                "address": address,
+                "entries": "1",
+                "minutes": "5",
+                "port": "80",
+            },
+        )
     dahua_module._HOST_FAILURES[address] = {"consecutive": 7}
 
 
@@ -97,7 +116,10 @@ def _open_issues(hass, address=ADDRESS):
 
 # --- removing the last entry ------------------------------------------------
 
-async def test_removing_the_last_entry_withdraws_both_issues(hass, enable_custom_integrations):
+
+async def test_removing_the_last_entry_withdraws_both_issues(
+    hass, enable_custom_integrations
+):
     entry = _entry(hass)
     _raise_both(hass)
     assert len(_open_issues(hass)) == 2
@@ -108,7 +130,9 @@ async def test_removing_the_last_entry_withdraws_both_issues(hass, enable_custom
     assert _open_issues(hass) == [], "a deleted device must not leave its card"
 
 
-async def test_removing_the_last_entry_forgets_its_failure_count(hass, enable_custom_integrations):
+async def test_removing_the_last_entry_forgets_its_failure_count(
+    hass, enable_custom_integrations
+):
     """The count drives the poll backoff, so re-adding the device must not
     inherit a backoff it has not earned."""
     entry = _entry(hass)
@@ -122,7 +146,10 @@ async def test_removing_the_last_entry_forgets_its_failure_count(hass, enable_cu
 
 # --- but not while the host still has entries -------------------------------
 
-async def test_removing_one_channel_of_a_recorder_keeps_the_issues(hass, enable_custom_integrations):
+
+async def test_removing_one_channel_of_a_recorder_keeps_the_issues(
+    hass, enable_custom_integrations
+):
     """An NVR is one entry per channel. Deleting channel 2 must not withdraw a
     card that still describes the host the other ten are on."""
     first = _entry(hass, channel=0)
@@ -151,6 +178,7 @@ async def test_another_hosts_issues_are_untouched(hass, enable_custom_integratio
 
 # --- and not on an unload, which is also a reload ---------------------------
 
+
 async def test_unloading_does_not_withdraw_anything(hass):
     """`async_unload_entry` runs on a reload too. Withdrawing there would clear
     the backoff every time somebody saved an option -- and it is also where the
@@ -166,6 +194,7 @@ async def test_unloading_does_not_withdraw_anything(hass):
 
 # --- the hook itself --------------------------------------------------------
 
+
 async def test_the_hook_runs_even_when_setup_never_succeeded(hass):
     """No coordinator was ever registered, which is *more* likely when a card
     was raised, not less. The old code returned early in that case.
@@ -176,9 +205,18 @@ async def test_the_hook_runs_even_when_setup_never_succeeded(hass):
     would pass while proving the opposite of what it says.
     """
     entry = MockConfigEntry(
-        domain=DOMAIN, title="gone",
-        data={"username": "u", "password": "p", "address": ADDRESS,
-              "port": "80", "rtsp_port": "554", "channel": 0, "name": "gone"})
+        domain=DOMAIN,
+        title="gone",
+        data={
+            "username": "u",
+            "password": "p",
+            "address": ADDRESS,
+            "port": "80",
+            "rtsp_port": "554",
+            "channel": 0,
+            "name": "gone",
+        },
+    )
     _raise_both(hass)
     assert entry.entry_id not in hass.data.get(DOMAIN, {})
 

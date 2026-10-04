@@ -5,6 +5,7 @@ switch showed off while the camera had detection enabled, its toggle wrote nothi
 and the reboot button did nothing -- each failing as though the request were wrong
 rather than the transport.
 """
+
 import aiohttp
 import pytest
 
@@ -25,7 +26,8 @@ class _Resp:
     def raise_for_status(self):
         if self.status >= 400:
             raise aiohttp.ClientResponseError(
-                request_info=None, history=(), status=self.status, message="Not Found")
+                request_info=None, history=(), status=self.status, message="Not Found"
+            )
 
     async def text(self):
         return self._body
@@ -104,7 +106,8 @@ async def test_a_config_read_that_404s_is_answered_over_rpc2(monkeypatch):
     client = _client(monkeypatch, rpc2)
 
     result = await client._request(
-        "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect")
+        "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"
+    )
 
     assert rpc2.reads == ["MotionDetect"]
     assert result, "the RPC2 answer was not returned to the caller"
@@ -114,10 +117,14 @@ async def test_a_config_read_that_404s_is_answered_over_rpc2(monkeypatch):
 async def test_the_host_is_remembered_so_the_second_read_skips_cgi(monkeypatch):
     """One 404 is the price of learning; paying it on every read is not."""
     cgi = _fake_cgi(monkeypatch, 404)
-    rpc2 = _FakeRpc2({"MotionDetect": [{"Enable": True}], "General": {"MachineName": "x"}})
+    rpc2 = _FakeRpc2(
+        {"MotionDetect": [{"Enable": True}], "General": {"MachineName": "x"}}
+    )
     client = _client(monkeypatch, rpc2)
 
-    await client._request("/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect")
+    await client._request(
+        "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"
+    )
     assert len(cgi) == 1
     await client._request("/cgi-bin/configManager.cgi?action=getConfig&name=General")
     assert len(cgi) == 1, "the second read went to CGI again"
@@ -141,7 +148,8 @@ async def test_a_500_is_still_an_error_not_a_transport_hint(monkeypatch):
 
     with pytest.raises(aiohttp.ClientResponseError):
         await client._request(
-            "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect")
+            "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"
+        )
     assert rpc2.reads == []
 
 
@@ -209,10 +217,17 @@ async def test_reboot_does_not_swallow_a_real_failure(monkeypatch):
 async def test_smart_motion_toggle_falls_back_too(monkeypatch):
     """The smart-motion switch is offered on these devices, so it needs it as well."""
     _fake_cgi(monkeypatch, 404)
-    rpc2 = _FakeRpc2({"SmartMotionDetect": [
-        {"Enable": True, "Sensitivity": "Middle",
-         "ObjectTypes": {"Human": True, "Vehicle": False}},
-    ]})
+    rpc2 = _FakeRpc2(
+        {
+            "SmartMotionDetect": [
+                {
+                    "Enable": True,
+                    "Sensitivity": "Middle",
+                    "ObjectTypes": {"Human": True, "Vehicle": False},
+                },
+            ]
+        }
+    )
     client = _client(monkeypatch, rpc2)
 
     await client.async_enabled_smart_motion_detection(0, False)
@@ -239,13 +254,16 @@ async def test_a_table_neither_transport_serves_reports_the_original_404(monkeyp
 
     class _Refusing(_FakeRpc2):
         async def get_config(self, params):
-            raise Rpc2MethodRefused("no such table", code=268959743, message="Unknown error")
+            raise Rpc2MethodRefused(
+                "no such table", code=268959743, message="Unknown error"
+            )
 
     client = _client(monkeypatch, _Refusing({}))
 
     with pytest.raises(aiohttp.ClientResponseError) as caught:
         await client._request(
-            "/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice")
+            "/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice"
+        )
     assert caught.value.status == 404
 
 
@@ -259,7 +277,9 @@ async def test_a_refused_table_is_not_asked_for_again(monkeypatch):
     class _Refusing(_FakeRpc2):
         async def get_config(self, params):
             asked.append(params["name"])
-            raise Rpc2MethodRefused("no such table", code=268959743, message="Unknown error")
+            raise Rpc2MethodRefused(
+                "no such table", code=268959743, message="Unknown error"
+            )
 
     client = _client(monkeypatch, _Refusing({}))
     url = "/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice"
@@ -283,6 +303,7 @@ MOTION_URL = "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"
 
 def _rpc2_read_raises(monkeypatch, exception):
     """Make the RPC2 config read fail, leaving the decision under test isolated."""
+
     async def _boom(self, table):
         raise exception
 
@@ -307,7 +328,8 @@ async def test_a_table_the_device_declines_does_not_cost_the_transport(monkeypat
     assert (client._rpc2_key(), "MotionDetect") in client_module._RPC2_TABLE_UNAVAILABLE
     assert client._rpc2_key() not in client_module._HOST_RPC2_UNAVAILABLE, (
         "a declined table wrote the whole host off, which is what put a working "
-        "device back on a login per call")
+        "device back on a login per call"
+    )
     assert calls, "the read was lost instead of falling through to CGI"
 
 
@@ -323,8 +345,8 @@ async def test_one_timeout_does_not_cost_the_transport(monkeypatch):
 
     assert client._rpc2_key() not in client_module._HOST_RPC2_UNAVAILABLE
     assert (client._rpc2_key(), "MotionDetect") not in (
-        client_module._RPC2_TABLE_UNAVAILABLE), (
-        "a timeout was recorded as the device refusing the table")
+        client_module._RPC2_TABLE_UNAVAILABLE
+    ), "a timeout was recorded as the device refusing the table"
     assert calls, "the read was lost instead of falling through to CGI"
 
 
@@ -362,15 +384,17 @@ async def test_a_refusal_is_checked_before_permanence(monkeypatch):
     refusal = Rpc2MethodRefused("declined")
     assert rpc2_failure_is_permanent(refusal) is True, (
         "if this ever becomes False the ordering below stops mattering and this test "
-        "should be rewritten rather than deleted")
+        "should be rewritten rather than deleted"
+    )
 
     client, _ = _rpc2_client(monkeypatch)
     _rpc2_read_raises(monkeypatch, refusal)
 
     await client._request(MOTION_URL)
 
-    assert client._rpc2_key() not in client_module._HOST_RPC2_UNAVAILABLE, (
-        "the permanence check ran first and wrote the host off for a refusal")
+    assert (
+        client._rpc2_key() not in client_module._HOST_RPC2_UNAVAILABLE
+    ), "the permanence check ran first and wrote the host off for a refusal"
 
 
 async def test_only_the_declined_table_goes_back_to_cgi(monkeypatch):
@@ -397,12 +421,12 @@ async def test_only_the_declined_table_goes_back_to_cgi(monkeypatch):
 
     await client._request(MOTION_URL)
     cgi_after_refusal = len(calls)
-    await client._request(
-        "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting")
+    await client._request("/cgi-bin/configManager.cgi?action=getConfig&name=Lighting")
 
     assert "Lighting" in rpc2.reads, "the other table stopped using RPC2 too"
-    assert len(calls) == cgi_after_refusal, (
-        "the Lighting read went to CGI as well, so the whole transport was lost")
+    assert (
+        len(calls) == cgi_after_refusal
+    ), "the Lighting read went to CGI as well, so the whole transport was lost"
 
 
 async def test_a_verified_read_never_goes_over_rpc2(monkeypatch):
@@ -453,7 +477,8 @@ async def test_the_ivs_rule_table_is_always_read_over_cgi(monkeypatch):
     monkeypatch.setattr(DahuaClient, "_rpc2_get_config", _record)
 
     await client._request(
-        "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule")
+        "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule"
+    )
 
     assert attempts == [], "VideoAnalyseRule was read over RPC2"
     assert calls

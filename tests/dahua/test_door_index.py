@@ -26,8 +26,8 @@ import pytest
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, door_index
 
-
 # --- the doors -----------------------------------------------------------------
+
 
 def test_the_first_door_is_zero():
     assert door_index({"Code": "DoorStatus", "Index": 0}) == 0
@@ -42,6 +42,7 @@ def test_a_third_door_keeps_its_number():
 
 
 # --- everything that is not a door number --------------------------------------
+
 
 def test_no_index_at_all_is_the_first_door():
     """A single-door VTO does not always send one."""
@@ -69,14 +70,23 @@ def test_something_unreadable_is_the_first_door():
     assert door_index({"Index": {}}) == 0
 
 
-@pytest.mark.parametrize("value,expected", [
-    (0, 0), (1, 1), (7, 7), (-3, 0), ("0", 0), ("4", 4),
-])
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (0, 0),
+        (1, 1),
+        (7, 7),
+        (-3, 0),
+        ("0", 0),
+        ("4", 4),
+    ],
+)
 def test_the_mapping_in_full(value, expected):
     assert door_index({"Index": value}) == expected
 
 
 # --- what it does to the sensor, which is the part that was wrong ---------------
+
 
 def _vto(channel=0):
     """A coordinator with just enough of itself to run the VTO event handler."""
@@ -92,9 +102,12 @@ def _vto(channel=0):
 
 
 def _door_event(status, index):
-    return {"Code": "DoorStatus", "Action": "Pulse",
-            "Data": {"Status": status, "LocaleTime": "2026-09-19 08:00:00"},
-            "Index": index}
+    return {
+        "Code": "DoorStatus",
+        "Action": "Pulse",
+        "Data": {"Status": status, "LocaleTime": "2026-09-19 08:00:00"},
+        "Index": index,
+    }
 
 
 def _listening(coordinator):
@@ -102,7 +115,9 @@ def _listening(coordinator):
     key = coordinator.get_event_key("DoorStatus")
     # Through the public API: the dict holds a list of listeners per event
     # since #715, because two entities can want the same one.
-    coordinator.add_dahua_event_listener("DoorStatus", lambda: coordinator.fired.append(key))
+    coordinator.add_dahua_event_listener(
+        "DoorStatus", lambda: coordinator.fired.append(key)
+    )
     return key
 
 
@@ -136,8 +151,9 @@ def test_the_second_door_closing_does_not_close_the_first():
 
     c.on_receive_vto_event(_door_event("Close", 1))
 
-    assert c._dahua_event_timestamp[key] == open_at, (
-        "door 2 closing reported door 1 closed while it stood open")
+    assert (
+        c._dahua_event_timestamp[key] == open_at
+    ), "door 2 closing reported door 1 closed while it stood open"
 
 
 def test_the_second_door_opening_does_not_open_the_first():
@@ -155,7 +171,8 @@ def test_a_vto_that_sends_no_index_is_unchanged():
     c = _vto()
     key = _listening(c)
 
-    c.on_receive_vto_event({"Code": "DoorStatus", "Action": "Pulse",
-                            "Data": {"Status": "Open"}})
+    c.on_receive_vto_event(
+        {"Code": "DoorStatus", "Action": "Pulse", "Data": {"Status": "Open"}}
+    )
 
     assert c._dahua_event_timestamp[key] > 0

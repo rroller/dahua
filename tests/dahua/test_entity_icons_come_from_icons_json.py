@@ -22,8 +22,16 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 
-PLATFORMS = ("binary_sensor", "button", "camera", "event", "light", "select",
-             "sensor", "switch")
+PLATFORMS = (
+    "binary_sensor",
+    "button",
+    "camera",
+    "event",
+    "light",
+    "select",
+    "sensor",
+    "switch",
+)
 
 # The mdi name each entity's code produced before it moved. Home Assistant shows
 # the same glyph either way, so a difference here is a changed icon on a
@@ -74,8 +82,9 @@ ICON_STAYS_IN_CODE = set()
 
 def _classes():
     for platform in PLATFORMS:
-        tree = ast.parse(io.open(PACKAGE / ("%s.py" % platform),
-                                 encoding="utf-8").read())
+        tree = ast.parse(
+            io.open(PACKAGE / ("%s.py" % platform), encoding="utf-8").read()
+        )
         for node in tree.body:
             if isinstance(node, ast.ClassDef):
                 yield platform, node
@@ -85,8 +94,9 @@ def _translation_key(cls):
     for item in cls.body:
         if isinstance(item, ast.Assign):
             for target in item.targets:
-                if (getattr(target, "id", None) == "_attr_translation_key"
-                        and isinstance(item.value, ast.Constant)):
+                if getattr(
+                    target, "id", None
+                ) == "_attr_translation_key" and isinstance(item.value, ast.Constant):
                     return item.value.value
     return None
 
@@ -99,8 +109,11 @@ def _declares_an_icon(cls):
     for node in ast.walk(cls):
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                name = (target.attr if isinstance(target, ast.Attribute)
-                        else getattr(target, "id", None))
+                name = (
+                    target.attr
+                    if isinstance(target, ast.Attribute)
+                    else getattr(target, "id", None)
+                )
                 if name == "_attr_icon":
                     return "_attr_icon"
     return None
@@ -108,9 +121,11 @@ def _declares_an_icon(cls):
 
 def _icons_in_file():
     data = json.load(io.open(PACKAGE / "icons.json", encoding="utf-8"))
-    return {(platform, key): entry["default"]
-            for platform, keys in data.get("entity", {}).items()
-            for key, entry in keys.items()}
+    return {
+        (platform, key): entry["default"]
+        for platform, keys in data.get("entity", {}).items()
+        for key, entry in keys.items()
+    }
 
 
 def _keys_passed_in(platform):
@@ -127,8 +142,7 @@ def _keys_passed_in(platform):
     # too, so collecting every call's would report exception message keys as icons
     # belonging to nothing the moment #846 lands. Keyed on the callee being a class
     # in this module rather than on a list of things to ignore, so it stays right.
-    entity_classes = {node.name for node in tree.body
-                      if isinstance(node, ast.ClassDef)}
+    entity_classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
     keys = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -145,9 +159,11 @@ def _keys_passed_in(platform):
 
 
 def _keys_in_code():
-    found = {(platform, key): cls.name
-             for platform, cls in _classes()
-             if (key := _translation_key(cls)) is not None}
+    found = {
+        (platform, key): cls.name
+        for platform, cls in _classes()
+        if (key := _translation_key(cls)) is not None
+    }
     for platform in PLATFORMS:
         for key in _keys_passed_in(platform):
             found.setdefault((platform, key), "chosen by %s.py" % platform)
@@ -156,11 +172,11 @@ def _keys_in_code():
 
 # --- the two sides agree -----------------------------------------------------
 
+
 def test_every_icon_in_the_file_belongs_to_an_entity():
     """An icon under a key nothing declares is never shown, and reads as
     coverage while it sits there."""
-    unknown = sorted(set(_icons_in_file()) - set(_keys_in_code())
-                     - EVENT_SENSOR_ICONS)
+    unknown = sorted(set(_icons_in_file()) - set(_keys_in_code()) - EVENT_SENSOR_ICONS)
 
     assert not unknown, "in icons.json with nothing declaring the key: %s" % unknown
 
@@ -171,10 +187,12 @@ def test_the_icons_are_the_ones_the_code_produced():
     icons = _icons_in_file()
 
     assert icons == WAS, "changed: %s" % sorted(
-        key for key in set(icons) | set(WAS) if icons.get(key) != WAS.get(key))
+        key for key in set(icons) | set(WAS) if icons.get(key) != WAS.get(key)
+    )
 
 
 # --- and the code does not override the file ---------------------------------
+
 
 def test_nothing_with_an_icon_in_the_file_also_sets_one_in_code():
     """`Entity.icon` returns `_attr_icon` when it is set, and a subclass's own
@@ -206,16 +224,15 @@ def test_an_entity_with_an_icon_in_code_is_one_that_cannot_have_a_key():
         offenders.append("%s.%s" % (platform, cls.name))
 
     assert not offenders, (
-        "sets an icon in code and is not listed in ICON_STAYS_IN_CODE: %s"
-        % offenders)
+        "sets an icon in code and is not listed in ICON_STAYS_IN_CODE: %s" % offenders
+    )
 
 
 def test_every_platform_in_the_file_is_one_this_integration_has():
     """The first level is the platform domain. A typo there is not an error: the
     frontend looks the icon up under the platform the entity was added with, so
     `sensors` simply never matches."""
-    unknown = sorted({platform for platform, _ in _icons_in_file()}
-                     - set(PLATFORMS))
+    unknown = sorted({platform for platform, _ in _icons_in_file()} - set(PLATFORMS))
 
     assert not unknown, "not a platform this integration has: %s" % unknown
 

@@ -5,6 +5,7 @@ the poller, and both are invisible in normal use: one only shows on a camera tha
 has been quiet for a whole stream lifetime, the other only after a transport
 failure that happens to span the end of a motion event.
 """
+
 import pytest
 
 from custom_components.dahua import client as client_module
@@ -45,25 +46,31 @@ class _FakeRpc2Client:
 
         code = params["code"]
         if code in self._refuse:
-            raise Rpc2MethodRefused("refused", code=268632064, message="InterfaceNotFound")
+            raise Rpc2MethodRefused(
+                "refused", code=268632064, message="InterfaceNotFound"
+            )
 
         if self._refused.get(code, 0) < self._refuse_for.get(code, 0):
             self._refused[code] = self._refused.get(code, 0) + 1
-            raise Rpc2MethodRefused("busy", code=287638033,
-                                    message="Request length error!")
+            raise Rpc2MethodRefused(
+                "busy", code=287638033, message="Request length error!"
+            )
 
         cycle = self._served.get(code, 0)
         self._served[code] = cycle + 1
         if cycle >= len(self._script):
             raise _StopPoll()
         self.asked.append((cycle, code))
-        return {"result": True, "params": {"indexes": self._script[cycle].get(code, [])}}
+        return {
+            "result": True,
+            "params": {"indexes": self._script[cycle].get(code, [])},
+        }
 
 
 class _FakeHolder:
     def __init__(self, client):
         self.client = client
-        self.task = object()   # identity is all the poller uses
+        self.task = object()  # identity is all the poller uses
         self.keepalive = None
 
 
@@ -123,17 +130,18 @@ async def test_a_cycle_that_answered_nothing_reports_no_activity(monkeypatch):
     refused everything reaches it -- and reporting the transport healthy on the
     strength of that is how a stream nothing is coming out of stays un-recycled.
     """
-    fake = _FakeRpc2Client([{"VideoMotion": []}] * 3,
-                           refuse_for={"VideoMotion": 2})
+    fake = _FakeRpc2Client([{"VideoMotion": []}] * 3, refuse_for={"VideoMotion": 2})
     received, on_receive = _collect()
 
     with pytest.raises(_StopPoll):
         await _client(monkeypatch, fake)._stream_events_rpc2(
-            on_receive, ["VideoMotion"], 0)
+            on_receive, ["VideoMotion"], 0
+        )
 
     # Two refused cycles, then three answered ones before the script runs out.
-    assert len(received) == 3, \
-        "a cycle in which the device refused everything sent a heartbeat"
+    assert (
+        len(received) == 3
+    ), "a cycle in which the device refused everything sent a heartbeat"
 
 
 async def test_active_event_emits_start_then_stop(monkeypatch):
@@ -189,13 +197,15 @@ async def test_state_is_per_host(monkeypatch):
     first = _FakeRpc2Client([{"VideoMotion": [0]}])
     with pytest.raises(_StopPoll):
         await _client(monkeypatch, first, "cam-a")._stream_events_rpc2(
-            _collect()[1], ["VideoMotion"], 0)
+            _collect()[1], ["VideoMotion"], 0
+        )
 
     other = _FakeRpc2Client([{"VideoMotion": []}])
     received, on_receive = _collect()
     with pytest.raises(_StopPoll):
         await _client(monkeypatch, other, "cam-b")._stream_events_rpc2(
-            on_receive, ["VideoMotion"], 0)
+            on_receive, ["VideoMotion"], 0
+        )
 
     events = [e for data, _ in received for e in parse_event(data.decode())]
     assert events == [], "cam-b was given cam-a's Start to clear"
@@ -206,7 +216,8 @@ async def test_a_code_the_device_refuses_is_dropped_and_cleared(monkeypatch):
     first = _FakeRpc2Client([{"SmartMotionHuman": [0]}])
     with pytest.raises(_StopPoll):
         await _client(monkeypatch, first)._stream_events_rpc2(
-            _collect()[1], ["SmartMotionHuman"], 0)
+            _collect()[1], ["SmartMotionHuman"], 0
+        )
 
     # Now the device refuses that code, so it is dropped from the poll -- and the
     # Start it is still holding has to be released on the way. It takes
@@ -216,7 +227,8 @@ async def test_a_code_the_device_refuses_is_dropped_and_cleared(monkeypatch):
     received, on_receive = _collect()
     with pytest.raises(_StopPoll):
         await _client(monkeypatch, second)._stream_events_rpc2(
-            on_receive, ["SmartMotionHuman", "VideoMotion"], 0)
+            on_receive, ["SmartMotionHuman", "VideoMotion"], 0
+        )
 
     events = [e for data, _ in received for e in parse_event(data.decode())]
     assert ("SmartMotionHuman", "Stop") in [(e["Code"], e["action"]) for e in events]
@@ -230,26 +242,29 @@ async def test_a_code_refused_once_is_asked_again(monkeypatch):
     of the entry -- with a debug line as the only record. #823 is where the
     refusal reasons started being kept; this is one of them mattering.
     """
-    fake = _FakeRpc2Client([{"VideoMotion": []}] * 3,
-                           refuse_for={"VideoMotion": 1})
+    fake = _FakeRpc2Client([{"VideoMotion": []}] * 3, refuse_for={"VideoMotion": 1})
     with pytest.raises(_StopPoll):
         await _client(monkeypatch, fake)._stream_events_rpc2(
-            _collect()[1], ["VideoMotion"], 0)
+            _collect()[1], ["VideoMotion"], 0
+        )
 
     assert fake.asked, "the code was dropped on its first refusal"
 
 
 async def test_a_transient_refusal_does_not_cost_the_event(monkeypatch):
     """The point of it: the event still arrives once the device answers."""
-    fake = _FakeRpc2Client([{"VideoMotion": [0]}] * 3,
-                           refuse_for={"VideoMotion": 2})
+    fake = _FakeRpc2Client([{"VideoMotion": [0]}] * 3, refuse_for={"VideoMotion": 2})
     received, on_receive = _collect()
     with pytest.raises(_StopPoll):
         await _client(monkeypatch, fake)._stream_events_rpc2(
-            on_receive, ["VideoMotion"], 0)
+            on_receive, ["VideoMotion"], 0
+        )
 
-    events = [(e["Code"], e["action"])
-              for data, _ in received for e in parse_event(data.decode())]
+    events = [
+        (e["Code"], e["action"])
+        for data, _ in received
+        for e in parse_event(data.decode())
+    ]
     assert ("VideoMotion", "Start") in events
 
 
@@ -272,17 +287,18 @@ async def test_a_success_between_refusals_starts_the_count_again(monkeypatch):
         if method == "eventManager.getEventIndexes":
             calls["n"] += 1
             if calls["n"] % 2:
-                raise Rpc2MethodRefused("busy", code=287638033,
-                                        message="Request length error!")
+                raise Rpc2MethodRefused(
+                    "busy", code=287638033, message="Request length error!"
+                )
         return await inner(method, params, **kwargs)
 
     fake.request = alternating
     with pytest.raises(_StopPoll):
         await _client(monkeypatch, fake)._stream_events_rpc2(
-            _collect()[1], ["VideoMotion"], 0)
+            _collect()[1], ["VideoMotion"], 0
+        )
 
-    assert calls["n"] > 4, \
-        "the code was dropped despite answering between refusals"
+    assert calls["n"] > 4, "the code was dropped despite answering between refusals"
 
 
 async def test_no_pollable_codes_ends_the_stream(monkeypatch):
@@ -305,6 +321,7 @@ async def test_no_pollable_codes_ends_the_stream(monkeypatch):
 # The idle interval is bounded by evidence rather than taste: #779 measured
 # VideoMotion lasting 11s and SmartMotionHuman 46s on the device this was written
 # for, so an idle poll at 8s still sees both.
+
 
 def _record_sleeps(monkeypatch):
     """What the poller actually waits between cycles."""
@@ -334,7 +351,8 @@ async def test_a_quiet_camera_eases_off(monkeypatch):
 
     assert waits, "the poller never waited at all"
     assert all(w > 50 for w in waits), (
-        "a camera with nothing happening kept the fast rate: %s" % waits)
+        "a camera with nothing happening kept the fast rate: %s" % waits
+    )
 
 
 async def test_a_busy_camera_keeps_the_fast_cycle(monkeypatch):
@@ -351,15 +369,18 @@ async def test_a_busy_camera_keeps_the_fast_cycle(monkeypatch):
 
     assert waits
     assert all(w < 50 for w in waits), (
-        "an active camera was polled at the idle rate: %s" % waits)
+        "an active camera was polled at the idle rate: %s" % waits
+    )
 
 
 async def test_activity_snaps_it_back(monkeypatch):
     """Idle, then something happens. The very next wait is the fast one."""
-    fake = _FakeRpc2Client([
-        {"VideoMotion": []},       # idle -> eased off
-        {"VideoMotion": [0]},      # active -> back to fast
-    ])
+    fake = _FakeRpc2Client(
+        [
+            {"VideoMotion": []},  # idle -> eased off
+            {"VideoMotion": [0]},  # active -> back to fast
+        ]
+    )
     client = _client(monkeypatch, fake)
     _idle_settings(monkeypatch)
     waits = _record_sleeps(monkeypatch)
@@ -401,7 +422,8 @@ async def test_easing_off_never_polls_faster_than_the_rate_bound(monkeypatch):
         await client._stream_events_rpc2(on_receive, ["VideoMotion", "AlarmLocal"], 0)
 
     assert all(w > 100 for w in waits), (
-        "easing off overrode the rate bound and polled faster: %s" % waits)
+        "easing off overrode the rate bound and polled faster: %s" % waits
+    )
 
 
 def test_the_idle_interval_can_still_see_the_shortest_measured_event():
@@ -413,11 +435,14 @@ def test_the_idle_interval_can_still_see_the_shortest_measured_event():
 def test_easing_off_is_a_real_reduction():
     """If the idle interval were not meaningfully longer than the fast one this
     would be complexity for nothing."""
-    assert (client_module.RPC2_EVENT_IDLE_POLL_SECONDS
-            >= 2 * client_module.RPC2_EVENT_POLL_SECONDS)
+    assert (
+        client_module.RPC2_EVENT_IDLE_POLL_SECONDS
+        >= 2 * client_module.RPC2_EVENT_POLL_SECONDS
+    )
 
 
 # --- what the fallback tells the user (#783, @matthewdva) ---------------------
+
 
 def test_the_fallback_message_explains_the_rest_of_the_damage():
     """A device with no CGI does not only lose its event stream.
@@ -505,8 +530,9 @@ def _client_and_holder(monkeypatch, fake, address="cam"):
 
 
 def _expired():
-    return Rpc2MethodRefused("expired", code=SESSION_EXPIRED,
-                             message="Component error: session invalid!")
+    return Rpc2MethodRefused(
+        "expired", code=SESSION_EXPIRED, message="Component error: session invalid!"
+    )
 
 
 async def test_an_expired_login_does_not_end_the_poll(monkeypatch):
@@ -536,8 +562,8 @@ async def test_an_expired_login_is_dropped_so_the_next_cycle_logs_in(monkeypatch
 
     assert holder.task is not original, "the expired login was kept"
     assert holder.relogins == 1, (
-        "logged in %d time(s); the expired session was reused"
-        % holder.relogins)
+        "logged in %d time(s); the expired session was reused" % holder.relogins
+    )
 
 
 async def test_a_new_login_gets_a_new_attach(monkeypatch):
@@ -552,16 +578,19 @@ async def test_a_new_login_gets_a_new_attach(monkeypatch):
 
     assert fake.attaches >= 2, (
         "attached %d time(s); the recovered login reused the old subscription"
-        % fake.attaches)
+        % fake.attaches
+    )
 
 
 async def test_a_session_refusal_is_recognised_by_what_the_device_says(monkeypatch):
     """Some firmware says the session is out of date in words rather than with the
     documented code. Both paths used to disagree about this, so the same device
     recovered on one and had its event stream closed on the other."""
+
     def _in_words():
-        return Rpc2MethodRefused("stale", code=268632064,
-                                 message="Component error: session out of date")
+        return Rpc2MethodRefused(
+            "stale", code=268632064, message="Component error: session out of date"
+        )
 
     fake = _RefusingFirst([{"VideoMotion": [0]}], _in_words)
     client, holder = _client_and_holder(monkeypatch, fake)
@@ -570,8 +599,9 @@ async def test_a_session_refusal_is_recognised_by_what_the_device_says(monkeypat
     with pytest.raises(_StopPoll):
         await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
 
-    assert holder.relogins == 1, (
-        "a session problem stated in words was not recognised, so no new login")
+    assert (
+        holder.relogins == 1
+    ), "a session problem stated in words was not recognised, so no new login"
 
 
 async def test_an_expired_login_is_not_counted_against_the_code(monkeypatch):
@@ -589,17 +619,20 @@ async def test_an_expired_login_is_not_counted_against_the_code(monkeypatch):
 
     assert fake.asked, (
         "VideoMotion was dropped after %d session expiries, so a quiet camera loses "
-        "the event it was watching for" % (limit + 2))
+        "the event it was watching for" % (limit + 2)
+    )
 
 
 async def test_a_refusal_that_is_not_a_session_problem_closes_the_stream(monkeypatch):
     """The gate has to still close. A device refusing the attach outright is not
     something a new login fixes, and the caller's backoff is the right place for it."""
+
     class _RefusingAttach(_FakeRpc2Client):
         async def request(self, method, params=None, object_id=None, **kwargs):
             if method == "eventManager.attach":
-                raise Rpc2MethodRefused("no", code=268632064,
-                                        message="InterfaceNotFound")
+                raise Rpc2MethodRefused(
+                    "no", code=268632064, message="InterfaceNotFound"
+                )
             return await super().request(method, params, object_id, **kwargs)
 
     client, _ = _client_and_holder(monkeypatch, _RefusingAttach([{}]))
@@ -621,5 +654,6 @@ async def test_a_login_another_caller_already_replaced_is_left_alone(monkeypatch
     with pytest.raises(_StopPoll):
         await client._stream_events_rpc2(on_receive, ["VideoMotion"], 0)
 
-    assert holder.relogins == 0, (
-        "dropped a login this cycle had not failed on, so the replacement was wasted")
+    assert (
+        holder.relogins == 0
+    ), "dropped a login this cycle had not failed on, so the replacement was wasted"

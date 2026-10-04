@@ -86,6 +86,7 @@ def _clean_streams():
 
 # --- the bug itself ---------------------------------------------------------
 
+
 def test_a_live_stream_is_reported_as_running():
     """The regression test. `_event_task` is None, as it always is, and a stream is
     attached and working. Reading the coordinator attribute answers False here."""
@@ -125,6 +126,7 @@ def test_nothing_reads_the_dead_coordinator_attribute():
 
 # --- no stream is not a failure --------------------------------------------
 
+
 def test_no_stream_registered_says_so_without_guessing():
     """No configured events means no stream is started, which is a choice and not a
     fault, so nothing else is claimed about it."""
@@ -145,11 +147,15 @@ def test_a_coordinator_with_no_address_does_not_raise():
 
 # --- the three states it has to tell apart ---------------------------------
 
+
 def test_the_device_refusing_the_attach_is_visible():
     coordinator = _coordinator()
     dahua._HOST_STREAMS[ADDRESS] = _stream(
-        _task=_Task(done=False), _received_data=False, _failing=True,
-        _consecutive_failures=4)
+        _task=_Task(done=False),
+        _received_data=False,
+        _failing=True,
+        _consecutive_failures=4,
+    )
 
     block = _stream_block(coordinator)
 
@@ -187,6 +193,7 @@ def test_a_stream_that_has_no_task_yet_is_not_running():
 
 # --- what the device was actually asked for -------------------------------
 
+
 def test_the_attached_events_are_the_union_across_the_channels():
     """A code that is not in here cannot arrive, whatever this entry has configured.
     The union is across every channel on the host, so one channel's selection explains
@@ -196,10 +203,14 @@ def test_the_attached_events_are_the_union_across_the_channels():
     channel's list is sent as codes=[All] and filtered locally, which `subscribed_as`
     reports. See test_the_dump_says_what_was_subscribed.py."""
     dahua._HOST_STREAMS[ADDRESS] = _stream(
-        _events=frozenset({"VideoMotion", "AlarmLocal", "CrossRegionDetection"}))
+        _events=frozenset({"VideoMotion", "AlarmLocal", "CrossRegionDetection"})
+    )
 
     assert _stream_block(_coordinator())["attached_events"] == [
-        "AlarmLocal", "CrossRegionDetection", "VideoMotion"]
+        "AlarmLocal",
+        "CrossRegionDetection",
+        "VideoMotion",
+    ]
 
 
 def test_an_empty_attachment_is_reported_as_empty_not_missing():
@@ -213,7 +224,8 @@ def test_configured_and_attached_are_both_reported():
     telling them apart is the point of reporting both."""
     coordinator = _coordinator(get_event_list=lambda: ["VideoMotion"])
     dahua._HOST_STREAMS[ADDRESS] = _stream(
-        _events=frozenset({"VideoMotion", "AlarmLocal"}))
+        _events=frozenset({"VideoMotion", "AlarmLocal"})
+    )
 
     block = _events_block(coordinator)
 
@@ -222,6 +234,7 @@ def test_configured_and_attached_are_both_reported():
 
 
 # --- who is lending the stream its client ---------------------------------
+
 
 def test_the_entry_lending_its_client_is_named():
     """The stream borrows one channel's client, so a reload of that entry moves the
@@ -244,7 +257,8 @@ def test_how_many_channels_share_the_stream_is_reported():
     common thing missing from a "my camera dropped out" issue."""
     others = [_coordinator(), _coordinator(), _coordinator()]
     dahua._HOST_STREAMS[ADDRESS] = _stream(
-        _by_channel={0: [others[0]], 3: [others[1], others[2]]})
+        _by_channel={0: [others[0]], 3: [others[1], others[2]]}
+    )
 
     block = _stream_block(_coordinator())
 
@@ -254,22 +268,32 @@ def test_how_many_channels_share_the_stream_is_reported():
 
 # --- and nothing sensitive goes in ----------------------------------------
 
+
 def test_no_coordinator_or_client_object_is_published():
     """`_owner` is a coordinator holding a client holding a password. Only the boolean
     derived from it may appear, and the same goes for the registered coordinators."""
     coordinator = _coordinator()
     dahua._HOST_STREAMS[ADDRESS] = _stream(
-        _owner=coordinator, _by_channel={0: [coordinator]})
+        _owner=coordinator, _by_channel={0: [coordinator]}
+    )
 
     block = _stream_block(coordinator)
 
-    assert isinstance(block["this_entry_owns_it"], bool), (
-        "the owner must be reduced to a boolean, not described: %r"
-        % (block["this_entry_owns_it"],))
+    assert isinstance(
+        block["this_entry_owns_it"], bool
+    ), "the owner must be reduced to a boolean, not described: %r" % (
+        block["this_entry_owns_it"],
+    )
     for value in block.values():
         assert isinstance(value, (bool, int, str, list)), value
-        for text in ([value] if isinstance(value, str) else
-                     [v for v in value if isinstance(v, str)]
-                     if isinstance(value, list) else []):
+        for text in (
+            [value]
+            if isinstance(value, str)
+            else (
+                [v for v in value if isinstance(v, str)]
+                if isinstance(value, list)
+                else []
+            )
+        ):
             assert "namespace" not in text.lower(), text
             assert "object at 0x" not in text, text

@@ -106,12 +106,15 @@ def test_the_shape_is_read_from_this_channels_row():
 # --- and what that means for the write --------------------------------------
 
 
-@pytest.mark.parametrize("fields, writable", [
-    ({"Config[0]": "0"}, True),
-    ({"Config[0]": "2"}, False),
-    ({"Config[0]": "0", "ConfigEx": "Day"}, False),
-    ({}, True),
-])
+@pytest.mark.parametrize(
+    "fields, writable",
+    [
+        ({"Config[0]": "0"}, True),
+        ({"Config[0]": "2"}, False),
+        ({"Config[0]": "0", "ConfigEx": "Day"}, False),
+        ({}, True),
+    ],
+)
 def test_whether_writing_config_zero_can_select_the_profile(fields, writable):
     assert _coordinator(fields).video_profile_mode_is_writable() is writable
 
@@ -128,8 +131,12 @@ def test_the_two_shapes_that_cannot_work_are_both_refused():
     general shape has the device reject the write, and the IL shape has it accepted and
     ignored. #458 is the first, #582 was the second."""
     assert _coordinator({"Config[0]": "2"}).video_profile_mode_is_writable() is False
-    assert _coordinator(
-        {"Config[0]": "0", "ConfigEx": "Day"}).video_profile_mode_is_writable() is False
+    assert (
+        _coordinator(
+            {"Config[0]": "0", "ConfigEx": "Day"}
+        ).video_profile_mode_is_writable()
+        is False
+    )
 
 
 def test_the_shape_and_the_verdict_agree():
@@ -139,4 +146,6 @@ def test_the_shape_and_the_verdict_agree():
         coordinator = _coordinator(fields)
         shape = coordinator.describe_video_profile_shape()
         assert coordinator.video_profile_mode_is_writable() is (shape == "ordinary"), (
-            fields, shape)
+            fields,
+            shape,
+        )

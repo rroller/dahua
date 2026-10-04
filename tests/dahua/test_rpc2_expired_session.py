@@ -151,6 +151,7 @@ async def test_refusal_exposes_response_fields():
 
 # --- the config-read path, which decides the transport -------------------------
 
+
 async def test_an_expired_login_on_a_config_read_is_renewed(rpc2_client):
     """Without the retry the refusal reached _request, which read it as "does
     not serve this table" and stopped asking RPC2 for it for good."""

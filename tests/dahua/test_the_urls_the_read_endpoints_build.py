@@ -37,43 +37,106 @@ INDEX = 2
 # method, positional arguments, the URL it must build, and whether it asks `get` to
 # check the reply. Taken from the source one at a time, not by pattern.
 ENDPOINTS = [
-    ("async_get_alarm_output_slots", (),
-     "/cgi-bin/alarm.cgi?action=getOutSlots", False),
-    ("async_get_coaxial_control_io_status", (CHANNEL,),
-     "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=3", False),
-    ("async_get_lighting_v2", (),
-     "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting_V2", False),
-    ("async_get_smart_motion_detection", (),
-     "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect", False),
-    ("async_get_ptz_position", (),
-     "/cgi-bin/ptz.cgi?action=getStatus", False),
-    ("async_get_ptz_presets", (CHANNEL,),
-     "/cgi-bin/ptz.cgi?action=getPresets&channel=3", False),
-    ("async_get_light_global_enabled", (),
-     "/cgi-bin/configManager.cgi?action=getConfig&name=LightGlobal[0].Enable", False),
-    ("async_get_remote_devices", (),
-     "/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice", False),
-    ("async_get_video_widget", (),
-     "/cgi-bin/configManager.cgi?action=getConfig&name=VideoWidget", False),
-    ("async_get_video_in_mode", (),
-     "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode", False),
-    ("async_get_disarming_linkage", (),
-     "/cgi-bin/configManager.cgi?action=getConfig&name=DisableLinkage", False),
-    ("async_get_event_notifications", (),
-     "/cgi-bin/configManager.cgi?action=getConfig&name=DisableEventNotify", False),
-    ("async_goto_preset_position", (CHANNEL, POSITION),
-     "/cgi-bin/ptz.cgi?action=start&channel=3&code=GotoPreset"
-     "&arg1=0&arg2=5&arg3=0", False),
-    ("async_set_floodlightmode", (2,),
-     "/cgi-bin/configManager.cgi?action=setConfig&FloodLightMode.Mode=2", False),
+    (
+        "async_get_alarm_output_slots",
+        (),
+        "/cgi-bin/alarm.cgi?action=getOutSlots",
+        False,
+    ),
+    (
+        "async_get_coaxial_control_io_status",
+        (CHANNEL,),
+        "/cgi-bin/coaxialControlIO.cgi?action=getStatus&channel=3",
+        False,
+    ),
+    (
+        "async_get_lighting_v2",
+        (),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting_V2",
+        False,
+    ),
+    (
+        "async_get_smart_motion_detection",
+        (),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect",
+        False,
+    ),
+    ("async_get_ptz_position", (), "/cgi-bin/ptz.cgi?action=getStatus", False),
+    (
+        "async_get_ptz_presets",
+        (CHANNEL,),
+        "/cgi-bin/ptz.cgi?action=getPresets&channel=3",
+        False,
+    ),
+    (
+        "async_get_light_global_enabled",
+        (),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=LightGlobal[0].Enable",
+        False,
+    ),
+    (
+        "async_get_remote_devices",
+        (),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice",
+        False,
+    ),
+    (
+        "async_get_video_widget",
+        (),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=VideoWidget",
+        False,
+    ),
+    (
+        "async_get_video_in_mode",
+        (),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode",
+        False,
+    ),
+    (
+        "async_get_disarming_linkage",
+        (),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=DisableLinkage",
+        False,
+    ),
+    (
+        "async_get_event_notifications",
+        (),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=DisableEventNotify",
+        False,
+    ),
+    (
+        "async_goto_preset_position",
+        (CHANNEL, POSITION),
+        "/cgi-bin/ptz.cgi?action=start&channel=3&code=GotoPreset"
+        "&arg1=0&arg2=5&arg3=0",
+        False,
+    ),
+    (
+        "async_set_floodlightmode",
+        (2,),
+        "/cgi-bin/configManager.cgi?action=setConfig&FloodLightMode.Mode=2",
+        False,
+    ),
     # The three that ask `get` to check the reply: writes dressed as reads.
-    ("async_set_light_global_enabled", (True,),
-     "/cgi-bin/configManager.cgi?action=setConfig&LightGlobal[0].Enable=true", True),
-    ("async_adjustfocus_v1", ("0.5", "0.7"),
-     "/cgi-bin/devVideoInput.cgi?action=adjustFocus&focus=0.5&zoom=0.7", True),
-    ("async_setprivacymask", (INDEX, True),
-     "/cgi-bin/configManager.cgi?action=setConfig"
-     "&PrivacyMasking[0][2].Enable=true", True),
+    (
+        "async_set_light_global_enabled",
+        (True,),
+        "/cgi-bin/configManager.cgi?action=setConfig&LightGlobal[0].Enable=true",
+        True,
+    ),
+    (
+        "async_adjustfocus_v1",
+        ("0.5", "0.7"),
+        "/cgi-bin/devVideoInput.cgi?action=adjustFocus&focus=0.5&zoom=0.7",
+        True,
+    ),
+    (
+        "async_setprivacymask",
+        (INDEX, True),
+        "/cgi-bin/configManager.cgi?action=setConfig"
+        "&PrivacyMasking[0][2].Enable=true",
+        True,
+    ),
 ]
 
 
@@ -119,7 +182,8 @@ async def test_the_endpoint_builds_its_url(method, args, url, _verify):
 
 @pytest.mark.parametrize("method, args, _url, verify", ENDPOINTS)
 async def test_only_the_writes_ask_for_the_reply_to_be_checked(
-        method, args, _url, verify):
+    method, args, _url, verify
+):
     """`verify_response` makes `get` raise on a reply that is not OK. Three of these
     are writes, and asking for a check on a read would reject a perfectly good empty
     table."""
@@ -140,8 +204,7 @@ async def test_no_two_endpoints_build_the_same_url():
         (sent, _flag), _result = await _call(method, args)
         built[method] = sent
 
-    duplicates = [m for m, u in built.items()
-                  if list(built.values()).count(u) > 1]
+    duplicates = [m for m, u in built.items() if list(built.values()).count(u) > 1]
     assert not duplicates, "these build an identical URL: %s" % sorted(duplicates)
 
 
@@ -152,17 +215,20 @@ async def test_every_argument_reaches_the_url(method, args, url, _verify):
     for argument in args:
         if isinstance(argument, bool) or argument in ("", None):
             continue
-        rendered = str(argument).lower() if isinstance(argument, bool) else str(argument)
-        assert rendered in url, (
-            "%s does not carry %r in its expected URL" % (method, argument))
+        rendered = (
+            str(argument).lower() if isinstance(argument, bool) else str(argument)
+        )
+        assert rendered in url, "%s does not carry %r in its expected URL" % (
+            method,
+            argument,
+        )
 
 
 @pytest.mark.parametrize("channel", [0, 1, 7, 15])
 async def test_the_channel_is_the_one_it_was_given(channel):
     """Spelled out for one of them, because the table only proves the argument appears
     somewhere in a URL built with one value."""
-    (sent, _flag), _result = await _call(
-        "async_get_ptz_presets", (channel,))
+    (sent, _flag), _result = await _call("async_get_ptz_presets", (channel,))
 
     assert sent.endswith("&channel=%d" % channel), sent
 
@@ -181,7 +247,8 @@ async def test_the_alarm_output_state_is_reshaped_into_the_key_that_is_read():
     """`coordinator.is_alarm_output_on` reads exactly `status.AlarmOut[0]`, so this
     method and that reader have to agree on the spelling or the sensor never moves."""
     (sent, _flag), result = await _call(
-        "async_get_alarm_output_state", (), answer={"result": "1"})
+        "async_get_alarm_output_state", (), answer={"result": "1"}
+    )
 
     assert sent == "/cgi-bin/alarm.cgi?action=getOutState"
     assert result == {"status.AlarmOut[0]": "1"}
@@ -190,8 +257,7 @@ async def test_the_alarm_output_state_is_reshaped_into_the_key_that_is_read():
 async def test_an_alarm_output_reply_with_no_result_is_still_shaped():
     """The value is deliberately passed through unmodified, so a device that answers
     something unexpected yields None rather than an error here."""
-    _call_args, result = await _call(
-        "async_get_alarm_output_state", (), answer={})
+    _call_args, result = await _call("async_get_alarm_output_state", (), answer={})
 
     assert result == {"status.AlarmOut[0]": None}
 
@@ -213,8 +279,7 @@ async def test_the_snapshot_goes_through_both_jpeg_repairs(monkeypatch):
     monkeypatch.setattr(client_module, "strip_dahua_snapshot_trailer", _strip)
     monkeypatch.setattr(client_module, "repair_dahua_snapshot_header", _repair)
 
-    (sent, _flag), result = await _call(
-        "async_get_snapshot", (4,), answer=b"jpeg")
+    (sent, _flag), result = await _call("async_get_snapshot", (4,), answer=b"jpeg")
 
     assert sent == "/cgi-bin/snapshot.cgi?channel=4"
     assert applied == ["strip", "repair"], applied

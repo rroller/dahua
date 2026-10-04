@@ -33,6 +33,9 @@ Why not use the Amcrest integration already provided by Home Assistant? The Amcr
 - **Write on the video.** The channel title, the timestamp and free text overlays can
   be set from an automation, which is how a temperature or a zone name gets burned
   into the recording.
+- **Watch what it recorded.** Recordings on the device's own storage show up in Home
+  Assistant's Media browser under **Dahua**, by camera and then by day, and play back
+  in the dashboard. See [Recordings](#recordings).
 
 ## Installation
 
@@ -358,7 +361,7 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | IMOU IPC-C26E-V2 <sup>*</sup> |
 | | IMOU IPC-K22A / Cube PoE-322A |
 | *Lorex* |
-| | | | | Lorex E891AB
+| | | | | Lorex E891AB/E893DD
 | | | | | Lorex LNB8005-C
 | | | | | Lorex LNE8964AB
 
@@ -401,8 +404,38 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | DHI-VTO2202F-P |
 | | DHI-VTO2211G-P |
 | | DHI-VTO3311Q-WP |
+| | DHI-VTO2211G-WP-S2 |
 | *IMOU* |
 | | IMOU C26EP-V2 | IMOU IPC-K46 | IMOU DB61i
+
+## Indoor monitors (VTH)
+
+Model | Firmware
+:------------ | :------------
+VTH2421F-P | 4.800.0000000.1.R
+
+Add an indoor monitor like any other device, by its address and an account on the
+monitor itself (usually the same as the VTO's). A VTH serves no CGI at all, so the
+integration identifies it over RPC2 and shows its real model and firmware.
+
+What it gets:
+
+- A **Camera for &lt;VTO&gt; calls** select for each VTO it knows: the camera its screen opens on
+  when that VTO calls. `none` is the VTO's own picture; the other options are the cameras in
+  the monitor's own camera list (Monitor > IPC on its screen). The monitor's screen has no
+  control for this on the measured firmware, though its manual describes it.
+- Reboot, firmware version and serial number.
+
+A monitor that reports it has no camera of its own (`SupportVideo` false in its
+`RemoteDevice` table, as on the VTH2421F-P) gets no camera entities, no camera event
+sensors, no event stream, no motion detection switch, no Day/Night select, no Preset
+Position, and no License Plate or Authorized Vehicle entities.
+
+The serial number shown is generated from the address and login, as for every device
+whose CGI does not answer, so that it stays stable; it is not the serial printed on the
+monitor.
+
+To ring a monitor, use [`dahua.vto_call`](#services) on the VTO, not on the monitor.
 
 # Known limitations
 
@@ -719,6 +752,7 @@ Service | Parameters | Description
 `dahua.enable_ivs_rule` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `index`: The rule index <br /> enabled`: True to enable the IVS rule, False to disable the IVS rule | Enable or disable an IVS rule
 `dahua.vto_open_door` | `target`: camera.cam13_main <br /> `door_id`: The door ID to open, e.g.: 1 <br /> Opens a door via a VTO
 `dahua.vto_cancel_call` | `target`: camera.cam13_main <br />Cancels a call on a VTO device (Doorbell)
+`dahua.vto_call` | `target`: camera.cam13_main <br /> `room`: The room to ring, e.g.: 9901 | Rings an indoor monitor (VTH) from a VTO, as its call button does. `9901#0` is dialled as `9901`, which rings the main monitor and its extensions. Measured on a DHI-VTO2211G-WP-S2
 `dahua.set_video_in_day_night_mode` | `target`: camera.cam13_main <br /> `config_type`: The config type: general, day, night <br /> `mode`: The mode: Auto, Color, BlackWhite. Note Auto is also known as Brightness by Dahua|Set the camera's Day/Night Mode. For example, Color, BlackWhite, or Auto
 `dahua.reboot` | `target`: camera.cam13_main <br />Reboots the device
 `dahua.set_illuminator_mode` | `target`: camera.cam13_main <br /> `mode`: Auto, On, Off <br /> `brightness`: 0 - 100 inclusive | Sets the illuminator (white light) mode. The light entity can only switch it on or off, and off is not the same as automatic, so this is how control is handed back to the camera with Auto
@@ -729,6 +763,24 @@ Service | Parameters | Description
 
 ## Camera
 This will provide a normal HA camera entity (can take snapshots, etc)
+
+## Recordings
+Recordings on the device's own storage (an SD card, or the NVR's disks) are browsable
+from **Media** in the sidebar, under **Dahua**. Pick a camera, then a day, then a clip,
+and it plays in the dashboard the same way a live view does.
+
+Playback uses the device's RTSP `cam/playback` stream, which Home Assistant's `stream`
+integration turns into HLS, so nothing is downloaded to the Home Assistant host.
+
+Two things worth knowing:
+- Days are listed for the last two weeks whether or not each one has a recording, so an
+  empty day opens to an empty folder. Dahua offers no quick "which days have footage"
+  query, so this avoids a round trip to the device for every day just to draw the list.
+- The day folders are Home Assistant's own calendar dates, but each day is asked of the
+  device as midnight-to-midnight on the **recorder's clock**. A clip always plays the
+  exact span it was recorded over, but if the recorder's clock differs from Home
+  Assistant's, a clip recorded near midnight can show up under the neighbouring day.
+  Keep both on NTP and they line up.
 
 ## Switches
 Switch |  Description |
@@ -774,6 +826,7 @@ Select |  Description |
 Security Light | On a doorbell, sets the light to off, on, or strobe. A doorbell's light has three states rather than two, which is why it is a select and not a switch
 Preset Position | Moves a PTZ camera to one of its stored preset positions, and reports the one it is at. Only created on cameras that report presets
 Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dahua also calls Brightness). Readable as well as settable, which is what makes it possible to notice a camera that changed mode by itself, such as one reverting to Auto after a power cut and then rendering black and white at night
+Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
 
 ## Event entities
 
@@ -793,6 +846,46 @@ Cancel Call | On a VTO (doorbell), hangs up a call in progress. Reports whether 
 Change the entity ids to your own. The event based ones use `dahua_event_received`,
 described under [Events](#events); `name` is the device name the integration reports,
 which is also in the event payload if you watch the bus.
+
+**A second doorbell that is not wired to the VTO rings the indoor monitors, showing its own camera.**
+
+Here a KNX push button (`binary_sensor.gate_doorbell`) rings room 9901 through the VTO, and the
+monitors open the call on the gate camera instead of the VTO's picture. They are set back
+afterwards, so the VTO's own button still shows the VTO.
+
+```yaml
+alias: Gate doorbell rings the indoor monitors
+mode: single
+max_exceeded: silent
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.gate_doorbell
+    to: "on"
+actions:
+  - action: select.select_option
+    target:
+      entity_id:
+        - select.vth_hall_camera_for_main_vto_calls
+        - select.vth_upstairs_camera_for_main_vto_calls
+    data:
+      option: Gate
+    continue_on_error: true
+  - action: dahua.vto_call
+    target:
+      entity_id: camera.front_door_main
+    data:
+      room: "9901"
+    continue_on_error: true
+  - delay:
+      seconds: 90
+  - action: select.select_option
+    target:
+      entity_id:
+        - select.vth_hall_camera_for_main_vto_calls
+        - select.vth_upstairs_camera_for_main_vto_calls
+    data:
+      option: none
+```
 
 **Somebody rang the doorbell: notify a phone with a picture.**
 

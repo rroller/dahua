@@ -1,4 +1,5 @@
 """Configure pytest for dahua integration tests."""
+
 import asyncio
 
 import pytest
@@ -52,6 +53,24 @@ def _clear_host_uptime():
     yield
     dahua_module._HOST_UPTIME_STATE.clear()
     dahua_module._HOST_UPTIME_LOCKS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_host_failures():
+    """Which hosts are failing is module state, keyed by address.
+
+    A successful poll withdraws the host's repair issues when its address is in
+    there, through the coordinator's `hass`. The poll doubles in
+    test_poll_skips_unused.py and test_ivs_rules.py use 10.0.0.5 and a
+    SimpleNamespace for `hass`, so a 10.0.0.5 left behind by another test on the
+    same worker failed their polls with "unhashable type: 'types.SimpleNamespace'",
+    at random under `-n auto`. Reproduced by seeding the address before a poll.
+    """
+    from custom_components import dahua as dahua_module
+
+    dahua_module._HOST_FAILURES.clear()
+    yield
+    dahua_module._HOST_FAILURES.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +137,7 @@ async def _stop_shared_event_streams():
     yield
     await _drain()
 
+
 @pytest.fixture(autouse=True)
 def _clear_rpc2_event_state():
     """What the RPC2 poll last reported active is module state, per host.
@@ -142,6 +162,7 @@ def _clear_rpc2_event_state():
     yield
     _drain()
 
+
 @pytest.fixture(autouse=True)
 def _clear_cgi_config_absent():
     """Which hosts have no CGI config endpoint is learnt once, per host.
@@ -155,3 +176,19 @@ def _clear_cgi_config_absent():
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
     yield
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_refused_controls():
+    """What a device has refused is learnt once, per channel and per control.
+
+    Same trap as the fixture above, with sharper teeth: one test that makes the
+    device answer 403 would leave every later test's press failing fast without
+    sending anything, and the mode select unavailable. That reads as the code
+    under test being broken.
+    """
+    from custom_components.dahua.refusals import forget
+
+    forget()
+    yield
+    forget()
