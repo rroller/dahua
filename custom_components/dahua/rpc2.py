@@ -558,3 +558,82 @@ class DahuaRpc2Client:
             params={"name": "LeLensMask", "table": [entry], "options": []},
         )
         _LOGGER.debug("RPC2 LeLensMask set to Enable=%s", enabled)
+
+    async def async_find_recordings(
+        self,
+        channel: int,
+        start_time: str,
+        end_time: str,
+        max_results: int = 200,
+        types=("dav",),
+    ) -> list[dict]:
+        """List recorded files for a channel between two times, over RPC2.
+
+        The mediaFileFind object the device hands back is stateful and lives on
+        the device, so the shape is the same factory/action/destroy dance as
+        async_open_door, with the destroy in a finally for the same reason: the
+        object is the device's, and leaking finders on an NVR is a real cost.
+
+        `channel` is 0-based, which is what the finder's condition takes
+        (measured: condition.Channel 0 returned the device's channel 0). The
+        times are Dahua's own "YYYY-MM-DD HH:MM:SS" form. Returns the raw info
+        records (FilePath, StartTime, EndTime, Type, Length, Flags, ...), newest
+        first, capped at max_results so a month of continuous recording cannot
+        pull an unbounded list into a browse call.
+        """
+        if not self._session_id:
+            await self.login()
+        made = await self.request(method="mediaFileFind.factory.create")
+        object_id = made.get("result")
+        if (
+            isinstance(object_id, bool)
+            or not isinstance(object_id, int)
+            or object_id <= 0
+        ):
+            raise ConnectionError(
+                "Dahua RPC2 mediaFileFind.factory.create returned no object"
+            )
+        try:
+            await self.request(
+                method="mediaFileFind.findFile",
+                object_id=object_id,
+                params={
+                    "condition": {
+                        "Channel": channel,
+                        "Dirs": [],
+                        "Types": list(types),
+                        "Order": "Descent",
+                        "Flags": ["Timing", "Event", "Manual", "Marker"],
+                        "StartTime": start_time,
+                        "EndTime": end_time,
+                    }
+                },
+            )
+            records: list[dict] = []
+            while len(records) < max_results:
+                want = min(100, max_results - len(records))
+                # findNextFile returns result=false with no more files, which is
+                # the end of the list, not a device refusal; do not let that
+                # raise through request's verify_result.
+                got = await self.request(
+                    method="mediaFileFind.findNextFile",
+                    object_id=object_id,
+                    params={"count": want},
+                    verify_result=False,
+                )
+                params = got.get("params") or {}
+                infos = params.get("infos") or []
+                records.extend(info for info in infos if isinstance(info, dict))
+                if not infos or len(infos) < want:
+                    break
+            return records[:max_results]
+        finally:
+            for method in ("mediaFileFind.close", "mediaFileFind.destroy"):
+                try:
+                    await self.request(
+                        method=method, object_id=object_id, verify_result=False
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    # A failed cleanup must not lose the caller the records it
+                    # already has; leaking the finder is the lesser cost.
+                    _LOGGER.debug("RPC2 %s failed", method, exc_info=True)

@@ -211,7 +211,7 @@ class DahuaVTOClient(asyncio.Protocol):
         if not self.disconnected.done():
             self.disconnected.set_result(True)
 
-    def send(self, action, handler, params=None):
+    def send(self, action, handler, params=None, object_id=None):
         if params is None:
             params = {}
 
@@ -224,6 +224,10 @@ class DahuaVTOClient(asyncio.Protocol):
             "method": action,
             "params": params,
         }
+        # Methods reached through a factory instance carry its object id, e.g.
+        # VideoTalkPhone.endCall (#460). Absent for ordinary calls.
+        if object_id is not None:
+            message_data["object"] = object_id
 
         request_id = self.request_id
         self.data_handlers[request_id] = handler
@@ -405,11 +409,83 @@ class DahuaVTOClient(asyncio.Protocol):
             # this ended rather than leaving it to accumulate.
             self.data_handlers.pop(request_id, None)
 
-        if isinstance(message, dict) and message.get("result") is False:
-            raise CancelCallRefused(
-                "{0} refused the hang-up: {1}".format(self.host, message)
+        if not (isinstance(message, dict) and message.get("result") is False):
+            # hc answered and did not refuse, which is the VTO2000A path and
+            # stays exactly as it was.
+            return True
+
+        # hc answered but refused. A VTO2311R-WP answers both console.runCmd hc
+        # and VideoTalkPhone.disconnect with 268959743 yet ends the call through
+        # VideoTalkPhone.endCall (#460). Try that over the same connection before
+        # giving up, so the refused hc is not the last word on firmware that has
+        # a working method.
+        _LOGGER.debug(
+            "hc was refused on %s (%s); trying VideoTalkPhone.endCall",
+            self.host,
+            message,
+        )
+        try:
+            if await self._end_call_via_videotalkphone(timeout):
+                return True
+        except asyncio.TimeoutError:
+            pass
+        raise CancelCallRefused(
+            "{0} refused the hang-up: {1}".format(self.host, message)
+        )
+
+    async def _request_reply(
+        self,
+        action,
+        params=None,
+        object_id=None,
+        timeout: float = CANCEL_CALL_TIMEOUT_SECONDS,
+    ):
+        """Send one request and wait for the device's reply to it.
+
+        The same wait-and-clean-up `cancel_call` does, factored out so the
+        VideoTalkPhone fallback does not repeat it three times. Raises
+        asyncio.TimeoutError if no reply arrives, and always drops the handler.
+        """
+        answered = self._loop.create_future()
+
+        def on_reply(message):
+            if not answered.done():
+                answered.set_result(message)
+
+        request_id = self.send(action, on_reply, params, object_id=object_id)
+        try:
+            return await asyncio.wait_for(answered, timeout)
+        finally:
+            self.data_handlers.pop(request_id, None)
+
+    async def _end_call_via_videotalkphone(self, timeout: float) -> bool:
+        """Hang up through VideoTalkPhone, for firmware that refuses hc (#460).
+
+        Measured on a VTO2311R-WP: factory.instance returns an object id, endCall
+        on it ends the call (Calling -> Idle), and destroy releases it. endCall is
+        a recognised method on a VTO2000A too (it answers rather than
+        "Method not found"), so this is the same call across models; it is only
+        reached when hc has already been refused. The object is released whether
+        or not the hang-up took.
+        """
+        created = await self._request_reply(
+            "VideoTalkPhone.factory.instance", timeout=timeout
+        )
+        object_id = created.get("result") if isinstance(created, dict) else None
+        if not isinstance(object_id, int):
+            return False
+        try:
+            ended = await self._request_reply(
+                "VideoTalkPhone.endCall", object_id=object_id, timeout=timeout
             )
-        return True
+        finally:
+            try:
+                await self._request_reply(
+                    "VideoTalkPhone.destroy", object_id=object_id, timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.debug("VideoTalkPhone.destroy did not answer on %s", self.host)
+        return not (isinstance(ended, dict) and ended.get("result") is False)
 
     def load_version(self):
         _LOGGER.debug("Get version")

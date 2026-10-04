@@ -1195,6 +1195,31 @@ class DahuaClient:
 
         return url
 
+    def get_rtsp_playback_url(
+        self, channel_number: int, start_time: str, end_time: str
+    ) -> str:
+        """The RTSP URL for a recorded clip (Dahua's cam/playback VOD).
+
+        `channel_number` is 1-based like get_rtsp_stream_url (and, like it, must
+        be the detected number, not index+1, so a device that streams on 0 is
+        not broken). The times are Dahua's underscore form, YYYY_MM_DD_HH_MM_SS,
+        which is what this endpoint takes. Measured on a DHI-NVR5464: the device
+        serves a finite VOD that ends at end_time (ffprobe read duration=3600
+        for a one-hour clip), so Home Assistant's stream plays it to the clip
+        boundary rather than as an endless live feed.
+        """
+        return (
+            "rtsp://{0}:{1}@{2}:{3}/cam/playback?channel={4}&starttime={5}&endtime={6}"
+        ).format(
+            quote(self._username, safe=""),
+            quote(self._password, safe=""),
+            self._address,
+            self._rtsp_port,
+            channel_number,
+            start_time,
+            end_time,
+        )
+
     async def async_get_snapshot(self, channel_number: int) -> bytes:
         """
         Takes a snapshot of the camera and returns the binary jpeg data
@@ -3339,6 +3364,43 @@ class DahuaClient:
                     await rpc2.logout()
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.debug("RPC2 logout failed after openDoor", exc_info=True)
+
+    async def async_find_recordings(
+        self,
+        channel: int,
+        start_time: str,
+        end_time: str,
+        max_results: int = 200,
+    ) -> list[dict]:
+        """List recorded clips for a channel between two times, over RPC2.
+
+        A private, logged-out-after client for the same reason openDoor uses
+        one: browsing recordings must not leave a cached RPC2 session with a
+        keepalive behind for a user who never turned RPC2 on. `channel` is
+        0-based (the finder's own convention); the times are Dahua's
+        "YYYY-MM-DD HH:MM:SS" form.
+        """
+        session = self._rpc2_session()
+        rpc2 = DahuaRpc2Client(
+            self._username,
+            self._password,
+            self._address,
+            self._port,
+            self._rtsp_port,
+            session,
+            self._use_https,
+        )
+        try:
+            async with asyncio.timeout(TIMEOUT_SECONDS):
+                return await rpc2.async_find_recordings(
+                    channel, start_time, end_time, max_results
+                )
+        finally:
+            try:
+                async with asyncio.timeout(5):
+                    await rpc2.logout()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("RPC2 logout failed after mediaFileFind", exc_info=True)
 
     async def async_vto_call(self, room: str) -> dict:
         """Ring a room from this VTO, over RPC2, in a session of its own.
