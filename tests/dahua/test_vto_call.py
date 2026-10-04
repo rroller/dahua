@@ -41,8 +41,9 @@ def _rpc2(answers=None, session_id="sess-1"):
     client.logins = 0
     script = dict(answers or {})
 
-    async def _request(method, params="unset", object_id=None, verify_result=True,
-                       **kwargs):
+    async def _request(
+        method, params="unset", object_id=None, verify_result=True, **kwargs
+    ):
         client.sent.append({"method": method, "params": params, "object": object_id})
         answer = script.get(method, {"result": True})
         if isinstance(answer, BaseException):
@@ -64,6 +65,7 @@ def _methods(client):
 
 # --- the requests -------------------------------------------------------------
 
+
 async def test_a_call_is_an_object_then_begin_call_on_it():
     """The exact sequence the VTO's own page sends, down to the params."""
     client = _rpc2({"VideoTalkPhone.factory.instance": {"result": 27581624}})
@@ -72,9 +74,11 @@ async def test_a_call_is_an_object_then_begin_call_on_it():
 
     assert client.sent == [
         {"method": "VideoTalkPhone.factory.instance", "params": None, "object": None},
-        {"method": "VideoTalkPhone.beginCall",
-         "params": {"number": "9901", "type": "normal", "isTestCall": True},
-         "object": 27581624},
+        {
+            "method": "VideoTalkPhone.beginCall",
+            "params": {"number": "9901", "type": "normal", "isTestCall": True},
+            "object": 27581624,
+        },
     ]
 
 
@@ -141,10 +145,12 @@ async def test_a_factory_that_returns_no_object_stops_before_the_call(bad):
 
 async def test_a_refused_call_is_raised_as_a_refusal():
     """So the service can tell the user the device's reason."""
-    client = _rpc2({
-        "VideoTalkPhone.factory.instance": {"result": 5},
-        "VideoTalkPhone.beginCall": Rpc2MethodRefused("refused", code=268632085),
-    })
+    client = _rpc2(
+        {
+            "VideoTalkPhone.factory.instance": {"result": 5},
+            "VideoTalkPhone.beginCall": Rpc2MethodRefused("refused", code=268632085),
+        }
+    )
 
     with pytest.raises(Rpc2MethodRefused):
         await client.async_vto_call("9901")
@@ -152,21 +158,26 @@ async def test_a_refused_call_is_raised_as_a_refusal():
 
 # --- the room number ----------------------------------------------------------
 
-@pytest.mark.parametrize("room, number", [
-    ("9901#0", "9901"),       # the main monitor, as a VTH shows its own room
-    (" 9901#0 ", "9901"),     # pasted with spaces
-    ("9901", "9901"),         # already a number
-    ("9901#1", "9901#1"),     # an extension keeps its suffix
-    ("9901#10", "9901#10"),   # a different room, not 9901#1 and not 9901
-    ("9901#00", "9901#00"),   # not the measured shape; left alone
-    ("1#1#8001#100", "1#1#8001#100"),  # apartment form, not measured
-    ("1#1#8001#0", "1#1#8001#0"),      # nor this one
-])
+
+@pytest.mark.parametrize(
+    "room, number",
+    [
+        ("9901#0", "9901"),  # the main monitor, as a VTH shows its own room
+        (" 9901#0 ", "9901"),  # pasted with spaces
+        ("9901", "9901"),  # already a number
+        ("9901#1", "9901#1"),  # an extension keeps its suffix
+        ("9901#10", "9901#10"),  # a different room, not 9901#1 and not 9901
+        ("9901#00", "9901#00"),  # not the measured shape; left alone
+        ("1#1#8001#100", "1#1#8001#100"),  # apartment form, not measured
+        ("1#1#8001#0", "1#1#8001#0"),  # nor this one
+    ],
+)
 def test_only_a_bare_number_with_hash_zero_loses_the_suffix(room, number):
     assert vto_call_number(room) == number
 
 
 # --- the client: one session, given back ----------------------------------------
+
 
 class _FakeRpc2:
     def __init__(self, fails=None, logout_raises=None):
@@ -235,8 +246,10 @@ async def test_a_logout_failure_does_not_turn_a_started_call_into_an_error(monke
 
 
 async def test_a_logout_failure_does_not_hide_why_the_call_was_refused(monkeypatch):
-    rpc2 = _FakeRpc2(fails=Rpc2MethodRefused("room unknown"),
-                     logout_raises=OSError("connection reset"))
+    rpc2 = _FakeRpc2(
+        fails=Rpc2MethodRefused("room unknown"),
+        logout_raises=OSError("connection reset"),
+    )
     client = _client(monkeypatch, rpc2)
 
     with pytest.raises(Rpc2MethodRefused, match="room unknown"):
@@ -244,6 +257,7 @@ async def test_a_logout_failure_does_not_hide_why_the_call_was_refused(monkeypat
 
 
 # --- the service handler ------------------------------------------------------
+
 
 def _camera(*, doorbell=True, fails=None):
     camera = object.__new__(DahuaCamera)
@@ -276,8 +290,11 @@ async def test_a_doorbell_passes_the_room_on():
 
 
 async def test_a_refusal_reaches_the_user_with_the_room_and_the_reason():
-    camera, _ = _camera(fails=Rpc2MethodRefused(
-        "Dahua RPC2 method VideoTalkPhone.beginCall returned result=false (code=1)"))
+    camera, _ = _camera(
+        fails=Rpc2MethodRefused(
+            "Dahua RPC2 method VideoTalkPhone.beginCall returned result=false (code=1)"
+        )
+    )
 
     with pytest.raises(HomeAssistantError) as err:
         await camera.async_vto_call("9902")

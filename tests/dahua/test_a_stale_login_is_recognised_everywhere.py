@@ -27,6 +27,7 @@ def _refusal(code=None, message=None):
 
 # --- what counts -------------------------------------------------------------
 
+
 def test_the_documented_code_counts():
     assert rpc2_refusal_is_a_stale_login(_refusal(code=RPC2_SESSION_EXPIRED_CODE))
 
@@ -35,14 +36,16 @@ def test_the_wording_the_coaxial_path_already_knew_counts():
     """This was the only message match in the codebase, and it was in one of the
     three places. Losing it here would be a regression on #775."""
     assert rpc2_refusal_is_a_stale_login(
-        _refusal(code=287637504, message="session is out of date"))
+        _refusal(code=287637504, message="session is out of date")
+    )
 
 
 def test_a_session_message_counts_without_a_recognised_code():
     """The case the event poll could not recover from: the device explains the
     problem in the message and carries a code nothing knows."""
     assert rpc2_refusal_is_a_stale_login(
-        _refusal(code=999, message="Invalid session in request data!"))
+        _refusal(code=999, message="Invalid session in request data!")
+    )
 
 
 def test_the_wording_is_matched_whatever_its_case():
@@ -51,17 +54,20 @@ def test_the_wording_is_matched_whatever_its_case():
 
 # --- and what does not -------------------------------------------------------
 
+
 def test_a_refusal_about_something_else_does_not_count():
     """Measured on a DHI-NVR5464 answering a 17KB setConfig (#823). Treating this
     as a stale login would throw the session away and try again, twice, and then
     report a session problem for a request that was simply too long."""
     assert not rpc2_refusal_is_a_stale_login(
-        _refusal(code=287638033, message="Request length error!"))
+        _refusal(code=287638033, message="Request length error!")
+    )
 
 
 def test_an_unknown_method_does_not_count():
     assert not rpc2_refusal_is_a_stale_login(
-        _refusal(code=268632064, message="InterfaceNotFound"))
+        _refusal(code=268632064, message="InterfaceNotFound")
+    )
 
 
 def test_a_refusal_that_gave_no_reason_does_not_count():

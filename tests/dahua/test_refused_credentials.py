@@ -16,6 +16,7 @@ The fix must not re-create #714, where one 401 was treated as proof of a wrong
 password. Channels of one NVR share a digest challenge and a raced nonce is
 refused exactly like a bad credential, so a single refusal stays non-fatal.
 """
+
 import pytest
 from aiohttp import ClientResponseError
 
@@ -75,6 +76,7 @@ def _401():
 
 # --- one refusal is not a wrong password (#714 must not come back) -----------
 
+
 def test_the_first_refusal_is_an_ordinary_failed_poll():
     _clean()
     c = _coordinator()
@@ -102,11 +104,13 @@ def test_a_success_in_between_clears_the_count():
         c._auth_refused(_401())
     async_record_host_success(c.hass, c._address)
 
-    assert isinstance(c._auth_refused(_401()), UpdateFailed), \
-        "the count survived a success, so transient 401s accumulate for ever"
+    assert isinstance(
+        c._auth_refused(_401()), UpdateFailed
+    ), "the count survived a success, so transient 401s accumulate for ever"
 
 
 # --- at the budget, stop ----------------------------------------------------
+
 
 def test_at_the_budget_it_asks_for_new_credentials():
     _clean()
@@ -124,6 +128,7 @@ def test_at_the_budget_it_asks_for_new_credentials():
 
 # --- the count is the host's, not the entry's -------------------------------
 
+
 def test_many_channels_refused_once_each_is_one_bad_moment():
     """The count is per source, so a recorder having a moment is not a wrong password.
 
@@ -140,8 +145,10 @@ def test_many_channels_refused_once_each_is_one_bad_moment():
 
     results = [c._auth_refused(_401()) for c in channels]
 
-    assert all(isinstance(r, UpdateFailed) and not isinstance(r, ConfigEntryAuthFailed)
-               for r in results), "one moment was read as a wrong password"
+    assert all(
+        isinstance(r, UpdateFailed) and not isinstance(r, ConfigEntryAuthFailed)
+        for r in results
+    ), "one moment was read as a wrong password"
 
 
 def test_one_channel_refused_to_the_budget_still_stops():
@@ -170,8 +177,9 @@ def test_once_the_budget_is_spent_every_channel_stops():
 
     second = _coordinator(entry_id="e2")
 
-    assert isinstance(second._auth_refused(_401()), ConfigEntryAuthFailed), (
-        "another channel kept polling after the host's budget was spent")
+    assert isinstance(
+        second._auth_refused(_401()), ConfigEntryAuthFailed
+    ), "another channel kept polling after the host's budget was spent"
 
 
 def test_a_different_host_keeps_its_own_count():
@@ -188,6 +196,7 @@ def test_a_different_host_keeps_its_own_count():
 
 
 # --- the event stream stops too ---------------------------------------------
+
 
 async def test_the_event_stream_stops_once_the_budget_is_gone():
     """It backs off to ten minutes at most, well inside the half hour lock.
@@ -211,8 +220,9 @@ async def test_the_event_stream_stops_once_the_budget_is_gone():
     async def _refuse(*_args, **_kwargs):
         raise _401()
 
-    stream._owner = type("O", (), {"client": type("C", (), {
-        "stream_events": staticmethod(_refuse)})()})()
+    stream._owner = type(
+        "O", (), {"client": type("C", (), {"stream_events": staticmethod(_refuse)})()}
+    )()
 
     # Returns rather than sleeping and re-attaching. If it looped, this hangs.
     await stream._async_run()

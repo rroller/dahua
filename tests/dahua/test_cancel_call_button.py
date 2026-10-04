@@ -19,6 +19,7 @@ on the VTO2211G-WP, is the most commented open issue here, and "it stopped
 working" was all anyone could report because the doorbell's own answer was
 logged at info where nothing read it.
 """
+
 import asyncio
 
 import pytest
@@ -72,6 +73,7 @@ async def _reply_with(p, message):
 
 
 # --- the call now reports what happened -------------------------------------
+
 
 async def test_a_doorbell_that_agrees_reports_success():
     p = _protocol()
@@ -137,6 +139,7 @@ async def test_the_handler_does_not_leak_on_timeout_either():
 
 # --- the button -------------------------------------------------------------
 
+
 class _Coordinator:
     # The platforms file each channel's entities under its own subentry, so they
     # read this on every entity they add. None is a single camera, and is what
@@ -165,8 +168,9 @@ class _Coordinator:
 
 @pytest.fixture(autouse=True)
 def _skip_ha_plumbing(monkeypatch):
-    monkeypatch.setattr(button_module.DahuaBaseEntity, "__init__",
-                        lambda self, c, e: None)
+    monkeypatch.setattr(
+        button_module.DahuaBaseEntity, "__init__", lambda self, c, e: None
+    )
 
 
 def _button(coordinator):
@@ -179,8 +183,11 @@ async def test_only_a_doorbell_gets_one():
     added = []
     coordinator = _Coordinator(doorbell=True)
     hass = type("H", (), {"data": {}})()
-    await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), adds_entities(added))
+    await async_setup_entry(
+        hass,
+        type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})(),
+        adds_entities(added),
+    )
 
     assert any(isinstance(b, DahuaCancelCallButton) for b in added)
 
@@ -189,8 +196,11 @@ async def test_a_camera_does_not():
     added = []
     coordinator = _Coordinator(doorbell=False)
     hass = type("H", (), {"data": {}})()
-    await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), adds_entities(added))
+    await async_setup_entry(
+        hass,
+        type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})(),
+        adds_entities(added),
+    )
 
     assert not any(isinstance(b, DahuaCancelCallButton) for b in added)
     assert any(isinstance(b, DahuaRebootButton) for b in added)

@@ -63,18 +63,25 @@ from custom_components.dahua.flow_preview import (
 
 IMAGE = b"\xff\xd8\xffthis is a jpeg"
 
-EN = (Path(__file__).resolve().parents[2]
-      / "custom_components" / "dahua" / "translations" / "en.json")
+EN = (
+    Path(__file__).resolve().parents[2]
+    / "custom_components"
+    / "dahua"
+    / "translations"
+    / "en.json"
+)
 
 
 # --- fixtures ----------------------------------------------------------------
+
 
 def _hass():
     registered = []
     return SimpleNamespace(
         data={},
         http=SimpleNamespace(register_view=registered.append),
-        _registered=registered)
+        _registered=registered,
+    )
 
 
 def _flow(hass=None, channel=3, use_https=None):
@@ -108,6 +115,7 @@ def _stub_fetch(monkeypatch, image=IMAGE):
 
 
 # --- the form has to carry it ------------------------------------------------
+
 
 async def test_the_name_form_carries_the_picture(monkeypatch):
     """The whole point. A helper that builds the right markdown and a form that does
@@ -158,6 +166,7 @@ async def test_nothing_is_stored_when_there_is_no_picture(monkeypatch):
 
 # --- and the string and the code have to agree on the placeholder name -------
 
+
 def _placeholders_in(text):
     """The `{name}` tokens Home Assistant will try to substitute."""
     return set(re.findall(r"\{([a-z_]+)\}", text))
@@ -184,7 +193,8 @@ def test_the_description_reads_as_prose_when_there_is_no_picture():
         description = json.load(handle)["config"]["step"]["name"]["description"]
 
     assert description.rstrip().endswith("{preview}"), (
-        "the picture goes last: %r" % description)
+        "the picture goes last: %r" % description
+    )
     without = description.replace("{preview}", "")
     assert without == without.lstrip(), "a missing picture leaves a blank line"
 
@@ -202,6 +212,7 @@ async def test_the_description_is_what_the_picture_is_placed_into(monkeypatch):
 
 
 # --- asked for once ---------------------------------------------------------
+
 
 async def test_the_device_is_only_asked_once(monkeypatch):
     """This form comes back whenever the name is empty, and a half megabyte snapshot
@@ -234,11 +245,14 @@ async def test_the_second_form_carries_the_same_picture(monkeypatch):
     first = await handler._show_config_form_name(handler.init_info)
     second = await handler._show_config_form_name(handler.init_info)
 
-    assert (first["description_placeholders"]["preview"]
-            == second["description_placeholders"]["preview"])
+    assert (
+        first["description_placeholders"]["preview"]
+        == second["description_placeholders"]["preview"]
+    )
 
 
 # --- what the device is asked for -------------------------------------------
+
 
 async def test_the_channel_being_added_is_the_channel_shown(monkeypatch):
     """A preview of channel 0 while channel 3 is being added would actively mislead:
@@ -267,6 +281,7 @@ async def test_https_is_passed_through_when_it_is_set(monkeypatch):
 
 # --- the fetch never raises -------------------------------------------------
 
+
 class _Refusing:
     def __init__(self, *args, **kwargs):
         pass
@@ -288,8 +303,10 @@ async def test_a_refused_snapshot_is_not_an_error(monkeypatch):
     """Every way of not getting a picture has to end with the flow carrying on."""
     monkeypatch.setattr(flow_module, "DahuaClient", _Refusing)
 
-    assert await flow_module.async_fetch_preview(
-        "admin", "pw", "10.0.0.5", "80", "554", 0) is None
+    assert (
+        await flow_module.async_fetch_preview("admin", "pw", "10.0.0.5", "80", "554", 0)
+        is None
+    )
 
 
 async def test_a_slow_snapshot_is_given_up_on(monkeypatch):
@@ -299,11 +316,14 @@ async def test_a_slow_snapshot_is_given_up_on(monkeypatch):
     monkeypatch.setattr(flow_module, "DahuaClient", _Slow)
     monkeypatch.setattr(flow_module, "PREVIEW_TIMEOUT_SECONDS", 0.01)
 
-    assert await flow_module.async_fetch_preview(
-        "admin", "pw", "10.0.0.5", "80", "554", 0) is None
+    assert (
+        await flow_module.async_fetch_preview("admin", "pw", "10.0.0.5", "80", "554", 0)
+        is None
+    )
 
 
 # --- the url the dialog gets is the url the view answers --------------------
+
 
 def test_the_url_handed_out_is_the_url_the_view_serves():
     """Two halves that must not drift: the markdown points at a path, and the view
@@ -325,6 +345,7 @@ async def test_the_image_url_is_root_relative(monkeypatch):
 
 
 # --- the store --------------------------------------------------------------
+
 
 def test_the_view_serves_what_was_stored():
     hass = _hass()
@@ -378,7 +399,9 @@ def test_a_stored_image_is_given_a_deadline():
 
     expires = hass.data[DATA_FLOW_PREVIEWS][token][0]
 
-    assert 0 < expires - flow_preview.time.monotonic() <= flow_preview.PREVIEW_TTL_SECONDS
+    assert (
+        0 < expires - flow_preview.time.monotonic() <= flow_preview.PREVIEW_TTL_SECONDS
+    )
 
 
 async def test_an_expired_token_is_dropped_rather_than_left_holding_the_image():
@@ -449,8 +472,7 @@ def test_the_store_is_capped():
     add, so a run of them would each be holding an image."""
     hass = _hass()
 
-    tokens = [async_store_preview(hass, IMAGE)
-              for _ in range(MAX_STORED_PREVIEWS + 3)]
+    tokens = [async_store_preview(hass, IMAGE) for _ in range(MAX_STORED_PREVIEWS + 3)]
 
     assert len(hass.data[DATA_FLOW_PREVIEWS]) == MAX_STORED_PREVIEWS
     assert tokens[-1] in hass.data[DATA_FLOW_PREVIEWS]
@@ -471,6 +493,7 @@ def test_dropping_before_anything_was_stored_is_harmless():
 
 
 # --- and the flow lets go of it --------------------------------------------
+
 
 async def test_the_flow_drops_its_image_when_it_ends(monkeypatch):
     """Called for a created entry, an abort and a cancelled dialog alike, so it is the
@@ -514,6 +537,7 @@ async def test_one_flow_does_not_drop_anothers_image(monkeypatch):
 
 
 # --- and the reason it is unauthenticated is recorded ---------------------
+
 
 def test_the_view_is_deliberately_unauthenticated():
     """Not an oversight, and not safe to "fix": the frontend puts the user's token in

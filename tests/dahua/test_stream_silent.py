@@ -18,8 +18,8 @@ from custom_components.dahua import (
     stream_lifetime,
 )
 
-
 # --- the judgement itself -----------------------------------------------------
+
 
 def test_a_stream_that_never_spoke_did_not_live():
     """An hour of silence is the read timeout firing over and over, not uptime."""
@@ -37,6 +37,7 @@ def test_a_stream_that_spoke_keeps_its_lifetime():
 
 
 # --- and what it means once the delay sees it ---------------------------------
+
 
 def test_a_silent_stream_is_not_reconnected_immediately():
     """The bug: a mute subscription reconnecting every read timeout, forever."""

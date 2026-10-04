@@ -465,8 +465,13 @@ async def test_diagnostics_adjacent_sources_match_capability_and_make_no_request
 @pytest.mark.parametrize("platform", ["switch", "light"])
 @pytest.mark.parametrize(
     "device_class,channel,opt_in,expected",
-    [("SD", 1, False, True), ("NVR", 0, False, False), ("NVR", 0, True, True),
-     ("", 0, True, True), ("", 1, True, True)],
+    [
+        ("SD", 1, False, True),
+        ("NVR", 0, False, False),
+        ("NVR", 0, True, True),
+        ("", 0, True, True),
+        ("", 1, True, True),
+    ],
 )
 async def test_entity_creation_uses_host_class_not_channel(
     monkeypatch, platform, device_class, channel, opt_in, expected

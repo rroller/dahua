@@ -74,6 +74,7 @@ def _described(address=ADDRESS, **kwargs):
 
 # --- which transport ------------------------------------------------------
 
+
 def test_a_doorbell_is_named_as_the_vto_listener():
     """A doorbell takes the VTO listener exclusively: `if not is_doorbell` is what
     registers a CGI stream, so one never appears for it."""
@@ -126,6 +127,7 @@ def test_the_events_block_carries_the_poll_detail():
 
 # --- the poller's own state -----------------------------------------------
 
+
 def test_a_host_that_never_polled_says_so_and_claims_nothing_else():
     assert _rpc2_poll_block(_coordinator()) == {"used": False}
 
@@ -177,15 +179,20 @@ def test_a_poller_that_has_not_finished_a_cycle_reports_no_age():
 
 # --- what it is holding active -------------------------------------------
 
+
 def test_the_active_events_are_reported():
     """A code stuck in here is a sensor stuck on, which is the shape of #728's other
     half and was previously invisible."""
     _described()
     client_module._HOST_RPC2_EVENT_STATE[ADDRESS] = {
-        ("SmartMotionHuman", 0), ("CrossRegionDetection", 0)}
+        ("SmartMotionHuman", 0),
+        ("CrossRegionDetection", 0),
+    }
 
     assert _rpc2_poll_block(_coordinator())["active"] == [
-        "CrossRegionDetection-0", "SmartMotionHuman-0"]
+        "CrossRegionDetection-0",
+        "SmartMotionHuman-0",
+    ]
 
 
 def test_nothing_active_is_an_empty_list_not_a_missing_key():
@@ -202,6 +209,7 @@ def test_the_active_set_is_read_for_this_host_only():
 
 
 # --- the poller has to publish it, or none of the above is real -----------
+
 
 class _StopPoll(Exception):
     """Escape the poller's endless loop, as test_rpc2_event_poll.py does."""
@@ -286,7 +294,7 @@ async def test_the_block_reads_what_the_poller_writes(monkeypatch):
 
 
 async def test_an_expanded_all_is_counted_as_the_codes_it_became(monkeypatch):
-    """"All" cannot be polled, so it is expanded. The count has to describe what is
+    """ "All" cannot be polled, so it is expanded. The count has to describe what is
     actually asked for, since that is what sets the cycle."""
     from custom_components.dahua.config_flow import ALL_EVENTS
 
@@ -302,6 +310,7 @@ async def test_an_expanded_all_is_counted_as_the_codes_it_became(monkeypatch):
 
 # --- and it is forgotten with the host --------------------------------------
 
+
 def test_the_poll_state_is_dropped_when_the_last_entry_for_a_host_goes(monkeypatch):
     """Otherwise it is remembered for the life of the process, and a dump for a
     different device at a recycled address would describe the old one's poller.
@@ -314,8 +323,8 @@ def test_the_poll_state_is_dropped_when_the_last_entry_for_a_host_goes(monkeypat
     _described()
     client_module._HOST_RPC2_EVENT_STATE[ADDRESS] = {("VideoMotion", 0)}
     monkeypatch.setattr(
-        dahua, "ir",
-        SimpleNamespace(async_delete_issue=lambda *args, **kwargs: None))
+        dahua, "ir", SimpleNamespace(async_delete_issue=lambda *args, **kwargs: None)
+    )
 
     dahua._async_forget_host(SimpleNamespace(), ADDRESS)
 
@@ -324,6 +333,7 @@ def test_the_poll_state_is_dropped_when_the_last_entry_for_a_host_goes(monkeypat
 
 
 # --- nothing sensitive ------------------------------------------------------
+
 
 def test_only_names_and_counts_are_published():
     """The poller holds a client holding a password. None of it may appear."""

@@ -3,7 +3,9 @@
 import re
 
 
-def ivs_rules_for_channel(table: dict, channel: int, name: str = "VideoAnalyseRule") -> list[dict]:
+def ivs_rules_for_channel(
+    table: dict, channel: int, name: str = "VideoAnalyseRule"
+) -> list[dict]:
     """Return complete normal rules with unambiguous Dahua IDs on this channel."""
     rules = []
     ids = {}
@@ -18,16 +20,22 @@ def ivs_rules_for_channel(table: dict, channel: int, name: str = "VideoAnalyseRu
             continue
         if table.get(prefix + ".Enable") not in ("true", "false"):
             continue
-        rules.append({
-            "channel": channel,
-            "index": int(match[1]),
-            "id": rule_id,
-            "name": table.get(prefix + ".Name") or f"IVS Rule {rule_id}",
-        })
-    return sorted((rule for rule in rules if ids[rule["id"]] == 1), key=lambda rule: rule["index"])
+        rules.append(
+            {
+                "channel": channel,
+                "index": int(match[1]),
+                "id": rule_id,
+                "name": table.get(prefix + ".Name") or f"IVS Rule {rule_id}",
+            }
+        )
+    return sorted(
+        (rule for rule in rules if ids[rule["id"]] == 1), key=lambda rule: rule["index"]
+    )
 
 
-def ivs_rule_index(table: dict, channel: int, rule_id: str, name: str = "VideoAnalyseRule") -> int | None:
+def ivs_rule_index(
+    table: dict, channel: int, rule_id: str, name: str = "VideoAnalyseRule"
+) -> int | None:
     """Resolve an ID in the current table, never falling back to an old index."""
     for rule in ivs_rules_for_channel(table, channel, name):
         if rule["id"] == str(rule_id):

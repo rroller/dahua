@@ -28,8 +28,9 @@ SERIAL = "SERIAL1"
 
 
 class _Discovery:
-    def __init__(self, ip="10.0.0.5", macaddress="aa:bb:cc:dd:ee:ff",
-                 hostname="doorbell"):
+    def __init__(
+        self, ip="10.0.0.5", macaddress="aa:bb:cc:dd:ee:ff", hostname="doorbell"
+    ):
         self.ip = ip
         self.macaddress = macaddress
         self.hostname = hostname
@@ -43,8 +44,9 @@ def _dhcp_handler(monkeypatch, identity=None, serial_entries=(), address_match=N
     """
     handler = object.__new__(DahuaFlowHandler)
     handler.context = {}
-    handler.seen = SimpleNamespace(unique_id=None, aborted=None, matched=None,
-                                   reached_user=False)
+    handler.seen = SimpleNamespace(
+        unique_id=None, aborted=None, matched=None, reached_user=False
+    )
 
     async def _set_unique_id(unique_id, **kwargs):
         handler.seen.unique_id = unique_id
@@ -84,6 +86,7 @@ class _Aborted(Exception):
 
 # --- being found --------------------------------------------------------------
 
+
 async def test_a_device_that_says_nothing_is_still_offered(monkeypatch):
     """The property the comment in the source insists on: only one of five devices
     answers the probe, so a silent one must still reach the form."""
@@ -118,8 +121,9 @@ async def test_a_device_that_answers_prefills_its_port(monkeypatch):
 async def test_a_device_already_configured_by_serial_is_not_offered_again(monkeypatch):
     """The serial is the identity. An address can change with a DHCP lease, so matching on
     it alone would offer a device somebody already has every time it renews."""
-    handler = _dhcp_handler(monkeypatch, identity={"SerialNo": SERIAL},
-                            serial_entries=[object()])
+    handler = _dhcp_handler(
+        monkeypatch, identity={"SerialNo": SERIAL}, serial_entries=[object()]
+    )
 
     result = await handler.async_step_dhcp(_Discovery())
 
@@ -129,8 +133,9 @@ async def test_a_device_already_configured_by_serial_is_not_offered_again(monkey
 
 async def test_a_serial_with_whitespace_still_matches(monkeypatch):
     """Devices pad these fields."""
-    handler = _dhcp_handler(monkeypatch, identity={"SerialNo": "  %s  " % SERIAL},
-                            serial_entries=[object()])
+    handler = _dhcp_handler(
+        monkeypatch, identity={"SerialNo": "  %s  " % SERIAL}, serial_entries=[object()]
+    )
 
     result = await handler.async_step_dhcp(_Discovery())
 
@@ -158,14 +163,18 @@ async def test_repeated_announcements_do_not_become_repeated_cards(monkeypatch):
     assert handler.seen.unique_id, "no unique id was set, so announcements would stack"
 
 
-@pytest.mark.parametrize("identity,hostname,expected", [
-    ({"DeviceType": "VTO2211G-WP"}, "doorbell", "VTO2211G-WP"),
-    ({"MachineName": "Front Door"}, "doorbell", "Front Door"),
-    ({}, "doorbell", "doorbell"),
-    ({}, None, "Dahua device"),
-])
-async def test_the_card_is_named_by_the_best_thing_available(monkeypatch, identity,
-                                                             hostname, expected):
+@pytest.mark.parametrize(
+    "identity,hostname,expected",
+    [
+        ({"DeviceType": "VTO2211G-WP"}, "doorbell", "VTO2211G-WP"),
+        ({"MachineName": "Front Door"}, "doorbell", "Front Door"),
+        ({}, "doorbell", "doorbell"),
+        ({}, None, "Dahua device"),
+    ],
+)
+async def test_the_card_is_named_by_the_best_thing_available(
+    monkeypatch, identity, hostname, expected
+):
     """Four fallbacks deep, because the card is what somebody has to recognise their own
     camera from in a list of discoveries."""
     handler = _dhcp_handler(monkeypatch, identity=identity)
@@ -186,6 +195,7 @@ async def test_the_card_also_carries_the_address(monkeypatch):
 
 # --- being moved to an area ---------------------------------------------------
 
+
 class _Registry:
     def __init__(self, device=None):
         self._device = device
@@ -198,15 +208,17 @@ class _Registry:
         self.updates.append((device_id, kwargs))
 
 
-def _options_handler(monkeypatch, stored=None, options=None, loaded=True,
-                     device=None):
+def _options_handler(monkeypatch, stored=None, options=None, loaded=True, device=None):
     coordinator = SimpleNamespace(get_serial_number=lambda: SERIAL)
     entry = SimpleNamespace(
         data={CONF_AREA: stored} if stored is not None else {},
-        options={}, entry_id="e",
-        runtime_data={0: coordinator} if loaded else {})
-    monkeypatch.setattr(DahuaOptionsFlowHandler, "config_entry",
-                        property(lambda self: entry))
+        options={},
+        entry_id="e",
+        runtime_data={0: coordinator} if loaded else {},
+    )
+    monkeypatch.setattr(
+        DahuaOptionsFlowHandler, "config_entry", property(lambda self: entry)
+    )
     handler = DahuaOptionsFlowHandler()
     handler.options = dict(options or {})
     handler.hass = object()
@@ -216,8 +228,7 @@ def _options_handler(monkeypatch, stored=None, options=None, loaded=True,
 
 
 async def test_choosing_an_area_moves_the_device(monkeypatch):
-    handler, registry = _options_handler(
-        monkeypatch, device=SimpleNamespace(id="dev1"))
+    handler, registry = _options_handler(monkeypatch, device=SimpleNamespace(id="dev1"))
 
     await handler._async_move_device("kitchen")
 
@@ -228,7 +239,8 @@ async def test_submitting_the_same_area_again_moves_nothing(monkeypatch):
     """The no-op the docstring is about. Somebody who moved the device by hand and then
     opens options for an unrelated setting must not have it re-filed under them."""
     handler, registry = _options_handler(
-        monkeypatch, stored="kitchen", device=SimpleNamespace(id="dev1"))
+        monkeypatch, stored="kitchen", device=SimpleNamespace(id="dev1")
+    )
 
     await handler._async_move_device("kitchen")
 
@@ -239,8 +251,11 @@ async def test_the_stored_option_wins_over_the_entry_data(monkeypatch):
     """Options are where a later choice lives, so a value already chosen there is what
     "unchanged" is measured against."""
     handler, registry = _options_handler(
-        monkeypatch, stored="hall", options={CONF_AREA: "kitchen"},
-        device=SimpleNamespace(id="dev1"))
+        monkeypatch,
+        stored="hall",
+        options={CONF_AREA: "kitchen"},
+        device=SimpleNamespace(id="dev1"),
+    )
 
     await handler._async_move_device("kitchen")
 
@@ -248,8 +263,7 @@ async def test_the_stored_option_wins_over_the_entry_data(monkeypatch):
 
 
 async def test_choosing_no_area_moves_nothing(monkeypatch):
-    handler, registry = _options_handler(
-        monkeypatch, device=SimpleNamespace(id="dev1"))
+    handler, registry = _options_handler(monkeypatch, device=SimpleNamespace(id="dev1"))
 
     await handler._async_move_device("")
     await handler._async_move_device(None)

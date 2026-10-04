@@ -37,6 +37,7 @@ def _client(status):
 
 # --- the coordinator's path: a 401 must not be fatal ------------------------
 
+
 async def test_a_401_falls_back_by_default():
     """What the coordinator calls, and what 0.10.7 did."""
     result = await _client(401).async_get_system_info()
@@ -58,6 +59,7 @@ async def test_no_status_is_fatal_by_default(status):
 
 
 # --- the config flow's path: a 401 is exactly what it is testing for --------
+
 
 async def test_a_401_is_raised_when_the_caller_asked():
     """#702: a wrong password must fail setup, not add a broken camera."""

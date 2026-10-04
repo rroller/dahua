@@ -1,4 +1,5 @@
 """Dahua Digest Auth Support"""
+
 import base64
 import logging
 import os
@@ -62,7 +63,13 @@ class DigestAuth:
     https://github.com/requests/requests/blob/v2.18.4/requests/auth.py.
     """
 
-    def __init__(self, username: str, password: str, session: aiohttp.ClientSession, previous=None):
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        session: aiohttp.ClientSession,
+        previous=None,
+    ):
         if previous is None:
             previous = {}
 
@@ -131,7 +138,9 @@ class DigestAuth:
                     # fail every later request too. Drop it and probe instead.
                     self.challenge = None
 
-            response = await self.session.request(method, url, headers=attempt_headers, **kwargs)
+            response = await self.session.request(
+                method, url, headers=attempt_headers, **kwargs
+            )
 
             if response.status != 401:
                 return response
@@ -184,20 +193,27 @@ class DigestAuth:
 
         if offered is not None and offered not in ANSWERABLE_SCHEMES:
             self._warn_once(
-                "scheme", offered,
+                "scheme",
+                offered,
                 "This device asked for %s authentication, which this integration "
                 "does not implement. No password will work and the failure will look "
                 "like a wrong username and password. WWW-Authenticate: %s",
-                offered, response.headers.get("www-authenticate", ""))
+                offered,
+                response.headers.get("www-authenticate", ""),
+            )
             return response
 
         fields = self._offered_fields(response)
         _LOGGER.debug(
             "Credentials refused by a device offering %s auth (%s)",
-            offered or "no", ", ".join(
+            offered or "no",
+            ", ".join(
                 "%s=%s" % (name, fields[name])
                 for name in ("realm", "qop", "algorithm", "stale")
-                if fields.get(name)) or "no fields")
+                if fields.get(name)
+            )
+            or "no fields",
+        )
         return response
 
     def _warn_once(self, kind, value, message, *args):
@@ -259,23 +275,29 @@ class DigestAuth:
         algorithm = self.challenge.get("algorithm", "MD5").upper()
         opaque = self.challenge.get("opaque")
 
-        if qop and not (qop == "auth" or "auth" in [part.strip() for part in qop.split(",")]):
+        if qop and not (
+            qop == "auth" or "auth" in [part.strip() for part in qop.split(",")]
+        ):
             raise ClientError("Unsupported qop value: %s" % qop)
 
         # The session variant is a suffix on any of them, so it is tested as one
         # rather than enumerated: MD5-SESS was handled and SHA-256-SESS was not,
         # for no reason either algorithm knows about.
         session_variant = algorithm.endswith(SESSION_SUFFIX)
-        base_algorithm = algorithm[: -len(SESSION_SUFFIX)] if session_variant else algorithm
+        base_algorithm = (
+            algorithm[: -len(SESSION_SUFFIX)] if session_variant else algorithm
+        )
         hash_fn = HASH_ALGORITHMS.get(base_algorithm)
         if hash_fn is None:
             self._warn_once(
-                "algorithm", algorithm,
+                "algorithm",
+                algorithm,
                 "This device asked for digest algorithm %s, which this integration "
                 "cannot sign. No credentials can be sent, so the device will answer "
                 "401 and the failure will look like a wrong username and password. "
                 "Please report the algorithm name on a new issue",
-                algorithm)
+                algorithm,
+            )
             return ""
 
         def H(x):

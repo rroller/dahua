@@ -56,6 +56,7 @@ class _Entry:
 
 # --- an unloaded entry, which is the case that used to raise ----------------
 
+
 def test_an_unloaded_entry_has_no_channels():
     """Home Assistant deletes runtime_data on unload, so the attribute is gone
     rather than empty. Callers during teardown must not get an AttributeError."""
@@ -78,6 +79,7 @@ def test_runtime_data_set_to_nothing_reads_as_no_channels():
 
 
 # --- a loaded entry ---------------------------------------------------------
+
 
 def test_a_loaded_entry_yields_its_coordinator():
     entry = _Entry({0: "channel-0"})
@@ -105,6 +107,7 @@ def test_the_single_accessor_is_the_first_channel():
 
 # --- the typed entry -------------------------------------------------------
 
+
 def test_the_typed_entry_alias_resolves():
     """A PEP 695 alias is evaluated lazily, which is what lets it name
     DahuaDataUpdateCoordinator before that class is defined. Touching __value__
@@ -120,6 +123,7 @@ def test_the_typed_entry_alias_resolves():
 
 # --- and the rule itself, so it cannot quietly come back -------------------
 
+
 def test_no_module_stores_runtime_state_in_hass_data_under_the_domain():
     """The Bronze rule, asserted rather than trusted.
 
@@ -128,17 +132,18 @@ def test_no_module_stores_runtime_state_in_hass_data_under_the_domain():
     so has no runtime_data to put a preview on. That is why this looks for the
     domain keyed access specifically and not for hass.data at all.
     """
-    pattern = re.compile(
-        r"hass\.data(?:\.get\(|\.setdefault\(|\[)\s*DOMAIN")
+    pattern = re.compile(r"hass\.data(?:\.get\(|\.setdefault\(|\[)\s*DOMAIN")
 
     offenders = []
     for path in sorted(PACKAGE.glob("*.py")):
         for number, line in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), start=1):
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             if line.lstrip().startswith("#"):
                 continue
             if pattern.search(line):
                 offenders.append("%s:%d %s" % (path.name, number, line.strip()))
 
     assert not offenders, "runtime state belongs on the entry:\n  " + "\n  ".join(
-        offenders)
+        offenders
+    )

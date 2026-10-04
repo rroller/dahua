@@ -56,7 +56,8 @@ def test_a_v1_only_channel_reads_its_mode_without_needing_the_address():
 
     def _explode():
         raise AssertionError(
-            "the refusal store was consulted for a channel with no v2 row")
+            "the refusal store was consulted for a channel with no v2 row"
+        )
 
     coordinator.get_address = _explode
 
@@ -83,6 +84,7 @@ SINGLE = {
 
 
 # --- picking the profile ------------------------------------------------------
+
 
 def test_the_live_profile_is_used_when_the_device_reports_it():
     assert infrared_profile(NVR, 3, "1") == "1"
@@ -120,6 +122,7 @@ def test_nothing_reported_is_profile_zero():
 
 # --- reading the state --------------------------------------------------------
 
+
 def test_the_light_is_read_from_the_live_profile():
     """Profile 1 is Manual; profile 0 is Auto. The camera is on 1."""
     assert _coordinator(3, "1", NVR).is_infrared_light_on() is True
@@ -146,7 +149,9 @@ def test_a_missing_row_does_not_raise():
     c = _coordinator(9, "1", {})
 
     assert c.is_infrared_light_on() is False
-    assert c.get_infrared_brightness() == 255, "the documented default when nothing is reported"
+    assert (
+        c.get_infrared_brightness() == 255
+    ), "the documented default when nothing is reported"
 
 
 # --- and the write, which is the half the docstring above is actually about ---
@@ -169,7 +174,8 @@ def _client():
 async def _url(mode="Manual", brightness=50, channel=0, profile="0"):
     client = _client()
     await DahuaClient.async_set_lighting_v1_mode(
-        client, channel, mode, brightness, profile)
+        client, channel, mode, brightness, profile
+    )
     return client.get.await_args.args[0]
 
 
@@ -200,6 +206,7 @@ async def test_the_channel_is_the_one_asked_for():
 
 # --- the mode the device will accept -----------------------------------------
 
+
 async def test_on_is_written_as_manual():
     """The service takes On because that is what a person says; the API wants Manual."""
     assert "Mode=Manual" in await _url(mode="On")
@@ -224,6 +231,7 @@ async def test_the_first_character_is_capitalised_for_the_device():
 
 
 # --- the on/off wrapper the light entity uses -------------------------------
+
 
 async def test_turning_the_light_on_writes_manual_to_the_live_profile():
     client = _client()

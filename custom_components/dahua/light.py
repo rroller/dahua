@@ -11,16 +11,21 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
-    LightEntity, LightEntityFeature, ColorMode,
+    LightEntity,
+    LightEntityFeature,
+    ColorMode,
 )
 
-from . import (DahuaDataUpdateCoordinator, dahua_utils, entry_coordinators,
-               scheme_blocking_white_light)
+from . import (
+    DahuaDataUpdateCoordinator,
+    dahua_utils,
+    entry_coordinators,
+    scheme_blocking_white_light,
+)
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .client import SECURITY_LIGHT_TYPE
 from .infrared import async_write_infrared_mode
-
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 # coordinator does not help here, since it only centralises inbound reads and
 # leaves outbound actions uncontrolled.
 PARALLEL_UPDATES = 1
+
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     """Setup light platform."""
@@ -49,17 +55,22 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
         # whether to fetch the status this entity reads. The Amcrest doorbell exclusion is
         # part of it: its Security Light is a select built in select.py.
         if coordinator.creates_security_light_entity():
-            entities.append(DahuaSecurityLight(
-                coordinator, entry,
-                translation_key=("warning_light"
-                                 if coordinator.uses_recorder_deterrence()
-                                 else "security_light")))
+            entities.append(
+                DahuaSecurityLight(
+                    coordinator,
+                    entry,
+                    translation_key=(
+                        "warning_light"
+                        if coordinator.uses_recorder_deterrence()
+                        else "security_light"
+                    ),
+                )
+            )
 
         if coordinator.is_amcrest_doorbell():
             entities.append(AmcrestRingLight(coordinator, entry))
 
-        async_add_entities(
-            entities, config_subentry_id=coordinator.subentry_id)
+        async_add_entities(entities, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
@@ -160,7 +171,8 @@ class DahuaInfraredLight(DahuaBaseEntity, LightEntity):
             self._coordinator,
             "Manual" if enabled else "Off",
             dahua_utils.hass_brightness_to_dahua_brightness(
-                kwargs.get(ATTR_BRIGHTNESS)),
+                kwargs.get(ATTR_BRIGHTNESS)
+            ),
         )
 
     async def async_turn_on(self, **kwargs):
@@ -249,8 +261,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         await super().async_added_to_hass()
 
         store_key = (
-            f"{DOMAIN}.illuminator_restore."
-            f"{self._entry.entry_id}.{self.unique_id}"
+            f"{DOMAIN}.illuminator_restore." f"{self._entry.entry_id}.{self.unique_id}"
         )
 
         self._restore_store = Store(
@@ -272,9 +283,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         # Whatever generation exists at entity startup is the baseline.
         # Only a later coordinator poll with a newer generation represents
         # a reboot that happened while this entity was alive.
-        self._seen_reboot_generation = (
-            self._coordinator.get_camera_reboot_generation()
-        )
+        self._seen_reboot_generation = self._coordinator.get_camera_reboot_generation()
 
     @callback
     def _handle_coordinator_update(self):
@@ -306,11 +315,9 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
                     self._reboot_recovery_task is None
                     or self._reboot_recovery_task.done()
                 ):
-                    self._reboot_recovery_task = (
-                        self.hass.async_create_background_task(
-                            self._async_handle_camera_reboot(generation),
-                            f"dahua_illuminator_reboot_recovery_{self.unique_id}",
-                        )
+                    self._reboot_recovery_task = self.hass.async_create_background_task(
+                        self._async_handle_camera_reboot(generation),
+                        f"dahua_illuminator_reboot_recovery_{self.unique_id}",
                     )
 
         if self._manual_on and not reboot_pending:
@@ -320,11 +327,9 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
                 task = getattr(self, "_external_change_task", None)
 
                 if task is None or task.done():
-                    self._external_change_task = (
-                        self.hass.async_create_background_task(
-                            self._async_release_externally_changed_override(),
-                            f"dahua_illuminator_external_change_{self.unique_id}",
-                        )
+                    self._external_change_task = self.hass.async_create_background_task(
+                        self._async_release_externally_changed_override(),
+                        f"dahua_illuminator_external_change_{self.unique_id}",
                     )
 
         super()._handle_coordinator_update()
@@ -365,8 +370,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             raise
         except Exception:
             _LOGGER.warning(
-                "Dahua Illuminator: failed to recover override "
-                "after camera reboot",
+                "Dahua Illuminator: failed to recover override " "after camera reboot",
                 exc_info=True,
             )
         finally:
@@ -376,14 +380,9 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         """Persist original camera state before applying a CGI override."""
 
         if self._restore_store is None:
-            raise RuntimeError(
-                "Illuminator restore Store is not initialized"
-            )
+            raise RuntimeError("Illuminator restore Store is not initialized")
 
-        if (
-            self._scheme_restore is None
-            or self._light_restore is None
-        ):
+        if self._scheme_restore is None or self._light_restore is None:
             raise RuntimeError(
                 "Cannot apply illuminator override without complete restore state"
             )
@@ -417,9 +416,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             "old_brightness": old_brightness,
             "ha_brightness": self._last_brightness,
             "override_brightness": (
-                dahua_utils.hass_brightness_to_dahua_brightness(
-                    self._last_brightness
-                )
+                dahua_utils.hass_brightness_to_dahua_brightness(self._last_brightness)
             ),
         }
 
@@ -453,17 +450,13 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         """Mark that HA has started restoring its saved camera state."""
 
         if self._restore_store is None:
-            raise RuntimeError(
-                "Illuminator restore Store is not initialized"
-            )
+            raise RuntimeError("Illuminator restore Store is not initialized")
 
         if data is None:
             data = await self._restore_store.async_load()
 
         if not isinstance(data, dict) or not data.get("active"):
-            raise RuntimeError(
-                "Illuminator restore snapshot is missing"
-            )
+            raise RuntimeError("Illuminator restore snapshot is missing")
 
         data["phase"] = "restoring"
         await self._restore_store.async_save(data)
@@ -555,8 +548,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             # If Store cleanup fails, retain ownership state so a future
             # coordinator update can retry rather than losing recovery data.
             _LOGGER.warning(
-                "Dahua Illuminator: failed to release externally changed "
-                "override",
+                "Dahua Illuminator: failed to release externally changed " "override",
                 exc_info=True,
             )
         finally:
@@ -603,13 +595,9 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
             override_brightness = data.get("override_brightness")
 
-            if override_brightness is None and isinstance(
-                saved_ha_brightness, int
-            ):
-                override_brightness = (
-                    dahua_utils.hass_brightness_to_dahua_brightness(
-                        saved_ha_brightness
-                    )
+            if override_brightness is None and isinstance(saved_ha_brightness, int):
+                override_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
+                    saved_ha_brightness
                 )
 
             if override_brightness is not None:
@@ -622,11 +610,14 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             )
             return False
 
-        current_scheme = None if previous_scheme is None else (
-            await self._coordinator.client
-            .async_get_lighting_scheme_mode(
-                scheme_channel,
-                scheme_profile,
+        current_scheme = (
+            None
+            if previous_scheme is None
+            else (
+                await self._coordinator.client.async_get_lighting_scheme_mode(
+                    scheme_channel,
+                    scheme_profile,
+                )
             )
         )
 
@@ -634,21 +625,14 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             current_mode,
             _current_field,
             current_brightness,
-        ) = (
-            await self._coordinator.client
-            .async_get_lighting_v2_live_state(
-                channel,
-                profile_mode,
-                index,
-            )
+        ) = await self._coordinator.client.async_get_lighting_v2_live_state(
+            channel,
+            profile_mode,
+            index,
         )
 
-        light_restored = (
-            current_mode == old_mode
-            and (
-                old_brightness is None
-                or current_brightness == old_brightness
-            )
+        light_restored = current_mode == old_mode and (
+            old_brightness is None or current_brightness == old_brightness
         )
 
         # Both parts are already back to the saved original state.
@@ -675,10 +659,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
                 or current_brightness == override_brightness
             )
 
-            override_still_owned = (
-                current_mode == "Manual"
-                and brightness_still_owned
-            )
+            override_still_owned = current_mode == "Manual" and brightness_still_owned
 
             if not override_still_owned:
                 _LOGGER.info(
@@ -785,8 +766,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         )
 
         _LOGGER.debug(
-            "Dahua Illuminator: forced WhiteLight Off "
-            "(channel=%s profile=%s)",
+            "Dahua Illuminator: forced WhiteLight Off " "(channel=%s profile=%s)",
             channel,
             profile_mode,
         )
@@ -857,8 +837,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         )
 
         _LOGGER.debug(
-            "Dahua Illuminator: restored LightingScheme %s "
-            "(channel=%s profile=%s)",
+            "Dahua Illuminator: restored LightingScheme %s " "(channel=%s profile=%s)",
             previous_scheme,
             scheme_channel,
             scheme_profile,
@@ -877,10 +856,8 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
         self._last_brightness = hass_brightness
 
-        dahua_brightness = (
-            dahua_utils.hass_brightness_to_dahua_brightness(
-                hass_brightness
-            )
+        dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
+            hass_brightness
         )
 
         channel = self._coordinator.get_channel()
@@ -913,13 +890,10 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
                 old_mode,
                 live_field,
                 old_brightness,
-            ) = (
-                await self._coordinator.client
-                .async_get_lighting_v2_live_state(
-                    channel,
-                    profile_mode,
-                    index,
-                )
+            ) = await self._coordinator.client.async_get_lighting_v2_live_state(
+                channel,
+                profile_mode,
+                index,
             )
 
             # Use the field actually reported by the live WhiteLight row.
@@ -960,17 +934,21 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
         if self._scheme_restore is None:
             current_scheme = (
-                await self._coordinator.client
-                .async_get_lighting_scheme_mode(channel, profile_mode)
+                await self._coordinator.client.async_get_lighting_scheme_mode(
+                    channel, profile_mode
+                )
             )
             self._scheme_restore = (channel, profile_mode, current_scheme)
         else:
-            scheme_channel, scheme_profile, _previous_scheme = (
-                self._scheme_restore
-            )
-            current_scheme = None if _previous_scheme is None else (
-                await self._coordinator.client
-                .async_get_lighting_scheme_mode(scheme_channel, scheme_profile)
+            scheme_channel, scheme_profile, _previous_scheme = self._scheme_restore
+            current_scheme = (
+                None
+                if _previous_scheme is None
+                else (
+                    await self._coordinator.client.async_get_lighting_scheme_mode(
+                        scheme_channel, scheme_profile
+                    )
+                )
             )
 
         # Persist the original state BEFORE the first CGI override.
@@ -992,13 +970,10 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         # Then force WhiteMode. Some cameras later report AIMode again,
         # but the physical white-light override remains active.
         if current_scheme is not None and current_scheme != "WhiteMode":
-            await (
-                self._coordinator.client
-                .async_set_lighting_scheme(
-                    channel,
-                    profile_mode,
-                    "WhiteMode",
-                )
+            await self._coordinator.client.async_set_lighting_scheme(
+                channel,
+                profile_mode,
+                "WhiteMode",
             )
 
             _LOGGER.debug(
@@ -1049,7 +1024,9 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             self._scheme_unreadable = True
             _LOGGER.debug(
                 "LightingScheme is not readable on this device; the white light "
-                "scheme check is switched off for it", exc_info=True)
+                "scheme check is switched off for it",
+                exc_info=True,
+            )
             _LOGGER.warning(
                 "The white light on %s was set, but this device does not serve "
                 "LightingScheme, so whether the camera will use the white emitter "
@@ -1065,7 +1042,8 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
                 "The white light on %s was set, but the camera's lighting scheme is "
                 "%s, so the light will not physically come on. Switch that camera to "
                 "white light in its own web interface to use this entity.",
-                self._coordinator.get_device_name(), blocking,
+                self._coordinator.get_device_name(),
+                blocking,
             )
 
     async def async_turn_off(self, **kwargs):
@@ -1098,9 +1076,7 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             and self._light_restore is None
             and self._scheme_restore is None
         ):
-            _LOGGER.debug(
-                "Dahua Illuminator: already off; ignoring duplicate OFF"
-            )
+            _LOGGER.debug("Dahua Illuminator: already off; ignoring duplicate OFF")
             return
 
         # Do not rely only on coordinator.data here. Another HA service,
@@ -1139,7 +1115,6 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
         await self._coordinator.async_refresh()
         self.async_write_ha_state()
-
 
 
 class AmcrestRingLight(DahuaBaseEntity, LightEntity):
@@ -1188,9 +1163,9 @@ class AmcrestRingLight(DahuaBaseEntity, LightEntity):
 
 class FloodLight(DahuaBaseEntity, LightEntity):
     """
-        Representation of a Amcrest, Dahua, and Lorex Flood Light (for cameras that have them)
-        Unlike the 'Dahua Illuminator', Amcrest Flood Lights do not play nicely
-        with adjusting the 'White Light' brightness.
+    Representation of a Amcrest, Dahua, and Lorex Flood Light (for cameras that have them)
+    Unlike the 'Dahua Illuminator', Amcrest Flood Lights do not play nicely
+    with adjusting the 'White Light' brightness.
     """
 
     _attr_translation_key = "flood_light"
@@ -1216,7 +1191,7 @@ class FloodLight(DahuaBaseEntity, LightEntity):
     def supported_features(self):
         """Flag supported features."""
         return LightEntityFeature.EFFECT
-    
+
     @property
     def color_mode(self) -> ColorMode | str | None:
         """Return the color mode of the light."""
@@ -1236,19 +1211,25 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         """Turn the light on"""
         if self._coordinator._supports_floodlightmode:
             channel = self._coordinator.get_channel()
-            self._coordinator._floodlight_mode = await self._coordinator.client.async_get_floodlightmode()
+            self._coordinator._floodlight_mode = (
+                await self._coordinator.client.async_get_floodlightmode()
+            )
             await self._coordinator.client.async_set_floodlightmode(2)
             if self._coordinator.is_nvr_channel():
                 await self._coordinator.client.async_set_nvr_coaxial_control_state(
                     self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, True
                 )
             else:
-                await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, True)
+                await self._coordinator.client.async_set_coaxial_control_state(
+                    channel, SECURITY_LIGHT_TYPE, True
+                )
             await self._coordinator.async_refresh()
         else:
             channel = self._coordinator.get_channel()
             profile_mode = self._coordinator.get_profile_mode()
-            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(channel, True, profile_mode)
+            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(
+                channel, True, profile_mode
+            )
             await self._coordinator.async_refresh()
 
     async def async_turn_off(self, **kwargs):
@@ -1260,13 +1241,19 @@ class FloodLight(DahuaBaseEntity, LightEntity):
                     self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, False
                 )
             else:
-                await self._coordinator.client.async_set_coaxial_control_state(channel, SECURITY_LIGHT_TYPE, False)
-            await self._coordinator.client.async_set_floodlightmode(self._coordinator._floodlight_mode)
+                await self._coordinator.client.async_set_coaxial_control_state(
+                    channel, SECURITY_LIGHT_TYPE, False
+                )
+            await self._coordinator.client.async_set_floodlightmode(
+                self._coordinator._floodlight_mode
+            )
             await self._coordinator.async_refresh()
         else:
             channel = self._coordinator.get_channel()
             profile_mode = self._coordinator.get_profile_mode()
-            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(channel, False, profile_mode)
+            await self._coordinator.client.async_set_lighting_v2_for_flood_lights(
+                channel, False, profile_mode
+            )
             await self._coordinator.async_refresh()
 
 
@@ -1276,8 +1263,9 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
     The camera will only keep this light on for a few seconds before it automatically turns off.
     """
 
-    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry, *,
-                 translation_key):
+    def __init__(
+        self, coordinator: DahuaDataUpdateCoordinator, entry, *, translation_key
+    ):
         """`translation_key` rather than a name, and keyword only.
 
         This light is called "Warning Light" on a recorder and "Security
@@ -1316,7 +1304,9 @@ class DahuaSecurityLight(DahuaBaseEntity, LightEntity):
                 self._coordinator.get_channel_number(), SECURITY_LIGHT_TYPE, True
             )
         elif self._coordinator.uses_rpc2_deterrence(SECURITY_LIGHT_TYPE):
-            await self._coordinator.client.async_set_coaxial_control_state_rpc2(SECURITY_LIGHT_TYPE, True)
+            await self._coordinator.client.async_set_coaxial_control_state_rpc2(
+                SECURITY_LIGHT_TYPE, True
+            )
         else:
             await self._coordinator.client.async_set_coaxial_control_state(
                 self._coordinator.get_security_light_control_channel(),

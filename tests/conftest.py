@@ -1,4 +1,5 @@
 """Configure pytest for dahua integration tests."""
+
 import asyncio
 
 import pytest
@@ -136,6 +137,7 @@ async def _stop_shared_event_streams():
     yield
     await _drain()
 
+
 @pytest.fixture(autouse=True)
 def _clear_rpc2_event_state():
     """What the RPC2 poll last reported active is module state, per host.
@@ -159,6 +161,7 @@ def _clear_rpc2_event_state():
     _drain()
     yield
     _drain()
+
 
 @pytest.fixture(autouse=True)
 def _clear_cgi_config_absent():

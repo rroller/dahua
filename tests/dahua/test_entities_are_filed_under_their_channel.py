@@ -46,8 +46,11 @@ def _add_calls():
         for node in ast.walk(ast.parse(source)):
             if not isinstance(node, ast.Call):
                 continue
-            name = (node.func.attr if isinstance(node.func, ast.Attribute)
-                    else getattr(node.func, "id", None))
+            name = (
+                node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else getattr(node.func, "id", None)
+            )
             if name not in ADD_CALLBACKS:
                 continue
             passed = any(kw.arg == "config_subentry_id" for kw in node.keywords)
@@ -63,19 +66,22 @@ def test_the_scan_finds_the_platforms():
 
     assert len(calls) >= 8, calls
     assert len({name for name, _line, _passed in calls}) >= 7, sorted(
-        {name for name, _line, _passed in calls})
+        {name for name, _line, _passed in calls}
+    )
 
 
 def test_every_platform_files_its_entities_under_a_subentry():
     """The regression test. A channel of a merged recorder belongs to its subentry,
     and Home Assistant only knows that if it is told at the moment the entity is
     added."""
-    missing = ["%s:%d" % (name, line)
-               for name, line, passed in _add_calls() if not passed]
+    missing = [
+        "%s:%d" % (name, line) for name, line, passed in _add_calls() if not passed
+    ]
 
     assert not missing, (
         "these calls add entities without saying which channel they belong to, so "
-        "they land on the entry and under no subentry: %s" % missing)
+        "they land on the entry and under no subentry: %s" % missing
+    )
 
 
 def test_the_coordinator_carries_its_subentry():
@@ -89,7 +95,8 @@ def test_the_coordinator_carries_its_subentry():
     assert coordinator.subentry_id is None, (
         "a coordinator built without one must read None rather than raise: the "
         "platforms pass this on every entity they add, and None is also what "
-        "async_add_entities wants for an entry with no subentries")
+        "async_add_entities wants for an entry with no subentries"
+    )
 
 
 def test_a_single_camera_files_under_no_subentry():

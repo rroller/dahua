@@ -82,32 +82,39 @@ READ = "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting"
 
 # --- what the word is ----------------------------------------------------------
 
-@pytest.mark.parametrize("body", [
-    "Error",
-    "error",
-    "ERROR",
-    " Error ",
-    "Error\r\n",
-    "Error\nsomething the device added",
-])
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Error",
+        "error",
+        "ERROR",
+        " Error ",
+        "Error\r\n",
+        "Error\nsomething the device added",
+    ],
+)
 def test_the_device_declining_is_recognised(body):
     """Case and whitespace vary by firmware, and some add a second line."""
     assert write_was_declined(body) is True
 
 
-@pytest.mark.parametrize("body", [
-    "OK",
-    "ok",
-    "ok\r\n",
-    "",
-    "   ",
-    "\n",
-    "Errors=0",
-    "ErrorCode=0",
-    "error_count=0",
-    "table.Lighting[0][0].Mode=Auto",
-    "An error occurred",
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "OK",
+        "ok",
+        "ok\r\n",
+        "",
+        "   ",
+        "\n",
+        "Errors=0",
+        "ErrorCode=0",
+        "error_count=0",
+        "table.Lighting[0][0].Mode=Auto",
+        "An error occurred",
+    ],
+)
 def test_everything_else_is_left_alone(body):
     """The whole point of being narrow. An empty body is not a refusal -- several
     write endpoints answer with nothing and the write lands -- and a body that
@@ -132,6 +139,7 @@ def test_the_word_is_named_once():
 
 # --- and what it is raised as --------------------------------------------------
 
+
 def test_it_is_a_connection_error_so_existing_handlers_still_work():
     """Every write path already catches ConnectionError somewhere above it -- the
     entities translate one into "the device would not do that", which is exactly
@@ -153,6 +161,7 @@ def test_it_is_its_own_type_so_a_caller_can_tell_the_difference():
 # The classifier above could be perfect and never called. The mutation that
 # removes `reject_declined=True` from get() leaves every test above passing, which
 # is exactly the "a scan I never ran" shape -- so these drive the real client.
+
 
 async def test_a_write_answered_with_error_raises(monkeypatch):
     calls = _answering(monkeypatch, "Error")

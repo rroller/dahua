@@ -33,6 +33,7 @@ A_ROW = ("0", 0, "NearLight")
 
 # --- the rule ------------------------------------------------------------------
 
+
 def test_v1_is_used_while_it_has_not_been_refused():
     """Every camera that works today keeps the table it works on, including ones
     that happen to report a v2 row."""
@@ -54,11 +55,14 @@ def test_no_v2_row_and_no_refusal_is_the_ordinary_case():
     assert infrared_transport(None, v1_refused=False) == "v1"
 
 
-@pytest.mark.parametrize("row", [
-    ("0", 0, "MiddleLight"),
-    ("2", 1, "NearLight"),
-    ("0", 3, "FarLight"),
-])
+@pytest.mark.parametrize(
+    "row",
+    [
+        ("0", 0, "MiddleLight"),
+        ("2", 1, "NearLight"),
+        ("0", 3, "FarLight"),
+    ],
+)
 def test_the_row_contents_do_not_change_the_decision(row):
     """Only its presence matters here. Which profile, index and bank to use is
     `infrared_v2_row`'s job, and keeping the two separate is what lets this one be
@@ -69,12 +73,15 @@ def test_the_row_contents_do_not_change_the_decision(row):
 
 # --- and the shape of the thing -------------------------------------------------
 
+
 def test_it_answers_with_one_of_exactly_two_names():
     """The callers branch on this string, so a third value would be a silent
     fall-through to the v1 branch."""
-    answers = {infrared_transport(row, refused)
-               for row in (A_ROW, None)
-               for refused in (True, False)}
+    answers = {
+        infrared_transport(row, refused)
+        for row in (A_ROW, None)
+        for refused in (True, False)
+    }
 
     assert answers == {"v1", "v2"}
 

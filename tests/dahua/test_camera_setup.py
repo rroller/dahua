@@ -49,8 +49,15 @@ class _Coordinator:
     # `async_add_entities` wants for an entry that has no subentries.
     subentry_id = None
 
-    def __init__(self, model="IPC-HDW1234", max_streams=2, channel=0, number=1,
-                 infrared=False, illuminator=False):
+    def __init__(
+        self,
+        model="IPC-HDW1234",
+        max_streams=2,
+        channel=0,
+        number=1,
+        infrared=False,
+        illuminator=False,
+    ):
         self.client = _Client()
         self._model = model
         self._max_streams = max_streams
@@ -110,25 +117,26 @@ def setup(monkeypatch):
 
     class _Recorder:
         def __init__(self, coordinator, stream_index, config_entry, **kwargs):
-            built.append({
-                "coordinator": coordinator,
-                "stream_index": stream_index,
-                "logical_channel": kwargs.get("logical_channel"),
-                "media_channel": kwargs.get("media_channel"),
-                "display_name": kwargs.get("display_name"),
-                "unique_suffix": kwargs.get("unique_suffix"),
-            })
+            built.append(
+                {
+                    "coordinator": coordinator,
+                    "stream_index": stream_index,
+                    "logical_channel": kwargs.get("logical_channel"),
+                    "media_channel": kwargs.get("media_channel"),
+                    "display_name": kwargs.get("display_name"),
+                    "unique_suffix": kwargs.get("unique_suffix"),
+                }
+            )
 
     monkeypatch.setattr(camera_module, "DahuaCamera", _Recorder)
     monkeypatch.setattr(
-        camera_module.entity_platform, "async_get_current_platform",
-        lambda: platform)
+        camera_module.entity_platform, "async_get_current_platform", lambda: platform
+    )
 
     async def run(*coordinators):
         entry = _Entry({i: c for i, c in enumerate(coordinators)})
         added = []
-        await camera_module.async_setup_entry(
-            None, entry, adds_entities(added))
+        await camera_module.async_setup_entry(None, entry, adds_entities(added))
         return added
 
     run.built = built
@@ -137,6 +145,7 @@ def setup(monkeypatch):
 
 
 # --- an ordinary camera -----------------------------------------------------
+
 
 async def test_a_camera_gets_one_entity_per_stream(setup):
     await setup(_Coordinator(max_streams=3))
@@ -157,9 +166,11 @@ async def test_a_camera_with_one_stream_gets_one_entity(setup):
 async def test_every_channel_of_a_recorder_gets_its_streams(setup):
     """An NVR entry owns several coordinators, and each is a channel with its own
     cameras."""
-    await setup(_Coordinator(max_streams=2, channel=0),
-                _Coordinator(max_streams=2, channel=1),
-                _Coordinator(max_streams=2, channel=2))
+    await setup(
+        _Coordinator(max_streams=2, channel=0),
+        _Coordinator(max_streams=2, channel=1),
+        _Coordinator(max_streams=2, channel=2),
+    )
 
     assert len(setup.built) == 6
     assert sorted({b["coordinator"].get_channel() for b in setup.built}) == [0, 1, 2]
@@ -167,14 +178,22 @@ async def test_every_channel_of_a_recorder_gets_its_streams(setup):
 
 # --- the two-sensor model ---------------------------------------------------
 
+
 async def test_the_sdt4e425_gets_a_set_of_streams_for_each_of_its_two_sensors(setup):
     """One config entry, two physical sensors. Panorama is media channel 1 and PTZ is
     media channel 2, and each gets every stream."""
     await setup(_Coordinator(model="DH-SDT4E425-4F-GB-A-PV1", max_streams=2))
 
     assert len(setup.built) == 4
-    assert [(b["logical_channel"], b["media_channel"], b["display_name"],
-             b["unique_suffix"]) for b in setup.built] == [
+    assert [
+        (
+            b["logical_channel"],
+            b["media_channel"],
+            b["display_name"],
+            b["unique_suffix"],
+        )
+        for b in setup.built
+    ] == [
         (0, 1, "Panorama", "Main"),
         (0, 1, "Panorama Sub", "Sub"),
         (1, 2, "PTZ", "1_Main"),
@@ -213,6 +232,7 @@ async def test_a_camera_reporting_no_model_takes_the_ordinary_path(setup):
 
 # --- the services, registered once ------------------------------------------
 
+
 async def test_the_entity_services_are_registered(setup):
     await setup(_Coordinator())
 
@@ -228,7 +248,8 @@ async def test_a_recorders_channels_do_not_register_the_services_again(setup):
     names = setup.platform.registered
     duplicated = sorted({n for n in names if names.count(n) > 1})
     assert duplicated == [], "registered twice, which raises on a real platform: %s" % (
-        duplicated,)
+        duplicated,
+    )
 
 
 async def test_an_entry_with_nothing_set_up_still_registers_its_services(setup):
@@ -240,8 +261,7 @@ async def test_an_entry_with_nothing_set_up_still_registers_its_services(setup):
     entry = _Entry({})
     added = []
 
-    await camera_module.async_setup_entry(
-        None, entry, adds_entities(added))
+    await camera_module.async_setup_entry(None, entry, adds_entities(added))
 
     assert added == []
     assert setup.built == []
@@ -253,6 +273,7 @@ async def test_an_entry_with_nothing_set_up_still_registers_its_services(setup):
 # Entity services are registered once for the whole platform. The two conditional ones
 # were gated on `coordinator`, the variable left behind by the loop above, so on a
 # recorder the last channel iterated decided for all of them.
+
 
 async def test_the_infrared_service_is_registered_when_the_camera_has_one(setup):
     await setup(_Coordinator(infrared=True))
@@ -272,19 +293,23 @@ async def test_one_channel_with_an_illuminator_is_enough_for_the_recorder(setup)
     """The bug. Channel 0 has the illuminator and the last channel does not, and the
     service is registered once for the platform -- so asking only the channel the loop
     finished on took `set_illuminator_mode` away from the channel that could use it."""
-    await setup(_Coordinator(channel=0, illuminator=True),
-                _Coordinator(channel=1, illuminator=False),
-                _Coordinator(channel=2, illuminator=False))
+    await setup(
+        _Coordinator(channel=0, illuminator=True),
+        _Coordinator(channel=1, illuminator=False),
+        _Coordinator(channel=2, illuminator=False),
+    )
 
-    assert camera_module.SERVICE_SET_ILLUMINATOR_MODE in setup.platform.registered, (
-        "the channel with the illuminator cannot be told to go back to automatic")
+    assert (
+        camera_module.SERVICE_SET_ILLUMINATOR_MODE in setup.platform.registered
+    ), "the channel with the illuminator cannot be told to go back to automatic"
 
 
 async def test_the_capability_is_not_lost_when_the_last_channel_lacks_it(setup):
     """The same fault from the other side, and the ordering that used to matter: the
     supporting channel last would have worked by luck, so this puts it first."""
-    await setup(_Coordinator(channel=0, infrared=True),
-                _Coordinator(channel=1, infrared=False))
+    await setup(
+        _Coordinator(channel=0, infrared=True), _Coordinator(channel=1, infrared=False)
+    )
 
     assert camera_module.SERVICE_SET_INFRARED_MODE in setup.platform.registered
 

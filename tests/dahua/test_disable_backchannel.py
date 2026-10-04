@@ -87,10 +87,9 @@ async def test_one_channels_answer_does_not_silence_another():
     options are shared and the channel's own answer has to win. Without
     that, disabling the backchannel on one camera would take the talk
     channel away from the doorbell next to it."""
-    assert await _source(channel={"disable_backchannel": False},
-                         disable_backchannel=True) == (
-        "rtsp://host/cam?channel=1&subtype=0"
-    )
+    assert await _source(
+        channel={"disable_backchannel": False}, disable_backchannel=True
+    ) == ("rtsp://host/cam?channel=1&subtype=0")
 
 
 def _schema_defaults(result):
@@ -103,7 +102,8 @@ def _schema_defaults(result):
 
 async def _shown_options_form(hass, entry):
     registered = MockConfigEntry(
-        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options))
+        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options)
+    )
     registered.add_to_hass(hass)
 
     handler = DahuaOptionsFlowHandler()

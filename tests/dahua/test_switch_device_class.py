@@ -52,7 +52,8 @@ OUTPUT_SWITCHES = [
 def _switch_classes():
     """Every switch entity this integration defines."""
     found = [
-        obj for _, obj in inspect.getmembers(switch_module, inspect.isclass)
+        obj
+        for _, obj in inspect.getmembers(switch_module, inspect.isclass)
         if issubclass(obj, SwitchEntity)
         and obj is not SwitchEntity
         and obj.__module__ == switch_module.__name__
@@ -80,14 +81,16 @@ def test_the_output_switches_say_they_are_switches():
 def test_every_switch_is_either_configuration_or_declares_a_device_class():
     """The invariant. Neither is a decision nobody made."""
     undecided = [
-        cls.__name__ for cls in _switch_classes()
+        cls.__name__
+        for cls in _switch_classes()
         if _built(cls).device_class is None
         and _built(cls).entity_category is not EntityCategory.CONFIG
     ]
 
     assert undecided == [], (
         "these switches are neither configuration entities nor device outputs, so "
-        "nothing says which they are: %s" % undecided)
+        "nothing says which they are: %s" % undecided
+    )
 
 
 def test_the_configuration_switches_are_not_given_a_device_class():
@@ -95,13 +98,15 @@ def test_the_configuration_switches_are_not_given_a_device_class():
     attribute meaningless -- it would be on every switch in the integration and
     distinguish nothing, which is the opposite of what a device class is for."""
     labelled = [
-        cls.__name__ for cls in _switch_classes()
+        cls.__name__
+        for cls in _switch_classes()
         if _built(cls).entity_category is EntityCategory.CONFIG
         and _built(cls).device_class is not None
     ]
 
     assert labelled == [], (
-        "a configuration entity was given a device class: %s" % labelled)
+        "a configuration entity was given a device class: %s" % labelled
+    )
 
 
 def test_no_switch_is_both_an_output_and_a_configuration_entity():
@@ -109,4 +114,3 @@ def test_no_switch_is_both_an_output_and_a_configuration_entity():
     reasoning in this file no longer describes the code."""
     for cls in OUTPUT_SWITCHES:
         assert _built(cls).entity_category is not EntityCategory.CONFIG, cls.__name__
-

@@ -37,6 +37,7 @@ def _part(payload, declared=None, separator=b"\r\n\r\n", headers=True):
 
 # --- not enough to deliver yet ----------------------------------------------
 
+
 def test_a_buffer_with_no_boundary_yields_nothing():
     """The first chunk of a stream can arrive before the first boundary does."""
     assert _pop_complete_multipart_part(b"garbage", BOUNDARY) == (None, b"garbage")
@@ -71,6 +72,7 @@ def test_a_payload_still_arriving_yields_nothing():
 
 
 # --- delivering on Content-Length -------------------------------------------
+
 
 def test_a_complete_part_is_delivered_without_waiting_for_the_next_boundary():
     """The whole point. The next part may be a heartbeat interval away, and this
@@ -122,6 +124,7 @@ def test_both_header_separators_are_understood(separator):
 
 # --- when the length and the framing disagree -------------------------------
 
+
 def test_a_length_that_would_eat_the_next_part_is_not_believed():
     """The subtle one. The declared length runs past where the next boundary
     actually is, so trusting it would swallow the start of the next event and lose
@@ -142,8 +145,12 @@ def test_a_length_that_would_eat_the_next_part_is_not_believed():
 def test_an_unusable_content_length_falls_back_to_the_boundary(declared):
     """A negative or unparseable length is no length at all. Falling back keeps
     the device working at the old latency rather than not working."""
-    head = (BOUNDARY + b"\r\nContent-Type: text/plain\r\nContent-Length: "
-            + declared + b"\r\n\r\n")
+    head = (
+        BOUNDARY
+        + b"\r\nContent-Type: text/plain\r\nContent-Length: "
+        + declared
+        + b"\r\n\r\n"
+    )
     buffer = head + b"payload" + b"\r\n" + BOUNDARY
 
     part, rest = _pop_complete_multipart_part(buffer, BOUNDARY)
@@ -154,6 +161,7 @@ def test_an_unusable_content_length_falls_back_to_the_boundary(declared):
 
 
 # --- devices that send no length at all -------------------------------------
+
 
 def test_without_a_length_it_waits_for_the_next_boundary():
     payload = b"Code=VideoMotion;action=Start;index=0"

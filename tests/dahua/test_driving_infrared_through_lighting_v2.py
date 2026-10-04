@@ -57,6 +57,7 @@ def _v2(channel, profile, index, light_type, banks=("MiddleLight",), mode="Auto"
 
 # --- finding the row ------------------------------------------------------------
 
+
 def test_the_infrared_row_is_found_by_what_the_device_calls_it():
     """Channel 11's real shape: infrared at 0, white at 1."""
     data = {}
@@ -119,6 +120,7 @@ def test_a_row_naming_no_light_type_is_not_claimed_as_infrared():
 
 
 # --- which profile ---------------------------------------------------------------
+
 
 def test_the_live_profile_is_preferred():
     data = {}

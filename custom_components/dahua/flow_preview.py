@@ -52,6 +52,7 @@ in for the credential. Here the token is 32 random bytes, it is minted per flow,
 expires, and what it unlocks is a still already in memory -- no device call happens on
 the request, and no credential is anywhere near the URL.
 """
+
 import logging
 import secrets
 import time
@@ -97,8 +98,11 @@ def _async_prune(store: dict, now: float, keep: str) -> None:
     newest, so trimming the oldest cannot reach it, but saying so beats relying on a
     clock whose two readings could come back equal.
     """
-    for token in [token for token, (expires, _, _) in store.items()
-                  if expires <= now and token != keep]:
+    for token in [
+        token
+        for token, (expires, _, _) in store.items()
+        if expires <= now and token != keep
+    ]:
         del store[token]
     while len(store) > MAX_STORED_PREVIEWS:
         candidates = [token for token in store if token != keep]
@@ -106,8 +110,9 @@ def _async_prune(store: dict, now: float, keep: str) -> None:
 
 
 @callback
-def async_store_preview(hass: HomeAssistant, image: bytes,
-                        content_type: str = "image/jpeg") -> str:
+def async_store_preview(
+    hass: HomeAssistant, image: bytes, content_type: str = "image/jpeg"
+) -> str:
     """Hold one image for a flow to point at, and return its token."""
     store = hass.data.get(DATA_FLOW_PREVIEWS)
     if store is None:

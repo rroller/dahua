@@ -31,8 +31,7 @@ import pytest
 
 from custom_components.dahua.config_flow import DahuaFlowHandler
 
-PACKAGE = (pathlib.Path(__file__).resolve().parents[2]
-           / "custom_components" / "dahua")
+PACKAGE = pathlib.Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 FLOW_TITLE = json.loads(
     (PACKAGE / "translations" / "en.json").read_text(encoding="utf-8")
 )["config"]["flow_title"]
@@ -46,6 +45,7 @@ def _handler():
 
 def _entry(title="Gerty New", address="10.0.0.5"):
     from types import SimpleNamespace
+
     return SimpleNamespace(title=title, data={"address": address})
 
 
@@ -58,7 +58,9 @@ def test_the_entry_title_and_address_reach_the_card():
     handler._set_flow_title(_entry())
 
     assert handler.context["title_placeholders"] == {
-        "name": "Gerty New", "address": "10.0.0.5"}
+        "name": "Gerty New",
+        "address": "10.0.0.5",
+    }
 
 
 def test_an_entry_with_no_title_falls_back_to_its_address():
@@ -106,9 +108,10 @@ def test_every_placeholder_the_title_needs_is_supplied():
     handler._set_flow_title(_entry())
     supplied = set(handler.context["title_placeholders"])
 
-    assert needed <= supplied, (
-        "flow_title needs %s and the flow supplies %s"
-        % (sorted(needed), sorted(supplied)))
+    assert needed <= supplied, "flow_title needs %s and the flow supplies %s" % (
+        sorted(needed),
+        sorted(supplied),
+    )
 
 
 STEPS_FROM_AN_EXISTING_ENTRY = ("async_step_reauth", "async_step_reconfigure")
@@ -121,15 +124,21 @@ def test_the_steps_started_from_an_entry_set_the_title(step):
     that forgets this reproduces the bug exactly, and this is what notices."""
     source = (PACKAGE / "config_flow.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    handler = next(n for n in tree.body if isinstance(n, ast.ClassDef)
-                   and n.name == "DahuaFlowHandler")
-    method = next(m for m in handler.body
-                  if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
-                  and m.name == step)
+    handler = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "DahuaFlowHandler"
+    )
+    method = next(
+        m
+        for m in handler.body
+        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and m.name == step
+    )
 
     body = ast.unparse(method)
     assert "_set_flow_title" in body or "title_placeholders" in body, (
-        "%s renders flow_title with nothing to substitute" % step)
+        "%s renders flow_title with nothing to substitute" % step
+    )
 
 
 def test_the_scan_would_notice_a_step_that_did_not():
@@ -137,12 +146,19 @@ def test_the_scan_would_notice_a_step_that_did_not():
     because there is no entry yet, so it proves the scan can return False."""
     source = (PACKAGE / "config_flow.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    handler = next(n for n in tree.body if isinstance(n, ast.ClassDef)
-                   and n.name == "DahuaFlowHandler")
-    method = next(m for m in handler.body
-                  if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
-                  and m.name == "async_step_user")
+    handler = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "DahuaFlowHandler"
+    )
+    method = next(
+        m
+        for m in handler.body
+        if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and m.name == "async_step_user"
+    )
 
     body = ast.unparse(method)
-    assert "_set_flow_title" not in body and "title_placeholders" not in body, (
-        "async_step_user now sets a title, so this control no longer proves anything")
+    assert (
+        "_set_flow_title" not in body and "title_placeholders" not in body
+    ), "async_step_user now sets a title, so this control no longer proves anything"

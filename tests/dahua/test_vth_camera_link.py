@@ -16,6 +16,7 @@ On one extension LinkIPC was absent rather than empty.
 Pinned closely because a device answers a setConfig it did not apply with OK, and
 because VTHRemoteIPCInfo carries each camera's login: none of it may leave the client.
 """
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -27,28 +28,49 @@ from custom_components.dahua.client import DahuaClient, vth_camera_links
 from custom_components.dahua.coordinator import VTH_CAMERA_LINKS
 from custom_components.dahua.select import NO_CAMERA, DahuaVthCameraLinkSelect
 
-EMPTY_IPC = {"Address": "0.0.0.0", "Channel": 0, "MachineAddress": "", "Port": 554,
-             "UserName": "admin", "Password": "default"}
+EMPTY_IPC = {
+    "Address": "0.0.0.0",
+    "Channel": 0,
+    "MachineAddress": "",
+    "Port": 554,
+    "UserName": "admin",
+    "Password": "default",
+}
 
 
 def _vto_table(link="", **extra):
-    vto = {"Address": "10.0.0.4", "MachineAddress": "Main VTO", "Enable": True,
-           "Username": "admin", "Password": "vto-secret", "RingVolume": 70}
+    vto = {
+        "Address": "10.0.0.4",
+        "MachineAddress": "Main VTO",
+        "Enable": True,
+        "Username": "admin",
+        "Password": "vto-secret",
+        "RingVolume": 70,
+    }
     if link is not None:
         vto["LinkIPC"] = link
     vto.update(extra)
-    return {"Vto00": vto,
-            "Vto01": {"Address": "0.0.0.0", "MachineAddress": "", "LinkIPC": ""}}
+    return {
+        "Vto00": vto,
+        "Vto01": {"Address": "0.0.0.0", "MachineAddress": "", "LinkIPC": ""},
+    }
 
 
 def _camera_table():
     table = {"Ipc%02d" % i: dict(EMPTY_IPC) for i in range(64)}
-    table["Ipc32"] = {"Address": "10.0.0.8", "Channel": 0, "MachineAddress": "Front",
-                      "Port": 554, "UserName": "admin", "Password": "ipc-secret"}
+    table["Ipc32"] = {
+        "Address": "10.0.0.8",
+        "Channel": 0,
+        "MachineAddress": "Front",
+        "Port": 554,
+        "UserName": "admin",
+        "Password": "ipc-secret",
+    }
     return table
 
 
 # --- reading the tables -----------------------------------------------------
+
 
 def test_the_measured_tables_read_as_one_vto_and_one_camera():
     assert vth_camera_links(_vto_table(), _camera_table()) == {
@@ -106,12 +128,15 @@ def test_a_missing_table_is_an_error_not_an_empty_answer(vto, cameras):
 
 # --- the client ---------------------------------------------------------------
 
+
 class _Device:
     """A VTH's two tables behind RPC2, recording every request."""
 
     def __init__(self, vto_table, camera_table=None, applies=True, drops_empty=False):
         self.vto_table = vto_table
-        self.camera_table = camera_table if camera_table is not None else _camera_table()
+        self.camera_table = (
+            camera_table if camera_table is not None else _camera_table()
+        )
         self.applies = applies
         # A VTH that stores no LinkIPC at all rather than an empty one, which is
         # how the measured extension that had no field would read back.
@@ -121,8 +146,9 @@ class _Device:
     async def request(self, method, params=None, **kwargs):
         self.asked.append((method, params))
         if method == "configManager.getConfig":
-            table = {"VTOInfo": self.vto_table,
-                     "VTHRemoteIPCInfo": self.camera_table}[params["name"]]
+            table = {"VTOInfo": self.vto_table, "VTHRemoteIPCInfo": self.camera_table}[
+                params["name"]
+            ]
             return {"result": True, "params": {"table": _copy(table)}}
         if method == "configManager.setConfig":
             if self.applies:
@@ -168,8 +194,11 @@ async def test_linking_writes_the_whole_table_with_only_that_link_changed():
     assert await _client(device).async_set_vth_camera_link("Vto00", "Ipc32") is True
 
     methods = [method for method, _ in device.asked]
-    assert methods == ["configManager.getConfig", "configManager.setConfig",
-                       "configManager.getConfig"]
+    assert methods == [
+        "configManager.getConfig",
+        "configManager.setConfig",
+        "configManager.getConfig",
+    ]
     written = device.asked[1][1]
     assert written["name"] == "VTOInfo" and written["options"] == []
     expected = _copy(before)
@@ -224,6 +253,7 @@ async def test_a_slot_that_is_not_there_is_not_written():
 
 # --- the coordinator ----------------------------------------------------------
 
+
 def _coordinator(device_class="VTH", data=None, client=None):
     c = object.__new__(DahuaDataUpdateCoordinator)
     c._device_class = device_class
@@ -232,8 +262,10 @@ def _coordinator(device_class="VTH", data=None, client=None):
     return c
 
 
-@pytest.mark.parametrize("device_class, expected", [
-    ("VTH", True), (" vth ", True), ("VTO", False), ("VTHX", False), ("", False)])
+@pytest.mark.parametrize(
+    "device_class, expected",
+    [("VTH", True), (" vth ", True), ("VTO", False), ("VTHX", False), ("", False)],
+)
 def test_only_a_device_that_says_vth_is_an_indoor_monitor(device_class, expected):
     assert _coordinator(device_class).is_indoor_monitor() is expected
 
@@ -247,24 +279,32 @@ async def test_the_poll_stores_the_links():
     client = SimpleNamespace(async_get_vth_camera_links=AsyncMock(return_value=links))
 
     assert await _coordinator(client=client)._async_fetch_vth_camera_links() == {
-        VTH_CAMERA_LINKS: links}
+        VTH_CAMERA_LINKS: links
+    }
 
 
 async def test_a_failed_read_keeps_the_last_answer():
     """So one refused read does not empty the select's options."""
     links = vth_camera_links(_vto_table(), _camera_table())
-    client = SimpleNamespace(async_get_vth_camera_links=AsyncMock(
-        side_effect=ConnectionError("gone")))
+    client = SimpleNamespace(
+        async_get_vth_camera_links=AsyncMock(side_effect=ConnectionError("gone"))
+    )
     coordinator = _coordinator(data={VTH_CAMERA_LINKS: links}, client=client)
 
-    assert await coordinator._async_fetch_vth_camera_links() == {VTH_CAMERA_LINKS: links}
+    assert await coordinator._async_fetch_vth_camera_links() == {
+        VTH_CAMERA_LINKS: links
+    }
 
 
 async def test_a_failed_first_read_adds_nothing():
-    client = SimpleNamespace(async_get_vth_camera_links=AsyncMock(
-        side_effect=ValueError("no table")))
+    client = SimpleNamespace(
+        async_get_vth_camera_links=AsyncMock(side_effect=ValueError("no table"))
+    )
 
-    assert await _coordinator(data={}, client=client)._async_fetch_vth_camera_links() is None
+    assert (
+        await _coordinator(data={}, client=client)._async_fetch_vth_camera_links()
+        is None
+    )
 
 
 def test_the_links_are_read_from_the_poll_data():
@@ -276,13 +316,15 @@ def test_the_links_are_read_from_the_poll_data():
 
 # --- the select ---------------------------------------------------------------
 
+
 def _select(links, vto="Vto00", landed=True):
     coordinator = SimpleNamespace(
         get_vth_camera_links=lambda: links,
         get_serial_number=lambda: "AA0082DPAJB838E",
         get_device_name=lambda: "Hall VTH",
         client=SimpleNamespace(
-            async_set_vth_camera_link=AsyncMock(return_value=landed)),
+            async_set_vth_camera_link=AsyncMock(return_value=landed)
+        ),
         async_refresh=AsyncMock(),
         last_update_success=True,
     )
@@ -294,8 +336,10 @@ def _select(links, vto="Vto00", landed=True):
 
 
 def _links(link="", cameras=None):
-    return {"vtos": {"Vto00": {"name": "Main VTO", "link": link}},
-            "cameras": {"Ipc32": "Front"} if cameras is None else cameras}
+    return {
+        "vtos": {"Vto00": {"name": "Main VTO", "link": link}},
+        "cameras": {"Ipc32": "Front"} if cameras is None else cameras,
+    }
 
 
 def test_the_options_are_none_and_the_cameras():
@@ -364,7 +408,9 @@ async def test_choosing_a_camera_writes_its_slot_key_and_refreshes():
 
     await select.async_select_option("Front")
 
-    coordinator.client.async_set_vth_camera_link.assert_awaited_once_with("Vto00", "Ipc32")
+    coordinator.client.async_set_vth_camera_link.assert_awaited_once_with(
+        "Vto00", "Ipc32"
+    )
     coordinator.async_refresh.assert_awaited_once()
 
 
@@ -395,22 +441,35 @@ async def test_a_write_the_vth_ignored_says_so_after_refreshing():
     coordinator.async_refresh.assert_awaited_once()
     assert err.value.translation_key == "vth_camera_link_ignored"
     assert err.value.translation_placeholders == {
-        "device": "Hall VTH", "vto": "Main VTO", "option": "Front"}
+        "device": "Hall VTH",
+        "vto": "Main VTO",
+        "option": "Front",
+    }
 
 
 # --- which selects an indoor monitor gets ---------------------------------------
 
+
 async def test_an_indoor_monitor_gets_one_select_per_vto(monkeypatch):
     from custom_components.dahua import select as select_module
 
-    links = {"vtos": {"Vto00": {"name": "Main VTO", "link": ""},
-                      "Vto01": {"name": "Gate VTO", "link": ""}},
-             "cameras": {"Ipc32": "Front"}}
+    links = {
+        "vtos": {
+            "Vto00": {"name": "Main VTO", "link": ""},
+            "Vto01": {"name": "Gate VTO", "link": ""},
+        },
+        "cameras": {"Ipc32": "Front"},
+    }
     made = []
-    monkeypatch.setattr(select_module, "DahuaVthCameraLinkSelect",
-                        lambda coordinator, entry, vto: made.append(vto))
+    monkeypatch.setattr(
+        select_module,
+        "DahuaVthCameraLinkSelect",
+        lambda coordinator, entry, vto: made.append(vto),
+    )
     coordinator = _setup_double(links)
-    monkeypatch.setattr(select_module, "entry_coordinators", lambda entry: {0: coordinator})
+    monkeypatch.setattr(
+        select_module, "entry_coordinators", lambda entry: {0: coordinator}
+    )
 
     await select_module.async_setup_entry(None, object(), lambda devices, **kw: None)
 
@@ -421,10 +480,15 @@ async def test_anything_else_gets_none(monkeypatch):
     from custom_components.dahua import select as select_module
 
     made = []
-    monkeypatch.setattr(select_module, "DahuaVthCameraLinkSelect",
-                        lambda coordinator, entry, vto: made.append(vto))
+    monkeypatch.setattr(
+        select_module,
+        "DahuaVthCameraLinkSelect",
+        lambda coordinator, entry, vto: made.append(vto),
+    )
     coordinator = _setup_double(_links(), indoor_monitor=False)
-    monkeypatch.setattr(select_module, "entry_coordinators", lambda entry: {0: coordinator})
+    monkeypatch.setattr(
+        select_module, "entry_coordinators", lambda entry: {0: coordinator}
+    )
 
     await select_module.async_setup_entry(None, object(), lambda devices, **kw: None)
 
@@ -434,6 +498,7 @@ async def test_anything_else_gets_none(monkeypatch):
 def _setup_double(links, indoor_monitor=True):
     """Just enough of a coordinator for select.async_setup_entry to walk past the
     other selects without creating any."""
+
     async def no_presets(*args):
         # Answered, and empty: the camera has told us it holds no presets, so no
         # preset select is made and the test is only about the VTO selects.

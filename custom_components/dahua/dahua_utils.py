@@ -1,6 +1,7 @@
 """
 Various utilities for Dahua cameras
 """
+
 import json
 import logging
 import re
@@ -27,7 +28,9 @@ def describe_write_refusal(exception) -> str:
     """
     status = getattr(exception, "status", None)
     if isinstance(status, int) and not isinstance(status, bool):
-        return ("HTTP %d %s" % (status, getattr(exception, "message", "") or "")).strip()
+        return (
+            "HTTP %d %s" % (status, getattr(exception, "message", "") or "")
+        ).strip()
     return str(exception).strip() or type(exception).__name__
 
 
@@ -127,7 +130,8 @@ def channels_worth_offering(devices: dict) -> list:
     probe tells the difference, which is why the caller probes.
     """
     return sorted(
-        index for index, slot in devices.items()
+        index
+        for index, slot in devices.items()
         if slot.get("enabled") and slot.get("protocol") != "onvif"
     )
 
@@ -165,7 +169,7 @@ def parse_event(data: str) -> list[dict[str, any]]:
     # }]
 
     # We will split on "--myboundary" and then find the line the event starts on
-    event_blocks = re.split(r'--myboundary\r?\n', data)
+    event_blocks = re.split(r"--myboundary\r?\n", data)
 
     events = []
 
@@ -185,10 +189,10 @@ def parse_event(data: str) -> list[dict[str, any]]:
         # stream_events hands on whatever iter_chunks gives it, so that is
         # ordinary rather than exceptional. Indexing blindly there raised
         # IndexError out of on_receive and took the whole stream down (#475).
-        start = re.search(r'^Code=', event_block, re.MULTILINE)
+        start = re.search(r"^Code=", event_block, re.MULTILINE)
         if start is None:
             continue
-        event_block = event_block[start.start():].strip()
+        event_block = event_block[start.start() :].strip()
 
         # At this point we'll have something that looks like this...
         # Code=VideoMotion;action=Start;index=0;data={
@@ -198,15 +202,15 @@ def parse_event(data: str) -> list[dict[str, any]]:
         # }
         # And we want to put each key/value pair into a dictionary...
         event = dict()
-        for key_value in event_block.split(';'):
-            if '=' not in key_value:
+        for key_value in event_block.split(";"):
+            if "=" not in key_value:
                 # Not a key=value pair. Either the device cut the block short,
                 # or the JSON payload carries a semicolon of its own -- a rule
                 # or region the user named "Drive; Gate" is enough. Unpacking
                 # it raised ValueError, which lost every event in the batch and
                 # ended the stream; skipping it loses only this fragment.
                 continue
-            key, value = key_value.split('=', 1)
+            key, value = key_value.split("=", 1)
             event[key] = value
 
         # data is a json string, convert it to real json and add it back to the output dic
@@ -221,7 +225,8 @@ def parse_event(data: str) -> list[dict[str, any]]:
                 # sends no payload, and the usual cause is a truncated one.
                 _LOGGER.debug(
                     "Could not parse the JSON payload of a %s event; leaving it as text",
-                    event.get("Code", "?"), exc_info=True,
+                    event.get("Code", "?"),
+                    exc_info=True,
                 )
         events.append(event)
 
@@ -229,9 +234,20 @@ def parse_event(data: str) -> list[dict[str, any]]:
 
 
 HOMOGLYPHS = {
-    'Α': 'A', 'Β': 'B', 'Ε': 'E', 'Ζ': 'Z', 'Η': 'H', 'Ι': 'I',
-    'Κ': 'K', 'Μ': 'M', 'Ν': 'N', 'Ο': 'O', 'Ρ': 'P', 'Τ': 'T',
-    'Υ': 'Y', 'Χ': 'X'
+    "Α": "A",
+    "Β": "B",
+    "Ε": "E",
+    "Ζ": "Z",
+    "Η": "H",
+    "Ι": "I",
+    "Κ": "K",
+    "Μ": "M",
+    "Ν": "N",
+    "Ο": "O",
+    "Ρ": "P",
+    "Τ": "T",
+    "Υ": "Y",
+    "Χ": "X",
 }
 
 
@@ -242,12 +258,12 @@ def normalize_plate(plate_text: str | None) -> str:
     clean = str(plate_text).upper()
     for gr, lat in HOMOGLYPHS.items():
         clean = clean.replace(gr, lat)
-    clean = re.sub(r'[^A-Z0-9]', '', clean)
+    clean = re.sub(r"[^A-Z0-9]", "", clean)
     # Standard 7-character plate format: 3 letters + 4 digits (e.g. ABO1234, XYZ5670)
     # Correct common OCR confusions between letter O and digit 0 based on position:
     if len(clean) == 7:
-        letters_part = clean[:3].replace('0', 'O')
-        digits_part = clean[3:].replace('O', '0')
+        letters_part = clean[:3].replace("0", "O")
+        digits_part = clean[3:].replace("O", "0")
         if letters_part.isalpha() and digits_part.isdigit():
             clean = letters_part + digits_part
     return clean
@@ -281,7 +297,11 @@ def _extract_plate_from_raw_string(text: str, event: dict) -> dict | None:
                     best_plate = flipped
                     plate_text = flipped
                     break
-            if best_plate is None and any(c.isdigit() for c in norm_c) and any(c.isalpha() for c in norm_c):
+            if (
+                best_plate is None
+                and any(c.isdigit() for c in norm_c)
+                and any(c.isalpha() for c in norm_c)
+            ):
                 best_plate = norm_c
                 plate_text = cand
 
@@ -427,7 +447,14 @@ def extract_plate_data(event: dict) -> dict | None:
 
     # 4. Check direct keys on data
     if not plate_text:
-        for k in ["PlateNumber", "plateNumber", "PlateText", "plateText", "PlateNo", "plateNo"]:
+        for k in [
+            "PlateNumber",
+            "plateNumber",
+            "PlateText",
+            "plateText",
+            "PlateNo",
+            "plateNo",
+        ]:
             val = data.get(k)
             if isinstance(val, str):
                 txt = val.strip()
@@ -448,7 +475,12 @@ def extract_plate_data(event: dict) -> dict | None:
     direction = None
 
     if isinstance(tc, dict):
-        vehicle_brand = tc.get("Brand") or tc.get("VehicleSign") or tc.get("VehicleLogo") or tc.get("Logo")
+        vehicle_brand = (
+            tc.get("Brand")
+            or tc.get("VehicleSign")
+            or tc.get("VehicleLogo")
+            or tc.get("Logo")
+        )
         vehicle_series = tc.get("SubBrand") or tc.get("Series")
         # Measured on a DHI-ITC413-PW4D-IZ1 (#757), driven each way past it.
         # Four fields look like a direction and only three of them move:
@@ -481,7 +513,13 @@ def extract_plate_data(event: dict) -> dict | None:
             if isinstance(c, str):
                 vehicle_color = c
         if not vehicle_brand:
-            vehicle_brand = veh.get("Brand") or veh.get("VehicleSign") or veh.get("VehicleLogo") or veh.get("Logo") or veh.get("Text")
+            vehicle_brand = (
+                veh.get("Brand")
+                or veh.get("VehicleSign")
+                or veh.get("VehicleLogo")
+                or veh.get("Logo")
+                or veh.get("Text")
+            )
         if not vehicle_series:
             vehicle_series = veh.get("SubBrand") or veh.get("Series")
 
@@ -489,7 +527,12 @@ def extract_plate_data(event: dict) -> dict | None:
         vehicle_type = veh.get("Text")
 
     if not vehicle_brand:
-        vehicle_brand = data.get("Brand") or data.get("VehicleSign") or data.get("VehicleLogo") or data.get("Logo")
+        vehicle_brand = (
+            data.get("Brand")
+            or data.get("VehicleSign")
+            or data.get("VehicleLogo")
+            or data.get("Logo")
+        )
     if not direction:
         # This camera reports JunctionDirection at the top level rather than
         # inside TrafficCar, so the same list is checked in both places.
@@ -513,7 +556,6 @@ def extract_plate_data(event: dict) -> dict | None:
         "event_code": event.get("Code"),
         "timestamp": event.get("UTC") or data.get("UTC") or data.get("LocaleTime"),
     }
-
 
 
 def parse_ptz_presets(data) -> list:
@@ -563,16 +605,39 @@ def parse_ptz_presets(data) -> list:
 # Field names whose *value* is somebody's business rather than ours. The names
 # are kept, because "which field carries this" is the usual question; only the
 # contents go.
-EVENT_PRIVATE_FIELDS = frozenset({
-    # Spelled without separators: the lookup strips underscores, so "raw_plate"
-    # and "rawplate" both land here and only one spelling is listed.
-    "plate", "platenumber", "rawplate", "platedata", "plates",
-    "card", "cardno", "cardnumber", "cardname",
-    "user", "userid", "username", "usertype",
-    "password", "token", "secret", "key", "uuid",
-    "serialnumber", "defendcode", "imei", "phonenumber", "tel",
-    "faceid", "personid", "facefeature", "similarity",
-})
+EVENT_PRIVATE_FIELDS = frozenset(
+    {
+        # Spelled without separators: the lookup strips underscores, so "raw_plate"
+        # and "rawplate" both land here and only one spelling is listed.
+        "plate",
+        "platenumber",
+        "rawplate",
+        "platedata",
+        "plates",
+        "card",
+        "cardno",
+        "cardnumber",
+        "cardname",
+        "user",
+        "userid",
+        "username",
+        "usertype",
+        "password",
+        "token",
+        "secret",
+        "key",
+        "uuid",
+        "serialnumber",
+        "defendcode",
+        "imei",
+        "phonenumber",
+        "tel",
+        "faceid",
+        "personid",
+        "facefeature",
+        "similarity",
+    }
+)
 
 EVENT_VALUE_LIMIT = 80
 EVENT_LIST_LIMIT = 6
@@ -611,8 +676,9 @@ def summarise_event(value, _depth: int = 0):
                 out[key] = summarise_event(item, _depth + 1)
         return out
     if isinstance(value, (list, tuple)):
-        kept = [summarise_event(item, _depth + 1)
-                for item in list(value)[:EVENT_LIST_LIMIT]]
+        kept = [
+            summarise_event(item, _depth + 1) for item in list(value)[:EVENT_LIST_LIMIT]
+        ]
         dropped = len(value) - len(kept)
         if dropped > 0:
             kept.append("<%d more>" % dropped)

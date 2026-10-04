@@ -95,5 +95,6 @@ def test_the_value_is_derived_rather_than_stored():
 
     assert declared is not None, (
         "entity_registry_enabled_default is no longer declared on DahuaCamera; if it "
-        "moved to an _attr_ then read it off an instance and delete this test")
+        "moved to an _attr_ then read it off an instance and delete this test"
+    )
     assert hasattr(declared, "__get__"), declared

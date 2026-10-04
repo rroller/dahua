@@ -65,6 +65,7 @@ def _client(probe, address="10.0.0.1", username="u"):
 
 # --- the case this exists for ----------------------------------------------
 
+
 async def test_two_entries_asking_at_once_cost_one_round_trip():
     probe = _Probe()
     a, b = _client(probe), _client(probe)
@@ -106,6 +107,7 @@ async def test_different_reads_are_not_confused_for_each_other():
 
 
 # --- what must never be shared ---------------------------------------------
+
 
 async def test_a_read_that_names_a_channel_is_not_shared():
     """The key is the URL, so a per-channel read separates itself.
@@ -152,6 +154,7 @@ async def test_a_write_is_never_served_from_the_cache():
 
 
 # --- invalidation -----------------------------------------------------------
+
 
 async def test_a_write_drops_what_the_host_had_cached():
     """Otherwise a switch would spring back for the rest of the TTL."""
@@ -214,6 +217,7 @@ async def test_the_last_entry_leaving_forgets_the_host():
 
 # --- failures ---------------------------------------------------------------
 
+
 class _FailingProbe(_Probe):
     def __init__(self):
         super().__init__(hold=0)
@@ -265,6 +269,7 @@ async def test_one_cancelled_entry_does_not_take_the_read_away():
 
 
 # --- shape ------------------------------------------------------------------
+
 
 async def test_callers_cannot_scribble_on_each_others_result():
     probe = _Probe(hold=0)
@@ -323,15 +328,14 @@ async def test_one_camera_stops_re_reading_its_settings_every_poll(monkeypatch):
     probe = _Probe(hold=0)
     c = _client(probe)
 
-    for _ in range(5):                      # five poll cycles, 30s apart
+    for _ in range(5):  # five poll cycles, 30s apart
         await c.get(MOTION)
         await c.get(LINKAGE)
         now[0] += DEFAULT_SCAN_INTERVAL
 
-    assert probe.calls == 2, (
-        "settings were re-read across %d poll cycles (%d requests)"
-        % (5, probe.calls)
-    )
+    assert (
+        probe.calls == 2
+    ), "settings were re-read across %d poll cycles (%d requests)" % (5, probe.calls)
 
 
 async def test_status_is_re_read_across_those_same_cycles(monkeypatch):

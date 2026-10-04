@@ -16,12 +16,13 @@ live in, which is the only thing that makes them guessable:
     set_text_overlay    writes VideoWidget[ch].CustomTitle[group].Text
     set_custom_overlay  writes VideoWidget[ch].UserDefinedTitle[group].Text
 """
+
 import yaml
 
 from custom_components.dahua import dahua_utils
 
-
 # --- the parsing ------------------------------------------------------------
+
 
 def test_one_line_reads_back_as_one_line():
     assert dahua_utils.parse_overlay_lines("Front Door") == ["Front Door"]
@@ -53,7 +54,9 @@ def test_a_space_is_a_space():
     so rather than the user noticing on the video.
     """
     assert dahua_utils.parse_overlay_lines("Front Door|Side Gate") == [
-        "Front Door", "Side Gate"]
+        "Front Door",
+        "Side Gate",
+    ]
 
 
 def test_an_empty_line_between_two_others_is_kept():
@@ -62,6 +65,7 @@ def test_an_empty_line_between_two_others_is_kept():
 
 
 # --- the service contract ---------------------------------------------------
+
 
 def test_the_service_is_declared():
     with open("custom_components/dahua/services.yaml", encoding="utf-8") as f:

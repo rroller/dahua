@@ -23,8 +23,13 @@ import json
 import pathlib
 import re
 
-EN = (pathlib.Path(__file__).parents[2]
-      / "custom_components" / "dahua" / "translations" / "en.json")
+EN = (
+    pathlib.Path(__file__).parents[2]
+    / "custom_components"
+    / "dahua"
+    / "translations"
+    / "en.json"
+)
 
 
 def _channel_text():
@@ -55,12 +60,13 @@ def test_the_two_forms_say_the_same_thing():
 def test_the_label_is_a_field_name_not_a_paragraph():
     """A 130 character label is a sign the explanation has nowhere to go."""
     for label, _helper in _channel_text():
-        assert len(label) <= 40, (
-            "the explanation belongs in data_description, not the label")
+        assert (
+            len(label) <= 40
+        ), "the explanation belongs in data_description, not the label"
 
 
 def test_the_user_is_told_how_the_index_relates_to_the_recorder():
-    """"0 based index" alone is true and still lets someone type 4 for channel 4,
+    """ "0 based index" alone is true and still lets someone type 4 for channel 4,
     so the worked example is the part that actually helps.
 
     The relation and the example have to be in the SAME sentence. Asserting that
@@ -75,10 +81,12 @@ def test_the_user_is_told_how_the_index_relates_to_the_recorder():
         assert "0" in shown, "must say the count starts at 0"
 
         sentences = re.split(r"(?<=[.])\s+", shown)
-        assert any("recorder" in one.lower() and "4" in one and "3" in one
-                   for one in sentences), (
+        assert any(
+            "recorder" in one.lower() and "4" in one and "3" in one for one in sentences
+        ), (
             "one sentence must relate the number the recorder shows to the index, "
-            "e.g. \"a recorder's channel 4 is 3 here\"")
+            'e.g. "a recorder\'s channel 4 is 3 here"'
+        )
 
 
 def test_the_explanation_is_where_home_assistant_will_render_it():
@@ -106,7 +114,10 @@ def test_no_helper_text_describes_a_field_that_does_not_exist():
         for name, step in strings.get(section, {}).get("step", {}).items():
             orphans = set(step.get("data_description", {})) - set(step.get("data", {}))
             assert not orphans, "%s.%s describes missing fields %s" % (
-                section, name, sorted(orphans))
+                section,
+                name,
+                sorted(orphans),
+            )
 
 
 def test_the_password_field_says_it_is_not_a_cloud_account():

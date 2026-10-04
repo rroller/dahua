@@ -19,6 +19,7 @@ clears them immediately afterwards.
 **At most one card per removal.** Two would be noise on a single deletion, so the
 sibling offer carries the dependents note when both apply.
 """
+
 import pytest
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -39,14 +40,18 @@ OTHER = "10.0.0.2"
 
 @pytest.fixture(autouse=True)
 def _clean_state():
-    for store in (dahua_module._HOST_FAILURES,
-                  dahua_module._HOST_UPTIME_STATE,
-                  dahua_module._HOST_UPTIME_LOCKS):
+    for store in (
+        dahua_module._HOST_FAILURES,
+        dahua_module._HOST_UPTIME_STATE,
+        dahua_module._HOST_UPTIME_LOCKS,
+    ):
         store.clear()
     yield
-    for store in (dahua_module._HOST_FAILURES,
-                  dahua_module._HOST_UPTIME_STATE,
-                  dahua_module._HOST_UPTIME_LOCKS):
+    for store in (
+        dahua_module._HOST_FAILURES,
+        dahua_module._HOST_UPTIME_STATE,
+        dahua_module._HOST_UPTIME_LOCKS,
+    ):
         store.clear()
 
 
@@ -54,8 +59,7 @@ def _clean_state():
 def _no_dependents(monkeypatch):
     """Most tests here are about the sibling half, so the search side is stubbed
     out and they do not depend on whether the search component is loaded."""
-    monkeypatch.setattr(dahua_module, "_async_dependents",
-                        lambda hass, entry_id: {})
+    monkeypatch.setattr(dahua_module, "_async_dependents", lambda hass, entry_id: {})
 
 
 def _entry(hass, *, address=ADDRESS, channel=0, title=None, add=True):
@@ -63,9 +67,15 @@ def _entry(hass, *, address=ADDRESS, channel=0, title=None, add=True):
         domain=DOMAIN,
         title=title or "Ch%d" % channel,
         unique_id="SERIAL_%d_%s" % (channel, address),
-        data={"username": "u", "password": "p", "address": address,
-              "port": "80", "rtsp_port": "554", "channel": channel,
-              "name": "Ch%d" % channel},
+        data={
+            "username": "u",
+            "password": "p",
+            "address": address,
+            "port": "80",
+            "rtsp_port": "554",
+            "channel": channel,
+            "name": "Ch%d" % channel,
+        },
     )
     if add:
         entry.add_to_hass(hass)
@@ -77,6 +87,7 @@ def _issue(hass, issue_id):
 
 
 # --- the offer --------------------------------------------------------------
+
 
 async def test_removing_one_channel_offers_to_remove_the_rest(hass):
     gone = _entry(hass, channel=0, title="Front", add=False)
@@ -130,16 +141,20 @@ async def test_another_hosts_entries_are_not_counted(hass):
 
     await async_remove_entry(hass, gone)
 
-    assert _issue(hass, ISSUE_SIBLINGS_REMAIN.format(ADDRESS)) is None, (
-        "another recorder's entries are not this one's siblings")
+    assert (
+        _issue(hass, ISSUE_SIBLINGS_REMAIN.format(ADDRESS)) is None
+    ), "another recorder's entries are not this one's siblings"
 
 
 # --- the notice -------------------------------------------------------------
 
+
 async def test_a_removal_that_broke_automations_says_so(hass, monkeypatch):
     monkeypatch.setattr(
-        dahua_module, "_async_dependents",
-        lambda hass_, entry_id: {"automation": ["automation.porch"]})
+        dahua_module,
+        "_async_dependents",
+        lambda hass_, entry_id: {"automation": ["automation.porch"]},
+    )
     gone = _entry(hass, channel=0, title="Front", add=False)
 
     await async_remove_entry(hass, gone)
@@ -154,8 +169,10 @@ async def test_a_removal_that_broke_automations_says_so(hass, monkeypatch):
 async def test_only_one_card_when_both_apply(hass, monkeypatch):
     """Two cards on one deletion is noise. The offer carries the note instead."""
     monkeypatch.setattr(
-        dahua_module, "_async_dependents",
-        lambda hass_, entry_id: {"script": ["script.chime"]})
+        dahua_module,
+        "_async_dependents",
+        lambda hass_, entry_id: {"script": ["script.chime"]},
+    )
     gone = _entry(hass, channel=0, add=False)
     _entry(hass, channel=1)
 
@@ -177,7 +194,10 @@ async def test_nothing_referenced_it_and_nothing_remains_is_silent(hass):
 
 # --- the wording ------------------------------------------------------------
 
-async def test_working_out_what_referenced_it_never_fails_the_removal(hass, monkeypatch):
+
+async def test_working_out_what_referenced_it_never_fails_the_removal(
+    hass, monkeypatch
+):
     """The search component is an `after_dependency`: available in practice, not
     something to fail on. And this runs *after* Home Assistant has already deleted the
     entry, so raising here cannot undo anything, it only loses the note.
@@ -185,11 +205,13 @@ async def test_working_out_what_referenced_it_never_fails_the_removal(hass, monk
     `async_remove_entry`'s exceptions are logged and discarded, so a failure here would
     be invisible except as a card that never appeared.
     """
+
     def _explodes(*args, **kwargs):
         raise RuntimeError("the search component moved")
 
     monkeypatch.setattr(
-        "homeassistant.helpers.entity.entity_sources", _explodes, raising=False)
+        "homeassistant.helpers.entity.entity_sources", _explodes, raising=False
+    )
 
     assert _async_dependents(hass, "any-entry-id") == {}
 
@@ -205,6 +227,7 @@ async def test_a_working_search_is_filtered_to_what_breaks_silently(hass, monkey
     Note that the guard tested above covers the search *call*. The filtering below it
     sits outside the try, so this exercises a different few lines.
     """
+
     class _Searcher:
         def __init__(self, hass, sources):
             pass
@@ -220,7 +243,8 @@ async def test_a_working_search_is_filtered_to_what_breaks_silently(hass, monkey
             }
 
     monkeypatch.setattr(
-        "homeassistant.components.search.Searcher", _Searcher, raising=False)
+        "homeassistant.components.search.Searcher", _Searcher, raising=False
+    )
 
     answer = _async_dependents(hass, "an-entry")
 
@@ -234,6 +258,7 @@ async def test_a_working_search_is_filtered_to_what_breaks_silently(hass, monkey
 
 async def test_a_search_that_found_nothing_reports_nothing(hass, monkeypatch):
     """An empty answer must not become a card saying something broke."""
+
     class _Searcher:
         def __init__(self, hass, sources):
             pass
@@ -242,7 +267,8 @@ async def test_a_search_that_found_nothing_reports_nothing(hass, monkeypatch):
             return {"automation": set()}
 
     monkeypatch.setattr(
-        "homeassistant.components.search.Searcher", _Searcher, raising=False)
+        "homeassistant.components.search.Searcher", _Searcher, raising=False
+    )
 
     assert _async_dependents(hass, "an-entry") == {}
 
@@ -256,14 +282,17 @@ def test_several_of_a_kind_are_plural():
 
 
 def test_two_kinds_are_joined_with_and():
-    assert _describe_dependents(
-        {"automation": ["a"], "script": ["b", "c"]}) == "1 automation and 2 scripts"
+    assert (
+        _describe_dependents({"automation": ["a"], "script": ["b", "c"]})
+        == "1 automation and 2 scripts"
+    )
 
 
 def test_three_kinds_use_commas_then_and():
-    assert _describe_dependents(
-        {"automation": ["a"], "script": ["b"], "scene": ["c"]}
-    ) == "1 automation, 1 script and 1 scene"
+    assert (
+        _describe_dependents({"automation": ["a"], "script": ["b"], "scene": ["c"]})
+        == "1 automation, 1 script and 1 scene"
+    )
 
 
 def test_nothing_describes_as_nothing():

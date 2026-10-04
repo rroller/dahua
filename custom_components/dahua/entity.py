@@ -1,11 +1,17 @@
 """DahuaBaseEntity class"""
-from custom_components.dahua import DahuaDataUpdateCoordinator, async_host_is_unreachable
+
+from custom_components.dahua import (
+    DahuaDataUpdateCoordinator,
+    async_host_is_unreachable,
+)
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, ATTRIBUTION
 
 """
 For a list of entity types, see https://developers.home-assistant.io/docs/core/entity/
 """
+
+
 class DahuaBaseEntity(CoordinatorEntity):
     """
     DahuaBaseEntity is the base entity for all Dahua entities

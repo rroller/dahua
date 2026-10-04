@@ -22,6 +22,7 @@ already reports those is unaffected. On this camera `Direction` is the integer
 0, which is falsy, so it falls through instead of reporting a meaningless zero.
 That is luck rather than design, and the ordering makes it deliberate.
 """
+
 from custom_components.dahua import dahua_utils
 
 
@@ -50,22 +51,33 @@ def _direction(event):
 
 # --- the shapes the reporter's camera actually sent ---------------------------
 
+
 def test_a_vehicle_approaching():
-    assert _direction(_event(
-        Direction=0,
-        DrivingDirection=["Approach", ""],
-        JunctionDirection="Obverse",
-        VehicleDirection="Head",
-    )) == "Approach"
+    assert (
+        _direction(
+            _event(
+                Direction=0,
+                DrivingDirection=["Approach", ""],
+                JunctionDirection="Obverse",
+                VehicleDirection="Head",
+            )
+        )
+        == "Approach"
+    )
 
 
 def test_a_vehicle_leaving():
-    assert _direction(_event(
-        Direction=0,
-        DrivingDirection=["Leave", ""],
-        JunctionDirection="Reverse",
-        VehicleDirection="Tail",
-    )) == "Leave"
+    assert (
+        _direction(
+            _event(
+                Direction=0,
+                DrivingDirection=["Leave", ""],
+                JunctionDirection="Reverse",
+                VehicleDirection="Tail",
+            )
+        )
+        == "Leave"
+    )
 
 
 def test_junction_direction_at_the_top_level():
@@ -75,28 +87,44 @@ def test_junction_direction_at_the_top_level():
 
 # --- the ordering ------------------------------------------------------------
 
+
 def test_a_camera_already_reporting_direction_is_unaffected():
     """No regression. Whatever worked before still wins."""
-    assert _direction(_event(
-        Direction="North",
-        DrivingDirection=["Approach", ""],
-    )) == "North"
+    assert (
+        _direction(
+            _event(
+                Direction="North",
+                DrivingDirection=["Approach", ""],
+            )
+        )
+        == "North"
+    )
 
 
 def test_direction_name_still_beats_the_new_fields():
-    assert _direction(_event(
-        DirectionName="Inbound",
-        JunctionDirection="Obverse",
-    )) == "Inbound"
+    assert (
+        _direction(
+            _event(
+                DirectionName="Inbound",
+                JunctionDirection="Obverse",
+            )
+        )
+        == "Inbound"
+    )
 
 
 def test_driving_direction_is_preferred_over_the_photographic_ones():
     """Approach says what happened; Obverse and Head need a manual."""
-    assert _direction(_event(
-        DrivingDirection=["Leave", ""],
-        JunctionDirection="Reverse",
-        VehicleDirection="Tail",
-    )) == "Leave"
+    assert (
+        _direction(
+            _event(
+                DrivingDirection=["Leave", ""],
+                JunctionDirection="Reverse",
+                VehicleDirection="Tail",
+            )
+        )
+        == "Leave"
+    )
 
 
 def test_vehicle_direction_is_the_last_resort():
@@ -104,6 +132,7 @@ def test_vehicle_direction_is_the_last_resort():
 
 
 # --- the awkward shapes -----------------------------------------------------
+
 
 def test_a_zero_is_not_a_direction():
     """The bug in miniature: Direction 0 must not be reported as a direction."""

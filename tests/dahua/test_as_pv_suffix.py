@@ -14,6 +14,7 @@ The broader complaint in #676, OEM rebrands with no usable name at all, is not
 solved by this and cannot be solved by matching names. That is what the RPC2
 capability probe in #717 is for.
 """
+
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
 

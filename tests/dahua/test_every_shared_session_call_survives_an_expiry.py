@@ -39,9 +39,7 @@ EXPIRED = Rpc2MethodRefused(
 
 # What the recorder really answers for a table it does not serve. It must not be
 # mistaken for an expired session: retrying spends a login to learn nothing.
-ABSENT = Rpc2MethodRefused(
-    "absent", code=285278249, message="Authority:check failure."
-)
+ABSENT = Rpc2MethodRefused("absent", code=285278249, message="Authority:check failure.")
 
 
 class FakeRpc2:
@@ -230,12 +228,17 @@ async def test_a_write_that_meets_an_expiry_reads_its_table_again(rpc2_client):
         await rpc2_client._rpc2_set_config_value("MotionDetect", 0, "Mode", "Manual")
 
     assert [name for name, _session in FakeRpc2.calls] == [
-        "get_config:MotionDetect", "set_configs:MotionDetect",
-        "get_config:MotionDetect", "set_configs:MotionDetect",
+        "get_config:MotionDetect",
+        "set_configs:MotionDetect",
+        "get_config:MotionDetect",
+        "set_configs:MotionDetect",
     ]
     # The retry ran on the new session, not the one that had expired.
     assert [session for _name, session in FakeRpc2.calls] == [
-        "session-1", "session-1", "session-2", "session-2",
+        "session-1",
+        "session-1",
+        "session-2",
+        "session-2",
     ]
     # And it carried the value asked for, from a table read on the live session.
     assert writes[1][0][1][0]["Mode"] == "Manual"
@@ -284,7 +287,8 @@ def test_every_caller_of_the_shared_session_is_accounted_for():
     # The scan really found something; an empty set would pass vacuously.
     assert "_rpc2_shared_call" in frames
 
-    assert frames == HANDLES_EXPIRY_ITSELF, (
-        "these take the shared RPC2 session without expiry handling: %s"
-        % sorted(frames - HANDLES_EXPIRY_ITSELF)
+    assert (
+        frames == HANDLES_EXPIRY_ITSELF
+    ), "these take the shared RPC2 session without expiry handling: %s" % sorted(
+        frames - HANDLES_EXPIRY_ITSELF
     )

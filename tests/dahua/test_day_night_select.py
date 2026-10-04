@@ -47,6 +47,7 @@ def _coordinator(channel, data):
 
 # --- reading the value --------------------------------------------------------
 
+
 def test_the_documented_values_map_to_the_service_names():
     assert DAY_NIGHT_NAMES == {"0": "Color", "1": "Auto", "2": "BlackWhite"}
 
@@ -71,6 +72,7 @@ def test_the_profile_scoped_rows_are_not_read():
 
 # --- what must not be guessed at ----------------------------------------------
 
+
 def test_a_device_that_reports_nothing_has_no_mode():
     """None, not Color. A device without this setting must not be shown as
     though it were in one."""
@@ -79,15 +81,23 @@ def test_a_device_that_reports_nothing_has_no_mode():
 
 
 def test_a_value_outside_the_documented_range_is_not_invented():
-    assert day_night_color_name({"table.VideoInOptions[0].DayNightColor": "9"}, 0) is None
-    assert day_night_color_name({"table.VideoInOptions[0].DayNightColor": ""}, 0) is None
+    assert (
+        day_night_color_name({"table.VideoInOptions[0].DayNightColor": "9"}, 0) is None
+    )
+    assert (
+        day_night_color_name({"table.VideoInOptions[0].DayNightColor": ""}, 0) is None
+    )
 
 
 def test_whitespace_is_tolerated():
-    assert day_night_color_name({"table.VideoInOptions[0].DayNightColor": " 2 "}, 0) == "BlackWhite"
+    assert (
+        day_night_color_name({"table.VideoInOptions[0].DayNightColor": " 2 "}, 0)
+        == "BlackWhite"
+    )
 
 
 # --- the coordinator's half ---------------------------------------------------
+
 
 def test_the_coordinator_reads_this_channel():
     assert _coordinator(3, NVR).get_day_night_color() == "BlackWhite"

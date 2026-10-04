@@ -45,6 +45,7 @@ The timing makes the copies accurate rather than approximate: this runs during
 `async_setup`, when the registries have just been read from those files and
 nothing has modified them yet.
 """
+
 import logging
 import os
 import shutil
@@ -57,8 +58,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 from . import ISSUE_SIBLINGS_REMAIN
-from .const import (CHANNEL_OPTION_KEYS, CONF_ADDRESS, CONF_CHANNEL, CONF_PORT,
-                    DOMAIN)
+from .const import CHANNEL_OPTION_KEYS, CONF_ADDRESS, CONF_CHANNEL, CONF_PORT, DOMAIN
 from .host import normalize_address
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
@@ -93,10 +93,13 @@ def _channel_settings(entry) -> dict:
     Reported by alpha520098 on #825, who also identified the key set.
     """
     settings = dict(entry.data)
-    settings.update({
-        key: value for key, value in (entry.options or {}).items()
-        if key in CHANNEL_OPTION_KEYS
-    })
+    settings.update(
+        {
+            key: value
+            for key, value in (entry.options or {}).items()
+            if key in CHANNEL_OPTION_KEYS
+        }
+    )
     return settings
 
 
@@ -178,7 +181,8 @@ def _backup(hass: HomeAssistant) -> str | None:
     """Copy the registries somewhere the user can find them. Blocking."""
     storage = hass.config.path(".storage")
     target = hass.config.path(
-        "dahua-pre-merge-backup-%s" % time.strftime("%Y%m%d-%H%M%S"))
+        "dahua-pre-merge-backup-%s" % time.strftime("%Y%m%d-%H%M%S")
+    )
     copied = []
     try:
         os.makedirs(target, exist_ok=True)
@@ -190,7 +194,8 @@ def _backup(hass: HomeAssistant) -> str | None:
     except OSError:
         _LOGGER.exception(
             "Could not back up the Home Assistant registries before merging "
-            "Dahua entries. The merge has NOT been attempted")
+            "Dahua entries. The merge has NOT been attempted"
+        )
         return None
     if not copied:
         return None
@@ -274,7 +279,9 @@ async def async_merge_channel_entries(hass: HomeAssistant) -> None:
         "one entry per channel. %d host(s) affected. Copies of the Home "
         "Assistant registries were saved to %s first; this cannot be undone from "
         "inside Home Assistant, so keep them until you are happy",
-        len(hosts), backup)
+        len(hosts),
+        backup,
+    )
 
     for (address, _port), group in hosts.items():
         try:
@@ -286,7 +293,9 @@ async def async_merge_channel_entries(hass: HomeAssistant) -> None:
             _LOGGER.exception(
                 "Could not merge the Dahua entries for %s. They are unchanged or "
                 "partly merged; the registry copies in %s are the way back",
-                address, backup)
+                address,
+                backup,
+            )
 
 
 async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> None:
@@ -333,7 +342,8 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
     # actually there rather than against what we expect to have done.
     expected = sum(
         len(er.async_entries_for_config_entry(entities, entry.entry_id))
-        for entry in ordered)
+        for entry in ordered
+    )
 
     # Entities first. See the module docstring: moving a device first makes Home
     # Assistant delete the entities that still point at the old entry.
@@ -362,13 +372,15 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
             "Refusing to merge %s: %d of its %d entities are still on their old "
             "entries. No device has been touched and nothing has been removed, "
             "so the entries are exactly as they were. Please report this",
-            address, expected - on_survivor, expected)
+            address,
+            expected - on_survivor,
+            expected,
+        )
         return
 
     for entry in ordered:
         subentry_id = subentry_for[entry.entry_id]
-        for device in list(
-                dr.async_entries_for_config_entry(devices, entry.entry_id)):
+        for device in list(dr.async_entries_for_config_entry(devices, entry.entry_id)):
             devices.async_update_device(
                 device.id,
                 new_config_entry_id=survivor.entry_id,
@@ -389,7 +401,10 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
             "that does not own it, so this is not something the integration can "
             "undo. Nothing further will be removed, and the registry copies "
             "taken before the merge are the way back. Please report this",
-            address, expected, survived)
+            address,
+            expected,
+            survived,
+        )
         return
 
     removed = 0
@@ -402,7 +417,11 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
             _LOGGER.error(
                 "Not removing the Dahua entry for channel %d of %s: it still owns "
                 "%d entities, so the merge is incomplete and removing it would "
-                "delete them", _channel_of(entry), address, len(left))
+                "delete them",
+                _channel_of(entry),
+                address,
+                len(left),
+            )
             continue
         await hass.config_entries.async_remove(entry.entry_id)
         removed += 1
@@ -419,8 +438,7 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
         # <address>" card -- whose fix removes every entry at the address, which
         # is the recorder this merge has just finished creating. Nothing is left
         # to offer, so the card it just raised is withdrawn.
-        ir.async_delete_issue(
-            hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(removed_host))
+        ir.async_delete_issue(hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(removed_host))
 
     _LOGGER.warning(
         "%s is now one Dahua entry with %d channels: %d entities moved and %d "
@@ -430,4 +448,9 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
         # The subentries the survivor actually has, not the number of entries
         # that were folded into them: two entries can share a channel, and
         # counting entries would then claim a channel that does not exist.
-        address, len(survivor.subentries), moved, removed, survived)
+        address,
+        len(survivor.subentries),
+        moved,
+        removed,
+        survived,
+    )

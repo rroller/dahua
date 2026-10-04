@@ -102,8 +102,9 @@ async def test_sdt4e425_creates_two_sensors_with_three_streams(monkeypatch):
 
     coordinator = _FakeCoordinator()
     hass = SimpleNamespace(data={})
-    entry = SimpleNamespace(entry_id="entry", title="Camera",
-                            runtime_data={0: coordinator})
+    entry = SimpleNamespace(
+        entry_id="entry", title="Camera", runtime_data={0: coordinator}
+    )
     entities = []
 
     await camera_platform.async_setup_entry(hass, entry, adds_entities(entities))
@@ -137,8 +138,9 @@ async def test_other_models_keep_native_stream_setup(monkeypatch):
 
     coordinator = _FakeCoordinator(model="OTHER")
     hass = SimpleNamespace(data={})
-    entry = SimpleNamespace(entry_id="entry", title="Camera",
-                            runtime_data={0: coordinator})
+    entry = SimpleNamespace(
+        entry_id="entry", title="Camera", runtime_data={0: coordinator}
+    )
     entities = []
 
     await camera_platform.async_setup_entry(hass, entry, adds_entities(entities))

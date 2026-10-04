@@ -33,6 +33,7 @@ def _light(bank, brightness=200):
 
 # --- a doorbell: no bank ------------------------------------------------------
 
+
 def test_no_bank_is_on_off():
     assert _light(None).color_mode == ColorMode.ONOFF
 
@@ -48,6 +49,7 @@ def test_no_bank_reports_no_brightness():
 
 # --- a camera: a real bank, unchanged ----------------------------------------
 
+
 def test_a_bank_is_dimmable():
     assert _light("MiddleLight").color_mode == ColorMode.BRIGHTNESS
 
@@ -61,6 +63,7 @@ def test_a_bank_reports_its_brightness():
 
 
 # --- the two agree ------------------------------------------------------------
+
 
 def test_the_only_mode_is_the_supported_one():
     """supported_color_modes is built from color_mode, so a device cannot end up

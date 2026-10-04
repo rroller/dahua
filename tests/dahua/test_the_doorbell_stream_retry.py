@@ -92,17 +92,23 @@ def retries(monkeypatch):
     A real delay here is a minute at the short end, so the suite's nine second
     timeout would fire long before the second attempt.
     """
+
     class _Asked(list):
         """A list of what the delay function was told, plus the delay it
         should hand back, so a test can choose one."""
+
         delay = 0
 
     asked = _Asked()
 
     def fake(lived_seconds, consecutive_failures, received_data):
-        asked.append({"lived": lived_seconds,
-                      "failures": consecutive_failures,
-                      "received_data": received_data})
+        asked.append(
+            {
+                "lived": lived_seconds,
+                "failures": consecutive_failures,
+                "received_data": received_data,
+            }
+        )
         # Reset on a device that spoke, climb otherwise, which is what the real
         # one does. A fake that only ever climbed would make the recovery test
         # assert the fake's behaviour rather than the loop's.
@@ -115,20 +121,24 @@ def retries(monkeypatch):
 @pytest.fixture
 def connections(monkeypatch):
     """Replace create_connection on the running loop, scoped to that object."""
+
     def install(*script):
         attempts = _Attempts(*script)
         monkeypatch.setattr(
-            asyncio.get_running_loop(), "create_connection",
-            attempts.create_connection)
+            asyncio.get_running_loop(), "create_connection", attempts.create_connection
+        )
         return attempts
 
     return install
 
 
 def _warnings(caplog):
-    return [r.getMessage() for r in caplog.records
-            if r.name.startswith("custom_components.dahua")
-            and r.levelname in ("WARNING", "ERROR")]
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name.startswith("custom_components.dahua")
+        and r.levelname in ("WARNING", "ERROR")
+    ]
 
 
 async def _run(coordinator):
@@ -137,6 +147,7 @@ async def _run(coordinator):
 
 
 # --- a doorbell that will not answer ----------------------------------------
+
 
 async def test_a_refused_connection_reports_that_nothing_was_said(retries, connections):
     """There is no protocol to ask, so the answer comes from a `getattr` default.
@@ -160,7 +171,7 @@ async def test_refusals_accumulate(retries, connections):
 
 
 async def test_a_refusal_is_reported_with_its_cause(retries, connections, caplog):
-    """"The doorbell is unreachable" is not actionable. Which error it was
+    """ "The doorbell is unreachable" is not actionable. Which error it was
     separates a wrong password from a device that is switched off."""
     connections(REFUSED)
 
@@ -183,6 +194,7 @@ async def test_it_keeps_trying_after_a_refusal(retries, connections):
 
 
 # --- a doorbell that connected and then dropped -----------------------------
+
 
 async def test_a_connection_that_talked_says_so(retries, connections):
     """The distinction the whole backoff rests on. This device answered, so the
@@ -238,8 +250,9 @@ async def test_a_disconnect_is_reported(retries, connections, caplog):
     assert "econnect" in said[0], said[0]
 
 
-async def test_a_disconnect_with_no_wait_does_not_promise_one(retries, connections,
-                                                              caplog):
+async def test_a_disconnect_with_no_wait_does_not_promise_one(
+    retries, connections, caplog
+):
     """Two spellings of the same line, one naming a delay and one not. Saying
     "reconnecting in 0s" is the kind of detail that sends somebody looking for a
     setting that does not exist."""
@@ -251,6 +264,7 @@ async def test_a_disconnect_with_no_wait_does_not_promise_one(retries, connectio
 
 
 # --- and being shut down is not a failure -----------------------------------
+
 
 async def test_cancellation_is_not_retried(retries, connections):
     """Cancellation is Home Assistant stopping the task. The broad handler beside

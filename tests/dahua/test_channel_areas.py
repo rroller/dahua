@@ -21,6 +21,7 @@ explicit override every other channel would silently be filed in the primary's
 area, which is worse than filing nothing. That is what
 `test_an_area_reaches_only_the_channel_it_was_chosen_for` exists for.
 """
+
 from types import SimpleNamespace
 
 from custom_components.dahua.config_flow import DahuaFlowHandler
@@ -81,6 +82,7 @@ async def _submit(flow, answers):
 
 # --- the form -----------------------------------------------------------------
 
+
 async def test_the_form_asks_about_every_device_being_added():
     """The one being set up, and each channel ticked alongside it."""
     flow = _flow(found={1: "BACKYARD", 4: "DRIVEWAY"}, chosen=[1, 4])
@@ -125,6 +127,7 @@ async def test_a_channel_with_no_title_still_gets_a_field():
 
 # --- what the answers do ------------------------------------------------------
 
+
 async def test_the_area_for_the_device_being_added_goes_into_its_entry():
     flow = _flow(found={1: "BACKYARD"}, chosen=[1])
 
@@ -142,16 +145,20 @@ async def test_an_area_reaches_only_the_channel_it_was_chosen_for():
     """
     flow = _flow(found={1: "BACKYARD", 2: "DRIVEWAY"}, chosen=[1, 2])
 
-    await _submit(flow, {
-        "Front (this device)": "front_garden",
-        "Channel 2: BACKYARD": "back_garden",
-    })
+    await _submit(
+        flow,
+        {
+            "Front (this device)": "front_garden",
+            "Channel 2: BACKYARD": "back_garden",
+        },
+    )
 
     started = _queued(flow)
     assert flow.init_info[CONF_AREA] == "front_garden"
     assert started[0][CONF_AREA] == "back_garden"
-    assert CONF_AREA not in started[1], (
-        "channel 2 was left blank, so it must not inherit the primary's area")
+    assert (
+        CONF_AREA not in started[1]
+    ), "channel 2 was left blank, so it must not inherit the primary's area"
 
 
 def _queued(flow):
@@ -166,8 +173,11 @@ def _queued(flow):
     and their indexing reads better without it.
     """
     primary = flow.init_info[CONF_CHANNEL]
-    return [subentry["data"] for subentry in flow._channel_subentries()
-            if subentry["data"][CONF_CHANNEL] != primary]
+    return [
+        subentry["data"]
+        for subentry in flow._channel_subentries()
+        if subentry["data"][CONF_CHANNEL] != primary
+    ]
 
 
 async def test_a_blank_answer_stores_no_area_at_all():
@@ -184,8 +194,7 @@ async def test_an_empty_string_is_treated_as_no_area():
     """A cleared picker submits "" rather than omitting the field."""
     flow = _flow(found={1: "BACKYARD"}, chosen=[1])
 
-    await _submit(flow, {"Front (this device)": "",
-                         "Channel 2: BACKYARD": ""})
+    await _submit(flow, {"Front (this device)": "", "Channel 2: BACKYARD": ""})
 
     assert CONF_AREA not in flow.init_info
     assert CONF_AREA not in _queued(flow)[0]
@@ -207,6 +216,7 @@ async def test_the_areas_step_goes_on_to_naming():
 
 
 # --- when it is offered at all ------------------------------------------------
+
 
 async def test_choosing_channels_leads_to_the_areas_step():
     flow = _flow(found={1: "BACKYARD"})

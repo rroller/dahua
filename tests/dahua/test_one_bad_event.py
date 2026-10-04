@@ -45,8 +45,10 @@ def _wire(*payloads):
     out = b""
     for code in payloads:
         body = "Code=%s;action=Start;index=0;data=%s" % (code, json.dumps({"x": 1}))
-        out += ("--myboundary\r\nContent-Type: text/plain\r\n"
-                "Content-Length: 0\r\n\r\n" + body + "\r\n").encode()
+        out += (
+            "--myboundary\r\nContent-Type: text/plain\r\n"
+            "Content-Length: 0\r\n\r\n" + body + "\r\n"
+        ).encode()
     return out
 
 
@@ -65,8 +67,9 @@ def test_the_other_channels_still_get_the_event():
     stream.on_receive(_wire("CrossLineDetection"), 0)
 
     assert exploder.calls == 1
-    assert recorder.seen == ["CrossLineDetection"], (
-        "a sibling coordinator lost an event it could have handled")
+    assert recorder.seen == [
+        "CrossLineDetection"
+    ], "a sibling coordinator lost an event it could have handled"
 
 
 def test_the_stream_keeps_working_afterwards():

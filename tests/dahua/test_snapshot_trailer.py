@@ -27,6 +27,7 @@ def _jpeg(trailer=b""):
 
 # --- the device this exists for -----------------------------------------------
 
+
 def test_the_dhav_trailer_is_removed():
     assert strip_dahua_snapshot_trailer(_jpeg(b"dhav\x59\x19\x01\x00")) == _jpeg()
 
@@ -42,6 +43,7 @@ def test_a_trailer_of_another_length_is_still_removed():
 
 
 # --- and everything that must be left alone -----------------------------------
+
 
 def test_a_clean_jpeg_is_untouched():
     clean = _jpeg()

@@ -9,6 +9,7 @@ already saved on it.
 a matching stop. So the duration is how far it travels, and the stop is the part
 that must not be skipped.
 """
+
 import asyncio
 
 import yaml
@@ -38,6 +39,7 @@ def _params(url):
 
 # --- the move itself --------------------------------------------------------
 
+
 async def test_it_starts_and_then_stops():
     client = _Client()
 
@@ -54,8 +56,7 @@ async def test_both_halves_name_the_same_move():
 
     start, stop = (_params(u) for u in client.urls)
     for field in ("channel", "code", "arg2"):
-        assert start[field] == stop[field], \
-            "%s differs between start and stop" % field
+        assert start[field] == stop[field], "%s differs between start and stop" % field
     assert start["channel"] == "2"
     assert start["code"] == "RightUp"
     assert start["arg2"] == "6", "speed is not being sent"
@@ -74,8 +75,10 @@ async def test_it_stops_even_when_the_wait_is_cancelled():
     except asyncio.CancelledError:
         pass
 
-    assert [_params(u)["action"] for u in client.urls] == ["start", "stop"], \
-        "the camera was left moving"
+    assert [_params(u)["action"] for u in client.urls] == [
+        "start",
+        "stop",
+    ], "the camera was left moving"
 
 
 async def test_a_refused_start_does_not_leave_a_stop_owing():
@@ -92,10 +95,12 @@ async def test_a_refused_start_does_not_leave_a_stop_owing():
 
 # --- the directions ---------------------------------------------------------
 
+
 def test_every_direction_has_a_dahua_code():
     assert PTZ_MOVE_CODES["left"] == "Left"
-    assert PTZ_MOVE_CODES["up_right"] == "RightUp", \
-        "Dahua spells the diagonals the other way round"
+    assert (
+        PTZ_MOVE_CODES["up_right"] == "RightUp"
+    ), "Dahua spells the diagonals the other way round"
     assert PTZ_MOVE_CODES["zoom_in"] == "ZoomTele"
     assert PTZ_MOVE_CODES["zoom_out"] == "ZoomWide"
 
@@ -113,6 +118,8 @@ def test_the_service_offers_exactly_the_directions_it_can_do():
     with open("custom_components/dahua/services.yaml", encoding="utf-8") as f:
         services = yaml.safe_load(f)
 
-    offered = services["ptz_move"]["fields"]["direction"]["selector"]["select"]["options"]
+    offered = services["ptz_move"]["fields"]["direction"]["selector"]["select"][
+        "options"
+    ]
 
     assert sorted(offered) == sorted(PTZ_MOVE_CODES)

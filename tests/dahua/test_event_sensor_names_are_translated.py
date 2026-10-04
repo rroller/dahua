@@ -37,19 +37,26 @@ from custom_components.dahua.config_flow import ALL_EVENTS
 
 PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 
+
 # The four the platform adds for a doorbell whether or not they were selected.
 # Read out of binary_sensor.py rather than repeated, so adding a fifth fails here.
 def _doorbell_codes():
     source = io.open(PACKAGE / "binary_sensor.py", encoding="utf-8").read()
-    setup = next(node for node in ast.parse(source).body
-                 if isinstance(node, ast.AsyncFunctionDef)
-                 and node.name == "async_setup_entry")
+    setup = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "async_setup_entry"
+    )
     codes = []
     for node in ast.walk(setup):
-        if (isinstance(node, ast.Call)
-                and getattr(node.func, "id", None) == "DahuaEventSensor"):
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "DahuaEventSensor"
+        ):
             for argument in node.args:
-                if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                if isinstance(argument, ast.Constant) and isinstance(
+                    argument.value, str
+                ):
                     codes.append(argument.value)
     return codes
 
@@ -66,11 +73,13 @@ def _names_in_file():
     against a derived string failed. It was the run that caught it, not the review.
     """
     data = json.load(io.open(PACKAGE / "translations" / "en.json", encoding="utf-8"))
-    return {slug: entry["name"]
-            for slug, entry in data["entity"]["binary_sensor"].items()}
+    return {
+        slug: entry["name"] for slug, entry in data["entity"]["binary_sensor"].items()
+    }
 
 
 # --- the three sides agree ---------------------------------------------------
+
 
 def test_every_code_the_platform_can_produce_has_a_string():
     """The fallback exists for a config nobody else wrote. Reaching it by adding a
@@ -88,23 +97,28 @@ def test_translated_events_matches_the_file():
     keys_in_file = set(_names_in_file()) - {"authorized_vehicle"}
     keys_from_codes = {event_translation_key(code) for code in TRANSLATED_EVENTS}
 
-    assert keys_from_codes == keys_in_file, (
-        "in the set but not the file: %s; in the file but not the set: %s"
-        % (sorted(keys_from_codes - keys_in_file),
-           sorted(keys_in_file - keys_from_codes)))
+    assert (
+        keys_from_codes == keys_in_file
+    ), "in the set but not the file: %s; in the file but not the set: %s" % (
+        sorted(keys_from_codes - keys_in_file),
+        sorted(keys_in_file - keys_from_codes),
+    )
 
 
 def test_each_string_is_what_the_code_derived():
     """The names are carried across unchanged, so nobody's sensor is renamed."""
     names = _names_in_file()
-    wrong = {code: (event_display_name(code), names.get(event_translation_key(code)))
-             for code in sorted(TRANSLATED_EVENTS)
-             if names.get(event_translation_key(code)) != event_display_name(code)}
+    wrong = {
+        code: (event_display_name(code), names.get(event_translation_key(code)))
+        for code in sorted(TRANSLATED_EVENTS)
+        if names.get(event_translation_key(code)) != event_display_name(code)
+    }
 
     assert not wrong, "the file disagrees with the derivation: %s" % wrong
 
 
 # --- and the slug is the identity, which is why nothing moved ----------------
+
 
 def test_the_translation_key_is_the_unique_id_suffix():
     """Not a coincidence worth losing. If these ever diverge, the key stops being
@@ -141,13 +155,17 @@ def test_every_event_sensor_icon_belongs_to_a_code_this_ships():
 def test_every_slug_is_a_valid_translation_key():
     """Home Assistant's own validator wants a slug. A key with a capital or a space
     is not an error: the lookup simply never matches."""
-    bad = [(code, event_translation_key(code)) for code in sorted(TRANSLATED_EVENTS)
-           if not re.fullmatch(r"[a-z0-9_]+", event_translation_key(code))]
+    bad = [
+        (code, event_translation_key(code))
+        for code in sorted(TRANSLATED_EVENTS)
+        if not re.fullmatch(r"[a-z0-9_]+", event_translation_key(code))
+    ]
 
     assert not bad, "not slugs: %s" % bad
 
 
 # --- the derivation itself ---------------------------------------------------
+
 
 def test_the_three_hand_written_names_are_the_overrides():
     """These three are not what the regex would produce, which is the point of
@@ -155,8 +173,11 @@ def test_the_three_hand_written_names_are_the_overrides():
     assert event_display_name("VideoMotion") == "Motion Alarm"
     assert event_display_name("CrossLineDetection") == "Cross Line Alarm"
     assert event_display_name("DoorbellPressed") == "Button Pressed"
-    assert set(NAME_OVERRIDES) == {"VideoMotion", "CrossLineDetection",
-                                   "DoorbellPressed"}
+    assert set(NAME_OVERRIDES) == {
+        "VideoMotion",
+        "CrossLineDetection",
+        "DoorbellPressed",
+    }
 
 
 def test_the_regex_splits_on_a_capital_after_a_lower_case_letter_only():

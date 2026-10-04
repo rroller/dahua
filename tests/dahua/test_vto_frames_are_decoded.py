@@ -40,9 +40,16 @@ def _event(card_name="Front Door", event_id=8):
     return {
         "id": event_id,
         "method": "client.notifyEventStream",
-        "params": {"SID": 513, "eventList": [
-            {"Action": "Pulse", "Code": "AccessControl",
-             "Data": {"CardNo": "1234ABCD", "CardName": card_name}}]},
+        "params": {
+            "SID": 513,
+            "eventList": [
+                {
+                    "Action": "Pulse",
+                    "Code": "AccessControl",
+                    "Data": {"CardNo": "1234ABCD", "CardName": card_name},
+                }
+            ],
+        },
         "session": 1722306858,
     }
 
@@ -57,6 +64,7 @@ def _frame(*payloads):
 
 # --- the regression ----------------------------------------------------------
 
+
 def test_an_ascii_event_parses():
     """The baseline that always worked, so the next test is about the accent and not
     about the frame."""
@@ -69,7 +77,8 @@ def test_an_event_with_an_accent_in_it_parses():
     """This is the bug. One u-umlaut in a card holder's name and the whole event was
     dropped: the doorbell press never reached the bus, and nothing said so."""
     messages = DahuaVTOClient.parse_response(
-        _frame(_event(card_name="Vorderer Eingang ü")))
+        _frame(_event(card_name="Vorderer Eingang ü"))
+    )
 
     assert [m["id"] for m in messages] == [8], "the event was dropped"
     card = messages[0]["params"]["eventList"][0]["Data"]["CardName"]
@@ -86,11 +95,13 @@ def test_a_name_outside_latin_1_parses_too():
 
 # --- the frames a doorbell actually sends ------------------------------------
 
+
 def test_two_events_in_one_read_both_parse():
     """parse_response's own comment documents this: usually one event per line,
     sometimes two."""
     messages = DahuaVTOClient.parse_response(
-        _frame(_event(event_id=8), _event(event_id=9)))
+        _frame(_event(event_id=8), _event(event_id=9))
+    )
 
     assert [m["id"] for m in messages] == [8, 9]
 
@@ -121,15 +132,17 @@ def test_a_truncated_frame_surrenders_an_inner_object_with_no_id():
     """
     whole = _frame(_event())
 
-    messages = DahuaVTOClient.parse_response(whole[:len(whole) - 10])
+    messages = DahuaVTOClient.parse_response(whole[: len(whole) - 10])
 
     # Not a loop over a possibly-empty list: this asserts the fragment is really
     # there, so the "no id" check below cannot pass vacuously.
     assert len(messages) == 1, "expected the inner object, got %s" % (messages,)
-    assert "eventList" in messages[0], (
-        "expected the params fragment: %s" % (messages[0],))
-    assert messages[0].get("id") is None, (
-        "a fragment carrying an id would be dispatched as if it were a real reply")
+    assert "eventList" in messages[0], "expected the params fragment: %s" % (
+        messages[0],
+    )
+    assert (
+        messages[0].get("id") is None
+    ), "a fragment carrying an id would be dispatched as if it were a real reply"
 
 
 def test_a_frame_truncated_harder_yields_nothing():
@@ -138,7 +151,7 @@ def test_a_frame_truncated_harder_yields_nothing():
     whole doorbell."""
     whole = _frame(_event())
 
-    assert DahuaVTOClient.parse_response(whole[:len(whole) - 60]) == []
+    assert DahuaVTOClient.parse_response(whole[: len(whole) - 60]) == []
 
 
 def test_rubbish_yields_nothing_rather_than_raising():
@@ -148,7 +161,7 @@ def test_rubbish_yields_nothing_rather_than_raising():
 def test_bytes_that_are_not_utf_8_at_all_do_not_raise():
     """A stream resynchronising after a partial read can hand over anything.
     errors="replace" is what keeps that from taking the connection down."""
-    assert DahuaVTOClient.parse_response(b"\xff\xfe\xfd{\"id\":1}\n") == [{"id": 1}]
+    assert DahuaVTOClient.parse_response(b'\xff\xfe\xfd{"id":1}\n') == [{"id": 1}]
 
 
 def test_a_string_still_works():
@@ -159,13 +172,15 @@ def test_a_string_still_works():
 
 # --- the object finder underneath -------------------------------------------
 
+
 def test_nested_objects_are_returned_once_at_the_top_level():
     """raw_decode consumes the whole outer object and the position advances past it,
     so the inner ones are not yielded again as messages of their own."""
     text = '{"id": 1, "params": {"inner": {"deeper": true}}}'
 
     assert list(DahuaVTOClient.extract_json_objects(text)) == [
-        {"id": 1, "params": {"inner": {"deeper": True}}}]
+        {"id": 1, "params": {"inner": {"deeper": True}}}
+    ]
 
 
 def test_text_around_the_objects_is_skipped():
@@ -175,6 +190,7 @@ def test_text_around_the_objects_is_skipped():
 
 
 # --- the outgoing side, which is the same mistake mirrored -------------------
+
 
 def test_the_declared_length_matches_the_bytes_actually_written():
     """The incoming bug was characters confused with bytes. convert_message is where
@@ -189,17 +205,21 @@ def test_the_declared_length_matches_the_bytes_actually_written():
     exactly the users this change is about. This test is here to fail if someone does
     that.
     """
-    for label, password in (("ascii", "secret"),
-                            ("non-ascii", "gehört-nicht-mir")):
+    for label, password in (("ascii", "secret"), ("non-ascii", "gehört-nicht-mir")):
         message = DahuaVTOClient.convert_message(
-            {"method": "global.login", "params": {"password": password}})
+            {"method": "global.login", "params": {"password": password}}
+        )
 
         payload = message[OUTGOING_HEADER_SIZE:]
         declared = struct.unpack("<L", message[16:20])[0]
 
-        assert declared == len(payload), (
-            "%s: the header declares %d bytes and %d were written"
-            % (label, declared, len(payload)))
+        assert declared == len(
+            payload
+        ), "%s: the header declares %d bytes and %d were written" % (
+            label,
+            declared,
+            len(payload),
+        )
         # The third length field carries the same value.
         assert struct.unpack("<L", message[24:28])[0] == len(payload), label
         # Round-trips, which is the point of getting the length right.
@@ -217,6 +237,7 @@ def test_the_outgoing_header_is_the_dhip_magic():
 
 # --- the login hash ---------------------------------------------------------
 
+
 def test_the_login_hash_is_two_rounds_of_md5():
     """A golden vector for the challenge response, with credentials that are
     obviously fake. Dahua's scheme is two MD5 rounds in uppercase hex: first
@@ -224,7 +245,8 @@ def test_the_login_hash_is_two_rounds_of_md5():
     if a refactor changes it there is no reference to check against. This is that
     reference."""
     digest = DahuaVTOClient._get_hashed_password(
-        "1234567890", "Login to 00408C123456", "admin", "not-a-real-password")
+        "1234567890", "Login to 00408C123456", "admin", "not-a-real-password"
+    )
 
     assert digest == "3CAECEC8AF5D91ECECEDC596386944B8"
 
@@ -246,6 +268,7 @@ def test_a_non_ascii_password_hashes_over_its_utf_8_bytes():
     """The hash encodes explicitly, so this one was never at risk. Pinned because it
     is the same axis the parser got wrong."""
     digest = DahuaVTOClient._get_hashed_password(
-        "1234567890", "Login to 00408C123456", "admin", "gehör")
+        "1234567890", "Login to 00408C123456", "admin", "gehör"
+    )
 
     assert digest == "BFFCBC496B6A80698D9999F3CA6FB751"

@@ -22,6 +22,7 @@ short table rather than a rule, and anything not in it behaves exactly as before
 Whichever comes first wins: a device that does send a closing event still clears
 the sensor immediately, so this only adds a floor for devices that never send one.
 """
+
 import time
 from types import SimpleNamespace
 
@@ -45,11 +46,13 @@ def _sensor(event_name, started_ago=None, momentary=False):
     stamp = 0 if started_ago is None else int(time.time()) - started_ago
     sensor._coordinator = SimpleNamespace(
         get_event_timestamp=lambda name: stamp,
-        event_is_momentary=lambda name: momentary)
+        event_is_momentary=lambda name: momentary,
+    )
     return sensor
 
 
 # --- the bug -----------------------------------------------------------------
+
 
 def test_a_press_turns_the_sensor_on():
     assert _sensor("DoorbellPressed", started_ago=0).is_on is True
@@ -77,6 +80,7 @@ def test_the_sensor_is_still_on_inside_the_hold():
 
 # --- what must not change ----------------------------------------------------
 
+
 def test_motion_is_not_given_a_hold():
     """The dangerous mistake. Motion uses Start and Stop and must keep doing so.
 
@@ -90,8 +94,12 @@ def test_motion_is_not_given_a_hold():
 
 
 def test_the_ivs_codes_are_not_given_a_hold():
-    for code in ("CrossLineDetection", "CrossRegionDetection",
-                 "SmartMotionHuman", "SmartMotionVehicle"):
+    for code in (
+        "CrossLineDetection",
+        "CrossRegionDetection",
+        "SmartMotionHuman",
+        "SmartMotionVehicle",
+    ):
         assert code not in MOMENTARY_EVENT_HOLD_SECONDS, code
         assert _sensor(code, started_ago=3600).is_on is True, code
 
@@ -118,6 +126,7 @@ def test_a_device_that_does_send_a_stop_still_clears_immediately():
 
 
 # --- the timer ---------------------------------------------------------------
+
 
 def test_the_hold_is_long_enough_to_be_useful():
     """Short enough to feel momentary, long enough for an automation to fire."""
@@ -151,6 +160,7 @@ async def test_removing_the_entity_drops_its_timer():
 # InterVideoAccess has ever been observed as a Pulse in a report (#329), and the
 # selectable set gained two codes in a week. The coordinator records what the
 # device actually sent, and the sensor asks it.
+
 
 def test_a_pulse_code_clears_itself_even_though_it_is_not_in_the_list():
     """It has no entry in MOMENTARY_EVENT_HOLD_SECONDS, so without the

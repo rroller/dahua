@@ -80,8 +80,9 @@ class _Coordinator:
     def get_infrared_v2_row(self):
         return self.v2_row
 
-    async def async_set_lighting_v1_mode(self, channel, mode, brightness,
-                                         profile_mode="0", bank="MiddleLight"):
+    async def async_set_lighting_v1_mode(
+        self, channel, mode, brightness, profile_mode="0", bank="MiddleLight"
+    ):
         self.written.append((channel, mode, brightness, profile_mode))
         self.banks.append(bank)
         self.mode = mode
@@ -99,11 +100,15 @@ def _mode_select(coordinator):
 
 # --- what the dropdown shows ---------------------------------------------------
 
-@pytest.mark.parametrize("mode,option", [
-    ("Auto", "auto"),
-    ("Manual", "manual"),
-    ("Off", "off"),
-])
+
+@pytest.mark.parametrize(
+    "mode,option",
+    [
+        ("Auto", "auto"),
+        ("Manual", "manual"),
+        ("Off", "off"),
+    ],
+)
 def test_the_mode_the_device_reports_is_the_option_shown(mode, option):
     assert _mode_select(_Coordinator(mode=mode)).current_option == option
 
@@ -137,11 +142,15 @@ def test_the_two_maps_are_each_other():
 
 # --- what selecting one writes -------------------------------------------------
 
-@pytest.mark.parametrize("option,mode", [
-    ("auto", "Auto"),
-    ("manual", "Manual"),
-    ("off", "Off"),
-])
+
+@pytest.mark.parametrize(
+    "option,mode",
+    [
+        ("auto", "Auto"),
+        ("manual", "Manual"),
+        ("off", "Off"),
+    ],
+)
 async def test_selecting_a_mode_writes_the_device_spelling(option, mode):
     coordinator = _Coordinator(mode="Manual", level=60)
     await _mode_select(coordinator).async_select_option(option)
@@ -185,6 +194,7 @@ async def test_an_option_that_is_not_offered_writes_nothing():
 
 
 # --- and the light says what it could not say before ---------------------------
+
 
 def test_the_light_reports_the_mode_and_level_even_when_it_reads_off():
     """The Auto case, which is twelve of this recorder's fifteen channels."""

@@ -67,9 +67,11 @@ async def test_requests_to_one_host_are_capped():
     await asyncio.gather(*(c.get("/cgi-bin/x") for _ in range(20)))
 
     assert probe.calls == 20, "every request must still be made"
-    assert probe.peak <= MAX_CONCURRENT_REQUESTS_PER_HOST, (
-        "peak concurrency %d exceeded the cap of %d"
-        % (probe.peak, MAX_CONCURRENT_REQUESTS_PER_HOST)
+    assert (
+        probe.peak <= MAX_CONCURRENT_REQUESTS_PER_HOST
+    ), "peak concurrency %d exceeded the cap of %d" % (
+        probe.peak,
+        MAX_CONCURRENT_REQUESTS_PER_HOST,
     )
 
 
@@ -101,7 +103,9 @@ async def test_different_hosts_do_not_share_a_budget():
 
 async def test_two_clients_same_address_reuse_the_same_semaphore():
     probe = _ConcurrencyProbe()
-    assert _client("10.0.0.1", probe)._host_limit is _client("10.0.0.1", probe)._host_limit
+    assert (
+        _client("10.0.0.1", probe)._host_limit is _client("10.0.0.1", probe)._host_limit
+    )
 
 
 async def test_get_bytes_is_capped_too():
@@ -127,8 +131,10 @@ async def test_waiting_for_a_slot_counts_against_the_timeout():
     probe = _ConcurrencyProbe(hold=30)
     c = _client("10.0.0.1", probe)
 
-    blockers = [asyncio.create_task(c.get("/cgi-bin/slow"))
-                for _ in range(MAX_CONCURRENT_REQUESTS_PER_HOST)]
+    blockers = [
+        asyncio.create_task(c.get("/cgi-bin/slow"))
+        for _ in range(MAX_CONCURRENT_REQUESTS_PER_HOST)
+    ]
     await asyncio.sleep(0.05)
 
     # The queued call must not wait forever; it is bounded by the same timeout.

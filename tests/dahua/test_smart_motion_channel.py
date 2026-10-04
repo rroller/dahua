@@ -36,15 +36,20 @@ def _coordinator(channel, data, amcrest=False):
     return c
 
 
-@pytest.mark.parametrize("channel,expected", [
-    (1, True),
-    (11, True),
-    (0, False),
-    (2, False),
-    (9, False),
-])
+@pytest.mark.parametrize(
+    "channel,expected",
+    [
+        (1, True),
+        (11, True),
+        (0, False),
+        (2, False),
+        (9, False),
+    ],
+)
 def test_each_channel_reads_its_own_row(channel, expected):
-    assert _coordinator(channel, NVR_TABLE).is_smart_motion_detection_enabled() is expected
+    assert (
+        _coordinator(channel, NVR_TABLE).is_smart_motion_detection_enabled() is expected
+    )
 
 
 def test_the_channel_that_has_it_on_is_not_reported_off():
@@ -54,16 +59,21 @@ def test_the_channel_that_has_it_on_is_not_reported_off():
 
 def test_a_table_with_no_row_zero_does_not_make_every_channel_false():
     """Reading row 0 against this table is false for all eleven channels."""
-    states = {_coordinator(c, NVR_TABLE).is_smart_motion_detection_enabled()
-              for c in (0, 1, 2, 9, 11)}
+    states = {
+        _coordinator(c, NVR_TABLE).is_smart_motion_detection_enabled()
+        for c in (0, 1, 2, 9, 11)
+    }
 
     assert states == {True, False}, "every channel reported the same state"
 
 
 # --- a single camera is untouched ------------------------------------------
 
+
 def test_a_single_camera_still_reads_row_zero():
-    assert _coordinator(0, SINGLE_CAMERA_TABLE).is_smart_motion_detection_enabled() is True
+    assert (
+        _coordinator(0, SINGLE_CAMERA_TABLE).is_smart_motion_detection_enabled() is True
+    )
 
 
 def test_a_channel_with_no_row_of_its_own_reads_nothing():
@@ -72,7 +82,10 @@ def test_a_channel_with_no_row_of_its_own_reads_nothing():
     Row 0 belongs to whichever camera reported it. A channel that has no row of
     its own must not read this one.
     """
-    assert _coordinator(3, SINGLE_CAMERA_TABLE).is_smart_motion_detection_enabled() is False
+    assert (
+        _coordinator(3, SINGLE_CAMERA_TABLE).is_smart_motion_detection_enabled()
+        is False
+    )
 
 
 def test_channels_do_not_all_report_camera_ones_state():
@@ -92,8 +105,12 @@ def test_an_empty_table_is_off():
 
 def test_a_missing_value_does_not_raise():
     """The row can exist with no Enable key at all."""
-    assert _coordinator(1, {"table.SmartMotionDetect[1].Sensitivity": "Middle"}
-                        ).is_smart_motion_detection_enabled() is False
+    assert (
+        _coordinator(
+            1, {"table.SmartMotionDetect[1].Sensitivity": "Middle"}
+        ).is_smart_motion_detection_enabled()
+        is False
+    )
 
 
 # --- the write side ---------------------------------------------------------
@@ -101,6 +118,7 @@ def test_a_missing_value_does_not_raise():
 # test_switch.py asserts the arguments the switch passes to the client. Nothing
 # asserted the URL the client then builds, so the hardcoded index survived
 # there unnoticed. This closes that.
+
 
 class _Session:
     def __init__(self):
@@ -127,6 +145,7 @@ class _Resp:
 
 def _client(session):
     from custom_components.dahua.client import DahuaClient
+
     return DahuaClient("u", "p", "10.0.0.1", 80, 554, session)
 
 

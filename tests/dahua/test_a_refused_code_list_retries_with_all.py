@@ -39,17 +39,27 @@ from types import SimpleNamespace
 from custom_components.dahua.host import DahuaHostEventStream
 
 ADDRESS = "10.0.0.5"
-NINE_CODES = frozenset({
-    "AlarmLocal", "AudioMutation", "CrossLineDetection", "CrossRegionDetection",
-    "SmartMotionHuman", "SmartMotionVehicle", "VideoBlind", "VideoLoss",
-    "VideoMotion",
-})
+NINE_CODES = frozenset(
+    {
+        "AlarmLocal",
+        "AudioMutation",
+        "CrossLineDetection",
+        "CrossRegionDetection",
+        "SmartMotionHuman",
+        "SmartMotionVehicle",
+        "VideoBlind",
+        "VideoLoss",
+        "VideoMotion",
+    }
+)
 
 
 def _refused(status):
     return ClientResponseError(
         request_info=SimpleNamespace(real_url="http://%s/x" % ADDRESS),
-        history=(), status=status)
+        history=(),
+        status=status,
+    )
 
 
 # Every attach and every backoff, in the order they happened. Counting attaches
@@ -129,6 +139,7 @@ async def _run(stream):
 
 # --- the reported failure ---------------------------------------------------
 
+
 @pytest.mark.parametrize("status", [400, 500])
 async def test_a_refused_list_is_retried_as_all(status):
     """#728 answers 400 and #832 answers 500. Both mean the same thing here: the
@@ -149,8 +160,10 @@ async def test_the_retry_is_immediate():
 
     await _run(_stream(client))
 
-    assert TIMELINE[:2] == [("asked", sorted(NINE_CODES)), ("asked", ["All"])], (
-        "the retry went through the backoff: %r" % (TIMELINE,))
+    assert TIMELINE[:2] == [
+        ("asked", sorted(NINE_CODES)),
+        ("asked", ["All"]),
+    ], "the retry went through the backoff: %r" % (TIMELINE,)
 
 
 async def test_it_says_what_it_did_and_why(caplog):
@@ -161,9 +174,11 @@ async def test_it_says_what_it_did_and_why(caplog):
 
     await _run(_stream(client))
 
-    said = [r.getMessage() for r in caplog.records
-            if r.name.startswith("custom_components.dahua")
-            and r.levelname == "WARNING"]
+    said = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name.startswith("custom_components.dahua") and r.levelname == "WARNING"
+    ]
     assert said, "the workaround was silent"
     assert "400" in said[0]
     assert ADDRESS in said[0]
@@ -183,6 +198,7 @@ async def test_it_is_tried_once_and_not_again():
 
 
 # --- and what it must not do ------------------------------------------------
+
 
 async def test_a_stream_that_was_working_is_not_switched():
     """The socket ending after the device has been talking is not a refusal, and
@@ -232,6 +248,7 @@ async def test_a_failure_with_no_status_is_not_a_refusal():
 
 # --- and it has to outlive a channel change ---------------------------------
 
+
 async def test_what_the_device_said_survives_the_heuristic():
     """`_restart_if_needed` recomputes the old guess whenever channels change. On
     its own that would drop the stream back onto a list already known to fail, and
@@ -239,8 +256,9 @@ async def test_what_the_device_said_survives_the_heuristic():
     client = _Attaches()
     stream = _stream(client, _tried_all_events=True, _task=None)
     stream._hass = SimpleNamespace()
-    stream._by_channel = {0: [SimpleNamespace(
-        events=list(NINE_CODES), get_channel=lambda: 0)]}
+    stream._by_channel = {
+        0: [SimpleNamespace(events=list(NINE_CODES), get_channel=lambda: 0)]
+    }
 
     stream._restart_if_needed()
 

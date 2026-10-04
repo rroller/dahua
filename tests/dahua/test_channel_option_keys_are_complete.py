@@ -35,8 +35,11 @@ PER_CHANNEL_READERS = ("channel_option", "_channel_first")
 
 def _constant_names_to_values():
     """CONF_X -> "x", for every string constant in const.py."""
-    return {name: value for name, value in vars(const).items()
-            if name.startswith("CONF_") and isinstance(value, str)}
+    return {
+        name: value
+        for name, value in vars(const).items()
+        if name.startswith("CONF_") and isinstance(value, str)
+    }
 
 
 def _keys_read_per_channel():
@@ -49,17 +52,18 @@ def _keys_read_per_channel():
             if not isinstance(node, ast.Call):
                 continue
             function = node.func
-            called = (function.attr if isinstance(function, ast.Attribute)
-                      else getattr(function, "id", None))
+            called = (
+                function.attr
+                if isinstance(function, ast.Attribute)
+                else getattr(function, "id", None)
+            )
             if called not in PER_CHANNEL_READERS or not node.args:
                 continue
             first = node.args[0]
             if isinstance(first, ast.Name) and first.id in names:
-                found.setdefault(names[first.id],
-                                 "%s:%d" % (path.name, node.lineno))
+                found.setdefault(names[first.id], "%s:%d" % (path.name, node.lineno))
             elif isinstance(first, ast.Constant) and isinstance(first.value, str):
-                found.setdefault(first.value,
-                                 "%s:%d" % (path.name, node.lineno))
+                found.setdefault(first.value, "%s:%d" % (path.name, node.lineno))
     return found
 
 
@@ -73,13 +77,15 @@ def test_the_scan_finds_something():
 
 def test_every_per_channel_key_is_carried_by_the_merge():
     found = _keys_read_per_channel()
-    missing = {key: where for key, where in found.items()
-               if key not in CHANNEL_OPTION_KEYS}
+    missing = {
+        key: where for key, where in found.items() if key not in CHANNEL_OPTION_KEYS
+    }
 
     assert not missing, (
         "these keys are read per channel but are not in CHANNEL_OPTION_KEYS, so the "
         "#827 migration drops them and the value stored when the camera was added "
-        "shadows the user's setting for good: %s" % missing)
+        "shadows the user's setting for good: %s" % missing
+    )
 
 
 def test_the_configured_events_key_is_carried_too():
@@ -93,8 +99,14 @@ def test_nothing_host_wide_crept_in():
     """The set is also a promise about what is *not* carried. A host-wide key here
     would be pinned onto each channel at migration and would stop following the
     host, so the poll interval is named explicitly rather than left to judgement."""
-    for key in (const.CONF_SCAN_INTERVAL, const.CONF_ADDRESS, const.CONF_PORT,
-                const.CONF_USERNAME, const.CONF_PASSWORD, const.CONF_USE_HTTPS):
+    for key in (
+        const.CONF_SCAN_INTERVAL,
+        const.CONF_ADDRESS,
+        const.CONF_PORT,
+        const.CONF_USERNAME,
+        const.CONF_PASSWORD,
+        const.CONF_USE_HTTPS,
+    ):
         assert key not in CHANNEL_OPTION_KEYS, key
 
 
