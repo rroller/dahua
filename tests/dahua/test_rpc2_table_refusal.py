@@ -29,8 +29,10 @@ from custom_components.dahua.client import (
 )
 from custom_components.dahua.rpc2 import Rpc2MethodRefused
 
-MEASURED = ("Dahua RPC2 method configManager.getConfig returned result=false "
-            "(code=268959743, message=Unknown error! error code was not set in service!)")
+MEASURED = (
+    "Dahua RPC2 method configManager.getConfig returned result=false "
+    "(code=268959743, message=Unknown error! error code was not set in service!)"
+)
 
 
 def test_a_refusal_is_still_a_connection_error():
@@ -50,10 +52,13 @@ def test_a_refusal_is_not_a_transport_failure():
     assert not isinstance(Rpc2MethodRefused(MEASURED), TRANSIENT_RPC2_FAILURES)
 
 
-@pytest.mark.parametrize("exception", [
-    TimeoutError(),
-    __import__("aiohttp").ClientConnectionError("closed"),
-])
+@pytest.mark.parametrize(
+    "exception",
+    [
+        TimeoutError(),
+        __import__("aiohttp").ClientConnectionError("closed"),
+    ],
+)
 def test_transport_failures_are_still_not_permanent(exception):
     """Unchanged: a timeout must not write the host off either (#639)."""
     assert rpc2_failure_is_permanent(exception) is False

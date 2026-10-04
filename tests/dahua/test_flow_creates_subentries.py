@@ -38,6 +38,7 @@ def _flow(extra=(), found=None, areas=None, primary=None):
 
 # --- what gets created ------------------------------------------------------
 
+
 def test_a_single_camera_gets_no_subentries_at_all():
     """A camera is not a hub with one member.
 
@@ -86,10 +87,11 @@ def test_each_channel_has_its_own_unique_id():
 
 # --- names ------------------------------------------------------------------
 
+
 def test_extra_channels_are_named_from_what_the_recorder_reported():
-    subentries = _flow(extra=[1, 9],
-                       found={1: "FRONT VERANDAH", 9: "SIDE YARD"}
-                       )._channel_subentries()
+    subentries = _flow(
+        extra=[1, 9], found={1: "FRONT VERANDAH", 9: "SIDE YARD"}
+    )._channel_subentries()
     titles = {s["data"]["channel"]: s["title"] for s in subentries}
 
     assert titles == {0: "Gerty New", 1: "FRONT VERANDAH", 9: "SIDE YARD"}
@@ -114,12 +116,14 @@ def test_the_primary_keeps_the_name_the_user_typed():
 
 # --- areas, which is where the old code had a trap --------------------------
 
+
 def test_a_channel_with_no_area_does_not_inherit_the_recorders():
     """Every channel is built from the primary's data, which carries the area the
     user chose for the recorder itself. Without removing it, ticking one area
     would silently file all 64 channels in that one room."""
-    subentries = _flow(extra=[1], primary=dict(PRIMARY, area="hallway")
-                       )._channel_subentries()
+    subentries = _flow(
+        extra=[1], primary=dict(PRIMARY, area="hallway")
+    )._channel_subentries()
     areas = {s["data"]["channel"]: s["data"].get("area") for s in subentries}
 
     assert areas[0] == "hallway"
@@ -127,9 +131,9 @@ def test_a_channel_with_no_area_does_not_inherit_the_recorders():
 
 
 def test_a_channel_with_its_own_area_keeps_it():
-    subentries = _flow(extra=[1, 9],
-                       primary=dict(PRIMARY, area="hallway"),
-                       areas={9: "garden"})._channel_subentries()
+    subentries = _flow(
+        extra=[1, 9], primary=dict(PRIMARY, area="hallway"), areas={9: "garden"}
+    )._channel_subentries()
     areas = {s["data"]["channel"]: s["data"].get("area") for s in subentries}
 
     assert areas == {0: "hallway", 1: None, 9: "garden"}
@@ -137,14 +141,19 @@ def test_a_channel_with_its_own_area_keeps_it():
 
 # --- and the two halves agree ------------------------------------------------
 
+
 def test_setup_would_bring_up_every_channel_the_flow_created():
     """The join that matters: what the flow writes is what channel_configs reads.
     These are the two ends of #827 and a disagreement between them would leave
     channels configured but never set up."""
     subentries = _flow(extra=[1, 9])._channel_subentries()
     entry = SimpleNamespace(
-        entry_id="e1", data=PRIMARY, options={},
-        subentries={s["unique_id"]: SimpleNamespace(data=s["data"])
-                    for s in subentries})
+        entry_id="e1",
+        data=PRIMARY,
+        options={},
+        subentries={
+            s["unique_id"]: SimpleNamespace(data=s["data"]) for s in subentries
+        },
+    )
 
     assert [c[1]["channel"] for c in channel_configs(entry)] == [0, 1, 9]

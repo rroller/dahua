@@ -82,6 +82,7 @@ def _clean_streams():
 
 # --- what the device was actually asked for ---------------------------------
 
+
 def test_an_explicit_subscription_is_reported_as_itself():
     """The ordinary case, and the one every single camera takes."""
     dahua._HOST_STREAMS[ADDRESS] = _stream(_using_all_events=False)
@@ -89,7 +90,10 @@ def test_an_explicit_subscription_is_reported_as_itself():
     block = _stream_block(_reader())
 
     assert block["subscribed_as"] == [
-        "AlarmLocal", "CrossRegionDetection", "VideoMotion"]
+        "AlarmLocal",
+        "CrossRegionDetection",
+        "VideoMotion",
+    ]
     assert block["subscribed_as"] == block["attached_events"]
 
 
@@ -114,7 +118,10 @@ def test_the_selection_is_still_reported_when_All_was_sent():
     block = _stream_block(_reader())
 
     assert block["attached_events"] == [
-        "AlarmLocal", "CrossRegionDetection", "VideoMotion"]
+        "AlarmLocal",
+        "CrossRegionDetection",
+        "VideoMotion",
+    ]
     assert block["subscribed_as"] == ["All"]
 
 
@@ -128,10 +135,14 @@ def test_a_stream_that_never_set_the_flag_reads_as_explicit():
     dahua._HOST_STREAMS[ADDRESS] = bare
 
     assert _stream_block(_reader())["subscribed_as"] == [
-        "AlarmLocal", "CrossRegionDetection", "VideoMotion"]
+        "AlarmLocal",
+        "CrossRegionDetection",
+        "VideoMotion",
+    ]
 
 
 # --- an event that arrived and moved nothing --------------------------------
+
 
 def _coordinator(channel=0):
     """A coordinator built the way this suite builds them, exercising the real
@@ -170,7 +181,9 @@ def test_the_count_is_per_key_and_accumulates():
     c._dispatch_event({"Code": "SmartMotionVehicle", "action": "Start"}, "Start")
 
     assert c._events_without_listener == {
-        "FaceDetection-0": 3, "SmartMotionVehicle-0": 1}
+        "FaceDetection-0": 3,
+        "SmartMotionVehicle-0": 1,
+    }
 
 
 def test_the_key_carries_the_channel():
@@ -211,11 +224,11 @@ def test_two_coordinators_do_not_pool_their_counts():
 
 # --- and it reaches the dump ------------------------------------------------
 
+
 def test_the_counts_reach_the_diagnostics_dump():
     dahua._HOST_STREAMS[ADDRESS] = _stream()
 
-    block = _events_block(_reader(
-        _events_without_listener={"FaceDetection-0": 4}))
+    block = _events_block(_reader(_events_without_listener={"FaceDetection-0": 4}))
 
     assert block["arrived_with_no_listener"] == {"FaceDetection-0": 4}
 

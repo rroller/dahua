@@ -22,11 +22,15 @@ def _entry(**options):
 
 def test_defaults_to_the_previous_hardcoded_interval():
     """Entries that never set the option keep the behaviour they had."""
-    assert get_configured_scan_interval(_entry()) == timedelta(seconds=DEFAULT_SCAN_INTERVAL)
+    assert get_configured_scan_interval(_entry()) == timedelta(
+        seconds=DEFAULT_SCAN_INTERVAL
+    )
 
 
 def test_uses_the_configured_interval():
-    assert get_configured_scan_interval(_entry(scan_interval=300)) == timedelta(seconds=300)
+    assert get_configured_scan_interval(_entry(scan_interval=300)) == timedelta(
+        seconds=300
+    )
 
 
 def test_values_below_the_minimum_are_raised_to_it():
@@ -45,7 +49,9 @@ def test_a_nonsense_value_falls_back_to_the_default():
 
 def test_a_numeric_string_is_accepted():
     """Home Assistant can hand back a string from a number field."""
-    assert get_configured_scan_interval(_entry(scan_interval="120")) == timedelta(seconds=120)
+    assert get_configured_scan_interval(_entry(scan_interval="120")) == timedelta(
+        seconds=120
+    )
 
 
 def _schema_defaults(result):
@@ -61,8 +67,9 @@ def _schema_defaults(result):
         if nested is not None and hasattr(nested, "schema"):
             for inner in nested.schema:
                 inner_default = getattr(inner, "default", None)
-                out[str(inner.schema)] = (inner_default() if callable(inner_default)
-                                          else inner_default)
+                out[str(inner.schema)] = (
+                    inner_default() if callable(inner_default) else inner_default
+                )
     return out
 
 
@@ -72,7 +79,8 @@ def _validators(result):
 
 async def _shown_options_form(hass, entry):
     registered = MockConfigEntry(
-        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options))
+        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options)
+    )
     registered.add_to_hass(hass)
 
     handler = DahuaOptionsFlowHandler()
@@ -89,12 +97,16 @@ async def _shown_options_form(hass, entry):
 async def test_options_form_offers_the_interval(hass):
     defaults = _schema_defaults(await _shown_options_form(hass, _entry()))
 
-    assert "scan_interval" in defaults, "the options screen does not expose the interval"
+    assert (
+        "scan_interval" in defaults
+    ), "the options screen does not expose the interval"
     assert defaults["scan_interval"] == DEFAULT_SCAN_INTERVAL
 
 
 async def test_options_form_defaults_to_the_chosen_interval(hass):
-    defaults = _schema_defaults(await _shown_options_form(hass, _entry(scan_interval=600)))
+    defaults = _schema_defaults(
+        await _shown_options_form(hass, _entry(scan_interval=600))
+    )
 
     assert defaults["scan_interval"] == 600
 

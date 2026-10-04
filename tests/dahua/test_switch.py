@@ -24,6 +24,7 @@ class _Client:
     def _record(self, name):
         async def call(*args):
             self.calls.append((name,) + args)
+
         return call
 
     def __getattr__(self, name):
@@ -140,11 +141,18 @@ ALL = [
 
 # --- each switch drives its own API ----------------------------------------
 
-@pytest.mark.parametrize("cls,method", [
-    (DahuaMotionDetectionBinarySwitch, "enable_motion_detection"),
-    (DahuaDisarmingLinkageBinarySwitch, "async_set_disarming_linkage"),
-    (DahuaDisarmingEventNotificationsLinkageBinarySwitch, "async_set_event_notifications"),
-])
+
+@pytest.mark.parametrize(
+    "cls,method",
+    [
+        (DahuaMotionDetectionBinarySwitch, "enable_motion_detection"),
+        (DahuaDisarmingLinkageBinarySwitch, "async_set_disarming_linkage"),
+        (
+            DahuaDisarmingEventNotificationsLinkageBinarySwitch,
+            "async_set_event_notifications",
+        ),
+    ],
+)
 async def test_channel_switches_send_channel_and_state(cls, method):
     c = _Coordinator(channel=4)
     s = _switch(cls, c)
@@ -175,6 +183,7 @@ async def test_siren_turn_off_keeps_the_siren_type():
 
 # --- smart motion picks an API by vendor -----------------------------------
 
+
 async def test_smart_motion_uses_the_dahua_api_by_default():
     c = _Coordinator(amcrest=False)
     s = _switch(DahuaSmartMotionDetectionBinarySwitch, c)
@@ -204,6 +213,7 @@ async def test_smart_motion_uses_the_ivs_rule_on_amcrest():
 
 
 # --- identity --------------------------------------------------------------
+
 
 def test_every_switch_has_its_own_unique_id():
     """A collision would silently merge two switches into one entity."""
@@ -242,12 +252,15 @@ def test_every_switch_declares_a_translation_key():
         assert _switch(cls, c).translation_key, cls.__name__
 
 
-@pytest.mark.parametrize("cls,key", [
-    (DahuaMotionDetectionBinarySwitch, "motion"),
-    (DahuaDisarmingLinkageBinarySwitch, "disarming"),
-    (DahuaDisarmingEventNotificationsLinkageBinarySwitch, "notifications"),
-    (DahuaSmartMotionDetectionBinarySwitch, "smart"),
-])
+@pytest.mark.parametrize(
+    "cls,key",
+    [
+        (DahuaMotionDetectionBinarySwitch, "motion"),
+        (DahuaDisarmingLinkageBinarySwitch, "disarming"),
+        (DahuaDisarmingEventNotificationsLinkageBinarySwitch, "notifications"),
+        (DahuaSmartMotionDetectionBinarySwitch, "smart"),
+    ],
+)
 def test_is_on_reflects_the_coordinator(cls, key):
     c = _Coordinator()
     s = _switch(cls, c)
@@ -258,6 +271,7 @@ def test_is_on_reflects_the_coordinator(cls, key):
 
 
 # --- platform setup must not talk to the device -----------------------------
+
 
 async def test_setup_asks_the_device_nothing():
     """A network call here spends the entry's setup budget.
@@ -278,8 +292,7 @@ async def test_setup_asks_the_device_nothing():
     coordinator.supports_disarming_linkage = lambda: True
 
     hass = SimpleNamespace(data={})
-    entry = SimpleNamespace(entry_id="e1", options={},
-                            runtime_data={0: coordinator})
+    entry = SimpleNamespace(entry_id="e1", options={}, runtime_data={0: coordinator})
     added = []
 
     # The decision is what changed here, not how the entities are built.
@@ -321,9 +334,8 @@ async def test_the_disarming_switches_follow_what_the_device_answered():
     ):
         await switch_module.async_setup_entry(
             hass,
-            SimpleNamespace(entry_id="e1", options={},
-                            runtime_data={0: coordinator}),
-            adds_entities(added)
+            SimpleNamespace(entry_id="e1", options={}, runtime_data={0: coordinator}),
+            adds_entities(added),
         )
 
     assert "disarming" not in added
@@ -335,6 +347,7 @@ async def test_the_disarming_switches_follow_what_the_device_answered():
 #
 # A physical relay rather than a setting, so what it writes matters more than most:
 # AlarmOut.Mode=1 forces it on and Mode=2 forces it off. Its three methods had no tests.
+
 
 async def test_the_alarm_output_forces_on_and_off():
     c = _Coordinator()
@@ -399,6 +412,7 @@ def test_the_alarm_output_reports_the_physical_state():
 
 # --- privacy mode -------------------------------------------------------------
 
+
 async def test_privacy_mode_covers_and_uncovers_the_lens():
     """This one moves a motorised cover, so it is the only switch here whose off state
     the camera cannot see past."""
@@ -416,6 +430,7 @@ async def test_privacy_mode_covers_and_uncovers_the_lens():
 
 
 # --- the siren, built the way the platform builds it --------------------------
+
 
 def test_the_siren_takes_its_key_from_the_platform():
     """Called Alarm on a recorder and Siren otherwise, which the platform decides. The
@@ -452,6 +467,7 @@ def test_the_siren_reports_what_the_coordinator_read():
 # are about the decision it makes: three of the appends had no test, so three switches
 # were only ever built by hand.
 
+
 async def _added_for(coordinator):
     """Run the real platform setup with every entity replaced by its name."""
     from types import SimpleNamespace
@@ -459,8 +475,11 @@ async def _added_for(coordinator):
 
     from custom_components.dahua import switch as switch_module
 
-    for name in ("supports_siren", "supports_smart_motion_detection",
-                 "supports_disarming_linkage"):
+    for name in (
+        "supports_siren",
+        "supports_smart_motion_detection",
+        "supports_disarming_linkage",
+    ):
         if not hasattr(coordinator, name):
             setattr(coordinator, name, lambda: False)
 
@@ -476,7 +495,8 @@ async def _added_for(coordinator):
         DahuaAlarmOutputSwitch=lambda *a, **k: "alarm_output",
     ):
         await switch_module.async_setup_entry(
-            SimpleNamespace(data={}), entry, adds_entities(added))
+            SimpleNamespace(data={}), entry, adds_entities(added)
+        )
     return added
 
 
@@ -536,7 +556,8 @@ async def _switches_for(coordinator):
         DahuaMotionDetectionBinarySwitch=lambda *a, **k: "motion",
     ):
         await switch_module.async_setup_entry(
-            SimpleNamespace(data={}), entry, adds_entities(added))
+            SimpleNamespace(data={}), entry, adds_entities(added)
+        )
     return added
 
 

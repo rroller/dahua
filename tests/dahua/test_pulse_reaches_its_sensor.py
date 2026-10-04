@@ -22,6 +22,7 @@ a report (#329), the rest is inference from vendor documentation, and the
 selectable set changes. The device says `action=Pulse`; the coordinator records
 that and the sensor asks it.
 """
+
 import time
 from types import SimpleNamespace
 
@@ -69,8 +70,9 @@ def test_an_unrecognised_action_reaches_no_listener():
     coordinator = _coordinator()
     fired = _listening(coordinator, "VideoMotion")
 
-    coordinator._dispatch_event({"Code": "VideoMotion", "Action": "Nonsense"},
-                                "Nonsense")
+    coordinator._dispatch_event(
+        {"Code": "VideoMotion", "Action": "Nonsense"}, "Nonsense"
+    )
 
     assert fired == [], "a listener was called for an action nobody understands"
     assert _stamp(coordinator, "VideoMotion") == 0
@@ -85,13 +87,15 @@ def test_an_unrecognised_action_does_not_clear_a_running_event():
     running = _stamp(coordinator, "VideoMotion")
     assert running > 0, "the fixture must start the event for this to mean anything"
 
-    coordinator._dispatch_event({"Code": "VideoMotion", "Action": "Nonsense"},
-                                "Nonsense")
+    coordinator._dispatch_event(
+        {"Code": "VideoMotion", "Action": "Nonsense"}, "Nonsense"
+    )
 
     assert _stamp(coordinator, "VideoMotion") == running
 
 
 # --- the bug --------------------------------------------------------------
+
 
 def test_a_pulse_with_no_state_raises_its_sensor():
     """This is the whole issue: it used to write the sensor off instead."""
@@ -142,6 +146,7 @@ def test_a_pulse_carrying_unrelated_data_still_raises_it():
 
 # --- what must not change -------------------------------------------------
 
+
 def test_a_doorbell_ring_is_still_read_as_a_call_state():
     c = _coordinator()
     _listening(c, "DoorbellPressed")
@@ -149,8 +154,9 @@ def test_a_doorbell_ring_is_still_read_as_a_call_state():
     _pulse(c, "DoorbellPressed", {"State": 1})
 
     assert _stamp(c, "DoorbellPressed") > 0
-    assert c.event_is_momentary("DoorbellPressed") is False, (
-        "the doorbell has its own hold and must not be handled as a bare Pulse")
+    assert (
+        c.event_is_momentary("DoorbellPressed") is False
+    ), "the doorbell has its own hold and must not be handled as a bare Pulse"
 
 
 def test_a_doorbell_state_that_is_not_a_ring_still_clears_it():
@@ -224,6 +230,7 @@ def test_start_and_stop_are_untouched():
 
 
 # --- and it never becomes the thing that raises ---------------------------
+
 
 def test_a_coordinator_that_has_never_dispatched_answers_anyway():
     """Most tests build one of these with object.__new__ and set only what they

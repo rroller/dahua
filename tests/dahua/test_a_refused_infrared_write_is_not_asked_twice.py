@@ -83,11 +83,13 @@ def _select(coordinator):
 # with a mutation sweep. One assertion stays here, so this file does not pass if
 # the infrared path stops agreeing with that decision.
 
+
 def test_the_status_this_recorder_answers_is_still_a_refusal():
     assert refusal_is_outright(_response_error(403)) is True
 
 
 # --- learning it once ---------------------------------------------------------
+
 
 async def test_a_refused_write_is_remembered_and_not_sent_again():
     coordinator = _Coordinator(channel=3)
@@ -104,8 +106,9 @@ async def test_a_refused_write_is_remembered_and_not_sent_again():
         await light.async_turn_on()
 
     assert second.value.translation_key == "infrared_write_already_refused"
-    assert len(coordinator.client.v1) == 1, (
-        "the second press was sent to a device that had already said no")
+    assert (
+        len(coordinator.client.v1) == 1
+    ), "the second press was sent to a device that had already said no"
 
 
 async def test_a_failure_that_is_not_a_refusal_is_asked_again():
@@ -276,6 +279,7 @@ async def test_a_channel_with_a_v2_row_is_available_before_anything_is_tried():
 
 
 # --- what the two entities do about it ----------------------------------------
+
 
 async def test_the_select_goes_unavailable_and_the_light_does_not():
     """The split this change is about. The select exists only to write; the

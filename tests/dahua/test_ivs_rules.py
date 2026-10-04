@@ -18,9 +18,15 @@ from . import adds_entities
 
 def row(index, rule_id, enabled="true", channel=2, kind="Normal", name="Line"):
     prefix = f"table.VideoAnalyseRule[{channel}][{index}]"
-    return {prefix + "." + key: value for key, value in {
-        "Id": rule_id, "Class": kind, "Name": name, "Enable": enabled,
-    }.items()}
+    return {
+        prefix + "." + key: value
+        for key, value in {
+            "Id": rule_id,
+            "Class": kind,
+            "Name": name,
+            "Enable": enabled,
+        }.items()
+    }
 
 
 def coordinator(table):
@@ -42,17 +48,23 @@ def coordinator(table):
 
 def entity(c, rule_id="42"):
     rule = next(rule for rule in c.get_ivs_rules() if rule["id"] == rule_id)
+
     def init(self, coord, entry):
         self._coordinator = coord
         self.coordinator = coord
+
     with patch.object(DahuaBaseEntity, "__init__", init):
         return DahuaIVSRuleSwitch(c, None, rule)
 
 
 class TestIVSDiscovery(TestCase):
     def test_multiple_normal_rules_and_sparse_indexes(self):
-        table = {**row(0, "42"), **row(17, "7", "false"),
-                 **row(2, "8", kind="FaceDetection"), **row(3, "42", channel=1)}
+        table = {
+            **row(0, "42"),
+            **row(17, "7", "false"),
+            **row(2, "8", kind="FaceDetection"),
+            **row(3, "42", channel=1),
+        }
         rules = ivs_rules_for_channel(table, 2)
         self.assertEqual([(r["id"], r["index"]) for r in rules], [("42", 0), ("7", 17)])
 
@@ -70,13 +82,19 @@ class TestIVSDiscovery(TestCase):
             self.assertIsNone(ivs_rule_index(table, 2, "42"))
 
     def test_missing_name_uses_id_and_zero_id_is_valid(self):
-        self.assertEqual(ivs_rules_for_channel(row(3, "0", name=""), 2)[0]["name"], "IVS Rule 0")
+        self.assertEqual(
+            ivs_rules_for_channel(row(3, "0", name=""), 2)[0]["name"], "IVS Rule 0"
+        )
 
     def test_state_follows_id_after_reorder_and_insertion(self):
         c = coordinator({**row(0, "42"), **row(1, "7", "false")})
         switch = entity(c)
         identity = switch.unique_id
-        c.data = {**row(0, "7"), **row(1, "99"), **row(8, "42", "false", name="Renamed")}
+        c.data = {
+            **row(0, "7"),
+            **row(1, "99"),
+            **row(8, "42", "false", name="Renamed"),
+        }
         self.assertFalse(switch.is_on)
         self.assertEqual(switch.unique_id, identity)
         replacement = entity(coordinator(c.data))
@@ -94,11 +112,26 @@ class TestIVSDiscovery(TestCase):
         self.assertNotEqual(entity(c, "42").unique_id, entity(c, "7").unique_id)
 
     def test_read_cache_expires_before_next_default_poll(self):
-        self.assertEqual(_cache_lifetime("/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule"), 5)
-        self.assertEqual(_cache_lifetime("/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"), 300)
+        self.assertEqual(
+            _cache_lifetime(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule"
+            ),
+            5,
+        )
+        self.assertEqual(
+            _cache_lifetime(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"
+            ),
+            300,
+        )
         # The active day/night profile is live state, and every light command
         # addresses the Lighting row it names.
-        self.assertEqual(_cache_lifetime("/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"), 5)
+        self.assertEqual(
+            _cache_lifetime(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
+            ),
+            5,
+        )
 
 
 class TestIVSActions:
@@ -116,17 +149,25 @@ class TestIVSActions:
         ]
         await switch.async_turn_on()
         c.client.get.assert_awaited_with(
-            "/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[2][4].Enable=true", True)
+            "/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[2][4].Enable=true",
+            True,
+        )
         await switch.async_turn_off()
         c.client.get.assert_awaited_with(
-            "/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[2][8].Enable=false", True)
+            "/cgi-bin/configManager.cgi?action=setConfig&VideoAnalyseRule[2][8].Enable=false",
+            True,
+        )
         self.assertEqual(c.client._request.await_count, 2)
         self.assertEqual(c.async_refresh.await_count, 2)
 
     async def test_removed_ambiguous_or_non_normal_rule_never_writes(self):
-        for table in ({}, row(0, "7"), row(0, "42", channel=1),
-                      row(0, "42", kind="FaceDetection"),
-                      {**row(0, "42"), **row(1, "42")}):
+        for table in (
+            {},
+            row(0, "7"),
+            row(0, "42", channel=1),
+            row(0, "42", kind="FaceDetection"),
+            {**row(0, "42"), **row(1, "42")},
+        ):
             c = coordinator(row(0, "42"))
             switch = entity(c)
             c.client._request.return_value = table
@@ -159,25 +200,36 @@ class TestIVSActions:
         switch = entity(c, "1")
         self.assertTrue(switch.is_on)
         await switch.async_turn_off()
-        c.client.async_set_remote_ivs_rule_by_id.assert_awaited_once_with(10, "1", False)
+        c.client.async_set_remote_ivs_rule_by_id.assert_awaited_once_with(
+            10, "1", False
+        )
         c.client._request.assert_not_awaited()
 
     async def test_setup_adds_all_normal_rules_without_network_reads(self):
         c = coordinator({**row(0, "42"), **row(17, "7")})
-        for method in ("is_nvr_channel", "supports_siren", "supports_smart_motion_detection",
-                       "supports_smart_motion_detection_amcrest", "supports_privacy_mode",
-                       "supports_alarm_output", "supports_disarming_linkage"):
+        for method in (
+            "is_nvr_channel",
+            "supports_siren",
+            "supports_smart_motion_detection",
+            "supports_smart_motion_detection_amcrest",
+            "supports_privacy_mode",
+            "supports_alarm_output",
+            "supports_disarming_linkage",
+        ):
             setattr(c, method, lambda: False)
         hass = SimpleNamespace(data={})
         added = []
+
         def init(self, coord, entry):
             self._coordinator = coord
             self.coordinator = coord
+
         with patch.object(DahuaBaseEntity, "__init__", init):
             await async_setup_entry(
                 hass,
                 SimpleNamespace(entry_id="entry", runtime_data={0: c}),
-                adds_entities(added))
+                adds_entities(added),
+            )
         rules = [s for s in added if isinstance(s, DahuaIVSRuleSwitch)]
         self.assertEqual(len(rules), 2)
         self.assertEqual(len({s.unique_id for s in rules}), 2)
@@ -185,6 +237,7 @@ class TestIVSActions:
 
     async def test_poll_reads_current_ivs_table_only_when_switches_enabled(self):
         from tests.dahua.test_poll_skips_unused import _coordinator
+
         for enabled in (True, False):
             c = _coordinator(switch=enabled)
             c._ivs_rules = ivs_rules_for_channel(row(0, "42"), 2)
@@ -199,7 +252,9 @@ async def test_direct_reads_and_fresh_writes_keep_cgi_when_rpc2_is_enabled():
     from tests.dahua.test_host_read_cache import _Probe, _client
 
     table = row(0, "42")
-    probe = _Probe(hold=0, body="\n".join(f"{key}={value}" for key, value in table.items()))
+    probe = _Probe(
+        hold=0, body="\n".join(f"{key}={value}" for key, value in table.items())
+    )
     client = _client(probe)
     client._use_rpc2 = True
     client._rpc2_get_config = AsyncMock()

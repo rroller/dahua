@@ -72,6 +72,7 @@ _HOST_UPTIME_LOCKS: dict[str, asyncio.Lock] = {}
 # Reuse the first host uptime read for the others in that poll burst.
 HOST_UPTIME_DEDUPE_SECONDS = 5.0
 
+
 async def _async_get_host_uptime_generation(coordinator) -> int:
     """Poll one host-wide uptime value and return its reboot generation."""
 
@@ -96,9 +97,7 @@ async def _async_get_host_uptime_generation(coordinator) -> int:
         # coordinator was waiting for the lock.
         now = time.monotonic()
 
-        if (
-            now - state["last_read"] < HOST_UPTIME_DEDUPE_SECONDS
-        ):
+        if now - state["last_read"] < HOST_UPTIME_DEDUPE_SECONDS:
             return int(state["generation"])
 
         try:
@@ -121,15 +120,11 @@ async def _async_get_host_uptime_generation(coordinator) -> int:
 
         previous = state["uptime"]
 
-        if (
-            previous is not None
-            and current < previous
-        ):
+        if previous is not None and current < previous:
             state["generation"] += 1
 
             _LOGGER.info(
-                "Dahua host %s reboot detected "
-                "(uptime %s -> %s, generation=%s)",
+                "Dahua host %s reboot detected " "(uptime %s -> %s, generation=%s)",
                 address,
                 previous,
                 current,
@@ -140,6 +135,7 @@ async def _async_get_host_uptime_generation(coordinator) -> int:
         state["last_read"] = time.monotonic()
 
         return int(state["generation"])
+
 
 def stream_lifetime(lived_seconds: float, received_data: bool) -> float:
     """How long the stream really lasted, for the purpose of retrying it.
@@ -161,8 +157,10 @@ def stream_lifetime(lived_seconds: float, received_data: bool) -> float:
     """
     return lived_seconds if received_data else 0.0
 
-def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0,
-                            received_data: bool = False) -> float:
+
+def event_stream_retry_delay(
+    lived_seconds: float, consecutive_failures: int = 0, received_data: bool = False
+) -> float:
     """How long to wait before re-attaching, given how long the stream lasted.
 
     `received_data` is whether the device sent anything at all on this attach --
@@ -176,11 +174,14 @@ def event_stream_retry_delay(lived_seconds: float, consecutive_failures: int = 0
         # Double per successive instant death, so a device that is refusing
         # attach gets asked less often the longer it keeps refusing.
         doublings = max(0, consecutive_failures - 1)
-        backoff = EVENT_STREAM_RETRY_SECONDS * (2 ** min(doublings, MAX_BACKOFF_DOUBLINGS))
+        backoff = EVENT_STREAM_RETRY_SECONDS * (
+            2 ** min(doublings, MAX_BACKOFF_DOUBLINGS)
+        )
         return jittered(min(backoff, EVENT_STREAM_MAX_RETRY_SECONDS))
     if lived_seconds < EVENT_STREAM_HEALTHY_SECONDS:
         return jittered(EVENT_STREAM_SHORT_RETRY_SECONDS)
     return 0.0
+
 
 # Guard on the exponent so the arithmetic stays sane for a device that has been
 # failing for a week. The time ceilings below are what actually bind.
@@ -200,12 +201,14 @@ MAX_BACKOFF_DOUBLINGS = 6
 # likely to be real than a raw one, so the budget here can be small.
 MAX_AUTH_REFUSALS = 3
 
+
 def jittered(seconds: float, fraction: float = EVENT_STREAM_JITTER) -> float:
     """Spread a shared interval so simultaneous callers stop being simultaneous."""
     if seconds <= 0 or fraction <= 0:
         return seconds
     spread = seconds * fraction
     return max(1.0, seconds + random.uniform(-spread, spread))
+
 
 SSL_CONTEXT = ssl.create_default_context()
 
@@ -264,6 +267,7 @@ _HOST_NETWORK_IDENTITY_LOCKS: dict = {}
 # BC0A198PAJ779DF against 4f3a9c8ecafe4f3a9c8ecafe4f3a9c8e.
 _SYNTHESISED_UNIQUE_ID = re.compile(r"^[0-9a-f]{32}(?:_\d+)?$")
 
+
 def normalize_address(address: str) -> str:
     """One device, one key.
 
@@ -274,6 +278,7 @@ def normalize_address(address: str) -> str:
     """
     return (address or "").strip().rstrip("/")
 
+
 def _entries_for_address(hass: HomeAssistant, address: str) -> list:
     """Every config entry pointing at this host."""
     wanted = normalize_address(address)
@@ -282,6 +287,7 @@ def _entries_for_address(hass: HomeAssistant, address: str) -> list:
         for entry in hass.config_entries.async_entries(DOMAIN)
         if normalize_address(entry.data.get(CONF_ADDRESS)) == wanted
     ]
+
 
 async def _async_probe_tcp(address: str, port: int, timeout: float = 5.0) -> bool:
     """Can we open a TCP connection? No HTTP, no credentials, no retry."""
@@ -300,6 +306,7 @@ async def _async_probe_tcp(address: str, port: int, timeout: float = 5.0) -> boo
                 await writer.wait_closed()
             except Exception:  # pylint: disable=broad-except
                 pass
+
 
 async def _async_evaluate_host(hass: HomeAssistant, address: str) -> None:
     """Decide which card, if any, this host has earned.
@@ -364,6 +371,7 @@ async def _async_evaluate_host(hass: HomeAssistant, address: str) -> None:
             learn_more_url="https://github.com/rroller/dahua#debugging",
         )
 
+
 @callback
 def async_record_host_failure(hass: HomeAssistant, address: str, entry_id: str) -> int:
     """Note a failed refresh, raising a card once it stops looking like a blip.
@@ -390,6 +398,7 @@ def async_record_host_failure(hass: HomeAssistant, address: str, entry_id: str) 
         hass.async_create_task(_async_evaluate_host(hass, address))
     return state["consecutive"]
 
+
 @callback
 def async_host_is_unreachable(address: str) -> bool:
     """Whether this host has failed enough polls to be called unreachable.
@@ -401,6 +410,7 @@ def async_host_is_unreachable(address: str) -> bool:
     state = _HOST_FAILURES.get(normalize_address(address))
     return bool(state and state["consecutive"] >= UNREACHABLE_AFTER_FAILURES)
 
+
 def is_synthesised_identity(value) -> bool:
     """Whether an identity is a hash of the credentials rather than a device serial.
 
@@ -409,6 +419,7 @@ def is_synthesised_identity(value) -> bool:
     unique_id carries and a bare serial does not.
     """
     return bool(value) and bool(_SYNTHESISED_UNIQUE_ID.match(str(value)))
+
 
 async def async_network_identity(hass, address: str) -> dict:
     """What the device says about itself over DHDiscover, asked once per host.
@@ -435,9 +446,11 @@ async def async_network_identity(hass, address: str) -> dict:
             return _HOST_NETWORK_IDENTITY[address]
         # Imported here because discovery imports nothing from us but config_flow does.
         from .discovery import async_probe
+
         found = await async_probe(address)
         _HOST_NETWORK_IDENTITY[address] = found
         return found
+
 
 async def async_device_is_zero_indexed(client, device: str):
     """Whether this device numbers its channels from zero.
@@ -475,9 +488,12 @@ async def async_device_is_zero_indexed(client, device: str):
             # every other channel would then inherit.
             _LOGGER.debug(
                 "%s did not answer the channel numbering probe; leaving it undecided",
-                device, exc_info=True)
+                device,
+                exc_info=True,
+            )
             return None
     return _HOST_CHANNEL_BASE[device]
+
 
 @callback
 def async_record_host_auth_refusal(address: str, source: str = "") -> int:
@@ -520,6 +536,7 @@ def async_record_host_auth_refusal(address: str, source: str = "") -> int:
     state["auth_refusals"] = max(by_source.values())
     return state["auth_refusals"]
 
+
 @callback
 def async_record_host_success(hass: HomeAssistant, address: str) -> None:
     """The device answered, so withdraw anything we said about it.
@@ -531,6 +548,7 @@ def async_record_host_success(hass: HomeAssistant, address: str) -> None:
         return
     ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
     ir.async_delete_issue(hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address))
+
 
 def _acquire_connector(address: str) -> TCPConnector:
     """Returns the shared connector for this address, creating it if needed."""
@@ -545,6 +563,7 @@ def _acquire_connector(address: str) -> TCPConnector:
     holder[1] += 1
     return holder[0]
 
+
 async def _release_connector(address: str) -> None:
     """Drops a reference, closing the connector once nothing is using it."""
     address = normalize_address(address)
@@ -556,6 +575,7 @@ async def _release_connector(address: str) -> None:
         _HOST_CONNECTORS.pop(address, None)
         clear_host_cache(address)
         await holder[0].close()
+
 
 # Raw IVS event codes that can become Smart Motion events later in
 # DahuaDataUpdateCoordinator.translate_event_code(). The host-level filter runs
@@ -573,6 +593,7 @@ DERIVES_INTO = {
     "CrossLineDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
     "CrossRegionDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
 }
+
 
 class DahuaHostEventStream:
     """One event stream for a host, shared by every channel configured on it.
@@ -780,9 +801,7 @@ class DahuaHostEventStream:
                             self._address,
                         )
                     else:
-                        _LOGGER.debug(
-                            "Event stream for %s still silent", self._address
-                        )
+                        _LOGGER.debug("Event stream for %s still silent", self._address)
             except Exception as ex:  # pylint: disable=broad-except
                 # Credentials the device is refusing must stop being offered
                 # here too, not just on the poll. This stream backs off to at
@@ -796,11 +815,13 @@ class DahuaHostEventStream:
                 # while anything here is still authenticating.
                 if isinstance(ex, ClientResponseError) and ex.status == 401:
                     refusals = async_record_host_auth_refusal(
-                        self._address, "event stream")
+                        self._address, "event stream"
+                    )
                     if refusals >= MAX_AUTH_REFUSALS:
                         _LOGGER.warning(
                             "Event stream for %s stopped: the device refused these credentials %d times. It will start again once the credentials are re-entered",
-                            self._address, refusals,
+                            self._address,
+                            refusals,
                         )
                         return
 
@@ -812,7 +833,8 @@ class DahuaHostEventStream:
                     self._using_all_events = True
                     _LOGGER.warning(
                         "Event stream for %s refused a list of %d event codes with HTTP %s. Some firmware will not serve a long explicit list; subscribing to all events instead and filtering locally, which does not change which events reach Home Assistant",
-                        self._address, len(self._events),
+                        self._address,
+                        len(self._events),
                         getattr(ex, "status", "?"),
                     )
                     continue
@@ -929,7 +951,9 @@ class DahuaHostEventStream:
                         _LOGGER.warning(
                             "Unhandled error while handling a %s event from %s; "
                             "the event is dropped and the stream continues",
-                            event.get("Code", "?"), self._address, exc_info=True,
+                            event.get("Code", "?"),
+                            self._address,
+                            exc_info=True,
                         )
                 continue
 
@@ -952,11 +976,16 @@ class DahuaHostEventStream:
                     _LOGGER.warning(
                         "Unhandled error while handling a %s event from %s on channel %s; "
                         "the event is dropped and the stream continues",
-                        event.get("Code", "?"), self._address, index, exc_info=True,
+                        event.get("Code", "?"),
+                        self._address,
+                        index,
+                        exc_info=True,
                     )
+
 
 # address -> DahuaHostEventStream
 _HOST_STREAMS: Dict[str, DahuaHostEventStream] = {}
+
 
 def _host_stream(hass: HomeAssistant, address: str) -> DahuaHostEventStream:
     address = normalize_address(address)
@@ -964,6 +993,7 @@ def _host_stream(hass: HomeAssistant, address: str) -> DahuaHostEventStream:
     if stream is None:
         stream = _HOST_STREAMS[address] = DahuaHostEventStream(hass, address)
     return stream
+
 
 async def _release_host_stream(coordinator) -> None:
     address = normalize_address(coordinator.get_address())

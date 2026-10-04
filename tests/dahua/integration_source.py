@@ -27,8 +27,10 @@ DEFINITION_KINDS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 def modules() -> dict:
     """path -> source text, for every module in the integration."""
-    return {path: io.open(path, encoding="utf-8").read()
-            for path in sorted(PACKAGE.glob("*.py"))}
+    return {
+        path: io.open(path, encoding="utf-8").read()
+        for path in sorted(PACKAGE.glob("*.py"))
+    }
 
 
 def source() -> str:
@@ -56,4 +58,5 @@ def definition(name: str, kinds=DEFINITION_KINDS):
                 return node
     raise AssertionError(
         "no definition named %r in the integration. Looked in: %s"
-        % (name, ", ".join(looked)))
+        % (name, ", ".join(looked))
+    )

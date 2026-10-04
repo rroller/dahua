@@ -36,6 +36,7 @@ MEASURED = {
 
 # --- reading the protocol ----------------------------------------------------
 
+
 def test_the_measured_onvif_channel():
     assert remote_device_protocol(MEASURED, 10) == "onvif"
 
@@ -61,6 +62,7 @@ def test_a_reply_that_is_not_a_table(data):
 
 
 # --- and the question the setup actually asks --------------------------------
+
 
 def test_only_the_onvif_channel_is_flagged():
     assert is_onvif_channel(MEASURED, 10) is True

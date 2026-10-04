@@ -27,6 +27,7 @@ PROFILE_NAMES = {
 # so there is nothing to serialise: read only: every state comes from the coordinator.
 PARALLEL_UPDATES = 0
 
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
     for coordinator in entry_coordinators(entry).values():
@@ -46,8 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.supports_profile_mode():
             sensors.append(DahuaProfileSensor(coordinator, entry))
 
-        async_add_devices(
-            sensors, config_subentry_id=coordinator.subentry_id)
+        async_add_devices(sensors, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
@@ -163,7 +163,8 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
         listener" once per reload the entry has ever had.
         """
         self.async_on_remove(
-            self._coordinator.add_plate_listener(self.schedule_update_ha_state))
+            self._coordinator.add_plate_listener(self.schedule_update_ha_state)
+        )
 
     @property
     def should_poll(self) -> bool:

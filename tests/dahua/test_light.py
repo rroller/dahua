@@ -40,19 +40,21 @@ class _Client:
         self.light_brightness = 64
         self.light_field = "NearLight"
 
-    async def async_set_lighting_v2_mode(self, channel, mode, brightness,
-                                        profile_mode, light_index=0,
-                                        bank="MiddleLight"):
+    async def async_set_lighting_v2_mode(
+        self, channel, mode, brightness, profile_mode, light_index=0, bank="MiddleLight"
+    ):
         """The fallback path infrared takes once v1 has been refused."""
-        self.v2_modes.append((channel, mode, brightness, profile_mode,
-                              light_index, bank))
+        self.v2_modes.append(
+            (channel, mode, brightness, profile_mode, light_index, bank)
+        )
         if self.v2_refuses is not None:
             raise self.v2_refuses
         if not self.v2_ignores:
             self.infrared_mode = mode
 
-    async def async_set_lighting_v1_mode(self, channel, mode, brightness,
-                                         profile_mode="0", bank="MiddleLight"):
+    async def async_set_lighting_v1_mode(
+        self, channel, mode, brightness, profile_mode="0", bank="MiddleLight"
+    ):
         self.v1.append((channel, mode, brightness, profile_mode))
         self.v1_banks.append(bank)
         if self.v1_refuses is not None:
@@ -64,11 +66,13 @@ class _Client:
         if not self.v1_ignores:
             self.infrared_mode = mode
 
-    async def async_set_lighting_v1(self, channel, enabled, brightness,
-                                    profile_mode="0", bank="MiddleLight"):
+    async def async_set_lighting_v1(
+        self, channel, enabled, brightness, profile_mode="0", bank="MiddleLight"
+    ):
         """What the real client does with it: on is Manual, off is Off."""
         await self.async_set_lighting_v1_mode(
-            channel, "Manual" if enabled else "Off", brightness, profile_mode, bank)
+            channel, "Manual" if enabled else "Off", brightness, profile_mode, bank
+        )
 
     async def async_get_lighting_scheme_mode(self, channel, profile_mode):
         return self.scheme
@@ -87,12 +91,8 @@ class _Client:
     async def async_set_lighting_scheme(self, channel, profile_mode, mode):
         previous = self.scheme
         self.scheme = mode
-        self.scheme_writes.append(
-            (channel, profile_mode, mode)
-        )
-        self.operations.append(
-            ("scheme", channel, profile_mode, mode)
-        )
+        self.scheme_writes.append((channel, profile_mode, mode))
+        self.operations.append(("scheme", channel, profile_mode, mode))
         return previous
 
     async def async_get_lighting_v2_live_state(
@@ -317,9 +317,7 @@ def _light(cls, coordinator):
         entity._light_restore = None
         entity._last_brightness = 255
         entity._restore_store = _Store()
-        entity._seen_reboot_generation = (
-            coordinator.get_camera_reboot_generation()
-        )
+        entity._seen_reboot_generation = coordinator.get_camera_reboot_generation()
         entity._reboot_recovery_task = None
 
     return entity
@@ -327,23 +325,30 @@ def _light(cls, coordinator):
 
 # --- brightness conversion -------------------------------------------------
 
-@pytest.mark.parametrize("hass_value,expected", [
-    (0, 0),
-    (255, 100),
-    (128, 50),
-    (None, 100),   # no brightness given means full, not off
-])
+
+@pytest.mark.parametrize(
+    "hass_value,expected",
+    [
+        (0, 0),
+        (255, 100),
+        (128, 50),
+        (None, 100),  # no brightness given means full, not off
+    ],
+)
 def test_hass_brightness_maps_to_dahua_scale(hass_value, expected):
     assert dahua_utils.hass_brightness_to_dahua_brightness(hass_value) == expected
 
 
-@pytest.mark.parametrize("dahua_value,expected", [
-    ("0", 0),
-    ("100", 255),
-    ("50", 127),
-    ("", 255),     # blank means full
-    (None, 255),
-])
+@pytest.mark.parametrize(
+    "dahua_value,expected",
+    [
+        ("0", 0),
+        ("100", 255),
+        ("50", 127),
+        ("", 255),  # blank means full
+        (None, 255),
+    ],
+)
 def test_dahua_brightness_maps_back_to_hass_scale(dahua_value, expected):
     assert dahua_utils.dahua_brightness_to_hass_brightness(dahua_value) == expected
 
@@ -360,7 +365,10 @@ def test_the_two_conversions_agree_on_what_no_value_means():
 
     assert no_value_hass == 255, "full on the HASS scale"
     assert no_value_dahua == 100, "full on the Dahua scale"
-    assert dahua_utils.dahua_brightness_to_hass_brightness(str(no_value_dahua)) == no_value_hass
+    assert (
+        dahua_utils.dahua_brightness_to_hass_brightness(str(no_value_dahua))
+        == no_value_hass
+    )
 
 
 def test_full_and_off_survive_a_round_trip():
@@ -371,12 +379,14 @@ def test_full_and_off_survive_a_round_trip():
 
 # --- infrared light (v1 API) ----------------------------------------------
 
+
 async def test_infrared_turn_on_sends_the_channel_and_brightness():
     c = _Coordinator(channel=3)
     await _light(DahuaInfraredLight, c).async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
-    assert c.client.v1 == [(3, "Manual", 100, "1")], (
-        "the write must name the profile the camera is using, not 0")
+    assert c.client.v1 == [
+        (3, "Manual", 100, "1")
+    ], "the write must name the profile the camera is using, not 0"
     assert c.client.v2 == [], "the infrared light must not use the v2 API"
     assert c.refreshed == 1
 
@@ -410,15 +420,14 @@ def test_infrared_reads_state_from_the_coordinator():
 
 # --- illuminator (v2 API, carries the profile mode) ------------------------
 
+
 async def test_illuminator_passes_the_profile_mode_through():
     """Day/night handling rides on this argument and has regressed before."""
     c = _Coordinator(channel=2, profile_mode="1")
 
     await _light(DahuaIlluminator, c).async_turn_on(**{ATTR_BRIGHTNESS: 255})
 
-    assert c.client.v2 == [
-        (2, True, 100, "1", 0, "NearLight")
-    ]
+    assert c.client.v2 == [(2, True, 100, "1", 0, "NearLight")]
     assert c.client.v1 == [], "the illuminator must not use the v1 API"
 
 
@@ -501,6 +510,7 @@ async def test_scheme_illuminator_failed_write_preserves_entity_state(monkeypatc
 
 # --- identity --------------------------------------------------------------
 
+
 def test_the_two_lights_do_not_share_a_unique_id():
     """A collision would merge two different lights into one entity."""
     c = _Coordinator()
@@ -522,6 +532,7 @@ def test_name_is_prefixed_with_the_device_name():
 
 # --- Smart Dual Light restore regressions -----------------------------------
 
+
 async def test_duplicate_off_preserves_restored_camera_configuration():
     c = _Coordinator()
     light = _light(DahuaIlluminator, c)
@@ -535,7 +546,9 @@ async def test_duplicate_off_preserves_restored_camera_configuration():
 
     assert c.client.operations == operations
     assert (c.client.scheme, c.client.light_mode, c.client.light_brightness) == (
-        "AIMode", "Manual", 64
+        "AIMode",
+        "Manual",
+        64,
     )
 
 
@@ -555,8 +568,12 @@ async def test_brightness_update_keeps_original_profile_and_restore_snapshot():
 
 
 @pytest.mark.parametrize("restart", [False, True])
-@pytest.mark.parametrize("mode,brightness", [("Auto", 100), ("Off", 100), ("Manual", 42)])
-async def test_external_change_is_preserved_on_off_and_restart(restart, mode, brightness):
+@pytest.mark.parametrize(
+    "mode,brightness", [("Auto", 100), ("Off", 100), ("Manual", 42)]
+)
+async def test_external_change_is_preserved_on_off_and_restart(
+    restart, mode, brightness
+):
     c = _Coordinator()
     light = _light(DahuaIlluminator, c)
     await light.async_turn_on()
@@ -632,7 +649,9 @@ async def test_interrupted_restore_resumes_after_restart(monkeypatch):
     assert await recovered_light._recover_persisted_override() is True
     assert light._restore_store.data is None
     assert (c.client.scheme, c.client.light_mode, c.client.light_brightness) == (
-        "AIMode", "Manual", 64
+        "AIMode",
+        "Manual",
+        64,
     )
 
 

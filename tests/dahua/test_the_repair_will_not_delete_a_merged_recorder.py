@@ -62,8 +62,12 @@ def _entry(hass, *, channel=0, title=None):
         title=title or f"Ch{channel}",
         unique_id=f"SERIAL_{channel}" if channel else "SERIAL",
         data={
-            "username": "u", "password": "p", "address": ADDRESS,
-            "port": "80", "rtsp_port": "554", "channel": channel,
+            "username": "u",
+            "password": "p",
+            "address": ADDRESS,
+            "port": "80",
+            "rtsp_port": "554",
+            "channel": channel,
             "name": title or f"Ch{channel}",
         },
     )
@@ -80,12 +84,15 @@ def _merged_entry(hass):
     """
     entry = _entry(hass, channel=0, title="Gerty New")
     for index in (0, 1, 3, 4):
-        hass.config_entries.async_add_subentry(entry, ConfigSubentry(
-            data={"channel": index, "name": f"Ch{index}"},
-            subentry_type=CHANNEL_SUBENTRY,
-            title=f"Ch{index}",
-            unique_id=f"{ADDRESS}-{index}",
-        ))
+        hass.config_entries.async_add_subentry(
+            entry,
+            ConfigSubentry(
+                data={"channel": index, "name": f"Ch{index}"},
+                subentry_type=CHANNEL_SUBENTRY,
+                title=f"Ch{index}",
+                unique_id=f"{ADDRESS}-{index}",
+            ),
+        )
     assert entry.subentries, "the merged entry must really have subentries"
     return entry
 
@@ -104,8 +111,9 @@ async def test_the_flow_will_not_remove_a_merged_recorder(hass):
     await _flow(hass).async_step_confirm({})
     await hass.async_block_till_done()
 
-    assert hass.config_entries.async_get_entry(merged.entry_id) is not None, (
-        "the merged recorder was deleted by the repair meant to tidy up after it")
+    assert (
+        hass.config_entries.async_get_entry(merged.entry_id) is not None
+    ), "the merged recorder was deleted by the repair meant to tidy up after it"
 
 
 async def test_the_flow_still_removes_entries_that_were_never_merged(hass):
@@ -146,12 +154,15 @@ async def test_a_camera_that_holds_one_channel_is_a_leftover_however_it_is_shape
     the guard has always meant, and gives all three the same answer.
     """
     one_subentry = _entry(hass, channel=7, title="Front Door")
-    hass.config_entries.async_add_subentry(one_subentry, ConfigSubentry(
-        data={"channel": 7, "name": "Front Door"},
-        subentry_type=CHANNEL_SUBENTRY,
-        title="Front Door",
-        unique_id=f"{ADDRESS}-7",
-    ))
+    hass.config_entries.async_add_subentry(
+        one_subentry,
+        ConfigSubentry(
+            data={"channel": 7, "name": "Front Door"},
+            subentry_type=CHANNEL_SUBENTRY,
+            title="Front Door",
+            unique_id=f"{ADDRESS}-7",
+        ),
+    )
     assert one_subentry.subentries, "the shape under test needs its subentry"
 
     flat = _entry(hass, channel=8, title="Side Gate")
@@ -160,8 +171,9 @@ async def test_a_camera_that_holds_one_channel_is_a_leftover_however_it_is_shape
     await _flow(hass).async_step_confirm({})
     await hass.async_block_till_done()
 
-    assert hass.config_entries.async_get_entry(one_subentry.entry_id) is None, (
-        "a one channel entry was protected because of how it was shaped")
+    assert (
+        hass.config_entries.async_get_entry(one_subentry.entry_id) is None
+    ), "a one channel entry was protected because of how it was shaped"
     assert hass.config_entries.async_get_entry(flat.entry_id) is None
 
 

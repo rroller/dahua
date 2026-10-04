@@ -92,8 +92,8 @@ async def test_close_releases_the_rpc2_session():
 
 async def test_close_is_safe_to_call_twice_and_without_use():
     c = _client(_Session({}))
-    await c.close()          # never used a session
-    await c.close()          # and again
+    await c.close()  # never used a session
+    await c.close()  # and again
 
     session = c._rpc2_session()
     await c.close()

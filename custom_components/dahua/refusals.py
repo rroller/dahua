@@ -112,7 +112,11 @@ def remember(coordinator, control: str, described: str) -> None:
         "%s will not operate its %s on channel %s (%s), so Home Assistant will "
         "stop asking. Reload the entry to try again after changing anything on "
         "the device",
-        coordinator.get_address(), control, coordinator.get_channel(), described)
+        coordinator.get_address(),
+        control,
+        coordinator.get_channel(),
+        described,
+    )
 
 
 def forget(coordinator=None, control: str | None = None) -> None:

@@ -45,13 +45,21 @@ class _Session:
 
 @pytest.fixture(autouse=True)
 def _clean_shared_state():
-    for store in (client_module._HOST_CACHE, client_module._HOST_DIGEST_STATE,
-                  client_module._HOST_RPC2, client_module._HOST_LIMITS):
+    for store in (
+        client_module._HOST_CACHE,
+        client_module._HOST_DIGEST_STATE,
+        client_module._HOST_RPC2,
+        client_module._HOST_LIMITS,
+    ):
         store.clear()
     client_module._HOST_RPC2_UNAVAILABLE.clear()
     yield
-    for store in (client_module._HOST_CACHE, client_module._HOST_DIGEST_STATE,
-                  client_module._HOST_RPC2, client_module._HOST_LIMITS):
+    for store in (
+        client_module._HOST_CACHE,
+        client_module._HOST_DIGEST_STATE,
+        client_module._HOST_RPC2,
+        client_module._HOST_LIMITS,
+    ):
         store.clear()
     client_module._HOST_RPC2_UNAVAILABLE.clear()
 
@@ -99,12 +107,12 @@ async def test_a_write_to_one_device_leaves_the_other_cached():
     await b.get(MACHINE_NAME)
     assert len(session.urls) == 2
 
-    await a.get(A_WRITE)                      # clears device :80 only
+    await a.get(A_WRITE)  # clears device :80 only
 
-    await b.get(MACHINE_NAME)                 # still cached
+    await b.get(MACHINE_NAME)  # still cached
     assert len(session.urls) == 3, "the write cleared the other device too"
 
-    await a.get(MACHINE_NAME)                 # must go back to the device
+    await a.get(MACHINE_NAME)  # must go back to the device
     assert len(session.urls) == 4
 
 
@@ -126,16 +134,26 @@ async def test_the_digest_challenge_is_not_carried_between_devices():
     """A nonce is issued by one box and means nothing to another."""
     session = _Session()
 
-    assert _client(session, port=80)._digest_state is not _client(session, port=81)._digest_state
-    assert _client(session, port=80)._digest_state is _client(session, port=80)._digest_state
+    assert (
+        _client(session, port=80)._digest_state
+        is not _client(session, port=81)._digest_state
+    )
+    assert (
+        _client(session, port=80)._digest_state
+        is _client(session, port=80)._digest_state
+    )
 
 
 async def test_the_rpc2_session_is_not_carried_between_devices():
     """A session id is scoped to the box that issued it."""
     session = _Session()
 
-    assert _client(session, port=80)._rpc2_key() != _client(session, port=81)._rpc2_key()
-    assert _client(session, port=80)._rpc2_key() == _client(session, port=80)._rpc2_key()
+    assert (
+        _client(session, port=80)._rpc2_key() != _client(session, port=81)._rpc2_key()
+    )
+    assert (
+        _client(session, port=80)._rpc2_key() == _client(session, port=80)._rpc2_key()
+    )
 
 
 async def test_the_request_budget_is_still_shared_by_address():
@@ -148,4 +166,6 @@ async def test_the_request_budget_is_still_shared_by_address():
     """
     session = _Session()
 
-    assert _client(session, port=80)._host_limit is _client(session, port=81)._host_limit
+    assert (
+        _client(session, port=80)._host_limit is _client(session, port=81)._host_limit
+    )

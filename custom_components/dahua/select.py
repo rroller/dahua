@@ -1,4 +1,5 @@
 """Select entity platform for Dahua."""
+
 import logging
 
 from homeassistant.core import HomeAssistant
@@ -11,8 +12,11 @@ from . import dahua_utils
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .infrared import (
-    MODE_BY_OPTION, OPTION_BY_MODE, async_write_infrared_mode,
-    infrared_write_is_refused)
+    MODE_BY_OPTION,
+    OPTION_BY_MODE,
+    async_write_infrared_mode,
+    infrared_write_is_refused,
+)
 from .model_profiles import is_sdt4e425
 
 _LOGGER = logging.getLogger(__package__)
@@ -24,6 +28,7 @@ _LOGGER = logging.getLogger(__package__)
 # coordinator does not help here, since it only centralises inbound reads and
 # leaves outbound actions uncontrolled.
 PARALLEL_UPDATES = 1
+
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup select platform."""
@@ -52,7 +57,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             # which keeps the ten-entry list for a device that has nothing to
             # move.
             _LOGGER.debug(
-                "Indoor monitor without a camera, so no Preset Position control")
+                "Indoor monitor without a camera, so no Preset Position control"
+            )
         else:
             preset_ids = await _async_preset_ids(coordinator)
             if preset_ids == []:
@@ -65,7 +71,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
                 # Not the same as None, which is the device declining to answer.
                 # Saving a preset and reloading the entry brings the control back.
                 _LOGGER.debug(
-                    "Camera reports no presets, so no Preset Position control")
+                    "Camera reports no presets, so no Preset Position control"
+                )
             elif preset_ids is None and coordinator.reported_device_class() == "VTO":
                 # A refusal keeps the ten-entry list, for cameras that refuse the
                 # query but drive GotoPreset. A door station has no motor to
@@ -74,11 +81,14 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
                 # presets 1 to 10. Decided on its own answer, not on is_doorbell,
                 # whose model-name list also matches devices that never said so.
                 _LOGGER.debug(
-                    "A VTO that will not list presets has none, so no Preset Position control")
+                    "A VTO that will not list presets has none, so no Preset Position control"
+                )
             else:
                 devices.append(
                     DahuaCameraPresetPositionSelect(
-                        coordinator, entry, preset_ids=preset_ids))
+                        coordinator, entry, preset_ids=preset_ids
+                    )
+                )
 
         if coordinator.supports_day_night_color():
             devices.append(DahuaDayNightModeSelect(coordinator, entry))
@@ -94,9 +104,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             for vto in links.get("vtos") or {}:
                 devices.append(DahuaVthCameraLinkSelect(coordinator, entry, vto))
 
-        async_add_devices(
-            devices, config_subentry_id=coordinator.subentry_id)
-
+        async_add_devices(devices, config_subentry_id=coordinator.subentry_id)
 
 
 async def _async_preset_ids(coordinator):
@@ -124,7 +132,8 @@ async def _async_preset_ids(coordinator):
     """
     try:
         data = await coordinator.client.async_get_ptz_presets(
-            coordinator.get_channel_number())
+            coordinator.get_channel_number()
+        )
     except Exception:  # pylint: disable=broad-except
         _LOGGER.debug("Could not read the preset list", exc_info=True)
         return None
@@ -156,7 +165,9 @@ class DahuaDoorbellLightSelect(DahuaBaseEntity, SelectEntity):
         return "Off"
 
     async def async_select_option(self, option: str) -> None:
-        await self._coordinator.client.async_set_lighting_v2_for_amcrest_doorbells(option)
+        await self._coordinator.client.async_set_lighting_v2_for_amcrest_doorbells(
+            option
+        )
         await self._coordinator.async_refresh()
 
     @property
@@ -206,8 +217,7 @@ class DahuaInfraredModeSelect(DahuaBaseEntity, SelectEntity):
         `brightness_level` are read off the same table and are correct, so the
         reading half of this is still useful where the writing half is not.
         """
-        return (super().available
-                and not infrared_write_is_refused(self._coordinator))
+        return super().available and not infrared_write_is_refused(self._coordinator)
 
     @property
     def current_option(self):
@@ -228,7 +238,8 @@ class DahuaInfraredModeSelect(DahuaBaseEntity, SelectEntity):
         # quietly change the brightness as well. Full only when it reports none.
         level = self._coordinator.get_infrared_level()
         await async_write_infrared_mode(
-            self._coordinator, mode, 100 if level is None else level)
+            self._coordinator, mode, 100 if level is None else level
+        )
 
 
 class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
@@ -237,8 +248,12 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
     _attr_translation_key = "preset_position"
 
     def __init__(
-        self, coordinator: DahuaDataUpdateCoordinator, config_entry,
-        *, preset_ids: list[int] | None = None, rpc2_channel: int | None = None,
+        self,
+        coordinator: DahuaDataUpdateCoordinator,
+        config_entry,
+        *,
+        preset_ids: list[int] | None = None,
+        rpc2_channel: int | None = None,
     ):
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
         SelectEntity.__init__(self)
@@ -247,7 +262,19 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
         suffix = "1_preset_position" if rpc2_channel == 1 else "preset_position"
         self._attr_unique_id = f"{coordinator.get_serial_number()}_{suffix}"
         if preset_ids is None:
-            self._attr_options = ["Manual", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+            self._attr_options = [
+                "Manual",
+                "1",
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8",
+                "9",
+                "10",
+            ]
         else:
             self._attr_options = ["Manual", *[str(value) for value in preset_ids]]
 
@@ -271,7 +298,9 @@ class DahuaCameraPresetPositionSelect(DahuaBaseEntity, SelectEntity):
             )
         else:
             channel = self._coordinator.get_channel_number()
-            await self._coordinator.client.async_goto_preset_position(channel, int(option))
+            await self._coordinator.client.async_goto_preset_position(
+                channel, int(option)
+            )
         await self._coordinator.async_refresh()
 
     @property
@@ -314,7 +343,8 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
         if option not in self._attr_options:
             return
         await self._coordinator.client.async_set_video_in_day_night_mode(
-            self._coordinator.get_channel(), "general", option)
+            self._coordinator.get_channel(), "general", option
+        )
         await self._coordinator.async_refresh()
 
 
@@ -347,12 +377,15 @@ class DahuaVthCameraLinkSelect(DahuaBaseEntity, SelectEntity):
         super().__init__(coordinator, config_entry)
         self._coordinator = coordinator
         self._vto = vto
-        self._attr_translation_placeholders = {"vto": self._vto_entry().get("name") or vto}
+        self._attr_translation_placeholders = {
+            "vto": self._vto_entry().get("name") or vto
+        }
 
     @property
     def unique_id(self):
         return "{0}_camera_link_{1}".format(
-            self._coordinator.get_serial_number(), self._vto.lower())
+            self._coordinator.get_serial_number(), self._vto.lower()
+        )
 
     def _links(self) -> dict:
         return self._coordinator.get_vth_camera_links() or {}
@@ -399,7 +432,9 @@ class DahuaVthCameraLinkSelect(DahuaBaseEntity, SelectEntity):
         camera = self._choices().get(option)
         if camera is None:
             return
-        landed = await self._coordinator.client.async_set_vth_camera_link(self._vto, camera)
+        landed = await self._coordinator.client.async_set_vth_camera_link(
+            self._vto, camera
+        )
         await self._coordinator.async_refresh()
         if not landed:
             raise HomeAssistantError(

@@ -67,15 +67,28 @@ def _clear_probe_cache():
 
 # --- telling a hash from a serial -------------------------------------------
 
+
 @pytest.mark.parametrize("value", [HASH, HASH + "_1", HASH + "_11"])
 def test_a_credentials_hash_is_recognised(value):
     assert is_synthesised_identity(value) is True
 
 
-@pytest.mark.parametrize("value", [
-    SERIAL, SERIAL + "_3", "3C06520PAN00001", "", None, 0,
-    HASH[:31], HASH + "abc", HASH.upper(), HASH + "_", HASH + "_x",
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        SERIAL,
+        SERIAL + "_3",
+        "3C06520PAN00001",
+        "",
+        None,
+        0,
+        HASH[:31],
+        HASH + "abc",
+        HASH.upper(),
+        HASH + "_",
+        HASH + "_x",
+    ],
+)
 def test_anything_else_is_left_alone(value):
     """A real serial is shorter, upper case and not hex. `md5().hexdigest()` is lower
     case, so an upper case 32 character string is not one of ours."""
@@ -83,6 +96,7 @@ def test_anything_else_is_left_alone(value):
 
 
 # --- asked once per host ----------------------------------------------------
+
 
 def _stub_probe(monkeypatch, answer, record=None):
     async def _probe(address):
@@ -139,13 +153,15 @@ async def test_simultaneous_callers_share_one_probe(monkeypatch):
 
     monkeypatch.setattr(discovery_module, "async_probe", _probe)
 
-    await asyncio.gather(*[
-        async_network_identity(SimpleNamespace(), ADDRESS) for _ in range(5)])
+    await asyncio.gather(
+        *[async_network_identity(SimpleNamespace(), ADDRESS) for _ in range(5)]
+    )
 
     assert calls == [ADDRESS]
 
 
 # --- new adds prefer the network serial too --------------------------------
+
 
 class _Client:
     def __init__(self, serial, *args, **kwargs):
@@ -166,8 +182,7 @@ def _flow(monkeypatch, serial, probe_answer, probed=None):
 
     monkeypatch.setattr(flow_module, "ClientSession", lambda **kw: _Session())
     monkeypatch.setattr(flow_module, "TCPConnector", lambda **kw: None)
-    monkeypatch.setattr(flow_module, "DahuaClient",
-                        lambda *a, **kw: _Client(serial))
+    monkeypatch.setattr(flow_module, "DahuaClient", lambda *a, **kw: _Client(serial))
 
     async def _probe(address):
         if probed is not None:
@@ -182,7 +197,8 @@ async def test_a_new_add_prefers_the_network_serial(monkeypatch):
     handler = _flow(monkeypatch, HASH, {"SerialNo": SERIAL})
 
     data, error = await handler._test_credentials(
-        "admin", "pw", ADDRESS, "80", "554", 0)
+        "admin", "pw", ADDRESS, "80", "554", 0
+    )
 
     assert error is None
     assert data["serialNumber"] == SERIAL, "a new entry took the credentials hash"
@@ -193,7 +209,8 @@ async def test_a_device_that_identifies_itself_is_not_probed(monkeypatch):
     handler = _flow(monkeypatch, SERIAL, {"SerialNo": "SOMETHING-ELSE"}, probed)
 
     data, _error = await handler._test_credentials(
-        "admin", "pw", ADDRESS, "80", "554", 0)
+        "admin", "pw", ADDRESS, "80", "554", 0
+    )
 
     assert probed == [], "it probed a device that answered over HTTP"
     assert data["serialNumber"] == SERIAL
@@ -203,17 +220,22 @@ async def test_a_new_add_keeps_the_hash_when_the_probe_is_silent(monkeypatch):
     handler = _flow(monkeypatch, HASH, {})
 
     data, _error = await handler._test_credentials(
-        "admin", "pw", ADDRESS, "80", "554", 0)
+        "admin", "pw", ADDRESS, "80", "554", 0
+    )
 
     assert data["serialNumber"] == HASH
 
 
 # --- the migration ----------------------------------------------------------
 
+
 def _entry(unique_id, channel=0, address=ADDRESS, entry_id="e1", title="Cam"):
     return SimpleNamespace(
-        unique_id=unique_id, entry_id=entry_id, title=title,
-        data={CONF_ADDRESS: address, CONF_CHANNEL: channel})
+        unique_id=unique_id,
+        entry_id=entry_id,
+        title=title,
+        data={CONF_ADDRESS: address, CONF_CHANNEL: channel},
+    )
 
 
 def _hass(entries=()):
@@ -227,8 +249,10 @@ def _hass(entries=()):
     return SimpleNamespace(
         config_entries=SimpleNamespace(
             async_entries=lambda domain: list(entries),
-            async_update_entry=async_update_entry),
-        _updated=updated)
+            async_update_entry=async_update_entry,
+        ),
+        _updated=updated,
+    )
 
 
 async def test_a_device_with_a_real_serial_is_never_even_probed(monkeypatch):
@@ -311,6 +335,7 @@ async def test_nothing_is_written_when_the_id_already_matches(monkeypatch):
 
 # --- the case it must refuse to resolve ------------------------------------
 
+
 async def test_a_serial_already_held_by_another_entry_is_not_taken(monkeypatch):
     """#320: the camera is configured twice. Both entries have their own entities and
     history, so picking one would silently destroy somebody's data."""
@@ -323,7 +348,9 @@ async def test_a_serial_already_held_by_another_entry_is_not_taken(monkeypatch):
     assert hass._updated == [], "it moved onto an id another entry already holds"
 
 
-async def test_the_entry_being_migrated_is_in_the_list_and_does_not_block_itself(monkeypatch):
+async def test_the_entry_being_migrated_is_in_the_list_and_does_not_block_itself(
+    monkeypatch,
+):
     """Its own row is in `async_entries`, and it must not read as a collision with
     itself. It cannot: its id is md5 shaped and the target is a device serial, and the
     one case where those are equal returns at the matching-id check above. That is why
@@ -350,6 +377,7 @@ async def test_a_collision_on_another_channel_does_not_block_this_one(monkeypatc
 
 # --- and the migration has to actually be called ---------------------------
 
+
 def test_setup_calls_the_migration():
     """A helper that works and a setup that never calls it is the failure this repo keeps
     shipping, and driving the real `async_setup_entry` needs the whole of Home Assistant.
@@ -362,9 +390,11 @@ def test_setup_calls_the_migration():
     from .integration_source import definition
 
     setup = definition("async_setup_entry")
-    called = {ast.unparse(node.func) for node in ast.walk(setup)
-              if isinstance(node, ast.Call)}
+    called = {
+        ast.unparse(node.func) for node in ast.walk(setup) if isinstance(node, ast.Call)
+    }
 
     assert "async_migrate_synthesised_unique_id" in called, (
         "async_setup_entry does not call the migration, so no existing entry is ever "
-        "re-identified")
+        "re-identified"
+    )

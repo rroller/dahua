@@ -106,6 +106,7 @@ def _light(cls, coordinator=None):
 
 # --- what each light says it can do -----------------------------------------
 
+
 @pytest.mark.parametrize("cls", DIMMABLE)
 def test_a_dimmable_light_reports_brightness(cls):
     """Home Assistant draws the brightness slider from this. Reporting ONOFF here
@@ -145,12 +146,16 @@ def test_the_lights_with_effects_say_so(cls):
 
 # --- and whether it is on ---------------------------------------------------
 
-@pytest.mark.parametrize("cls, attribute", [
-    (DahuaInfraredLight, "infrared_on"),
-    (FloodLight, "flood_on"),
-    (DahuaSecurityLight, "security_on"),
-    (AmcrestRingLight, "ring_on"),
-])
+
+@pytest.mark.parametrize(
+    "cls, attribute",
+    [
+        (DahuaInfraredLight, "infrared_on"),
+        (FloodLight, "flood_on"),
+        (DahuaSecurityLight, "security_on"),
+        (AmcrestRingLight, "ring_on"),
+    ],
+)
 @pytest.mark.parametrize("state", [True, False])
 def test_each_light_reads_its_own_state(cls, attribute, state):
     """Four lights, four different questions to the coordinator. They are one line
@@ -163,10 +168,12 @@ def test_each_light_reads_its_own_state(cls, attribute, state):
 
 # --- which lights a device gets ---------------------------------------------
 
+
 async def _built(hass, **capabilities):
     added = []
-    entry = SimpleNamespace(entry_id="e1",
-                            runtime_data={0: _Coordinator(**capabilities)})
+    entry = SimpleNamespace(
+        entry_id="e1", runtime_data={0: _Coordinator(**capabilities)}
+    )
     await async_setup_entry(hass, entry, adds_entities(added))
     return [type(entity) for entity in added]
 
@@ -178,13 +185,16 @@ async def test_a_camera_with_nothing_gets_no_lights(hass):
     assert await _built(hass) == []
 
 
-@pytest.mark.parametrize("capability, cls", [
-    ("supports_infrared_light", DahuaInfraredLight),
-    ("supports_illuminator", DahuaIlluminator),
-    ("is_flood_light", FloodLight),
-    ("creates_security_light_entity", DahuaSecurityLight),
-    ("is_amcrest_doorbell", AmcrestRingLight),
-])
+@pytest.mark.parametrize(
+    "capability, cls",
+    [
+        ("supports_infrared_light", DahuaInfraredLight),
+        ("supports_illuminator", DahuaIlluminator),
+        ("is_flood_light", FloodLight),
+        ("creates_security_light_entity", DahuaSecurityLight),
+        ("is_amcrest_doorbell", AmcrestRingLight),
+    ],
+)
 async def test_each_capability_adds_its_own_light(hass, capability, cls):
     """Five conditions, five different questions. Each is tested alone so that one
     of them answering for another cannot pass unnoticed."""
@@ -194,8 +204,9 @@ async def test_each_capability_adds_its_own_light(hass, capability, cls):
 async def test_a_device_can_have_several_at_once(hass):
     """An NVR channel with a deterrence camera on it really does have both, and
     the entities are independent."""
-    built = await _built(hass, supports_illuminator=True,
-                         creates_security_light_entity=True)
+    built = await _built(
+        hass, supports_illuminator=True, creates_security_light_entity=True
+    )
 
     assert set(built) == {DahuaIlluminator, DahuaSecurityLight}
 
@@ -205,8 +216,14 @@ async def test_a_recorder_calls_its_deterrence_light_a_warning_light(hass):
     light in its own UI, and calling it a security light there sends people looking
     for a setting under the wrong name."""
     added = []
-    entry = SimpleNamespace(entry_id="e1", runtime_data={0: _Coordinator(
-        creates_security_light_entity=True, uses_recorder_deterrence=True)})
+    entry = SimpleNamespace(
+        entry_id="e1",
+        runtime_data={
+            0: _Coordinator(
+                creates_security_light_entity=True, uses_recorder_deterrence=True
+            )
+        },
+    )
 
     await async_setup_entry(hass, entry, adds_entities(added))
 
@@ -216,8 +233,10 @@ async def test_a_recorder_calls_its_deterrence_light_a_warning_light(hass):
 async def test_a_camera_calls_it_a_security_light(hass):
     """The negative control for the line above."""
     added = []
-    entry = SimpleNamespace(entry_id="e1", runtime_data={0: _Coordinator(
-        creates_security_light_entity=True)})
+    entry = SimpleNamespace(
+        entry_id="e1",
+        runtime_data={0: _Coordinator(creates_security_light_entity=True)},
+    )
 
     await async_setup_entry(hass, entry, adds_entities(added))
 

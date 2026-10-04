@@ -53,6 +53,7 @@ def _illuminator(client):
 
 # --- a device that refuses ---------------------------------------------------
 
+
 async def test_a_refusing_device_is_asked_exactly_once():
     client = _Client(Exception("400, message='Bad Request'"))
     entity = _illuminator(client)
@@ -72,6 +73,7 @@ async def test_the_command_still_succeeds_when_the_read_is_refused():
 
 
 # --- a device that answers is unaffected -------------------------------------
+
 
 async def test_a_device_that_answers_is_asked_every_time():
     """The scheme is something the user can change on the camera at any moment,
@@ -122,9 +124,11 @@ def _warnings(caplog):
     `__package__` and arrives as `custom_components.dahua`. An equality check here
     found nothing while the warning was being emitted perfectly well.
     """
-    return [r for r in caplog.records
-            if r.levelno >= logging.WARNING
-            and r.name.startswith("custom_components.dahua")]
+    return [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name.startswith("custom_components.dahua")
+    ]
 
 
 async def test_a_device_that_cannot_answer_says_so_once(caplog):
@@ -189,12 +193,21 @@ def test_turning_the_light_on_actually_performs_the_check():
 
     source = inspect.getsource(light_module)
     tree = ast.parse(source)
-    cls = next(n for n in tree.body
-               if isinstance(n, ast.ClassDef) and n.name == "DahuaIlluminator")
-    turn_on = next(n for n in cls.body
-                   if isinstance(n, ast.AsyncFunctionDef) and n.name == "async_turn_on")
+    cls = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "DahuaIlluminator"
+    )
+    turn_on = next(
+        n
+        for n in cls.body
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "async_turn_on"
+    )
 
-    called = {ast.unparse(node.func) for node in ast.walk(turn_on)
-              if isinstance(node, ast.Call)}
+    called = {
+        ast.unparse(node.func)
+        for node in ast.walk(turn_on)
+        if isinstance(node, ast.Call)
+    }
 
     assert "self._warn_if_the_scheme_blocks_it" in called, sorted(called)

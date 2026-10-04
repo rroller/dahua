@@ -76,10 +76,13 @@ def test_the_failure_list_names_all_three_checks(getter):
     assert any("Manual override" in line for line in answer), answer
 
 
-@pytest.mark.parametrize("getter, attribute", [
-    ("get_siren_detection_sources", "_siren_detection_failures"),
-    ("get_security_light_detection_sources", "_security_light_detection_failures"),
-])
+@pytest.mark.parametrize(
+    "getter, attribute",
+    [
+        ("get_siren_detection_sources", "_siren_detection_failures"),
+        ("get_security_light_detection_sources", "_security_light_detection_failures"),
+    ],
+)
 def test_a_recorded_failure_is_not_overwritten_by_the_generic_line(getter, attribute):
     """Real recorded evidence is more specific than "has not run", so it wins."""
     answer = getattr(_coordinator(**{attribute: ["RPC2 refused getCaps"]}), getter)()
@@ -88,12 +91,17 @@ def test_a_recorded_failure_is_not_overwritten_by_the_generic_line(getter, attri
     assert not any("has not run" in line for line in answer), answer
 
 
-@pytest.mark.parametrize("getter, attribute", [
-    ("get_siren_detection_sources", "_siren_detection_sources"),
-    ("get_security_light_detection_sources", "_security_light_detection_sources"),
-])
+@pytest.mark.parametrize(
+    "getter, attribute",
+    [
+        ("get_siren_detection_sources", "_siren_detection_sources"),
+        ("get_security_light_detection_sources", "_security_light_detection_sources"),
+    ],
+)
 def test_positive_evidence_is_returned_instead_of_the_failures(getter, attribute):
-    answer = getattr(_coordinator(**{attribute: ["ProductDefinition says yes"]}), getter)()
+    answer = getattr(
+        _coordinator(**{attribute: ["ProductDefinition says yes"]}), getter
+    )()
 
     assert answer == ["ProductDefinition says yes"]
 
@@ -101,10 +109,17 @@ def test_positive_evidence_is_returned_instead_of_the_failures(getter, attribute
 # --- the model whitelists, named so that losing one is a red test ------------
 
 
-@pytest.mark.parametrize("model", [
-    "IPC-HDW3849HP-AS-PV", "IP8M-2796E-something", "IPC-COLOR4M-TZ-A",
-    "PTZ3E10X-T180", "AD410", "DB61I",
-])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "IPC-HDW3849HP-AS-PV",
+        "IP8M-2796E-something",
+        "IPC-COLOR4M-TZ-A",
+        "PTZ3E10X-T180",
+        "AD410",
+        "DB61I",
+    ],
+)
 def test_a_whitelisted_model_reports_its_security_light_fallback(model):
     """PTZ3E10X-T180 was the uncovered one. These are the bug class of #570, #676 and
     #690, so each is pinned by name rather than by "some model matched"."""
@@ -114,9 +129,15 @@ def test_a_whitelisted_model_reports_its_security_light_fallback(model):
     assert not any("no matching" in line for line in answer), (model, answer)
 
 
-@pytest.mark.parametrize("model", [
-    "IPC-HDW3849HP-AS-PV", "TPC-BF1241-something", "W452ASD-x", "DH-L46N",
-])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "IPC-HDW3849HP-AS-PV",
+        "TPC-BF1241-something",
+        "W452ASD-x",
+        "DH-L46N",
+    ],
+)
 def test_a_whitelisted_model_reports_its_siren_fallback(model):
     answer = _coordinator(model=model).get_siren_detection_sources()
 
@@ -153,7 +174,8 @@ def test_a_doorbell_is_told_why_its_override_was_ignored():
     """The override is excluded for doorbells, and a user who set it deserves to see
     that rather than a bare "disabled"."""
     answer = _coordinator(
-        _manual_siren=True, is_doorbell=lambda: True).get_siren_detection_sources()
+        _manual_siren=True, is_doorbell=lambda: True
+    ).get_siren_detection_sources()
 
     assert any("excluded for doorbell" in line for line in answer), answer
 
@@ -187,7 +209,8 @@ def test_the_recorder_wins_over_the_ptz_model():
     """Both can be true on a recorder with that camera attached, and the order decides
     which write shape is used."""
     coordinator = _coordinator(
-        uses_recorder_deterrence=lambda: True, is_ptz3e10x_t180=lambda: True)
+        uses_recorder_deterrence=lambda: True, is_ptz3e10x_t180=lambda: True
+    )
 
     assert coordinator.get_security_light_control_channel() == CHANNEL_NUMBER
 
@@ -240,13 +263,16 @@ def test_the_fold_does_not_make_everything_match():
 def test_the_plate_metadata_is_a_dict_even_before_one_is_read():
     """Callers index into it, so `None` here would be a TypeError on a fresh device."""
     assert _coordinator(_last_plate_data=None).get_last_plate_data() == {}
-    assert _coordinator(
-        _last_plate_data={"plate": "A"}).get_last_plate_data() == {"plate": "A"}
+    assert _coordinator(_last_plate_data={"plate": "A"}).get_last_plate_data() == {
+        "plate": "A"
+    }
 
 
 def test_the_plate_timestamp_and_reboot_generation_are_surfaced():
-    assert _coordinator(_last_plate_timestamp=1620477656).get_last_plate_timestamp() \
+    assert (
+        _coordinator(_last_plate_timestamp=1620477656).get_last_plate_timestamp()
         == 1620477656
+    )
     assert _coordinator(_camera_reboot_generation=2).get_camera_reboot_generation() == 2
 
 
@@ -254,8 +280,8 @@ def test_an_event_that_has_never_fired_has_timestamp_zero():
     """Binary sensors subtract this from now, so `None` would be a TypeError and a
     missing key has to read as "not recently"."""
     coordinator = _coordinator(
-        _dahua_event_timestamp={},
-        get_event_key=lambda name: "key_%s" % name)
+        _dahua_event_timestamp={}, get_event_key=lambda name: "key_%s" % name
+    )
 
     assert coordinator.get_event_timestamp("CrossLineDetection") == 0
 
@@ -263,6 +289,7 @@ def test_an_event_that_has_never_fired_has_timestamp_zero():
 def test_an_event_that_has_fired_reports_when():
     coordinator = _coordinator(
         _dahua_event_timestamp={"key_VideoMotion": 1620477656},
-        get_event_key=lambda name: "key_%s" % name)
+        get_event_key=lambda name: "key_%s" % name,
+    )
 
     assert coordinator.get_event_timestamp("VideoMotion") == 1620477656

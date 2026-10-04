@@ -35,7 +35,9 @@ SERVICES_YAML = PACKAGE / "services.yaml"
 def _described():
     """The service names services.yaml describes."""
     loaded = yaml.safe_load(SERVICES_YAML.read_text(encoding="utf-8"))
-    assert isinstance(loaded, dict) and loaded, "services.yaml did not parse to a mapping"
+    assert (
+        isinstance(loaded, dict) and loaded
+    ), "services.yaml did not parse to a mapping"
     return set(loaded)
 
 
@@ -51,9 +53,12 @@ def _constants(tree):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
         target = node.targets[0]
-        if (isinstance(target, ast.Name) and target.id.startswith("SERVICE_")
-                and isinstance(node.value, ast.Constant)
-                and isinstance(node.value.value, str)):
+        if (
+            isinstance(target, ast.Name)
+            and target.id.startswith("SERVICE_")
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
             found[target.id] = node.value.value
     return found
 
@@ -69,22 +74,26 @@ def _registered(tree, constants):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if not (isinstance(func, ast.Attribute)
-                and func.attr == "async_register_entity_service"):
+        if not (
+            isinstance(func, ast.Attribute)
+            and func.attr == "async_register_entity_service"
+        ):
             continue
         assert node.args, "a registration with no arguments at line %d" % node.lineno
         first = node.args[0]
         if isinstance(first, ast.Name):
             assert first.id in constants, (
                 "registered with %s, which is not a SERVICE_ constant in this file"
-                % first.id)
+                % first.id
+            )
             names.add(constants[first.id])
         elif isinstance(first, ast.Constant) and isinstance(first.value, str):
             names.add(first.value)
         else:
             raise AssertionError(
                 "a registration at line %d names its service in a way this test cannot "
-                "read; widen the test rather than leaving it unchecked" % node.lineno)
+                "read; widen the test rather than leaving it unchecked" % node.lineno
+            )
     return names
 
 
@@ -106,33 +115,37 @@ def test_every_registered_service_is_described():
     missing = sorted(REGISTERED - DESCRIBED)
 
     assert not missing, (
-        "registered but absent from services.yaml, so invisible in the UI: %s" % missing)
+        "registered but absent from services.yaml, so invisible in the UI: %s" % missing
+    )
 
 
 def test_every_described_service_is_registered():
     """Otherwise the UI offers an action that raises `Service not found` when called."""
     extra = sorted(DESCRIBED - REGISTERED)
 
-    assert not extra, (
-        "described in services.yaml but never registered: %s" % extra)
+    assert not extra, "described in services.yaml but never registered: %s" % extra
 
 
 def test_no_service_constant_is_left_unregistered():
     """A constant nobody registers is either dead or a registration someone forgot."""
-    unused = sorted(name for constant, name in CONSTANTS.items()
-                    if name not in REGISTERED)
+    unused = sorted(
+        name for constant, name in CONSTANTS.items() if name not in REGISTERED
+    )
 
-    assert not unused, (
-        "SERVICE_ constants defined but never registered: %s" % unused)
+    assert not unused, "SERVICE_ constants defined but never registered: %s" % unused
 
 
 def test_each_described_service_has_a_name_and_a_description():
     """Home Assistant renders both. An entry with neither is a row in the UI that says
     nothing about what it does."""
     loaded = yaml.safe_load(SERVICES_YAML.read_text(encoding="utf-8"))
-    bare = sorted(name for name, body in loaded.items()
-                  if not isinstance(body, dict)
-                  or not body.get("name") or not body.get("description"))
+    bare = sorted(
+        name
+        for name, body in loaded.items()
+        if not isinstance(body, dict)
+        or not body.get("name")
+        or not body.get("description")
+    )
 
     assert not bare, "described with no name or no description: %s" % bare
 

@@ -1,4 +1,5 @@
 """Repair flows for Dahua."""
+
 import asyncio
 import logging
 
@@ -96,15 +97,15 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
 
     async def async_step_confirm(self, user_input: dict | None = None):
         # Imported here rather than at module scope to avoid a circular import.
-        from . import (ISSUE_SIBLINGS_REMAIN, _entries_for_address,
-                       channel_configs)
+        from . import ISSUE_SIBLINGS_REMAIN, _entries_for_address, channel_configs
 
         entries = _entries_for_address(self.hass, self._address)
         if not entries:
             # Already dealt with by hand, or the last one went while the card
             # was open. Nothing to do and nothing to apologise for.
             ir.async_delete_issue(
-                self.hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(self._address))
+                self.hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(self._address)
+            )
             return self.async_abort(reason="not_configured")
 
         if user_input is not None:
@@ -128,8 +129,7 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
             # after that change would have read as a merged recorder and been
             # protected from a card the user had asked for. Counting says what the
             # guard has always meant, and is right under either shape.
-            merged = [entry for entry in entries
-                      if len(channel_configs(entry)) > 1]
+            merged = [entry for entry in entries if len(channel_configs(entry)) > 1]
             if merged:
                 _LOGGER.error(
                     "Not removing %s for %s: it holds every channel of the "
@@ -137,7 +137,8 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
                     "it would delete every entity the recorder has. Remove it from "
                     "the integrations page if that is really what you want",
                     ", ".join(sorted(e.title or "untitled" for e in merged)),
-                    self._address)
+                    self._address,
+                )
 
             for entry in entries:
                 if len(channel_configs(entry)) > 1:
@@ -148,7 +149,8 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
                 await asyncio.sleep(RELOAD_STAGGER_SECONDS)
 
             ir.async_delete_issue(
-                self.hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(self._address))
+                self.hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(self._address)
+            )
             return self.async_create_entry(data={})
 
         return self.async_show_form(
@@ -157,8 +159,7 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
             description_placeholders={
                 "address": str(self._address),
                 "count": str(len(entries)),
-                "titles": ", ".join(
-                    sorted(e.title or "untitled" for e in entries)),
+                "titles": ", ".join(sorted(e.title or "untitled" for e in entries)),
                 "removed": str(self._removed),
                 "dependents_note": self._dependents_note,
             },

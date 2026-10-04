@@ -19,8 +19,8 @@ from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.coordinator import infrared_brightness_bank
 from custom_components.dahua.client import DahuaClient
 
-
 # --- the bank detector --------------------------------------------------------
+
 
 def test_a_mode_only_row_has_no_bank():
     """The doorbell shape: Mode and nothing else."""
@@ -35,20 +35,25 @@ def test_an_empty_table_has_no_bank():
 
 def test_a_row_with_middlelight_still_reports_it():
     """A camera is unchanged: a present bank is still found and named."""
-    data = {"table.Lighting[0][0].Mode": "Manual",
-            "table.Lighting[0][0].MiddleLight[0].Light": "100"}
+    data = {
+        "table.Lighting[0][0].Mode": "Manual",
+        "table.Lighting[0][0].MiddleLight[0].Light": "100",
+    }
 
     assert infrared_brightness_bank(data, 0, "0") == "MiddleLight"
 
 
 def test_near_and_far_are_still_found():
-    data = {"table.Lighting[3][0].NearLight[0].Light": "50",
-            "table.Lighting[3][0].FarLight[0].Light": "50"}
+    data = {
+        "table.Lighting[3][0].NearLight[0].Light": "50",
+        "table.Lighting[3][0].FarLight[0].Light": "50",
+    }
 
     assert infrared_brightness_bank(data, 3, "0") == "NearLight"
 
 
 # --- the write ----------------------------------------------------------------
+
 
 def _client():
     client = object.__new__(DahuaClient)
@@ -59,7 +64,8 @@ def _client():
 async def _url(bank, mode="Manual", brightness=100, channel=0, profile="0"):
     client = _client()
     await DahuaClient.async_set_lighting_v1_mode(
-        client, channel, mode, brightness, profile, bank)
+        client, channel, mode, brightness, profile, bank
+    )
     return client.get.await_args.args[0]
 
 
@@ -101,6 +107,7 @@ async def test_off_on_a_doorbell_is_just_mode():
 
 # --- the level read -----------------------------------------------------------
 
+
 def _coordinator(data, channel=0, profile="0"):
     c = object.__new__(DahuaDataUpdateCoordinator)
     c._channel = channel
@@ -118,7 +125,11 @@ def test_level_is_none_when_there_is_no_bank():
 
 
 def test_level_is_read_when_a_bank_is_present():
-    c = _coordinator({"table.Lighting[0][0].Mode": "Manual",
-                      "table.Lighting[0][0].MiddleLight[0].Light": "80"})
+    c = _coordinator(
+        {
+            "table.Lighting[0][0].Mode": "Manual",
+            "table.Lighting[0][0].MiddleLight[0].Light": "80",
+        }
+    )
 
     assert c.get_infrared_level() == 80

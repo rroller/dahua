@@ -42,8 +42,16 @@ ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "custom_components" / "dahua"
 TESTS = ROOT / "tests" / "dahua"
 
-PLATFORMS = ("binary_sensor", "button", "camera", "event", "light", "select",
-             "sensor", "switch")
+PLATFORMS = (
+    "binary_sensor",
+    "button",
+    "camera",
+    "event",
+    "light",
+    "select",
+    "sensor",
+    "switch",
+)
 
 # A capability question, as opposed to a plain read like `get_channel()`. Setup
 # branches on these to decide whether an entity exists at all, which is why a
@@ -54,9 +62,15 @@ CAPABILITY_PREFIXES = ("supports_", "is_", "has_", "uses_")
 def _setup_capability_reads(platform):
     """Which capability questions this platform's async_setup_entry asks."""
     tree = ast.parse(io.open(PACKAGE / ("%s.py" % platform), encoding="utf-8").read())
-    setup = next((node for node in tree.body
-                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                  and node.name == "async_setup_entry"), None)
+    setup = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "async_setup_entry"
+        ),
+        None,
+    )
     if setup is None:
         return set()
     found = set()
@@ -77,8 +91,9 @@ def _platforms_a_file_sets_up(source):
     found = set()
     for platform in PLATFORMS:
         called = re.search(r"\b" + platform + r"(_module)?\.async_setup_entry", source)
-        imported = re.search(r"dahua\." + platform + r" import[^\n]*async_setup_entry",
-                             source)
+        imported = re.search(
+            r"dahua\." + platform + r" import[^\n]*async_setup_entry", source
+        )
         if called or imported:
             found.add(platform)
     return found
@@ -92,8 +107,11 @@ def _answered_by_assignment(source):
     one answer per case. It is file-scoped rather than class-scoped because which
     instance an assignment lands on is not something ast can tell.
     """
-    return {name for name in re.findall(r"\.(\w+)\s*=", source)
-            if name.startswith(CAPABILITY_PREFIXES)}
+    return {
+        name
+        for name in re.findall(r"\.(\w+)\s*=", source)
+        if name.startswith(CAPABILITY_PREFIXES)
+    }
 
 
 def _classes_in_tests():
@@ -110,8 +128,11 @@ def _classes_in_tests():
 
 
 def _methods(cls):
-    return {member.name for member in cls.body
-            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    return {
+        member.name
+        for member in cls.body
+        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
 
 
 def _answers(path, cls, by_name, seen=None):
@@ -158,6 +179,7 @@ def test_every_setup_double_answers_the_whole_question_set():
             if missing:
                 incomplete.append(
                     "%s::%s reaches %s.async_setup_entry and does not answer %s"
-                    % (path.name, cls.name, platform, sorted(missing)))
+                    % (path.name, cls.name, platform, sorted(missing))
+                )
 
     assert not incomplete, "\n".join(incomplete)

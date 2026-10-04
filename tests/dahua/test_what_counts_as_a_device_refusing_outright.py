@@ -63,13 +63,15 @@ def _clean():
 
 # --- what counts --------------------------------------------------------------
 
+
 def test_the_status_a_recorder_refuses_a_config_write_with():
     assert refusal_is_outright(_Error("Forbidden", status=403)) is True
 
 
 def test_the_rpc2_code_for_the_same_answer():
-    assert refusal_is_outright(
-        _Error("Authority:check failure.", code=285278249)) is True
+    assert (
+        refusal_is_outright(_Error("Authority:check failure.", code=285278249)) is True
+    )
 
 
 def test_a_method_the_device_does_not_have():
@@ -80,22 +82,30 @@ def test_a_method_the_device_does_not_have():
 
 # --- what deliberately does not ------------------------------------------------
 
-@pytest.mark.parametrize("error,why", [
-    (_Error("Unauthorized", status=401),
-     "the credentials, which reauth exists for; a later write may succeed"),
-    (_Error("Bad Request", status=400),
-     "the request, not the capability"),
-    (_Error("Internal Server Error", status=500),
-     "the device having a bad moment"),
-    (_Error("session is out of date!", code=287637504),
-     "an expired session, which the shared-login retry already handles"),
-    (_Error("Unknown error! error code was not set in service!", code=268959743),
-     "a device declining without saying why -- #943 has one answering this "
-     "where it used to work, so it is not permanent"),
-    (asyncio.TimeoutError(), "never answered at all"),
-    (ConnectionError("reset"), "never answered at all"),
-    (_Error("something"), "no status and no code"),
-])
+
+@pytest.mark.parametrize(
+    "error,why",
+    [
+        (
+            _Error("Unauthorized", status=401),
+            "the credentials, which reauth exists for; a later write may succeed",
+        ),
+        (_Error("Bad Request", status=400), "the request, not the capability"),
+        (_Error("Internal Server Error", status=500), "the device having a bad moment"),
+        (
+            _Error("session is out of date!", code=287637504),
+            "an expired session, which the shared-login retry already handles",
+        ),
+        (
+            _Error("Unknown error! error code was not set in service!", code=268959743),
+            "a device declining without saying why -- #943 has one answering this "
+            "where it used to work, so it is not permanent",
+        ),
+        (asyncio.TimeoutError(), "never answered at all"),
+        (ConnectionError("reset"), "never answered at all"),
+        (_Error("something"), "no status and no code"),
+    ],
+)
 def test_these_are_not_a_refusal(error, why):
     assert refusal_is_outright(error) is False, why
 
@@ -132,13 +142,19 @@ def test_an_odd_value_in_either_field_is_not_a_refusal():
 #
 # These three use the real classes. They are the ones that would have caught it.
 
+
 def test_a_real_aiohttp_403_is_a_refusal():
     error = aiohttp.ClientResponseError(
         aiohttp.RequestInfo(
-            url="http://recorder/cgi-bin/configManager.cgi", method="GET",
+            url="http://recorder/cgi-bin/configManager.cgi",
+            method="GET",
             headers=aiohttp.typedefs.CIMultiDict(),
-            real_url="http://recorder/cgi-bin/configManager.cgi"),
-        (), status=403, message="Forbidden")
+            real_url="http://recorder/cgi-bin/configManager.cgi",
+        ),
+        (),
+        status=403,
+        message="Forbidden",
+    )
 
     assert refusal_is_outright(error) is True
 
@@ -146,39 +162,50 @@ def test_a_real_aiohttp_403_is_a_refusal():
 def test_a_real_aiohttp_500_is_not():
     error = aiohttp.ClientResponseError(
         aiohttp.RequestInfo(
-            url="http://recorder/cgi-bin/configManager.cgi", method="GET",
+            url="http://recorder/cgi-bin/configManager.cgi",
+            method="GET",
             headers=aiohttp.typedefs.CIMultiDict(),
-            real_url="http://recorder/cgi-bin/configManager.cgi"),
-        (), status=500, message="Internal Server Error")
+            real_url="http://recorder/cgi-bin/configManager.cgi",
+        ),
+        (),
+        status=500,
+        message="Internal Server Error",
+    )
 
     assert refusal_is_outright(error) is False
 
 
-@pytest.mark.parametrize("code,expected", [
-    (285278249, True),
-    (268894210, True),
-    (287637504, False),
-    (268959743, False),
-])
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        (285278249, True),
+        (268894210, True),
+        (287637504, False),
+        (268959743, False),
+    ],
+)
 def test_a_real_rpc2_refusal_is_judged_on_its_code(code, expected):
     """It has a `code` and no `status`, which is what makes the order work."""
     error = Rpc2MethodRefused("refused", code=code, message="whatever")
 
     assert not hasattr(error, "status"), (
         "if this ever grows a status, the order in refusal_is_outright needs "
-        "rereading")
+        "rereading"
+    )
     assert refusal_is_outright(error) is expected
 
 
 # --- and what is remembered ----------------------------------------------------
+
 
 def test_a_refusal_is_remembered_for_that_control_on_that_channel():
     coordinator = _Coordinator(channel=3)
     remember(coordinator, "siren", "errCode 268894210 Method not found!")
 
     assert is_refused(coordinator, "siren")
-    assert not is_refused(coordinator, "infrared"), (
-        "refusing the siren must not silence the infrared on the same channel")
+    assert not is_refused(
+        coordinator, "infrared"
+    ), "refusing the siren must not silence the infrared on the same channel"
     assert not is_refused(_Coordinator(channel=4), "siren")
     assert not is_refused(_Coordinator(address="192.168.0.232", channel=3), "siren")
 
@@ -226,8 +253,11 @@ def test_a_refusal_is_announced_once_rather_than_per_press(caplog):
     """The log line is the only place a user finds out why the control went
     quiet, so it has to name the device, the control and the reason."""
     import logging
+
     with caplog.at_level(logging.WARNING):
-        remember(_Coordinator(channel=3), "siren", "errCode 268894210 Method not found!")
+        remember(
+            _Coordinator(channel=3), "siren", "errCode 268894210 Method not found!"
+        )
 
     assert "192.168.0.213" in caplog.text
     assert "siren" in caplog.text

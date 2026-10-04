@@ -43,8 +43,11 @@ class _Transport:
 
 
 def _frame(payload):
-    return (b"\x00\x00\x00DHIP\x8c-\x96{\x08\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00"
-            + json.dumps(payload).encode("utf-8") + b"\n")
+    return (
+        b"\x00\x00\x00DHIP\x8c-\x96{\x08\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00"
+        + json.dumps(payload).encode("utf-8")
+        + b"\n"
+    )
 
 
 class _Caught:
@@ -52,7 +55,9 @@ class _Caught:
 
     def __init__(self):
         self.records = []
-        self._logger = logging.getLogger("custom_components.dahua")  # vto.py uses getLogger(__package__)
+        self._logger = logging.getLogger(
+            "custom_components.dahua"
+        )  # vto.py uses getLogger(__package__)
         self._handler = logging.Handler()
         self._handler.emit = self.records.append
 
@@ -66,8 +71,7 @@ class _Caught:
 
     @property
     def handler_failures(self):
-        return [r for r in self.records
-                if "Failed to handle message" in r.getMessage()]
+        return [r for r in self.records if "Failed to handle message" in r.getMessage()]
 
 
 def _drive(table_value, *, with_params=True):
@@ -91,6 +95,7 @@ VTH_TABLE = [["something"], [1, 2, 3]]
 
 
 # --- the case that crashed, asserted on the log not the default --------------
+
 
 def test_a_table_of_lists_does_not_crash_the_handler():
     """The VTH shape. Before the guard this logged a failure and aborted the packet."""
@@ -122,6 +127,7 @@ def test_missing_params_does_not_crash_the_handler():
 
 # --- the case that must keep working -----------------------------------------
 
+
 def test_a_real_vto_door_is_still_read():
     client, caught = _drive(VTO_TABLE)
 
@@ -131,8 +137,9 @@ def test_a_real_vto_door_is_still_read():
 
 def test_a_non_dict_entry_is_skipped_but_a_later_door_is_read():
     """A valid door after a bad entry must survive the guard, and nothing logs."""
-    client, caught = _drive([["junk"], {"AccessProtocol": "Local",
-                                        "UnlockReloadInterval": 7}])
+    client, caught = _drive(
+        [["junk"], {"AccessProtocol": "Local", "UnlockReloadInterval": 7}]
+    )
 
     assert not caught.handler_failures, caught.handler_failures
     assert client.hold_time == 7

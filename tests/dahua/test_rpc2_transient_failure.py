@@ -17,8 +17,8 @@ import aiohttp
 
 from custom_components.dahua.client import rpc2_failure_is_permanent
 
-
 # --- the failures that must not write a host off ------------------------------
+
 
 def test_a_timeout_is_not_a_verdict():
     assert rpc2_failure_is_permanent(TimeoutError()) is False
@@ -40,6 +40,7 @@ def test_a_connection_failure_is_not_a_verdict():
 
 
 # --- and the ones that genuinely are ------------------------------------------
+
 
 def test_a_device_that_answers_and_refuses_is_ruled_out():
     """An HTTP error means it replied; that is a statement about the device."""

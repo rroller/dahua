@@ -31,9 +31,11 @@ import pytest
 from aiohttp import ClientResponseError
 from yarl import URL
 
-from custom_components.dahua.config_flow import (TRANSPORT_WORKED,
-                                                 describe_setup_failure,
-                                                 redirected_to_https)
+from custom_components.dahua.config_flow import (
+    TRANSPORT_WORKED,
+    describe_setup_failure,
+    redirected_to_https,
+)
 
 
 class _Redirect:
@@ -60,9 +62,9 @@ FINAL_HTTP = "http://192.168.178.54:80/cgi-bin/magicBox.cgi?action=getMachineNam
 
 # --- the reported case --------------------------------------------------------
 
+
 def test_the_reported_401_is_reported_as_a_redirect():
-    reason = describe_setup_failure(
-        _error(401, [_Redirect(302)], FINAL_HTTPS))
+    reason = describe_setup_failure(_error(401, [_Redirect(302)], FINAL_HTTPS))
 
     assert reason == "https_redirect"
 
@@ -80,11 +82,14 @@ def test_every_redirect_status_counts(status):
 
 
 def test_a_chain_of_hops_still_counts():
-    assert redirected_to_https(
-        _error(401, [_Redirect(302), _Redirect(307)], FINAL_HTTPS)) is True
+    assert (
+        redirected_to_https(_error(401, [_Redirect(302), _Redirect(307)], FINAL_HTTPS))
+        is True
+    )
 
 
 # --- and a real refused password must keep saying so --------------------------
+
 
 def test_a_401_with_no_redirect_is_still_the_password():
     """The common case, and the one this must not swallow: a wrong password on a
@@ -137,23 +142,34 @@ def test_an_exception_that_is_not_a_response_error_is_untouched():
 
 # --- the other statuses are unaffected ----------------------------------------
 
+
 def test_a_404_is_still_the_cgi_service():
-    assert describe_setup_failure(
-        _error(404, [_Redirect(302)], FINAL_HTTPS)) == "cgi_disabled"
+    assert (
+        describe_setup_failure(_error(404, [_Redirect(302)], FINAL_HTTPS))
+        == "cgi_disabled"
+    )
 
 
 def test_another_status_is_still_an_unexpected_reply():
-    assert describe_setup_failure(
-        _error(500, [_Redirect(302)], FINAL_HTTPS)) == "unexpected_reply"
+    assert (
+        describe_setup_failure(_error(500, [_Redirect(302)], FINAL_HTTPS))
+        == "unexpected_reply"
+    )
 
 
 # --- and the user actually sees a sentence ------------------------------------
 
+
 def test_the_reason_has_an_english_message():
     """English is the per-key fallback, so a missing string here is a bare key in
     every language."""
-    path = (pathlib.Path(__file__).parents[2]
-            / "custom_components" / "dahua" / "translations" / "en.json")
+    path = (
+        pathlib.Path(__file__).parents[2]
+        / "custom_components"
+        / "dahua"
+        / "translations"
+        / "en.json"
+    )
     errors = json.loads(path.read_text(encoding="utf-8"))["config"]["error"]
 
     assert "https_redirect" in errors

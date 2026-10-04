@@ -56,6 +56,7 @@ def test_a_cancelled_keepalive_also_needs_replacing():
     """Cancellation completes a task too, and a later read may still want one."""
     loop = asyncio.new_event_loop()
     try:
+
         async def forever():
             await asyncio.sleep(3600)
 

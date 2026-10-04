@@ -21,9 +21,12 @@ camera serving several channels over one address.
 import pytest
 
 from custom_components.dahua import config_flow
-from custom_components.dahua.config_flow import (CHANNEL_ERRORS, TRANSPORT_WORKED,
-                                                 DahuaFlowHandler,
-                                                 async_channel_refusal)
+from custom_components.dahua.config_flow import (
+    CHANNEL_ERRORS,
+    TRANSPORT_WORKED,
+    DahuaFlowHandler,
+    async_channel_refusal,
+)
 
 # Deliberately the module's own voluptuous rather than a fresh import. Home Assistant
 # aliases voluptuous to probatio in sys.modules, so importing it separately can yield
@@ -81,6 +84,7 @@ def test_the_fixture_matches_what_the_recorder_reports():
 
 # --- what the recorder disowns ----------------------------------------------
 
+
 async def test_a_channel_the_recorder_does_not_have_is_refused():
     """16 on a sixteen channel recorder: the number it shows, one past the last
     index. This is the commonest form of the mistake."""
@@ -112,6 +116,7 @@ async def test_the_last_real_channel_is_accepted():
 
 
 # --- and everything it does not claim ---------------------------------------
+
 
 async def test_channel_zero_is_never_questioned():
     """A standalone camera at least as often as a recorder's first slot."""
@@ -154,6 +159,7 @@ async def test_an_empty_slot_that_is_enabled_is_still_accepted():
 
 # --- the error has to reach the field ---------------------------------------
 
+
 def test_every_channel_error_is_listed_as_one():
     """CHANNEL_ERRORS is what routes the message to the channel field instead of the
     top of the form. A new refusal that is not in it renders in the wrong place."""
@@ -166,8 +172,13 @@ def test_the_channel_errors_all_have_translations():
     import json
     import pathlib
 
-    path = (pathlib.Path(__file__).parents[2]
-            / "custom_components" / "dahua" / "translations" / "en.json")
+    path = (
+        pathlib.Path(__file__).parents[2]
+        / "custom_components"
+        / "dahua"
+        / "translations"
+        / "en.json"
+    )
     strings = json.loads(path.read_text(encoding="utf-8"))["config"]["error"]
 
     missing = set(CHANNEL_ERRORS) - set(strings)
@@ -186,9 +197,17 @@ def _validate(field, value):
     handler = DahuaFlowHandler()
     handler._errors = {}
     schema = handler._user_schema(reveal_transport=True)
-    return schema({"username": "u", "password": "p", "address": "1.2.3.4",
-                   "port": "80", "rtsp_port": "554", "channel": 0,
-                   **{field: value}})[field]
+    return schema(
+        {
+            "username": "u",
+            "password": "p",
+            "address": "1.2.3.4",
+            "port": "80",
+            "rtsp_port": "554",
+            "channel": 0,
+            **{field: value},
+        }
+    )[field]
 
 
 @pytest.mark.parametrize("field", ["port", "rtsp_port"])
@@ -247,6 +266,7 @@ class _Session:
 
 def _flow_with(monkeypatch, table=None, error=None):
     """A handler whose device answers identity, and RemoteDevice from `table`."""
+
     class _Device:
         def __init__(self, *args, **kwargs):
             self.identity_derived_from_credentials = False
@@ -272,7 +292,8 @@ async def test_the_add_form_asks_for_the_channel_to_be_checked(monkeypatch):
     handler = _flow_with(monkeypatch, TABLE)
 
     data, error = await handler._test_credentials(
-        "u", "p", "1.2.3.4", "80", "554", 16, None, check_channel=True)
+        "u", "p", "1.2.3.4", "80", "554", 16, None, check_channel=True
+    )
 
     assert data is None
     assert error == "channel_not_on_device"
@@ -282,7 +303,8 @@ async def test_a_good_channel_still_gets_through(monkeypatch):
     handler = _flow_with(monkeypatch, TABLE)
 
     data, error = await handler._test_credentials(
-        "u", "p", "1.2.3.4", "80", "554", 3, None, check_channel=True)
+        "u", "p", "1.2.3.4", "80", "554", 3, None, check_channel=True
+    )
 
     assert error is None
     assert data["name"] == "FrontDoor"
@@ -294,7 +316,8 @@ async def test_the_import_step_does_not_recheck(monkeypatch):
     handler = _flow_with(monkeypatch, TABLE)
 
     data, error = await handler._test_credentials(
-        "u", "p", "1.2.3.4", "80", "554", 16, None)
+        "u", "p", "1.2.3.4", "80", "554", 16, None
+    )
 
     assert error is None, "check_channel defaults off for the import path"
     assert data is not None
@@ -308,8 +331,9 @@ async def test_the_import_step_does_not_recheck(monkeypatch):
 
 
 def _keys(reveal=False):
-    return [str(marker.schema)
-            for marker in DahuaFlowHandler()._user_schema(reveal).schema]
+    return [
+        str(marker.schema) for marker in DahuaFlowHandler()._user_schema(reveal).schema
+    ]
 
 
 def test_the_form_asks_four_questions():
@@ -362,24 +386,30 @@ def test_a_refused_login_does_not_reveal_the_ports():
     handler = DahuaFlowHandler()
     handler._errors = {"base": "auth"}
 
-    assert any(reason not in TRANSPORT_WORKED
-               for reason in handler._errors.values()) is False
+    assert (
+        any(reason not in TRANSPORT_WORKED for reason in handler._errors.values())
+        is False
+    )
 
 
 def test_a_channel_refusal_does_not_reveal_the_ports_either():
     handler = DahuaFlowHandler()
     handler._errors = {"channel": "channel_not_on_device"}
 
-    assert any(reason not in TRANSPORT_WORKED
-               for reason in handler._errors.values()) is False
+    assert (
+        any(reason not in TRANSPORT_WORKED for reason in handler._errors.values())
+        is False
+    )
 
 
 def test_a_connection_failure_does_reveal_them():
     handler = DahuaFlowHandler()
     handler._errors = {"base": "cannot_connect"}
 
-    assert any(reason not in TRANSPORT_WORKED
-               for reason in handler._errors.values()) is True
+    assert (
+        any(reason not in TRANSPORT_WORKED for reason in handler._errors.values())
+        is True
+    )
 
 
 # --- the values the form stopped asking for still have to arrive --------------
@@ -395,14 +425,21 @@ async def _port_seen_by(monkeypatch, discovered=None, given=None):
     handler = _flow_with(monkeypatch, TABLE)
     handler._discovered = dict(discovered or {})
 
-    async def _capture(username, password, address, port, rtsp_port, channel,
-                       use_https=None, check_channel=False):
+    async def _capture(
+        username,
+        password,
+        address,
+        port,
+        rtsp_port,
+        channel,
+        use_https=None,
+        check_channel=False,
+    ):
         seen.update(port=port, rtsp_port=rtsp_port, use_https=use_https)
-        return None, "auth"          # stay on the form; only the arguments matter
+        return None, "auth"  # stay on the form; only the arguments matter
 
     handler._test_credentials = _capture
-    submitted = {"username": "u", "password": "p", "address": "1.2.3.4",
-                 "channel": 0}
+    submitted = {"username": "u", "password": "p", "address": "1.2.3.4", "channel": 0}
     submitted.update(given or {})
     await handler.async_step_user(submitted)
     return seen
@@ -424,8 +461,9 @@ async def test_a_discovered_port_is_used_instead_of_the_default(monkeypatch):
 
 async def test_what_the_user_typed_beats_both(monkeypatch):
     """Once a failure has revealed the field, their answer is the one that counts."""
-    seen = await _port_seen_by(monkeypatch, discovered={"port": "8000"},
-                               given={"port": "8443"})
+    seen = await _port_seen_by(
+        monkeypatch, discovered={"port": "8000"}, given={"port": "8443"}
+    )
 
     assert seen["port"] == "8443"
 

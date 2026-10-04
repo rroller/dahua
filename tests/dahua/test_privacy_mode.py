@@ -37,7 +37,9 @@ async def test_set_privacy_mode_keeps_the_cameras_own_schedule():
     """Only Enable changes; TimeSection and LastPosition are written back intact."""
     schedule = [["1 00:00:00-23:59:59"]]
     position = [-0.586, -0.206, 0.0078125]
-    rpc2 = _FakeRpc2([{"Enable": False, "TimeSection": schedule, "LastPosition": position}])
+    rpc2 = _FakeRpc2(
+        [{"Enable": False, "TimeSection": schedule, "LastPosition": position}]
+    )
 
     await rpc2.async_set_privacy_mode(True)
 
@@ -68,7 +70,9 @@ async def test_a_failed_poll_keeps_the_last_known_state():
     coordinator.client = _FailingClient()
     coordinator.data = {"privacy_mode_enabled": True}
 
-    assert await coordinator._async_fetch_privacy_mode() == {"privacy_mode_enabled": True}
+    assert await coordinator._async_fetch_privacy_mode() == {
+        "privacy_mode_enabled": True
+    }
 
 
 async def test_a_failed_poll_before_any_data_reports_off():
@@ -76,7 +80,9 @@ async def test_a_failed_poll_before_any_data_reports_off():
     coordinator.client = _FailingClient()
     coordinator.data = None
 
-    assert await coordinator._async_fetch_privacy_mode() == {"privacy_mode_enabled": False}
+    assert await coordinator._async_fetch_privacy_mode() == {
+        "privacy_mode_enabled": False
+    }
 
 
 def test_the_switch_reflects_the_coordinator_state():
@@ -115,7 +121,9 @@ async def test_privacy_mode_reuses_the_clients_rpc2_session():
     await client._async_privacy_mode_rpc2(action, "test")
 
     assert isinstance(sessions[0], _FakeSession)
-    assert sessions[0] is sessions[1], "a new session per call rebuilds the connection pool"
+    assert (
+        sessions[0] is sessions[1]
+    ), "a new session per call rebuilds the connection pool"
 
     await client.close()
     assert sessions[0].closed, "the client must release the session it built"

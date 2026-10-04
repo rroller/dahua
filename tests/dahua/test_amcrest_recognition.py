@@ -28,18 +28,29 @@ def _coordinator(model):
 
 # --- the two checks must agree about a device --------------------------------
 
-@pytest.mark.parametrize("model", [
-    "AD410", "ad410", "AD410 ", "DB61i", "DB61I", "db61i",
-])
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "AD410",
+        "ad410",
+        "AD410 ",
+        "DB61i",
+        "DB61I",
+        "db61i",
+    ],
+)
 def test_a_doorbell_is_a_doorbell_to_both_questions(model):
     c = _coordinator(model)
 
     assert c.is_amcrest_doorbell(), "not recognised as an Amcrest doorbell"
-    assert c.supports_smart_motion_detection_amcrest(), (
-        "recognised as a doorbell but not for its own smart motion path")
+    assert (
+        c.supports_smart_motion_detection_amcrest()
+    ), "recognised as a doorbell but not for its own smart motion path"
 
 
 # --- the cases that used to fall through -------------------------------------
+
 
 def test_the_uppercase_i_is_the_same_doorbell():
     """DB61i and DB61I are one device, and one spelling used to lose its switch."""
@@ -58,9 +69,17 @@ def test_the_documented_spellings_still_match():
 
 # --- and nothing else may match ----------------------------------------------
 
-@pytest.mark.parametrize("model", [
-    "IPC-HDW3849HP-AS-PV", "DHI-NVR5464-16P-EI", "VTO2202F-P-S2", "N843A8", "",
-])
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "IPC-HDW3849HP-AS-PV",
+        "DHI-NVR5464-16P-EI",
+        "VTO2202F-P-S2",
+        "N843A8",
+        "",
+    ],
+)
 def test_a_device_that_is_not_one_of_these_is_not_claimed(model):
     assert not _coordinator(model).supports_smart_motion_detection_amcrest()
 

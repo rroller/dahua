@@ -121,8 +121,14 @@ class _Task:
         return self._done
 
 
-def _light(coordinator, *, manual_on=True, store=None, hass=None,
-           restore=(CHANNEL, PROFILE, INDEX, FIELD)):
+def _light(
+    coordinator,
+    *,
+    manual_on=True,
+    store=None,
+    hass=None,
+    restore=(CHANNEL, PROFILE, INDEX, FIELD),
+):
     """Only the attributes these three functions read, so nothing passes on state
     the test did not set. Built the way `test_light.py` builds one."""
     entity = object.__new__(DahuaIlluminator)
@@ -152,6 +158,7 @@ def _no_unawaited_coroutines():
 
 
 # --- is the camera still showing what HA set? -------------------------------
+
 
 def test_no_override_means_there_is_nothing_to_compare():
     """None, not False. An entity that never took ownership has not been taken
@@ -199,6 +206,7 @@ def test_an_unreadable_brightness_is_not_evidence_of_a_takeover():
 
 
 # --- what a coordinator update decides to do --------------------------------
+
 
 def test_an_update_with_no_override_active_schedules_nothing(_no_unawaited_coroutines):
     """The light is off as far as HA is concerned, so whatever the camera is doing
@@ -258,6 +266,7 @@ def test_the_state_is_still_written_when_nothing_was_scheduled():
 
 # --- a reboot is not an external change -------------------------------------
 
+
 def test_a_reboot_with_no_override_just_moves_the_baseline(_no_unawaited_coroutines):
     """Nothing to recover, so the new generation is simply accepted. Leaving the
     baseline behind would make the next poll look like another reboot."""
@@ -287,7 +296,8 @@ def test_a_reboot_with_an_override_starts_recovery(_no_unawaited_coroutines):
 
 
 def test_a_reboot_is_not_mistaken_for_somebody_changing_the_light(
-        _no_unawaited_coroutines):
+    _no_unawaited_coroutines,
+):
     """The one that matters most. A camera coming back up reports a WhiteLight
     state that does not match HA's override, which is exactly what an external
     change looks like. If the comparison ran anyway, every reboot would discard the
@@ -322,6 +332,7 @@ def test_the_baseline_is_not_moved_until_recovery_owns_it(_no_unawaited_coroutin
 
 
 # --- releasing it -----------------------------------------------------------
+
 
 async def test_the_release_discards_the_snapshot_and_lets_go():
     store = _Store()
@@ -412,6 +423,7 @@ async def test_cancellation_is_not_swallowed_as_a_store_failure():
     Cancellation is Home Assistant shutting the task down, and a background task
     that ignores it stops Home Assistant from stopping.
     """
+
     class _Cancels(_Store):
         async def async_remove(self):
             raise asyncio.CancelledError

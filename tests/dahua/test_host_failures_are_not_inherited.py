@@ -11,6 +11,7 @@ and then for no reason in its own code.
 
 conftest's `_clear_host_failures` empties it around every test.
 """
+
 import pytest
 from homeassistant.helpers.update_coordinator import UpdateFailed
 

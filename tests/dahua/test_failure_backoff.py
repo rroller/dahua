@@ -32,6 +32,7 @@ def _coordinator(**options):
 
 # --- a blip is not an outage --------------------------------------------------
 
+
 def test_a_single_failure_does_not_change_the_interval():
     """Backing off on one timeout would make everything feel sluggish."""
     assert failure_backoff(BASE, 1) == BASE
@@ -43,6 +44,7 @@ def test_failures_up_to_the_threshold_keep_the_configured_interval():
 
 
 # --- past that, ask less often ------------------------------------------------
+
 
 def test_the_interval_grows_once_the_failures_persist():
     first = failure_backoff(BASE, FAILURES_BEFORE_BACKOFF + 1)
@@ -76,12 +78,13 @@ def test_an_outage_costs_the_device_far_fewer_requests():
 
     without_backoff = window / BASE.total_seconds()  # what it used to do
 
-    assert polls_in_window() * 4 < without_backoff, (
-        "backing off is not meaningfully reducing the load on a failing device"
-    )
+    assert (
+        polls_in_window() * 4 < without_backoff
+    ), "backing off is not meaningfully reducing the load on a failing device"
 
 
 # --- recovery -----------------------------------------------------------------
+
 
 def test_answering_again_restores_the_configured_interval():
     c = _coordinator()
@@ -112,6 +115,7 @@ def test_backing_off_doubles_the_users_interval_not_the_default():
 
 
 # --- the event stream ---------------------------------------------------------
+
 
 def _mean_delay(lived, failures, samples=300):
     """The delay is jittered, so a single sample compares two coin flips."""

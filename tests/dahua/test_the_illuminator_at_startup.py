@@ -139,6 +139,7 @@ def _snapshot(**overrides):
 
 # --- a snapshot that must be left alone -------------------------------------
 
+
 async def test_no_store_recovers_nothing():
     """An entity that was never added properly. Recovery cannot run and must say
     so rather than raising into the caller's handler."""
@@ -165,10 +166,17 @@ async def test_a_phase_this_version_does_not_know_is_left_untouched():
     assert store.removed == 0
 
 
-@pytest.mark.parametrize("missing", [
-    "scheme_channel", "scheme_profile", "channel", "profile_mode", "index",
-    "field",
-])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "scheme_channel",
+        "scheme_profile",
+        "channel",
+        "profile_mode",
+        "index",
+        "field",
+    ],
+)
 async def test_a_snapshot_missing_a_field_is_left_untouched(missing):
     """Each of these is read without a default, so a record written by an older
     version or truncated mid-write raises KeyError. Every one is tested because the
@@ -181,11 +189,14 @@ async def test_a_snapshot_missing_a_field_is_left_untouched(missing):
     assert store.removed == 0
 
 
-@pytest.mark.parametrize("field, value", [
-    ("channel", "not a number"),
-    ("index", None),
-    ("scheme_channel", []),
-])
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("channel", "not a number"),
+        ("index", None),
+        ("scheme_channel", []),
+    ],
+)
 async def test_a_snapshot_holding_the_wrong_type_is_left_untouched(field, value):
     """The other half of the same handler. `int()` on a string that is not a
     number raises ValueError and on None raises TypeError, and both mean the same
@@ -209,6 +220,7 @@ async def test_a_refused_snapshot_writes_nothing_to_the_camera():
 
 # --- what startup does ------------------------------------------------------
 
+
 @pytest.fixture
 def at_startup(monkeypatch):
     """`async_added_to_hass` calls `super()` and builds a real Store.
@@ -218,12 +230,13 @@ def at_startup(monkeypatch):
     Assistant. Setting one on the base class shadows it for the duration, which is
     scoped to that class rather than to asyncio or to Home Assistant at large.
     """
+
     async def _nothing(self):
         return None
 
     monkeypatch.setattr(
-        light_module.DahuaBaseEntity, "async_added_to_hass", _nothing,
-        raising=False)
+        light_module.DahuaBaseEntity, "async_added_to_hass", _nothing, raising=False
+    )
 
     built = []
 
@@ -264,11 +277,11 @@ async def test_startup_takes_the_reboot_generation_as_its_baseline(at_startup):
     assert light._seen_reboot_generation == 7
 
 
-async def test_a_recovery_that_throws_does_not_stop_the_entity(at_startup,
-                                                               monkeypatch):
+async def test_a_recovery_that_throws_does_not_stop_the_entity(at_startup, monkeypatch):
     """Being added to Home Assistant must not depend on the camera answering. An
     entity that failed to appear because a recovery threw would take the light
     away entirely, which is worse than not finishing the restore."""
+
     async def _explode(self):
         raise RuntimeError("the camera is not answering")
 
@@ -279,8 +292,9 @@ async def test_a_recovery_that_throws_does_not_stop_the_entity(at_startup,
 
     await light.async_added_to_hass()
 
-    assert light._seen_reboot_generation == 4, (
-        "the baseline was not set, so the rest of startup was skipped")
+    assert (
+        light._seen_reboot_generation == 4
+    ), "the baseline was not set, so the rest of startup was skipped"
 
 
 async def test_a_recovery_that_throws_keeps_the_snapshot(at_startup, monkeypatch):
@@ -303,6 +317,7 @@ async def test_a_recovery_that_throws_keeps_the_snapshot(at_startup, monkeypatch
 
 # --- putting the camera back with nothing saved -----------------------------
 
+
 async def test_restoring_without_a_snapshot_still_releases_the_emitter():
     """`_restore_camera_lighting` is called with no saved light state when the
     entity never recorded one. It falls back to the coordinator's current channel
@@ -314,7 +329,8 @@ async def test_restoring_without_a_snapshot_still_releases_the_emitter():
     await light._restore_camera_lighting(None, None)
 
     assert coordinator.client.writes == [
-        ("v2_raw", CHANNEL, "1", 0, "Off", "MiddleLight")]
+        ("v2_raw", CHANNEL, "1", 0, "Off", "MiddleLight")
+    ]
 
 
 async def test_restoring_with_no_scheme_stops_after_the_light():
@@ -324,6 +340,7 @@ async def test_restoring_with_no_scheme_stops_after_the_light():
     light = _light(coordinator=coordinator)
 
     await light._restore_camera_lighting(
-        None, (CHANNEL, "1", 0, "MiddleLight", "Off", None))
+        None, (CHANNEL, "1", 0, "MiddleLight", "Off", None)
+    )
 
     assert [write[0] for write in coordinator.client.writes] == ["v2_raw"]

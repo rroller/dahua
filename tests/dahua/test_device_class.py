@@ -40,6 +40,7 @@ def _coordinator(model="", device_class=None):
 
 # --- what the device says wins when it says doorbell -------------------------
 
+
 def test_a_device_that_says_it_is_a_vto_is_a_doorbell():
     """#690: the model name is on no list, and the device says VTO anyway."""
     assert _coordinator(model="B451AJ", device_class="VTO").is_doorbell()
@@ -52,8 +53,18 @@ def test_the_model_name_alone_would_have_said_no():
 
 # --- and never takes a doorbell away -----------------------------------------
 
-@pytest.mark.parametrize("model", ["AD410", "DB61i", "DB2X-WP", "AV-VTA05-22AV2",
-                                   "VTO2202F-P-S2", "DHI-VTO3211D-P4-S2"])
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "AD410",
+        "DB61i",
+        "DB2X-WP",
+        "AV-VTA05-22AV2",
+        "VTO2202F-P-S2",
+        "DHI-VTO3211D-P4-S2",
+    ],
+)
 @pytest.mark.parametrize("answer", ["", "IPC", "NVR", "DVR"])
 def test_a_known_doorbell_stays_one_whatever_the_device_answers(model, answer):
     """No measurement exists for what an Amcrest or Imou doorbell reports, so a
@@ -66,10 +77,13 @@ def test_a_camera_is_still_not_a_doorbell():
 
 
 def test_a_recorder_is_still_not_a_doorbell():
-    assert not _coordinator(model="DHI-NVR5464-16P-EI", device_class="NVR").is_doorbell()
+    assert not _coordinator(
+        model="DHI-NVR5464-16P-EI", device_class="NVR"
+    ).is_doorbell()
 
 
 # --- and works on a coordinator that never ran the probe ---------------------
+
 
 def test_a_coordinator_without_the_attribute_falls_back_to_the_model():
     """Most tests and every older entry build one of these without the probe
@@ -85,6 +99,7 @@ def test_no_attribute_and_no_matching_model_is_simply_not_a_doorbell():
 
 
 # --- the reading itself ------------------------------------------------------
+
 
 class _Client:
     def __init__(self, body):

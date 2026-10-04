@@ -29,18 +29,29 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 
 # Every module that can define an entity class. entity.py holds the base classes.
-MODULES = ("entity", "binary_sensor", "button", "camera", "event", "light",
-           "select", "sensor", "switch")
+MODULES = (
+    "entity",
+    "binary_sensor",
+    "button",
+    "camera",
+    "event",
+    "light",
+    "select",
+    "sensor",
+    "switch",
+)
 
 # Overrides that deliberately replace a base's value rather than adding to it.
 # Each carries its reason, because the default is to add and a bare entry here
 # would be the bug this file exists to catch, written down instead of fixed.
 REPLACES_ON_PURPOSE = {
-    ("DahuaEventDrivenEntity", "available"):
-        "Judged on whether the device has stopped answering altogether, which is "
-        "the opposite of the coordinator's view: an event sensor is driven by the "
-        "stream, so a slow configManager read must not take it unavailable. The "
-        "docstring on it says so at length.",
+    (
+        "DahuaEventDrivenEntity",
+        "available",
+    ): "Judged on whether the device has stopped answering altogether, which is "
+    "the opposite of the coordinator's view: an event sensor is driven by the "
+    "stream, so a slow configManager read must not take it unavailable. The "
+    "docstring on it says so at length.",
 }
 
 
@@ -59,8 +70,11 @@ def _classes():
 
 def _members(cls):
     """{name: node} for the properties and methods this class defines itself."""
-    return {member.name: member for member in cls.body
-            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    return {
+        member.name: member
+        for member in cls.body
+        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
 
 
 def _returns_a_mapping(node) -> bool:
@@ -114,10 +128,14 @@ def test_the_scan_finds_the_classes_it_is_about():
 
     assert "DahuaBaseEntity" in classes
     assert "extra_state_attributes" in _members(classes["DahuaBaseEntity"][1])
-    subclasses = [name for name, (_module, cls) in classes.items()
-                  if "DahuaBaseEntity" in _base_names(cls)]
-    assert len(subclasses) > 20, (
-        "found only %d DahuaBaseEntity subclasses" % len(subclasses))
+    subclasses = [
+        name
+        for name, (_module, cls) in classes.items()
+        if "DahuaBaseEntity" in _base_names(cls)
+    ]
+    assert len(subclasses) > 20, "found only %d DahuaBaseEntity subclasses" % len(
+        subclasses
+    )
 
 
 def test_every_override_of_a_base_member_builds_on_it():
@@ -145,19 +163,23 @@ def test_every_override_of_a_base_member_builds_on_it():
                 continue
             replacing.append(
                 "%s.%s.%s replaces %s.%s without building on it"
-                % (module, name, member, inherited[member], member))
+                % (module, name, member, inherited[member], member)
+            )
 
     assert not replacing, (
         "an override that returns a fresh value drops whatever the base supplied. "
         "Call super, or add it to REPLACES_ON_PURPOSE with the reason:\n  %s"
-        % "\n  ".join(replacing))
+        % "\n  ".join(replacing)
+    )
 
 
 def test_nothing_is_excused_without_a_reason():
     """The escape hatch has to cost a sentence, or it becomes the default."""
     for (name, member), reason in REPLACES_ON_PURPOSE.items():
-        assert len(reason) > 40, (
-            "%s.%s is excused with no real reason given" % (name, member))
+        assert len(reason) > 40, "%s.%s is excused with no real reason given" % (
+            name,
+            member,
+        )
 
 
 def test_the_excused_overrides_still_exist():
@@ -165,5 +187,7 @@ def test_the_excused_overrides_still_exist():
     classes = _classes()
     for name, member in REPLACES_ON_PURPOSE:
         assert name in classes, "%s is listed and no longer exists" % name
-        assert member in _members(classes[name][1]), (
-            "%s no longer overrides %s" % (name, member))
+        assert member in _members(classes[name][1]), "%s no longer overrides %s" % (
+            name,
+            member,
+        )

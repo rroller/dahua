@@ -12,11 +12,15 @@ from custom_components.dahua.rpc2 import DahuaRpc2Client
 
 
 def _client(port, use_https=None):
-    return DahuaClient("u", "p", "1.2.3.4", port, 554, session=None, use_https=use_https)
+    return DahuaClient(
+        "u", "p", "1.2.3.4", port, 554, session=None, use_https=use_https
+    )
 
 
 def _rpc2(port, use_https=None):
-    return DahuaRpc2Client("u", "p", "1.2.3.4", port, 554, session=None, use_https=use_https)
+    return DahuaRpc2Client(
+        "u", "p", "1.2.3.4", port, 554, session=None, use_https=use_https
+    )
 
 
 @pytest.mark.parametrize(
@@ -55,7 +59,9 @@ async def test_internally_built_rpc2_client_inherits_the_flag(monkeypatch):
     captured = {}
 
     class _CapturingRpc2:
-        def __init__(self, username, password, address, port, rtsp_port, session, use_https=None):
+        def __init__(
+            self, username, password, address, port, rtsp_port, session, use_https=None
+        ):
             captured["use_https"] = use_https
 
         async def async_get_ptz_presets(self, channel):
@@ -72,7 +78,9 @@ async def test_internally_built_rpc2_client_inherits_the_flag(monkeypatch):
             return False
 
     monkeypatch.setattr(client_module, "DahuaRpc2Client", _CapturingRpc2)
-    monkeypatch.setattr(client_module.DahuaClient, "_new_rpc2_session", staticmethod(_NullSession))
+    monkeypatch.setattr(
+        client_module.DahuaClient, "_new_rpc2_session", staticmethod(_NullSession)
+    )
 
     # HTTPS on a non-443 port is exactly where deriving from the port is wrong.
     await _client(8443, True).async_get_ptz_preset_ids(1)
@@ -83,8 +91,14 @@ async def test_internally_built_rpc2_client_inherits_the_flag(monkeypatch):
 def test_unticked_means_derive_from_the_port_not_force_http():
     """False must not force HTTP on 443, or existing entries would break."""
     assert get_configured_use_https(SimpleNamespace(data={}, options={})) is None
-    assert get_configured_use_https(SimpleNamespace(data={"use_https": False}, options={})) is None
-    assert get_configured_use_https(SimpleNamespace(data={"use_https": True}, options={}) ) is True
+    assert (
+        get_configured_use_https(SimpleNamespace(data={"use_https": False}, options={}))
+        is None
+    )
+    assert (
+        get_configured_use_https(SimpleNamespace(data={"use_https": True}, options={}))
+        is True
+    )
 
 
 def _schema_defaults(result):
@@ -133,8 +147,14 @@ async def test_reconfigure_form_does_not_offer_credentials(hass):
     """Credentials belong to the reauth step, not here."""
     entry = SimpleNamespace(
         title="Front Door",
-        data={"address": "1.2.3.4", "port": "80", "rtsp_port": "554",
-              "channel": 0, "username": "u", "password": "p"},
+        data={
+            "address": "1.2.3.4",
+            "port": "80",
+            "rtsp_port": "554",
+            "channel": 0,
+            "username": "u",
+            "password": "p",
+        },
         options={},
     )
 
@@ -156,8 +176,15 @@ async def test_reconfigure_form_does_not_offer_credentials(hass):
 
 
 def _reauth_entry(**over):
-    data = {"address": "1.2.3.4", "port": "8443", "rtsp_port": "554",
-            "channel": 3, "use_https": True, "username": "u", "password": "old"}
+    data = {
+        "address": "1.2.3.4",
+        "port": "8443",
+        "rtsp_port": "554",
+        "channel": 3,
+        "use_https": True,
+        "username": "u",
+        "password": "old",
+    }
     data.update(over.pop("data", {}))
     entry = SimpleNamespace(entry_id="e1", title="Front Door", data=data, options={})
     for key, value in over.items():
@@ -172,11 +199,18 @@ async def _captured_reauth_args(hass, entry):
     handler.hass = hass
     handler._reauth_entry = entry
 
-    async def _capture(username, password, address, port, rtsp_port, channel,
-                       use_https=None):
-        seen.update(username=username, password=password, address=address,
-                    port=port, rtsp_port=rtsp_port, channel=channel,
-                    use_https=use_https)
+    async def _capture(
+        username, password, address, port, rtsp_port, channel, use_https=None
+    ):
+        seen.update(
+            username=username,
+            password=password,
+            address=address,
+            port=port,
+            rtsp_port=rtsp_port,
+            channel=channel,
+            use_https=use_https,
+        )
         # Refuse, so the flow stays on the form. Only the arguments matter here.
         return None, "auth"
 
@@ -188,8 +222,9 @@ async def _captured_reauth_args(hass, entry):
 async def test_reauth_retests_over_https_when_the_entry_says_so(hass):
     seen = await _captured_reauth_args(hass, _reauth_entry())
 
-    assert seen["use_https"] is True, (
-        "an HTTPS entry on 8443 was being retested over plain HTTP")
+    assert (
+        seen["use_https"] is True
+    ), "an HTTPS entry on 8443 was being retested over plain HTTP"
 
 
 async def test_reauth_sends_the_new_password_not_the_stored_one(hass):

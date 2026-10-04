@@ -32,22 +32,26 @@ from .integration_source import modules
 def _response_error(status, message=""):
     """An aiohttp.ClientResponseError the way aiohttp raises one."""
     return aiohttp.ClientResponseError(
-        request_info=None, history=(), status=status, message=message)
+        request_info=None, history=(), status=status, message=message
+    )
 
 
 # --- the two answers that mean opposite things ------------------------------
 
+
 def test_a_refusal_names_its_status():
     """400 is the one that means stop asking."""
-    assert _describe_client_error(
-        _response_error(400, "Bad Request")) == "HTTP 400 Bad Request"
+    assert (
+        _describe_client_error(_response_error(400, "Bad Request"))
+        == "HTTP 400 Bad Request"
+    )
 
 
 def test_a_server_error_names_its_status_too():
     """500 is the one that means try again, and it is what #832's event stream gets."""
-    assert _describe_client_error(
-        _response_error(500, "Internal Server Error")) == (
-            "HTTP 500 Internal Server Error")
+    assert _describe_client_error(_response_error(500, "Internal Server Error")) == (
+        "HTTP 500 Internal Server Error"
+    )
 
 
 @pytest.mark.parametrize("status", [400, 401, 404, 500, 501, 503])
@@ -65,6 +69,7 @@ def test_a_status_with_no_message_is_still_readable():
 
 # --- and the errors that carry no status ------------------------------------
 
+
 def test_a_name_resolution_failure_is_named_by_its_kind():
     assert _describe_client_error(socket.gaierror(-2, "Name not known")) == "gaierror"
 
@@ -73,10 +78,13 @@ def test_a_connection_error_does_not_paste_its_paragraph():
     """The reason this is not `str(exception)`. A connector error repeats the host and
     port that are already in the URL on the same line, and can carry a certificate
     chain with it."""
+
     class _Long(aiohttp.ClientError):
         def __str__(self):
-            return ("Cannot connect to host 192.168.1.218:8086 ssl:default "
-                    "[Connect call failed ('192.168.1.218', 8086)]")
+            return (
+                "Cannot connect to host 192.168.1.218:8086 ssl:default "
+                "[Connect call failed ('192.168.1.218', 8086)]"
+            )
 
     described = _describe_client_error(_Long())
 
@@ -93,12 +101,14 @@ def test_a_timeout_is_not_confused_for_a_status():
 
 # --- and the line actually uses it ------------------------------------------
 
+
 def test_the_request_failure_line_passes_the_description():
     """Without this, reverting the call site leaves every test above passing while
     the log line goes back to saying nothing. Searched across the package rather than
     in a named module, for the reason `integration_source` exists."""
     source = "".join(modules().values())
 
-    assert "_describe_client_error(exception))" in source, (
-        "the ClientError debug line no longer reports what the device answered")
-    assert 'ClientError fetching information from %s: %s' in source
+    assert (
+        "_describe_client_error(exception))" in source
+    ), "the ClientError debug line no longer reports what the device answered"
+    assert "ClientError fetching information from %s: %s" in source

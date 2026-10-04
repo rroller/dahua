@@ -65,7 +65,9 @@ def _client(*answers):
 def _refused(status):
     return ClientResponseError(
         request_info=SimpleNamespace(real_url="http://10.0.0.5/x"),
-        history=(), status=status)
+        history=(),
+        status=status,
+    )
 
 
 # --- the four toggles, and the keys that tell them apart ---------------------
@@ -75,7 +77,11 @@ TOGGLES = [
     ("async_enable_channel_title", (), "VideoWidget[4].ChannelTitle.EncodeBlend"),
     ("async_enable_time_overlay", (), "VideoWidget[4].TimeTitle.EncodeBlend"),
     ("async_enable_text_overlay", (2,), "VideoWidget[4].CustomTitle[2].EncodeBlend"),
-    ("async_enable_custom_overlay", (2,), "VideoWidget[4].UserDefinedTitle[2].EncodeBlend"),
+    (
+        "async_enable_custom_overlay",
+        (2,),
+        "VideoWidget[4].UserDefinedTitle[2].EncodeBlend",
+    ),
 ]
 
 
@@ -93,7 +99,8 @@ async def test_the_toggle_writes_its_own_key(method, extra, key):
 @pytest.mark.parametrize("method, extra, key", TOGGLES)
 @pytest.mark.parametrize("enabled, written", [(True, "true"), (False, "false")])
 async def test_the_boolean_is_written_the_way_the_device_spells_it(
-        method, extra, key, enabled, written):
+    method, extra, key, enabled, written
+):
     """Python's `True` is not `true`, and the device takes the lower case form."""
     client = _client()
 

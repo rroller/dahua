@@ -59,8 +59,7 @@ def _coordinator_reads(node) -> set:
 
 def _base_class_members() -> dict:
     """{member name: what it reads} for every member of the entity base classes."""
-    found = {name: set(reads)
-             for name, reads in INHERITED_FROM_HOME_ASSISTANT.items()}
+    found = {name: set(reads) for name, reads in INHERITED_FROM_HOME_ASSISTANT.items()}
     tree = ast.parse(io.open(PACKAGE / "entity.py", encoding="utf-8").read())
     for cls in (node for node in tree.body if isinstance(node, ast.ClassDef)):
         for member in cls.body:
@@ -90,11 +89,18 @@ def _provides(node) -> set:
     Assignments count because `data` and `last_update_success` are attributes
     rather than methods, and a double sets them in `__init__`.
     """
-    found = {member.name for member in node.body
-             if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    found |= {target.id for item in node.body
-              if isinstance(item, ast.Assign)
-              for target in item.targets if isinstance(target, ast.Name)}
+    found = {
+        member.name
+        for member in node.body
+        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    found |= {
+        target.id
+        for item in node.body
+        if isinstance(item, ast.Assign)
+        for target in item.targets
+        if isinstance(target, ast.Name)
+    }
     found |= set(re.findall(r"self\.(\w+)\s*=", ast.unparse(node)))
     return found
 
@@ -116,7 +122,8 @@ def test_the_scan_knows_what_the_base_classes_read():
 
     assert "data" in members.get("extra_state_attributes", set()), (
         "DahuaBaseEntity.extra_state_attributes reads coordinator.data; "
-        "if that changed, this file's whole premise needs rereading")
+        "if that changed, this file's whole premise needs rereading"
+    )
     assert "last_update_success" in members.get("available", set())
     assert members.get("device_info"), "device_info reads nothing?"
 
@@ -135,8 +142,9 @@ def test_every_double_answers_what_its_own_file_asks_of_it():
             continue
         wanted = set().union(*(members[name] for name in exercised))
 
-        classes = [node for node in ast.parse(source).body
-                   if isinstance(node, ast.ClassDef)]
+        classes = [
+            node for node in ast.parse(source).body if isinstance(node, ast.ClassDef)
+        ]
         by_name = {node.name: node for node in classes}
         for node in classes:
             if not _looks_like_a_coordinator(node):
@@ -147,12 +155,14 @@ def test_every_double_answers_what_its_own_file_asks_of_it():
             if missing:
                 short.append(
                     "%s::%s is read for %s and does not answer %s"
-                    % (path.name, node.name, sorted(exercised), missing))
+                    % (path.name, node.name, sorted(exercised), missing)
+                )
 
     assert not short, (
         "a double short of what a base class reads fails as an AttributeError "
         "from inside Home Assistant, which says nothing about the change that "
-        "caused it:\n  %s" % "\n  ".join(short))
+        "caused it:\n  %s" % "\n  ".join(short)
+    )
 
 
 def test_nothing_is_exempt_without_a_reason():

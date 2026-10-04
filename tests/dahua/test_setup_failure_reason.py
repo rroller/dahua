@@ -24,8 +24,13 @@ import pathlib
 import ssl
 
 import pytest
-from aiohttp import (ClientConnectorCertificateError, ClientConnectorError,
-                     ClientConnectorSSLError, ClientResponseError, ClientSSLError)
+from aiohttp import (
+    ClientConnectorCertificateError,
+    ClientConnectorError,
+    ClientConnectorSSLError,
+    ClientResponseError,
+    ClientSSLError,
+)
 
 from custom_components.dahua import config_flow
 from custom_components.dahua.config_flow import describe_setup_failure
@@ -36,6 +41,7 @@ def _response_error(status):
 
 
 # --- the one case that really is the password --------------------------------
+
 
 def test_a_rejected_login_is_a_rejected_login():
     assert describe_setup_failure(_response_error(401)) == "auth"
@@ -60,6 +66,7 @@ def test_a_403_is_not_a_rejected_login():
 
 # --- and the ones that never were --------------------------------------------
 
+
 def test_a_refused_connection_says_so():
     """#690: the log said ConnectionRefusedError; the form said check your password."""
     err = ClientConnectorError(connection_key=None, os_error=OSError(111, "refused"))
@@ -69,7 +76,10 @@ def test_a_refused_connection_says_so():
 
 def test_a_bare_os_error_is_also_a_connection_problem():
     """Not every refusal arrives wrapped."""
-    assert describe_setup_failure(ConnectionRefusedError(111, "refused")) == "cannot_connect"
+    assert (
+        describe_setup_failure(ConnectionRefusedError(111, "refused"))
+        == "cannot_connect"
+    )
     assert describe_setup_failure(OSError(113, "no route to host")) == "cannot_connect"
 
 
@@ -119,6 +129,7 @@ def test_a_404_on_the_api_path_points_at_the_cgi_service():
 def _probe_opening(open_ports):
     async def _probe(address, port, timeout=None):
         return port in open_ports
+
     return _probe
 
 
@@ -127,32 +138,39 @@ async def test_a_dahua_port_answering_means_http_is_switched_off(monkeypatch):
     any of 27 scanned HTTP ports."""
     monkeypatch.setattr(config_flow, "_async_probe_tcp", _probe_opening({37777}))
 
-    assert await config_flow.async_refine_connection_failure(
-        "1.2.3.4", "cannot_connect") == "http_service_off"
+    assert (
+        await config_flow.async_refine_connection_failure("1.2.3.4", "cannot_connect")
+        == "http_service_off"
+    )
 
 
 async def test_dhip_on_its_own_is_enough(monkeypatch):
     monkeypatch.setattr(config_flow, "_async_probe_tcp", _probe_opening({5000}))
 
-    assert await config_flow.async_refine_connection_failure(
-        "1.2.3.4", "cannot_connect") == "http_service_off"
+    assert (
+        await config_flow.async_refine_connection_failure("1.2.3.4", "cannot_connect")
+        == "http_service_off"
+    )
 
 
 async def test_443_open_suggests_https_and_takes_precedence(monkeypatch):
     """Of the two, HTTPS is the one with a port to hand the user."""
-    monkeypatch.setattr(config_flow, "_async_probe_tcp",
-                        _probe_opening({443, 37777}))
+    monkeypatch.setattr(config_flow, "_async_probe_tcp", _probe_opening({443, 37777}))
 
-    assert await config_flow.async_refine_connection_failure(
-        "1.2.3.4", "cannot_connect") == "https_available"
+    assert (
+        await config_flow.async_refine_connection_failure("1.2.3.4", "cannot_connect")
+        == "https_available"
+    )
 
 
 async def test_nothing_listening_stays_cannot_connect(monkeypatch):
     """The message is right when the device really is unreachable."""
     monkeypatch.setattr(config_flow, "_async_probe_tcp", _probe_opening(set()))
 
-    assert await config_flow.async_refine_connection_failure(
-        "1.2.3.4", "cannot_connect") == "cannot_connect"
+    assert (
+        await config_flow.async_refine_connection_failure("1.2.3.4", "cannot_connect")
+        == "cannot_connect"
+    )
 
 
 async def test_a_failure_that_is_not_a_connection_failure_is_left_alone(monkeypatch):
@@ -166,10 +184,18 @@ async def test_a_failure_that_is_not_a_connection_failure_is_left_alone(monkeypa
 
     monkeypatch.setattr(config_flow, "_async_probe_tcp", _record)
 
-    for reason in ("auth", "timeout", "ssl_error", "cgi_disabled",
-                   "unexpected_reply", "unknown"):
-        assert await config_flow.async_refine_connection_failure(
-            "1.2.3.4", reason) == reason
+    for reason in (
+        "auth",
+        "timeout",
+        "ssl_error",
+        "cgi_disabled",
+        "unexpected_reply",
+        "unknown",
+    ):
+        assert (
+            await config_flow.async_refine_connection_failure("1.2.3.4", reason)
+            == reason
+        )
 
     assert not probed, "nothing should be probed unless the connection failed"
 
@@ -183,6 +209,7 @@ def test_anything_unrecognised_points_at_the_log():
 # This is what was broken. `ssl_error` was written and translated, and no user
 # could ever see it, because the branch above it matched first.
 
+
 def test_the_tls_error_a_request_raises_names_https():
     """aiohttp raises ClientConnectorSSLError, never a bare ssl.SSLError.
 
@@ -190,7 +217,8 @@ def test_the_tls_error_a_request_raises_names_https():
     it asserted on a type nothing in the flow produces.
     """
     err = ClientConnectorSSLError(
-        connection_key=None, os_error=ssl.SSLError("handshake failure"))
+        connection_key=None, os_error=ssl.SSLError("handshake failure")
+    )
 
     assert describe_setup_failure(err) == "ssl_error"
 
@@ -199,7 +227,8 @@ def test_a_self_signed_certificate_names_https():
     """#248 and #314: the DVR's own certificate. Reported as a credentials
     problem for years, because this landed on cannot_connect."""
     err = ClientConnectorCertificateError(
-        connection_key=None, certificate_error=ssl.CertificateError("self signed"))
+        connection_key=None, certificate_error=ssl.CertificateError("self signed")
+    )
 
     assert describe_setup_failure(err) == "ssl_error"
 
@@ -212,7 +241,8 @@ def test_the_branch_order_is_load_bearing():
     """
     assert issubclass(ClientSSLError, ClientConnectorError), (
         "a TLS error IS a connection error, so testing ClientConnectorError "
-        "first makes ssl_error unreachable")
+        "first makes ssl_error unreachable"
+    )
     assert issubclass(ClientConnectorSSLError, ClientSSLError)
     assert issubclass(ClientConnectorCertificateError, ClientSSLError)
 
@@ -235,10 +265,16 @@ def test_why_the_clientsslerror_arm_is_belt_and_braces():
 
 # --- every reason must be a string a user can actually read ------------------
 
+
 def test_every_reason_has_a_translation():
     """A key with no string shows the raw key in the UI."""
-    path = (pathlib.Path(__file__).parents[2]
-            / "custom_components" / "dahua" / "translations" / "en.json")
+    path = (
+        pathlib.Path(__file__).parents[2]
+        / "custom_components"
+        / "dahua"
+        / "translations"
+        / "en.json"
+    )
     strings = json.loads(path.read_text(encoding="utf-8"))["config"]["error"]
 
     produced = {
@@ -247,8 +283,9 @@ def test_every_reason_has_a_translation():
         describe_setup_failure(ConnectionRefusedError()),
         describe_setup_failure(TimeoutError()),
         describe_setup_failure(ssl.SSLError()),
-        describe_setup_failure(ClientConnectorSSLError(
-            connection_key=None, os_error=ssl.SSLError())),
+        describe_setup_failure(
+            ClientConnectorSSLError(connection_key=None, os_error=ssl.SSLError())
+        ),
         describe_setup_failure(ValueError()),
     }
 
@@ -261,8 +298,13 @@ def test_every_reason_has_a_translation():
 def test_the_refined_reasons_have_translations_too():
     """These come from async_refine_connection_failure rather than from
     describe_setup_failure, so the test above cannot see them."""
-    path = (pathlib.Path(__file__).parents[2]
-            / "custom_components" / "dahua" / "translations" / "en.json")
+    path = (
+        pathlib.Path(__file__).parents[2]
+        / "custom_components"
+        / "dahua"
+        / "translations"
+        / "en.json"
+    )
     strings = json.loads(path.read_text(encoding="utf-8"))["config"]["error"]
 
     missing = {"https_available", "http_service_off", "cgi_disabled"} - set(strings)
@@ -271,9 +313,15 @@ def test_the_refined_reasons_have_translations_too():
 
 def test_no_reason_still_blames_the_password_by_accident():
     """The old text is kept only for a genuine rejection, and says so now."""
-    path = (pathlib.Path(__file__).parents[2]
-            / "custom_components" / "dahua" / "translations" / "en.json")
+    path = (
+        pathlib.Path(__file__).parents[2]
+        / "custom_components"
+        / "dahua"
+        / "translations"
+        / "en.json"
+    )
     strings = json.loads(path.read_text(encoding="utf-8"))["config"]["error"]
 
-    assert "Address" not in strings["auth"], (
-        "the credentials message must not mention the address any more")
+    assert (
+        "Address" not in strings["auth"]
+    ), "the credentials message must not mention the address any more"

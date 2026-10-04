@@ -23,8 +23,8 @@ import pytest
 
 from custom_components.dahua.client import DEFAULT_EXTRA_STREAMS, parse_extra_streams
 
-
 # --- what real devices answer -----------------------------------------------
+
 
 def test_the_measured_nvr():
     assert parse_extra_streams("2") == 2
@@ -44,6 +44,7 @@ def test_whitespace_does_not_make_it_unreadable():
 
 
 # --- and what an unreadable answer must not do ------------------------------
+
 
 @pytest.mark.parametrize("value", [None, "", "   ", "abc", "2,3", {}])
 def test_an_unreadable_answer_falls_back_rather_than_raising(value):

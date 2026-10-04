@@ -33,13 +33,22 @@ import pytest
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.const import (
-    CONF_AUTHORIZED_HOLD_TIME, DEFAULT_AUTHORIZED_HOLD_TIME)
+    CONF_AUTHORIZED_HOLD_TIME,
+    DEFAULT_AUTHORIZED_HOLD_TIME,
+)
 
 CHANNEL = 2
 
 
-def _coordinator(data=None, *, channel=CHANNEL, channel_config=None,
-                 options=None, entry_data=None, **attrs):
+def _coordinator(
+    data=None,
+    *,
+    channel=CHANNEL,
+    channel_config=None,
+    options=None,
+    entry_data=None,
+    **attrs
+):
     """Only the attributes these readers touch, so nothing passes on state it never set."""
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator.data = {} if data is None else data
@@ -59,12 +68,21 @@ def _coordinator(data=None, *, channel=CHANNEL, channel_config=None,
 # getter, the data that means "yes", and a key that is deliberately close but wrong.
 READERS = [
     ("is_alarm_output_on", {"status.AlarmOut[0]": "1"}, {"status.AlarmOut[1]": "1"}),
-    ("is_motion_detection_enabled",
-     {"table.MotionDetect[2].Enable": "true"}, {"table.MotionDetect[0].Enable": "true"}),
-    ("is_disarming_linkage_enabled",
-     {"table.DisableLinkage.Enable": "true"}, {"table.DisableLinkage": "true"}),
-    ("is_ring_light_on",
-     {"table.LightGlobal[0].Enable": "true"}, {"table.LightGlobal[1].Enable": "true"}),
+    (
+        "is_motion_detection_enabled",
+        {"table.MotionDetect[2].Enable": "true"},
+        {"table.MotionDetect[0].Enable": "true"},
+    ),
+    (
+        "is_disarming_linkage_enabled",
+        {"table.DisableLinkage.Enable": "true"},
+        {"table.DisableLinkage": "true"},
+    ),
+    (
+        "is_ring_light_on",
+        {"table.LightGlobal[0].Enable": "true"},
+        {"table.LightGlobal[1].Enable": "true"},
+    ),
     ("is_siren_on", {"status.Speaker": "On"}, {"status.Speakers": "On"}),
     ("is_security_light_on", {"status.WhiteLight": "On"}, {"status.WhiteLights": "On"}),
 ]
@@ -101,13 +119,19 @@ def test_nothing_polled_yet_is_not_yes(getter, yes, wrong_key):
 def test_event_notifications_are_enabled_when_the_device_says_disabled_is_false():
     """`DisableEventNotify.Enable` is a *disable* flag, so enabled is `false`.
     Reading this as a normal Enable key inverts every notification sensor."""
-    assert _coordinator(
-        {"table.DisableEventNotify.Enable": "false"}
-    ).is_event_notifications_enabled() is True
+    assert (
+        _coordinator(
+            {"table.DisableEventNotify.Enable": "false"}
+        ).is_event_notifications_enabled()
+        is True
+    )
 
-    assert _coordinator(
-        {"table.DisableEventNotify.Enable": "true"}
-    ).is_event_notifications_enabled() is False
+    assert (
+        _coordinator(
+            {"table.DisableEventNotify.Enable": "true"}
+        ).is_event_notifications_enabled()
+        is False
+    )
 
 
 def test_event_notifications_are_not_enabled_before_the_first_poll():
@@ -123,8 +147,10 @@ def test_event_notifications_are_not_enabled_before_the_first_poll():
 def test_motion_detection_reads_its_own_channel():
     """On a recorder every channel shares one polled table, so the channel in the key
     is the only thing separating this channel's answer from channel 0's."""
-    data = {"table.MotionDetect[0].Enable": "false",
-            "table.MotionDetect[2].Enable": "true"}
+    data = {
+        "table.MotionDetect[0].Enable": "false",
+        "table.MotionDetect[2].Enable": "true",
+    }
 
     assert _coordinator(data, channel=2).is_motion_detection_enabled() is True
     assert _coordinator(data, channel=0).is_motion_detection_enabled() is False
@@ -133,12 +159,15 @@ def test_motion_detection_reads_its_own_channel():
 # --- case, which is not handled the same way everywhere ----------------------
 
 
-@pytest.mark.parametrize("getter, data", [
-    ("is_motion_detection_enabled", {"table.MotionDetect[2].Enable": "TRUE"}),
-    ("is_disarming_linkage_enabled", {"table.DisableLinkage.Enable": "True"}),
-    ("is_siren_on", {"status.Speaker": "ON"}),
-    ("is_security_light_on", {"status.WhiteLight": "on"}),
-])
+@pytest.mark.parametrize(
+    "getter, data",
+    [
+        ("is_motion_detection_enabled", {"table.MotionDetect[2].Enable": "TRUE"}),
+        ("is_disarming_linkage_enabled", {"table.DisableLinkage.Enable": "True"}),
+        ("is_siren_on", {"status.Speaker": "ON"}),
+        ("is_security_light_on", {"status.WhiteLight": "on"}),
+    ],
+)
 def test_these_readers_ignore_the_case_the_device_used(getter, data):
     assert getattr(_coordinator(data), getter)() is True
 
@@ -148,8 +177,13 @@ def test_the_ring_light_is_case_sensitive_and_that_is_measured_not_intended():
     Pinned rather than fixed: a device answering `True` here would read as off, and
     changing it is a behaviour change for whatever firmware does that, so it should be
     a deliberate commit rather than a tidy-up inside another one."""
-    assert _coordinator({"table.LightGlobal[0].Enable": "true"}).is_ring_light_on() is True
-    assert _coordinator({"table.LightGlobal[0].Enable": "True"}).is_ring_light_on() is False
+    assert (
+        _coordinator({"table.LightGlobal[0].Enable": "true"}).is_ring_light_on() is True
+    )
+    assert (
+        _coordinator({"table.LightGlobal[0].Enable": "True"}).is_ring_light_on()
+        is False
+    )
 
 
 # --- the two level status lookup --------------------------------------------
@@ -158,13 +192,15 @@ def test_the_ring_light_is_case_sensitive_and_that_is_measured_not_intended():
 def test_a_status_value_is_looked_for_in_both_shapes():
     """Devices answer `status.status.X` and others answer `status.X`, and the doubled
     form wins. Both are real, which is why the fallback exists."""
-    assert _coordinator({"status.status.Speaker": "On"}).get_status_value("Speaker") == "On"
+    assert (
+        _coordinator({"status.status.Speaker": "On"}).get_status_value("Speaker")
+        == "On"
+    )
     assert _coordinator({"status.Speaker": "On"}).get_status_value("Speaker") == "On"
 
 
 def test_the_doubled_form_wins_over_the_single_one():
-    coordinator = _coordinator(
-        {"status.status.Speaker": "On", "status.Speaker": "Off"})
+    coordinator = _coordinator({"status.status.Speaker": "On", "status.Speaker": "Off"})
 
     assert coordinator.get_status_value("Speaker") == "On"
 
@@ -181,15 +217,19 @@ def test_an_absent_status_value_is_empty_rather_than_none():
 def test_the_hold_time_prefers_this_channel_over_the_entry():
     coordinator = _coordinator(
         channel_config={CONF_AUTHORIZED_HOLD_TIME: 90},
-        options={CONF_AUTHORIZED_HOLD_TIME: 30})
+        options={CONF_AUTHORIZED_HOLD_TIME: 30},
+    )
 
     assert coordinator.get_authorized_hold_time() == 90
 
 
 def test_the_hold_time_falls_back_to_the_entry_then_the_default():
-    assert _coordinator(
-        entry_data={CONF_AUTHORIZED_HOLD_TIME: 45}
-    ).get_authorized_hold_time() == 45
+    assert (
+        _coordinator(
+            entry_data={CONF_AUTHORIZED_HOLD_TIME: 45}
+        ).get_authorized_hold_time()
+        == 45
+    )
 
     assert _coordinator().get_authorized_hold_time() == DEFAULT_AUTHORIZED_HOLD_TIME
 
@@ -220,22 +260,27 @@ def test_the_last_plate_is_unknown_until_one_is_read():
 
 def test_a_plate_record_with_no_plate_in_it_is_unknown():
     """The record is built from an event payload, so the key can be absent."""
-    assert _coordinator(
-        _last_plate_data={"other": "x"}).get_last_plate() == "unknown"
+    assert _coordinator(_last_plate_data={"other": "x"}).get_last_plate() == "unknown"
 
 
 def test_the_last_plate_is_reported_when_there_is_one():
-    assert _coordinator(_last_plate_data={"plate": "ABC123"}).get_last_plate() == "ABC123"
+    assert (
+        _coordinator(_last_plate_data={"plate": "ABC123"}).get_last_plate() == "ABC123"
+    )
 
 
 def test_the_device_name_prefers_the_configured_one():
     """`_name` is what the user called it; `machine_name` is what the device calls
     itself. Preferring the device's would rename everything on the next poll."""
-    assert _coordinator(
-        _name="Front Door", machine_name="IPC-HFW1234").get_device_name() == "Front Door"
+    assert (
+        _coordinator(_name="Front Door", machine_name="IPC-HFW1234").get_device_name()
+        == "Front Door"
+    )
 
-    assert _coordinator(
-        _name=None, machine_name="IPC-HFW1234").get_device_name() == "IPC-HFW1234"
+    assert (
+        _coordinator(_name=None, machine_name="IPC-HFW1234").get_device_name()
+        == "IPC-HFW1234"
+    )
 
 
 # --- and the readers that just surface an attribute -------------------------

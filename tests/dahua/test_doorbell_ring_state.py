@@ -55,11 +55,13 @@ def _listening(c):
 
 
 def _press(c, state):
-    c.on_receive_vto_event({"Code": "BackKeyLight", "Action": "Pulse",
-                            "Data": {"State": state}})
+    c.on_receive_vto_event(
+        {"Code": "BackKeyLight", "Action": "Pulse", "Data": {"State": state}}
+    )
 
 
 # --- ringing ----------------------------------------------------------------
+
 
 @pytest.mark.parametrize("state", [1, 2])
 def test_both_ringing_states_raise_the_sensor(state):
@@ -83,6 +85,7 @@ def test_the_value_may_arrive_as_a_string():
 
 
 # --- not ringing ------------------------------------------------------------
+
 
 @pytest.mark.parametrize("state", [0, 4, 5, 6, 7, 8, 9, 11])
 def test_the_other_documented_states_do_not_ring(state):

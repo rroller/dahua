@@ -43,8 +43,11 @@ def _coordinator(data=None, **attrs):
 
 
 def _light(index, field, value, *, channel=CHANNEL, profile=PROFILE):
-    return {"table.Lighting_V2[{0}][{1}][{2}].{3}".format(
-        channel, profile, index, field): value}
+    return {
+        "table.Lighting_V2[{0}][{1}][{2}].{3}".format(
+            channel, profile, index, field
+        ): value
+    }
 
 
 # --- which bank the wrapper asks about --------------------------------------
@@ -130,8 +133,9 @@ def test_a_scheme_device_needs_both_the_mode_and_whitemode():
 
     assert coordinator.is_illuminator_on() is False
 
-    data["table.LightingScheme[{0}][{1}].LightingMode".format(
-        CHANNEL, PROFILE)] = "WhiteMode"
+    data["table.LightingScheme[{0}][{1}].LightingMode".format(CHANNEL, PROFILE)] = (
+        "WhiteMode"
+    )
 
     assert coordinator.is_illuminator_on() is True
 
@@ -145,13 +149,15 @@ async def test_a_channel_with_events_joins_the_hosts_stream():
     registered = []
 
     coordinator = _coordinator(
-        events=["VideoMotion"], hass=object(), _address="10.0.0.5")
+        events=["VideoMotion"], hass=object(), _address="10.0.0.5"
+    )
 
     class _Stream:
         def register(self, who):
             registered.append(who)
 
     import custom_components.dahua.coordinator as module
+
     original = module._host_stream
     module._host_stream = lambda hass, address: _Stream()
     try:
@@ -170,6 +176,7 @@ async def test_a_channel_with_no_events_does_not_register():
     coordinator = _coordinator(events=None, hass=object(), _address="10.0.0.5")
 
     import custom_components.dahua.coordinator as module
+
     original = module._host_stream
 
     def _should_not_run(hass, address):
@@ -201,7 +208,9 @@ async def test_the_doorbell_listener_runs_as_a_task_it_can_be_stopped_by():
 
     await coordinator.async_start_vto_event_listener()
 
-    assert coordinator._vto_task is not None, "no handle was kept, so nothing can stop it"
+    assert (
+        coordinator._vto_task is not None
+    ), "no handle was kept, so nothing can stop it"
     await coordinator._vto_task
     assert ran == ["started"]
 
@@ -226,12 +235,15 @@ def test_one_failing_plate_listener_does_not_stop_the_others():
         # Stubbed rather than driven: this test is about the listener loop, and
         # whether a plate is authorised is a separate contract with its own tests.
         is_plate_authorized=lambda plate: False,
-        hass=type("_Hass", (), {"bus": type("_Bus", (), {"fire": lambda *a: None})()})(),
+        hass=type(
+            "_Hass", (), {"bus": type("_Bus", (), {"fire": lambda *a: None})()}
+        )(),
     )
 
     coordinator._handle_anpr_plate(
-        {"Code": "TrafficJunction",
-         "data": {"TrafficCar": {"PlateNumber": "ABC123"}}})
+        {"Code": "TrafficJunction", "data": {"TrafficCar": {"PlateNumber": "ABC123"}}}
+    )
 
-    assert notified == ["second"], (
-        "the second listener was skipped because the first raised")
+    assert notified == [
+        "second"
+    ], "the second listener was skipped because the first raised"

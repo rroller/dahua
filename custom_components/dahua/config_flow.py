@@ -1,12 +1,18 @@
 """Adds config flow (UI flow) for Dahua IP cameras."""
+
 import asyncio
 import logging
 import ssl
 
 import voluptuous as vol
 
-from aiohttp import (ClientConnectorError, ClientResponseError, ClientSession,
-                     ClientSSLError, TCPConnector)
+from aiohttp import (
+    ClientConnectorError,
+    ClientResponseError,
+    ClientSession,
+    ClientSSLError,
+    TCPConnector,
+)
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigSubentryData
@@ -19,8 +25,12 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 
 from . import dahua_utils
-from . import (ISSUE_CHANNEL_NOT_ADDED, _async_probe_tcp, entry_coordinators,
-               is_synthesised_identity)
+from . import (
+    ISSUE_CHANNEL_NOT_ADDED,
+    _async_probe_tcp,
+    entry_coordinators,
+    is_synthesised_identity,
+)
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
 from .migrate import CHANNEL_SUBENTRY
@@ -62,7 +72,7 @@ https://developers.home-assistant.io/docs/data_entry_flow_index/
 
 SSL_CONTEXT = ssl.create_default_context()
 
-#SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
+# SSL_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
 SSL_CONTEXT.set_ciphers("DEFAULT")
 SSL_CONTEXT.check_hostname = False
 SSL_CONTEXT.verify_mode = ssl.CERT_NONE
@@ -84,49 +94,50 @@ FAILURE_PROBE_TIMEOUT_SECONDS = 3.0
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
-ALL_EVENTS = ["VideoMotion",
-              "VideoLoss",
-              "AlarmLocal",
-              "CrossLineDetection",
-              "CrossRegionDetection",
-              "AudioMutation",
-              "SmartMotionHuman",
-              "SmartMotionVehicle",
-              "VideoBlind",
-              "AudioAnomaly",
-              "VideoMotionInfo",
-              "NewFile",
-              "IntelliFrame",
-              "LeftDetection",
-              "TakenAwayDetection",
-              "VideoAbnormalDetection",
-              "FaceDetection",
-              "FaceRecognition",
-              "HumanTrait",
-              "VideoUnFocus",
-              "WanderDetection",
-              "RioterDetection",
-              "ParkingDetection",
-              "MoveDetection",
-              "StorageNotExist",
-              "StorageFailure",
-              "StorageLowSpace",
-              "AlarmOutput",
-              "InterVideoAccess",
-              "NTPAdjustTime",
-              "TimeChange",
-              "MDResult",
-              "HeatImagingTemper",
-              "CrowdDetection",
-              "FireWarning",
-              "FireWarningInfo",
-              "ObjectPlacementDetection",
-              "ObjectRemovalDetection",
-              "All",
-              "Traffic",
-              "TrafficJunction",
-              "TrafficSnapshot",
-              ]
+ALL_EVENTS = [
+    "VideoMotion",
+    "VideoLoss",
+    "AlarmLocal",
+    "CrossLineDetection",
+    "CrossRegionDetection",
+    "AudioMutation",
+    "SmartMotionHuman",
+    "SmartMotionVehicle",
+    "VideoBlind",
+    "AudioAnomaly",
+    "VideoMotionInfo",
+    "NewFile",
+    "IntelliFrame",
+    "LeftDetection",
+    "TakenAwayDetection",
+    "VideoAbnormalDetection",
+    "FaceDetection",
+    "FaceRecognition",
+    "HumanTrait",
+    "VideoUnFocus",
+    "WanderDetection",
+    "RioterDetection",
+    "ParkingDetection",
+    "MoveDetection",
+    "StorageNotExist",
+    "StorageFailure",
+    "StorageLowSpace",
+    "AlarmOutput",
+    "InterVideoAccess",
+    "NTPAdjustTime",
+    "TimeChange",
+    "MDResult",
+    "HeatImagingTemper",
+    "CrowdDetection",
+    "FireWarning",
+    "FireWarningInfo",
+    "ObjectPlacementDetection",
+    "ObjectRemovalDetection",
+    "All",
+    "Traffic",
+    "TrafficJunction",
+    "TrafficSnapshot",
+]
 
 """
 https://developers.home-assistant.io/docs/data_entry_flow_index
@@ -193,8 +204,9 @@ def redirected_to_https(exception: BaseException) -> bool:
     carries the URL the last request actually went to.
     """
     history = getattr(exception, "history", None) or ()
-    if not any(getattr(response, "status", None) in REDIRECT_STATUSES
-               for response in history):
+    if not any(
+        getattr(response, "status", None) in REDIRECT_STATUSES for response in history
+    ):
         return False
     url = getattr(getattr(exception, "request_info", None), "url", None)
     return getattr(url, "scheme", None) == "https"
@@ -303,10 +315,12 @@ async def async_channel_refusal(client, channel):
         return None
     try:
         devices = dahua_utils.parse_remote_devices(
-            await client.async_get_remote_devices())
+            await client.async_get_remote_devices()
+        )
     except Exception:  # pylint: disable=broad-except
-        _LOGGER.debug("No RemoteDevice table to check channel %s against", index,
-                      exc_info=True)
+        _LOGGER.debug(
+            "No RemoteDevice table to check channel %s against", index, exc_info=True
+        )
         return None
     if not devices:
         return None
@@ -321,6 +335,8 @@ async def async_channel_refusal(client, channel):
         # snapshot answers 400 and RTSP times out (#710).
         return "channel_is_onvif"
     return None
+
+
 async def async_refine_connection_failure(address: str, reason: str) -> str:
     """Turn "nothing answered" into what the device is actually doing.
 
@@ -365,8 +381,9 @@ PREVIEW_TIMEOUT_SECONDS = 5
 PREVIEW_ALT_TEXT = "Snapshot from this camera"
 
 
-async def async_fetch_preview(username, password, address, port, rtsp_port,
-                              channel, use_https=None):
+async def async_fetch_preview(
+    username, password, address, port, rtsp_port, channel, use_https=None
+):
     """Return one still from a channel, or None. Never raises.
 
     A picture is a nicety, so every way of not getting one -- no snapshot endpoint, a
@@ -376,16 +393,18 @@ async def async_fetch_preview(username, password, address, port, rtsp_port,
     connector = TCPConnector(ssl=SSL_CONTEXT)
     session = ClientSession(connector=connector)
     try:
-        client = DahuaClient(username, password, address, port, rtsp_port,
-                             session, use_https)
+        client = DahuaClient(
+            username, password, address, port, rtsp_port, session, use_https
+        )
         return await asyncio.wait_for(
-            client.async_get_snapshot(int(channel)), PREVIEW_TIMEOUT_SECONDS)
+            client.async_get_snapshot(int(channel)), PREVIEW_TIMEOUT_SECONDS
+        )
     except Exception as exception:  # pylint: disable=broad-except
         # Debug, not warning: this failing is not a fault and the user is about to be
         # shown a working form. The connection itself has already been proven.
         _LOGGER.debug(
-            "No preview still for channel %s at %s (%s)",
-            channel, address, exception)
+            "No preview still for channel %s at %s (%s)", channel, address, exception
+        )
         return None
     finally:
         await session.close()
@@ -458,8 +477,12 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if port:
             self._discovered[CONF_PORT] = str(port)
 
-        name = (info.get("DeviceType") or info.get("MachineName")
-                or discovery_info.hostname or "Dahua device")
+        name = (
+            info.get("DeviceType")
+            or info.get("MachineName")
+            or discovery_info.hostname
+            or "Dahua device"
+        )
         # Shown on the discovery card in the integrations list.
         self.context["title_placeholders"] = {"name": name, "address": address}
         return await self.async_step_user()
@@ -496,7 +519,10 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         index = int(import_data.get(CONF_CHANNEL) or 0)
         _LOGGER.warning(
             "Channel %s on %s could not be added (%s), so it has been skipped",
-            index + 1, address, reason or "unknown")
+            index + 1,
+            address,
+            reason or "unknown",
+        )
         ir.async_create_issue(
             self.hass,
             DOMAIN,
@@ -533,10 +559,15 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 continue
             if entry.data.get(CONF_ADDRESS) == address:
                 continue
-            _LOGGER.debug("Moving %s from %s to %s, same serial",
-                          entry.unique_id, entry.data.get(CONF_ADDRESS), address)
+            _LOGGER.debug(
+                "Moving %s from %s to %s, same serial",
+                entry.unique_id,
+                entry.data.get(CONF_ADDRESS),
+                address,
+            )
             self.hass.config_entries.async_update_entry(
-                entry, data={**entry.data, CONF_ADDRESS: address})
+                entry, data={**entry.data, CONF_ADDRESS: address}
+            )
 
     def _async_entries_for_serial(self, serial: str) -> list:
         """Every entry for one device, including a recorder's other channels.
@@ -548,7 +579,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """
         prefix = serial + "_"
         return [
-            entry for entry in self._async_current_entries()
+            entry
+            for entry in self._async_current_entries()
             if (entry.unique_id or "") == serial
             or (entry.unique_id or "").startswith(prefix)
         ]
@@ -584,7 +616,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 # Only allow a camera to be setup once
                 if "serialNumber" in data and data["serialNumber"] is not None:
                     unique_id = channel_unique_id(
-                        data["serialNumber"], user_input[CONF_CHANNEL])
+                        data["serialNumber"], user_input[CONF_CHANNEL]
+                    )
                     await self.async_set_unique_id(unique_id)
                     # Heal the siblings first, because the call below raises.
                     self._async_heal_siblings(unique_id, user_input[CONF_ADDRESS])
@@ -594,7 +627,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     # nothing pointing at Reconfigure. Same serial is the same
                     # device, so the address we have just talked to is the right one.
                     self._abort_if_unique_id_configured(
-                        updates={CONF_ADDRESS: user_input[CONF_ADDRESS]})
+                        updates={CONF_ADDRESS: user_input[CONF_ADDRESS]}
+                    )
 
                 user_input[CONF_NAME] = data["name"]
                 self.init_info = user_input
@@ -623,7 +657,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if self._discovery_task is None:
             self._discovery_task = self.hass.async_create_task(
                 self._async_discover_channels(
-                    self.init_info, int(self.init_info[CONF_CHANNEL])))
+                    self.init_info, int(self.init_info[CONF_CHANNEL])
+                )
+            )
 
         # Whether the search has finished, not whether it has been started.
         # A step showing progress is re-entered for reasons other than the task
@@ -635,8 +671,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_progress(
                 step_id="discover",
                 progress_action="discover",
-                description_placeholders={
-                    "seconds": str(DISCOVERY_TIMEOUT_SECONDS)},
+                description_placeholders={"seconds": str(DISCOVERY_TIMEOUT_SECONDS)},
                 progress_task=self._discovery_task,
             )
 
@@ -650,7 +685,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             self._found_channels = {}
 
         return self.async_show_progress_done(
-            next_step_id="channels" if self._found_channels else "name")
+            next_step_id="channels" if self._found_channels else "name"
+        )
 
     async def _async_discover_channels(self, user_input, exclude) -> dict:
         """Which other channels of this recorder have a live camera on them.
@@ -671,17 +707,21 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         Any failure here means nothing is offered, never a failed setup. Adding
         one camera must not start depending on a recorder-only table.
         """
-        session = ClientSession(
-            connector=TCPConnector(ssl=SSL_CONTEXT))
+        session = ClientSession(connector=TCPConnector(ssl=SSL_CONTEXT))
         try:
             client = DahuaClient(
-                user_input[CONF_USERNAME], user_input[CONF_PASSWORD],
-                user_input[CONF_ADDRESS], user_input[CONF_PORT],
-                user_input[CONF_RTSP_PORT], session,
-                True if user_input.get(CONF_USE_HTTPS) else None)
+                user_input[CONF_USERNAME],
+                user_input[CONF_PASSWORD],
+                user_input[CONF_ADDRESS],
+                user_input[CONF_PORT],
+                user_input[CONF_RTSP_PORT],
+                session,
+                True if user_input.get(CONF_USE_HTTPS) else None,
+            )
             try:
                 devices = dahua_utils.parse_remote_devices(
-                    await client.async_get_remote_devices())
+                    await client.async_get_remote_devices()
+                )
             except Exception:  # pylint: disable=broad-except
                 # A standalone camera has no such table. Nothing to offer is an
                 # ordinary answer rather than a failure, so this is not a
@@ -689,24 +729,31 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 # that can do nothing at all and leave no trace of why.
                 _LOGGER.debug(
                     "No RemoteDevice table on %s, so no channels to offer",
-                    user_input[CONF_ADDRESS], exc_info=True)
+                    user_input[CONF_ADDRESS],
+                    exc_info=True,
+                )
                 return {}
 
             candidates = [
-                index for index in dahua_utils.channels_worth_offering(devices)
+                index
+                for index in dahua_utils.channels_worth_offering(devices)
                 if index != exclude
             ]
             _LOGGER.debug(
                 "%s: %d slots, %s worth offering, %d after excluding channel %s",
-                user_input[CONF_ADDRESS], len(devices),
-                dahua_utils.channels_worth_offering(devices), len(candidates),
-                exclude)
+                user_input[CONF_ADDRESS],
+                len(devices),
+                dahua_utils.channels_worth_offering(devices),
+                len(candidates),
+                exclude,
+            )
             if not candidates:
                 return {}
 
             try:
                 titles = dahua_utils.parse_channel_titles(
-                    await client.async_get_config("ChannelTitle"))
+                    await client.async_get_config("ChannelTitle")
+                )
             except Exception:  # pylint: disable=broad-except
                 titles = {}
 
@@ -727,14 +774,20 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # convenience, and not offering anything is a fine outcome.
             answered = await asyncio.wait_for(
                 asyncio.gather(*[live(i) for i in candidates]),
-                DISCOVERY_TIMEOUT_SECONDS)
+                DISCOVERY_TIMEOUT_SECONDS,
+            )
             found = {
                 index: titles.get(index) or "Channel {0}".format(index + 1)
-                for index in answered if index is not None
+                for index in answered
+                if index is not None
             }
-            _LOGGER.debug("%s: %d of %d candidates answered a snapshot: %s",
-                          user_input[CONF_ADDRESS], len(found), len(candidates),
-                          sorted(found))
+            _LOGGER.debug(
+                "%s: %d of %d candidates answered a snapshot: %s",
+                user_input[CONF_ADDRESS],
+                len(found),
+                len(candidates),
+                sorted(found),
+            )
             return found
         except Exception:  # pylint: disable=broad-except
             _LOGGER.debug("Could not look for other channels", exc_info=True)
@@ -763,16 +816,18 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="channels",
-            data_schema=vol.Schema({
-                vol.Optional(CONF_ALL_CHANNELS, default=False): bool,
-                vol.Optional(CONF_EXTRA_CHANNELS, default=[]):
-                    cv.multi_select({
-                        str(index): "Channel {0}: {1}".format(index + 1, name)
-                        for index, name in sorted(self._found_channels.items())
-                    }),
-            }),
-            description_placeholders={
-                "count": str(len(self._found_channels))},
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(CONF_ALL_CHANNELS, default=False): bool,
+                    vol.Optional(CONF_EXTRA_CHANNELS, default=[]): cv.multi_select(
+                        {
+                            str(index): "Channel {0}: {1}".format(index + 1, name)
+                            for index, name in sorted(self._found_channels.items())
+                        }
+                    ),
+                }
+            ),
+            description_placeholders={"count": str(len(self._found_channels))},
             errors=self._errors,
         )
 
@@ -794,8 +849,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # index this integration uses. A channel the recorder gave no title
             # is just its number, rather than "Channel 7: Channel 7".
             title = self._found_channels.get(index)
-            label = ("Channel {0}: {1}".format(index + 1, title) if title
-                     else "Channel {0}".format(index + 1))
+            label = (
+                "Channel {0}: {1}".format(index + 1, title)
+                if title
+                else "Channel {0}".format(index + 1)
+            )
             fields[label] = index
         return fields
 
@@ -824,13 +882,15 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self._area_fields = self._area_form_fields()
         return self.async_show_form(
             step_id="areas",
-            data_schema=vol.Schema({
-                # Optional, and a blank answer means no area rather than an
-                # error: somebody who has not made their areas yet must still
-                # be able to finish adding their cameras.
-                vol.Optional(label): selector.AreaSelector()
-                for label in self._area_fields
-            }),
+            data_schema=vol.Schema(
+                {
+                    # Optional, and a blank answer means no area rather than an
+                    # error: somebody who has not made their areas yet must still
+                    # be able to finish adding their cameras.
+                    vol.Optional(label): selector.AreaSelector()
+                    for label in self._area_fields
+                }
+            ),
             errors=self._errors,
         )
 
@@ -843,10 +903,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         the others are unaffected.
         """
         data, error = await self._test_credentials(
-            import_data[CONF_USERNAME], import_data[CONF_PASSWORD],
-            import_data[CONF_ADDRESS], import_data[CONF_PORT],
-            import_data[CONF_RTSP_PORT], import_data[CONF_CHANNEL],
-            True if import_data.get(CONF_USE_HTTPS) else None)
+            import_data[CONF_USERNAME],
+            import_data[CONF_PASSWORD],
+            import_data[CONF_ADDRESS],
+            import_data[CONF_PORT],
+            import_data[CONF_RTSP_PORT],
+            import_data[CONF_CHANNEL],
+            True if import_data.get(CONF_USE_HTTPS) else None,
+        )
         if data is None:
             # An import-sourced flow renders no card, so aborting here used to be
             # completely silent: no error, no card, no repair, and the abort reason
@@ -861,8 +925,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
 
-        return self.async_create_entry(
-            title=import_data[CONF_NAME], data=import_data)
+        return self.async_create_entry(title=import_data[CONF_NAME], data=import_data)
 
     async def async_step_name(self, user_input=None):
         """Handle a flow to configure the camera name."""
@@ -919,7 +982,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             data[CONF_CHANNEL] = index
             if index != self.init_info[CONF_CHANNEL]:
                 data[CONF_NAME] = self._found_channels.get(
-                    index, "Channel {0}".format(index + 1))
+                    index, "Channel {0}".format(index + 1)
+                )
                 # Every channel inherits init_info, which carries the *primary's*
                 # area. Without this, ticking one area for the recorder itself
                 # would silently file every other channel there too.
@@ -928,12 +992,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     data[CONF_AREA] = area
                 else:
                     data.pop(CONF_AREA, None)
-            subentries.append(ConfigSubentryData(
-                data=data,
-                subentry_type=CHANNEL_SUBENTRY,
-                title=data[CONF_NAME],
-                unique_id="%s_%s" % (data[CONF_ADDRESS], index),
-            ))
+            subentries.append(
+                ConfigSubentryData(
+                    data=data,
+                    subentry_type=CHANNEL_SUBENTRY,
+                    title=data[CONF_NAME],
+                    unique_id="%s_%s" % (data[CONF_ADDRESS], index),
+                )
+            )
         return subentries
 
     @callback
@@ -964,7 +1030,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth(self, entry_data):
         """Handle reauthentication when credentials become invalid."""
-        self._reauth_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        self._reauth_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
         self._set_flow_title(self._reauth_entry)
         return await self._show_reauth_form()
 
@@ -1020,14 +1088,18 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_USERNAME,
-                                 default=current.get(CONF_USERNAME, "")): str,
+                    vol.Required(
+                        CONF_USERNAME, default=current.get(CONF_USERNAME, "")
+                    ): str,
                     vol.Required(CONF_PASSWORD): str,
                 }
             ),
             description_placeholders={
-                "name": (entry.title if entry is not None and entry.title
-                         else current.get(CONF_ADDRESS, "this device")),
+                "name": (
+                    entry.title
+                    if entry is not None and entry.title
+                    else current.get(CONF_ADDRESS, "this device")
+                ),
             },
             errors=self._errors,
         )
@@ -1085,8 +1157,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                             self._errors[CONF_CHANNEL] = "already_configured"
                             return await self._show_reconfigure_form(entry, user_input)
                         return self.async_update_reload_and_abort(
-                            entry, unique_id=moved_to, data_updates=user_input)
-                return self.async_update_reload_and_abort(entry, data_updates=user_input)
+                            entry, unique_id=moved_to, data_updates=user_input
+                        )
+                return self.async_update_reload_and_abort(
+                    entry, data_updates=user_input
+                )
             self._errors["base"] = error or "auth"
 
         return await self._show_reconfigure_form(entry, user_input)
@@ -1102,15 +1177,21 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="reconfigure",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_ADDRESS, default=current.get(CONF_ADDRESS, "")): str,
-                    vol.Required(CONF_PORT,
-                                 default=str(current.get(CONF_PORT, "80"))): vol.All(cv.port, vol.Coerce(str)),
-                    vol.Required(CONF_RTSP_PORT,
-                                 default=str(current.get(CONF_RTSP_PORT, "554"))): vol.All(cv.port, vol.Coerce(str)),
-                    vol.Required(CONF_CHANNEL,
-                                 default=int(current.get(CONF_CHANNEL, 0))): vol.All(
-                                     vol.Coerce(int), vol.Range(min=0)),
-                    vol.Optional(CONF_USE_HTTPS, default=bool(current.get(CONF_USE_HTTPS, False))): bool,
+                    vol.Required(
+                        CONF_ADDRESS, default=current.get(CONF_ADDRESS, "")
+                    ): str,
+                    vol.Required(
+                        CONF_PORT, default=str(current.get(CONF_PORT, "80"))
+                    ): vol.All(cv.port, vol.Coerce(str)),
+                    vol.Required(
+                        CONF_RTSP_PORT, default=str(current.get(CONF_RTSP_PORT, "554"))
+                    ): vol.All(cv.port, vol.Coerce(str)),
+                    vol.Required(
+                        CONF_CHANNEL, default=int(current.get(CONF_CHANNEL, 0))
+                    ): vol.All(vol.Coerce(int), vol.Range(min=0)),
+                    vol.Optional(
+                        CONF_USE_HTTPS, default=bool(current.get(CONF_USE_HTTPS, False))
+                    ): bool,
                 }
             ),
             errors=self._errors,
@@ -1143,7 +1224,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             vol.Required(CONF_PASSWORD): str,
             vol.Required(CONF_ADDRESS): str,
             vol.Required(CONF_CHANNEL, default=0): vol.All(
-                vol.Coerce(int), vol.Range(min=0)),
+                vol.Coerce(int), vol.Range(min=0)
+            ),
         }
         if reveal_transport:
             # Checked as ports and stored as strings, which is what every existing
@@ -1156,9 +1238,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # not a conversion, so vol.All(cv.port, str) asserts that the int cv.port
             # just produced is a string and fails every time.
             fields[vol.Required(CONF_PORT, default="80")] = vol.All(
-                cv.port, vol.Coerce(str))
+                cv.port, vol.Coerce(str)
+            )
             fields[vol.Required(CONF_RTSP_PORT, default="554")] = vol.All(
-                cv.port, vol.Coerce(str))
+                cv.port, vol.Coerce(str)
+            )
             fields[vol.Optional(CONF_USE_HTTPS, default=False)] = bool
         return vol.Schema(fields)
 
@@ -1174,8 +1258,13 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         field. The password is never prefilled from either source.
         """
         known = dict(self._discovered)
-        known.update({key: value for key, value in (user_input or {}).items()
-                      if key != CONF_PASSWORD and value not in (None, "")})
+        known.update(
+            {
+                key: value
+                for key, value in (user_input or {}).items()
+                if key != CONF_PASSWORD and value not in (None, "")
+            }
+        )
 
         return self.async_show_form(
             step_id="user",
@@ -1183,12 +1272,17 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 self._user_schema(
                     reveal_transport=any(
                         reason not in TRANSPORT_WORKED
-                        for reason in self._errors.values())),
-                known),
+                        for reason in self._errors.values()
+                    )
+                ),
+                known,
+            ),
             errors=self._errors,
         )
 
-    async def _show_config_form_name(self, user_input):  # pylint: disable=unused-argument
+    async def _show_config_form_name(
+        self, user_input
+    ):  # pylint: disable=unused-argument
         """Show the configuration form to edit location data."""
         return self.async_show_form(
             step_id="name",
@@ -1220,13 +1314,19 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self._preview_markdown = ""
         info = self.init_info or {}
         image = await async_fetch_preview(
-            info.get(CONF_USERNAME), info.get(CONF_PASSWORD),
-            info.get(CONF_ADDRESS), info.get(CONF_PORT), info.get(CONF_RTSP_PORT),
-            info.get(CONF_CHANNEL), True if info.get(CONF_USE_HTTPS) else None)
+            info.get(CONF_USERNAME),
+            info.get(CONF_PASSWORD),
+            info.get(CONF_ADDRESS),
+            info.get(CONF_PORT),
+            info.get(CONF_RTSP_PORT),
+            info.get(CONF_CHANNEL),
+            True if info.get(CONF_USE_HTTPS) else None,
+        )
         if image:
             self._preview_token = async_store_preview(self.hass, image)
             self._preview_markdown = "![{0}]({1})".format(
-                PREVIEW_ALT_TEXT, preview_url(self._preview_token))
+                PREVIEW_ALT_TEXT, preview_url(self._preview_token)
+            )
         return self._preview_markdown
 
     @callback
@@ -1241,8 +1341,17 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             async_drop_preview(self.hass, self._preview_token)
             self._preview_token = None
 
-    async def _test_credentials(self, username, password, address, port, rtsp_port,
-                                channel, use_https=None, check_channel=False):
+    async def _test_credentials(
+        self,
+        username,
+        password,
+        address,
+        port,
+        rtsp_port,
+        channel,
+        use_https=None,
+        check_channel=False,
+    ):
         """Return (data, error) -- the device's name and serial, or why not.
 
         The error is a translation key, because every failure used to arrive as
@@ -1260,7 +1369,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         connector = TCPConnector(ssl=SSL_CONTEXT)
         session = ClientSession(connector=connector)
         try:
-            client = DahuaClient(username, password, address, port, rtsp_port, session, use_https)
+            client = DahuaClient(
+                username, password, address, port, rtsp_port, session, use_https
+            )
             data = await client.get_machine_name()
             # True only if get_machine_name itself fell back: the flag starts
             # False and this is the first call to use it. Reading it after the
@@ -1291,7 +1402,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     if from_network:
                         _LOGGER.debug(
                             "%s would not identify itself over HTTP, so the network "
-                            "probe's serial is used instead of a hash", address)
+                            "probe's serial is used instead of a hash",
+                            address,
+                        )
                         data["serialNumber"] = from_network
                 if name_is_a_hash:
                     # Only what the user is shown. The identity above is separate: a
@@ -1305,7 +1418,10 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.error(
                 "Could not connect to Dahua device at %s (%s). For iMou devices "
                 "see https://github.com/rroller/dahua/issues/6",
-                address, reason, exc_info=exception)
+                address,
+                reason,
+                exc_info=exception,
+            )
             return None, await async_refine_connection_failure(address, reason)
         finally:
             await session.close()
@@ -1360,10 +1476,12 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
         # again and the stored shape is unchanged.
         schema = {
             vol.Required(OPTIONS_SECTION_PLATFORMS): section(
-                vol.Schema({
-                    vol.Required(x, default=self.options.get(x, True)): bool
-                    for x in sorted(PLATFORMS)
-                }),
+                vol.Schema(
+                    {
+                        vol.Required(x, default=self.options.get(x, True)): bool
+                        for x in sorted(PLATFORMS)
+                    }
+                ),
                 {"collapsed": True},
             )
         }
@@ -1441,7 +1559,8 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Optional(
                 CONF_AREA,
                 default=self.options.get(
-                    CONF_AREA, self.config_entry.data.get(CONF_AREA, "")),
+                    CONF_AREA, self.config_entry.data.get(CONF_AREA, "")
+                ),
             )
         ] = selector.AreaSelector()
         return self.async_show_form(
@@ -1460,8 +1579,7 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
         A no-op when the value has not changed, so opening options and pressing
         submit does not re-file a device somebody has moved by hand.
         """
-        stored = self.options.get(
-            CONF_AREA, self.config_entry.data.get(CONF_AREA))
+        stored = self.options.get(CONF_AREA, self.config_entry.data.get(CONF_AREA))
         if not area_id or area_id == stored:
             return
         channels = entry_coordinators(self.config_entry)
@@ -1473,7 +1591,8 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             return
         registry = dr.async_get(self.hass)
         device = registry.async_get_device(
-            identifiers={(DOMAIN, coordinator.get_serial_number())})
+            identifiers={(DOMAIN, coordinator.get_serial_number())}
+        )
         if device is not None:
             registry.async_update_device(device.id, area_id=area_id)
 
@@ -1529,9 +1648,12 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
             if channel in taken:
                 errors[CONF_CHANNEL] = "channel_already_added"
             else:
-                data = {**base, CONF_CHANNEL: channel,
-                        CONF_NAME: user_input[CONF_NAME],
-                        CONF_EVENTS: user_input.get(CONF_EVENTS, DEFAULT_EVENTS)}
+                data = {
+                    **base,
+                    CONF_CHANNEL: channel,
+                    CONF_NAME: user_input[CONF_NAME],
+                    CONF_EVENTS: user_input.get(CONF_EVENTS, DEFAULT_EVENTS),
+                }
                 # "" means no area, which is a real answer; anything else moves the
                 # new channel's device into it rather than inheriting the primary's.
                 if user_input.get(CONF_AREA):
@@ -1546,15 +1668,20 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema({
-                vol.Required(CONF_CHANNEL, default=next_free): vol.All(
-                    vol.Coerce(int), vol.Range(min=0)),
-                vol.Required(CONF_NAME,
-                             default="Channel {0}".format(next_free + 1)): str,
-                vol.Optional(CONF_AREA, default=""): selector.AreaSelector(),
-                vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS):
-                    cv.multi_select(ALL_EVENTS),
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_CHANNEL, default=next_free): vol.All(
+                        vol.Coerce(int), vol.Range(min=0)
+                    ),
+                    vol.Required(
+                        CONF_NAME, default="Channel {0}".format(next_free + 1)
+                    ): str,
+                    vol.Optional(CONF_AREA, default=""): selector.AreaSelector(),
+                    vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(
+                        ALL_EVENTS
+                    ),
+                }
+            ),
             errors=errors,
         )
 
@@ -1576,31 +1703,38 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
 
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=vol.Schema({
-                vol.Required(CONF_NAME,
-                             default=data.get(CONF_NAME, subentry.title)): str,
-                vol.Optional(CONF_AREA,
-                             default=data.get(CONF_AREA) or ""):
-                    selector.AreaSelector(),
-                vol.Optional(
-                    CONF_EVENTS,
-                    default=data.get(CONF_EVENTS, DEFAULT_EVENTS)):
-                    cv.multi_select(ALL_EVENTS),
-                vol.Required(
-                    CONF_AUTO_DETECT_CHANNEL,
-                    default=data.get(CONF_AUTO_DETECT_CHANNEL, True)): bool,
-                vol.Required(
-                    CONF_NVR_ACTIVE_DETERRENCE,
-                    default=data.get(CONF_NVR_ACTIVE_DETERRENCE, False)): bool,
-                vol.Required(CONF_MANUAL_SIREN,
-                             default=data.get(CONF_MANUAL_SIREN, False)): bool,
-                vol.Required(
-                    CONF_MANUAL_SECURITY_LIGHT,
-                    default=data.get(CONF_MANUAL_SECURITY_LIGHT, False)): bool,
-                vol.Required(
-                    CONF_DISABLE_BACKCHANNEL,
-                    default=data.get(CONF_DISABLE_BACKCHANNEL, False)): bool,
-            }),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_NAME, default=data.get(CONF_NAME, subentry.title)
+                    ): str,
+                    vol.Optional(
+                        CONF_AREA, default=data.get(CONF_AREA) or ""
+                    ): selector.AreaSelector(),
+                    vol.Optional(
+                        CONF_EVENTS, default=data.get(CONF_EVENTS, DEFAULT_EVENTS)
+                    ): cv.multi_select(ALL_EVENTS),
+                    vol.Required(
+                        CONF_AUTO_DETECT_CHANNEL,
+                        default=data.get(CONF_AUTO_DETECT_CHANNEL, True),
+                    ): bool,
+                    vol.Required(
+                        CONF_NVR_ACTIVE_DETERRENCE,
+                        default=data.get(CONF_NVR_ACTIVE_DETERRENCE, False),
+                    ): bool,
+                    vol.Required(
+                        CONF_MANUAL_SIREN, default=data.get(CONF_MANUAL_SIREN, False)
+                    ): bool,
+                    vol.Required(
+                        CONF_MANUAL_SECURITY_LIGHT,
+                        default=data.get(CONF_MANUAL_SECURITY_LIGHT, False),
+                    ): bool,
+                    vol.Required(
+                        CONF_DISABLE_BACKCHANNEL,
+                        default=data.get(CONF_DISABLE_BACKCHANNEL, False),
+                    ): bool,
+                }
+            ),
             description_placeholders={
                 "channel": str(data.get(CONF_CHANNEL, 0)),
                 "name": subentry.title,

@@ -42,13 +42,20 @@ ADDRESS = "10.0.0.5"
 # Every client call the poll can make. All are off in the harness except the motion
 # read, which is the only one gated on nothing but `_wanted_by`.
 CLIENT_METHODS = (
-    "async_get_alarm_output_state", "async_get_config_lighting",
-    "async_get_config_motion_detection", "async_get_disarming_linkage",
-    "async_get_event_notifications", "async_get_ivs_rules",
-    "async_get_light_global_enabled", "async_get_lighting_scheme",
-    "async_get_lighting_v2", "async_get_ptz_position",
-    "async_get_remote_ivs_rules", "async_get_smart_motion_detection",
-    "async_get_video_analyse_rules_for_amcrest", "async_get_video_in_mode",
+    "async_get_alarm_output_state",
+    "async_get_config_lighting",
+    "async_get_config_motion_detection",
+    "async_get_disarming_linkage",
+    "async_get_event_notifications",
+    "async_get_ivs_rules",
+    "async_get_light_global_enabled",
+    "async_get_lighting_scheme",
+    "async_get_lighting_v2",
+    "async_get_ptz_position",
+    "async_get_remote_ivs_rules",
+    "async_get_smart_motion_detection",
+    "async_get_video_analyse_rules_for_amcrest",
+    "async_get_video_in_mode",
     "async_get_video_in_options",
     "async_reconcile_lighting_scheme_restore_modes",
 )
@@ -56,15 +63,26 @@ CLIENT_METHODS = (
 # Everything the poll asks the coordinator about itself. Off, so the fan-out is
 # one call and a test is about that call rather than about which flags it set.
 CAPABILITY_FLAGS = (
-    "_supports_coaxial_control", "_supports_day_night_color",
-    "_supports_disarming_linkage", "_supports_event_notifications",
-    "_supports_lighting_v2", "_supports_privacy_mode", "_supports_profile_mode",
-    "_supports_ptz_position", "_supports_smart_motion_detection",
+    "_supports_coaxial_control",
+    "_supports_day_night_color",
+    "_supports_disarming_linkage",
+    "_supports_event_notifications",
+    "_supports_lighting_v2",
+    "_supports_privacy_mode",
+    "_supports_profile_mode",
+    "_supports_ptz_position",
+    "_supports_smart_motion_detection",
 )
 CAPABILITY_METHODS = (
-    "is_doorbell", "is_amcrest_doorbell", "is_flood_light", "is_nvr_channel",
-    "reads_coaxial_status", "supports_alarm_output", "supports_infrared_light",
-    "supports_security_light", "supports_smart_motion_detection_amcrest",
+    "is_doorbell",
+    "is_amcrest_doorbell",
+    "is_flood_light",
+    "is_nvr_channel",
+    "reads_coaxial_status",
+    "supports_alarm_output",
+    "supports_infrared_light",
+    "supports_security_light",
+    "supports_smart_motion_detection_amcrest",
     "uses_rpc2_deterrence",
 )
 
@@ -81,6 +99,7 @@ def _clean():
 
 def _coordinator(hass, motion=None):
     """A coordinator whose poll makes exactly one call: the motion read."""
+
     async def _motion():
         if isinstance(motion, BaseException):
             raise motion
@@ -88,8 +107,10 @@ def _coordinator(hass, motion=None):
 
     client = SimpleNamespace(use_rpc2=False)
     for name in CLIENT_METHODS:
+
         async def _nothing(*args, **kwargs):
             return {}
+
         setattr(client, name, _nothing)
     client.async_get_config_motion_detection = _motion
 
@@ -128,7 +149,9 @@ def _response_error(status):
     """
     return ClientResponseError(
         request_info=SimpleNamespace(real_url="http://%s/cgi-bin/x.cgi" % ADDRESS),
-        history=(), status=status)
+        history=(),
+        status=status,
+    )
 
 
 def _401():
@@ -136,6 +159,7 @@ def _401():
 
 
 # --- a poll that worked -----------------------------------------------------
+
 
 async def test_a_good_poll_returns_what_it_read(hass):
     coordinator = _coordinator(hass, motion={"table.MotionDetect[0].Enable": "true"})
@@ -151,8 +175,9 @@ async def test_a_good_poll_clears_the_hosts_failures(hass):
     camera backed off for the life of the process."""
     coordinator = _coordinator(hass)
     dahua_module.async_record_host_failure(hass, ADDRESS, "e1")
-    assert ADDRESS in dahua_module._HOST_FAILURES, (
-        "the failure was not recorded, so clearing it proves nothing")
+    assert (
+        ADDRESS in dahua_module._HOST_FAILURES
+    ), "the failure was not recorded, so clearing it proves nothing"
 
     await coordinator._async_update_data()
 
@@ -170,6 +195,7 @@ async def test_a_good_poll_restores_the_interval(hass):
 
 
 # --- a poll that failed for an ordinary reason ------------------------------
+
 
 async def test_a_failed_read_becomes_UpdateFailed(hass):
     coordinator = _coordinator(hass, motion=TimeoutError())
@@ -214,6 +240,7 @@ async def test_consecutive_failures_climb(hass):
 
 
 # --- and the one that has to be treated differently -------------------------
+
 
 async def test_one_401_is_not_a_wrong_password(hass):
     """#714. A single refusal is an ordinary failed poll: polling continues and no
@@ -261,9 +288,7 @@ async def test_the_refusal_count_is_per_host_not_per_entry(hass):
 async def test_a_non_401_response_is_not_an_auth_failure(hass):
     """The check is on the status, not on the exception type, and a 500 from a
     device having a bad day must not empty the user's credentials dialog."""
-    coordinator = _coordinator(
-        hass,
-        motion=_response_error(500))
+    coordinator = _coordinator(hass, motion=_response_error(500))
 
     for _ in range(MAX_AUTH_REFUSALS + 1):
         with pytest.raises(UpdateFailed) as caught:

@@ -80,6 +80,7 @@ def _response_error(status, message):
 
 # --- a refusal reaches the user ------------------------------------------------
 
+
 @pytest.mark.parametrize("enabled", [True, False])
 async def test_a_refused_write_is_reported_not_swallowed(enabled):
     coordinator = _Coordinator(channel=6)
@@ -97,14 +98,16 @@ async def test_a_refused_write_is_reported_not_swallowed(enabled):
     assert caught.value.translation_placeholders["device"] == "Front Door"
     # The write was attempted. A guard that never called the device would also
     # raise, and would pass this test without the fix being the reason.
-    assert coordinator.client.v1 == [
-        (6, "Manual" if enabled else "Off", 100, "1")]
+    assert coordinator.client.v1 == [(6, "Manual" if enabled else "Off", 100, "1")]
 
 
-@pytest.mark.parametrize("error", [
-    asyncio.TimeoutError(),
-    aiohttp.ClientConnectionError("connection reset"),
-])
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncio.TimeoutError(),
+        aiohttp.ClientConnectionError("connection reset"),
+    ],
+)
 async def test_a_device_that_never_answers_is_reported_too(error):
     """A refusal is not the only way this fails, and a timeout carries no
     message at all -- formatting one straight into a card gives a blank where
@@ -121,6 +124,7 @@ async def test_a_device_that_never_answers_is_reported_too(error):
 
 
 # --- a 200 that changed nothing is not a success ------------------------------
+
 
 @pytest.mark.parametrize("enabled,wanted", [(True, "Manual"), (False, "Off")])
 async def test_a_write_the_device_ignored_is_reported(enabled, wanted):
@@ -151,7 +155,7 @@ async def test_an_ignored_turn_off_is_caught_even_though_is_on_agrees():
     coordinator = _Coordinator(channel=3)
     coordinator.client.v1_ignores = True
     coordinator.client.infrared_mode = "Auto"
-    coordinator.infrared_on = False          # what is_on would report
+    coordinator.infrared_on = False  # what is_on would report
     light = _light(DahuaInfraredLight, coordinator)
 
     assert light.is_on is False, "the state the old code would have accepted"
@@ -207,6 +211,7 @@ async def test_a_mode_the_device_chose_itself_is_reported_as_what_it_says():
 
 # --- the phrase the user reads ------------------------------------------------
 
+
 def test_a_status_is_named_rather_than_the_request_url():
     """`str()` on the real error is the whole setConfig URL. That is what used
     to reach the frontend."""
@@ -216,8 +221,10 @@ def test_a_status_is_named_rather_than_the_request_url():
 
 
 def test_the_other_refusal_this_recorder_gives_is_named_too():
-    assert dahua_utils.describe_write_refusal(
-        _response_error(400, "Bad Request")) == "HTTP 400 Bad Request"
+    assert (
+        dahua_utils.describe_write_refusal(_response_error(400, "Bad Request"))
+        == "HTTP 400 Bad Request"
+    )
 
 
 def test_an_exception_with_no_message_falls_back_to_its_type():
@@ -226,8 +233,10 @@ def test_an_exception_with_no_message_falls_back_to_its_type():
 
 
 def test_a_message_is_used_when_there_is_no_status():
-    assert dahua_utils.describe_write_refusal(
-        ConnectionError("session is out of date!")) == "session is out of date!"
+    assert (
+        dahua_utils.describe_write_refusal(ConnectionError("session is out of date!"))
+        == "session is out of date!"
+    )
 
 
 def test_a_status_that_is_not_a_number_is_not_treated_as_one():
@@ -237,11 +246,14 @@ def test_a_status_that_is_not_a_number_is_not_treated_as_one():
     class _Odd(Exception):
         status = "weird"
 
-    assert dahua_utils.describe_write_refusal(_Odd("the real reason")) \
-        == "the real reason"
+    assert (
+        dahua_utils.describe_write_refusal(_Odd("the real reason")) == "the real reason"
+    )
 
     class _Boolish(Exception):
         status = True
 
-    assert dahua_utils.describe_write_refusal(_Boolish("still the reason")) \
+    assert (
+        dahua_utils.describe_write_refusal(_Boolish("still the reason"))
         == "still the reason"
+    )

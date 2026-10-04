@@ -55,10 +55,18 @@ def _url(client):
 
 # --- the day/night pair, which are not interchangeable ----------------------
 
-@pytest.mark.parametrize("mode, expected", [
-    ("night", "1"), ("Night", "1"), ("NIGHT", "1"),
-    ("day", "0"), ("Day", "0"), ("anything else", "0"),
-])
+
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        ("night", "1"),
+        ("Night", "1"),
+        ("NIGHT", "1"),
+        ("day", "0"),
+        ("Day", "0"),
+        ("anything else", "0"),
+    ],
+)
 async def test_the_video_profile_mode_numbers(mode, expected):
     """Night is 1 here. Anything that is not night is day, deliberately, so an
     unexpected value leaves the camera on its normal profile rather than on
@@ -69,13 +77,19 @@ async def test_the_video_profile_mode_numbers(mode, expected):
 
     assert _url(client) == (
         "/cgi-bin/configManager.cgi?action=setConfig"
-        "&VideoInMode[2].Config[0]=%s" % expected)
+        "&VideoInMode[2].Config[0]=%s" % expected
+    )
 
 
-@pytest.mark.parametrize("mode, expected", [
-    ("night", "3"), ("Night", "3"),
-    ("day", "0"), ("anything else", "0"),
-])
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        ("night", "3"),
+        ("Night", "3"),
+        ("day", "0"),
+        ("anything else", "0"),
+    ],
+)
 async def test_the_night_switch_mode_numbers(mode, expected):
     """Night is **3** here, not 1, and it is a different table. This is the path a
     Lorex NVR takes, chosen in camera.py by a model-name whitelist."""
@@ -85,7 +99,8 @@ async def test_the_night_switch_mode_numbers(mode, expected):
 
     assert _url(client) == (
         "/cgi-bin/configManager.cgi?action=setConfig"
-        "&VideoInOptions[5].NightOptions.SwitchMode=%s" % expected)
+        "&VideoInOptions[5].NightOptions.SwitchMode=%s" % expected
+    )
 
 
 async def test_the_two_day_night_writes_do_not_share_a_table():
@@ -101,9 +116,13 @@ async def test_the_two_day_night_writes_do_not_share_a_table():
     assert _url(profile) != _url(switch)
 
 
-@pytest.mark.parametrize("method", [
-    "async_set_video_profile_mode", "async_set_night_switch_mode",
-])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "async_set_video_profile_mode",
+        "async_set_night_switch_mode",
+    ],
+)
 async def test_the_day_night_writes_are_verified(method):
     """Both pass verify_response, so a device that answers with an error body
     rather than an error status is still a failure."""
@@ -116,14 +135,15 @@ async def test_the_day_night_writes_are_verified(method):
 
 # --- the overlay writers ----------------------------------------------------
 
+
 async def test_the_channel_title_url():
     client = _client()
 
     await client.async_set_service_set_channel_title(3, "Front", "Gate")
 
     assert _url(client) == (
-        "/cgi-bin/configManager.cgi?action=setConfig"
-        "&ChannelTitle[3].Name=Front|Gate")
+        "/cgi-bin/configManager.cgi?action=setConfig" "&ChannelTitle[3].Name=Front|Gate"
+    )
 
 
 async def test_the_text_overlay_url_carries_its_group():
@@ -135,7 +155,8 @@ async def test_the_text_overlay_url_carries_its_group():
 
     assert _url(client) == (
         "/cgi-bin/configManager.cgi?action=setConfig"
-        "&VideoWidget[1].CustomTitle[2].Text=a|b|c|d")
+        "&VideoWidget[1].CustomTitle[2].Text=a|b|c|d"
+    )
 
 
 async def test_the_custom_overlay_writes_a_different_key():
@@ -147,7 +168,8 @@ async def test_the_custom_overlay_writes_a_different_key():
 
     assert _url(client) == (
         "/cgi-bin/configManager.cgi?action=setConfig"
-        "&VideoWidget[1].UserDefinedTitle[2].Text=a|b")
+        "&VideoWidget[1].UserDefinedTitle[2].Text=a|b"
+    )
 
 
 async def test_a_space_in_a_title_is_not_written_as_a_plus():
@@ -171,11 +193,14 @@ async def test_an_overlay_write_that_worked_does_not_raise(answer):
     await client.async_set_service_set_channel_title(0, "a", "b")
 
 
-@pytest.mark.parametrize("method, args", [
-    ("async_set_service_set_channel_title", (0, "a", "b")),
-    ("async_set_service_set_text_overlay", (0, 1, "a", "b", "c", "d")),
-    ("async_set_service_set_custom_overlay", (0, 1, "a", "b")),
-])
+@pytest.mark.parametrize(
+    "method, args",
+    [
+        ("async_set_service_set_channel_title", (0, "a", "b")),
+        ("async_set_service_set_text_overlay", (0, 1, "a", "b", "c", "d")),
+        ("async_set_service_set_custom_overlay", (0, 1, "a", "b")),
+    ],
+)
 async def test_an_overlay_write_that_was_refused_raises(method, args):
     """The only writes in the client that read the answer. A service call that
     silently did nothing is worse than one that fails, because the user is looking
@@ -188,6 +213,7 @@ async def test_an_overlay_write_that_was_refused_raises(method, args):
 
 # --- the two lighting writes with their own shapes --------------------------
 
+
 @pytest.mark.parametrize("enabled, mode", [(True, "Manual"), (False, "Off")])
 async def test_a_flood_light_is_switched_by_its_mode(enabled, mode):
     """There is no separate on/off key: Manual is on and Off is off, and the light
@@ -198,17 +224,21 @@ async def test_a_flood_light_is_switched_by_its_mode(enabled, mode):
 
     assert _url(client) == (
         "/cgi-bin/configManager.cgi?action=setConfig"
-        "&Lighting_V2[4][1][1].Mode=%s" % mode)
+        "&Lighting_V2[4][1][1].Mode=%s" % mode
+    )
 
 
-@pytest.mark.parametrize("mode, expected", [
-    ("on", "ForceOn&Lighting_V2[0][0][1].State=On"),
-    ("On", "ForceOn&Lighting_V2[0][0][1].State=On"),
-    ("strobe", "ForceOn&Lighting_V2[0][0][1].State=Flicker"),
-    ("flicker", "ForceOn&Lighting_V2[0][0][1].State=Flicker"),
-    ("off", "Off"),
-    ("anything else", "Off"),
-])
+@pytest.mark.parametrize(
+    "mode, expected",
+    [
+        ("on", "ForceOn&Lighting_V2[0][0][1].State=On"),
+        ("On", "ForceOn&Lighting_V2[0][0][1].State=On"),
+        ("strobe", "ForceOn&Lighting_V2[0][0][1].State=Flicker"),
+        ("flicker", "ForceOn&Lighting_V2[0][0][1].State=Flicker"),
+        ("off", "Off"),
+        ("anything else", "Off"),
+    ],
+)
 async def test_an_amcrest_doorbell_light_takes_three_modes(mode, expected):
     """The on and strobe values carry a second parameter inside the Mode value, so
     one write sets both Mode and State. It reads like a quoting mistake and is
@@ -219,7 +249,8 @@ async def test_an_amcrest_doorbell_light_takes_three_modes(mode, expected):
 
     assert _url(client) == (
         "/cgi-bin/configManager.cgi?action=setConfig"
-        "&Lighting_V2[0][0][1].Mode=%s" % expected)
+        "&Lighting_V2[0][0][1].Mode=%s" % expected
+    )
 
 
 async def test_the_doorbell_light_is_hard_wired_to_channel_zero():

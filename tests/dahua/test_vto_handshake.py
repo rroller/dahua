@@ -49,14 +49,19 @@ def _frame(payload):
     The header only has to be the right length and binary; parse_response finds the
     JSON inside it either way.
     """
-    return (b"\x00\x00\x00DHIP\x8c-\x96{\x08\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00"
-            + json.dumps(payload).encode("utf-8") + b"\n")
+    return (
+        b"\x00\x00\x00DHIP\x8c-\x96{\x08\x00\x00\x00{\x01\x00\x00\x00\x00\x00\x00"
+        + json.dumps(payload).encode("utf-8")
+        + b"\n"
+    )
 
 
 def _sent(client):
     """Everything the client has written, decoded. Strips the outgoing DHIP header."""
-    return [json.loads(message[HEADER_SIZE:].decode("utf-8"))
-            for message in client.transport.written]
+    return [
+        json.loads(message[HEADER_SIZE:].decode("utf-8"))
+        for message in client.transport.written
+    ]
 
 
 def _requests_for(client, method):
@@ -67,8 +72,13 @@ def _client(events=None):
     """The real client with a recording transport. Constructed rather than
     object.__new__'d, so __init__ is exercised too -- it needs a running loop for its
     disconnected future, which is why these tests are async."""
-    client = DahuaVTOClient(HOST, USERNAME, PASSWORD, False,
-                            events.append if events is not None else (lambda event: None))
+    client = DahuaVTOClient(
+        HOST,
+        USERNAME,
+        PASSWORD,
+        False,
+        events.append if events is not None else (lambda event: None),
+    )
     client.transport = _Transport()
     return client
 
@@ -88,25 +98,37 @@ def _do_handshake(client):
     client.connection_made(client.transport)
 
     pre_login = _requests_for(client, "global.login")[0]
-    client.data_received(_frame({
-        "id": pre_login["id"],
-        "session": 1722306858,
-        "error": {"code": 268632079, "message": "Component error: login challenge!"},
-        "params": {"random": "1234567890", "realm": "Login to 00408C123456"},
-    }))
+    client.data_received(
+        _frame(
+            {
+                "id": pre_login["id"],
+                "session": 1722306858,
+                "error": {
+                    "code": 268632079,
+                    "message": "Component error: login challenge!",
+                },
+                "params": {"random": "1234567890", "realm": "Login to 00408C123456"},
+            }
+        )
+    )
 
     login = _requests_for(client, "global.login")[1]
-    client.data_received(_frame({
-        "id": login["id"],
-        "session": 1722306858,
-        "result": True,
-        "params": {"keepAliveInterval": 60},
-    }))
+    client.data_received(
+        _frame(
+            {
+                "id": login["id"],
+                "session": 1722306858,
+                "result": True,
+                "params": {"keepAliveInterval": 60},
+            }
+        )
+    )
 
     return _requests_for(client, "eventManager.attach")[0]["id"]
 
 
 # --- the handshake ----------------------------------------------------------
+
 
 async def test_connecting_asks_for_the_login_challenge():
     """The first thing on the wire is a login with an empty password, which is what
@@ -130,12 +152,19 @@ async def test_the_challenge_is_answered_with_a_hash_and_the_session_is_kept():
     client.connection_made(client.transport)
     pre_login = _requests_for(client, "global.login")[0]
 
-    client.data_received(_frame({
-        "id": pre_login["id"],
-        "session": 1722306858,
-        "error": {"code": 268632079, "message": "Component error: login challenge!"},
-        "params": {"random": "1234567890", "realm": "Login to 00408C123456"},
-    }))
+    client.data_received(
+        _frame(
+            {
+                "id": pre_login["id"],
+                "session": 1722306858,
+                "error": {
+                    "code": 268632079,
+                    "message": "Component error: login challenge!",
+                },
+                "params": {"random": "1234567890", "realm": "Login to 00408C123456"},
+            }
+        )
+    )
 
     assert client.random == "1234567890"
     assert client.realm == "Login to 00408C123456"
@@ -144,7 +173,8 @@ async def test_the_challenge_is_answered_with_a_hash_and_the_session_is_kept():
     login = _requests_for(client, "global.login")[1]
     assert login["session"] == 1722306858, "the login did not quote the session"
     assert login["params"]["password"] == DahuaVTOClient._get_hashed_password(
-        "1234567890", "Login to 00408C123456", USERNAME, PASSWORD)
+        "1234567890", "Login to 00408C123456", USERNAME, PASSWORD
+    )
     _finish(client)
 
 
@@ -155,14 +185,22 @@ async def test_an_error_that_is_not_the_challenge_does_not_start_a_login():
     client.connection_made(client.transport)
     pre_login = _requests_for(client, "global.login")[0]
 
-    client.data_received(_frame({
-        "id": pre_login["id"],
-        "error": {"code": 268632085, "message": "Component error: user or password not valid!"},
-        "params": {},
-    }))
+    client.data_received(
+        _frame(
+            {
+                "id": pre_login["id"],
+                "error": {
+                    "code": 268632085,
+                    "message": "Component error: user or password not valid!",
+                },
+                "params": {},
+            }
+        )
+    )
 
-    assert len(_requests_for(client, "global.login")) == 1, (
-        "a second login went out after a refusal")
+    assert (
+        len(_requests_for(client, "global.login")) == 1
+    ), "a second login went out after a refusal"
     _finish(client)
 
 
@@ -174,8 +212,9 @@ async def test_the_plaintext_password_is_never_written_to_the_wire():
     _do_handshake(client)
 
     everything = b"".join(client.transport.written)
-    assert PASSWORD.encode("utf-8") not in everything, (
-        "the plaintext password was written to the socket")
+    assert (
+        PASSWORD.encode("utf-8") not in everything
+    ), "the plaintext password was written to the socket"
     _finish(client)
 
 
@@ -193,8 +232,10 @@ async def test_a_successful_login_loads_the_details_and_attaches():
     assert "magicBox.getSoftwareVersion" in methods
     assert "magicBox.getDeviceType" in methods
     # Two getConfig calls: AccessControl for the hold time, T2UServer for the serial.
-    tables = [message["params"]["name"]
-              for message in _requests_for(client, "configManager.getConfig")]
+    tables = [
+        message["params"]["name"]
+        for message in _requests_for(client, "configManager.getConfig")
+    ]
     assert sorted(tables) == ["AccessControl", "T2UServer"], tables
     _finish(client)
 
@@ -207,8 +248,10 @@ async def test_the_keepalive_is_scheduled_five_seconds_inside_the_devices_interv
     _do_handshake(client)
 
     assert client.keep_alive_interval == 55, "60 second interval, asked at 55"
-    assert client._keep_alive_handle is not None, "nothing scheduled, so the device "\
+    assert client._keep_alive_handle is not None, (
+        "nothing scheduled, so the device "
         "will drop the connection when the interval expires"
+    )
     _finish(client)
 
 
@@ -218,11 +261,16 @@ async def test_a_login_reply_without_an_interval_does_not_attach():
     client = _client()
     client.connection_made(client.transport)
     pre_login = _requests_for(client, "global.login")[0]
-    client.data_received(_frame({
-        "id": pre_login["id"], "session": 1,
-        "error": {"message": "Component error: login challenge!"},
-        "params": {"random": "1", "realm": "r"},
-    }))
+    client.data_received(
+        _frame(
+            {
+                "id": pre_login["id"],
+                "session": 1,
+                "error": {"message": "Component error: login challenge!"},
+                "params": {"random": "1", "realm": "r"},
+            }
+        )
+    )
     login = _requests_for(client, "global.login")[1]
 
     client.data_received(_frame({"id": login["id"], "params": {}}))
@@ -234,6 +282,7 @@ async def test_a_login_reply_without_an_interval_does_not_attach():
 
 # --- events reaching Home Assistant -----------------------------------------
 
+
 async def test_an_event_reaches_the_callback():
     """The end of the whole path: a doorbell press arrives as a frame and comes out
     on the hook into Home Assistant."""
@@ -241,12 +290,20 @@ async def test_an_event_reaches_the_callback():
     client = _client(events)
     attach_id = _do_handshake(client)
 
-    client.data_received(_frame({
-        "id": attach_id,
-        "method": "client.notifyEventStream",
-        "params": {"SID": 513, "eventList": [
-            {"Action": "Pulse", "Code": "CallNoAnswered", "Index": 999}]},
-    }))
+    client.data_received(
+        _frame(
+            {
+                "id": attach_id,
+                "method": "client.notifyEventStream",
+                "params": {
+                    "SID": 513,
+                    "eventList": [
+                        {"Action": "Pulse", "Code": "CallNoAnswered", "Index": 999}
+                    ],
+                },
+            }
+        )
+    )
 
     assert len(events) == 1, "the press did not reach Home Assistant"
     assert events[0]["Code"] == "CallNoAnswered"
@@ -259,13 +316,21 @@ async def test_two_events_in_one_frame_both_reach_the_callback():
     client = _client(events)
     attach_id = _do_handshake(client)
 
-    client.data_received(_frame({
-        "id": attach_id,
-        "method": "client.notifyEventStream",
-        "params": {"SID": 513, "eventList": [
-            {"Action": "Start", "Code": "VideoMotion"},
-            {"Action": "Pulse", "Code": "CallNoAnswered"}]},
-    }))
+    client.data_received(
+        _frame(
+            {
+                "id": attach_id,
+                "method": "client.notifyEventStream",
+                "params": {
+                    "SID": 513,
+                    "eventList": [
+                        {"Action": "Start", "Code": "VideoMotion"},
+                        {"Action": "Pulse", "Code": "CallNoAnswered"},
+                    ],
+                },
+            }
+        )
+    )
 
     assert [event["Code"] for event in events] == ["VideoMotion", "CallNoAnswered"]
     _finish(client)
@@ -279,14 +344,21 @@ async def test_an_event_carries_the_device_identity_but_not_the_firmware():
     client = _client(events)
     attach_id = _do_handshake(client)
     client.dahua_details = {
-        "deviceType": "VTO2211G-WP", "serialNumber": "not-a-real-serial",
-        "version": "4.300.0000000.0", "buildDate": "2021-01-01",
+        "deviceType": "VTO2211G-WP",
+        "serialNumber": "not-a-real-serial",
+        "version": "4.300.0000000.0",
+        "buildDate": "2021-01-01",
     }
 
-    client.data_received(_frame({
-        "id": attach_id, "method": "client.notifyEventStream",
-        "params": {"eventList": [{"Code": "CallNoAnswered"}]},
-    }))
+    client.data_received(
+        _frame(
+            {
+                "id": attach_id,
+                "method": "client.notifyEventStream",
+                "params": {"eventList": [{"Code": "CallNoAnswered"}]},
+            }
+        )
+    )
 
     assert events[0]["deviceType"] == "VTO2211G-WP"
     assert events[0]["serialNumber"] == "not-a-real-serial"
@@ -324,6 +396,7 @@ async def test_a_reply_nobody_is_waiting_for_does_not_raise():
 
 # --- the buffer -------------------------------------------------------------
 
+
 async def test_a_frame_split_across_two_reads_is_reassembled():
     """TCP does not promise frame boundaries. The buffer exists for this, and the
     event has to arrive once the rest turns up -- not be dropped, and not arrive
@@ -331,10 +404,13 @@ async def test_a_frame_split_across_two_reads_is_reassembled():
     events = []
     client = _client(events)
     attach_id = _do_handshake(client)
-    whole = _frame({
-        "id": attach_id, "method": "client.notifyEventStream",
-        "params": {"eventList": [{"Code": "CallNoAnswered"}]},
-    })
+    whole = _frame(
+        {
+            "id": attach_id,
+            "method": "client.notifyEventStream",
+            "params": {"eventList": [{"Code": "CallNoAnswered"}]},
+        }
+    )
     half = len(whole) // 2
 
     client.data_received(whole[:half])
@@ -351,8 +427,11 @@ async def test_two_frames_in_one_read_are_both_processed():
     events = []
     client = _client(events)
     attach_id = _do_handshake(client)
-    event = {"id": attach_id, "method": "client.notifyEventStream",
-             "params": {"eventList": [{"Code": "CallNoAnswered"}]}}
+    event = {
+        "id": attach_id,
+        "method": "client.notifyEventStream",
+        "params": {"eventList": [{"Code": "CallNoAnswered"}]},
+    }
 
     client.data_received(_frame(event) + _frame(event))
 
@@ -386,18 +465,31 @@ async def test_anything_the_device_says_counts_as_having_heard_from_it():
 
 # --- what the loaders read --------------------------------------------------
 
+
 async def test_the_hold_time_comes_from_the_local_access_protocol_only():
     """The AccessControl table has a row per protocol and only the local one applies.
     Reading the wrong row would give the door the wrong relock delay."""
     client = _client()
     _do_handshake(client)
-    access = [message for message in _requests_for(client, "configManager.getConfig")
-              if message["params"]["name"] == "AccessControl"][0]
+    access = [
+        message
+        for message in _requests_for(client, "configManager.getConfig")
+        if message["params"]["name"] == "AccessControl"
+    ][0]
 
-    client.data_received(_frame({"id": access["id"], "params": {"table": [
-        {"AccessProtocol": "Remote", "UnlockReloadInterval": 99},
-        {"AccessProtocol": "Local", "UnlockReloadInterval": 3},
-    ]}}))
+    client.data_received(
+        _frame(
+            {
+                "id": access["id"],
+                "params": {
+                    "table": [
+                        {"AccessProtocol": "Remote", "UnlockReloadInterval": 99},
+                        {"AccessProtocol": "Local", "UnlockReloadInterval": 3},
+                    ]
+                },
+            }
+        )
+    )
 
     assert client.hold_time == 3, "the hold time was read off the wrong protocol"
     _finish(client)
@@ -411,19 +503,34 @@ async def test_the_version_and_type_and_serial_are_recorded():
     sent = _sent(client)
     version = [m for m in sent if m["method"] == "magicBox.getSoftwareVersion"][0]
     device_type = [m for m in sent if m["method"] == "magicBox.getDeviceType"][0]
-    t2u = [m for m in _requests_for(client, "configManager.getConfig")
-           if m["params"]["name"] == "T2UServer"][0]
+    t2u = [
+        m
+        for m in _requests_for(client, "configManager.getConfig")
+        if m["params"]["name"] == "T2UServer"
+    ][0]
 
-    client.data_received(_frame({"id": version["id"], "params": {"version": {
-        "Version": "4.300.0000000.0", "BuildDate": "2021-01-01"}}}))
-    client.data_received(_frame({"id": device_type["id"],
-                                 "params": {"type": "VTO2211G-WP"}}))
-    client.data_received(_frame({"id": t2u["id"], "params": {
-        "table": {"UUID": "not-a-real-serial"}}}))
+    client.data_received(
+        _frame(
+            {
+                "id": version["id"],
+                "params": {
+                    "version": {"Version": "4.300.0000000.0", "BuildDate": "2021-01-01"}
+                },
+            }
+        )
+    )
+    client.data_received(
+        _frame({"id": device_type["id"], "params": {"type": "VTO2211G-WP"}})
+    )
+    client.data_received(
+        _frame({"id": t2u["id"], "params": {"table": {"UUID": "not-a-real-serial"}}})
+    )
 
     assert client.dahua_details == {
-        "version": "4.300.0000000.0", "buildDate": "2021-01-01",
-        "deviceType": "VTO2211G-WP", "serialNumber": "not-a-real-serial",
+        "version": "4.300.0000000.0",
+        "buildDate": "2021-01-01",
+        "deviceType": "VTO2211G-WP",
+        "serialNumber": "not-a-real-serial",
     }
     _finish(client)
 
@@ -433,8 +540,9 @@ async def test_a_version_reply_without_a_version_does_not_raise():
     not take the handshake down with it."""
     client = _client()
     _do_handshake(client)
-    version = [m for m in _sent(client)
-               if m["method"] == "magicBox.getSoftwareVersion"][0]
+    version = [
+        m for m in _sent(client) if m["method"] == "magicBox.getSoftwareVersion"
+    ][0]
 
     client.data_received(_frame({"id": version["id"], "params": {}}))
 
@@ -443,6 +551,7 @@ async def test_a_version_reply_without_a_version_does_not_raise():
 
 
 # --- keeping the connection, and losing it ----------------------------------
+
 
 async def test_the_keepalive_handler_does_not_leak_a_handler_per_beat():
     """Every keepalive registers a handler under a fresh request id, and the handler
@@ -458,9 +567,12 @@ async def test_the_keepalive_handler_does_not_leak_a_handler_per_beat():
         beat = _requests_for(client, "global.keepAlive")[-1]
         client.data_received(_frame({"id": beat["id"], "params": {}}))
 
-    assert len(client.data_handlers) == before, (
-        "handlers grew from %d to %d over five beats"
-        % (before, len(client.data_handlers)))
+    assert (
+        len(client.data_handlers) == before
+    ), "handlers grew from %d to %d over five beats" % (
+        before,
+        len(client.data_handlers),
+    )
     _finish(client)
 
 
@@ -517,6 +629,7 @@ async def test_losing_the_connection_twice_does_not_raise():
 
 # --- not writing to a socket that has gone ----------------------------------
 
+
 async def test_nothing_is_written_to_a_closing_transport():
     """send checks is_closing first. Writing to a closed transport raises, and that
     exception would surface inside whichever handler happened to call send."""
@@ -542,6 +655,7 @@ async def test_nothing_is_written_to_a_closing_transport():
 # ones that turn a fault into a doorbell that has gone quiet. Worth pinning on
 # purpose, rather than covering by accident.
 
+
 async def test_a_home_assistant_callback_that_raises_does_not_stop_later_events():
     """`on_receive_vto_event` is a hook into Home Assistant, so it can raise for
     reasons that have nothing to do with the doorbell. If that killed the event path,
@@ -555,8 +669,11 @@ async def test_a_home_assistant_callback_that_raises_does_not_stop_later_events(
     client = DahuaVTOClient(HOST, USERNAME, PASSWORD, False, explode)
     client.transport = _Transport()
     attach_id = _do_handshake(client)
-    event = {"id": attach_id, "method": "client.notifyEventStream",
-             "params": {"eventList": [{"Code": "CallNoAnswered"}]}}
+    event = {
+        "id": attach_id,
+        "method": "client.notifyEventStream",
+        "params": {"eventList": [{"Code": "CallNoAnswered"}]},
+    }
 
     client.data_received(_frame(event))
     client.data_received(_frame(event))
@@ -572,9 +689,15 @@ async def test_an_event_frame_with_no_event_list_does_not_raise():
     client = _client(events)
     attach_id = _do_handshake(client)
 
-    client.data_received(_frame({"id": attach_id,
-                                 "method": "client.notifyEventStream",
-                                 "params": {"SID": 513}}))
+    client.data_received(
+        _frame(
+            {
+                "id": attach_id,
+                "method": "client.notifyEventStream",
+                "params": {"SID": 513},
+            }
+        )
+    )
 
     assert events == []
     _finish(client)
@@ -588,8 +711,13 @@ async def test_one_bad_frame_does_not_stop_the_next_one():
     client = _client(events)
     attach_id = _do_handshake(client)
     bad_id = client.send("global.keepAlive", lambda message: 1 / 0)
-    event = _frame({"id": attach_id, "method": "client.notifyEventStream",
-                    "params": {"eventList": [{"Code": "CallNoAnswered"}]}})
+    event = _frame(
+        {
+            "id": attach_id,
+            "method": "client.notifyEventStream",
+            "params": {"eventList": [{"Code": "CallNoAnswered"}]},
+        }
+    )
 
     client.data_received(_frame({"id": bad_id, "params": {}}) + event)
 
@@ -632,8 +760,9 @@ async def test_the_keepalive_reschedules_even_when_it_cannot_find_its_own_handle
 
     handler({"id": 424242})
 
-    assert client._keep_alive_handle is not None, (
-        "an unrecognised keepalive reply stopped the keepalive")
+    assert (
+        client._keep_alive_handle is not None
+    ), "an unrecognised keepalive reply stopped the keepalive"
     _finish(client)
 
 

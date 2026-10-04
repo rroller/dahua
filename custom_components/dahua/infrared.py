@@ -62,8 +62,10 @@ def infrared_write_is_refused(coordinator) -> bool:
     refused, so reporting it as refused then would take the control away while a
     working path remained.
     """
-    return all(refusals.is_refused(coordinator, path)
-               for path in infrared_transports(coordinator))
+    return all(
+        refusals.is_refused(coordinator, path)
+        for path in infrared_transports(coordinator)
+    )
 
 
 def forget_refused_infrared_writes(coordinator=None) -> None:
@@ -92,8 +94,11 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
     device = coordinator.get_device_name()
     channel = coordinator.get_channel()
 
-    untried = [path for path in infrared_transports(coordinator)
-               if not refusals.is_refused(coordinator, path)]
+    untried = [
+        path
+        for path in infrared_transports(coordinator)
+        if not refusals.is_refused(coordinator, path)
+    ]
     if not untried:
         # Nothing is sent. Every path this channel has was refused, and a second
         # identical request is a round trip to hear the same answer.
@@ -109,19 +114,24 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
             if path == refusals.INFRARED_V2:
                 profile, index, bank = coordinator.get_infrared_v2_row()
                 await coordinator.client.async_set_lighting_v2_mode(
-                    channel, mode, brightness, profile, index, bank)
+                    channel, mode, brightness, profile, index, bank
+                )
             else:
                 await coordinator.client.async_set_lighting_v1_mode(
-                    channel, mode, brightness,
+                    channel,
+                    mode,
+                    brightness,
                     coordinator.get_infrared_profile(),
-                    coordinator.get_infrared_bank())
+                    coordinator.get_infrared_bank(),
+                )
         except WRITE_FAILED as err:
             last = err
             if refusals.refusal_is_outright(err):
                 # Learnt, and the next path is tried in the same press rather
                 # than making the user click again to discover the fallback.
-                refusals.remember(coordinator, path,
-                                  dahua_utils.describe_write_refusal(err))
+                refusals.remember(
+                    coordinator, path, dahua_utils.describe_write_refusal(err)
+                )
                 continue
             # Not a refusal -- a timeout or a dropped connection says nothing
             # about whether this path works, so do not burn the fallback on it.
@@ -155,7 +165,11 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
     if reported != mode:
         _LOGGER.debug(
             "%s accepted Lighting mode %s on channel %s and still reports %s",
-            device, mode, coordinator.get_channel(), reported)
+            device,
+            mode,
+            coordinator.get_channel(),
+            reported,
+        )
         raise HomeAssistantError(
             translation_domain=DOMAIN,
             translation_key="infrared_write_ignored",

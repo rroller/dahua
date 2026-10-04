@@ -50,13 +50,15 @@ class _Rpc2:
     async def async_open_door(self, channel, door_index=0, short_number="HA"):
         self.channel = channel
         made = await self.request(
-            method="accessControl.factory.instance", params={"channel": channel})
+            method="accessControl.factory.instance", params={"channel": channel}
+        )
         oid = made.get("result")
         try:
             return await self.request(method="accessControl.openDoor", object_id=oid)
         finally:
-            await self.request(method="accessControl.destroy", object_id=oid,
-                               verify_result=False)
+            await self.request(
+                method="accessControl.destroy", object_id=oid, verify_result=False
+            )
 
     async def logout(self):
         self.logged_out = True
@@ -70,18 +72,23 @@ def _client(cgi_status=None, rpc2=None):
     async def get(url, verify_ok=False):
         c.cgi_calls.append(url)
         if cgi_status is not None:
-            raise aiohttp.ClientResponseError(None, None, status=cgi_status, message="x")
+            raise aiohttp.ClientResponseError(
+                None, None, status=cgi_status, message="x"
+            )
         return {"ok": True}
 
     c.get = get
     if rpc2 is not None:
+
         async def _fallback(door_id):
             return await rpc2.async_open_door(max(0, door_id - 1))
+
         c._async_open_door_rpc2 = _fallback
     return c
 
 
 # --- the ordinary case ------------------------------------------------------
+
 
 async def test_a_working_cgi_endpoint_is_used_and_nothing_else_is():
     rpc2 = _Rpc2()
@@ -95,6 +102,7 @@ async def test_a_working_cgi_endpoint_is_used_and_nothing_else_is():
 
 # --- the case this exists for -----------------------------------------------
 
+
 @pytest.mark.parametrize("status", [404, 501])
 async def test_an_absent_endpoint_falls_back(status):
     rpc2 = _Rpc2()
@@ -102,9 +110,11 @@ async def test_an_absent_endpoint_falls_back(status):
 
     await c.async_access_control_open_door(1)
 
-    assert rpc2.calls == ["accessControl.factory.instance",
-                          "accessControl.openDoor",
-                          "accessControl.destroy"]
+    assert rpc2.calls == [
+        "accessControl.factory.instance",
+        "accessControl.openDoor",
+        "accessControl.destroy",
+    ]
 
 
 async def test_the_object_is_destroyed_even_when_opening_fails():
@@ -138,6 +148,7 @@ async def test_door_two_is_channel_one():
 
 
 # --- and the ones that must NOT fall back -----------------------------------
+
 
 async def test_a_400_never_falls_back():
     """#154: a VTO answered 400 while the door opened anyway.

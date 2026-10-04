@@ -1,4 +1,5 @@
 """Small model-specific helpers for upstream Dahua compatibility."""
+
 from __future__ import annotations
 
 import re

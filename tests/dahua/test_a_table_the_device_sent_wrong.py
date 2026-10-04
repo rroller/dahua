@@ -27,7 +27,9 @@ from aiohttp import ClientResponseError
 from types import SimpleNamespace
 
 from custom_components.dahua.client import (
-    DahuaClient, lighting_scheme_illuminator_tables)
+    DahuaClient,
+    lighting_scheme_illuminator_tables,
+)
 
 CHANNEL = 0
 PROFILE = 0
@@ -37,7 +39,9 @@ LIGHT = 1
 def _refused(status=400):
     return ClientResponseError(
         request_info=SimpleNamespace(real_url="http://10.0.0.5/x"),
-        history=(), status=status)
+        history=(),
+        status=status,
+    )
 
 
 def _client(answer):
@@ -59,7 +63,8 @@ async def test_a_refused_motion_detect_table_reads_as_disabled():
     """Not an error. A device that will not serve the table does not have the feature,
     so the switch shows off rather than the whole device going unavailable."""
     assert await _client(_refused()).async_get_config_motion_detection() == {
-        "table.MotionDetect[0].Enable": "false"}
+        "table.MotionDetect[0].Enable": "false"
+    }
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 500])
@@ -75,16 +80,18 @@ async def test_any_refusal_reads_as_disabled(status):
 async def test_a_table_the_device_does_serve_is_returned_untouched():
     """The control. Without it every assertion above could hold for a method that
     always answers "false"."""
-    real = {"table.MotionDetect[0].Enable": "true",
-            "table.MotionDetect[0].DetectVersion": "V3.0"}
+    real = {
+        "table.MotionDetect[0].Enable": "true",
+        "table.MotionDetect[0].DetectVersion": "V3.0",
+    }
 
     assert await _client(real).async_get_config_motion_detection() == real
 
 
 async def test_a_refused_amcrest_rule_reads_as_disabled():
-    assert await _client(
-        _refused()).async_get_video_analyse_rules_for_amcrest() == {
-            "table.VideoAnalyseRule[0][0].Enable": "false"}
+    assert await _client(_refused()).async_get_video_analyse_rules_for_amcrest() == {
+        "table.VideoAnalyseRule[0][0].Enable": "false"
+    }
 
 
 async def test_an_amcrest_rule_that_answers_is_returned_untouched():
@@ -117,12 +124,17 @@ def _lighting(**overrides):
     return [[[{}, row]]]
 
 
-def _build(scheme=None, lighting=None, enabled=True, brightness=50,
-           restore_mode=None):
+def _build(scheme=None, lighting=None, enabled=True, brightness=50, restore_mode=None):
     return lighting_scheme_illuminator_tables(
         _scheme() if scheme is None else scheme,
         _lighting() if lighting is None else lighting,
-        CHANNEL, PROFILE, LIGHT, enabled, brightness, restore_mode)
+        CHANNEL,
+        PROFILE,
+        LIGHT,
+        enabled,
+        brightness,
+        restore_mode,
+    )
 
 
 def test_a_valid_pair_builds_both_tables():
@@ -148,7 +160,8 @@ def test_the_inputs_are_not_modified():
 def test_a_light_the_tables_do_not_contain_is_named_as_such():
     with pytest.raises(ValueError, match="do not contain"):
         lighting_scheme_illuminator_tables(
-            _scheme(), _lighting(), CHANNEL, PROFILE, 99, True, 50)
+            _scheme(), _lighting(), CHANNEL, PROFILE, 99, True, 50
+        )
 
 
 @pytest.mark.parametrize("row", ["not a dict", 5, None, []])
@@ -215,7 +228,8 @@ def test_turning_it_off_restores_the_captured_mode():
     """The captured mode must differ from the one the scheme is already on, or the
     assertion holds whether or not it was restored."""
     scheme, _lighting_out = _build(
-        scheme=_scheme("WhiteMode"), enabled=False, restore_mode="DoubleMode")
+        scheme=_scheme("WhiteMode"), enabled=False, restore_mode="DoubleMode"
+    )
 
     assert scheme[CHANNEL][PROFILE]["LightingMode"] == "DoubleMode"
 
@@ -235,5 +249,6 @@ def test_a_scheme_on_another_mode_is_left_alone_entirely():
     scheme, lighting = _build(scheme=_scheme("NightMode"), enabled=False)
 
     assert scheme[CHANNEL][PROFILE]["LightingMode"] == "NightMode"
-    assert lighting[CHANNEL][PROFILE][LIGHT]["Mode"] == "Manual", (
-        "the emitter was stopped even though the scheme is on another mode")
+    assert (
+        lighting[CHANNEL][PROFILE][LIGHT]["Mode"] == "Manual"
+    ), "the emitter was stopped even though the scheme is on another mode"

@@ -103,8 +103,9 @@ def _for_challenge(challenge):
 
 def _params(header):
     body = header.partition(" ")[2]
-    return {m[0]: (m[1] or m[2])
-            for m in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', body)}
+    return {
+        m[0]: (m[1] or m[2]) for m in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', body)
+    }
 
 
 def _warnings(caplog):
@@ -113,13 +114,17 @@ def _warnings(caplog):
     caplog collects every logger in the process, so counting by level alone would
     make these assertions hostage to anything else that happens to warn.
     """
-    return [r for r in caplog.records
-            if r.levelno >= logging.WARNING and r.name == "custom_components.dahua"]
+    return [
+        r
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and r.name == "custom_components.dahua"
+    ]
 
 
 def _logged(caplog):
-    return "\n".join(r.getMessage() for r in caplog.records
-                     if r.name == "custom_components.dahua")
+    return "\n".join(
+        r.getMessage() for r in caplog.records if r.name == "custom_components.dahua"
+    )
 
 
 def _md5(value):
@@ -132,12 +137,16 @@ def _sha256(value):
 
 # --- 1. the comma inside a quoted value -----------------------------------------
 
-@pytest.mark.parametrize("header", [
-    'Digest realm="%s", qop="auth,auth-int", nonce="abc"' % REALM,
-    'Digest realm="%s", qop="auth, auth-int", nonce="abc"' % REALM,
-    'Digest realm="Login to device, channel 1", qop="auth", nonce="abc"',
-    'Digest qop="auth,auth-int", realm="Login to device, channel 1", nonce="abc"',
-])
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        'Digest realm="%s", qop="auth,auth-int", nonce="abc"' % REALM,
+        'Digest realm="%s", qop="auth, auth-int", nonce="abc"' % REALM,
+        'Digest realm="Login to device, channel 1", qop="auth", nonce="abc"',
+        'Digest qop="auth,auth-int", realm="Login to device, channel 1", nonce="abc"',
+    ],
+)
 async def test_a_comma_inside_a_quoted_value_does_not_destroy_the_challenge(header):
     """The #947 fault. Each of these used to end as a 401 the user was told was a
     wrong username and password."""
@@ -153,7 +162,8 @@ def test_the_two_value_qop_survives_parsing_intact():
     """Not just "it parsed": the value has to arrive whole, because
     _build_digest_header checks `auth` against the list and signs `qop="auth"`."""
     fields = parse_key_value_list(
-        'realm="%s", qop="auth,auth-int", nonce="abc"' % REALM)
+        'realm="%s", qop="auth,auth-int", nonce="abc"' % REALM
+    )
 
     assert fields == {"realm": REALM, "qop": "auth,auth-int", "nonce": "abc"}
 
@@ -188,6 +198,7 @@ def test_a_qop_this_cannot_do_is_still_refused_when_it_is_the_only_one_offered()
 
 # --- how the splitter behaves, which is the load-bearing part ------------------
 
+
 def test_fields_are_split_only_on_the_commas_between_them():
     assert split_header_fields('realm="a,b", nonce="c"') == ['realm="a,b"', 'nonce="c"']
 
@@ -195,14 +206,18 @@ def test_fields_are_split_only_on_the_commas_between_them():
 def test_an_unquoted_value_still_splits():
     """Some firmware omits the quotes, and RFC 7616 makes algorithm a token."""
     assert parse_key_value_list("nonce=abc, algorithm=SHA-256") == {
-        "nonce": "abc", "algorithm": "SHA-256"}
+        "nonce": "abc",
+        "algorithm": "SHA-256",
+    }
 
 
 def test_a_trailing_comma_does_not_become_an_empty_field():
     """An empty field has no `=`, so it would raise and discard the whole
     challenge."""
     assert parse_key_value_list('nonce="abc", realm="r",') == {
-        "nonce": "abc", "realm": "r"}
+        "nonce": "abc",
+        "realm": "r",
+    }
 
 
 def test_a_value_containing_an_equals_sign_is_not_cut_at_it():
@@ -245,6 +260,7 @@ def test_a_field_with_no_name_is_no_challenge():
 
 # --- 2. the algorithms a device may name ---------------------------------------
 
+
 def test_sha_256_is_signed_with_sha_256():
     """RFC 7616's upgrade from MD5, and what firmware on a security baseline is
     liable to offer. This used to build no header at all."""
@@ -255,9 +271,14 @@ def test_sha_256_is_signed_with_sha_256():
     ha1 = _sha256("%s:%s:%s" % (USER, REALM, PASSWORD))
     ha2 = _sha256("%s:%s" % ("GET", params["uri"]))
     assert params["response"] == _sha256("%s:%s:%s" % (ha1, "n1", ha2))
-    assert params["response"] != _md5("%s:%s:%s" % (
-        _md5("%s:%s:%s" % (USER, REALM, PASSWORD)), "n1",
-        _md5("%s:%s" % ("GET", params["uri"])))), "signed with MD5"
+    assert params["response"] != _md5(
+        "%s:%s:%s"
+        % (
+            _md5("%s:%s:%s" % (USER, REALM, PASSWORD)),
+            "n1",
+            _md5("%s:%s" % ("GET", params["uri"])),
+        )
+    ), "signed with MD5"
 
 
 def test_the_algorithm_is_echoed_as_the_device_named_it():
@@ -272,8 +293,9 @@ def test_sha_256_sess_folds_the_nonce_into_ha1():
     """The session variant is a suffix on any algorithm. MD5-SESS was handled by an
     equality test, so SHA-256-SESS was signed as plain SHA-256 -- a valid-looking
     header that authenticates as the wrong thing."""
-    auth = _for_challenge({"realm": REALM, "nonce": "n1", "qop": "auth",
-                           "algorithm": "SHA-256-SESS"})
+    auth = _for_challenge(
+        {"realm": REALM, "nonce": "n1", "qop": "auth", "algorithm": "SHA-256-SESS"}
+    )
 
     params = _params(auth._build_digest_header("GET", URL))
 
@@ -283,16 +305,18 @@ def test_sha_256_sess_folds_the_nonce_into_ha1():
     noncebit = ":".join(["n1", params["nc"], params["cnonce"], "auth", ha2])
 
     assert params["response"] == _sha256("%s:%s" % (session_ha1, noncebit))
-    assert params["response"] != _sha256("%s:%s" % (plain, noncebit)), (
-        "signed as plain SHA-256, so the session nonce was ignored")
+    assert params["response"] != _sha256(
+        "%s:%s" % (plain, noncebit)
+    ), "signed as plain SHA-256, so the session nonce was ignored"
 
 
 @pytest.mark.parametrize("algorithm", ["sha-256", "SHA-256-sess", "md5-SESS"])
 def test_the_algorithm_name_is_matched_whatever_its_case(algorithm):
     """RFC 7616 s3.3 makes it case insensitive, and firmware sends `-sess` lower
     while naming the digest upper."""
-    auth = _for_challenge({"realm": REALM, "nonce": "n1", "qop": "auth",
-                           "algorithm": algorithm})
+    auth = _for_challenge(
+        {"realm": REALM, "nonce": "n1", "qop": "auth", "algorithm": algorithm}
+    )
 
     assert auth._build_digest_header("GET", URL), algorithm
 
@@ -300,8 +324,9 @@ def test_the_algorithm_name_is_matched_whatever_its_case(algorithm):
 async def test_a_device_offering_sha_256_can_be_added():
     """End to end through request(), which is where the three dropped attempts and
     the final 401 came from."""
-    device = _Device('Digest realm="%s", qop="auth", nonce="abc", algorithm=SHA-256'
-                     % REALM)
+    device = _Device(
+        'Digest realm="%s", qop="auth", nonce="abc", algorithm=SHA-256' % REALM
+    )
 
     response = await _auth(device).request("GET", URL)
 
@@ -309,6 +334,7 @@ async def test_a_device_offering_sha_256_can_be_added():
 
 
 # --- 3. and saying so, for the ones that are genuinely unanswerable ------------
+
 
 def test_an_algorithm_that_cannot_be_signed_says_which_one(caplog):
     """The absent credential is right. Being silent about it is what made #947
@@ -390,9 +416,11 @@ async def test_what_is_logged_is_the_challenge_and_not_the_credentials(caplog):
         async def request(self, method, url, headers=None, **kwargs):
             return _Response(401, self.challenge)
 
-    await _auth(_AlwaysRefuses(
-        'Digest realm="%s", qop="auth", nonce="%s"' % (REALM, nonce),
-    )).request("GET", URL)
+    await _auth(
+        _AlwaysRefuses(
+            'Digest realm="%s", qop="auth", nonce="%s"' % (REALM, nonce),
+        )
+    ).request("GET", URL)
 
     logged = _logged(caplog)
     assert REALM in logged, "nothing was logged, so this proves nothing"

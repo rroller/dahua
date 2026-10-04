@@ -28,7 +28,8 @@ OLD_FIXED_DELAY = 30
 def _mean_delay(lived, failures, received_data, runs=40):
     """The delay averaged over the jitter."""
     return statistics.mean(
-        vto_retry_state(lived, failures, received_data)[0] for _ in range(runs))
+        vto_retry_state(lived, failures, received_data)[0] for _ in range(runs)
+    )
 
 
 def test_a_doorbell_that_was_talking_reconnects_at_once():
@@ -67,8 +68,10 @@ def test_the_backoff_is_capped():
 
 def test_the_first_refusal_waits_about_a_minute():
     """Not the thirty seconds it used to, and not ten minutes either."""
-    assert abs(_mean_delay(0.2, 0, False) - EVENT_STREAM_RETRY_SECONDS) \
+    assert (
+        abs(_mean_delay(0.2, 0, False) - EVENT_STREAM_RETRY_SECONDS)
         <= EVENT_STREAM_RETRY_SECONDS * 0.2
+    )
 
 
 def test_a_connection_that_talked_then_died_quickly_is_retried_soon():
@@ -76,8 +79,10 @@ def test_a_connection_that_talked_then_died_quickly_is_retried_soon():
     delay, failures = vto_retry_state(5, 4, True)
 
     assert failures == 0
-    assert abs(delay - EVENT_STREAM_SHORT_RETRY_SECONDS) \
+    assert (
+        abs(delay - EVENT_STREAM_SHORT_RETRY_SECONDS)
         <= EVENT_STREAM_SHORT_RETRY_SECONDS * 0.2
+    )
 
 
 def test_the_failure_count_climbs_while_it_is_refused_and_resets_when_it_answers():
@@ -100,7 +105,8 @@ def test_an_unplugged_doorbell_costs_far_fewer_attempts():
         attempts += 1
 
     assert attempts < day / OLD_FIXED_DELAY / 10, (
-        "an unplugged doorbell is still contacted %d times a day" % attempts)
+        "an unplugged doorbell is still contacted %d times a day" % attempts
+    )
 
 
 def test_the_protocol_records_that_the_device_spoke():
