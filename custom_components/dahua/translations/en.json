@@ -130,6 +130,7 @@
                             "camera": "Camera enabled",
                             "event": "Event enabled",
                             "light": "Light enabled",
+                            "number": "Number enabled",
                             "select": "Select enabled",
                             "sensor": "Sensor enabled",
                             "switch": "Switch enabled"

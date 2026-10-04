@@ -66,6 +66,12 @@ class DahuaImageAdjustmentNumber(DahuaBaseEntity, NumberEntity):
         self._attr_unique_id = "%s_%s" % (coordinator.get_serial_number(), key)
 
     @property
+    def unique_id(self):
+        # DahuaBaseEntity.unique_id returns the bare serial; each entity that is
+        # not the one legacy VideoMotion sensor overrides it, as select/switch do.
+        return self._attr_unique_id
+
+    @property
     def available(self) -> bool:
         """Off until the poll has a value, so a device without VideoColor does not
         show four sliders stuck at an invented default."""
