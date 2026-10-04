@@ -33,6 +33,9 @@ Why not use the Amcrest integration already provided by Home Assistant? The Amcr
 - **Write on the video.** The channel title, the timestamp and free text overlays can
   be set from an automation, which is how a temperature or a zone name gets burned
   into the recording.
+- **Watch what it recorded.** Recordings on the device's own storage show up in Home
+  Assistant's Media browser under **Dahua**, by camera and then by day, and play back
+  in the dashboard. See [Recordings](#recordings).
 
 ## Installation
 
@@ -733,6 +736,24 @@ Service | Parameters | Description
 
 ## Camera
 This will provide a normal HA camera entity (can take snapshots, etc)
+
+## Recordings
+Recordings on the device's own storage (an SD card, or the NVR's disks) are browsable
+from **Media** in the sidebar, under **Dahua**. Pick a camera, then a day, then a clip,
+and it plays in the dashboard the same way a live view does.
+
+Playback uses the device's RTSP `cam/playback` stream, which Home Assistant's `stream`
+integration turns into HLS, so nothing is downloaded to the Home Assistant host.
+
+Two things worth knowing:
+- Days are listed for the last two weeks whether or not each one has a recording, so an
+  empty day opens to an empty folder. Dahua offers no quick "which days have footage"
+  query, so this avoids a round trip to the device for every day just to draw the list.
+- The day folders are Home Assistant's own calendar dates, but each day is asked of the
+  device as midnight-to-midnight on the **recorder's clock**. A clip always plays the
+  exact span it was recorded over, but if the recorder's clock differs from Home
+  Assistant's, a clip recorded near midnight can show up under the neighbouring day.
+  Keep both on NTP and they line up.
 
 ## Switches
 Switch |  Description |
