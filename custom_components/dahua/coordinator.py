@@ -671,6 +671,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # would pool their counts and the field would name no channel in particular.
     _events_without_listener: dict = None
 
+    # The flood light's pre-force mode, captured by turn_on before it forces the
+    # camera to manual so turn_off can put it back. None means nothing was
+    # captured this session, and turn_off must then not write a mode at all --
+    # see FloodLight.async_turn_off.
+    _floodlight_mode: int = None
+
     """Class to manage fetching data from the API."""
 
     def __init__(
@@ -822,7 +828,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # attributes so an automation can tell which rule tripped (#373).
         self._dahua_event_details: Dict[str, dict] = dict()
 
-        self._floodlight_mode = 2
+        self._floodlight_mode = None
 
         # A recorder's disks (name, state, capacity, error), refreshed slowly
         # because each read costs a login the device logs. Empty on anything that
