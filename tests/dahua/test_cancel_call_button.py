@@ -89,7 +89,15 @@ async def test_a_doorbell_that_refuses_raises():
     p = _protocol()
     pending = asyncio.ensure_future(p.cancel_call(timeout=2))
 
-    await _reply_with(p, {"id": 2, "result": False, "error": {"message": "nope"}})
+    # hc refused, so cancel_call now tries VideoTalkPhone.endCall; refuse that
+    # too (via its factory instance), and only then does it raise. #460.
+    answered = set()
+    await _answer(p, answered, {"result": False, "error": {"message": "nope"}})  # hc
+    await _answer(p, answered, {"result": 500})  # factory.instance -> object id
+    await _answer(
+        p, answered, {"result": False, "error": {"code": 268959743}}
+    )  # endCall
+    await _answer(p, answered, {"result": True})  # destroy
 
     with pytest.raises(CancelCallRefused) as refused:
         await pending
@@ -260,3 +268,78 @@ def test_its_unique_id_does_not_collide():
 
     assert _button(_Coordinator()).unique_id == "SER1_cancel_call"
     assert _button(_Coordinator()).unique_id != other.unique_id
+
+
+# --- #460: fall back to VideoTalkPhone.endCall when hc is refused -------------
+
+import json as _json
+
+
+async def _answer(p, answered, message):
+    """Answer the next request cancel_call registers that has not been answered.
+
+    cancel_call sends the fallback as a sequence -- factory.instance, endCall,
+    destroy -- awaiting each reply before the next, so tracking which ids were
+    already answered keeps a multi-step drive from replying to the same handler
+    twice across the brief window where one is popped and the next not yet added.
+    """
+    for _ in range(200):
+        new = [rid for rid in p.data_handlers if rid not in answered]
+        if new:
+            rid = new[0]
+            answered.add(rid)
+            p.data_handlers[rid](message)
+            return rid
+        await asyncio.sleep(0)
+    raise AssertionError("no new request appeared to answer")
+
+
+def _sent(p):
+    """The JSON messages written to the transport, decoded past the 32-byte header."""
+    out = []
+    for frame in p.transport.written:
+        try:
+            out.append(_json.loads(frame[32:].decode("utf-8")))
+        except Exception:  # pylint: disable=broad-except
+            pass
+    return out
+
+
+async def test_a_refused_hc_falls_back_to_endcall_and_succeeds():
+    """A VTO2311R-WP refuses hc but ends the call through VideoTalkPhone (#460)."""
+    p = _protocol()
+    pending = asyncio.ensure_future(p.cancel_call(timeout=2))
+
+    answered = set()
+    await _answer(p, answered, {"result": False, "error": {"code": 268959743}})  # hc
+    await _answer(p, answered, {"result": 777})  # VideoTalkPhone.factory.instance
+    await _answer(p, answered, {"result": True})  # VideoTalkPhone.endCall
+    await _answer(p, answered, {"result": True})  # VideoTalkPhone.destroy
+
+    assert await pending is True
+
+    sent = _sent(p)
+    methods = [m.get("method") for m in sent]
+    assert methods == [
+        "console.runCmd",
+        "VideoTalkPhone.factory.instance",
+        "VideoTalkPhone.endCall",
+        "VideoTalkPhone.destroy",
+    ], methods
+    # endCall and destroy carry the object id the factory handed back.
+    end = next(m for m in sent if m["method"] == "VideoTalkPhone.endCall")
+    destroy = next(m for m in sent if m["method"] == "VideoTalkPhone.destroy")
+    assert end["object"] == 777
+    assert destroy["object"] == 777
+
+
+async def test_a_working_hc_never_touches_videotalkphone():
+    """The VTO2000A path: hc succeeds, so the fallback is not tried at all."""
+    p = _protocol()
+    pending = asyncio.ensure_future(p.cancel_call(timeout=2))
+
+    await _reply_with(p, {"result": True})  # hc
+
+    assert await pending is True
+    methods = [m.get("method") for m in _sent(p)]
+    assert methods == ["console.runCmd"], methods
