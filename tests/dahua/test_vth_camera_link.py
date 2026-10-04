@@ -510,6 +510,7 @@ def _setup_double(links, indoor_monitor=True):
         get_model=lambda: "VTH2421F-P",
         supports_day_night_color=lambda: False,
         supports_infrared_light=lambda: False,
+        supports_smart_motion_detection=lambda: False,
         is_indoor_monitor=lambda: indoor_monitor,
         is_indoor_monitor_without_video=lambda: indoor_monitor,
         get_vth_camera_links=lambda: links,

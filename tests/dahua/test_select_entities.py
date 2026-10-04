@@ -333,6 +333,9 @@ class _SetupCoordinator(_Coordinator):
     def supports_infrared_light(self):
         return self._infrared_supported
 
+    def supports_smart_motion_detection(self):
+        return False
+
     def is_indoor_monitor(self):
         # A camera. The indoor monitor's camera-link selects are in
         # test_vth_camera_link.py.

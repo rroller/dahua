@@ -326,6 +326,9 @@
             "day_night_mode": {
                 "name": "Day/Night Mode"
             },
+            "smart_motion_sensitivity": {
+                "name": "Smart Motion Sensitivity"
+            },
             "vth_camera_link": {
                 "name": "Camera for {vto} calls",
                 "state": {

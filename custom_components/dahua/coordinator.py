@@ -1550,7 +1550,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     else self.client.async_get_ivs_rules()
                 )
                 coros.append(asyncio.ensure_future(ivs_read))
-            if self._supports_smart_motion_detection and self._wanted_by(SWITCH):
+            if self._supports_smart_motion_detection and self._wanted_by(
+                SWITCH, SELECT
+            ):
                 coros.append(
                     asyncio.ensure_future(
                         self.client.async_get_smart_motion_detection()
@@ -2718,6 +2720,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 == "true"
             )
         return (self._smart_motion_row() or "").lower() == "true"
+
+    def get_smart_motion_sensitivity(self):
+        """This channel's smart motion sensitivity word, or None.
+
+        Read from the same per-channel SmartMotionDetect row the enable switch
+        uses. None when the poll has not landed or the device reports a value
+        the select does not offer, which shows as unknown rather than as a
+        sensitivity the camera is not in.
+        """
+        return self.data.get(
+            "table.SmartMotionDetect[{0}].Sensitivity".format(self._channel)
+        )
 
     def creates_siren_entity(self) -> bool:
         """Whether switch.py creates the siren for this entry.

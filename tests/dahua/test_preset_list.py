@@ -242,6 +242,7 @@ def _setup_coordinator(
         supports_security_light=lambda: False,
         supports_day_night_color=lambda: day_night,
         supports_infrared_light=lambda: infrared,
+        supports_smart_motion_detection=lambda: False,
         is_indoor_monitor=lambda: False,
         is_indoor_monitor_without_video=lambda: no_video,
         reported_device_class=lambda: device_class,
