@@ -566,6 +566,25 @@ def _active_issues(hass: HomeAssistant) -> list[dict[str, Any]]:
     ]
 
 
+def _ivs_channel_block(coordinator) -> dict:
+    """Rule discovery and unmatched events for one channel."""
+    return {
+        "discovery": getattr(coordinator, "_ivs_discovery_diagnostics", {}),
+        "unmatched_event_counts": dict(
+            getattr(coordinator, "_ivs_unmatched_counts", {})
+        ),
+        "last_unmatched_event": getattr(coordinator, "_ivs_last_unmatched", None),
+    }
+
+
+def _ivs_block(config_entry) -> dict:
+    """Keep the all-channel IVS summary at the top level."""
+    return {
+        str(channel): _ivs_channel_block(coordinator)
+        for channel, coordinator in entry_coordinators(config_entry).items()
+    }
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, config_entry: ConfigEntry
 ) -> Mapping[str, Any]:
@@ -590,6 +609,7 @@ async def async_get_config_entry_diagnostics(
         return {
             "entry": _entry_block(config_entry),
             "channels": [],
+            "ivs": {},
             "note": "this entry has no channels set up, so there is nothing to "
             "report about the device",
             "active_issues": _active_issues(hass),
@@ -603,6 +623,7 @@ async def async_get_config_entry_diagnostics(
             "capabilities": _capabilities_block(coordinator),
             "client": _client_block(coordinator, config_entry),
             "events": _events_block(coordinator),
+            "ivs": _ivs_channel_block(coordinator),
         }
 
     first = coordinators[0]
@@ -616,6 +637,7 @@ async def async_get_config_entry_diagnostics(
         "capabilities": _capabilities_block(first),
         "client": _client_block(first, config_entry),
         "events": _events_block(first),
+        "ivs": _ivs_block(config_entry),
         # Host wide, so it is reported once however many channels there are.
         "host": _host_block(hass, first, config_entry),
         "active_issues": _active_issues(hass),

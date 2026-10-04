@@ -87,6 +87,41 @@ def test_remote_discovery_uses_zero_based_channel_and_normal_class():
     assert ivs_rules_for_channel(table, 11, "RemoteVideoAnalyseRule") == []
 
 
+async def test_initial_nvr_discovery_uses_the_per_channel_remote_read(hass):
+    """Initial discovery must use the same per-channel RPC2 shape as the switch.
+
+    The exact RPC2 contract is pinned below by
+    test_remote_read_contract_uses_zero_based_channel_and_only_local_false.
+    This test pins the other half of the chain: coordinator setup must reach
+    that method with the current channel rather than discovering rules through
+    a different whole-table read shape.
+    """
+    from tests.dahua.test_probe_timeouts import _Client, _coordinator
+
+    channel = 10
+    table = flatten_rpc2_config(
+        "RemoteVideoAnalyseRule",
+        [rule(1, True), rule(2, False, "IVS-2")],
+        f"table.RemoteVideoAnalyseRule[{channel}]",
+    )
+    client = _Client()
+    client.async_get_remote_ivs_rules = AsyncMock(return_value=table)
+
+    c = _coordinator(client)
+    c.hass = hass
+    c._channel = channel
+    c._channel_number = channel + 1
+    c.is_nvr_channel = lambda: True
+    # Polling the IVS switches reads the table again; this test isolates discovery.
+    c._wanted_by = lambda *_: False
+
+    await c._async_update_data()
+
+    client.async_get_remote_ivs_rules.assert_awaited_once_with(channel)
+    assert [item["id"] for item in c.get_ivs_rules()] == ["1", "2"]
+    assert all(item.get("remote") is True for item in c.get_ivs_rules())
+
+
 async def test_remote_read_contract_uses_zero_based_channel_and_only_local_false():
     rpc = object.__new__(DahuaRpc2Client)
     rpc._session_id = None

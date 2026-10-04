@@ -26,6 +26,7 @@ def ivs_rules_for_channel(
                 "index": int(match[1]),
                 "id": rule_id,
                 "name": table.get(prefix + ".Name") or f"IVS Rule {rule_id}",
+                "type": table.get(prefix + ".Type"),
             }
         )
     return sorted(
@@ -41,3 +42,34 @@ def ivs_rule_index(
         if rule["id"] == str(rule_id):
             return rule["index"]
     return None
+
+
+def ivs_discovery_diagnostics(table: dict, channel: int, name: str) -> dict:
+    """Explain skipped normal rows using the setup read, without another request."""
+    rules = ivs_rules_for_channel(table, channel, name)
+    accepted = {rule["index"] for rule in rules}
+    skipped = []
+    for key, value in table.items():
+        match = re.fullmatch(
+            rf"table\.{re.escape(name)}\[{channel}\]\[(\d+)\]\.Class", key
+        )
+        if not match or value != "Normal":
+            continue
+        index = int(match[1])
+        if index in accepted:
+            continue
+        prefix = key[:-6]
+        rule_id = table.get(prefix + ".Id")
+        if rule_id is None or not str(rule_id).strip():
+            reason = "missing_id"
+        elif table.get(prefix + ".Enable") not in ("true", "false"):
+            reason = "invalid_enable"
+        else:
+            reason = "duplicate_id"
+        skipped.append({"index": index, "reason": reason})
+    return {
+        "channel": channel,
+        "source": name,
+        "discovered_count": len(rules),
+        "skipped": sorted(skipped, key=lambda row: row["index"]),
+    }

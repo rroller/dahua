@@ -78,7 +78,7 @@ from .host import (
     stream_lifetime,
 )
 from .illuminator_restore import IlluminatorRestoreStore
-from .ivs import ivs_rule_index, ivs_rules_for_channel
+from .ivs import ivs_discovery_diagnostics, ivs_rule_index, ivs_rules_for_channel
 from .model_profiles import is_sdt4e425
 from .vto import DahuaVTOClient
 
@@ -1269,12 +1269,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     self._ivs_rules = ivs_rules_for_channel(
                         ivs_table, self._channel, name
                     )
+                    self._ivs_discovery_diagnostics = ivs_discovery_diagnostics(
+                        ivs_table, self._channel, name
+                    )
+                    _LOGGER.debug("IVS discovery: %s", self._ivs_discovery_diagnostics)
                     if remote_ivs:
                         for rule in self._ivs_rules:
                             rule["remote"] = True
                     data.update(ivs_table)
-                except PROBE_FAILED + (ConnectionError, ValueError):
+                except PROBE_FAILED + (ConnectionError, ValueError) as err:
                     self._ivs_rules = []
+                    self._ivs_discovery_diagnostics = {
+                        "channel": self._channel,
+                        "source": (
+                            "RemoteVideoAnalyseRule"
+                            if remote_ivs
+                            else "VideoAnalyseRule"
+                        ),
+                        "discovered_count": 0,
+                        "read_error": type(err).__name__,
+                    }
                 _LOGGER.debug("Device IVS rules=%s", self._ivs_rules)
 
                 # Day/Night mode. Judged by whether this channel's row came
@@ -1821,7 +1835,81 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         existed on the doorbell path the whole time.
         """
         details = self._extract_event_details(event)
-        for code in self.translate_event_code(event):
+        codes = self.translate_event_code(event)
+        raw_code = event.get("Code")
+        data = event.get("data", event.get("Data", {}))
+        if isinstance(data, dict) and data.get("Class") == "Normal":
+            rule_id = data.get("RuleID")
+            if rule_id is None:
+                rule_id = data.get("RuleId")
+            if rule_id is not None and any(
+                rule["id"] == str(rule_id) for rule in self.get_ivs_rules()
+            ):
+                codes.append(f"IVSRule_{rule_id}")
+                if action == "Start" and raw_code:
+                    # Remember which rules this code actually lit, so the Stop
+                    # below clears exactly those rather than trusting that the
+                    # configured Type is spelled like the event Code.
+                    active = getattr(self, "_ivs_active_rules", None)
+                    if active is None:
+                        active = self._ivs_active_rules = {}
+                    active.setdefault(raw_code, set()).add(str(rule_id))
+            else:
+                # Configuration IDs and event IDs are not proven equivalent on
+                # every NVR. Record the mismatch; never guess by name or index.
+                reason = "missing_rule_id" if rule_id is None else "unknown_rule_id"
+                counts = getattr(self, "_ivs_unmatched_counts", None)
+                if counts is None:
+                    counts = self._ivs_unmatched_counts = {}
+                first = reason not in counts
+                counts[reason] = counts.get(reason, 0) + 1
+                self._ivs_last_unmatched = {
+                    "channel": self._channel,
+                    "reason": reason,
+                    "rule_id": (
+                        str(rule_id)[:80] if isinstance(rule_id, (str, int)) else None
+                    ),
+                    "code": str(raw_code or "")[:80],
+                }
+                if first:
+                    _LOGGER.debug(
+                        "Normal IVS event did not match a discovered rule: %s",
+                        self._ivs_last_unmatched,
+                    )
+
+        # Dahua sends one Start per rule but a single Stop for the whole event
+        # code, and that Stop names only one rule (the first Start's EventID):
+        #   Start RuleID=9 EventID=10161
+        #   Start RuleID=7 EventID=10163
+        #   Start RuleID=8 EventID=10165
+        #   Stop  RuleID=9 EventID=10161
+        # So a Stop means "this code is now inactive", not "this rule ended".
+        # Clear every rule that code lit, even when the Stop has no usable data.
+        #
+        # Those rules are only being cleared. The Stop's data describes the one
+        # rule it names, so the others are kept out of the details write below
+        # and keep the name, direction and object type of their own last event.
+        clear_only = set()
+        if action == "Stop" and raw_code:
+            active = getattr(self, "_ivs_active_rules", None) or {}
+            for rule_id in sorted(active.pop(raw_code, ())):
+                rule_code = f"IVSRule_{rule_id}"
+                if rule_code not in codes:
+                    codes.append(rule_code)
+                    clear_only.add(rule_code)
+            # Also match by configured Type, and add those to the tracked rules
+            # rather than using it only when nothing was tracked: a reload loses
+            # the tracking, so a rule lit before it is known only by its Type
+            # even when another rule of the same code was lit after it.
+            for rule in self.get_ivs_rules():
+                if rule.get("type") != raw_code:
+                    continue
+                rule_code = f"IVSRule_{rule['id']}"
+                if rule_code not in codes:
+                    codes.append(rule_code)
+                    clear_only.add(rule_code)
+
+        for code in codes:
             event_key = self.get_event_key(code)
 
             if code == "AccessControl":
@@ -1851,7 +1939,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # the sensor can report which rule tripped (#373). Only when the event
             # carried any -- a plain VideoMotion leaves whatever was last there
             # rather than blanking it, matching how the timestamp persists.
-            if details:
+            if details and code not in clear_only:
                 self._dahua_event_details[event_key] = details
 
             if action == "Start":

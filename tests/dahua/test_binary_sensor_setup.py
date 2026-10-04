@@ -37,6 +37,9 @@ class _Coordinator:
     def get_event_list(self):
         return self._events
 
+    def get_ivs_rules(self):
+        return []
+
     def get_storage_disks(self):
         return []
 
