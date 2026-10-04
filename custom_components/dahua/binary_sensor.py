@@ -6,6 +6,7 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.event import async_call_later
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
@@ -180,6 +181,14 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         # Recognised from a plate, which an indoor monitor without a camera cannot read.
         if not coordinator.is_indoor_monitor_without_video():
             sensors.append(DahuaAuthorizedVehicleBinarySensor(coordinator, entry))
+
+        # One disk-health sensor per physical disk on a recorder. Disabled by
+        # default: it is diagnostic, and the read that feeds it is a logged login,
+        # so only someone who enables it pays for the refresh (#745).
+        for disk in coordinator.get_storage_disks():
+            sensors.append(
+                DahuaDiskProblemBinarySensor(coordinator, entry, disk["name"])
+            )
 
         if sensors:
             async_add_devices(sensors, config_subentry_id=coordinator.subentry_id)
@@ -453,3 +462,66 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
     def should_poll(self) -> bool:
         """Return False as entity pushes state updates."""
         return False
+
+
+class DahuaDiskProblemBinarySensor(DahuaBaseEntity, BinarySensorEntity):
+    """A recorder's disk health, as a diagnostic problem sensor (#745).
+
+    On when the disk's State is not Success or any partition reports an error.
+    Disabled by default: it is diagnostic, and the read that feeds it is a login
+    the device logs, so only someone who enables it pays for the refresh. Carries
+    capacity and state as attributes. SMART attributes (temperature, reallocated
+    sectors) are not served by the HTTP or RPC2 API, so this is the health the
+    device does report.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator, entry, disk_name):
+        DahuaBaseEntity.__init__(self, coordinator, entry)
+        BinarySensorEntity.__init__(self)
+        self._coordinator = coordinator
+        self._disk_name = disk_name
+        # /dev/sda -> dev_sda, so the id is stable and slug-shaped.
+        slug = disk_name.replace("/", "_").strip("_")
+        self._attr_unique_id = "%s_disk_%s" % (coordinator.get_serial_number(), slug)
+        self._attr_name = "Disk %s" % disk_name
+
+    def _disk(self):
+        for disk in self._coordinator.get_storage_disks():
+            if disk["name"] == self._disk_name:
+                return disk
+        return None
+
+    @property
+    def unique_id(self):
+        return self._attr_unique_id
+
+    @property
+    def is_on(self):
+        """True when the disk is unhealthy; None if it is no longer reported."""
+        disk = self._disk()
+        if disk is None:
+            return None
+        return not disk["healthy"]
+
+    @property
+    def should_poll(self) -> bool:
+        return False
+
+    @property
+    def extra_state_attributes(self):
+        disk = self._disk()
+        if disk is None:
+            return super().extra_state_attributes
+        return {
+            **(super().extra_state_attributes or {}),
+            "disk": disk["name"],
+            "state": disk["state"],
+            "total_gb": round(disk["total_bytes"] / 1_000_000_000, 1),
+            "used_gb": round(disk["used_bytes"] / 1_000_000_000, 1),
+            "partition_error": disk["has_error"],
+            "health_flag": disk["health_flag"],
+        }

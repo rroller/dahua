@@ -30,7 +30,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from . import dahua_utils
 from . import refusals
-from .client import DahuaClient, rpc2_refusal_is_a_stale_login
+from .client import DahuaClient, parse_storage_disks, rpc2_refusal_is_a_stale_login
 from .rpc2 import Rpc2MethodRefused
 from .const import (
     CAMERA,
@@ -816,6 +816,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         self._floodlight_mode = 2
 
+        # A recorder's disks (name, state, capacity, error), refreshed slowly
+        # because each read costs a login the device logs. Empty on anything that
+        # is not a recorder. See _async_refresh_storage (#745).
+        self._storage_disks: list = []
+        self._storage_last_refresh: float = 0.0
+
         self._last_plate_data: dict = {}
         self._last_plate_timestamp: int = 0
         self._plate_listeners: list = []
@@ -1114,6 +1120,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug(
                     "Device reports class=%s", self._device_class or "<no answer>"
                 )
+
+                # A recorder has disks worth a health sensor; nothing else does.
+                # Read them once here so the disk sensors can be enumerated, then
+                # refresh slowly in the poll below (#745).
+                if self.is_recorder_host():
+                    await self._async_refresh_storage()
 
                 # Some Dahua firmwares index channels from 0, others from 1. The default
                 # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
@@ -1430,6 +1442,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # This is the event loop code that's called every n seconds
         try:
+            # A recorder's disks, refreshed at most hourly because each read is a
+            # login the device logs. Gated on disks having been found at setup, so
+            # anything that is not a recorder never pays for it (#745).
+            if self._storage_disks and time.time() - self._storage_last_refresh >= 3600:
+                await self._async_refresh_storage()
+
             # We need the profile mode (0=day, 1=night, 2=scene)
             if self._supports_profile_mode and not self.is_doorbell():
                 try:
@@ -2334,6 +2352,28 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "XVR",
             "HCVR",
         }
+
+    async def _async_refresh_storage(self) -> None:
+        """Read the recorder's disks, slowly.
+
+        Each read is a login the device writes to its own log, which users
+        already complain about, so this is called once at setup and then at most
+        hourly rather than on every poll (#745). A failure leaves the last known
+        disks in place rather than blanking the sensors.
+        """
+        try:
+            raw = await self.client.async_get_storage_device_info()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Storage device probe failed on %s", self._address, exc_info=True
+            )
+            return
+        self._storage_disks = parse_storage_disks(raw)
+        self._storage_last_refresh = time.time()
+
+    def get_storage_disks(self) -> list:
+        """The recorder's disks, for the diagnostic disk sensors to read (#745)."""
+        return list(self._storage_disks)
 
     def reported_device_class(self) -> str:
         """The class the device itself answered, folded, or "" if it did not answer.
