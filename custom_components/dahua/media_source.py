@@ -31,10 +31,18 @@ from homeassistant.components.media_source import (
     Unresolvable,
 )
 from homeassistant.components.stream import (
-    FORMAT_CONTENT_TYPE,
     HLS_PROVIDER,
     create_stream,
 )
+
+# The media-browser dialog routes a resolved source to its hls.js player
+# (ha-hls-player) only when the mime is exactly this string. The stream
+# component's own FORMAT_CONTENT_TYPE is the other HLS spelling,
+# "application/vnd.apple.mpegurl", which the dialog does not match: it then
+# falls back to a plain <video>, and Chromium cannot play an m3u8 there, so
+# playback failed with "does not support this type of media" and no request was
+# ever made. Read out of the 2026.x frontend, confirmed on a live Edge session.
+HLS_MIME_THE_DIALOG_PLAYS = "application/x-mpegURL"
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
@@ -123,7 +131,7 @@ class DahuaMediaSource(MediaSource):
         # source does the same replace; it is a no-op if the endpoint name has no
         # "master_" prefix, so it can only help.
         endpoint = stream.endpoint_url(HLS_PROVIDER).replace("master_", "")
-        return PlayMedia(endpoint, FORMAT_CONTENT_TYPE[HLS_PROVIDER])
+        return PlayMedia(endpoint, HLS_MIME_THE_DIALOG_PLAYS)
 
     # -- browse -------------------------------------------------------------
 
