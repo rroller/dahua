@@ -2112,8 +2112,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         event_key = self.get_event_key(event_name)
         return self._dahua_event_details.get(event_key, {})
 
-    def add_dahua_event_listener(self, event_name: str,
-                                 listener: CALLBACK_TYPE) -> CALLBACK_TYPE:
+    def add_dahua_event_listener(
+        self, event_name: str, listener: CALLBACK_TYPE
+    ) -> CALLBACK_TYPE:
         """Listen for one event on this channel, and return how to stop.
 
         The return value is what `Entity.async_on_remove` wants, and it used to
