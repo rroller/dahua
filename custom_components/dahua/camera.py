@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import voluptuous as vol
 from aiohttp import ClientError
 
@@ -52,6 +53,14 @@ SERVICE_REBOOT = "reboot"
 SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
 SERVICE_GET_OVERLAY_TEXT = "get_overlay_text"
 SERVICE_GET_CHANNEL_TITLE = "get_channel_title"
+SERVICE_GET_CONFIG = "get_config"
+
+# What a configManager config name may contain. A name goes straight into the
+# getConfig URL, so this keeps it from smuggling in another CGI parameter (an
+# "&action=setConfig..." tail, say); the brackets and dots are for indexed names
+# like "Lighting[0][0]". Anchored so the whole name matches, not just its start,
+# and used as the service schema so an invalid name is refused before any call.
+_CONFIG_NAME = re.compile(r"\A[A-Za-z0-9_.\[\]]+\Z")
 SERVICE_PTZ_MOVE = "ptz_move"
 
 # What ptz.cgi calls each direction. The eight compass moves plus the two
@@ -398,6 +407,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         SERVICE_GET_CHANNEL_TITLE,
         {},
         "async_get_channel_title",
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_GET_CONFIG,
+        {vol.Required("name"): vol.All(str, vol.Match(_CONFIG_NAME))},
+        "async_get_config_service",
         supports_response=SupportsResponse.ONLY,
     )
 
@@ -830,6 +846,22 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             await self._coordinator.client.async_get_config("ChannelTitle")
         )
         return {"channel_title": titles.get(self._logical_channel, "")}
+
+    async def async_get_config_service(self, name: str) -> dict:
+        """Read any configuration table from the device, for diagnostics.
+
+        A deliberate read-only escape hatch: this integration wraps the common
+        config tables, but a device has many model-specific ones it does not,
+        and inspecting them meant enabling debug logging. getConfig cannot change
+        the device, so unlike an arbitrary-CGI passthrough this cannot be used to
+        write, which matters here -- several config writes on these devices are
+        irreversible or accepted-but-ignored.
+
+        The name is validated by the service schema (_CONFIG_NAME) before this
+        runs, because it goes straight into the getConfig URL and an unchecked
+        name could append another CGI parameter.
+        """
+        return {"config": await self._coordinator.client.async_get_config(name)}
 
     async def async_set_service_set_text_overlay(
         self, group: int, text1: str, text2: str, text3: str, text4: str
