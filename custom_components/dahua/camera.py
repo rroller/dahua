@@ -51,6 +51,7 @@ SERVICE_SET_DAY_NIGHT_MODE = "set_video_in_day_night_mode"
 SERVICE_REBOOT = "reboot"
 SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
 SERVICE_GET_OVERLAY_TEXT = "get_overlay_text"
+SERVICE_GET_CHANNEL_TITLE = "get_channel_title"
 SERVICE_PTZ_MOVE = "ptz_move"
 
 # What ptz.cgi calls each direction. The eight compass moves plus the two
@@ -390,6 +391,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             ),
         },
         "async_get_overlay_text",
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_GET_CHANNEL_TITLE,
+        {},
+        "async_get_channel_title",
         supports_response=SupportsResponse.ONLY,
     )
 
@@ -807,6 +815,21 @@ class DahuaCamera(DahuaBaseEntity, Camera):
                 )
             ),
         }
+
+    async def async_get_channel_title(self) -> dict:
+        """Read back this channel's title overlay.
+
+        #980, the companion to set_channel_title the way get_overlay_text is to
+        the overlay setters. A separate service rather than another key on
+        get_overlay_text so #461's response shape does not change, and because
+        the title has no overlay group to pass. Reads the same ChannelTitle
+        table the add flow already reads, and returns "" rather than null for a
+        channel the device does not list, so a template can use it directly.
+        """
+        titles = dahua_utils.parse_channel_titles(
+            await self._coordinator.client.async_get_config("ChannelTitle")
+        )
+        return {"channel_title": titles.get(self._logical_channel, "")}
 
     async def async_set_service_set_text_overlay(
         self, group: int, text1: str, text2: str, text3: str, text4: str
