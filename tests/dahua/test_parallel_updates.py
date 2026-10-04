@@ -24,7 +24,7 @@ READ_ONLY = {"binary_sensor", "sensor", "event"}
 
 # Platforms that send a command to the device: a toggle, a preset, a reboot, a
 # stream. These are the ones the limit exists for.
-ACTING = {"camera", "switch", "light", "select", "button"}
+ACTING = {"camera", "switch", "light", "select", "button", "number"}
 
 
 def _declared(platform):

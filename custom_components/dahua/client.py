@@ -1837,6 +1837,26 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
         return await self.get(url)
 
+    async def async_get_video_color(self) -> dict:
+        """The picture adjustments per channel. Example output:
+        table.VideoColor[0][0].Brightness=50
+        table.VideoColor[0][0].Contrast=50
+        table.VideoColor[0][0].Saturation=50
+        table.VideoColor[0][0].Hue=50
+
+        Index [channel][profile]; profile 0 is the general one the number
+        entities read and write (#image adjustments, Reolink/Tapo parity).
+        """
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoColor"
+        return await self.get(url)
+
+    async def async_set_video_color(self, channel: int, field: str, value: int):
+        """Set one picture adjustment on a channel's general profile (0-100)."""
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VideoColor[{0}][0].{1}={2}".format(
+            channel, field, int(value)
+        )
+        return await self.get(url)
+
     async def async_get_storage_device_info(self) -> dict:
         """The recorder's disks: state, capacity and error flags (#745).
 

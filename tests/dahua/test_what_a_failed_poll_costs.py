@@ -56,6 +56,7 @@ CLIENT_METHODS = (
     "async_get_smart_motion_detection",
     "async_get_video_analyse_rules_for_amcrest",
     "async_get_video_in_mode",
+    "async_get_video_color",
     "async_get_video_in_options",
     "async_reconcile_lighting_scheme_restore_modes",
 )

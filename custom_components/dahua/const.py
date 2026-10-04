@@ -25,7 +25,18 @@ SELECT = "select"
 BUTTON = "button"
 SENSOR = "sensor"
 EVENT = "event"
-PLATFORMS = [BINARY_SENSOR, SWITCH, LIGHT, CAMERA, SELECT, BUTTON, SENSOR, EVENT]
+NUMBER = "number"
+PLATFORMS = [
+    BINARY_SENSOR,
+    SWITCH,
+    LIGHT,
+    CAMERA,
+    SELECT,
+    BUTTON,
+    SENSOR,
+    EVENT,
+    NUMBER,
+]
 
 
 # Configuration and options
