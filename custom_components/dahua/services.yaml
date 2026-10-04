@@ -178,6 +178,27 @@ enable_custom_overlay:
       selector:
         boolean:
 
+get_config:
+  name: Read a configuration table
+  description: >-
+    Returns a configuration table from the device, read-only, for diagnostics.
+    The integration wraps the common tables already; this reads any of the
+    model-specific ones it does not. It cannot change the device.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    name:
+      name: Config name
+      description: >-
+        The configManager config name, for example Encode, VideoColor or
+        Lighting[0][0].
+      required: true
+      example: Encode
+      selector:
+        text:
+
 get_channel_title:
   name: Read the channel title
   description: >-
