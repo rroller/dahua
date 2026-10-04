@@ -136,8 +136,16 @@ async def test_the_day_night_read_is_skipped_when_the_device_has_no_mode():
 async def test_switch_reads_are_skipped_without_the_switch_platform():
     calls = await _poll(switch=False)
 
-    for api in (DISARMING, NOTIFICATIONS, SMART_MOTION, PRIVACY, ALARM_OUT):
+    for api in (DISARMING, NOTIFICATIONS, PRIVACY, ALARM_OUT):
         assert api not in calls, f"{api} is only read by a switch"
+
+
+async def test_smart_motion_is_read_for_the_switch_or_the_select():
+    """SmartMotionDetect carries both the enable (switch) and the sensitivity
+    (select), so it is skipped only when neither platform is on."""
+    assert SMART_MOTION in await _poll(select=False), "the enable switch still wants it"
+    assert SMART_MOTION in await _poll(switch=False), "the sensitivity select wants it"
+    assert SMART_MOTION not in await _poll(switch=False, select=False)
 
 
 async def test_light_reads_are_skipped_without_the_light_platform():
