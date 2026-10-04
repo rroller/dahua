@@ -40,6 +40,9 @@ class _Coordinator:
     def get_serial_number(self):
         return "SERIAL1"
 
+    def get_address(self):
+        return "10.0.0.5"
+
     def get_channel(self):
         return self._channel
 
