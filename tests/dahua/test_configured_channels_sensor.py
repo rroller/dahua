@@ -49,3 +49,10 @@ def test_the_sensor_reports_the_count():
 
 def test_the_sensor_id_is_the_device_serial():
     assert _sensor(15).unique_id == "SER1_configured_channels"
+
+
+def test_the_sensor_is_off_by_default():
+    """A recorder is one entry per channel and all answer is_recorder_host, so
+    an enabled-by-default sensor would appear once per channel. Off by default,
+    like the disk sensors, so the host-wide count is opt-in rather than repeated."""
+    assert _sensor(15).entity_registry_enabled_default is False

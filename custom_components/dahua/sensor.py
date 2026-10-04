@@ -138,6 +138,11 @@ class DahuaConfiguredChannelsSensor(DahuaBaseEntity, SensorEntity):
 
     _attr_translation_key = "configured_channels"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # Off by default, like the disk sensors (#745). A recorder is represented by
+    # one entry per channel and every one of them answers is_recorder_host, so
+    # without this the same host-wide count appears once per channel. Enabling a
+    # single one is enough.
+    _attr_entity_registry_enabled_default = False
 
     @property
     def unique_id(self):
