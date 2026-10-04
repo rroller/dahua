@@ -652,6 +652,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # they fail on the attribute rather than on anything they are testing.
     _channel_config: dict = {}
 
+    # The recorder's disks (#745), on the class for the same reason: the poll and
+    # the disk sensors read them, and the many object.__new__ tests do not set
+    # them. Only ever reassigned, never mutated in place, so one shared default
+    # is safe, like _channel_config above.
+    _storage_disks: list = []
+    _storage_last_refresh: float = 0.0
+
     # Which subentry of the entry this channel is, or None for a single camera.
     # Declared on the class for the same reason as the line above: a great many
     # tests build a coordinator with object.__new__, and the platforms read this
