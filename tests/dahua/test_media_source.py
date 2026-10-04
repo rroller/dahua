@@ -246,7 +246,9 @@ async def test_resolving_a_clip_plays_the_channel_number_over_hls(monkeypatch):
     assert captured["endpoint_fmt"] == "hls"
     # The master prefix is stripped, the way Reolink's media source does it.
     assert media.url == "/api/hls/TOKEN/playlist.m3u8"
-    assert media.mime_type == "application/vnd.apple.mpegurl"
+    # The exact string the media-browser dialog matches to use its hls.js player;
+    # the other HLS spelling falls back to a <video> that Chromium cannot play.
+    assert media.mime_type == "application/x-mpegURL"
 
 
 async def test_resolve_rejects_a_non_file_identifier(monkeypatch):
