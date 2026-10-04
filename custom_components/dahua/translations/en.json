@@ -355,6 +355,9 @@
             "profile": {
                 "name": "Profile"
             },
+            "configured_channels": {
+                "name": "Configured Channels"
+            },
             "license_plate": {
                 "name": "License Plate"
             }

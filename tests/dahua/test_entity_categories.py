@@ -72,6 +72,9 @@ def _coordinator():
         get_device_serial_number=lambda: "SERIAL1",  # what the device reports
         get_firmware_version=lambda: "2.800.0",
         get_profile_mode=lambda: "1",
+        # None so the configured-channels sensor is not created here; this
+        # double is a camera, not a recorder.
+        get_configured_channel_count=lambda: None,
     )
     return c
 

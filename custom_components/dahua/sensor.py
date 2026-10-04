@@ -47,6 +47,11 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.supports_profile_mode():
             sensors.append(DahuaProfileSensor(coordinator, entry))
 
+        # Only on a recorder that answered the RemoteDevice read at setup; None
+        # everywhere else, so a camera does not get a meaningless channel count.
+        if coordinator.get_configured_channel_count() is not None:
+            sensors.append(DahuaConfiguredChannelsSensor(coordinator, entry))
+
         async_add_devices(sensors, config_subentry_id=coordinator.subentry_id)
 
 
@@ -120,6 +125,27 @@ class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
         attrs = super().extra_state_attributes
         attrs["profile_number"] = self._coordinator.get_profile_mode()
         return attrs
+
+
+class DahuaConfiguredChannelsSensor(DahuaBaseEntity, SensorEntity):
+    """How many channels a recorder has a camera configured on.
+
+    Read once from the recorder's RemoteDevice table at setup, like the disk
+    sensors, so it adds nothing to the poll. It counts configured (enabled)
+    slots, not live connectivity: the table says a camera is set up on a
+    channel, not that it is reachable right now.
+    """
+
+    _attr_translation_key = "configured_channels"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_configured_channels"
+
+    @property
+    def native_value(self):
+        return self._coordinator.get_configured_channel_count()
 
 
 class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):

@@ -660,6 +660,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _storage_disks: list = []
     _storage_last_refresh: float = 0.0
 
+    # The recorder's configured camera slots (RemoteDevice), read once at setup
+    # like the disks. A diagnostic read is a login the device logs, and the slots
+    # change rarely, so it is not polled. Empty on anything that is not a recorder.
+    _remote_devices: dict = {}
+
     # Which subentry of the entry this channel is, or None for a single camera.
     # Declared on the class for the same reason as the line above: a great many
     # tests build a coordinator with object.__new__, and the platforms read this
@@ -1140,6 +1145,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # refresh slowly in the poll below (#745).
                 if self.is_recorder_host():
                     await self._async_refresh_storage()
+                    await self._async_refresh_remote_devices()
 
                 # Some Dahua firmwares index channels from 0, others from 1. The default
                 # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
@@ -2394,6 +2400,34 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_storage_disks(self) -> list:
         """The recorder's disks, for the diagnostic disk sensors to read (#745)."""
         return list(self._storage_disks)
+
+    async def _async_refresh_remote_devices(self) -> None:
+        """Read which channels the recorder has a camera configured on, once.
+
+        The same once-at-setup discipline as the disks: a getConfig is a login
+        the device logs, and the camera slots do not change often enough to
+        poll. A failure leaves the table empty, so the sensor simply does not
+        appear.
+        """
+        try:
+            raw = await self.client.async_get_remote_devices()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "RemoteDevice probe failed on %s", self._address, exc_info=True
+            )
+            return
+        self._remote_devices = dahua_utils.parse_remote_devices(raw)
+
+    def get_configured_channel_count(self):
+        """How many channels the recorder reports a camera configured on, or None.
+
+        None when nothing was read -- not a recorder, or the read failed -- so
+        the sensor is created only where there is a real answer. Counts enabled
+        slots: a slot the recorder lists but has switched off is not a camera.
+        """
+        if not self._remote_devices:
+            return None
+        return sum(1 for slot in self._remote_devices.values() if slot.get("enabled"))
 
     def get_video_color(self, field: str):
         """A picture adjustment for this channel's general profile, or None.

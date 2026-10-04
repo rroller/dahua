@@ -60,6 +60,7 @@ WAS = {
     ("sensor", "firmware_version"): "Firmware Version",
     ("sensor", "serial_number"): "Serial Number",
     ("sensor", "profile"): "Profile",
+    ("sensor", "configured_channels"): "Configured Channels",
     ("sensor", "license_plate"): "License Plate",
     ("switch", "motion_detection"): "Motion Detection",
     ("switch", "disarming"): "Disarming",
