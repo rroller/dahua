@@ -11,7 +11,8 @@
   "config_flow": true,
   "dependencies": [
     "http",
-    "repairs"
+    "repairs",
+    "stream"
   ],
   "dhcp": [
     {
