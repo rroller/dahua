@@ -15,6 +15,7 @@ from custom_components.dahua.const import (
     MOTION_SENSOR_DEVICE_CLASS,
     SAFETY_DEVICE_CLASS,
     SOUND_DEVICE_CLASS,
+    TAMPER_DEVICE_CLASS,
 )
 
 
@@ -154,6 +155,7 @@ def test_a_code_with_no_string_keeps_the_derived_english_name(sensor):
         ("VideoMotion", MOTION_SENSOR_DEVICE_CLASS),
         ("AlarmLocal", SAFETY_DEVICE_CLASS),
         ("VideoLoss", SAFETY_DEVICE_CLASS),
+        ("VideoBlind", TAMPER_DEVICE_CLASS),
         ("DoorStatus", DOOR_DEVICE_CLASS),
         ("AudioMutation", SOUND_DEVICE_CLASS),
         ("SmartMotionHuman", MOTION_SENSOR_DEVICE_CLASS),  # the fallback
