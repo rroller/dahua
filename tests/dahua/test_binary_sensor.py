@@ -38,6 +38,9 @@ class _Coordinator:
         # DahuaBaseEntity.extra_state_attributes reads data.get("id"), and the
         # authorized vehicle sensor adds to that dict rather than replacing it.
         self.data = {"id": 7}
+        # event code -> the last event's rule details, as the coordinator keeps
+        # them for #373.
+        self.event_details = {}
 
     def get_serial_number(self):
         return "SERIAL1"
@@ -47,6 +50,9 @@ class _Coordinator:
 
     def get_event_timestamp(self, event_name):
         return self.timestamps.get(event_name, 0)
+
+    def get_event_details(self, event_name):
+        return self.event_details.get(event_name, {})
 
     def event_is_momentary(self, event_name):
         """No event here has arrived as a Pulse, so none clears itself."""
@@ -721,3 +727,36 @@ async def test_removal_is_safe_with_no_timer_pending(vehicle):
 
     assert s._unsub_timer is None
 
+
+
+# --- #373: an IVS/smart sensor exposes which rule tripped --------------------
+
+
+def test_an_ivs_sensor_exposes_the_rule_details_with_the_base_attrs():
+    """Built directly so the real base __init__ runs, the way the authorized
+    vehicle attribute test does, because the rule details are layered on the
+    base's id and integration rather than replacing them."""
+    c = _Coordinator()
+    c.event_details["CrossLineDetection"] = {
+        "rule_name": "Pool Entry",
+        "direction": "LeftToRight",
+        "object_type": "Human",
+    }
+    s = DahuaEventSensor(c, object(), "CrossLineDetection")
+
+    attrs = s.extra_state_attributes
+    assert attrs["rule_name"] == "Pool Entry"
+    assert attrs["direction"] == "LeftToRight"
+    assert attrs["object_type"] == "Human"
+    assert attrs["id"] == "7"
+    assert attrs["integration"] == "dahua"
+
+
+def test_a_sensor_without_details_keeps_only_the_base_attrs():
+    c = _Coordinator()
+    s = DahuaEventSensor(c, object(), "VideoMotion")
+
+    attrs = s.extra_state_attributes
+    assert "rule_name" not in attrs
+    assert "object_type" not in attrs
+    assert attrs["id"] == "7"

@@ -752,6 +752,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # If cleared the time will be 0. The time unit is seconds epoch
         self._dahua_event_timestamp: Dict[str, int] = dict()
 
+        # event_key -> the useful fields of the most recent event for that code
+        # (rule name, direction, object type), for the sensor to expose as
+        # attributes so an automation can tell which rule tripped (#373).
+        self._dahua_event_details: Dict[str, dict] = dict()
+
         self._floodlight_mode = 2
 
         self._last_plate_data: dict = {}
@@ -1561,6 +1566,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         AccessControl card was never handed to async_scan_tag. Both behaviours
         existed on the doorbell path the whole time.
         """
+        details = self._extract_event_details(event)
         for code in self.translate_event_code(event):
             event_key = self.get_event_key(code)
 
@@ -1586,6 +1592,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     counts = self._events_without_listener = {}
                 counts[event_key] = counts.get(event_key, 0) + 1
                 continue
+
+            # Keep the triggering event's rule name / direction / object type, so
+            # the sensor can report which rule tripped (#373). Only when the event
+            # carried any -- a plain VideoMotion leaves whatever was last there
+            # rather than blanking it, matching how the timestamp persists.
+            if details:
+                self._dahua_event_details[event_key] = details
 
             if action == "Start":
                 self._dahua_event_timestamp[event_key] = int(time.time())
@@ -1696,6 +1709,41 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # The wire format is "Code=VideoMotion;action=Start;index=0", so the
         # action arrives lowercased here and capitalised on the DHIP path.
         self._dispatch_event(event, event.get("action", ""))
+
+    def _extract_event_details(self, event: dict) -> dict:
+        """The fields of an IVS/smart event an automation wants, or {} if none.
+
+        Which rule tripped (`rule_name`/`rule_id`), which way a line was crossed
+        (`direction`), and what was seen (`object_type`). All optional: a plain
+        VideoMotion, or a payload that arrived truncated, carries none and yields
+        an empty dict, so the sensor exposes nothing extra.
+
+        Read as defensively as translate_event_code, and for the same reason: a
+        truncated payload leaves a string rather than a dict here, and a device
+        sends `"Object": null`, so a careless `.get` chain would raise out of the
+        stream loop and take every channel's events down with it (#475). RuleId is
+        read in both casings because this NVR sends `RuleId` on a CrossLine event
+        and `RuleID` on a HumanTrait one, measured on a DHI-NVR5464. "Unknown" is
+        dropped rather than surfaced, since it is the device saying it did not
+        classify the object, not a useful value for an automation.
+        """
+        data = event.get("data", event.get("Data", {}))
+        if not isinstance(data, dict):
+            return {}
+        details = {}
+        name = data.get("Name")
+        if name:
+            details["rule_name"] = name
+        rule_id = data.get("RuleId", data.get("RuleID"))
+        if rule_id is not None:
+            details["rule_id"] = rule_id
+        direction = data.get("Direction")
+        if direction:
+            details["direction"] = direction
+        object_type = (data.get("Object") or {}).get("ObjectType")
+        if object_type and object_type.lower() != "unknown":
+            details["object_type"] = object_type
+        return details
 
     def translate_event_code(self, event: dict):
         """
@@ -1833,6 +1881,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         event_key = self.get_event_key(event_name)
         return self._dahua_event_timestamp.get(event_key, 0)
+
+    def get_event_details(self, event_name: str) -> dict:
+        """The rule name, direction and object type of the most recent event for
+        this code, for the sensor to expose as attributes (#373). Empty until an
+        event that carried any has arrived.
+        """
+        event_key = self.get_event_key(event_name)
+        return self._dahua_event_details.get(event_key, {})
 
     def add_dahua_event_listener(self, event_name: str,
                                  listener: CALLBACK_TYPE) -> CALLBACK_TYPE:
