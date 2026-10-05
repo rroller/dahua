@@ -376,6 +376,22 @@ class DahuaRpc2Client:
             )
         return response
 
+    async def set_config(self, name: str, table, channel: int | None = None) -> dict:
+        """Commit one complete config table, optionally for one channel.
+
+        The channel-scoped form is what a recorder needs for a camera behind it:
+        measured on a DHI-NVR5464-16P-EI, `configManager.setConfig` with
+        `channel` and `options: []` writes LightingScheme and Lighting_V2 for
+        that channel, while the channel-less form of the same tables is refused.
+        One table per call, on purpose -- the caller orders the two writes and
+        reads back between them, because a multicall is not a transaction here
+        and would hide which half landed.
+        """
+        params = {"name": name, "table": table, "options": []}
+        if channel is not None:
+            params["channel"] = channel
+        return await self.request(method="configManager.setConfig", params=params)
+
     async def get_device_name(self) -> str:
         """Get the device name"""
         data = await self.get_config({"name": "General"})

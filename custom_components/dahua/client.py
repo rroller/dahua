@@ -12,6 +12,7 @@ import aiohttp
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
 from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
+from . import white_light_override as wlo
 from hashlib import md5
 from urllib.parse import quote
 
@@ -1118,6 +1119,7 @@ class DahuaClient:
         use_https: bool = None,
         use_rpc2: bool = False,
         illuminator_restore_store=None,
+        channel_snapshot_store=None,
     ) -> None:
         self._username = username
         self._password = password
@@ -1152,6 +1154,7 @@ class DahuaClient:
         # Preserve the camera's policy while the illuminator temporarily owns
         # a channel/profile. Camera config survives HA restarts, so this must.
         self._illuminator_restore_store = illuminator_restore_store
+        self._channel_snapshot_store = channel_snapshot_store
         self._lighting_scheme_lock = asyncio.Lock()
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
@@ -2314,6 +2317,139 @@ class DahuaClient:
                     raise ValueError("Dahua lighting scheme is missing LightingMode")
                 if current_mode != "WhiteMode":
                     await restore_store.async_remove(channel, profile)
+
+    async def async_force_channel_scoped_white_light(
+        self, channel: int, enabled: bool, brightness: int
+    ) -> None:
+        """Force a recorder channel's white light on or off over channel-scoped RPC2.
+
+        The #959 fix for cameras whose LightingScheme answers per channel. ON
+        writes Lighting_V2 (WhiteLight Manual + brightness) and then switches
+        every scene to WhiteMode: configure first, arm last, so a half-applied
+        ON never leaves a scene armed over an unconfigured row, and any failure
+        before the scene write leaves the camera in its untouched original mode.
+        OFF restores the exact tables captured on the first ON, the scene table
+        first so the camera is disarmed before its old WhiteLight row goes back
+        (disarmed, a stale row is ignored; armed, it would briefly drive the
+        wrong thing). Both halves read back and check the modes converged.
+
+        The pre-takeover tables are the only recovery copy and live in the
+        channel snapshot store. Saved only on the first ON, so a second ON
+        cannot overwrite the true original with an already-forced state; removed
+        only after a restore verifies, so a failed OFF is retried on the next
+        OFF or at startup. Shapes handled in white_light_override; recipe
+        measured in #959 (jays3l33t's, confirmed on a DHI-NVR5464 / VSIPP).
+        """
+        store = self._channel_snapshot_store
+        if store is None:
+            raise RuntimeError("Dahua channel snapshot storage is unavailable")
+
+        def read(name):
+            return self._rpc2_shared_call(
+                lambda client: client.get_config(
+                    {"name": name, "onlyLocal": False, "channel": channel}
+                )
+            )
+
+        def write(name, table):
+            return self._rpc2_shared_call(
+                lambda client: client.set_config(name, table, channel=channel)
+            )
+
+        async with self._lighting_scheme_lock, asyncio.timeout(
+            TIMEOUT_SECONDS
+        ), self._host_limit:
+            if enabled:
+                scheme = (await read("LightingScheme")).get("table")
+                lighting = (await read("Lighting_V2")).get("table")
+                if wlo.lighting_shape(scheme, lighting) is None:
+                    raise ValueError(
+                        "Dahua lighting tables for channel %s are not a shape this "
+                        "white-light override can drive" % channel
+                    )
+                if await store.async_get(channel) is None:
+                    await store.async_set(
+                        channel,
+                        {"LightingScheme": scheme, "Lighting_V2": lighting},
+                    )
+                scheme_on, lighting_on = wlo.build_on(scheme, lighting, brightness)
+                # Clear before writing so the verification read-backs below are
+                # cache misses that reflect what the camera actually took. A
+                # reorder that left this after the writes would make the checks
+                # read the pre-write cache and pass vacuously.
+                clear_host_cache(self._device)
+                await write("Lighting_V2", lighting_on)
+                back = (await read("Lighting_V2")).get("table")
+                if not all(mode == "Manual" for mode in wlo.white_light_modes(back)):
+                    raise ConnectionError(
+                        "Dahua did not accept the Lighting_V2 white-light write "
+                        "on channel %s" % channel
+                    )
+                await write("LightingScheme", scheme_on)
+                back_scheme = (await read("LightingScheme")).get("table")
+                if not wlo.is_forced_on(back_scheme, back):
+                    raise ConnectionError(
+                        "Dahua did not accept the LightingScheme WhiteMode write "
+                        "on channel %s" % channel
+                    )
+                return
+
+            snapshot = await store.async_get(channel)
+            if snapshot is None:
+                return
+            orig_scheme = snapshot.get("LightingScheme")
+            orig_lighting = snapshot.get("Lighting_V2")
+            clear_host_cache(self._device)
+            await write("LightingScheme", orig_scheme)
+            await write("Lighting_V2", orig_lighting)
+            back_scheme = (await read("LightingScheme")).get("table")
+            back_lighting = (await read("Lighting_V2")).get("table")
+            if not wlo.modes_match(
+                back_scheme, back_lighting, orig_scheme, orig_lighting
+            ):
+                raise ConnectionError(
+                    "Dahua did not restore channel %s lighting to its saved state; "
+                    "keeping the snapshot for another attempt" % channel
+                )
+            await store.async_remove(channel)
+
+    async def async_channel_scoped_white_light_supported(self, channel: int) -> bool:
+        """Whether this channel's LightingScheme + Lighting_V2 answer per channel
+        in a shape the white-light override can drive (#959).
+
+        A read-only setup probe used only to decide routing. Channel-scoped,
+        because a recorder refuses the channel-less read of these tables. Any
+        refusal or unexpected shape means no, so a camera this was not built for
+        stays on its existing path; a probe failure must never fail setup.
+        """
+        try:
+            scheme = (
+                await self._rpc2_shared_call(
+                    lambda client: client.get_config(
+                        {
+                            "name": "LightingScheme",
+                            "onlyLocal": False,
+                            "channel": channel,
+                        }
+                    )
+                )
+            ).get("table")
+            lighting = (
+                await self._rpc2_shared_call(
+                    lambda client: client.get_config(
+                        {"name": "Lighting_V2", "onlyLocal": False, "channel": channel}
+                    )
+                )
+            ).get("table")
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Channel-scoped lighting probe failed on %s channel %s",
+                self._address,
+                channel,
+                exc_info=True,
+            )
+            return False
+        return wlo.lighting_shape(scheme, lighting) is not None
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:

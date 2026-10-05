@@ -77,7 +77,7 @@ from .host import (
     event_stream_retry_delay,
     stream_lifetime,
 )
-from .illuminator_restore import IlluminatorRestoreStore
+from .illuminator_restore import IlluminatorRestoreStore, ChannelLightingSnapshotStore
 from .ivs import ivs_discovery_diagnostics, ivs_rule_index, ivs_rules_for_channel
 from .model_profiles import is_sdt4e425
 from .vto import DahuaVTOClient
@@ -728,6 +728,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             use_https,
             use_rpc2=entry.options.get(CONF_USE_RPC2, False),
             illuminator_restore_store=IlluminatorRestoreStore(hass, entry.entry_id),
+            channel_snapshot_store=ChannelLightingSnapshotStore(hass, entry.entry_id),
         )
 
         # self.config_entry = entry
@@ -786,6 +787,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         self._supports_lighting_v2 = False
         self._supports_lighting_scheme_illuminator = False
+        self._supports_channel_scoped_illuminator = False
 
         # Host-wide camera/NVR reboot generation.
         # Multiple NVR channel coordinators share the host uptime read.
@@ -1406,6 +1408,34 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug(
                         "Device supports LightingScheme illuminator=%s",
                         self._supports_lighting_scheme_illuminator,
+                    )
+
+                # Cameras whose LightingScheme answers per channel -- a recorder
+                # channel such as a VSIPP on an NVR -- need the same two-table
+                # white-light contract but in the channel-scoped shape the
+                # whole-table path above cannot consume. Probed by capability,
+                # not model name (#959), and kept a separate flag so routing
+                # never sends these to the whole-table method. Mutually
+                # exclusive with the Color4M path, which is checked first.
+                # getattr, not a bare read: both flags are set in __init__, but
+                # the suite builds coordinators with object.__new__ and sets only
+                # some attributes, and uses_lighting_scheme_illuminator already
+                # reads this one the same way.
+                if getattr(self, "_supports_lighting_v2", False) and not getattr(
+                    self, "_supports_lighting_scheme_illuminator", False
+                ):
+                    # The probe is read-only and self-guards, but keep the call
+                    # itself from ever failing setup: a capability question must
+                    # not be the thing that stops a device initialising.
+                    try:
+                        self._supports_channel_scoped_illuminator = await self.client.async_channel_scoped_white_light_supported(
+                            self._channel
+                        )
+                    except Exception:  # pylint: disable=broad-except
+                        self._supports_channel_scoped_illuminator = False
+                    _LOGGER.debug(
+                        "Device supports channel-scoped illuminator=%s",
+                        self._supports_channel_scoped_illuminator,
                     )
 
                 # Checking privacy mode (LeLensMask) support. This is RPC2 only and many models lack it.
@@ -2807,6 +2837,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def uses_lighting_scheme_illuminator(self) -> bool:
         """Whether this device needs the two-table white-light contract."""
         return getattr(self, "_supports_lighting_scheme_illuminator", False)
+
+    def uses_channel_scoped_illuminator(self) -> bool:
+        """Whether this channel needs the channel-scoped two-table white light.
+
+        The recorder-channel variant of the above (#959). Mutually exclusive
+        with it: the detection only sets this when the whole-table path was not.
+        """
+        return getattr(self, "_supports_channel_scoped_illuminator", False)
 
     def is_motion_detection_enabled(self) -> bool:
         """Returns true if motion detection is enabled for the camera"""

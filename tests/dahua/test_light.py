@@ -22,6 +22,8 @@ class _Client:
         self.scheme_reads = 0
         self.scheme_writes = []
         self.operations = []
+        # (channel, enabled, brightness) for each channel-scoped force (#959).
+        self.channel_scoped_calls = []
 
         # How the device answers an infrared write: normally it takes it. Set
         # v1_refuses to an exception to model a refusal, or v1_ignores to model
@@ -39,6 +41,12 @@ class _Client:
         self.light_mode = "Manual"
         self.light_brightness = 64
         self.light_field = "NearLight"
+
+    async def async_force_channel_scoped_white_light(
+        self, channel, enabled, brightness
+    ):
+        """The #959 recorder-channel path. Records the routed arguments."""
+        self.channel_scoped_calls.append((channel, enabled, brightness))
 
     async def async_set_lighting_v2_mode(
         self, channel, mode, brightness, profile_mode, light_index=0, bank="MiddleLight"
@@ -204,7 +212,9 @@ class _Store:
 
 
 class _Coordinator:
-    def __init__(self, channel=3, profile_mode="1", uses_scheme=False):
+    def __init__(
+        self, channel=3, profile_mode="1", uses_scheme=False, uses_channel_scoped=False
+    ):
         self.client = _Client()
         self._channel = channel
         self._profile_mode = profile_mode
@@ -230,6 +240,7 @@ class _Coordinator:
         self.illuminator_bank = "MiddleLight"
         self.camera_reboot_generation = 0
         self.uses_scheme = uses_scheme
+        self.uses_channel_scoped = uses_channel_scoped
 
     def get_channel(self):
         return self._channel
@@ -292,6 +303,9 @@ class _Coordinator:
 
     def uses_lighting_scheme_illuminator(self):
         return self.uses_scheme
+
+    def uses_channel_scoped_illuminator(self):
+        return self.uses_channel_scoped
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -482,6 +496,28 @@ async def test_scheme_illuminator_uses_the_two_table_client_path():
         (0, False, 100, "1", 1),
     ]
     assert c.client.v2 == []
+    assert light.async_write_ha_state.call_count == 2
+
+
+async def test_channel_scoped_illuminator_routes_to_the_force_method():
+    """A recorder channel whose LightingScheme answers per channel (#959) goes to
+    the channel-scoped force method, not the plain Lighting_V2 path, and passes the
+    channel, the on/off, and the converted brightness (255 -> 100). OFF brightness
+    is unused by the override, so it is sent as 0."""
+    c = _Coordinator(channel=11, profile_mode="1", uses_channel_scoped=True)
+
+    light = _light(DahuaIlluminator, c)
+    assert light.is_on is False
+
+    await light.async_turn_on(**{ATTR_BRIGHTNESS: 255})
+    assert light.is_on is True
+
+    await light.async_turn_off()
+    assert light.is_on is False
+
+    assert c.client.channel_scoped_calls == [(11, True, 100), (11, False, 0)]
+    assert c.client.v2 == [] and c.client.v2_raw == [] and c.client.v1 == []
+    assert c.client.scheme_calls == []
     assert light.async_write_ha_state.call_count == 2
 
 

@@ -257,8 +257,23 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         return False
 
     async def async_added_to_hass(self):
-        """Restore a CGI lighting override left behind by an HA restart."""
+        """Restore a lighting override left behind by an HA restart."""
         await super().async_added_to_hass()
+
+        # A channel snapshot surviving a restart means a recorder channel may be
+        # stranded in WhiteMode while HA shows this light off. OFF restores the
+        # saved tables and is a no-op when nothing was owned, so running it
+        # unconditionally here is safe (#959, the #983 restart lesson).
+        if self._coordinator.uses_channel_scoped_illuminator():
+            try:
+                await self._coordinator.client.async_force_channel_scoped_white_light(
+                    self._coordinator.get_channel(), False, 0
+                )
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.warning(
+                    "Dahua Illuminator: channel-scoped startup restore failed",
+                    exc_info=True,
+                )
 
         store_key = (
             f"{DOMAIN}.illuminator_restore." f"{self._entry.entry_id}.{self.unique_id}"
@@ -877,6 +892,19 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             self.async_write_ha_state()
             return
 
+        # A recorder channel whose LightingScheme answers per channel (#959):
+        # the same two-table contract, channel-scoped. Like the path above, it
+        # has no polled override state, so ownership is published only after the
+        # camera accepts the write.
+        if self._coordinator.uses_channel_scoped_illuminator():
+            await self._coordinator.client.async_force_channel_scoped_white_light(
+                channel, True, dahua_brightness
+            )
+            self._manual_on = True
+            await self._coordinator.async_refresh()
+            self.async_write_ha_state()
+            return
+
         field = self._coordinator.get_illuminator_bank()
 
         # Capture the original WhiteLight row only on the first ON.
@@ -1059,6 +1087,18 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
             )
             await self._coordinator.client.async_set_lighting_scheme_illuminator(
                 channel, False, dahua_brightness, profile_mode, index
+            )
+            self._manual_on = False
+            await self._coordinator.async_refresh()
+            self.async_write_ha_state()
+            return
+
+        # Recorder-channel channel-scoped path (#959). Brightness is unused on
+        # off: the override restores the exact tables it captured.
+        if self._coordinator.uses_channel_scoped_illuminator():
+            channel = self._coordinator.get_channel()
+            await self._coordinator.client.async_force_channel_scoped_white_light(
+                channel, False, 0
             )
             self._manual_on = False
             await self._coordinator.async_refresh()
