@@ -2325,13 +2325,16 @@ class DahuaClient:
 
         The #959 fix for cameras whose LightingScheme answers per channel. ON
         writes Lighting_V2 (WhiteLight Manual + brightness) and then switches
-        every scene to WhiteMode: configure first, arm last, so a half-applied
-        ON never leaves a scene armed over an unconfigured row, and any failure
-        before the scene write leaves the camera in its untouched original mode.
-        OFF restores the exact tables captured on the first ON, the scene table
-        first so the camera is disarmed before its old WhiteLight row goes back
-        (disarmed, a stale row is ignored; armed, it would briefly drive the
-        wrong thing). Both halves read back and check the modes converged.
+        every scene to WhiteMode and disables its schedule: configure first, arm
+        last, so a half-applied ON never leaves a scene armed over an
+        unconfigured row, and any failure before the scene write leaves the
+        camera in its untouched original mode. OFF reads the tables back and
+        merges the saved original onto them, the scene table first so the camera
+        is disarmed before its old WhiteLight row goes back. The merge puts a
+        scene back only where it is still WhiteMode and a WhiteLight row back
+        only where it is still Manual, so a scene the user changed while the
+        light was on is preserved (@jays3l33t, #959). Both halves read back and
+        check the modes converged on what was written.
 
         The pre-takeover tables are the only recovery copy and live in the
         channel snapshot store. Saved only on the first ON, so a second ON
@@ -2399,13 +2402,34 @@ class DahuaClient:
                 return
             orig_scheme = snapshot.get("LightingScheme")
             orig_lighting = snapshot.get("Lighting_V2")
+            # Read what the camera reports now so a scene the user changed while
+            # the light was on is not clobbered by the snapshot. Clear first so
+            # this read is fresh rather than the pre-override copy.
             clear_host_cache(self._device)
-            await write("LightingScheme", orig_scheme)
-            await write("Lighting_V2", orig_lighting)
+            cur_scheme = (await read("LightingScheme")).get("table")
+            cur_lighting = (await read("Lighting_V2")).get("table")
+            if wlo.lighting_shape(cur_scheme, cur_lighting) is not None and len(
+                cur_scheme
+            ) == len(orig_scheme):
+                target_scheme, target_lighting = wlo.build_restore(
+                    cur_scheme, cur_lighting, orig_scheme, orig_lighting
+                )
+            else:
+                # Current tables unreadable or a different shape, so a merge
+                # cannot be trusted. Put the whole saved original back, which
+                # still disarms every scene.
+                target_scheme, target_lighting = orig_scheme, orig_lighting
+            # Scene table first so the camera is disarmed before the old
+            # WhiteLight row goes back (disarmed, a stale row is ignored).
+            await write("LightingScheme", target_scheme)
+            await write("Lighting_V2", target_lighting)
+            # Clear again so the verification reads reflect the writes, not the
+            # current-state reads taken just above.
+            clear_host_cache(self._device)
             back_scheme = (await read("LightingScheme")).get("table")
             back_lighting = (await read("Lighting_V2")).get("table")
             if not wlo.modes_match(
-                back_scheme, back_lighting, orig_scheme, orig_lighting
+                back_scheme, back_lighting, target_scheme, target_lighting
             ):
                 raise ConnectionError(
                     "Dahua did not restore channel %s lighting to its saved state; "

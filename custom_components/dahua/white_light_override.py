@@ -34,6 +34,7 @@ import copy
 WHITE_LIGHT = "WhiteLight"
 WHITE_MODE = "WhiteMode"
 MANUAL = "Manual"
+SCHEME_SCHEDULE = "SchemeSchedule"
 
 # The brightness banks a WhiteLight row may carry. A row has some subset.
 BRIGHTNESS_BANKS = ("NearLight", "MiddleLight", "FarLight")
@@ -102,6 +103,14 @@ def build_on(scheme, lighting, brightness):
     lighting_on = copy.deepcopy(lighting)
     for scene in scheme_on:
         scene["LightingMode"] = WHITE_MODE
+        # Disable the scene's own schedule while it is forced. A schedule left
+        # enabled can switch the scene back off WhiteMode on a timer, undoing
+        # the override with nothing in HA to show why. The original Enable is
+        # carried in the snapshot and comes back on restore. Only touched when
+        # the schedule is already there; no field is invented (@jays3l33t, #959).
+        schedule = scene.get(SCHEME_SCHEDULE)
+        if isinstance(schedule, dict) and "Enable" in schedule:
+            schedule["Enable"] = False
     level = int(brightness)
     for profile in lighting_on:
         row = white_light(profile)
@@ -138,3 +147,31 @@ def modes_match(scheme_a, lighting_a, scheme_b, lighting_b):
     return scheme_modes(scheme_a) == scheme_modes(scheme_b) and white_light_modes(
         lighting_a
     ) == white_light_modes(lighting_b)
+
+
+def build_restore(cur_scheme, cur_lighting, orig_scheme, orig_lighting):
+    """Tables that put the owned parts back without clobbering anything else.
+
+    build_on forces every scene, so the snapshot is the whole original table and
+    a blunt restore would overwrite a scene the user changed while the light was
+    on. This merges: start from what the camera reports now, and put a scene's
+    LightingMode (and its schedule) back only where it is still WhiteMode, and a
+    WhiteLight row back only where it is still Manual -- the exact marks build_on
+    leaves. A scene or row that reads as anything else was changed since, so it
+    is left as it is. No active-scene index is needed, which is deliberate: the
+    index is what #959 kept getting wrong, so ownership is read off the modes.
+
+    cur_* is a fresh read the caller has already checked with lighting_shape and
+    confirmed the same length as the snapshot. Inputs are not mutated.
+    """
+    restore_scheme = copy.deepcopy(cur_scheme)
+    restore_lighting = copy.deepcopy(cur_lighting)
+    for index, scene in enumerate(restore_scheme):
+        if scene.get("LightingMode") == WHITE_MODE:
+            restore_scheme[index] = copy.deepcopy(orig_scheme[index])
+    for index, profile in enumerate(restore_lighting):
+        row = white_light(profile)
+        if row.get("Mode") == MANUAL:
+            row.clear()
+            row.update(copy.deepcopy(white_light(orig_lighting[index])))
+    return restore_scheme, restore_lighting
