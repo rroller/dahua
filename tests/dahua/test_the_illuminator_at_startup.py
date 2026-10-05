@@ -100,6 +100,9 @@ class _Coordinator:
     def get_illuminator_bank(self):
         return "MiddleLight"
 
+    def uses_channel_scoped_illuminator(self):
+        return False
+
 
 def _light(store=None, coordinator=None):
     entity = object.__new__(DahuaIlluminator)
