@@ -146,3 +146,23 @@ async def test_a_failed_row_write_aborts_before_arming_the_scene():
 
     assert "LightingScheme" not in dev.writes
     assert wlo.scheme_modes(dev.t[11]["LightingScheme"]) == ["AIMode"] * 9
+
+
+async def test_off_preserves_a_scene_the_user_changed_while_on():
+    """The merge restore: a scene switched away from WhiteMode while the light
+    was on is left as the camera reports it, while the owned scenes revert and
+    the snapshot is still purged once the write verifies."""
+    dev, store = _Device(), _Store()
+    c = _client(dev, store)
+    await c.async_force_channel_scoped_white_light(11, True, 100)
+
+    dev.t[11]["LightingScheme"][5]["LightingMode"] = "ColorMode"
+    dev.writes.clear()
+
+    await c.async_force_channel_scoped_white_light(11, False, 0)
+
+    assert dev.writes == ["LightingScheme", "Lighting_V2"]
+    modes = wlo.scheme_modes(dev.t[11]["LightingScheme"])
+    assert modes[5] == "ColorMode"  # the user's change survived
+    assert modes[0] == "AIMode"  # an owned scene reverted
+    assert 11 not in store.d  # snapshot purged after the write verified
