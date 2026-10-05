@@ -232,7 +232,7 @@ async def test_the_cloud_upgrade_probe_is_not_asked_without_the_update_platform(
     spend a read on a device that will never show one. The poll half of the same
     gate is pinned in test_poll_skips_unused.py; this is the setup half."""
     coordinator = _coordinator(hass)
-    coordinator._wanted_by = lambda platform: platform != UPDATE
+    coordinator._wanted_by = lambda *platforms: UPDATE not in platforms
 
     await coordinator._async_update_data()
 
