@@ -26,8 +26,9 @@ def _rpc2(answers=None, session_id="sess-1"):
     client.calls = []
     script = dict(answers or {})
 
-    async def _request(method, params=None, object_id=None, verify_result=True,
-                       **kwargs):
+    async def _request(
+        method, params=None, object_id=None, verify_result=True, **kwargs
+    ):
         client.calls.append(method)
         answer = script.get(method, {"result": True})
         if isinstance(answer, BaseException):
@@ -39,6 +40,7 @@ def _rpc2(answers=None, session_id="sess-1"):
 
 
 # --- logging out --------------------------------------------------------------
+
 
 async def test_logging_out_without_a_session_asks_the_device_nothing():
     """There is nothing to end, and spending a request saying so would be a line in the
@@ -85,6 +87,7 @@ async def test_the_session_is_dropped_even_when_the_logout_failed():
 
 
 # --- the PTZ object -----------------------------------------------------------
+
 
 async def test_the_ptz_object_is_asked_for_once_per_channel():
     """It is session scoped, so asking again per move would be a request per press."""
@@ -156,15 +159,56 @@ async def test_a_refused_object_is_not_remembered():
 
 # --- opening a door -----------------------------------------------------------
 
+
 async def test_opening_a_door_is_three_calls_in_order():
     """An object from the factory, the action on that object, and destroy."""
     client = _rpc2({"accessControl.factory.instance": {"result": 9}})
 
     await client.async_open_door(0)
 
-    assert client.calls == ["accessControl.factory.instance",
-                            "accessControl.openDoor",
-                            "accessControl.destroy"]
+    assert client.calls == [
+        "accessControl.factory.instance",
+        "accessControl.openDoor",
+        "accessControl.destroy",
+    ]
+
+
+async def test_opening_a_door_logs_in_first_on_a_fresh_client():
+    """_async_open_door_rpc2 builds a private client with no session and nothing
+    logged it in, so the factory was asked without one. Asked after the login now."""
+    client = _rpc2({"accessControl.factory.instance": {"result": 9}}, session_id=None)
+    order = []
+
+    async def _login():
+        order.append("login")
+        client._session_id = "sess-new"
+
+    client.login = _login
+    original = client.request
+
+    async def _request(method, *args, **kwargs):
+        order.append(method)
+        return await original(method, *args, **kwargs)
+
+    client.request = _request
+
+    await client.async_open_door(0)
+
+    assert order[:2] == ["login", "accessControl.factory.instance"]
+
+
+async def test_opening_a_door_with_a_session_does_not_log_in_again():
+    client = _rpc2({"accessControl.factory.instance": {"result": 9}})
+    logins = []
+
+    async def _login():
+        logins.append(1)
+
+    client.login = _login
+
+    await client.async_open_door(0)
+
+    assert logins == []
 
 
 async def test_a_factory_that_returns_no_object_stops_before_the_door():
@@ -181,8 +225,12 @@ async def test_a_factory_that_returns_no_object_stops_before_the_door():
 async def test_the_object_is_destroyed_even_when_the_door_refuses():
     """The object is the device's, not ours. Leaking one on a doorbell is a real cost,
     and a door that refuses is exactly when the press gets repeated."""
-    client = _rpc2({"accessControl.factory.instance": {"result": 9},
-                    "accessControl.openDoor": RuntimeError("door said no")})
+    client = _rpc2(
+        {
+            "accessControl.factory.instance": {"result": 9},
+            "accessControl.openDoor": RuntimeError("door said no"),
+        }
+    )
 
     with pytest.raises(RuntimeError):
         await client.async_open_door(0)
@@ -193,17 +241,25 @@ async def test_the_object_is_destroyed_even_when_the_door_refuses():
 async def test_a_failed_destroy_does_not_lose_the_door():
     """Losing the door's result to a failed tidy-up would be worse than leaking the
     object, so the destroy never raises."""
-    client = _rpc2({"accessControl.factory.instance": {"result": 9},
-                    "accessControl.openDoor": {"result": True, "params": {"ok": 1}},
-                    "accessControl.destroy": OSError("connection reset")})
+    client = _rpc2(
+        {
+            "accessControl.factory.instance": {"result": 9},
+            "accessControl.openDoor": {"result": True, "params": {"ok": 1}},
+            "accessControl.destroy": OSError("connection reset"),
+        }
+    )
 
     assert await client.async_open_door(0) == {"result": True, "params": {"ok": 1}}
 
 
 async def test_a_failed_destroy_does_not_hide_why_the_door_failed():
-    client = _rpc2({"accessControl.factory.instance": {"result": 9},
-                    "accessControl.openDoor": RuntimeError("door said no"),
-                    "accessControl.destroy": OSError("connection reset")})
+    client = _rpc2(
+        {
+            "accessControl.factory.instance": {"result": 9},
+            "accessControl.openDoor": RuntimeError("door said no"),
+            "accessControl.destroy": OSError("connection reset"),
+        }
+    )
 
     with pytest.raises(RuntimeError, match="door said no"):
         await client.async_open_door(0)
@@ -211,9 +267,11 @@ async def test_a_failed_destroy_does_not_hide_why_the_door_failed():
 
 # --- the one-line reads -------------------------------------------------------
 
+
 async def test_the_current_time_comes_out_of_params():
     client = _rpc2(
-        {"global.getCurrentTime": {"params": {"time": "2026-09-29 12:00:00"}}})
+        {"global.getCurrentTime": {"params": {"time": "2026-09-29 12:00:00"}}}
+    )
 
     assert await client.current_time() == "2026-09-29 12:00:00"
 

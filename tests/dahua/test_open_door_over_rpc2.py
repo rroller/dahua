@@ -55,14 +55,14 @@ class _Rpc2:
 
 def _client(monkeypatch, rpc2):
     client = DahuaClient("admin", "pw", "10.0.0.5", 80, 554, object())
-    monkeypatch.setattr(client_module, "DahuaRpc2Client",
-                        lambda *args, **kwargs: rpc2)
+    monkeypatch.setattr(client_module, "DahuaRpc2Client", lambda *args, **kwargs: rpc2)
     # The real one builds a session and a connection pool; nothing here uses it.
     monkeypatch.setattr(DahuaClient, "_rpc2_session", lambda self: object())
     return client
 
 
 # --- which door ---------------------------------------------------------------
+
 
 async def test_door_one_is_channel_zero(monkeypatch):
     """The inference the docstring records. Pinned so that if anybody ever measures it
@@ -101,7 +101,9 @@ async def test_the_result_the_device_gave_is_returned(monkeypatch):
     client = _client(monkeypatch, rpc2)
 
     assert await client._async_open_door_rpc2(1) == {
-        "result": True, "params": {"status": True}}
+        "result": True,
+        "params": {"status": True},
+    }
 
 
 # --- and letting go of the session --------------------------------------------
@@ -109,6 +111,7 @@ async def test_the_result_the_device_gave_is_returned(monkeypatch):
 # A private client rather than the shared one, on purpose: this is a one-shot user
 # action and must not leave a cached session with a keepalive behind for somebody who
 # never enabled RPC2. Which means it has to log out itself, every time.
+
 
 async def test_it_logs_out_after_opening_the_door(monkeypatch):
     rpc2 = _Rpc2()
@@ -145,8 +148,9 @@ async def test_a_logout_failure_does_not_hide_why_the_door_did_not_open(monkeypa
     """The other direction. The caller turns this into a message for the user, and
     replacing the device's refusal with a connection error from the tidy-up loses the
     only explanation there was."""
-    rpc2 = _Rpc2(fails=RuntimeError("door said no"),
-                 logout_raises=OSError("connection reset"))
+    rpc2 = _Rpc2(
+        fails=RuntimeError("door said no"), logout_raises=OSError("connection reset")
+    )
     client = _client(monkeypatch, rpc2)
 
     with pytest.raises(RuntimeError, match="door said no"):

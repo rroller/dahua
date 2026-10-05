@@ -23,6 +23,7 @@ class _Client:
         async def call(*args, **kwargs):
             self.calls.append(name)
             return {}
+
         return call
 
 
@@ -33,7 +34,7 @@ def _coordinator(**options):
     c._address = "10.0.0.5"
     c._channel = 0
     c.initialized = True
-    c.model = ""            # keeps every model-string capability out of the way
+    c.model = ""  # keeps every model-string capability out of the way
     c._profile_mode = 0
     c._supports_profile_mode = False
     c._supports_ptz_position = True
@@ -56,7 +57,7 @@ def _coordinator(**options):
     c._supports_lighting_v2 = True
     c._supports_privacy_mode = True
     c._supports_day_night_color = True
-    c._supports_lighting = True          # gates supports_infrared_light()
+    c._supports_lighting = True  # gates supports_infrared_light()
     c._supports_floodlightmode = False
     c._channel_number = 1
     c._max_streams = 3
@@ -92,12 +93,23 @@ async def test_everything_is_fetched_when_every_platform_is_on():
     """The default must not change: this is what an untouched entry does."""
     calls = await _poll()
 
-    for api in (PTZ, COAXIAL, MOTION, LIGHTING_V2, INFRARED, DISARMING,
-                NOTIFICATIONS, SMART_MOTION, PRIVACY, DAY_NIGHT):
+    for api in (
+        PTZ,
+        COAXIAL,
+        MOTION,
+        LIGHTING_V2,
+        INFRARED,
+        DISARMING,
+        NOTIFICATIONS,
+        SMART_MOTION,
+        PRIVACY,
+        DAY_NIGHT,
+    ):
         assert api in calls, f"{api} stopped being fetched by default"
 
 
 # --- each request follows the platform that reads it -------------------------
+
 
 async def test_ptz_position_is_skipped_without_the_select_platform():
     """Only the preset position select reads it, and it is uncached."""
@@ -125,8 +137,16 @@ async def test_the_day_night_read_is_skipped_when_the_device_has_no_mode():
 async def test_switch_reads_are_skipped_without_the_switch_platform():
     calls = await _poll(switch=False)
 
-    for api in (DISARMING, NOTIFICATIONS, SMART_MOTION, PRIVACY, ALARM_OUT):
+    for api in (DISARMING, NOTIFICATIONS, PRIVACY, ALARM_OUT):
         assert api not in calls, f"{api} is only read by a switch"
+
+
+async def test_smart_motion_is_read_for_the_switch_or_the_select():
+    """SmartMotionDetect carries both the enable (switch) and the sensitivity
+    (select), so it is skipped only when neither platform is on."""
+    assert SMART_MOTION in await _poll(select=False), "the enable switch still wants it"
+    assert SMART_MOTION in await _poll(switch=False), "the sensitivity select wants it"
+    assert SMART_MOTION not in await _poll(switch=False, select=False)
 
 
 async def test_light_reads_are_skipped_without_the_light_platform():
@@ -137,6 +157,7 @@ async def test_light_reads_are_skipped_without_the_light_platform():
 
 
 # --- a request with two readers survives losing one of them ------------------
+
 
 async def test_coaxial_status_survives_either_reader():
     """The siren switch and the security light both read this."""
@@ -180,7 +201,7 @@ async def test_a_doorbell_with_no_security_light_does_not_start_fetching_it():
     """The gate mirrors the condition select.py creates that entity under, so
     nothing that never had the select begins paying for the read."""
     c = _coordinator(light=False)
-    c.model = "DB600"       # an Amcrest doorbell, but no security light
+    c.model = "DB600"  # an Amcrest doorbell, but no security light
     # The shared fake grants this so the coaxial reads above have a reader. Here the
     # model's own answer is the point, so it goes back.
     c.supports_security_light = lambda: False
@@ -192,12 +213,16 @@ async def test_a_doorbell_with_no_security_light_does_not_start_fetching_it():
 
 # --- turning one platform off must not take another's reads with it ----------
 
-@pytest.mark.parametrize("disabled,still_wanted", [
-    ("select", [COAXIAL, MOTION, LIGHTING_V2, DISARMING, PRIVACY]),
-    ("light", [PTZ, COAXIAL, MOTION, DISARMING, SMART_MOTION, PRIVACY]),
-    ("switch", [PTZ, COAXIAL, MOTION, LIGHTING_V2, INFRARED]),
-    ("binary_sensor", [PTZ, COAXIAL, MOTION, LIGHTING_V2, DISARMING, PRIVACY]),
-])
+
+@pytest.mark.parametrize(
+    "disabled,still_wanted",
+    [
+        ("select", [COAXIAL, MOTION, LIGHTING_V2, DISARMING, PRIVACY]),
+        ("light", [PTZ, COAXIAL, MOTION, DISARMING, SMART_MOTION, PRIVACY]),
+        ("switch", [PTZ, COAXIAL, MOTION, LIGHTING_V2, INFRARED]),
+        ("binary_sensor", [PTZ, COAXIAL, MOTION, LIGHTING_V2, DISARMING, PRIVACY]),
+    ],
+)
 async def test_disabling_one_platform_leaves_the_others_alone(disabled, still_wanted):
     calls = await _poll(**{disabled: False})
 
@@ -206,6 +231,7 @@ async def test_disabling_one_platform_leaves_the_others_alone(disabled, still_wa
 
 
 # --- and it is not fetched for a device with nothing that reads it ------------
+
 
 async def test_a_device_with_nothing_that_reads_the_coaxial_status_is_not_asked():
     """`_supports_coaxial_control` means the endpoint answers, not that this device has a
@@ -253,6 +279,7 @@ async def test_a_flood_light_without_floodlightmode_is_not_asked():
 
 
 # --- the cloud upgrade record belongs to the update platform -----------------
+
 
 async def test_the_cloud_upgrade_record_is_not_read_without_the_update_platform():
     """It feeds only the informational update entity."""

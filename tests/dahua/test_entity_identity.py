@@ -43,6 +43,7 @@ from custom_components.dahua.light import (
 from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
     DahuaDayNightModeSelect,
+    DahuaInfraredModeSelect,
     DahuaDoorbellLightSelect,
 )
 from custom_components.dahua.switch import (
@@ -73,6 +74,7 @@ GOLDEN_SERIALS = {
 
 # --- the coordinator's half -------------------------------------------------
 
+
 @pytest.mark.parametrize("channel", CHANNELS)
 def test_the_serial_a_channel_reports(channel):
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
@@ -89,6 +91,7 @@ def test_channel_zero_is_bare_and_the_others_are_not():
 
 
 # --- building real entities -------------------------------------------------
+
 
 class _Client:
     @staticmethod
@@ -140,10 +143,17 @@ class _Entry:
 @pytest.fixture(autouse=True)
 def _skip_ha_plumbing(monkeypatch):
     """Build the real entities, skipping only Home Assistant's own __init__."""
-    for module in (bs_module, button_module, camera_module, light_module,
-                   select_module, switch_module):
+    for module in (
+        bs_module,
+        button_module,
+        camera_module,
+        light_module,
+        select_module,
+        switch_module,
+    ):
         monkeypatch.setattr(
-            module.DahuaBaseEntity, "__init__",
+            module.DahuaBaseEntity,
+            "__init__",
             lambda self, c, e: setattr(self, "_coordinator", c),
         )
     monkeypatch.setattr(bs_module.BinarySensorEntity, "__init__", lambda self: None)
@@ -165,9 +175,18 @@ def _bare(cls, coordinator):
 GOLDEN_SUFFIXES = [
     # binary_sensor.py -- one per event the camera reports
     ("", lambda c: DahuaEventSensor(c, _Entry(), "VideoMotion")),
-    ("_cross_line_alarm", lambda c: DahuaEventSensor(c, _Entry(), "CrossLineDetection")),
-    ("_smart_motion_human", lambda c: DahuaEventSensor(c, _Entry(), "SmartMotionHuman")),
-    ("_smart_motion_vehicle", lambda c: DahuaEventSensor(c, _Entry(), "SmartMotionVehicle")),
+    (
+        "_cross_line_alarm",
+        lambda c: DahuaEventSensor(c, _Entry(), "CrossLineDetection"),
+    ),
+    (
+        "_smart_motion_human",
+        lambda c: DahuaEventSensor(c, _Entry(), "SmartMotionHuman"),
+    ),
+    (
+        "_smart_motion_vehicle",
+        lambda c: DahuaEventSensor(c, _Entry(), "SmartMotionVehicle"),
+    ),
     ("_alarm_local", lambda c: DahuaEventSensor(c, _Entry(), "AlarmLocal")),
     ("_button_pressed", lambda c: DahuaEventSensor(c, _Entry(), "DoorbellPressed")),
     # camera.py -- one per stream
@@ -177,9 +196,14 @@ GOLDEN_SUFFIXES = [
     # switch.py
     ("_motion_detection", lambda c: _bare(DahuaMotionDetectionBinarySwitch, c)),
     ("_disarming", lambda c: _bare(DahuaDisarmingLinkageBinarySwitch, c)),
-    ("_event_notifications",
-     lambda c: _bare(DahuaDisarmingEventNotificationsLinkageBinarySwitch, c)),
-    ("_smart_motion_detection", lambda c: _bare(DahuaSmartMotionDetectionBinarySwitch, c)),
+    (
+        "_event_notifications",
+        lambda c: _bare(DahuaDisarmingEventNotificationsLinkageBinarySwitch, c),
+    ),
+    (
+        "_smart_motion_detection",
+        lambda c: _bare(DahuaSmartMotionDetectionBinarySwitch, c),
+    ),
     ("_siren", lambda c: _bare(DahuaSirenBinarySwitch, c)),
     ("_privacy_mode", lambda c: _bare(DahuaPrivacyModeBinarySwitch, c)),
     ("_alarm_output_0", lambda c: DahuaAlarmOutputSwitch(c, _Entry(), output=0)),
@@ -188,8 +212,10 @@ GOLDEN_SUFFIXES = [
     ("_illuminator", lambda c: DahuaIlluminator(c, _Entry())),
     ("_ring_light", lambda c: AmcrestRingLight(c, _Entry())),
     ("_flood_light", lambda c: FloodLight(c, _Entry())),
-    ("_security", lambda c: DahuaSecurityLight(
-        c, _Entry(), translation_key="security_light")),
+    (
+        "_security",
+        lambda c: DahuaSecurityLight(c, _Entry(), translation_key="security_light"),
+    ),
     # button.py
     ("_reboot", lambda c: _bare(DahuaRebootButton, c)),
     ("_open_door", lambda c: _bare(DahuaOpenDoorButton, c)),
@@ -197,16 +223,21 @@ GOLDEN_SUFFIXES = [
     # select.py
     ("_security_light", lambda c: DahuaDoorbellLightSelect(c, _Entry())),
     ("_preset_position", lambda c: DahuaCameraPresetPositionSelect(c, _Entry())),
-    ("_1_preset_position",
-     lambda c: DahuaCameraPresetPositionSelect(c, _Entry(), rpc2_channel=1)),
+    (
+        "_1_preset_position",
+        lambda c: DahuaCameraPresetPositionSelect(c, _Entry(), rpc2_channel=1),
+    ),
     ("_day_night_mode", lambda c: DahuaDayNightModeSelect(c, _Entry())),
+    ("_infrared_mode", lambda c: DahuaInfraredModeSelect(c, _Entry())),
     # update.py
     ("_firmware_update", lambda c: _bare(DahuaFirmwareUpdateEntity, c)),
 ]
 
 
 @pytest.mark.parametrize("channel", CHANNELS)
-@pytest.mark.parametrize("suffix,build", GOLDEN_SUFFIXES, ids=[s or "bare" for s, _ in GOLDEN_SUFFIXES])
+@pytest.mark.parametrize(
+    "suffix,build", GOLDEN_SUFFIXES, ids=[s or "bare" for s, _ in GOLDEN_SUFFIXES]
+)
 def test_the_unique_id_of_every_entity(channel, suffix, build):
     entity = build(_Coordinator(channel))
 
@@ -250,6 +281,7 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_preset_position",
         "4L03CB4PAZC9E8F_2_1_preset_position",
         "4L03CB4PAZC9E8F_2_day_night_mode",
+        "4L03CB4PAZC9E8F_2_infrared_mode",
         "4L03CB4PAZC9E8F_2_firmware_update",
     }
 
@@ -268,7 +300,9 @@ def test_the_base_entity_falls_back_to_the_bare_serial():
 # SDT4E425, the plain one otherwise. They cannot both exist, which is the only
 # reason the pair below does not collide.
 EXCLUSIVE = "_1_preset_position"
-COEXISTING = [(suffix, build) for suffix, build in GOLDEN_SUFFIXES if suffix != EXCLUSIVE]
+COEXISTING = [
+    (suffix, build) for suffix, build in GOLDEN_SUFFIXES if suffix != EXCLUSIVE
+]
 
 
 @pytest.mark.parametrize("channel", CHANNELS)
@@ -280,8 +314,11 @@ def test_no_two_entities_on_a_channel_share_an_id(channel):
 
 def test_no_two_channels_share_an_id():
     """The whole reason the channel is in the serial at all."""
-    ids = [build(_Coordinator(channel)).unique_id
-           for channel in CHANNELS for _, build in COEXISTING]
+    ids = [
+        build(_Coordinator(channel)).unique_id
+        for channel in CHANNELS
+        for _, build in COEXISTING
+    ]
 
     assert len(set(ids)) == len(ids)
 
@@ -305,7 +342,11 @@ def test_the_rpc2_preset_select_reads_as_channel_ones_plain_one():
         _Coordinator(1), _Entry()
     ).unique_id
 
-    assert rpc2_on_channel_zero == plain_on_channel_one == "4L03CB4PAZC9E8F_1_preset_position"
+    assert (
+        rpc2_on_channel_zero
+        == plain_on_channel_one
+        == "4L03CB4PAZC9E8F_1_preset_position"
+    )
 
 
 def test_a_channel_id_is_not_a_prefix_of_a_different_entity_on_channel_zero():
@@ -315,6 +356,8 @@ def test_a_channel_id_is_not_a_prefix_of_a_different_entity_on_channel_zero():
     whose suffix happened to be "1" would take the same string.
     """
     channel_one = _Coordinator(1).get_serial_number()
-    channel_zero_ids = {build(_Coordinator(0)).unique_id for _, build in GOLDEN_SUFFIXES}
+    channel_zero_ids = {
+        build(_Coordinator(0)).unique_id for _, build in GOLDEN_SUFFIXES
+    }
 
     assert channel_one not in channel_zero_ids

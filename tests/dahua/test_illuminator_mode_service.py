@@ -24,11 +24,13 @@ def _client():
 async def _call(mode, brightness=100, profile="1", index=1, bank="NearLight"):
     c = _client()
     await DahuaClient.async_set_lighting_v2_mode(
-        c, 0, mode, brightness, profile, index, bank)
+        c, 0, mode, brightness, profile, index, bank
+    )
     return c.get.await_args.args[0]
 
 
 # --- the gap this closes ------------------------------------------------------
+
 
 async def test_auto_hands_control_back_to_the_camera():
     url = await _call("Auto")
@@ -50,6 +52,7 @@ async def test_off_is_still_off():
 
 
 # --- and it must address the same light the toggle does -----------------------
+
 
 async def test_it_writes_the_resolved_light_index():
     """Index 0 is the infrared emitter on dual-light cameras; see #652."""

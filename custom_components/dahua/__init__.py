@@ -1,6 +1,7 @@
 """
 Custom integration to integrate Dahua cameras with Home Assistant.
 """
+
 import asyncio
 from collections import deque
 from typing import Any, Dict
@@ -34,7 +35,6 @@ from .client import (
     DahuaClient,
     clear_host_cache,
 )
-from .model_profiles import is_sdt4e425
 from .ivs import ivs_rules_for_channel, ivs_rule_index
 
 from .const import (
@@ -174,7 +174,6 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     vto_retry_state,
 )
 
-
 WHITE_LIGHT_SCHEME = "WhiteMode"
 
 
@@ -196,6 +195,7 @@ def scheme_blocking_white_light(data: dict, channel: int, profile_mode):
     if mode is None or mode == WHITE_LIGHT_SCHEME:
         return None
     return mode
+
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -275,6 +275,40 @@ def get_configured_use_https(entry: ConfigEntry):
     return True if entry.data.get(CONF_USE_HTTPS) else None
 
 
+# The connection belongs to the device, not to the channel, and every writer
+# after setup -- reauth, reconfigure, the HTTPS repair, the discovery heal --
+# updates `entry.data`. A merged recorder's coordinators are built from subentry
+# data, and each subentry kept its own copy from the add flow, so the entry's
+# values are overlaid in channel_configs. Without that, the reload after a
+# successful reauth rebuilt every coordinator from the stale copy: the new
+# password was accepted, written to the entry, and then ignored, so reauth
+# started again forever and the device accumulated failed logins it locks out for.
+CONNECTION_KEYS = (
+    CONF_ADDRESS,
+    CONF_PORT,
+    CONF_RTSP_PORT,
+    CONF_USERNAME,
+    CONF_PASSWORD,
+    CONF_USE_HTTPS,
+)
+
+
+def subentries_share_one_connection(configs: list) -> bool:
+    """Whether these channel configs all describe the same device.
+
+    A merged recorder's subentries all carry the connection they were added
+    with. The old address-only migration could merge two devices that share an
+    address on different ports into one entry, though, and that entry's
+    subentries disagree about the connection. Only one can be enforced, and
+    enforcing the entry's would point the other device's channels and entities
+    at the wrong box, so an entry like that keeps each channel's own.
+    """
+    seen = {
+        tuple((key, config.get(key)) for key in CONNECTION_KEYS) for config in configs
+    }
+    return len(seen) <= 1
+
+
 def channel_configs(entry: DahuaConfigEntry) -> list:
     """(subentry_id, config) for every channel this entry owns.
 
@@ -298,8 +332,24 @@ def channel_configs(entry: DahuaConfigEntry) -> list:
     and nothing to stop it at unload.
     """
     if entry.subentries:
-        pairs = [(subentry_id, dict(subentry.data))
-                 for subentry_id, subentry in entry.subentries.items()]
+        subentries = [
+            (subentry_id, dict(subentry.data))
+            for subentry_id, subentry in entry.subentries.items()
+        ]
+        # The entry's connection is only authoritative when its channels agree
+        # about what they are connected to. An entry the old address-only
+        # migration built from two devices on one address disagrees with itself,
+        # and one connection cannot describe both.
+        if subentries_share_one_connection([config for _, config in subentries]):
+            connection = {
+                key: entry.data[key] for key in CONNECTION_KEYS if key in entry.data
+            }
+            pairs = [
+                (subentry_id, {**config, **connection})
+                for subentry_id, config in subentries
+            ]
+        else:
+            pairs = subentries
     else:
         pairs = [(None, dict(entry.data))]
 
@@ -315,7 +365,10 @@ def channel_configs(entry: DahuaConfigEntry) -> list:
         if channel in channels:
             _LOGGER.warning(
                 "Dahua entry %s has more than one channel %s; using the first "
-                "and ignoring the rest", entry.entry_id, channel)
+                "and ignoring the rest",
+                entry.entry_id,
+                channel,
+            )
             continue
         config[CONF_CHANNEL] = channel
         channels[channel] = (subentry_id, config)
@@ -353,11 +406,13 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """
     try:
         from .migrate import async_merge_channel_entries
+
         await async_merge_channel_entries(hass)
     except Exception:  # pylint: disable=broad-except
         _LOGGER.exception(
             "Could not merge the Dahua config entries. Every entry is left as it "
-            "was and the integration will set up normally")
+            "was and the integration will set up normally"
+        )
     return True
 
 
@@ -374,8 +429,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     try:
         await async_migrate_synthesised_unique_id(hass, entry)
     except Exception:  # pylint: disable=broad-except
-        _LOGGER.debug("Could not re-identify %s from the network",
-                      entry.data.get(CONF_ADDRESS), exc_info=True)
+        _LOGGER.debug(
+            "Could not re-identify %s from the network",
+            entry.data.get(CONF_ADDRESS),
+            exc_info=True,
+        )
 
     # One coordinator per channel. A single camera has one, a merged recorder has
     # one per subentry (#827), and channel_configs hands back the same shape for
@@ -385,22 +443,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     failures = []
     try:
         for _subentry_id, config in channel_configs(entry):
-            built.append(DahuaDataUpdateCoordinator(
-                hass,
-                entry=entry,
-                events=events_for_channel(entry, config),
-                address=config.get(CONF_ADDRESS),
-                port=int(config.get(CONF_PORT)),
-                rtsp_port=int(config.get(CONF_RTSP_PORT)),
-                username=config.get(CONF_USERNAME),
-                password=config.get(CONF_PASSWORD),
-                name=config.get(CONF_NAME),
-                channel=config.get(CONF_CHANNEL, 0),
-                use_https=True if config.get(CONF_USE_HTTPS) else None,
-                # This channel's own settings. Empty for a single camera, which
-                # is what keeps channel_option identical to entry.options there.
-                channel_config=config if _subentry_id else None,
-            ))
+            built.append(
+                DahuaDataUpdateCoordinator(
+                    hass,
+                    entry=entry,
+                    events=events_for_channel(entry, config),
+                    address=config.get(CONF_ADDRESS),
+                    port=int(config.get(CONF_PORT)),
+                    rtsp_port=int(config.get(CONF_RTSP_PORT)),
+                    username=config.get(CONF_USERNAME),
+                    password=config.get(CONF_PASSWORD),
+                    name=config.get(CONF_NAME),
+                    channel=config.get(CONF_CHANNEL, 0),
+                    use_https=True if config.get(CONF_USE_HTTPS) else None,
+                    # This channel's own settings. Empty for a single camera, which
+                    # is what keeps channel_option identical to entry.options there.
+                    channel_config=config if _subentry_id else None,
+                    # Which subentry this channel is, so the platforms can file its
+                    # entities under it. None for a single camera, which is also what
+                    # async_add_entities wants when an entry has no subentries.
+                    subentry_id=_subentry_id,
+                )
+            )
 
         # Concurrently, because a 64 channel recorder doing these one at a time
         # would add minutes to startup. Not a thundering herd: every request still
@@ -408,7 +472,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         # changes how long the waiting takes rather than how hard the device is hit.
         results = await asyncio.gather(
             *[c.async_config_entry_first_refresh() for c in built],
-            return_exceptions=True)
+            return_exceptions=True,
+        )
 
         for coordinator, result in zip(built, results):
             if isinstance(result, BaseException):
@@ -443,8 +508,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         _LOGGER.warning(
             "%s set up %d of %d channels. These did not answer and will be "
             "retried on the next poll: %s",
-            entry.data.get(CONF_ADDRESS), len(coordinators),
-            len(built), ", ".join(str(channel) for channel, _ in failures))
+            entry.data.get(CONF_ADDRESS),
+            len(coordinators),
+            len(built),
+            ", ".join(str(channel) for channel, _ in failures),
+        )
 
     # Home Assistant's own place for per entry runtime state, and it clears the
     # attribute itself when the entry unloads, so there is nothing to pop.
@@ -478,11 +546,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # stop, which is the leak async_stop exists to prevent.
     for coordinator in coordinators:
         entry.async_on_unload(
-            hass.bus.async_listen_once(
-                EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
         )
 
     return True
+
+
 # Raised when an entry is removed and other entries for the same recorder are
 # still configured. An NVR is one entry per channel, so "remove the recorder"
 # is eleven deletions and nobody realises until they are eight in.
@@ -522,32 +591,45 @@ async def async_migrate_synthesised_unique_id(hass, entry) -> None:
     if not serial:
         _LOGGER.debug(
             "%s still has a synthesised id and the network probe offered no serial, so "
-            "it keeps the one it has", address)
+            "it keeps the one it has",
+            address,
+        )
         return
 
     # Imported here because config_flow imports this module.
     from .config_flow import channel_unique_id
+
     wanted = channel_unique_id(serial, entry.data.get(CONF_CHANNEL, 0))
     if wanted == unique_id:
         return
 
     # No need to exclude this entry: its own id is md5 shaped and `wanted` is a device
     # serial, and the one case where they are equal already returned above.
-    taken = [other for other in hass.config_entries.async_entries(DOMAIN)
-             if other.unique_id == wanted]
+    taken = [
+        other
+        for other in hass.config_entries.async_entries(DOMAIN)
+        if other.unique_id == wanted
+    ]
     if taken:
         _LOGGER.warning(
             "%s reports serial %s over the network, but the entry %s already holds that "
             "identity, so this camera is configured twice. Leaving both alone: remove "
             "whichever one you do not want rather than have this pick for you",
-            address, serial, taken[0].title)
+            address,
+            serial,
+            taken[0].title,
+        )
         return
 
     _LOGGER.info(
         "%s was identified by a hash of its own credentials, which changes whenever the "
         "password does. The network probe reports serial %s, so this entry is being moved "
-        "onto it and will survive a credential change from now on", address, serial)
+        "onto it and will survive a credential change from now on",
+        address,
+        serial,
+    )
     hass.config_entries.async_update_entry(entry, unique_id=wanted)
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bool:
     """Handle removal of an entry."""
@@ -558,21 +640,34 @@ async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bo
         # so an options-triggered reload can continue cleanly.
         return True
 
+    # What the device refused is forgotten here rather than kept for the life of
+    # the process, so that reloading an entry really does ask again -- which is
+    # what the warning about a refused infrared write tells the user to do. Per
+    # channel, so one recorder reloading does not cost every other host a refusal.
+    from .refusals import forget as forget_refusals
+
+    for coordinator in channels.values():
+        forget_refusals(coordinator)
+
     # Every channel is stopped, and all of them are stopped even if one raises.
     # A coordinator that keeps its session and its host pool reference is the
     # leak async_stop exists to prevent, so one failure must not strand the rest.
     for result in await asyncio.gather(
-            *[coordinator.async_stop() for coordinator in channels.values()],
-            return_exceptions=True):
+        *[coordinator.async_stop() for coordinator in channels.values()],
+        return_exceptions=True,
+    ):
         if isinstance(result, BaseException):
-            _LOGGER.debug("Stopping a Dahua channel failed during unload",
-                          exc_info=result)
+            _LOGGER.debug(
+                "Stopping a Dahua channel failed during unload", exc_info=result
+            )
 
     # The union across channels: a platform is forwarded once per entry however
     # many channels asked for it, so unloading it once per channel would fail.
-    wanted = {platform
-              for coordinator in channels.values()
-              for platform in coordinator.platforms}
+    wanted = {
+        platform
+        for coordinator in channels.values()
+        for platform in coordinator.platforms
+    }
     unloaded = all(
         await asyncio.gather(
             *[
@@ -614,13 +709,12 @@ def _async_forget_host(hass: HomeAssistant, address: str) -> None:
     _HOST_RPC2_EVENT_STATE.pop(address, None)
     # Which channels have already been reported as refusing a capability. Keyed by
     # device_key, which is "address:port", so this matches on the address part.
-    for target in [t for t in _CAPABILITY_REFUSALS_REPORTED
-                   if str(t[0]).split(":")[0] == address]:
+    for target in [
+        t for t in _CAPABILITY_REFUSALS_REPORTED if str(t[0]).split(":")[0] == address
+    ]:
         _CAPABILITY_REFUSALS_REPORTED.discard(target)
     ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
-    ir.async_delete_issue(
-        hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address)
-    )
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address))
 
 
 @callback
@@ -641,12 +735,16 @@ def _async_dependents(hass: HomeAssistant, entry_id: str) -> dict:
         # Imported here because the search component is an after_dependency:
         # available in practice, but not something to fail setup over.
         from homeassistant.components.search import (  # pylint: disable=import-outside-toplevel
-            ItemType, Searcher)
+            ItemType,
+            Searcher,
+        )
         from homeassistant.helpers.entity import (  # pylint: disable=import-outside-toplevel
-            entity_sources)
+            entity_sources,
+        )
 
         found = Searcher(hass, entity_sources(hass)).async_search(
-            ItemType.CONFIG_ENTRY, entry_id)
+            ItemType.CONFIG_ENTRY, entry_id
+        )
     except Exception as err:  # pylint: disable=broad-except
         _LOGGER.debug("Could not work out what referenced %s: %s", entry_id, err)
         return {}
@@ -662,9 +760,13 @@ def _async_dependents(hass: HomeAssistant, entry_id: str) -> dict:
 
 
 def _describe_dependents(dependents: dict) -> str:
-    """"3 automations and 1 script", or "" when nothing referenced it."""
-    words = {"automation": "automation", "script": "script",
-             "scene": "scene", "group": "group"}
+    """ "3 automations and 1 script", or "" when nothing referenced it."""
+    words = {
+        "automation": "automation",
+        "script": "script",
+        "scene": "scene",
+        "group": "group",
+    }
     parts = [
         "%d %s%s" % (len(items), words[kind], "" if len(items) == 1 else "s")
         for kind, items in dependents.items()
@@ -758,8 +860,13 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 @callback
-def _async_report_removal(hass: HomeAssistant, entry: ConfigEntry, address: str,
-                          siblings: list, dependents: dict) -> None:
+def _async_report_removal(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    address: str,
+    siblings: list,
+    dependents: dict,
+) -> None:
     """Say what the removal left behind, and offer to finish it.
 
     At most one card, because two would be noise on a single deletion:
@@ -780,8 +887,11 @@ def _async_report_removal(hass: HomeAssistant, entry: ConfigEntry, address: str,
     if siblings:
         titles = ", ".join(sorted(e.title or "untitled" for e in siblings))
         ir.async_create_issue(
-            hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(address),
-            is_fixable=True, is_persistent=True,
+            hass,
+            DOMAIN,
+            ISSUE_SIBLINGS_REMAIN.format(address),
+            is_fixable=True,
+            is_persistent=True,
             severity=ir.IssueSeverity.WARNING,
             translation_key="siblings_remain",
             # The title's placeholders, and only those. The fix flow fills its
@@ -797,24 +907,32 @@ def _async_report_removal(hass: HomeAssistant, entry: ConfigEntry, address: str,
                 # A whole sentence or nothing, so the form reads correctly
                 # either way. A bare count would leave a dangling clause.
                 "dependents_note": (
-                    "%s also referenced the entry you removed, and are not "
-                    "repaired by this." % described.capitalize()
-                ) if described else "",
+                    (
+                        "%s also referenced the entry you removed, and are not "
+                        "repaired by this." % described.capitalize()
+                    )
+                    if described
+                    else ""
+                ),
             },
         )
         return
 
     if described:
         ir.async_create_issue(
-            hass, DOMAIN, ISSUE_REMOVAL_BROKE_THINGS.format(entry.entry_id),
-            is_fixable=False, is_persistent=True,
+            hass,
+            DOMAIN,
+            ISSUE_REMOVAL_BROKE_THINGS.format(entry.entry_id),
+            is_fixable=False,
+            is_persistent=True,
             severity=ir.IssueSeverity.WARNING,
             translation_key="removal_broke_things",
             translation_placeholders={
                 "removed": entry.title or "untitled",
                 "dependents": described,
                 "names": ", ".join(
-                    name for items in dependents.values() for name in items),
+                    name for items in dependents.values() for name in items
+                ),
             },
         )
 

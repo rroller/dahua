@@ -44,15 +44,20 @@ def test_an_empty_selection_is_honoured_not_treated_as_unset():
 # because that one does guard. No events, no sensors, and nothing in the log
 # connecting the two.
 
+
 def test_an_entry_with_no_event_list_anywhere_gets_the_defaults():
     assert get_configured_events(_entry()) == DEFAULT_EVENTS
 
 
 def test_it_never_returns_none():
     """The contract the binary_sensor platform relies on."""
-    for entry in (_entry(), _entry(data_events=SETUP_EVENTS),
-                  _entry(option_events=[]), _entry(data_events=[]),
-                  _entry(data_events=SETUP_EVENTS, option_events=CHOSEN_EVENTS)):
+    for entry in (
+        _entry(),
+        _entry(data_events=SETUP_EVENTS),
+        _entry(option_events=[]),
+        _entry(data_events=[]),
+        _entry(data_events=SETUP_EVENTS, option_events=CHOSEN_EVENTS),
+    ):
         assert get_configured_events(entry) is not None
 
 
@@ -94,14 +99,16 @@ def _schema_defaults(result):
         if nested is not None and hasattr(nested, "schema"):
             for inner in nested.schema:
                 inner_default = getattr(inner, "default", None)
-                out[str(inner.schema)] = (inner_default() if callable(inner_default)
-                                          else inner_default)
+                out[str(inner.schema)] = (
+                    inner_default() if callable(inner_default) else inner_default
+                )
     return out
 
 
 async def _shown_options_form(hass, entry):
     registered = MockConfigEntry(
-        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options))
+        domain=DOMAIN, data=dict(entry.data), options=dict(entry.options)
+    )
     registered.add_to_hass(hass)
 
     handler = DahuaOptionsFlowHandler()

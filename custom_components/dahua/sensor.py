@@ -27,14 +27,18 @@ PROFILE_NAMES = {
 # so there is nothing to serialise: read only: every state comes from the coordinator.
 PARALLEL_UPDATES = 0
 
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
     for coordinator in entry_coordinators(entry).values():
         sensors = [
             DahuaFirmwareVersionSensor(coordinator, entry),
             DahuaSerialNumberSensor(coordinator, entry),
-            DahuaLicensePlateSensor(coordinator, entry),
         ]
+        # A plate is read from a picture, which an indoor monitor without a
+        # camera does not have.
+        if not coordinator.is_indoor_monitor_without_video():
+            sensors.append(DahuaLicensePlateSensor(coordinator, entry))
 
         # The profile is only ever read for devices that answered the Lighting
         # probe. Adding the sensor unconditionally would show "Day" forever on a
@@ -43,7 +47,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.supports_profile_mode():
             sensors.append(DahuaProfileSensor(coordinator, entry))
 
-        async_add_devices(sensors)
+        # Only on a recorder that answered the RemoteDevice read at setup; None
+        # everywhere else, so a camera does not get a meaningless channel count.
+        if coordinator.get_configured_channel_count() is not None:
+            sensors.append(DahuaConfiguredChannelsSensor(coordinator, entry))
+
+        async_add_devices(sensors, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
@@ -118,6 +127,32 @@ class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
         return attrs
 
 
+class DahuaConfiguredChannelsSensor(DahuaBaseEntity, SensorEntity):
+    """How many channels a recorder has a camera configured on.
+
+    Read once from the recorder's RemoteDevice table at setup, like the disk
+    sensors, so it adds nothing to the poll. It counts configured (enabled)
+    slots, not live connectivity: the table says a camera is set up on a
+    channel, not that it is reachable right now.
+    """
+
+    _attr_translation_key = "configured_channels"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # Off by default, like the disk sensors (#745). A recorder is represented by
+    # one entry per channel and every one of them answers is_recorder_host, so
+    # without this the same host-wide count appears once per channel. Enabling a
+    # single one is enough.
+    _attr_entity_registry_enabled_default = False
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_configured_channels"
+
+    @property
+    def native_value(self):
+        return self._coordinator.get_configured_channel_count()
+
+
 class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
     """The last recognized license plate reported by the camera."""
 
@@ -138,7 +173,16 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        return self._coordinator.get_last_plate_data()
+        """The plate's own fields, on top of what every entity here reports.
+
+        Returned alone until now, so `id` and `integration` were missing from this
+        sensor and only this one. Merged rather than replaced, and `or {}` because
+        get_last_plate_data returns None before the first plate.
+        """
+        return {
+            **(super().extra_state_attributes or {}),
+            **(self._coordinator.get_last_plate_data() or {}),
+        }
 
     async def async_added_to_hass(self):
         """Listen for a plate, and stop listening when removed.
@@ -150,7 +194,8 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
         listener" once per reload the entry has ever had.
         """
         self.async_on_remove(
-            self._coordinator.add_plate_listener(self.schedule_update_ha_state))
+            self._coordinator.add_plate_listener(self.schedule_update_ha_state)
+        )
 
     @property
     def should_poll(self) -> bool:

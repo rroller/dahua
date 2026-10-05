@@ -28,8 +28,9 @@ from custom_components.dahua.config_flow import (
 )
 from custom_components.dahua.const import PLATFORMS
 
-TRANSLATIONS = (Path(__file__).resolve().parents[2]
-                / "custom_components" / "dahua" / "translations")
+TRANSLATIONS = (
+    Path(__file__).resolve().parents[2] / "custom_components" / "dahua" / "translations"
+)
 
 EN = json.loads((TRANSLATIONS / "en.json").read_text(encoding="utf-8"))
 
@@ -54,6 +55,7 @@ def _schema_fields(reveal_transport):
 
 # --- the add form ----------------------------------------------------------
 
+
 def test_every_field_the_add_form_can_show_has_a_label():
     """A field with no string renders as its raw key, which is what the channel field
     looked like before #796."""
@@ -72,8 +74,9 @@ def _labels_in(language, step="user"):
     return set(body.get("data", {}))
 
 
-@pytest.mark.parametrize("language", ["en", "bg", "ca", "es", "fr", "it", "nl",
-                                      "pt", "pt-BR"])
+@pytest.mark.parametrize(
+    "language", ["en", "bg", "ca", "es", "fr", "it", "nl", "pt", "pt-BR"]
+)
 def test_no_language_labels_a_field_the_add_form_does_not_offer(language):
     """The `events` label outlived its field by three weeks, in all nine files. The
     transport fields count as offered because they are revealed on a failure rather
@@ -85,15 +88,26 @@ def test_no_language_labels_a_field_the_add_form_does_not_offer(language):
     orphans = _labels_in(language) - _schema_fields(reveal_transport=True)
 
     assert not orphans, "%s labels %s, which the form does not ask" % (
-        language, sorted(orphans))
+        language,
+        sorted(orphans),
+    )
 
 
 def test_the_language_list_above_is_the_list_that_ships():
     """Derived rather than trusted: a language added without being listed would
     silently stop being checked, which is how the issue placeholder map quietly
     stopped covering a new issue."""
-    assert set(_languages()) == {"en", "bg", "ca", "es", "fr", "it", "nl",
-                                 "pt", "pt-BR"}
+    assert set(_languages()) == {
+        "en",
+        "bg",
+        "ca",
+        "es",
+        "fr",
+        "it",
+        "nl",
+        "pt",
+        "pt-BR",
+    }
 
 
 def test_the_hidden_transport_fields_still_have_labels():
@@ -115,6 +129,7 @@ def test_every_description_describes_a_field_that_exists():
 
 # --- and the events label belongs to the options form, which does have one ---
 
+
 def test_the_options_form_keeps_its_events_label():
     """Removing it from the add form must not be read as removing it everywhere: the
     options screen is where the event selection went, and that field is real."""
@@ -128,6 +143,7 @@ def test_the_add_form_does_not_ask_about_events():
 
 
 # --- the other steps, where the pairing is simple enough to state -----------
+
 
 @pytest.mark.parametrize("step", ["name", "reauth_confirm", "reconfigure"])
 def test_no_step_describes_a_field_it_does_not_declare(step):
@@ -145,12 +161,12 @@ def test_the_areas_step_declares_no_fields_on_purpose():
 
 # --- the options form's platform toggles, which are built from a constant ------
 
+
 def _section(step="user", language="en"):
     """The strings for the collapsed platform section, if a language has any."""
     path = TRANSLATIONS / ("%s.json" % language)
     body = json.loads(path.read_text(encoding="utf-8"))["options"]["step"]
-    return body.get(step, {}).get("sections", {}).get(
-        OPTIONS_SECTION_PLATFORMS, {})
+    return body.get(step, {}).get("sections", {}).get(OPTIONS_SECTION_PLATFORMS, {})
 
 
 def _platform_labels(language="en"):
@@ -180,19 +196,23 @@ def test_every_platform_toggle_has_a_label():
     assert not missing, "no label for the %s toggle" % sorted(missing)
 
 
-@pytest.mark.parametrize("language", ["en", "bg", "ca", "es", "fr", "it", "nl",
-                                      "pt", "pt-BR"])
+@pytest.mark.parametrize(
+    "language", ["en", "bg", "ca", "es", "fr", "it", "nl", "pt", "pt-BR"]
+)
 def test_no_language_labels_a_platform_that_does_not_exist(language):
     """The orphan direction, which is the half #814 was about: a string for a
     platform that is no longer in `PLATFORMS` renders nowhere at all."""
     orphans = _platform_labels(language) - set(PLATFORMS)
 
     assert not orphans, "%s labels the %s toggle, which is not a platform" % (
-        language, sorted(orphans))
+        language,
+        sorted(orphans),
+    )
 
 
-@pytest.mark.parametrize("language", ["en", "bg", "ca", "es", "fr", "it", "nl",
-                                      "pt", "pt-BR"])
+@pytest.mark.parametrize(
+    "language", ["en", "bg", "ca", "es", "fr", "it", "nl", "pt", "pt-BR"]
+)
 def test_no_language_labels_a_platform_outside_the_section(language):
     """A platform label at the step's own `data` is read by nothing.
 
@@ -210,7 +230,8 @@ def test_no_language_labels_a_platform_outside_the_section(language):
 
     assert not stranded, (
         "%s labels %s at options.step.user.data, where a section's child is never "
-        "looked up" % (language, sorted(stranded)))
+        "looked up" % (language, sorted(stranded))
+    )
 
 
 def test_the_platform_section_has_a_heading_of_its_own():
@@ -234,11 +255,16 @@ def test_every_description_in_the_section_describes_a_toggle_in_it():
 
 # --- the per channel form, which is a third place labels can go missing -------
 
+
 def _subentry_step(step="reconfigure", language="en"):
     path = TRANSLATIONS / ("%s.json" % language)
     body = json.loads(path.read_text(encoding="utf-8"))
-    return (body.get("config_subentries", {}).get(CHANNEL_SUBENTRY, {})
-            .get("step", {}).get(step, {}))
+    return (
+        body.get("config_subentries", {})
+        .get(CHANNEL_SUBENTRY, {})
+        .get("step", {})
+        .get(step, {})
+    )
 
 
 def _subentry_schema_fields():
@@ -250,7 +276,8 @@ def _subentry_schema_fields():
     """
     flow = DahuaChannelSubentryFlow()
     flow._get_reconfigure_subentry = lambda: SimpleNamespace(
-        data={"channel": 3}, title="A channel")
+        data={"channel": 3}, title="A channel"
+    )
     result = asyncio.run(flow.async_step_reconfigure())
     return {str(key) for key in result["data_schema"].schema}
 
@@ -269,7 +296,8 @@ def test_the_channel_form_labels_no_field_it_does_not_ask():
     orphans = set(_subentry_step().get("data", {})) - _subentry_schema_fields()
 
     assert not orphans, "the channel form labels %s, which it does not ask" % sorted(
-        orphans)
+        orphans
+    )
 
 
 def test_every_description_on_the_channel_form_describes_a_field_it_asks():
@@ -299,6 +327,10 @@ def test_a_setting_that_moved_onto_the_channel_kept_its_wording():
     shared = set(channel) & set(options)
     assert shared, "expected some settings to be common to both forms"
     for key in sorted(shared):
-        assert channel[key] == options[key], (
-            "%s is worded differently on the two forms: %r vs %r"
-            % (key, channel[key], options[key]))
+        assert (
+            channel[key] == options[key]
+        ), "%s is worded differently on the two forms: %r vs %r" % (
+            key,
+            channel[key],
+            options[key],
+        )

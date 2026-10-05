@@ -19,8 +19,7 @@ from custom_components.dahua import channel_configs, events_for_channel
 def _entry(subentries=None, data=None, options=None):
     return SimpleNamespace(
         entry_id="e1",
-        data=data or {"address": "1.2.3.4", "channel": 0,
-                      "events": ["VideoMotion"]},
+        data=data or {"address": "1.2.3.4", "channel": 0, "events": ["VideoMotion"]},
         options=options or {},
         subentries=subentries or {},
     )
@@ -35,6 +34,7 @@ def _sub(channel, events=None):
 
 # --- the two shapes ---------------------------------------------------------
 
+
 def test_an_entry_with_no_subentries_is_one_channel():
     """A single camera, and any recorder channel that predates the merge."""
     configs = channel_configs(_entry())
@@ -46,8 +46,9 @@ def test_an_entry_with_no_subentries_is_one_channel():
 
 
 def test_a_merged_recorder_is_one_channel_per_subentry():
-    configs = channel_configs(_entry(subentries={
-        "s9": _sub(9), "s0": _sub(0), "s1": _sub(1)}))
+    configs = channel_configs(
+        _entry(subentries={"s9": _sub(9), "s0": _sub(0), "s1": _sub(1)})
+    )
 
     assert len(configs) == 3
     assert [c[1]["channel"] for c in configs] == [0, 1, 9]
@@ -57,8 +58,9 @@ def test_channels_come_out_in_channel_order_not_storage_order():
     """Subentries are a dict, so their order is insertion order and means
     nothing. Entities would otherwise appear in an arbitrary order on the device
     page, differently on different installs."""
-    configs = channel_configs(_entry(subentries={
-        "b": _sub(12), "a": _sub(3), "c": _sub(0)}))
+    configs = channel_configs(
+        _entry(subentries={"b": _sub(12), "a": _sub(3), "c": _sub(0)})
+    )
 
     assert [c[0] for c in configs] == ["c", "a", "b"]
 
@@ -66,16 +68,18 @@ def test_channels_come_out_in_channel_order_not_storage_order():
 def test_a_channel_stored_as_a_string_still_sorts_as_a_number():
     """The add flow writes extra channels as strings, so "10" and 9 have to be
     compared as numbers or channel 10 sorts before channel 9."""
-    configs = channel_configs(_entry(subentries={
-        "s10": _sub("10"), "s9": _sub(9), "s0": _sub(0)}))
+    configs = channel_configs(
+        _entry(subentries={"s10": _sub("10"), "s9": _sub(9), "s0": _sub(0)})
+    )
 
     assert [c[0] for c in configs] == ["s0", "s9", "s10"]
 
 
 def test_a_channel_with_an_unreadable_number_is_treated_as_zero():
     """Rather than raising and taking the whole recorder's setup down."""
-    configs = channel_configs(_entry(subentries={
-        "bad": _sub("not a number"), "one": _sub(1)}))
+    configs = channel_configs(
+        _entry(subentries={"bad": _sub("not a number"), "one": _sub(1)})
+    )
 
     assert [c[0] for c in configs] == ["bad", "one"]
 
@@ -96,8 +100,9 @@ def test_one_channel_is_described_once():
     the device with nothing owning it, and unload -- which walks runtime_data --
     would never stop it. That is a session left open for the life of Home
     Assistant, on a device that locks out a host making too many."""
-    configs = channel_configs(_entry(subentries={
-        "first": _sub(3), "second": _sub(3), "other": _sub(4)}))
+    configs = channel_configs(
+        _entry(subentries={"first": _sub(3), "second": _sub(3), "other": _sub(4)})
+    )
 
     assert [c[1]["channel"] for c in configs] == [3, 4]
     assert [c[0] for c in configs] == ["first", "other"]
@@ -107,21 +112,79 @@ def test_a_string_and_an_int_are_the_same_channel():
     """The two shapes are both in the wild, so the duplicate above is not a
     hypothetical: one entry added through the form and one imported can disagree
     about the type and agree about the channel."""
-    configs = channel_configs(_entry(subentries={
-        "as_int": _sub(3), "as_string": _sub("3")}))
+    configs = channel_configs(
+        _entry(subentries={"as_int": _sub(3), "as_string": _sub("3")})
+    )
 
     assert len(configs) == 1
 
 
+# --- the connection belongs to the entry, not the channel --------------------
+
+
+def test_the_entrys_connection_wins_over_a_stale_subentry_copy():
+    """reauth and reconfigure write `entry.data`, while a merged recorder's
+    coordinators are built from subentry data. The subentries kept their own copy
+    from the add flow, so without this overlay the reload after a successful
+    reauth rebuilt every coordinator from the old password -- the new one was
+    accepted, written, and ignored, and reauth started again forever."""
+    entry = _entry(
+        data={"address": "1.2.3.4", "username": "admin", "password": "new"},
+        subentries={"s0": _sub(0)},
+    )
+    entry.subentries["s0"].data.update({"username": "admin", "password": "old"})
+
+    config = channel_configs(entry)[0][1]
+
+    assert config["password"] == "new"
+    assert config["username"] == "admin"
+
+
+def test_a_connection_field_the_entry_does_not_carry_keeps_the_subentrys():
+    """A subentry written before a field existed, or one added by hand, still
+    sets it: the overlay adds what the entry has and takes nothing away."""
+    entry = _entry(subentries={"s0": _sub(0)})
+    entry.subentries["s0"].data["port"] = "8080"
+
+    config = channel_configs(entry)[0][1]
+
+    assert config["port"] == "8080"
+    assert config["address"] == "1.2.3.4"
+
+
+def test_a_mixed_device_entry_keeps_each_channels_own_connection():
+    """The old address-only migration could merge two devices that share an
+    address on different ports into one entry. Enforcing the entry's connection
+    there would point the second device's channel and entities at the first
+    recorder -- and the merge cannot repair it, because the entry is a group of
+    one and is left alone."""
+    entry = _entry(
+        data={"address": "10.0.0.1", "port": "80", "password": "first"},
+        subentries={"s0": _sub(0), "s1": _sub(1)},
+    )
+    entry.subentries["s0"].data.update({"port": "80", "password": "first"})
+    entry.subentries["s1"].data.update({"port": "81", "password": "second"})
+
+    configs = {c[0]: c[1] for c in channel_configs(entry)}
+
+    assert configs["s0"]["port"] == "80"
+    assert configs["s0"]["password"] == "first"
+    assert configs["s1"]["port"] == "81"
+    assert configs["s1"]["password"] == "second"
+
+
 # --- per channel event lists ------------------------------------------------
+
 
 def test_each_channel_keeps_its_own_event_list():
     """The whole point of a subentry per channel. One channel's selection
     becoming every channel's would be a silent, confusing regression."""
-    entry = _entry(subentries={
-        "s0": _sub(0, ["VideoMotion"]),
-        "s9": _sub(9, ["AlarmLocal"]),
-    })
+    entry = _entry(
+        subentries={
+            "s0": _sub(0, ["VideoMotion"]),
+            "s9": _sub(9, ["AlarmLocal"]),
+        }
+    )
     configs = dict((c[0], c[1]) for c in channel_configs(entry))
 
     assert events_for_channel(entry, configs["s0"]) == ["VideoMotion"]

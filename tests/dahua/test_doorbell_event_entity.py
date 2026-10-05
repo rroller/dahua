@@ -22,8 +22,15 @@ from custom_components.dahua import event as event_module
 from custom_components.dahua.const import EVENT, PLATFORMS
 from custom_components.dahua.event import DahuaDoorbellEvent, async_setup_entry
 
+from . import adds_entities
+
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, doorbell=True, timestamp=0):
         self._doorbell = doorbell
         self._timestamp = timestamp
@@ -54,8 +61,9 @@ class _Coordinator:
 
 @pytest.fixture(autouse=True)
 def _skip_ha_plumbing(monkeypatch):
-    monkeypatch.setattr(event_module.DahuaEventDrivenEntity, "__init__",
-                        lambda self, c, e: None)
+    monkeypatch.setattr(
+        event_module.DahuaEventDrivenEntity, "__init__", lambda self, c, e: None
+    )
 
 
 def _entity(coordinator):
@@ -69,6 +77,7 @@ def _entity(coordinator):
 
 # --- the platform ------------------------------------------------------------
 
+
 def test_the_event_platform_is_registered():
     assert EVENT in PLATFORMS
 
@@ -77,8 +86,11 @@ async def test_a_doorbell_gets_one():
     added = []
     coordinator = _Coordinator(doorbell=True)
     hass = type("H", (), {"data": {}})()
-    await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), added.extend)
+    await async_setup_entry(
+        hass,
+        type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})(),
+        adds_entities(added),
+    )
 
     assert len(added) == 1
     assert isinstance(added[0], DahuaDoorbellEvent)
@@ -89,13 +101,17 @@ async def test_a_camera_does_not():
     added = []
     coordinator = _Coordinator(doorbell=False)
     hass = type("H", (), {"data": {}})()
-    await async_setup_entry(hass, type("E", (), {"entry_id": "e1",
-                          "runtime_data": {0: coordinator}})(), added.extend)
+    await async_setup_entry(
+        hass,
+        type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})(),
+        adds_entities(added),
+    )
 
     assert added == []
 
 
 # --- firing -------------------------------------------------------------------
+
 
 async def test_it_fires_on_the_press():
     c = _Coordinator(timestamp=1_700_000_000)
@@ -128,9 +144,9 @@ def test_it_declares_itself_a_doorbell():
     entity = _entity(_Coordinator())
 
     assert entity.device_class == "doorbell"
-    assert entity.event_types == ["ring"], (
-        "Home Assistant refuses to accept a doorbell that cannot ring"
-    )
+    assert entity.event_types == [
+        "ring"
+    ], "Home Assistant refuses to accept a doorbell that cannot ring"
 
 
 def test_a_doorbell_must_be_able_to_ring():
@@ -163,6 +179,7 @@ def test_its_unique_id_does_not_collide_with_the_binary_sensor():
 
 # --- the thing that makes two subscribers possible ---------------------------
 
+
 def test_two_entities_can_want_the_same_event():
     """Assignment meant the second replaced the first, silently."""
     c = object.__new__(DahuaDataUpdateCoordinator)
@@ -192,6 +209,7 @@ def test_listeners_for_different_events_stay_separate():
 
 # --- and the thing that lets one of them leave -------------------------------
 
+
 def _coordinator_with_listeners():
     c = object.__new__(DahuaDataUpdateCoordinator)
     c._channel = 0
@@ -204,8 +222,9 @@ def test_removing_one_listener_leaves_the_other():
     other's subscription with it."""
     c = _coordinator_with_listeners()
     called = []
-    drop_first = c.add_dahua_event_listener("DoorbellPressed",
-                                            lambda: called.append("sensor"))
+    drop_first = c.add_dahua_event_listener(
+        "DoorbellPressed", lambda: called.append("sensor")
+    )
     c.add_dahua_event_listener("DoorbellPressed", lambda: called.append("event"))
 
     drop_first()
@@ -250,7 +269,7 @@ def test_removing_twice_is_harmless_while_another_listener_remains():
 
     Found by mutation: deleting the membership check left the test above green."""
     c = _coordinator_with_listeners()
-    kept = lambda: None                                      # noqa: E731
+    kept = lambda: None  # noqa: E731
     drop = c.add_dahua_event_listener("DoorbellPressed", lambda: None)
     c.add_dahua_event_listener("DoorbellPressed", kept)
 
@@ -265,7 +284,7 @@ def test_a_plate_listener_can_be_dropped_too():
     being called either."""
     c = object.__new__(DahuaDataUpdateCoordinator)
     c._plate_listeners = []
-    kept = lambda: None                                      # noqa: E731
+    kept = lambda: None  # noqa: E731
     drop = c.add_plate_listener(lambda: None)
     c.add_plate_listener(kept)
 
@@ -279,6 +298,7 @@ def test_a_plate_listener_can_be_dropped_too():
 # Everything above drives the listener mechanics on the coordinator directly. The
 # entity's own `async_added_to_hass` was never called, so what it does with the remover
 # it is handed had no test -- which is the half that #842 was about.
+
 
 async def test_it_subscribes_when_added_and_lets_go_when_removed():
     """The remover goes to `async_on_remove` rather than being discarded. Whether a key
@@ -297,8 +317,7 @@ async def test_it_subscribes_when_added_and_lets_go_when_removed():
     for undo in list(entity._on_remove):
         undo()
 
-    assert coordinator._dahua_event_listeners == {}, (
-        "the callback outlived the entity")
+    assert coordinator._dahua_event_listeners == {}, "the callback outlived the entity"
 
 
 def test_the_doorbell_event_is_pushed_not_polled():

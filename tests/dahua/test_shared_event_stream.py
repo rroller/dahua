@@ -29,7 +29,6 @@ def _clean_streams():
     dahua_module._HOST_STREAMS.clear()
 
 
-
 @pytest.fixture(autouse=True)
 async def _stop_host_streams(hass):
     """Cancel and await each host stream's task before Home Assistant looks.
@@ -95,6 +94,7 @@ async def _settle():
 
 # --- one stream, not eleven -------------------------------------------------
 
+
 async def test_eleven_channels_share_one_stream(hass):
     stream = _host_stream(hass, ADDRESS)
     coordinators = [_Coordinator(i, ["VideoMotion"]) for i in range(11)]
@@ -118,6 +118,7 @@ async def test_a_trailing_slash_is_the_same_host(hass):
 
 
 # --- the refcount case that would break an NVR -----------------------------
+
 
 async def test_unloading_one_channel_leaves_the_others_streaming(hass):
     """Reloading a single channel calls unload then setup on that entry only.
@@ -173,6 +174,7 @@ async def test_the_stream_moves_off_a_departing_owner(hass):
 
 # --- dispatch ---------------------------------------------------------------
 
+
 async def test_an_event_reaches_only_its_own_channel(hass):
     stream = _host_stream(hass, ADDRESS)
     channels = [_Coordinator(i, ["VideoMotion"]) for i in range(4)]
@@ -185,7 +187,9 @@ async def test_an_event_reaches_only_its_own_channel(hass):
     assert len(channels[2].handled) == 1
     assert channels[2].handled[0]["Code"] == "VideoMotion"
     for i in (0, 1, 3):
-        assert channels[i].handled == [], f"channel {i} received another channel's event"
+        assert (
+            channels[i].handled == []
+        ), f"channel {i} received another channel's event"
 
 
 async def test_an_unconfigured_channel_stays_silent(hass):
@@ -272,7 +276,7 @@ async def test_a_failing_alarmlocal_handler_does_not_end_the_stream(hass):
     stream.register(boom)
     await _settle()
 
-    stream.on_receive(ALARM_CH1, 0)     # must not raise
+    stream.on_receive(ALARM_CH1, 0)  # must not raise
 
     assert len(boom.handled) == 1, "the event still reached the handler"
 
@@ -304,7 +308,9 @@ async def test_alarmlocal_still_filtered_by_channel_on_a_multi_channel_host(hass
     stream.on_receive(ALARM_CH1, 0)  # index=1
 
     assert len(ch1.handled) == 1
-    assert ch0.handled == [], "AlarmLocal leaked to a channel that isn't the terminal's index"
+    assert (
+        ch0.handled == []
+    ), "AlarmLocal leaked to a channel that isn't the terminal's index"
 
 
 async def test_each_channel_gets_its_own_copy(hass):
@@ -332,6 +338,7 @@ async def test_junk_on_the_wire_is_ignored(hass):
 
 
 # --- the attach itself ------------------------------------------------------
+
 
 async def test_expanded_shared_subscription_attaches_with_all_events(hass):
     """Use All only when sharing makes the event list broader than before #615."""
@@ -400,7 +407,7 @@ async def test_derived_smart_motion_allows_raw_ivs_event_through(hass):
 
     stream.on_receive(
         (
-            b'Code=CrossRegionDetection;action=Start;index=0;'
+            b"Code=CrossRegionDetection;action=Start;index=0;"
             b'data={"Object":{"ObjectType":"Human"}}\r\n'
         ),
         0,
@@ -446,6 +453,7 @@ async def test_a_channel_with_no_events_starts_nothing(hass):
 
 # --- what the All fallback must not cost --------------------------------------
 
+
 async def test_each_channel_still_gets_its_own_codes_under_all(hass):
     """The guarantee the pre-#615 union attach used to hold, restated for `All`.
 
@@ -489,6 +497,7 @@ async def test_a_channels_own_code_is_not_dropped_because_a_sibling_wanted_it(ha
 
 # --- and the coupling that keeps DERIVES_INTO honest --------------------------
 
+
 def test_a_translated_code_that_becomes_selectable_must_be_mapped():
     """`translate_event_code` rewrites four raw codes, and the host filter runs
     before it, so any rewrite whose *target* a user can select needs its source
@@ -517,8 +526,8 @@ def test_a_translated_code_that_becomes_selectable_must_be_mapped():
             continue
         assert raw in DERIVES_INTO, (
             "%s is selectable and is derived from %s, which the host filter "
-            "drops before translation. Add it to DERIVES_INTO."
-            % (selectable, raw))
+            "drops before translation. Add it to DERIVES_INTO." % (selectable, raw)
+        )
         assert set(selectable) <= set(DERIVES_INTO[raw])
 
 
@@ -532,6 +541,7 @@ def test_the_mapped_sources_are_codes_a_device_actually_sends():
 
 
 # --- the flag has to survive an incompletely built stream ---------------------
+
 
 def test_the_broadened_flag_has_a_class_level_default():
     """Both `_async_run` and `on_receive` read `_using_all_events`, and several

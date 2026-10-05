@@ -20,16 +20,19 @@ from types import SimpleNamespace
 import pytest
 
 from custom_components.dahua import config_flow
-from custom_components.dahua.config_flow import (OPTIONS_SECTION_PLATFORMS,
-                                                 DahuaFlowHandler,
-                                                 DahuaOptionsFlowHandler,
-                                                 _flatten_sections,
-                                                 channel_unique_id)
+from custom_components.dahua.config_flow import (
+    OPTIONS_SECTION_PLATFORMS,
+    DahuaFlowHandler,
+    DahuaOptionsFlowHandler,
+    _flatten_sections,
+    channel_unique_id,
+)
 
 SERIAL = "BC0A198PAJ779DF"
 
 
 # --- the id, now computed in one place ---------------------------------------
+
 
 def test_channel_zero_is_the_bare_serial():
     assert channel_unique_id(SERIAL, 0) == SERIAL
@@ -49,6 +52,7 @@ def test_no_channel_is_channel_zero():
 
 
 # --- a channel that cannot be added has to say so ----------------------------
+
 
 class _Session:
     def __init__(self, *args, **kwargs):
@@ -75,8 +79,12 @@ def _import_flow(monkeypatch, raises=None):
     monkeypatch.setattr(config_flow, "DahuaClient", _Device)
     monkeypatch.setattr(config_flow, "ClientSession", _Session)
     monkeypatch.setattr(config_flow, "TCPConnector", lambda **kwargs: None)
-    monkeypatch.setattr(config_flow.ir, "async_create_issue",
-                        lambda *args, **kwargs: raised.append(kwargs))
+    monkeypatch.setattr(
+        config_flow.ir,
+        "async_create_issue",
+        lambda *args, **kwargs: raised.append(kwargs),
+    )
+
     # The refinement probes TCP after a connection failure; not the subject here.
     async def _no_probe(address, port, timeout=None):
         return False
@@ -89,9 +97,15 @@ def _import_flow(monkeypatch, raises=None):
 
 
 def _import_data(channel=7):
-    return {"username": "u", "password": "p", "address": "10.0.0.5",
-            "port": "80", "rtsp_port": "554", "channel": channel,
-            "name": "Channel 8"}
+    return {
+        "username": "u",
+        "password": "p",
+        "address": "10.0.0.5",
+        "port": "80",
+        "rtsp_port": "554",
+        "channel": channel,
+        "name": "Channel 8",
+    }
 
 
 async def test_a_channel_that_cannot_be_added_raises_a_repair(monkeypatch):
@@ -156,8 +170,13 @@ def test_the_abort_reason_has_a_translation():
     import json
     import pathlib
 
-    path = (pathlib.Path(__file__).parents[2]
-            / "custom_components" / "dahua" / "translations" / "en.json")
+    path = (
+        pathlib.Path(__file__).parents[2]
+        / "custom_components"
+        / "dahua"
+        / "translations"
+        / "en.json"
+    )
     strings = json.loads(path.read_text(encoding="utf-8"))["config"]
 
     assert "channel_not_added" in strings["abort"]
@@ -167,18 +186,26 @@ def test_the_repair_has_a_translation():
     import json
     import pathlib
 
-    path = (pathlib.Path(__file__).parents[2]
-            / "custom_components" / "dahua" / "translations" / "en.json")
+    path = (
+        pathlib.Path(__file__).parents[2]
+        / "custom_components"
+        / "dahua"
+        / "translations"
+        / "en.json"
+    )
     issues = json.loads(path.read_text(encoding="utf-8"))["issues"]
 
     assert "channel_not_added" in issues
     for placeholder in ("{channel}", "{address}", "{reason}"):
-        blob = issues["channel_not_added"]["title"] + \
-            issues["channel_not_added"]["description"]
+        blob = (
+            issues["channel_not_added"]["title"]
+            + issues["channel_not_added"]["description"]
+        )
         assert placeholder in blob, placeholder
 
 
 # --- reconfigure has to move the id with the channel -------------------------
+
 
 def _reconfigure_flow(monkeypatch, entries=()):
     class _Device:
@@ -199,27 +226,47 @@ def _reconfigure_flow(monkeypatch, entries=()):
     monkeypatch.setattr(config_flow, "TCPConnector", lambda **kwargs: None)
 
     entry = SimpleNamespace(
-        entry_id="this", unique_id=SERIAL + "_3",
-        data={"username": "u", "password": "p", "address": "10.0.0.5",
-              "port": "80", "rtsp_port": "554", "channel": 3})
+        entry_id="this",
+        unique_id=SERIAL + "_3",
+        title="Front Door",
+        data={
+            "username": "u",
+            "password": "p",
+            "address": "10.0.0.5",
+            "port": "80",
+            "rtsp_port": "554",
+            "channel": 3,
+        },
+    )
 
     seen = {}
     handler = DahuaFlowHandler()
     handler.hass = SimpleNamespace()
+    # Home Assistant hands a real flow a writable context; a handler built here
+    # inherits a read-only one, and the step fills title_placeholders in it.
+    handler.context = {}
     handler._get_reconfigure_entry = lambda: entry
     handler._async_current_entries = lambda: [entry, *entries]
 
     def _abort(target, **kwargs):
         seen.update(kwargs)
-        return {"type": "abort", "reason": kwargs.get("reason", "reconfigure_successful")}
+        return {
+            "type": "abort",
+            "reason": kwargs.get("reason", "reconfigure_successful"),
+        }
 
     handler.async_update_reload_and_abort = _abort
     return handler, entry, seen
 
 
 def _submitted(channel):
-    return {"address": "10.0.0.5", "port": "80", "rtsp_port": "554",
-            "channel": channel, "use_https": False}
+    return {
+        "address": "10.0.0.5",
+        "port": "80",
+        "rtsp_port": "554",
+        "channel": channel,
+        "use_https": False,
+    }
 
 
 async def test_changing_the_channel_moves_the_unique_id(monkeypatch):
@@ -243,8 +290,11 @@ async def test_leaving_the_channel_alone_leaves_the_id_alone(monkeypatch):
 async def test_a_channel_another_entry_already_holds_is_refused(monkeypatch):
     """Two entries on one id would read one camera twice, with duplicate entities
     and nothing to tell them apart."""
-    other = SimpleNamespace(entry_id="other", unique_id=SERIAL + "_5",
-                            data={"address": "10.0.0.5", "channel": 5})
+    other = SimpleNamespace(
+        entry_id="other",
+        unique_id=SERIAL + "_5",
+        data={"address": "10.0.0.5", "channel": 5},
+    )
     handler, _entry, seen = _reconfigure_flow(monkeypatch, entries=[other])
 
     result = await handler.async_step_reconfigure(_submitted(5))
@@ -264,12 +314,14 @@ async def test_moving_to_channel_zero_uses_the_bare_serial(monkeypatch):
 
 # --- the options form --------------------------------------------------------
 
+
 def _options_handler(monkeypatch):
     """config_entry is a read-only property on OptionsFlow, and __init__ reads it, so
     it is patched on the class before the handler exists."""
     entry = SimpleNamespace(data={}, options={}, entry_id="e")
-    monkeypatch.setattr(DahuaOptionsFlowHandler, "config_entry",
-                        property(lambda self: entry))
+    monkeypatch.setattr(
+        DahuaOptionsFlowHandler, "config_entry", property(lambda self: entry)
+    )
     handler = DahuaOptionsFlowHandler()
     # async_step_init is what sets this in the real flow, and it only forwards to
     # async_step_user, so the tests go straight to the step they are about.
@@ -291,8 +343,11 @@ async def test_the_section_is_collapsed(monkeypatch):
     """An expanded section is the nineteen field form again with extra furniture."""
     result = await _options_handler(monkeypatch).async_step_user()
 
-    marker = next(m for m in result["data_schema"].schema
-                  if str(m.schema) == OPTIONS_SECTION_PLATFORMS)
+    marker = next(
+        m
+        for m in result["data_schema"].schema
+        if str(m.schema) == OPTIONS_SECTION_PLATFORMS
+    )
 
     assert result["data_schema"].schema[marker].options["collapsed"] is True
 
@@ -308,25 +363,30 @@ async def test_saving_stores_the_toggles_flat(monkeypatch):
     handler._async_move_device = _no_move
     handler.async_create_entry = lambda **kwargs: {"type": "create_entry"}
 
-    await handler.async_step_user({
-        OPTIONS_SECTION_PLATFORMS: {"binary_sensor": False, "camera": True},
-        "scan_interval": 120,
-    })
+    await handler.async_step_user(
+        {
+            OPTIONS_SECTION_PLATFORMS: {"binary_sensor": False, "camera": True},
+            "scan_interval": 120,
+        }
+    )
 
     assert handler.options["binary_sensor"] is False
     assert handler.options["camera"] is True
     assert handler.options["scan_interval"] == 120
-    assert OPTIONS_SECTION_PLATFORMS not in handler.options, (
-        "the nesting must not reach the stored options")
+    assert (
+        OPTIONS_SECTION_PLATFORMS not in handler.options
+    ), "the nesting must not reach the stored options"
 
 
 def test_a_section_is_flattened_back_to_the_stored_shape():
     """Everything that reads these does entry.options.get("binary_sensor"), so the
     nesting Home Assistant returns must not reach the stored options."""
-    flat = _flatten_sections({
-        OPTIONS_SECTION_PLATFORMS: {"binary_sensor": False, "camera": True},
-        "scan_interval": 120,
-    })
+    flat = _flatten_sections(
+        {
+            OPTIONS_SECTION_PLATFORMS: {"binary_sensor": False, "camera": True},
+            "scan_interval": 120,
+        }
+    )
 
     assert flat == {"binary_sensor": False, "camera": True, "scan_interval": 120}
 
@@ -349,15 +409,21 @@ def test_the_section_has_a_translation():
     import json
     import pathlib
 
-    path = (pathlib.Path(__file__).parents[2]
-            / "custom_components" / "dahua" / "translations" / "en.json")
+    path = (
+        pathlib.Path(__file__).parents[2]
+        / "custom_components"
+        / "dahua"
+        / "translations"
+        / "en.json"
+    )
     step = json.loads(path.read_text(encoding="utf-8"))["options"]["step"]["user"]
 
     assert OPTIONS_SECTION_PLATFORMS in step.get("sections", {})
     moved = step["sections"][OPTIONS_SECTION_PLATFORMS]["data"]
     assert "binary_sensor" in moved
-    assert "binary_sensor" not in step["data"], (
-        "a label left at the top level renders nowhere and misleads the next reader")
+    assert (
+        "binary_sensor" not in step["data"]
+    ), "a label left at the top level renders nowhere and misleads the next reader"
 
 
 def test_why_the_entry_id_check_is_belt_and_braces():

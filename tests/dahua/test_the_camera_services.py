@@ -24,6 +24,8 @@ method name has reached CI here before.
 
 import pytest
 
+from homeassistant.exceptions import HomeAssistantError
+
 from custom_components.dahua.camera import DahuaCamera, PTZ_MOVE_CODES
 from custom_components.dahua.client import DahuaClient
 
@@ -47,7 +49,8 @@ class _Client:
             # be iterable, awaitable and whatever else was asked for.
             raise AttributeError(name)
         assert hasattr(DahuaClient, name), (
-            "camera.py called client.%s, which DahuaClient does not have" % name)
+            "camera.py called client.%s, which DahuaClient does not have" % name
+        )
 
         async def record(*args, **kwargs):
             self.calls.append((name, args, kwargs))
@@ -63,17 +66,37 @@ class _Client:
 
 
 class _Coordinator:
-    def __init__(self, model="IPC-HDW1234", vto_client=None):
+    def __init__(self, model="IPC-HDW1234", vto_client=None, profile_is_writable=True):
         self.client = _Client()
         self.refreshed = 0
         self.model = model
+        self.profile_is_writable = profile_is_writable
         self.vto_client = vto_client
 
     def get_model(self):
         return self.model
 
+    def video_profile_mode_is_writable(self):
+        """Whether writing Config[0] selects the profile on this channel.
+
+        Overridden per test where the point is the warning; True here so the
+        existing assertions stay about which call the service makes.
+        """
+        return self.profile_is_writable
+
+    def describe_video_profile_shape(self):
+        return "ordinary" if self.profile_is_writable else "general"
+
     def get_infrared_profile(self):
         return "0"
+
+    def get_infrared_bank(self):
+        """The service passes it through, the same as the light entity does."""
+        return "MiddleLight"
+
+    def get_infrared_v2_row(self):
+        """None: this file's camera is a single camera on the v1 path."""
+        return None
 
     def get_profile_mode(self):
         return "1"
@@ -111,13 +134,17 @@ def _camera(coordinator=None, **kwargs):
 
 # --- motion detection, which the camera platform offers as a standard service ---
 
+
 async def test_enabling_motion_detection_uses_the_logical_channel():
     camera = _camera()
 
     await camera.async_enable_motion_detection()
 
     assert camera._coordinator.client.only() == (
-        "enable_motion_detection", (LOGICAL, True), {})
+        "enable_motion_detection",
+        (LOGICAL, True),
+        {},
+    )
     assert camera._coordinator.refreshed == 1
 
 
@@ -129,7 +156,10 @@ async def test_disabling_motion_detection_sends_False():
     await camera.async_disable_motion_detection()
 
     assert camera._coordinator.client.only() == (
-        "enable_motion_detection", (LOGICAL, False), {})
+        "enable_motion_detection",
+        (LOGICAL, False),
+        {},
+    )
     assert camera._coordinator.refreshed == 1
 
 
@@ -158,6 +188,7 @@ async def test_the_same_guard_is_on_the_disable_path():
 
 # --- the two lights ---------------------------------------------------------
 
+
 async def test_the_infrared_service_sends_the_infrared_profile():
     """`get_infrared_profile` rather than `get_profile_mode`: the infrared light
     does not always live in the same profile as everything else."""
@@ -166,7 +197,10 @@ async def test_the_infrared_service_sends_the_infrared_profile():
     await camera.async_set_infrared_mode("Manual", 50)
 
     assert camera._coordinator.client.only() == (
-        "async_set_lighting_v1_mode", (LOGICAL, "Manual", 50, "0"), {})
+        "async_set_lighting_v1_mode",
+        (LOGICAL, "Manual", 50, "0", "MiddleLight"),
+        {},
+    )
     assert camera._coordinator.refreshed == 1
 
 
@@ -180,11 +214,14 @@ async def test_the_illuminator_service_addresses_the_same_light_as_the_toggle():
 
     assert camera._coordinator.client.only() == (
         "async_set_lighting_v2_mode",
-        (LOGICAL, "Manual", 80, "1", 1, "NearLight"), {})
+        (LOGICAL, "Manual", 80, "1", 1, "NearLight"),
+        {},
+    )
     assert camera._coordinator.refreshed == 1
 
 
 # --- the two that use the other channel -------------------------------------
+
 
 async def test_ptz_move_uses_the_channel_number_not_the_index():
     """The PTZ path is 1-based. Sending the logical index would pan the camera one
@@ -217,7 +254,10 @@ async def test_going_to_a_preset_uses_the_channel_number():
     await camera.async_goto_preset_position(4)
 
     assert camera._coordinator.client.only() == (
-        "async_goto_preset_position", (NUMBER, 4), {})
+        "async_goto_preset_position",
+        (NUMBER, 4),
+        {},
+    )
     assert camera._coordinator.refreshed == 1
 
 
@@ -229,11 +269,11 @@ async def test_the_SDT4E425_goes_over_rpc2_on_channel_one():
 
     await camera.async_goto_preset_position(7)
 
-    assert camera._coordinator.client.only() == (
-        "async_goto_preset_rpc2", (1, 7), {})
+    assert camera._coordinator.client.only() == ("async_goto_preset_rpc2", (1, 7), {})
 
 
 # --- day, night and recording ----------------------------------------------
+
 
 async def test_the_day_night_service_passes_the_config_type_through():
     camera = _camera()
@@ -241,7 +281,10 @@ async def test_the_day_night_service_passes_the_config_type_through():
     await camera.async_set_video_in_day_night_mode("day", "Color")
 
     assert camera._coordinator.client.only() == (
-        "async_set_video_in_day_night_mode", (LOGICAL, "day", "Color"), {})
+        "async_set_video_in_day_night_mode",
+        (LOGICAL, "day", "Color"),
+        {},
+    )
     assert camera._coordinator.refreshed == 1
 
 
@@ -251,7 +294,10 @@ async def test_the_record_mode_service():
     await camera.async_set_record_mode("Manual")
 
     assert camera._coordinator.client.only() == (
-        "async_set_record_mode", (LOGICAL, "Manual"), {})
+        "async_set_record_mode",
+        (LOGICAL, "Manual"),
+        {},
+    )
     assert camera._coordinator.refreshed == 1
 
 
@@ -261,14 +307,58 @@ async def test_an_ordinary_camera_sets_the_video_profile_directly():
     await camera.async_set_video_profile_mode("night")
 
     assert camera._coordinator.client.only() == (
-        "async_set_video_profile_mode", (LOGICAL, "night"), {})
+        "async_set_video_profile_mode",
+        (LOGICAL, "night"),
+        {},
+    )
 
 
-@pytest.mark.parametrize("model", [
-    "DHI-NVR4108HS-8P-4KS2",
-    "IPC-Color4K-T",
-    "Lorex NVR4108HS",
-])
+async def test_a_shape_that_cannot_select_the_profile_is_refused():
+    """#458, which answered `Unknown error` from February 2025. VideoInMode comes in
+    three shapes and this writes Config[0], which selects the profile in only one.
+
+    This used to warn and write anyway, left as warn-not-refuse pending a device in
+    each shape to justify refusing. That evidence is now in: on the general shape a
+    DHI-NVR5464 accepts the write with 200 and keeps rendering the profile it was on,
+    and the #458 reporter's camera threw on it. So the service refuses with a reason
+    rather than sending a write that is ignored or errors -- and nothing is written.
+    """
+    camera = _camera(profile_is_writable=False)
+
+    with pytest.raises(HomeAssistantError) as caught:
+        await camera.async_set_video_profile_mode("night")
+
+    assert camera._coordinator.client.calls == [], "a doomed write was sent anyway"
+    assert caught.value.translation_key == "video_profile_not_switchable"
+    assert caught.value.translation_placeholders == {
+        "device": "Front Door",
+        "shape": "general",
+    }
+
+
+async def test_an_ordinary_shape_says_nothing(caplog):
+    """The control. A warning on every profile write would be noise, and would train
+    people to ignore the one that matters."""
+    camera = _camera()
+
+    await camera.async_set_video_profile_mode("night")
+
+    said = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and r.name.startswith("custom_components.dahua")
+    ]
+    assert said == [], said
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "DHI-NVR4108HS-8P-4KS2",
+        "IPC-Color4K-T",
+        "Lorex NVR4108HS",
+    ],
+)
 async def test_the_models_that_switch_it_instead(model):
     """A whitelist on the model string, which is the bug class this integration
     keeps finding (#570, #676, #690). Testing it does not endorse it: it records
@@ -293,6 +383,7 @@ async def test_a_model_string_that_merely_contains_a_digit_is_not_matched():
 
 # --- focus, privacy and the overlays ---------------------------------------
 
+
 async def test_adjusting_focus_takes_no_channel():
     """It is one of the few client calls with no channel at all, so an added one
     would be a silent argument shift."""
@@ -301,7 +392,10 @@ async def test_adjusting_focus_takes_no_channel():
     await camera.async_adjustfocus("0.5", "0.2")
 
     assert camera._coordinator.client.only() == (
-        "async_adjustfocus_v1", ("0.5", "0.2"), {})
+        "async_adjustfocus_v1",
+        ("0.5", "0.2"),
+        {},
+    )
     assert camera._coordinator.refreshed == 1
 
 
@@ -310,8 +404,7 @@ async def test_privacy_masking_takes_an_index_and_no_channel():
 
     await camera.async_set_privacy_masking(2, True)
 
-    assert camera._coordinator.client.only() == (
-        "async_setprivacymask", (2, True), {})
+    assert camera._coordinator.client.only() == ("async_setprivacymask", (2, True), {})
 
 
 async def test_the_lens_privacy_mode_is_device_wide():
@@ -321,8 +414,7 @@ async def test_the_lens_privacy_mode_is_device_wide():
 
     await camera.async_set_privacy_mode(True)
 
-    assert camera._coordinator.client.only() == (
-        "async_set_privacy_mode", (True,), {})
+    assert camera._coordinator.client.only() == ("async_set_privacy_mode", (True,), {})
     assert camera._coordinator.refreshed == 1
 
 
@@ -332,7 +424,10 @@ async def test_the_channel_title_overlay():
     await camera.async_set_enable_channel_title(False)
 
     assert camera._coordinator.client.only() == (
-        "async_enable_channel_title", (LOGICAL, False), {})
+        "async_enable_channel_title",
+        (LOGICAL, False),
+        {},
+    )
 
 
 async def test_the_time_overlay():
@@ -341,7 +436,10 @@ async def test_the_time_overlay():
     await camera.async_set_enable_time_overlay(True)
 
     assert camera._coordinator.client.only() == (
-        "async_enable_time_overlay", (LOGICAL, True), {})
+        "async_enable_time_overlay",
+        (LOGICAL, True),
+        {},
+    )
 
 
 async def test_the_text_overlay_carries_its_group():
@@ -352,7 +450,10 @@ async def test_the_text_overlay_carries_its_group():
     await camera.async_set_enable_text_overlay(2, True)
 
     assert camera._coordinator.client.only() == (
-        "async_enable_text_overlay", (LOGICAL, 2, True), {})
+        "async_enable_text_overlay",
+        (LOGICAL, 2, True),
+        {},
+    )
 
 
 async def test_the_custom_overlay_carries_its_group():
@@ -361,10 +462,14 @@ async def test_the_custom_overlay_carries_its_group():
     await camera.async_set_enable_custom_overlay(3, False)
 
     assert camera._coordinator.client.only() == (
-        "async_enable_custom_overlay", (LOGICAL, 3, False), {})
+        "async_enable_custom_overlay",
+        (LOGICAL, 3, False),
+        {},
+    )
 
 
 # --- IVS rules --------------------------------------------------------------
+
 
 async def test_enabling_all_ivs_rules():
     camera = _camera()
@@ -372,7 +477,10 @@ async def test_enabling_all_ivs_rules():
     await camera.async_set_enable_all_ivs_rules(True)
 
     assert camera._coordinator.client.only() == (
-        "async_set_all_ivs_rules", (LOGICAL, True), {})
+        "async_set_all_ivs_rules",
+        (LOGICAL, True),
+        {},
+    )
 
 
 async def test_enabling_one_ivs_rule_by_index():
@@ -381,10 +489,14 @@ async def test_enabling_one_ivs_rule_by_index():
     await camera.async_enable_ivs_rule(1, False)
 
     assert camera._coordinator.client.only() == (
-        "async_set_ivs_rule", (LOGICAL, 1, False), {})
+        "async_set_ivs_rule",
+        (LOGICAL, 1, False),
+        {},
+    )
 
 
 # --- the doorbell services --------------------------------------------------
+
 
 async def test_opening_a_door_takes_the_door_id_and_no_channel():
     """A VTO's doors are numbered by the access control module, not by video
@@ -394,7 +506,10 @@ async def test_opening_a_door_takes_the_door_id_and_no_channel():
     await camera.async_vto_open_door(1)
 
     assert camera._coordinator.client.only() == (
-        "async_access_control_open_door", (1,), {})
+        "async_access_control_open_door",
+        (1,),
+        {},
+    )
 
 
 async def test_rebooting_does_not_refresh():
@@ -409,6 +524,7 @@ async def test_rebooting_does_not_refresh():
 
 
 # --- and the property the platform reads ------------------------------------
+
 
 def test_motion_detection_status_comes_from_the_coordinator():
     assert _camera().motion_detection_enabled is True

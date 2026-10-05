@@ -1,5 +1,6 @@
 """Tests for host-shared camera uptime and reboot generation detection."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -15,9 +16,11 @@ def _coordinator(address, uptime):
     return SimpleNamespace(
         _address=address,
         client=SimpleNamespace(
-            async_get_uptime_last=AsyncMock(side_effect=uptime)
-            if isinstance(uptime, list)
-            else AsyncMock(return_value=uptime)
+            async_get_uptime_last=(
+                AsyncMock(side_effect=uptime)
+                if isinstance(uptime, list)
+                else AsyncMock(return_value=uptime)
+            )
         ),
     )
 
@@ -44,12 +47,8 @@ async def test_same_host_multiple_coordinators_share_one_uptime_read():
         "monotonic",
         side_effect=[100.0, 100.0, 100.1],
     ):
-        first_generation = (
-            await dahua_module._async_get_host_uptime_generation(first)
-        )
-        second_generation = (
-            await dahua_module._async_get_host_uptime_generation(second)
-        )
+        first_generation = await dahua_module._async_get_host_uptime_generation(first)
+        second_generation = await dahua_module._async_get_host_uptime_generation(second)
 
     assert first_generation == 0
     assert second_generation == 0
@@ -100,12 +99,8 @@ async def test_uptime_rollback_increments_reboot_generation():
             106.0,
         ],
     ):
-        before = await dahua_module._async_get_host_uptime_generation(
-            coordinator
-        )
-        after = await dahua_module._async_get_host_uptime_generation(
-            coordinator
-        )
+        before = await dahua_module._async_get_host_uptime_generation(coordinator)
+        after = await dahua_module._async_get_host_uptime_generation(coordinator)
 
     assert before == 0
     assert after == 1
@@ -132,12 +127,8 @@ async def test_normal_uptime_increase_does_not_increment_generation():
             106.0,
         ],
     ):
-        first = await dahua_module._async_get_host_uptime_generation(
-            coordinator
-        )
-        second = await dahua_module._async_get_host_uptime_generation(
-            coordinator
-        )
+        first = await dahua_module._async_get_host_uptime_generation(coordinator)
+        second = await dahua_module._async_get_host_uptime_generation(coordinator)
 
     assert first == 0
     assert second == 0
@@ -158,12 +149,8 @@ async def test_failed_uptime_read_is_deduped_for_same_poll_burst():
             100.1,
         ],
     ):
-        first = await dahua_module._async_get_host_uptime_generation(
-            coordinator
-        )
-        second = await dahua_module._async_get_host_uptime_generation(
-            coordinator
-        )
+        first = await dahua_module._async_get_host_uptime_generation(coordinator)
+        second = await dahua_module._async_get_host_uptime_generation(coordinator)
 
     # Uptime support is optional; failure must not become a poll failure.
     assert first == 0
@@ -277,7 +264,8 @@ async def test_a_missing_last_raises_rather_than_reading_as_a_reboot(monkeypatch
     generation it already had.
     """
     client, _, _, _ = _uptime_client(
-        monkeypatch, [{"params": {"info": {}}}, {"params": {"info": {}}}])
+        monkeypatch, [{"params": {"info": {}}}, {"params": {"info": {}}}]
+    )
 
     with pytest.raises(RuntimeError):
         await client.async_get_uptime_last()
@@ -291,8 +279,7 @@ async def test_an_answer_with_no_info_at_all_raises_too(monkeypatch):
 
 
 async def test_a_first_attempt_that_fails_is_retried(monkeypatch):
-    client, _, rpc2, _ = _uptime_client(
-        monkeypatch, [TimeoutError(), _answer(500)])
+    client, _, rpc2, _ = _uptime_client(monkeypatch, [TimeoutError(), _answer(500)])
 
     assert await client.async_get_uptime_last() == 500
     assert len(rpc2.calls) == 2
@@ -304,7 +291,8 @@ async def test_the_login_is_dropped_before_the_retry(monkeypatch):
     the registry uses to decide whether to log in again, so it has to be None by the
     time the second attempt asks for the session."""
     client, holder, _, seen = _uptime_client(
-        monkeypatch, [TimeoutError(), _answer(500)])
+        monkeypatch, [TimeoutError(), _answer(500)]
+    )
     original = holder.task
 
     await client.async_get_uptime_last()
@@ -313,12 +301,12 @@ async def test_the_login_is_dropped_before_the_retry(monkeypatch):
     assert seen[0] is original
     assert seen[1] is None, (
         "the second attempt reused the login the first one failed on, which is the "
-        "one thing a reboot guarantees is dead")
+        "one thing a reboot guarantees is dead"
+    )
 
 
 async def test_both_attempts_failing_raises(monkeypatch):
-    client, _, rpc2, _ = _uptime_client(
-        monkeypatch, [TimeoutError(), TimeoutError()])
+    client, _, rpc2, _ = _uptime_client(monkeypatch, [TimeoutError(), TimeoutError()])
 
     with pytest.raises(TimeoutError):
         await client.async_get_uptime_last()
@@ -330,9 +318,41 @@ async def test_it_stops_after_two_attempts(monkeypatch):
     """Bounded on purpose: this runs inside the coordinator poll, and the caller
     already caches a failure so the next poll is not another burst of retries."""
     client, _, rpc2, _ = _uptime_client(
-        monkeypatch, [TimeoutError(), TimeoutError(), _answer(500)])
+        monkeypatch, [TimeoutError(), TimeoutError(), _answer(500)]
+    )
 
     with pytest.raises(TimeoutError):
         await client.async_get_uptime_last()
 
     assert len(rpc2.calls) == 2, "retried more than once"
+
+
+# --- and the one exception that is not the device's fault --------------------
+
+
+async def test_a_cancelled_uptime_read_is_not_treated_as_an_unsupported_device():
+    """Cancellation is how Home Assistant stops a coordinator, not something the
+    device did.
+
+    Everything else in `_async_get_host_uptime_generation` is swallowed on purpose,
+    because uptime is an optional enhancement and a device that cannot answer must
+    not fail the poll. A CancelledError caught by that same handler would be
+    swallowed too, so a coordinator being shut down would carry on into the rest of
+    its cycle and asyncio would warn that the cancellation was ignored.
+
+    The read is deliberately not cached either. `last_read` exists to stop eleven
+    channels of a recorder repeating a request the device just refused, and a
+    cancelled read is not a refusal: the next poll should try it.
+    """
+    coordinator = _coordinator("10.0.0.1", 500)
+    coordinator.client.async_get_uptime_last = AsyncMock(
+        side_effect=asyncio.CancelledError()
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await dahua_module._async_get_host_uptime_generation(coordinator)
+
+    state = dahua_module._HOST_UPTIME_STATE["10.0.0.1"]
+    assert (
+        state["last_read"] == 0.0
+    ), "a cancelled read was cached as a failed one, so the next poll will skip it"

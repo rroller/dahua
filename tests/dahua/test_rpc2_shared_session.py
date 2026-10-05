@@ -56,7 +56,6 @@ def _fresh():
     client_module._HOST_RPC2_UNAVAILABLE.clear()
 
 
-
 @pytest.fixture(autouse=True)
 async def _stop_rpc2_keepalives(hass):
     """Cancel and await the keepalive tasks before Home Assistant looks.

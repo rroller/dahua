@@ -32,8 +32,14 @@ class _Coordinator:
     # The real one, so the remover it hands back is the real remover.
     add_plate_listener = DahuaDataUpdateCoordinator.add_plate_listener
 
-    def __init__(self, firmware="4.300.0", build_date="2021-01-01", profile="1",
-                 plate="unknown", plate_data=None):
+    def __init__(
+        self,
+        firmware="4.300.0",
+        build_date="2021-01-01",
+        profile="1",
+        plate="unknown",
+        plate_data=None,
+    ):
         self._plate_listeners = []
         self._firmware = firmware
         self._build_date = build_date
@@ -73,8 +79,10 @@ def real_init(monkeypatch):
     leaves the subclass constructor -- the part under test -- running for real.
     """
     monkeypatch.setattr(
-        sensor_module.DahuaBaseEntity, "__init__",
-        lambda self, c, e: setattr(self, "_coordinator", c))
+        sensor_module.DahuaBaseEntity,
+        "__init__",
+        lambda self, c, e: setattr(self, "_coordinator", c),
+    )
 
 
 def _sensor(cls, coordinator):
@@ -85,6 +93,7 @@ def _sensor(cls, coordinator):
 
 
 # --- the firmware sensor's build date ----------------------------------------
+
 
 def test_the_build_date_is_exposed_as_an_attribute():
     """Templatable alongside the version, which is what makes "tell me when a camera is
@@ -113,6 +122,7 @@ def test_the_build_date_does_not_replace_the_usual_attributes():
 
 # --- the profile sensor's raw number -----------------------------------------
 
+
 def test_the_raw_profile_number_is_exposed_alongside_the_name():
     """The state is the readable name; an automation comparing profiles wants the number
     the device actually uses, and `Lighting_V2[channel][profile]` is indexed by it."""
@@ -128,6 +138,7 @@ def test_the_profile_attribute_keeps_the_base_attributes_too():
 
 
 # --- the licence plate sensor ------------------------------------------------
+
 
 def test_the_plate_sensor_has_its_own_unique_id(real_init):
     """Built with its real constructor, so the id is derived rather than asserted
@@ -156,7 +167,33 @@ def test_what_the_camera_said_about_the_vehicle_is_the_attributes():
     data = {"plate": "ABC1234", "vehicle_color": "Black", "confidence": 92}
     s = _sensor(DahuaLicensePlateSensor, _Coordinator(plate="ABC1234", plate_data=data))
 
-    assert s.extra_state_attributes == data
+    attrs = s.extra_state_attributes
+
+    assert {key: attrs[key] for key in data} == data
+    # On top of the base's rather than instead of them. This used to be an
+    # equality assertion, which is what let the sensor ship without `id` or
+    # `integration` while reading as fully covered.
+    assert attrs["integration"] == "dahua"
+    assert attrs["id"] == "7"
+
+
+def test_a_sensor_with_no_plate_yet_still_reports_the_base_attributes():
+    """The real coordinator returns None before the first plate, and `**None` is a
+    TypeError -- so the merge has to tolerate it.
+
+    `_plate_data` is set to None by hand because this file's double coerces it to
+    `{}` in its constructor, and `{}` merges fine. Testing against the double's
+    coercion rather than the shape production actually produces would pass
+    whatever the code did.
+    """
+    coordinator = _Coordinator()
+    coordinator._plate_data = None
+    assert coordinator.get_last_plate_data() is None, "the None path must be reached"
+
+    attrs = _sensor(DahuaLicensePlateSensor, coordinator).extra_state_attributes
+
+    assert attrs["integration"] == "dahua"
+    assert attrs["id"] == "7"
 
 
 def test_the_plate_sensor_is_pushed_not_polled():
@@ -164,6 +201,7 @@ def test_the_plate_sensor_is_pushed_not_polled():
 
 
 # --- and the leak --------------------------------------------------------------
+
 
 async def test_the_plate_sensor_subscribes_when_added():
     c = _Coordinator()
@@ -199,5 +237,6 @@ async def test_reloading_does_not_accumulate_dead_listeners():
         for undo in list(s._on_remove):
             undo()
 
-    assert c._plate_listeners == [], (
-        "%d dead listeners left behind, one per reload" % len(c._plate_listeners))
+    assert (
+        c._plate_listeners == []
+    ), "%d dead listeners left behind, one per reload" % len(c._plate_listeners)

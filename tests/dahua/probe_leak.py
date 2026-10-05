@@ -1,4 +1,5 @@
 """Does a failed setup give the shared connector back?"""
+
 import pytest
 from unittest.mock import patch
 
@@ -9,8 +10,13 @@ from custom_components import dahua as dahua_module
 from custom_components.dahua.const import DOMAIN
 
 DATA = {
-    "username": "u", "password": "p", "address": "10.9.9.9",
-    "port": 80, "rtsp_port": 554, "name": "Cam", "channel": 0,
+    "username": "u",
+    "password": "p",
+    "address": "10.9.9.9",
+    "port": 80,
+    "rtsp_port": 554,
+    "name": "Cam",
+    "channel": 0,
     "events": ["VideoMotion"],
 }
 
@@ -32,7 +38,8 @@ async def test_a_failed_setup_gives_the_connector_back(hass):
     entry.add_to_hass(hass)
 
     with patch.object(
-        dahua_module.DahuaDataUpdateCoordinator, "_async_update_data",
+        dahua_module.DahuaDataUpdateCoordinator,
+        "_async_update_data",
         side_effect=Exception("device is wedged"),
     ):
         for attempt in range(5):
@@ -50,16 +57,26 @@ async def test_the_update_listener_is_removed_on_unload(hass):
     entry.add_to_hass(hass)
 
     with patch.object(
-        dahua_module.DahuaDataUpdateCoordinator, "_async_update_data",
+        dahua_module.DahuaDataUpdateCoordinator,
+        "_async_update_data",
         return_value={"serialNumber": "S1"},
-    ), patch.object(dahua_module.DahuaDataUpdateCoordinator, "async_start_event_listener"):
+    ), patch.object(
+        dahua_module.DahuaDataUpdateCoordinator, "async_start_event_listener"
+    ):
         for cycle in range(4):
             await dahua_module.async_setup_entry(hass, entry)
-            print("after setup %d: listeners=%d" % (cycle + 1, len(entry.update_listeners)))
+            print(
+                "after setup %d: listeners=%d"
+                % (cycle + 1, len(entry.update_listeners))
+            )
             await dahua_module.async_unload_entry(hass, entry)
-            print("after unload %d: listeners=%d" % (cycle + 1, len(entry.update_listeners)))
+            print(
+                "after unload %d: listeners=%d"
+                % (cycle + 1, len(entry.update_listeners))
+            )
 
-    assert len(entry.update_listeners) <= 1, (
-        "%d listeners are registered; one options change fires that many reloads"
-        % len(entry.update_listeners)
+    assert (
+        len(entry.update_listeners) <= 1
+    ), "%d listeners are registered; one options change fires that many reloads" % len(
+        entry.update_listeners
     )

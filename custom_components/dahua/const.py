@@ -1,4 +1,5 @@
 """Constants for Dahua."""
+
 # Base component constants
 NAME = "Dahua"
 DOMAIN = "dahua"
@@ -11,6 +12,7 @@ ISSUE_URL = "https://github.com/rroller/dahua/issues"
 # Device classes - https://www.home-assistant.io/integrations/binary_sensor/#device-class
 MOTION_SENSOR_DEVICE_CLASS = "motion"
 SAFETY_DEVICE_CLASS = "safety"
+TAMPER_DEVICE_CLASS = "tamper"
 CONNECTIVITY_DEVICE_CLASS = "connectivity"
 SOUND_DEVICE_CLASS = "sound"
 DOOR_DEVICE_CLASS = "door"
@@ -24,6 +26,7 @@ SELECT = "select"
 BUTTON = "button"
 SENSOR = "sensor"
 EVENT = "event"
+NUMBER = "number"
 UPDATE = "update"
 PLATFORMS = [
     BINARY_SENSOR,
@@ -34,6 +37,7 @@ PLATFORMS = [
     BUTTON,
     SENSOR,
     EVENT,
+    NUMBER,
     UPDATE,
 ]
 
@@ -70,6 +74,31 @@ CONF_DISABLE_BACKCHANNEL = "disable_backchannel"
 CONF_AUTHORIZED_PLATES = "authorized_plates"
 CONF_AUTHORIZED_HOLD_TIME = "authorized_hold_time"
 
+# Settings that belong to one channel rather than to the host.
+#
+# `channel_option` reads a channel's own answer before the entry's, and a merged
+# recorder's channel keeps its answer in its subentry's data. So this is the set of
+# keys the #827 migration has to carry across: a key that belongs here and is left
+# behind reverts to whatever was stored when the camera was added, and a key that
+# does not belong here would be frozen per channel instead of following the host.
+#
+# test_channel_options_survive_the_merge.py scans the package for every key read
+# through channel_option, _channel_first or events_for_channel and fails if one is
+# missing from here, so a new per-channel option cannot be added without it.
+CHANNEL_OPTION_KEYS = frozenset(
+    {
+        CONF_AREA,
+        CONF_AUTHORIZED_HOLD_TIME,
+        CONF_AUTHORIZED_PLATES,
+        CONF_AUTO_DETECT_CHANNEL,
+        CONF_DISABLE_BACKCHANNEL,
+        CONF_EVENTS,
+        CONF_MANUAL_SECURITY_LIGHT,
+        CONF_MANUAL_SIREN,
+        CONF_NVR_ACTIVE_DETERRENCE,
+    }
+)
+
 # Events
 EVENT_DAHUA_ANPR_RECOGNIZED = "dahua_anpr_recognized"
 
@@ -78,9 +107,17 @@ DEFAULT_NAME = "Dahua"
 # What an entry subscribes to when nothing has ever said otherwise. Lives here
 # rather than in config_flow because __init__ needs it too, and config_flow
 # imports __init__ back.
-DEFAULT_EVENTS = ["VideoMotion", "CrossLineDetection", "AlarmLocal", "VideoLoss",
-                  "VideoBlind", "AudioMutation", "CrossRegionDetection",
-                  "SmartMotionHuman", "SmartMotionVehicle"]
+DEFAULT_EVENTS = [
+    "VideoMotion",
+    "CrossLineDetection",
+    "AlarmLocal",
+    "VideoLoss",
+    "VideoBlind",
+    "AudioMutation",
+    "CrossRegionDetection",
+    "SmartMotionHuman",
+    "SmartMotionVehicle",
+]
 DEFAULT_AUTHORIZED_HOLD_TIME = 60
 # How often the coordinator polls each device for its settings. Events do not
 # come from polling - they arrive on the event stream - so this only paces the

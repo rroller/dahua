@@ -1,4 +1,5 @@
 """Tests for doorbell detection and ANPR stream event handling."""
+
 from unittest.mock import MagicMock
 import pytest
 
@@ -21,13 +22,13 @@ class TestIsDoorbell:
     @pytest.mark.parametrize(
         "model",
         [
-            "DHI-ITC413-PW4D-IZ1",     # ANPR camera (previously misidentified due to DHI prefix)
-            "DHI-IPC-HFW5241E-Z12E",   # Standard Dahua IPC camera
-            "DHI-IPC-HDW5442TM-AS",    # Eyeball camera
-            "DHI-NVR5216-16P-I",       # NVR
-            "IPC-HFW4431R-Z",          # Dahua bullet without DHI prefix
-            "SD49225T-HN",             # PTZ camera
-            "NVR4208-8P-4KS2",         # NVR without DHI prefix
+            "DHI-ITC413-PW4D-IZ1",  # ANPR camera (previously misidentified due to DHI prefix)
+            "DHI-IPC-HFW5241E-Z12E",  # Standard Dahua IPC camera
+            "DHI-IPC-HDW5442TM-AS",  # Eyeball camera
+            "DHI-NVR5216-16P-I",  # NVR
+            "IPC-HFW4431R-Z",  # Dahua bullet without DHI prefix
+            "SD49225T-HN",  # PTZ camera
+            "NVR4208-8P-4KS2",  # NVR without DHI prefix
         ],
     )
     def test_non_doorbells_return_false(self, model: str):
@@ -58,7 +59,9 @@ class TestIsDoorbell:
 class TestAnprPlateHandlingAcrossStreams:
     """Tests for ANPR plate extraction across event streams."""
 
-    def _setup_coordinator(self, authorized_plates="ABC1234, XYZ5678") -> DahuaDataUpdateCoordinator:
+    def _setup_coordinator(
+        self, authorized_plates="ABC1234, XYZ5678"
+    ) -> DahuaDataUpdateCoordinator:
         coordinator = object.__new__(DahuaDataUpdateCoordinator)
         coordinator._name = "LPR Camera"
         coordinator._address = "10.0.0.1"

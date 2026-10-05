@@ -35,10 +35,20 @@ CHANNEL = 9
 # Two Normal rules. Id 2 sits at index 1, which is the point: the id and the
 # index differ, so a test that conflated them would pass either way.
 TABLE = [
-    {"Class": "Normal", "Id": 1, "Name": "Rule1", "Enable": True,
-     "EventHandler": {"TimeSection": [["1 00:00:00-23:59:59"]]}},
-    {"Class": "Normal", "Id": 2, "Name": "Rule2", "Enable": True,
-     "EventHandler": {"TimeSection": [["1 00:00:00-23:59:59"]]}},
+    {
+        "Class": "Normal",
+        "Id": 1,
+        "Name": "Rule1",
+        "Enable": True,
+        "EventHandler": {"TimeSection": [["1 00:00:00-23:59:59"]]},
+    },
+    {
+        "Class": "Normal",
+        "Id": 2,
+        "Name": "Rule2",
+        "Enable": True,
+        "EventHandler": {"TimeSection": [["1 00:00:00-23:59:59"]]},
+    },
 ]
 
 
@@ -60,8 +70,9 @@ class _Session:
     async def post(self, url, json=None):  # noqa: A002 - matches aiohttp
         self.posts.append(json)
         if json.get("method") == "configManager.getConfig":
-            return _Response({"id": 1, "result": True,
-                              "params": {"table": self._table}})
+            return _Response(
+                {"id": 1, "result": True, "params": {"table": self._table}}
+            )
         return _Response({"id": 2, "result": True})
 
 
@@ -83,6 +94,7 @@ def _sent(session, method):
 
 
 # --- the change itself ------------------------------------------------------
+
 
 @pytest.mark.parametrize("enabled", [True, False])
 def test_the_write_addresses_one_field(enabled):
@@ -125,6 +137,7 @@ def test_the_index_is_resolved_from_the_id_and_they_are_not_the_same():
 
 # --- and the read it depends on, which must not drift -----------------------
 
+
 def test_the_rule_is_resolved_from_a_fresh_per_channel_read():
     """Load bearing twice over: the index now addresses the write, and the `Id`
     a rule reports differs between read shapes on this firmware. The
@@ -146,6 +159,7 @@ def test_the_read_happens_before_the_write():
 
 
 # --- and the failure that must stay a failure -------------------------------
+
 
 def test_an_unknown_rule_writes_nothing():
     """Better to raise than to address an index that resolved to None and write

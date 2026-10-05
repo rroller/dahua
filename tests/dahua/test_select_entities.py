@@ -18,6 +18,8 @@ from custom_components.dahua.select import (
     DahuaDoorbellLightSelect,
 )
 
+from . import adds_entities
+
 
 class _Client:
     def __init__(self):
@@ -26,10 +28,16 @@ class _Client:
     def __getattr__(self, name):
         async def call(*args, **kwargs):
             self.calls.append((name,) + args)
+
         return call
 
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, data=None, channel=0, day_night=None):
         self.client = _Client()
         self.data = data or {}
@@ -109,43 +117,56 @@ async def test_choosing_a_light_option_writes_it_and_reads_back():
 
     await s.async_select_option("Strobe")
 
-    assert c.client.calls == [
-        ("async_set_lighting_v2_for_amcrest_doorbells", "Strobe")]
+    assert c.client.calls == [("async_set_lighting_v2_for_amcrest_doorbells", "Strobe")]
     assert c.refreshed == 1
 
 
 # --- the preset position ------------------------------------------------------
 
+
 async def test_a_firmware_with_no_readback_does_not_claim_a_position():
     """The SDT4E425 has no supported CGI position readback. Reporting the last preset
     asked for would show a position the camera may have been driven away from since,
     which is worse than admitting to not knowing."""
-    s = _select(DahuaCameraPresetPositionSelect,
-                _Coordinator({"status.PresetID": "3"}),
-                _rpc2_channel=1, _attr_options=["Manual", "1", "2"])
+    s = _select(
+        DahuaCameraPresetPositionSelect,
+        _Coordinator({"status.PresetID": "3"}),
+        _rpc2_channel=1,
+        _attr_options=["Manual", "1", "2"],
+    )
 
     assert s.current_option == "Manual"
 
 
 def test_a_camera_at_no_preset_reads_as_manual():
-    s = _select(DahuaCameraPresetPositionSelect,
-                _Coordinator({"status.PresetID": "0"}),
-                _rpc2_channel=None, _attr_options=["Manual", "1"])
+    s = _select(
+        DahuaCameraPresetPositionSelect,
+        _Coordinator({"status.PresetID": "0"}),
+        _rpc2_channel=None,
+        _attr_options=["Manual", "1"],
+    )
 
     assert s.current_option == "Manual"
 
 
 def test_a_camera_sitting_at_a_preset_reports_it():
-    s = _select(DahuaCameraPresetPositionSelect,
-                _Coordinator({"status.PresetID": "3"}),
-                _rpc2_channel=None, _attr_options=["Manual", "3"])
+    s = _select(
+        DahuaCameraPresetPositionSelect,
+        _Coordinator({"status.PresetID": "3"}),
+        _rpc2_channel=None,
+        _attr_options=["Manual", "3"],
+    )
 
     assert s.current_option == "3"
 
 
 def test_a_camera_that_has_not_reported_a_preset_reads_as_manual():
-    s = _select(DahuaCameraPresetPositionSelect, _Coordinator(),
-                _rpc2_channel=None, _attr_options=["Manual"])
+    s = _select(
+        DahuaCameraPresetPositionSelect,
+        _Coordinator(),
+        _rpc2_channel=None,
+        _attr_options=["Manual"],
+    )
 
     assert s.current_option == "Manual"
 
@@ -154,8 +175,12 @@ async def test_choosing_manual_moves_nothing():
     """Manual is what the select reports when the camera is not at a preset, so it has to
     be selectable without meaning "go somewhere". There is no position to go to."""
     c = _Coordinator()
-    s = _select(DahuaCameraPresetPositionSelect, c,
-                _rpc2_channel=None, _attr_options=["Manual", "1"])
+    s = _select(
+        DahuaCameraPresetPositionSelect,
+        c,
+        _rpc2_channel=None,
+        _attr_options=["Manual", "1"],
+    )
 
     await s.async_select_option("Manual")
 
@@ -166,8 +191,12 @@ async def test_choosing_a_preset_on_the_rpc2_firmware_uses_rpc2():
     """And passes the RPC2 channel rather than the logical one, which is the whole reason
     that attribute exists."""
     c = _Coordinator()
-    s = _select(DahuaCameraPresetPositionSelect, c,
-                _rpc2_channel=1, _attr_options=["Manual", "4"])
+    s = _select(
+        DahuaCameraPresetPositionSelect,
+        c,
+        _rpc2_channel=1,
+        _attr_options=["Manual", "4"],
+    )
 
     await s.async_select_option("4")
 
@@ -176,9 +205,13 @@ async def test_choosing_a_preset_on_the_rpc2_firmware_uses_rpc2():
 
 # --- the day/night mode -------------------------------------------------------
 
+
 def test_the_mode_is_whatever_the_device_reported():
-    s = _select(DahuaDayNightModeSelect, _Coordinator(day_night="BlackWhite"),
-                _attr_options=["Color", "BlackWhite", "Auto"])
+    s = _select(
+        DahuaDayNightModeSelect,
+        _Coordinator(day_night="BlackWhite"),
+        _attr_options=["Color", "BlackWhite", "Auto"],
+    )
 
     assert s.current_option == "BlackWhite"
 
@@ -186,21 +219,26 @@ def test_the_mode_is_whatever_the_device_reported():
 def test_a_device_that_reported_nothing_has_no_mode():
     """None shows as unknown, which is what a poll that has not landed means. Picking one
     of the three would claim the camera is in a mode nobody has read."""
-    s = _select(DahuaDayNightModeSelect, _Coordinator(day_night=None),
-                _attr_options=["Color", "BlackWhite", "Auto"])
+    s = _select(
+        DahuaDayNightModeSelect,
+        _Coordinator(day_night=None),
+        _attr_options=["Color", "BlackWhite", "Auto"],
+    )
 
     assert s.current_option is None
 
 
 async def test_choosing_a_mode_writes_it_against_the_general_profile():
     c = _Coordinator(channel=2)
-    s = _select(DahuaDayNightModeSelect, c,
-                _attr_options=["Color", "BlackWhite", "Auto"])
+    s = _select(
+        DahuaDayNightModeSelect, c, _attr_options=["Color", "BlackWhite", "Auto"]
+    )
 
     await s.async_select_option("Color")
 
     assert c.client.calls == [
-        ("async_set_video_in_day_night_mode", 2, "general", "Color")]
+        ("async_set_video_in_day_night_mode", 2, "general", "Color")
+    ]
     assert c.refreshed == 1
 
 
@@ -208,8 +246,9 @@ async def test_an_option_the_select_does_not_offer_is_ignored():
     """A service call can name anything. Passing it through would write a mode the device
     does not accept and then refresh as though something had changed."""
     c = _Coordinator()
-    s = _select(DahuaDayNightModeSelect, c,
-                _attr_options=["Color", "BlackWhite", "Auto"])
+    s = _select(
+        DahuaDayNightModeSelect, c, _attr_options=["Color", "BlackWhite", "Auto"]
+    )
 
     await s.async_select_option("Sepia")
 
@@ -218,6 +257,7 @@ async def test_an_option_the_select_does_not_offer_is_ignored():
 
 
 # --- which selects an entry creates ------------------------------------------
+
 
 async def _added_for(coordinator, cgi_presets=None):
     """Run the real setup with the entities recorded.
@@ -243,15 +283,25 @@ async def _added_for(coordinator, cgi_presets=None):
         _async_preset_ids=_preset_ids,
     ):
         await select_module.async_setup_entry(
-            SimpleNamespace(data={}), entry, added.extend)
+            SimpleNamespace(data={}), entry, adds_entities(added)
+        )
     return added
 
 
 class _SetupCoordinator(_Coordinator):
-    def __init__(self, amcrest=False, security_light=False, model="IPC-HDW1234",
-                 presets=(1, 2), preset_error=None, day_night_supported=False):
+    def __init__(
+        self,
+        amcrest=False,
+        security_light=False,
+        model="IPC-HDW1234",
+        presets=(1, 2),
+        preset_error=None,
+        day_night_supported=False,
+        infrared_supported=False,
+    ):
         super().__init__()
         self._day_night_supported = day_night_supported
+        self._infrared_supported = infrared_supported
         self._amcrest = amcrest
         self._security_light = security_light
         self._model = model
@@ -280,13 +330,33 @@ class _SetupCoordinator(_Coordinator):
     def supports_day_night_color(self):
         return self._day_night_supported
 
+    def supports_infrared_light(self):
+        return self._infrared_supported
+
+    def supports_smart_motion_detection(self):
+        return False
+
+    def is_indoor_monitor(self):
+        # A camera. The indoor monitor's camera-link selects are in
+        # test_vth_camera_link.py.
+        return False
+
+    def is_indoor_monitor_without_video(self):
+        # A camera; the indoor monitor is in test_preset_list.py.
+        return False
+
+    def reported_device_class(self):
+        # What a camera answers; the VTO is in test_preset_list.py.
+        return "IPC"
+
 
 async def test_the_doorbell_light_select_needs_a_doorbell_with_one():
     assert "light" not in await _added_for(_SetupCoordinator())
     assert "light" not in await _added_for(_SetupCoordinator(amcrest=True))
     assert "light" not in await _added_for(_SetupCoordinator(security_light=True))
     assert "light" in await _added_for(
-        _SetupCoordinator(amcrest=True, security_light=True))
+        _SetupCoordinator(amcrest=True, security_light=True)
+    )
 
 
 async def test_a_device_that_refuses_to_list_its_presets_still_gets_a_select():
@@ -294,15 +364,18 @@ async def test_a_device_that_refuses_to_list_its_presets_still_gets_a_select():
     PTZ camera with no preset control at all, where an empty list still offers Manual and
     can be corrected by a reload."""
     added = await _added_for(
-        _SetupCoordinator(model="DH-SDT4E425-4F-GB-A-PV1",
-                          preset_error=RuntimeError("refused")))
+        _SetupCoordinator(
+            model="DH-SDT4E425-4F-GB-A-PV1", preset_error=RuntimeError("refused")
+        )
+    )
 
     assert ("preset", []) in added
 
 
 async def test_presets_that_were_listed_reach_the_select():
     added = await _added_for(
-        _SetupCoordinator(model="DH-SDT4E425-4F-GB-A-PV1", presets=[1, 4]))
+        _SetupCoordinator(model="DH-SDT4E425-4F-GB-A-PV1", presets=[1, 4])
+    )
 
     assert ("preset", [1, 4]) in added
 
@@ -311,8 +384,7 @@ async def test_the_day_night_select_needs_a_device_that_reports_the_mode():
     """Reading it back is the point of the entity, so a device that does not report it
     would leave a control showing unknown for ever."""
     assert "day_night" not in await _added_for(_SetupCoordinator())
-    assert "day_night" in await _added_for(
-        _SetupCoordinator(day_night_supported=True))
+    assert "day_night" in await _added_for(_SetupCoordinator(day_night_supported=True))
 
 
 async def test_a_camera_that_holds_no_presets_gets_no_preset_control():

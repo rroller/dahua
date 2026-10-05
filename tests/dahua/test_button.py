@@ -16,6 +16,8 @@ from custom_components.dahua import button as button_module
 from custom_components.dahua.button import DahuaOpenDoorButton, DahuaRebootButton
 from custom_components.dahua.const import BUTTON, PLATFORMS
 
+from . import adds_entities
+
 
 class _Client:
     def __init__(self):
@@ -24,6 +26,7 @@ class _Client:
     def _record(self, name):
         async def call(*args, **kwargs):
             self.calls.append((name,) + args)
+
         return call
 
     def __getattr__(self, name):
@@ -31,6 +34,11 @@ class _Client:
 
 
 class _Coordinator:
+    # The platforms file each channel's entities under its own subentry, so they
+    # read this on every entity they add. None is a single camera, and is what
+    # `async_add_entities` wants for an entry that has no subentries.
+    subentry_id = None
+
     def __init__(self, doorbell=False, channel=0):
         self.client = _Client()
         self._doorbell = doorbell
@@ -62,6 +70,7 @@ def _skip_ha_plumbing(monkeypatch):
     hand, and useless the moment a test wanted to ask the platform which
     channel an entity ended up on: there was nothing to ask.
     """
+
     def _init(self, coordinator, config_entry):
         self._coordinator = coordinator
         self.config_entry = config_entry
@@ -77,6 +86,7 @@ def _button(cls, coordinator=None):
 
 # --- the platform actually loads now ---------------------------------------
 
+
 def test_the_button_platform_is_registered():
     """button.py existed on disk but was never in PLATFORMS, so it never ran."""
     assert BUTTON in PLATFORMS
@@ -86,10 +96,9 @@ async def test_the_setup_adds_a_reboot_button_for_a_camera():
     added = []
     coordinator = _Coordinator(doorbell=False)
     hass = type("H", (), {"data": {}})()
-    entry = type("E", (), {"entry_id": "e1",
-                           "runtime_data": {0: coordinator}})()
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
 
-    await button_module.async_setup_entry(hass, entry, added.extend)
+    await button_module.async_setup_entry(hass, entry, adds_entities(added))
 
     assert [type(b).__name__ for b in added] == ["DahuaRebootButton"]
 
@@ -100,13 +109,14 @@ async def test_a_doorbell_also_gets_an_open_door_button():
     added = []
     coordinator = _Coordinator(doorbell=True)
     hass = type("H", (), {"data": {}})()
-    entry = type("E", (), {"entry_id": "e1",
-                           "runtime_data": {0: coordinator}})()
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
 
-    await button_module.async_setup_entry(hass, entry, added.extend)
+    await button_module.async_setup_entry(hass, entry, adds_entities(added))
 
     assert [type(b).__name__ for b in added] == [
-        "DahuaRebootButton", "DahuaOpenDoorButton", "DahuaCancelCallButton",
+        "DahuaRebootButton",
+        "DahuaOpenDoorButton",
+        "DahuaCancelCallButton",
     ]
 
 
@@ -115,15 +125,17 @@ async def test_a_camera_gets_no_open_door_button():
     than no button."""
     added = []
     hass = type("H", (), {"data": {}})()
-    entry = type("E", (), {"entry_id": "e1",
-                           "runtime_data": {0: _Coordinator(doorbell=False)}})()
+    entry = type(
+        "E", (), {"entry_id": "e1", "runtime_data": {0: _Coordinator(doorbell=False)}}
+    )()
 
-    await button_module.async_setup_entry(hass, entry, added.extend)
+    await button_module.async_setup_entry(hass, entry, adds_entities(added))
 
     assert not any(isinstance(b, DahuaOpenDoorButton) for b in added)
 
 
 # --- what each button actually calls ---------------------------------------
+
 
 async def test_reboot_calls_reboot():
     b = _button(DahuaRebootButton)
@@ -152,6 +164,7 @@ async def test_open_door_names_the_door():
 
 # --- identity ---------------------------------------------------------------
 
+
 def test_the_unique_ids():
     assert _button(DahuaRebootButton).unique_id == "SERIAL1_reboot"
     assert _button(DahuaOpenDoorButton).unique_id == "SERIAL1_open_door"
@@ -165,7 +178,10 @@ def test_the_ids_follow_the_channel_like_every_other_entity():
 
 def test_the_two_buttons_do_not_collide():
     c = _Coordinator(doorbell=True)
-    assert _button(DahuaRebootButton, c).unique_id != _button(DahuaOpenDoorButton, c).unique_id
+    assert (
+        _button(DahuaRebootButton, c).unique_id
+        != _button(DahuaOpenDoorButton, c).unique_id
+    )
 
 
 def test_the_names_come_from_the_translation_file():
@@ -205,6 +221,7 @@ def test_open_door_is_not_a_restart_button():
 
 # --- the option toggle ------------------------------------------------------
 
+
 def test_the_new_platform_has_a_label_on_the_options_screen():
     """The screen is built from sorted(PLATFORMS); a platform with no
     translation shows as a bare key."""
@@ -226,6 +243,7 @@ def test_the_new_platform_has_a_label_on_the_options_screen():
 
 # --- several channels on one entry ------------------------------------------
 
+
 async def test_every_channel_on_the_entry_gets_its_own_buttons():
     """The point of the loop, tested now rather than when #827 lands.
 
@@ -236,18 +254,22 @@ async def test_every_channel_on_the_entry_gets_its_own_buttons():
     proves the loop does what it exists for.
     """
     added = []
-    channels = {0: _Coordinator(doorbell=False),
-                1: _Coordinator(doorbell=True),
-                9: _Coordinator(doorbell=False)}
+    channels = {
+        0: _Coordinator(doorbell=False),
+        1: _Coordinator(doorbell=True),
+        9: _Coordinator(doorbell=False),
+    }
     hass = type("H", (), {"data": {}})()
     entry = type("E", (), {"entry_id": "e1", "runtime_data": channels})()
 
-    await button_module.async_setup_entry(hass, entry, added.extend)
+    await button_module.async_setup_entry(hass, entry, adds_entities(added))
 
     # One reboot button each, and the doorbell's two extras, in channel order.
     assert [type(b).__name__ for b in added] == [
         "DahuaRebootButton",
-        "DahuaRebootButton", "DahuaOpenDoorButton", "DahuaCancelCallButton",
+        "DahuaRebootButton",
+        "DahuaOpenDoorButton",
+        "DahuaCancelCallButton",
         "DahuaRebootButton",
     ]
 
@@ -260,7 +282,7 @@ async def test_each_button_belongs_to_its_own_channels_coordinator():
     hass = type("H", (), {"data": {}})()
     entry = type("E", (), {"entry_id": "e1", "runtime_data": channels})()
 
-    await button_module.async_setup_entry(hass, entry, added.extend)
+    await button_module.async_setup_entry(hass, entry, adds_entities(added))
 
     # `_coordinator`, not CoordinatorEntity's public `coordinator`: the
     # autouse fixture above stands in for DahuaBaseEntity.__init__, so

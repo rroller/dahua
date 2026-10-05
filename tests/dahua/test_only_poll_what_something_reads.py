@@ -56,27 +56,37 @@ def _coordinator(**kwargs):
         is_flood_light=lambda: state["flood_light"],
         _wanted_by=lambda *wanted: any(w in state["platforms"] for w in wanted),
     )
-    for name in ("creates_siren_entity", "creates_security_light_entity",
-                 "reads_coaxial_status"):
+    for name in (
+        "creates_siren_entity",
+        "creates_security_light_entity",
+        "reads_coaxial_status",
+    ):
         setattr(c, name, getattr(DahuaDataUpdateCoordinator, name).__get__(c))
     return c
 
 
 # --- the measured case: a recorder that has neither --------------------------
 
+
 def test_a_recorder_without_the_opt_in_is_not_asked():
     """The DHI-NVR5464 here. Eleven entries, no siren and no security light entity, and
     the endpoint asked on every poll regardless."""
-    assert _coordinator(recorder=True, nvr_deterrence=False).reads_coaxial_status() is False
+    assert (
+        _coordinator(recorder=True, nvr_deterrence=False).reads_coaxial_status()
+        is False
+    )
 
 
 def test_a_recorder_with_the_opt_in_is_asked():
     """Ticking NVR active deterrence creates the Alarm and Warning Light, and those read
     this status, so it has to be fetched."""
-    assert _coordinator(recorder=True, nvr_deterrence=True).reads_coaxial_status() is True
+    assert (
+        _coordinator(recorder=True, nvr_deterrence=True).reads_coaxial_status() is True
+    )
 
 
 # --- a direct camera ---------------------------------------------------------
+
 
 def test_a_camera_with_a_siren_is_asked():
     assert _coordinator(siren=True).reads_coaxial_status() is True
@@ -91,6 +101,7 @@ def test_a_camera_with_neither_is_not_asked():
 
 
 # --- the flood light, which is the easy one to miss -------------------------
+
 
 def test_a_flood_light_that_reads_this_status_is_asked():
     """`is_flood_light_on` reads WhiteLight out of this status when the camera reports
@@ -111,12 +122,15 @@ def test_a_flood_light_on_firmware_without_floodlightmode_is_not_asked():
 
 
 def test_a_flood_light_still_needs_the_light_platform():
-    coordinator = _coordinator(flood_light=True, floodlightmode=True, platforms=[SWITCH])
+    coordinator = _coordinator(
+        flood_light=True, floodlightmode=True, platforms=[SWITCH]
+    )
 
     assert coordinator.reads_coaxial_status() is False
 
 
 # --- a platform switched off means nothing reads it --------------------------
+
 
 def test_a_siren_with_the_switch_platform_off_is_not_asked():
     """Turning a platform off is documented as reducing what the device is asked, not
@@ -139,13 +153,19 @@ def test_a_siren_is_asked_even_when_only_the_switch_platform_is_on():
 
 
 def test_no_platforms_at_all_asks_for_nothing():
-    coordinator = _coordinator(siren=True, security_light=True, flood_light=True,
-                               floodlightmode=True, platforms=[])
+    coordinator = _coordinator(
+        siren=True,
+        security_light=True,
+        flood_light=True,
+        floodlightmode=True,
+        platforms=[],
+    )
 
     assert coordinator.reads_coaxial_status() is False
 
 
 # --- the Amcrest doorbell's security light is a select, not a light ----------
+
 
 def test_an_amcrest_doorbell_creates_no_security_light():
     """select.py builds it instead, and that reads Lighting_V2."""
@@ -155,8 +175,9 @@ def test_an_amcrest_doorbell_creates_no_security_light():
 
 
 def test_an_amcrest_doorbell_is_not_asked_for_this_status():
-    coordinator = _coordinator(security_light=True, amcrest_doorbell=True,
-                               platforms=[LIGHT, SELECT])
+    coordinator = _coordinator(
+        security_light=True, amcrest_doorbell=True, platforms=[LIGHT, SELECT]
+    )
 
     assert coordinator.reads_coaxial_status() is False
 
@@ -170,11 +191,20 @@ def test_an_amcrest_doorbell_with_a_siren_is_still_asked():
 
 # --- the predicates are the platforms' own rule ------------------------------
 
+
 def test_the_recorder_opt_in_decides_the_siren_on_a_recorder():
-    assert _coordinator(recorder=True, nvr_deterrence=True,
-                        siren=False).creates_siren_entity() is True
-    assert _coordinator(recorder=True, nvr_deterrence=False,
-                        siren=True).creates_siren_entity() is False
+    assert (
+        _coordinator(
+            recorder=True, nvr_deterrence=True, siren=False
+        ).creates_siren_entity()
+        is True
+    )
+    assert (
+        _coordinator(
+            recorder=True, nvr_deterrence=False, siren=True
+        ).creates_siren_entity()
+        is False
+    )
 
 
 def test_the_model_decides_the_siren_on_a_direct_camera():
@@ -184,11 +214,17 @@ def test_the_model_decides_the_siren_on_a_direct_camera():
 
 # --- and the platforms have to use them, or the rule is not shared ----------
 
-@pytest.mark.parametrize("module,predicate", [
-    ("switch.py", "creates_siren_entity"),
-    ("light.py", "creates_security_light_entity"),
-])
-def test_the_platform_asks_the_coordinator_rather_than_repeating_the_rule(module, predicate):
+
+@pytest.mark.parametrize(
+    "module,predicate",
+    [
+        ("switch.py", "creates_siren_entity"),
+        ("light.py", "creates_security_light_entity"),
+    ],
+)
+def test_the_platform_asks_the_coordinator_rather_than_repeating_the_rule(
+    module, predicate
+):
     """The whole point of moving it. If a platform goes back to spelling the rule out,
     the poll and the platform can disagree again, and the direction that breaks is a
     entity reading a value nobody fetched."""
@@ -197,12 +233,15 @@ def test_the_platform_asks_the_coordinator_rather_than_repeating_the_rule(module
 
     source = io.open(
         Path(__file__).resolve().parents[2] / "custom_components" / "dahua" / module,
-        encoding="utf-8").read()
+        encoding="utf-8",
+    ).read()
 
-    assert "coordinator.%s()" % predicate in source, (
-        "%s does not use coordinator.%s" % (module, predicate))
+    assert (
+        "coordinator.%s()" % predicate in source
+    ), "%s does not use coordinator.%s" % (module, predicate)
     assert "supports_nvr_active_deterrence()" not in source, (
-        "%s still spells out the recorder rule itself" % module)
+        "%s still spells out the recorder rule itself" % module
+    )
 
 
 def test_the_poll_gates_each_coaxial_fetch_on_its_own_rule():
@@ -231,21 +270,27 @@ def test_the_poll_gates_each_coaxial_fetch_on_its_own_rule():
     # An if/elif chain is nested `If` nodes, so the outer one contains the inner branch
     # too. The gate wanted is the branch whose own *body* makes the call.
     gates = [
-        ast.unparse(node.test) for node in ast.walk(update)
+        ast.unparse(node.test)
+        for node in ast.walk(update)
         if isinstance(node, ast.If)
-        and any("_async_coaxial_status" in ast.unparse(stmt) for stmt in node.body)]
+        and any("_async_coaxial_status" in ast.unparse(stmt) for stmt in node.body)
+    ]
 
     assert len(gates) == 2, (
-        "expected the RPC2 and the CGI branch, both through the wrapper: %s" % gates)
+        "expected the RPC2 and the CGI branch, both through the wrapper: %s" % gates
+    )
 
     cgi = [gate for gate in gates if "reads_coaxial_status" in gate]
     rpc2 = [gate for gate in gates if "uses_rpc2_deterrence" in gate]
 
     assert len(cgi) == 1, (
         "no branch is gated on the shared rule, so the CGI fetch is back to asking "
-        "for a value nothing reads: %s" % gates)
+        "for a value nothing reads: %s" % gates
+    )
     assert len(rpc2) == 1, (
-        "the RPC2 branch is not gated on uses_rpc2_deterrence: %s" % gates)
+        "the RPC2 branch is not gated on uses_rpc2_deterrence: %s" % gates
+    )
     assert "_wanted_by" not in cgi[0], (
         "the CGI branch spells the platform rule out again instead of delegating to "
-        "reads_coaxial_status, which is how the two drifted apart before: %s" % cgi[0])
+        "reads_coaxial_status, which is how the two drifted apart before: %s" % cgi[0]
+    )

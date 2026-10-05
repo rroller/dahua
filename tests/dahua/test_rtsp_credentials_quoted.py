@@ -15,10 +15,10 @@ missed, and that branch is reachable: the camera platform creates a stream per
 index in `range(get_max_streams())`, so any device reporting four streams uses
 it.
 """
+
 from urllib.parse import urlparse
 
 from custom_components.dahua.client import DahuaClient
-
 
 AWKWARD = "p@ss:w/rd#1"
 
@@ -56,7 +56,8 @@ def test_the_port_is_still_the_port():
 
 def test_a_username_with_punctuation_is_encoded_too():
     parsed = _authority_is_intact(
-        _client(username="ad:min@host").get_rtsp_stream_url(0, 3))
+        _client(username="ad:min@host").get_rtsp_stream_url(0, 3)
+    )
 
     assert "@host" not in (parsed.username or "")
 

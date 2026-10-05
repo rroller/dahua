@@ -65,7 +65,7 @@ def _coordinator(raises=None, returns=None, over_rpc2=False):
             raise raises
         return returns
 
-    async def async_get_coaxial_control_io_status_rpc2():
+    async def async_get_coaxial_control_io_status_rpc2(channel=0):
         calls.append("rpc2")
         if raises is not None:
             raise raises
@@ -78,16 +78,22 @@ def _coordinator(raises=None, returns=None, over_rpc2=False):
             device_key=DEVICE,
             async_get_coaxial_control_io_status=async_get_coaxial_control_io_status,
             async_get_coaxial_control_io_status_rpc2=(
-                async_get_coaxial_control_io_status_rpc2)),
-        _calls=calls)
+                async_get_coaxial_control_io_status_rpc2
+            ),
+        ),
+        _calls=calls,
+    )
     coordinator._async_coaxial_status = (
-        dahua.DahuaDataUpdateCoordinator._async_coaxial_status.__get__(coordinator))
+        dahua.DahuaDataUpdateCoordinator._async_coaxial_status.__get__(coordinator)
+    )
     coordinator._previous_coaxial_status = (
-        dahua.DahuaDataUpdateCoordinator._previous_coaxial_status.__get__(coordinator))
+        dahua.DahuaDataUpdateCoordinator._previous_coaxial_status.__get__(coordinator)
+    )
     return coordinator
 
 
 # --- the refusal must not propagate -----------------------------------------
+
 
 @pytest.mark.parametrize("status", CAPABILITY_REFUSED)
 async def test_a_refusal_yields_no_data_instead_of_raising(status):
@@ -117,17 +123,19 @@ async def test_a_refusal_holds_the_last_reading_instead_of_reading_off():
 
     result = await coordinator._async_coaxial_status(12)
 
-    assert result == {"status.status.Speaker": "On",
-                      "status.status.WhiteLight": "Off"}
-    assert "status.PresetID" not in result, (
-        "another read's fresh value would have been overwritten with a stale one")
+    assert result == {"status.status.Speaker": "On", "status.status.WhiteLight": "Off"}
+    assert (
+        "status.PresetID" not in result
+    ), "another read's fresh value would have been overwritten with a stale one"
 
 
 async def test_an_rpc2_refusal_holds_the_last_reading_too():
     coordinator = _coordinator(
         over_rpc2=True,
-        raises=Rpc2MethodRefused("refused", code=268894210,
-                                 message="Method not found!"))
+        raises=Rpc2MethodRefused(
+            "refused", code=268894210, message="Method not found!"
+        ),
+    )
     coordinator.data = {"status.Speaker": "On"}
 
     result = await coordinator._async_coaxial_status(1)
@@ -155,6 +163,7 @@ async def test_the_channel_asked_for_is_the_channel_given():
 
 # --- but a real failure still has to be one --------------------------------
 
+
 @pytest.mark.parametrize("status", [401, 403, 500, 503])
 async def test_anything_that_is_not_a_refusal_still_raises(status):
     """A 401 has to reach the reauth path and a 500 is a device in trouble. Swallowing
@@ -175,6 +184,7 @@ async def test_a_connection_failure_still_raises():
 
 
 # --- and it says so once, not every poll ------------------------------------
+
 
 async def test_the_refusal_is_recorded_so_it_is_only_reported_once():
     coordinator = _coordinator(raises=_refusal(400))
@@ -206,8 +216,7 @@ async def test_two_devices_are_not_confused():
     await first._async_coaxial_status(1)
     await second._async_coaxial_status(1)
 
-    assert dahua._CAPABILITY_REFUSALS_REPORTED == {
-        (DEVICE, 1), ("192.168.0.232:80", 1)}
+    assert dahua._CAPABILITY_REFUSALS_REPORTED == {(DEVICE, 1), ("192.168.0.232:80", 1)}
 
 
 async def test_reporting_once_does_not_mean_asking_once():
@@ -218,11 +227,16 @@ async def test_reporting_once_does_not_mean_asking_once():
     for _ in range(4):
         await coordinator._async_coaxial_status(12)
 
-    assert coordinator._calls == [12, 12, 12, 12], (
-        "it stopped asking, which would switch off a capability that may recover")
+    assert coordinator._calls == [
+        12,
+        12,
+        12,
+        12,
+    ], "it stopped asking, which would switch off a capability that may recover"
 
 
 # --- the poll has to use the wrapper ---------------------------------------
+
 
 def test_the_poll_reads_the_status_through_the_wrapper():
     """A wrapper that works and a poll that still calls the client directly is the
@@ -240,13 +254,17 @@ def test_the_poll_reads_the_status_through_the_wrapper():
 
     update = definition("_async_update_data")
 
-    appends = [node for node in ast.walk(update)
-               if isinstance(node, ast.Call)
-               and ast.unparse(node.func).endswith("coros.append")]
+    appends = [
+        node
+        for node in ast.walk(update)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func).endswith("coros.append")
+    ]
     gathered = "\n".join(ast.unparse(node) for node in appends)
 
-    assert "self._async_coaxial_status" in gathered, (
-        "the poll does not gather through the wrapper, so a refusal still fails the entry")
+    assert (
+        "self._async_coaxial_status" in gathered
+    ), "the poll does not gather through the wrapper, so a refusal still fails the entry"
 
     # By the *name* of every gathered call, not by searching the text for one
     # spelling. This read `"async_get_coaxial_control_io_status(" not in gathered`,
@@ -257,13 +275,20 @@ def test_the_poll_reads_the_status_through_the_wrapper():
         for node in ast.walk(append):
             if isinstance(node, ast.Call):
                 func = node.func
-                called.add(func.attr if isinstance(func, ast.Attribute)
-                           else getattr(func, "id", ""))
-    direct = sorted(name for name in called
-                    if name.startswith("async_get_coaxial_control_io_status"))
+                called.add(
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else getattr(func, "id", "")
+                )
+    direct = sorted(
+        name
+        for name in called
+        if name.startswith("async_get_coaxial_control_io_status")
+    )
 
     assert not direct, (
-        "the gather calls the client directly, so the wrapper is bypassed: %s" % direct)
+        "the gather calls the client directly, so the wrapper is bypassed: %s" % direct
+    )
 
 
 # --- the RPC2 transport, which #848 was about --------------------------------
@@ -275,17 +300,20 @@ def test_the_poll_reads_the_status_through_the_wrapper():
 # person's cameras answering "Authority:check failure".
 
 
-@pytest.mark.parametrize("code,message", [
-    (268894210, "Method not found!"),          # velocibear and gabberpocky, AD410
-    (285278249, "Authority:check failure."),   # glenowen, DH-IPC-PDW3849
-])
+@pytest.mark.parametrize(
+    "code,message",
+    [
+        (268894210, "Method not found!"),  # velocibear and gabberpocky, AD410
+        (285278249, "Authority:check failure."),  # glenowen, DH-IPC-PDW3849
+    ],
+)
 async def test_an_rpc2_refusal_yields_no_data_instead_of_raising(code, message):
     """Both measured codes. "Authority:check failure" is not a permission problem:
     configManager answers it for a table name that does not exist, so it means the
     same thing as "Method not found" for our purposes."""
     coordinator = _coordinator(
-        over_rpc2=True,
-        raises=Rpc2MethodRefused("refused", code=code, message=message))
+        over_rpc2=True, raises=Rpc2MethodRefused("refused", code=code, message=message)
+    )
 
     assert await coordinator._async_coaxial_status(1) is None
 
@@ -304,8 +332,10 @@ async def test_a_stale_login_still_raises():
     it as "this device has no siren" would drop a capability the device does have."""
     coordinator = _coordinator(
         over_rpc2=True,
-        raises=Rpc2MethodRefused("refused", code=287637504,
-                                 message="session is out of date"))
+        raises=Rpc2MethodRefused(
+            "refused", code=287637504, message="session is out of date"
+        ),
+    )
 
     with pytest.raises(Rpc2MethodRefused):
         await coordinator._async_coaxial_status(1)
@@ -314,8 +344,10 @@ async def test_a_stale_login_still_raises():
 async def test_an_rpc2_refusal_is_reported_once_per_device():
     coordinator = _coordinator(
         over_rpc2=True,
-        raises=Rpc2MethodRefused("refused", code=268894210,
-                                 message="Method not found!"))
+        raises=Rpc2MethodRefused(
+            "refused", code=268894210, message="Method not found!"
+        ),
+    )
 
     await coordinator._async_coaxial_status(1)
     await coordinator._async_coaxial_status(1)
@@ -327,8 +359,10 @@ async def test_an_rpc2_refusal_does_not_stop_it_asking():
     """Same reasoning as the CGI path: a refusal costs a reading, not the capability."""
     coordinator = _coordinator(
         over_rpc2=True,
-        raises=Rpc2MethodRefused("refused", code=268894210,
-                                 message="Method not found!"))
+        raises=Rpc2MethodRefused(
+            "refused", code=268894210, message="Method not found!"
+        ),
+    )
 
     await coordinator._async_coaxial_status(1)
     await coordinator._async_coaxial_status(1)
@@ -339,13 +373,14 @@ async def test_an_rpc2_refusal_does_not_stop_it_asking():
 
 # --- and the reported-once state is forgotten with the host -----------------
 
+
 def test_the_reported_state_is_dropped_when_the_last_entry_for_a_host_goes(monkeypatch):
     """Otherwise a different device later given the same address inherits the silence and
     its first refusal is never reported."""
     dahua._CAPABILITY_REFUSALS_REPORTED.update({(DEVICE, 5), ("10.0.0.9:80", 1)})
     monkeypatch.setattr(
-        dahua, "ir",
-        SimpleNamespace(async_delete_issue=lambda *args, **kwargs: None))
+        dahua, "ir", SimpleNamespace(async_delete_issue=lambda *args, **kwargs: None)
+    )
 
     dahua._async_forget_host(SimpleNamespace(), ADDRESS)
 

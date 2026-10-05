@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pytest
 
-TRANSLATIONS = Path(__file__).resolve().parents[2] / "custom_components" / "dahua" / "translations"
+TRANSLATIONS = (
+    Path(__file__).resolve().parents[2] / "custom_components" / "dahua" / "translations"
+)
 EN = json.loads((TRANSLATIONS / "en.json").read_text(encoding="utf-8"))
 
 # What the code actually passes to async_create_issue / async_show_form.
@@ -26,8 +28,13 @@ ISSUE_PLACEHOLDERS = {
     "channel_not_added": {"address", "channel", "reason"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
-SIBLINGS_FLOW_PLACEHOLDERS = {"address", "count", "titles", "removed",
-                              "dependents_note"}
+SIBLINGS_FLOW_PLACEHOLDERS = {
+    "address",
+    "count",
+    "titles",
+    "removed",
+    "dependents_note",
+}
 
 
 def _placeholders(text: str) -> set:
@@ -54,7 +61,9 @@ def issue_keys_in(source: str) -> set:
         if name != ISSUE_RAISER:
             continue
         for keyword in node.keywords:
-            if keyword.arg == "translation_key" and isinstance(keyword.value, ast.Constant):
+            if keyword.arg == "translation_key" and isinstance(
+                keyword.value, ast.Constant
+            ):
                 keys.add(keyword.value.value)
     return keys
 
@@ -76,10 +85,12 @@ def test_the_map_above_covers_every_issue_the_code_raises():
     for text in modules().values():
         raised |= issue_keys_in(text)
 
-    assert raised == set(ISSUE_PLACEHOLDERS), (
-        "in the code but not the map: %s; in the map but not the code: %s"
-        % (sorted(raised - set(ISSUE_PLACEHOLDERS)),
-           sorted(set(ISSUE_PLACEHOLDERS) - raised)))
+    assert raised == set(
+        ISSUE_PLACEHOLDERS
+    ), "in the code but not the map: %s; in the map but not the code: %s" % (
+        sorted(raised - set(ISSUE_PLACEHOLDERS)),
+        sorted(set(ISSUE_PLACEHOLDERS) - raised),
+    )
 
 
 def test_only_a_created_issue_counts_as_an_issue():
@@ -93,7 +104,7 @@ def test_only_a_created_issue_counts_as_an_issue():
     """
     sample = (
         'ir.async_create_issue(hass, DOMAIN, key, translation_key="device_unreachable")\n'
-        'raise HomeAssistantError(translation_domain=DOMAIN,\n'
+        "raise HomeAssistantError(translation_domain=DOMAIN,\n"
         '                         translation_key="cancel_call_refused")\n'
         'DahuaSirenBinarySwitch(c, e, translation_key="siren")\n'
         '_attr_translation_key = "firmware_version"\n'
@@ -146,7 +157,9 @@ def test_no_text_uses_a_placeholder_the_code_does_not_supply(key):
     """An unsupplied placeholder renders literally as {whatever}."""
     issue = EN["issues"][key]
     used = _placeholders(issue["title"]) | _placeholders(issue.get("description", ""))
-    assert used <= ISSUE_PLACEHOLDERS[key], f"unsupplied: {used - ISSUE_PLACEHOLDERS[key]}"
+    assert (
+        used <= ISSUE_PLACEHOLDERS[key]
+    ), f"unsupplied: {used - ISSUE_PLACEHOLDERS[key]}"
 
 
 def test_the_siblings_flow_only_uses_its_own_placeholders():
@@ -154,8 +167,9 @@ def test_the_siblings_flow_only_uses_its_own_placeholders():
     async_show_form did not supply, so it would have rendered literally."""
     step = EN["issues"]["siblings_remain"]["fix_flow"]["step"]["confirm"]
     used = _placeholders(step["title"]) | _placeholders(step["description"])
-    assert used <= SIBLINGS_FLOW_PLACEHOLDERS, (
-        f"unsupplied: {used - SIBLINGS_FLOW_PLACEHOLDERS}")
+    assert (
+        used <= SIBLINGS_FLOW_PLACEHOLDERS
+    ), f"unsupplied: {used - SIBLINGS_FLOW_PLACEHOLDERS}"
 
 
 def test_the_siblings_issue_is_fixable_and_the_notice_is_not():

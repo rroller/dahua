@@ -2,6 +2,7 @@
 Button entity platform for Dahua.
 https://developers.home-assistant.io/docs/core/entity/button
 """
+
 import logging
 
 from homeassistant.components.button import ButtonDeviceClass, ButtonEntity
@@ -26,6 +27,7 @@ _LOGGER = logging.getLogger(__package__)
 # leaves outbound actions uncontrolled.
 PARALLEL_UPDATES = 1
 
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the button platform."""
     for coordinator in entry_coordinators(entry).values():
@@ -37,7 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             buttons.append(DahuaOpenDoorButton(coordinator, entry))
             buttons.append(DahuaCancelCallButton(coordinator, entry))
 
-        async_add_devices(buttons)
+        async_add_devices(buttons, config_subentry_id=coordinator.subentry_id)
 
 
 class DahuaRebootButton(DahuaBaseEntity, ButtonEntity):
@@ -104,7 +106,8 @@ class DahuaCancelCallButton(DahuaBaseEntity, ButtonEntity):
                 translation_domain=DOMAIN,
                 translation_key="no_vto_connection_for_button",
                 translation_placeholders={
-                    "device": self._coordinator.get_device_name()},
+                    "device": self._coordinator.get_device_name()
+                },
             )
         _LOGGER.debug("Cancelling call on %s", self._coordinator.get_address())
         try:

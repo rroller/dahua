@@ -38,15 +38,24 @@ from custom_components.dahua.rpc2 import (
     refusal_reason,
 )
 
-TOP_LEVEL = {"id": 9, "result": False, "session": "abc",
-             "errCode": 287638033, "message": "Request length error!"}
+TOP_LEVEL = {
+    "id": 9,
+    "result": False,
+    "session": "abc",
+    "errCode": 287638033,
+    "message": "Request length error!",
+}
 
-NESTED = {"id": 9, "result": False, "session": "abc",
-          "error": {"code": 287637505,
-                    "message": "Invalid session in request data!"}}
+NESTED = {
+    "id": 9,
+    "result": False,
+    "session": "abc",
+    "error": {"code": 287637505, "message": "Invalid session in request data!"},
+}
 
 
 # --- the shape that was being dropped ---------------------------------------
+
 
 def test_a_top_level_reason_is_read():
     """The measured #818 refusal. Both halves, because the code is what
@@ -58,6 +67,7 @@ def test_a_top_level_reason_is_read():
 
 
 # --- the shape that already worked, which must not change -------------------
+
 
 def test_a_nested_reason_is_still_read():
     code, message = refusal_reason(NESTED)
@@ -73,11 +83,11 @@ def test_nested_wins_when_a_device_sends_both():
     both["errCode"] = 1
     both["message"] = "top level"
 
-    assert refusal_reason(both) == (287637505,
-                                    "Invalid session in request data!")
+    assert refusal_reason(both) == (287637505, "Invalid session in request data!")
 
 
 # --- and a refusal that really says nothing --------------------------------
+
 
 def test_a_refusal_with_no_reason_at_all_reports_none():
     """Not every device explains itself, and inventing a code would be worse than
@@ -96,6 +106,7 @@ def test_a_non_dict_error_falls_back_to_the_top_level(error):
 
 
 # --- what the exception then carries ----------------------------------------
+
 
 class _Response:
     def __init__(self, payload):
@@ -124,12 +135,11 @@ def _refuse(response):
     fixture, and `asyncio.run` keeps the file runnable by a plain pytest that
     has no asyncio plugin, which is where it was proved.
     """
+
     async def go():
-        client = DahuaRpc2Client(
-            "u", "p", "192.0.2.10", 80, 554, _Session(response))
+        client = DahuaRpc2Client("u", "p", "192.0.2.10", 80, 554, _Session(response))
         with pytest.raises(Rpc2MethodRefused) as caught:
-            await client.request(
-                method="configManager.setConfig", params={"name": "x"})
+            await client.request(method="configManager.setConfig", params={"name": "x"})
         return caught.value
 
     return asyncio.run(go())

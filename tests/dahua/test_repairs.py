@@ -36,6 +36,7 @@ def _clean_state():
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
     """The flow staggers reloads; the suite runs with --timeout=9."""
+
     async def _instant(_seconds):
         return None
 
@@ -48,9 +49,14 @@ def _entry(hass, *, address=ADDRESS, channel=0, port="80", use_https=None):
         title=f"Ch{channel}",
         unique_id=f"SERIAL_{channel}" if channel else "SERIAL",
         data={
-            "username": "u", "password": "p", "address": address,
-            "port": port, "rtsp_port": "554", "channel": channel,
-            "name": f"Ch{channel}", "use_https": use_https,
+            "username": "u",
+            "password": "p",
+            "address": address,
+            "port": port,
+            "rtsp_port": "554",
+            "channel": channel,
+            "name": f"Ch{channel}",
+            "use_https": use_https,
         },
     )
     entry.add_to_hass(hass)
@@ -81,6 +87,7 @@ async def _fail(hass, entry, times):
 
 
 # --- when a card appears ---------------------------------------------------
+
 
 async def test_a_single_failure_raises_nothing(hass, monkeypatch):
     """One dropped poll must not put a card in front of the user."""
@@ -133,6 +140,7 @@ async def test_a_trailing_slash_is_the_same_host(hass, monkeypatch):
 
 # --- when it goes away -----------------------------------------------------
 
+
 async def test_a_success_clears_the_card(hass, monkeypatch):
     _probe(monkeypatch, False)
     entry = _entry(hass)
@@ -171,6 +179,7 @@ async def test_unloading_the_last_entry_removes_the_card(hass, monkeypatch):
 
 
 # --- choosing between the two cards ---------------------------------------
+
 
 async def test_https_is_offered_when_443_answers(hass, monkeypatch):
     """The failure we actually hit: port 80 dead, 443 accepting."""
@@ -220,15 +229,42 @@ async def test_the_probe_is_not_repeated_on_every_failure(hass, monkeypatch):
     assert len(calls) == 1
 
 
+async def test_a_host_with_no_entries_left_raises_nothing(hass, monkeypatch):
+    """The failures and the evaluation are not the same moment. Recording one
+    schedules `_async_evaluate_host` as a task, and an entry can be removed before
+    that task runs: a user deleting a camera that has been failing does exactly
+    that, and unloading the last entry for a host is the documented case.
+
+    Nothing to say about a host nobody has configured, so nothing is probed and no
+    card appears. The early return is also what keeps `entries[0]` below it from
+    being an IndexError on an empty list, which would surface as an unhandled task
+    exception rather than as anything a user could act on."""
+    calls = []
+    _probe(monkeypatch, True, calls)
+
+    for _ in range(UNREACHABLE_AFTER_FAILURES):
+        async_record_host_failure(hass, ADDRESS, "an-entry-that-is-gone")
+    await hass.async_block_till_done()
+
+    assert calls == [], "a host with no entries must not be probed"
+    assert _issue(hass, ISSUE_UNREACHABLE) is None
+    assert _issue(hass, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE) is None
+
+
 # --- the fix flow ----------------------------------------------------------
+
 
 async def test_the_fix_flow_switches_every_entry_for_the_host(hass, monkeypatch):
     entries = [_entry(hass, channel=i) for i in range(3)]
     _entry(hass, address="10.0.0.2", channel=0)
     ir.async_create_issue(
-        hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(ADDRESS),
-        is_fixable=True, severity=ir.IssueSeverity.WARNING,
-        translation_key="http_dead_https_available", data={"address": ADDRESS},
+        hass,
+        DOMAIN,
+        ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(ADDRESS),
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="http_dead_https_available",
+        data={"address": ADDRESS},
     )
 
     flow = await async_create_fix_flow(
@@ -303,9 +339,11 @@ async def test_the_init_step_goes_straight_to_the_confirm_step(hass):
 # and until now no test referenced it at all. The card that offers it was tested; the
 # button that acts on it was not.
 
+
 async def test_a_siblings_card_gets_the_removal_flow(hass):
     flow = await async_create_fix_flow(
-        hass, ISSUE_SIBLINGS_REMAIN.format(ADDRESS), {"address": ADDRESS})
+        hass, ISSUE_SIBLINGS_REMAIN.format(ADDRESS), {"address": ADDRESS}
+    )
 
     assert isinstance(flow, RemoveSiblingsRepairFlow)
 
@@ -317,7 +355,8 @@ async def test_the_form_lists_what_will_go_and_removes_nothing_yet(hass):
     entries = [_entry(hass, channel=i) for i in range(3)]
 
     flow = RemoveSiblingsRepairFlow(
-        {"address": ADDRESS, "removed": "Ch3", "dependents_note": ""})
+        {"address": ADDRESS, "removed": "Ch3", "dependents_note": ""}
+    )
     flow.hass = hass
     result = await flow.async_step_confirm()
 
@@ -326,9 +365,9 @@ async def test_the_form_lists_what_will_go_and_removes_nothing_yet(hass):
     assert result["description_placeholders"]["titles"] == "Ch0, Ch1, Ch2"
     assert result["description_placeholders"]["removed"] == "Ch3"
     for entry in entries:
-        assert entry.entry_id in {e.entry_id
-                                 for e in hass.config_entries.async_entries(DOMAIN)}, \
-            "an entry was removed before anybody confirmed"
+        assert entry.entry_id in {
+            e.entry_id for e in hass.config_entries.async_entries(DOMAIN)
+        }, "an entry was removed before anybody confirmed"
 
 
 async def test_confirming_removes_every_entry_for_that_recorder(hass):
@@ -338,9 +377,14 @@ async def test_confirming_removes_every_entry_for_that_recorder(hass):
     for i in range(3):
         _entry(hass, channel=i)
     ir.async_create_issue(
-        hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(ADDRESS),
-        is_fixable=True, is_persistent=True, severity=ir.IssueSeverity.WARNING,
-        translation_key="siblings_remain", data={"address": ADDRESS},
+        hass,
+        DOMAIN,
+        ISSUE_SIBLINGS_REMAIN.format(ADDRESS),
+        is_fixable=True,
+        is_persistent=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="siblings_remain",
+        data={"address": ADDRESS},
     )
 
     flow = RemoveSiblingsRepairFlow({"address": ADDRESS})
@@ -393,9 +437,10 @@ async def test_the_removals_are_staggered(hass, monkeypatch):
     await hass.async_block_till_done()
 
     staggers = [wait for wait in waits if wait == RELOAD_STAGGER_SECONDS]
-    assert len(staggers) == 4, (
-        "expected one %ss pause per entry removed, saw %s"
-        % (RELOAD_STAGGER_SECONDS, waits))
+    assert len(staggers) == 4, "expected one %ss pause per entry removed, saw %s" % (
+        RELOAD_STAGGER_SECONDS,
+        waits,
+    )
     assert RELOAD_STAGGER_SECONDS > 0
 
 
@@ -404,9 +449,14 @@ async def test_a_flow_whose_entries_are_already_gone_withdraws_the_card(hass):
     this one deletes its own issue on the way out: there is nothing left to fix, and a
     card offering to remove nothing is worse than no card."""
     ir.async_create_issue(
-        hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(ADDRESS),
-        is_fixable=True, is_persistent=True, severity=ir.IssueSeverity.WARNING,
-        translation_key="siblings_remain", data={"address": ADDRESS},
+        hass,
+        DOMAIN,
+        ISSUE_SIBLINGS_REMAIN.format(ADDRESS),
+        is_fixable=True,
+        is_persistent=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="siblings_remain",
+        data={"address": ADDRESS},
     )
 
     flow = RemoveSiblingsRepairFlow({"address": ADDRESS})

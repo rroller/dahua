@@ -38,8 +38,8 @@ for offset, value in ((1, 0x7C), (4, 0x05), (5, 0xFA), (6, 0xAB), (7, 0x6A)):
     PADDING[offset] = value
 PADDING = bytes(PADDING)
 
-DECLARED_TOO_SHORT = 4094          # what the camera writes
-TRUE_LENGTH = len(PADDING) + 2     # what it actually emits
+DECLARED_TOO_SHORT = 4094  # what the camera writes
+TRUE_LENGTH = len(PADDING) + 2  # what it actually emits
 
 
 def _segment(marker: int, payload: bytes, declared: int = None) -> bytes:
@@ -66,6 +66,7 @@ REPAIRED = SOI + APP0 + DQT + DHAV_COMMENT + SOF0 + DHT + SOS + SCAN
 
 # --- the file this exists for -------------------------------------------------
 
+
 def test_a_segment_that_lies_about_its_length_is_dropped():
     assert repair_dahua_snapshot_header(BROKEN) == REPAIRED
 
@@ -81,7 +82,7 @@ def test_the_image_itself_is_untouched():
     result = repair_dahua_snapshot_header(BROKEN)
 
     assert len(result) < len(BROKEN), "nothing was removed at all"
-    assert result[result.find(b"\xff\xc0"):] == BROKEN[BROKEN.find(b"\xff\xc0"):]
+    assert result[result.find(b"\xff\xc0") :] == BROKEN[BROKEN.find(b"\xff\xc0") :]
 
 
 def test_a_correctly_declared_comment_is_kept():
@@ -100,26 +101,29 @@ def test_the_result_still_starts_and_ends_where_a_jpeg_should():
 
 # --- anything else is left alone ----------------------------------------------
 
+
 def test_a_well_formed_header_is_returned_unchanged():
     assert repair_dahua_snapshot_header(REPAIRED) == REPAIRED
 
 
 def test_a_file_that_is_not_a_jpeg_is_returned_unchanged():
-    assert repair_dahua_snapshot_header(b"not an image at all") == b"not an image at all"
+    assert (
+        repair_dahua_snapshot_header(b"not an image at all") == b"not an image at all"
+    )
     assert repair_dahua_snapshot_header(b"") == b""
 
 
 def test_a_quantisation_table_with_a_bad_length_is_not_touched():
     """A DQT is the image. Dropping one to tidy the header would be worse."""
-    broken_dqt = (SOI + APP0 + _segment(0xDB, bytes(65), declared=40)
-                  + SOF0 + DHT + SOS + SCAN)
+    broken_dqt = (
+        SOI + APP0 + _segment(0xDB, bytes(65), declared=40) + SOF0 + DHT + SOS + SCAN
+    )
 
     assert repair_dahua_snapshot_header(broken_dqt) == broken_dqt
 
 
 def test_a_frame_header_with_a_bad_length_is_not_touched():
-    broken_sof = (SOI + APP0 + _segment(0xC0, bytes(15), declared=9)
-                  + DHT + SOS + SCAN)
+    broken_sof = SOI + APP0 + _segment(0xC0, bytes(15), declared=9) + DHT + SOS + SCAN
 
     assert repair_dahua_snapshot_header(broken_sof) == broken_sof
 
@@ -136,6 +140,7 @@ def test_a_header_with_no_scan_at_all_is_returned_unchanged():
 
 
 # --- the two cleanups are independent -----------------------------------------
+
 
 def test_the_trailer_stripper_is_unaffected_by_a_bad_header():
     """#658's fix and this one address different devices and must not interact."""

@@ -20,8 +20,9 @@ from pathlib import Path
 
 import pytest
 
-TRANSLATIONS = (Path(__file__).resolve().parents[2]
-                / "custom_components" / "dahua" / "translations")
+TRANSLATIONS = (
+    Path(__file__).resolve().parents[2] / "custom_components" / "dahua" / "translations"
+)
 
 # The word for "address" in each shipped language, so the rule English has always had
 # can be applied to all of them. Only `auth` is checked: cannot_connect names the
@@ -50,17 +51,21 @@ def _errors(language):
 
 # --- the map above has to keep up with the files -----------------------------
 
+
 def test_every_shipped_language_has_an_address_word():
     """Derived rather than trusted. A language added without its word here would
     silently stop being checked, which is how the hand written issue placeholder map
     quietly stopped covering a new issue."""
-    assert set(ADDRESS_WORDS) == set(_languages()), (
-        "shipped but unmapped: %s; mapped but not shipped: %s"
-        % (sorted(set(_languages()) - set(ADDRESS_WORDS)),
-           sorted(set(ADDRESS_WORDS) - set(_languages()))))
+    assert set(ADDRESS_WORDS) == set(
+        _languages()
+    ), "shipped but unmapped: %s; mapped but not shipped: %s" % (
+        sorted(set(_languages()) - set(ADDRESS_WORDS)),
+        sorted(set(ADDRESS_WORDS) - set(_languages())),
+    )
 
 
 # --- the rule English already had, now for everyone --------------------------
+
 
 @pytest.mark.parametrize("language", sorted(ADDRESS_WORDS))
 def test_no_language_blames_the_address_for_a_refused_login(language):
@@ -70,10 +75,12 @@ def test_no_language_blames_the_address_for_a_refused_login(language):
         pytest.skip("%s does not translate auth" % language)
 
     assert ADDRESS_WORDS[language].casefold() not in auth.casefold(), (
-        "%s tells the user to check their address over a refused login" % language)
+        "%s tells the user to check their address over a refused login" % language
+    )
 
 
 # --- and the set must not drift --------------------------------------------
+
 
 def test_every_language_covers_the_same_errors_as_english():
     """Not for completeness's sake: a half-translated error set is how the one
@@ -95,7 +102,10 @@ def test_no_language_invents_an_error_english_does_not_have():
 
     for language in _languages():
         extra = set(_errors(language)) - expected
-        assert not extra, "%s has %s, which English does not" % (language, sorted(extra))
+        assert not extra, "%s has %s, which English does not" % (
+            language,
+            sorted(extra),
+        )
 
 
 @pytest.mark.parametrize("language", sorted(ADDRESS_WORDS))

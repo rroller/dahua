@@ -26,6 +26,8 @@ from custom_components.dahua.dahua_utils import (
 from custom_components.dahua.rpc2 import DahuaRpc2Client, Rpc2MethodRefused
 from custom_components.dahua.update import DahuaFirmwareUpdateEntity
 
+from . import adds_entities
+
 # --- reading the two version strings -----------------------------------------
 
 
@@ -65,6 +67,14 @@ def test_a_sub_version_already_inside_the_main_one_is_not_doubled():
 def test_a_record_without_a_version_is_unknown():
     assert cloud_upgrade_version({"AutoCheck": True}) is None
     assert cloud_upgrade_version(None) is None
+
+
+def test_a_build_date_in_the_record_is_not_part_of_the_version():
+    """It would compare as extra numeric components and read as newer."""
+    assert (
+        cloud_upgrade_version({"LastVersion": "2.800.0000016.0.R,build:2020-06-05"})
+        == "2.800.0000016.0.R"
+    )
 
 
 # --- the comparison Home Assistant cannot make -------------------------------
@@ -120,6 +130,7 @@ def _coordinator(
         get_firmware_version=lambda: installed,
         get_cloud_firmware_version=lambda: latest,
         supports_cloud_upgrade=lambda: supports,
+        subentry_id=None,
     )
 
 
@@ -136,7 +147,7 @@ async def test_no_update_entity_without_a_cloud_record():
     than no entity -- the same reasoning as the profile sensor gate."""
     hass, entry, added = _setup(_coordinator(supports=False))
 
-    await update_module.async_setup_entry(hass, entry, added.extend)
+    await update_module.async_setup_entry(hass, entry, adds_entities(added))
 
     assert not any(isinstance(e, DahuaFirmwareUpdateEntity) for e in added)
 
@@ -146,7 +157,7 @@ async def test_the_update_entity_is_added_when_the_device_has_one():
         _coordinator(supports=True, latest="2.820.0000000.32.R")
     )
 
-    await update_module.async_setup_entry(hass, entry, added.extend)
+    await update_module.async_setup_entry(hass, entry, adds_entities(added))
 
     assert any(isinstance(e, DahuaFirmwareUpdateEntity) for e in added)
 

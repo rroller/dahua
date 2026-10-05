@@ -15,6 +15,7 @@ with credentials the web UI accepts.
 Basic is only ever sent after the device has asked for it by name, because it
 puts the password in a header in the clear.
 """
+
 import base64
 
 from custom_components.dahua.digest import BASIC, DigestAuth
@@ -54,11 +55,14 @@ def _expected_basic():
 
 # --- the failing case -------------------------------------------------------
 
+
 async def test_a_basic_challenge_is_answered_rather_than_returned():
-    session = _Session([
-        _Response(401, 'Basic realm="Device_CGI"'),
-        _Response(200),
-    ])
+    session = _Session(
+        [
+            _Response(401, 'Basic realm="Device_CGI"'),
+            _Response(200),
+        ]
+    )
 
     response = await _auth(session).request("GET", "http://d/cgi-bin/x.cgi")
 
@@ -68,10 +72,12 @@ async def test_a_basic_challenge_is_answered_rather_than_returned():
 
 async def test_the_first_attempt_carries_no_credentials():
     """Basic is only sent once the device has asked for it."""
-    session = _Session([
-        _Response(401, 'Basic realm="Device_CGI"'),
-        _Response(200),
-    ])
+    session = _Session(
+        [
+            _Response(401, 'Basic realm="Device_CGI"'),
+            _Response(200),
+        ]
+    )
 
     await _auth(session).request("GET", "http://d/cgi-bin/x.cgi")
 
@@ -93,11 +99,13 @@ async def test_the_choice_is_remembered_for_the_next_request():
 
 async def test_a_wrong_password_still_fails():
     """Switching scheme must not turn a real refusal into a loop."""
-    session = _Session([
-        _Response(401, 'Basic realm="Device_CGI"'),
-        _Response(401, 'Basic realm="Device_CGI"'),
-        _Response(401, 'Basic realm="Device_CGI"'),
-    ])
+    session = _Session(
+        [
+            _Response(401, 'Basic realm="Device_CGI"'),
+            _Response(401, 'Basic realm="Device_CGI"'),
+            _Response(401, 'Basic realm="Device_CGI"'),
+        ]
+    )
 
     response = await _auth(session).request("GET", "http://d/cgi-bin/x.cgi")
 
@@ -107,9 +115,11 @@ async def test_a_wrong_password_still_fails():
 
 # --- everything else must be untouched --------------------------------------
 
+
 async def test_a_device_that_wants_digest_is_unaffected():
-    challenge = ('Digest realm="Login to device", qop="auth", '
-                 'nonce="abc123", opaque="xyz"')
+    challenge = (
+        'Digest realm="Login to device", qop="auth", ' 'nonce="abc123", opaque="xyz"'
+    )
     session = _Session([_Response(401, challenge), _Response(200)])
 
     response = await _auth(session).request("GET", "http://d/cgi-bin/x.cgi")
@@ -128,7 +138,7 @@ async def test_a_401_with_no_challenge_is_still_returned():
 
 
 async def test_an_unknown_scheme_is_not_guessed_at():
-    session = _Session([_Response(401, 'Negotiate')])
+    session = _Session([_Response(401, "Negotiate")])
 
     response = await _auth(session).request("GET", "http://d/cgi-bin/x.cgi")
 

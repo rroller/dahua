@@ -19,6 +19,7 @@ now. The previous frame stays, and nothing raises.
 Only transport failures are caught, so a bug in the snapshot path still comes
 out rather than being quietly turned into a blank frame.
 """
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -27,7 +28,6 @@ import pytest
 from aiohttp import ClientError, ClientResponseError
 
 from custom_components.dahua.camera import DahuaCamera
-
 
 IMAGE = b"\xff\xd8\xff\xe0 a jpeg \xff\xd9"
 
@@ -38,7 +38,8 @@ def _camera(snapshot):
     cam._channel_number = 1
     cam._name = "Front Door"
     cam._coordinator = SimpleNamespace(
-        client=SimpleNamespace(async_get_snapshot=snapshot))
+        client=SimpleNamespace(async_get_snapshot=snapshot)
+    )
     return cam
 
 

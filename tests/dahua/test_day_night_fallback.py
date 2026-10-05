@@ -51,6 +51,7 @@ def _refused():
 
 # --- the device that has the old table --------------------------------------
 
+
 async def test_a_device_with_videoindaynight_is_unchanged():
     c = _Client("OK")
 
@@ -61,6 +62,7 @@ async def test_a_device_with_videoindaynight_is_unchanged():
 
 
 # --- the devices that do not -------------------------------------------------
+
 
 async def test_a_refused_write_falls_back_to_videoinoptions():
     c = _Client(_refused())
@@ -81,11 +83,19 @@ async def test_a_reply_that_is_not_ok_also_falls_back():
     assert "VideoInOptions[0].DayNightColor=2" in c.urls[1]
 
 
-@pytest.mark.parametrize("mode,expected", [
-    ("Color", 0), ("color", 0),
-    ("Auto", 1), ("auto", 1), ("Brightness", 1), (None, 1),
-    ("BlackWhite", 2), ("blackwhite", 2),
-])
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("Color", 0),
+        ("color", 0),
+        ("Auto", 1),
+        ("auto", 1),
+        ("Brightness", 1),
+        (None, 1),
+        ("BlackWhite", 2),
+        ("blackwhite", 2),
+    ],
+)
 async def test_every_mode_maps_to_the_documented_integer(mode, expected):
     c = _Client(_refused())
 

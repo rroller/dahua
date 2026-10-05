@@ -33,11 +33,11 @@ class TestParseEvent:
     def test_event_with_json_data(self):
         """Events with a JSON data payload parse data into a dict."""
         event_body = (
-            'Code=VideoMotion;action=Start;index=0;data={\n'
+            "Code=VideoMotion;action=Start;index=0;data={\n"
             '   "Id" : [ 0 ],\n'
             '   "RegionName" : [ "Region1" ],\n'
             '   "SmartMotionEnable" : true\n'
-            '}'
+            "}"
         )
         raw = _wrap_event(event_body)
         events = parse_event(raw)
@@ -63,10 +63,10 @@ class TestParseEvent:
     def test_equals_in_data_value_does_not_crash(self):
         """Bug #477: values containing '=' must not crash parse_event."""
         event_body = (
-            'Code=CrossRegionDetection;action=Start;index=0;data={\n'
+            "Code=CrossRegionDetection;action=Start;index=0;data={\n"
             '   "Name" : "Rule1",\n'
             '   "Encoded" : "dGVzdA=="\n'
-            '}'
+            "}"
         )
         raw = _wrap_event(event_body)
         events = parse_event(raw)
@@ -98,8 +98,10 @@ class TestParseEvent:
 
     def test_a_truncated_block_does_not_discard_the_events_before_it(self):
         """One bad block must cost one block, not the whole batch."""
-        raw = (_wrap_event("Code=VideoMotion;action=Start;index=0")
-               + "--myboundary\nContent-Type: text/plain\nContent-Length: 999\n")
+        raw = (
+            _wrap_event("Code=VideoMotion;action=Start;index=0")
+            + "--myboundary\nContent-Type: text/plain\nContent-Length: 999\n"
+        )
 
         events = parse_event(raw)
 
@@ -111,9 +113,9 @@ class TestParseEvent:
     def test_a_semicolon_inside_the_json_does_not_end_the_stream(self):
         """Users name rules and regions freely, and the payload is split on ';'."""
         event_body = (
-            'Code=CrossRegionDetection;action=Start;index=0;data={\n'
+            "Code=CrossRegionDetection;action=Start;index=0;data={\n"
             '   "Name" : "Drive; Gate"\n'
-            '}'
+            "}"
         )
 
         events = parse_event(_wrap_event(event_body))
@@ -205,8 +207,18 @@ class TestExtractPlateData:
         assert extract_plate_data({"data": {"PlateNumber": "null"}}) is None
         assert extract_plate_data({"data": {"PlateNumber": "--"}}) is None
         assert extract_plate_data({"data": {"PlateNumber": ""}}) is None
-        assert extract_plate_data({"data": {"Object": {"ObjectType": "Human", "Text": "Unknown"}}}) is None
-        assert extract_plate_data({"data": {"Object": {"ObjectType": "Vehicle", "Text": "Unknown"}}}) is None
+        assert (
+            extract_plate_data(
+                {"data": {"Object": {"ObjectType": "Human", "Text": "Unknown"}}}
+            )
+            is None
+        )
+        assert (
+            extract_plate_data(
+                {"data": {"Object": {"ObjectType": "Vehicle", "Text": "Unknown"}}}
+            )
+            is None
+        )
         assert extract_plate_data({"data": {}}) is None
         assert extract_plate_data("not a dict") is None
 
@@ -253,7 +265,6 @@ class TestNormalizePlate:
         assert normalize_plate(None) == ""
         assert normalize_plate("---") == ""
 
-
     def test_greek_zero_omicron_positional_normalization(self):
         # 3 letters + 4 digits: zero in letter section becomes O, O in digit section becomes 0
         assert normalize_plate("AB01234") == "ABO1234"
@@ -292,7 +303,7 @@ class TestExtractPlateStringFallback:
     def test_extract_from_valid_json_string(self):
         event = {
             "Code": "TrafficParkingSpaceParking",
-            "data": '{"Object": {"ObjectType": "Plate", "Text": "AB01234", "Confidence": 94}}'
+            "data": '{"Object": {"ObjectType": "Plate", "Text": "AB01234", "Confidence": 94}}',
         }
         res = extract_plate_data(event)
         assert res is not None
@@ -302,10 +313,7 @@ class TestExtractPlateStringFallback:
     def test_extract_from_truncated_json_string(self):
         # Truncated string simulating TCP packet split
         truncated = '{"Object": {"ObjectType": "Plate", "Text": "AB01234", "Confidence": 90}, "TrafficCa'
-        event = {
-            "Code": "TrafficParkingSpaceParking",
-            "data": truncated
-        }
+        event = {"Code": "TrafficParkingSpaceParking", "data": truncated}
         res = extract_plate_data(event)
         assert res is not None
         assert res["plate"] == "ABO1234"
@@ -314,15 +322,10 @@ class TestExtractPlateStringFallback:
     def test_extract_from_rtl_reversed_candidates(self):
         # When Dahua includes both RTL scrambled and standard order
         raw = '{"CurrentPlateInfo": [{"Text": "12340BA"}], "Object": {"Text": "AB01234", "Confidence": 91}}'
-        event = {
-            "Code": "TrafficParkingSpaceParking",
-            "data": raw
-        }
+        event = {"Code": "TrafficParkingSpaceParking", "data": raw}
         res = extract_plate_data(event)
         assert res is not None
         assert res["plate"] == "ABO1234"
-
-
 
 
 class TestTruncatedPlateFallback:
@@ -413,8 +416,10 @@ class TestTruncatedPlateFallback:
         assert res["confidence"] == 87
 
     def test_the_brand_and_colour_survive_truncation(self):
-        truncated = ('{"TrafficCar": {"PlateNumber": "ABC1234"}, "VehicleSign": "Audi",'
-                     ' "VehicleColor": "Black", "Vehic')
+        truncated = (
+            '{"TrafficCar": {"PlateNumber": "ABC1234"}, "VehicleSign": "Audi",'
+            ' "VehicleColor": "Black", "Vehic'
+        )
         res = extract_plate_data({"Code": "TrafficJunction", "data": truncated})
 
         assert res["vehicle_brand"] == "Audi"
@@ -427,8 +432,10 @@ class TestPlateInItsOtherShapes:
     getting the order wrong silently prefers the wrong field."""
 
     def test_plate_as_a_dict_with_its_own_confidence(self):
-        event = {"Code": "TrafficJunction",
-                 "data": {"Plate": {"Text": "ABC1234", "Confidence": 77}}}
+        event = {
+            "Code": "TrafficJunction",
+            "data": {"Plate": {"Text": "ABC1234", "Confidence": 77}},
+        }
         res = extract_plate_data(event)
 
         assert res["plate"] == "ABC1234"
@@ -436,13 +443,15 @@ class TestPlateInItsOtherShapes:
 
     def test_plate_as_a_bare_string(self):
         res = extract_plate_data(
-            {"Code": "TrafficJunction", "data": {"Plate": "ABC1234"}})
+            {"Code": "TrafficJunction", "data": {"Plate": "ABC1234"}}
+        )
 
         assert res["plate"] == "ABC1234"
 
     def test_the_lowercase_key_is_accepted(self):
         res = extract_plate_data(
-            {"Code": "TrafficJunction", "data": {"plate": "ABC1234"}})
+            {"Code": "TrafficJunction", "data": {"plate": "ABC1234"}}
+        )
 
         assert res["plate"] == "ABC1234"
 
@@ -451,7 +460,8 @@ class TestPlateInItsOtherShapes:
         in with "unlicensed" does not produce a sensor reading of that."""
         for placeholder in ("unlicensed", "unknown", "none", "--", ""):
             res = extract_plate_data(
-                {"Code": "TrafficJunction", "data": {"Plate": placeholder}})
+                {"Code": "TrafficJunction", "data": {"Plate": placeholder}}
+            )
             assert res is None, placeholder
 
 
@@ -466,17 +476,21 @@ class TestPlateDataEdges:
         """normalize_plate strips to alphanumerics, so a field holding separators comes
         back empty and must not become a reading."""
         res = extract_plate_data(
-            {"Code": "X", "data": {"Object": {"ObjectType": "Plate", "Text": "-/-"}}})
+            {"Code": "X", "data": {"Object": {"ObjectType": "Plate", "Text": "-/-"}}}
+        )
 
         assert res is None
 
     def test_the_vehicle_type_falls_back_to_the_vehicle_text(self):
         """Some firmware puts the body style in Vehicle.Text rather than in a named
         field."""
-        event = {"Code": "X", "data": {
-            "Plate": "ABC1234",
-            "Vehicle": {"Text": "Estate"},
-        }}
+        event = {
+            "Code": "X",
+            "data": {
+                "Plate": "ABC1234",
+                "Vehicle": {"Text": "Estate"},
+            },
+        }
         res = extract_plate_data(event)
 
         assert res["vehicle_type"] == "Estate"

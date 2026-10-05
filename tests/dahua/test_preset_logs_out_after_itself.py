@@ -46,8 +46,7 @@ class _Rpc2:
 def _client(monkeypatch, rpc2):
     client = DahuaClient("u", "p", "cam", 80, 554, object())
 
-    monkeypatch.setattr(client_module, "DahuaRpc2Client",
-                        lambda *args, **kwargs: rpc2)
+    monkeypatch.setattr(client_module, "DahuaRpc2Client", lambda *args, **kwargs: rpc2)
     # The real one builds a session and a connection pool; nothing here uses it.
     monkeypatch.setattr(DahuaClient, "_rpc2_session", lambda self: object())
     return client
@@ -133,8 +132,9 @@ async def test_a_logout_that_raises_does_not_hide_why_the_preset_failed(monkeypa
     """The other half, and the one that matters for diagnosis: an exception from the
     finally would replace the camera's own refusal with a connection error from the
     tidy-up, and the reason the press did not work would be gone."""
-    rpc2 = _Rpc2(fails=RuntimeError("camera said no"),
-                 logout_raises=OSError("connection reset"))
+    rpc2 = _Rpc2(
+        fails=RuntimeError("camera said no"), logout_raises=OSError("connection reset")
+    )
     client = _client(monkeypatch, rpc2)
 
     with pytest.raises(RuntimeError, match="camera said no"):

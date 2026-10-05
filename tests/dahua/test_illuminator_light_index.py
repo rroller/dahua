@@ -24,6 +24,7 @@ def _table(channel, profile, types):
 
 # --- the model this exists for ------------------------------------------------
 
+
 def test_white_light_at_one_is_found_when_zero_is_infrared():
     """#647: index 0 is the invisible emitter, so the illuminator must not use it."""
     data = _table(0, 0, {0: "InfraredLight", 1: "WhiteLight"})
@@ -37,6 +38,7 @@ def test_it_reads_the_row_for_this_channel_and_profile():
 
 
 # --- and the models that must not change --------------------------------------
+
 
 def test_white_light_at_zero_stays_at_zero():
     data = _table(0, 0, {0: "WhiteLight", 1: "InfraredLight"})

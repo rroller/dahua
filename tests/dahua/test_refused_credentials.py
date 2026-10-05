@@ -16,6 +16,7 @@ The fix must not re-create #714, where one 401 was treated as proof of a wrong
 password. Channels of one NVR share a digest challenge and a raced nonce is
 refused exactly like a bad credential, so a single refusal stays non-fatal.
 """
+
 import pytest
 from aiohttp import ClientResponseError
 
@@ -75,6 +76,7 @@ def _401():
 
 # --- one refusal is not a wrong password (#714 must not come back) -----------
 
+
 def test_the_first_refusal_is_an_ordinary_failed_poll():
     _clean()
     c = _coordinator()
@@ -102,11 +104,13 @@ def test_a_success_in_between_clears_the_count():
         c._auth_refused(_401())
     async_record_host_success(c.hass, c._address)
 
-    assert isinstance(c._auth_refused(_401()), UpdateFailed), \
-        "the count survived a success, so transient 401s accumulate for ever"
+    assert isinstance(
+        c._auth_refused(_401()), UpdateFailed
+    ), "the count survived a success, so transient 401s accumulate for ever"
 
 
 # --- at the budget, stop ----------------------------------------------------
+
 
 def test_at_the_budget_it_asks_for_new_credentials():
     _clean()
@@ -124,20 +128,58 @@ def test_at_the_budget_it_asks_for_new_credentials():
 
 # --- the count is the host's, not the entry's -------------------------------
 
-def test_channels_of_one_nvr_share_the_count():
-    """The lock is per source IP, so per-entry counts would never stop it.
 
-    Ten channels are ten entries hammering one device. If each counted alone,
-    the first to give up would stop while the other nine kept the lock alive.
+def test_many_channels_refused_once_each_is_one_bad_moment():
+    """The count is per source, so a recorder having a moment is not a wrong password.
+
+    Measured on a live twelve channel NVR: a burst of motion, one transient refusal,
+    and twelve channels incremented a single counter inside fourteen milliseconds.
+    Home Assistant then demanded a new password for credentials that were correct
+    throughout, and a probe with the stored password answered 200 straight afterwards.
+
+    Counting requests made that inevitable: any threshold below the channel count is
+    reached by one instant.
     """
     _clean()
-    entries = [_coordinator(entry_id="e%d" % i) for i in range(MAX_AUTH_REFUSALS)]
+    channels = [_coordinator(entry_id="e%d" % i) for i in range(12)]
 
-    results = [e._auth_refused(_401()) for e in entries]
+    results = [c._auth_refused(_401()) for c in channels]
+
+    assert all(
+        isinstance(r, UpdateFailed) and not isinstance(r, ConfigEntryAuthFailed)
+        for r in results
+    ), "one moment was read as a wrong password"
+
+
+def test_one_channel_refused_to_the_budget_still_stops():
+    """A password that is wrong is wrong every time, and nothing succeeded in between."""
+    _clean()
+    c = _coordinator()
+
+    results = [c._auth_refused(_401()) for _ in range(MAX_AUTH_REFUSALS)]
 
     assert isinstance(results[-1], ConfigEntryAuthFailed)
-    assert all(isinstance(r, UpdateFailed) and not isinstance(r, ConfigEntryAuthFailed)
-               for r in results[:-1])
+    assert all(not isinstance(r, ConfigEntryAuthFailed) for r in results[:-1])
+
+
+def test_once_the_budget_is_spent_every_channel_stops():
+    """The property the per-host count exists for, and the reason it stays per host.
+
+    The lock is per source IP, so ten channels are ten pollers renewing one lock. If
+    the budget were per entry, the first to give up would stop while the rest kept the
+    lock alive, and the correct password typed into the reauth dialog would be refused
+    along with everything else. That is #729.
+    """
+    _clean()
+    first = _coordinator(entry_id="e1")
+    for _ in range(MAX_AUTH_REFUSALS):
+        first._auth_refused(_401())
+
+    second = _coordinator(entry_id="e2")
+
+    assert isinstance(
+        second._auth_refused(_401()), ConfigEntryAuthFailed
+    ), "another channel kept polling after the host's budget was spent"
 
 
 def test_a_different_host_keeps_its_own_count():
@@ -155,11 +197,18 @@ def test_a_different_host_keeps_its_own_count():
 
 # --- the event stream stops too ---------------------------------------------
 
+
 async def test_the_event_stream_stops_once_the_budget_is_gone():
-    """It backs off to ten minutes at most, well inside the half hour lock."""
+    """It backs off to ten minutes at most, well inside the half hour lock.
+
+    The budget is spent here by a channel's polls, which is how it happens: the polls
+    run every interval and the stream only notices when its socket next fails. The
+    count is per source and shared per host, so a stream stops because of refusals it
+    never saw itself. That is the whole point of keeping it per host.
+    """
     _clean()
-    for _ in range(MAX_AUTH_REFUSALS - 1):
-        async_record_host_auth_refusal("10.0.0.5")
+    for _ in range(MAX_AUTH_REFUSALS):
+        async_record_host_auth_refusal("10.0.0.5", "a channel")
 
     stream = object.__new__(DahuaHostEventStream)
     stream._address = "10.0.0.5"
@@ -171,8 +220,9 @@ async def test_the_event_stream_stops_once_the_budget_is_gone():
     async def _refuse(*_args, **_kwargs):
         raise _401()
 
-    stream._owner = type("O", (), {"client": type("C", (), {
-        "stream_events": staticmethod(_refuse)})()})()
+    stream._owner = type(
+        "O", (), {"client": type("C", (), {"stream_events": staticmethod(_refuse)})()}
+    )()
 
     # Returns rather than sleeping and re-attaching. If it looped, this hangs.
     await stream._async_run()

@@ -28,8 +28,17 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 
-PLATFORMS = ("binary_sensor", "button", "camera", "event", "light", "select",
-             "sensor", "switch", "update")
+PLATFORMS = (
+    "binary_sensor",
+    "button",
+    "camera",
+    "event",
+    "light",
+    "select",
+    "sensor",
+    "switch",
+    "update",
+)
 
 # What each entity's `name` property returned before it was translated. The whole
 # point of the change was that Home Assistant composes "<device> <entity>" either
@@ -43,9 +52,16 @@ WAS = {
     ("select", "security_light"): "Security Light",
     ("select", "preset_position"): "Preset Position",
     ("select", "day_night_mode"): "Day/Night Mode",
+    # New with the infrared mode control, so there is no earlier property for it
+    # to match. Listed because this table is asserted as equal to the file, which
+    # is what makes a rename fail rather than pass quietly.
+    ("select", "infrared_mode"): "Infrared Mode",
+    ("select", "smart_motion_sensitivity"): "Smart Motion Sensitivity",
+    ("select", "vth_camera_link"): "Camera for {vto} calls",
     ("sensor", "firmware_version"): "Firmware Version",
     ("sensor", "serial_number"): "Serial Number",
     ("sensor", "profile"): "Profile",
+    ("sensor", "configured_channels"): "Configured Channels",
     ("sensor", "license_plate"): "License Plate",
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
@@ -92,9 +108,11 @@ def _declared(cls):
     for item in cls.body:
         if isinstance(item, ast.Assign):
             for target in item.targets:
-                if (isinstance(target, ast.Name)
-                        and target.id == "_attr_translation_key"
-                        and isinstance(item.value, ast.Constant)):
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id == "_attr_translation_key"
+                    and isinstance(item.value, ast.Constant)
+                ):
                     return item.value.value
     return None
 
@@ -113,8 +131,7 @@ def _keys_passed_in(platform):
     # too, and collecting those reported five exception keys as entity names with
     # nothing behind them. Keyed on the callee being a class in this module rather
     # than on a list of things to ignore, so it stays right as more is added.
-    entity_classes = {node.name for node in tree.body
-                      if isinstance(node, ast.ClassDef)}
+    entity_classes = {node.name for node in tree.body if isinstance(node, ast.ClassDef)}
     keys = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -131,9 +148,11 @@ def _keys_passed_in(platform):
 
 
 def _keys_in_code():
-    found = {(platform, key): cls.name
-             for platform, cls in _classes()
-             if (key := _declared(cls)) is not None}
+    found = {
+        (platform, key): cls.name
+        for platform, cls in _classes()
+        if (key := _declared(cls)) is not None
+    }
     for platform in PLATFORMS:
         for key in _keys_passed_in(platform):
             found.setdefault((platform, key), "chosen by %s.py" % platform)
@@ -157,12 +176,15 @@ def _owned_by_the_event_sensor_file(pair):
 
 def _names_in_file():
     data = json.load(io.open(PACKAGE / "translations" / "en.json", encoding="utf-8"))
-    return {(platform, key): entry["name"]
-            for platform, keys in data.get("entity", {}).items()
-            for key, entry in keys.items()}
+    return {
+        (platform, key): entry["name"]
+        for platform, keys in data.get("entity", {}).items()
+        for key, entry in keys.items()
+    }
 
 
 # --- the two sides have to agree --------------------------------------------
+
 
 def test_every_key_the_code_declares_has_an_english_name():
     """A key with no string is not an error. The lookup misses and the entity has
@@ -170,14 +192,16 @@ def test_every_key_the_code_declares_has_an_english_name():
     Garage."""
     missing = sorted(set(_keys_in_code()) - set(_names_in_file()))
 
-    assert not missing, (
-        "declared in code with no name in en.json: %s" % missing)
+    assert not missing, "declared in code with no name in en.json: %s" % missing
 
 
 def test_every_name_in_the_file_belongs_to_an_entity():
     """Dead strings read as coverage, and a translator spends real time on them."""
-    unused = sorted(pair for pair in set(_names_in_file()) - set(_keys_in_code())
-                    if not _owned_by_the_event_sensor_file(pair))
+    unused = sorted(
+        pair
+        for pair in set(_names_in_file()) - set(_keys_in_code())
+        if not _owned_by_the_event_sensor_file(pair)
+    )
 
     assert not unused, "in en.json with nothing declaring it: %s" % unused
 
@@ -186,14 +210,19 @@ def test_the_names_are_what_the_properties_returned():
     """The change was meant to be invisible. Home Assistant composes
     "<device> <entity>" from has_entity_name either way, so a string that differs
     from the old property renames an entity that is already on a dashboard."""
-    names = {pair: text for pair, text in _names_in_file().items()
-             if not _owned_by_the_event_sensor_file(pair)}
+    names = {
+        pair: text
+        for pair, text in _names_in_file().items()
+        if not _owned_by_the_event_sensor_file(pair)
+    }
 
     assert names == WAS, "renamed: %s" % sorted(
-        key for key in set(names) | set(WAS) if names.get(key) != WAS.get(key))
+        key for key in set(names) | set(WAS) if names.get(key) != WAS.get(key)
+    )
 
 
 # --- and nothing quietly keeps naming itself --------------------------------
+
 
 def test_an_entity_either_translates_its_name_or_is_listed_as_named_elsewhere():
     """The gap this closes is a new entity with `return "Something"`: it works, it
@@ -207,8 +236,8 @@ def test_an_entity_either_translates_its_name_or_is_listed_as_named_elsewhere():
                 hard_coded.append("%s.%s" % (platform, cls.name))
 
     assert not hard_coded, (
-        "names itself in code and is not listed in NAMED_ELSEWHERE: %s"
-        % hard_coded)
+        "names itself in code and is not listed in NAMED_ELSEWHERE: %s" % hard_coded
+    )
 
 
 def test_nothing_that_translates_its_name_also_sets_attr_name():
@@ -223,8 +252,11 @@ def test_nothing_that_translates_its_name_also_sets_attr_name():
         for node in ast.walk(cls):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
-                    name = (target.attr if isinstance(target, ast.Attribute)
-                            else getattr(target, "id", None))
+                    name = (
+                        target.attr
+                        if isinstance(target, ast.Attribute)
+                        else getattr(target, "id", None)
+                    )
                     if name == "_attr_name":
                         both.append("%s.%s" % (platform, cls.name))
 
@@ -235,7 +267,6 @@ def test_every_platform_with_keys_is_one_home_assistant_knows():
     """The first level of the entity section is the platform domain, and a typo
     there is not an error either: the lookup is built from the platform the entity
     is added under, so `sensors` rather than `sensor` simply never matches."""
-    unknown = sorted({platform for platform, _ in _names_in_file()}
-                     - set(PLATFORMS))
+    unknown = sorted({platform for platform, _ in _names_in_file()} - set(PLATFORMS))
 
     assert not unknown, "not a platform this integration has: %s" % unknown

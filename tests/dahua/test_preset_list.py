@@ -25,13 +25,18 @@ GotoPreset the device refuses should not exist. Only an error stays unknown, and
 there the ten-entry list is kept, because a camera can refuse getPresets and
 still accept GotoPreset -- the SDT4E425 is that shape.
 """
+
 from types import SimpleNamespace
+
+import pytest
 
 from custom_components.dahua import dahua_utils
 from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
     _async_preset_ids,
 )
+
+from . import adds_entities
 
 
 def _reply(*indexes, named=True):
@@ -46,6 +51,7 @@ def _reply(*indexes, named=True):
 
 def _coordinator(answer):
     """A coordinator whose camera answers getPresets with `answer`."""
+
     async def get_presets(channel):
         if isinstance(answer, Exception):
             raise answer
@@ -58,6 +64,7 @@ def _coordinator(answer):
 
 
 # --- reading what the camera reports -----------------------------------------
+
 
 def test_the_presets_a_camera_lists_are_read():
     assert dahua_utils.parse_ptz_presets(_reply(1, 2)) == [1, 2]
@@ -98,11 +105,13 @@ def test_only_the_index_field_counts():
     that does not exist. A name cannot be mistaken for one because it will not
     parse as a number; these will.
     """
-    assert dahua_utils.parse_ptz_presets({
-        "presets[0].Index": "1",
-        "presets[0].Speed": "7",
-        "presets[0].Dwell": "30",
-    }) == [1]
+    assert dahua_utils.parse_ptz_presets(
+        {
+            "presets[0].Index": "1",
+            "presets[0].Speed": "7",
+            "presets[0].Dwell": "30",
+        }
+    ) == [1]
 
 
 def test_a_refusal_reads_as_nothing_rather_than_raising():
@@ -115,6 +124,7 @@ def test_a_non_numeric_index_is_skipped():
 
 
 # --- what the entity is then given -------------------------------------------
+
 
 async def test_a_camera_that_lists_presets_reports_exactly_those():
     assert await _async_preset_ids(_coordinator(_reply(1, 3))) == [1, 3]
@@ -156,18 +166,23 @@ async def test_the_channel_number_is_used_not_the_index():
 
 # --- the options the entity ends up with -------------------------------------
 
+
 def _entity(monkeypatch, preset_ids):
     """Build the real select, with only the Home Assistant base stubbed out."""
     import custom_components.dahua.select as select_module
 
-    monkeypatch.setattr(select_module.DahuaBaseEntity, "__init__",
-                        lambda self, coordinator, config_entry: None)
+    monkeypatch.setattr(
+        select_module.DahuaBaseEntity,
+        "__init__",
+        lambda self, coordinator, config_entry: None,
+    )
     coordinator = SimpleNamespace(
         get_device_name=lambda: "Front Gate",
         get_serial_number=lambda: "SER1",
     )
     return select_module.DahuaCameraPresetPositionSelect(
-        coordinator, None, preset_ids=preset_ids)
+        coordinator, None, preset_ids=preset_ids
+    )
 
 
 def test_a_camera_that_said_nothing_still_gets_the_old_ten(monkeypatch):
@@ -175,7 +190,18 @@ def test_a_camera_that_said_nothing_still_gets_the_old_ten(monkeypatch):
     entity = _entity(monkeypatch, None)
 
     assert entity._attr_options == [
-        "Manual", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+        "Manual",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+    ]
 
 
 def test_the_options_are_the_presets_the_camera_reported(monkeypatch):
@@ -191,14 +217,22 @@ def test_manual_is_always_offered(monkeypatch):
 
 # --- and whether the control is created at all (#525) ------------------------
 
-def _setup_coordinator(answer, day_night=False):
+
+def _setup_coordinator(
+    answer, day_night=False, infrared=False, no_video=False, device_class="IPC"
+):
     """A coordinator complete enough to drive select.async_setup_entry."""
+    asked = []
+
     async def get_presets(channel):
+        asked.append(channel)
         if isinstance(answer, Exception):
             raise answer
         return answer
 
     return SimpleNamespace(
+        # Read by select.async_setup_entry when it files the entities.
+        subentry_id=None,
         client=SimpleNamespace(async_get_ptz_presets=get_presets),
         get_channel_number=lambda: 1,
         get_model=lambda: "IPC-HFW3449E-S-IL",
@@ -207,21 +241,37 @@ def _setup_coordinator(answer, day_night=False):
         is_amcrest_doorbell=lambda: False,
         supports_security_light=lambda: False,
         supports_day_night_color=lambda: day_night,
+        supports_infrared_light=lambda: infrared,
+        supports_smart_motion_detection=lambda: False,
+        is_indoor_monitor=lambda: False,
+        is_indoor_monitor_without_video=lambda: no_video,
+        reported_device_class=lambda: device_class,
+        asked_for_presets=asked,
     )
 
 
-async def _added(monkeypatch, answer, day_night=False):
+async def _added(
+    monkeypatch,
+    answer,
+    day_night=False,
+    infrared=False,
+    no_video=False,
+    coordinator=None,
+):
     import custom_components.dahua.select as select_module
 
-    monkeypatch.setattr(select_module.DahuaBaseEntity, "__init__",
-                        lambda self, coordinator, config_entry: None)
-    coordinator = _setup_coordinator(answer, day_night)
+    monkeypatch.setattr(
+        select_module.DahuaBaseEntity,
+        "__init__",
+        lambda self, coordinator, config_entry: None,
+    )
+    if coordinator is None:
+        coordinator = _setup_coordinator(answer, day_night, infrared, no_video)
     hass = type("H", (), {"data": {}})()
-    entry = type("E", (), {"entry_id": "e1",
-                           "runtime_data": {0: coordinator}})()
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
 
     added = []
-    await select_module.async_setup_entry(hass, entry, added.extend)
+    await select_module.async_setup_entry(hass, entry, adds_entities(added))
     return [type(entity).__name__ for entity in added]
 
 
@@ -239,21 +289,97 @@ async def test_a_camera_that_refuses_the_query_keeps_its_control(monkeypatch):
     """No regression. A device can refuse getPresets and still drive
     GotoPreset, so a refusal must not remove a working control."""
     assert await _added(monkeypatch, RuntimeError("400")) == [
-        "DahuaCameraPresetPositionSelect"]
+        "DahuaCameraPresetPositionSelect"
+    ]
 
 
 async def test_a_timeout_keeps_its_control_too(monkeypatch):
     assert await _added(monkeypatch, TimeoutError()) == [
-        "DahuaCameraPresetPositionSelect"]
+        "DahuaCameraPresetPositionSelect"
+    ]
 
 
 async def test_a_camera_with_presets_still_gets_one(monkeypatch):
     assert await _added(monkeypatch, _reply(1, 3)) == [
-        "DahuaCameraPresetPositionSelect"]
+        "DahuaCameraPresetPositionSelect"
+    ]
 
 
 async def test_skipping_it_does_not_cost_the_camera_its_other_entities(monkeypatch):
     """The platform must carry on. Dropping the preset control by returning
     early would take Day/Night with it."""
-    assert await _added(monkeypatch, {}, day_night=True) == [
-        "DahuaDayNightModeSelect"]
+    assert await _added(monkeypatch, {}, day_night=True) == ["DahuaDayNightModeSelect"]
+
+
+async def test_the_infrared_mode_control_is_offered_only_where_there_is_one(
+    monkeypatch,
+):
+    """An -AS-PV has no infrared emitter, so a mode dropdown for one is a control
+    that can only ever fail. Gated on the same capability the light entity is."""
+    assert await _added(monkeypatch, {}, infrared=True) == ["DahuaInfraredModeSelect"]
+    assert await _added(monkeypatch, {}, infrared=False) == []
+
+
+# --- an indoor monitor without a camera -------------------------------------
+#
+# A VTH2421F-P has no camera (its own RemoteDevice entry says SupportVideo false)
+# and serves no CGI, so ptz.cgi answers 404. That is a refusal, which the branch
+# above deliberately answers with the ten-entry list -- a Preset Position control
+# for a device with nothing to move.
+
+
+async def test_an_indoor_monitor_without_a_camera_gets_no_preset_control(monkeypatch):
+    import aiohttp
+
+    refused = aiohttp.ClientResponseError(None, None, status=404)
+    assert await _added(monkeypatch, refused, no_video=True) == []
+
+
+async def test_it_is_not_even_asked_for_presets(monkeypatch):
+    import aiohttp
+
+    coordinator = _setup_coordinator(
+        aiohttp.ClientResponseError(None, None, status=404), no_video=True
+    )
+    await _added(monkeypatch, None, coordinator=coordinator)
+
+    assert coordinator.asked_for_presets == []
+
+
+async def test_its_other_selects_are_unaffected(monkeypatch):
+    assert await _added(
+        monkeypatch, RuntimeError("404"), day_night=True, no_video=True
+    ) == ["DahuaDayNightModeSelect"]
+
+
+# --- a VTO that will not list presets ------------------------------------------
+#
+# A DHI-VTO2211G-WP-S2 says class=VTO, refuses getPresets and the PTZ position probe
+# (400), and was given presets 1 to 10: the refusal path keeps them for cameras that
+# refuse the query but drive GotoPreset. A door station has no motor.
+
+
+async def test_a_vto_that_refuses_the_query_gets_no_preset_control(monkeypatch):
+    coordinator = _setup_coordinator(RuntimeError("400"), device_class="VTO")
+
+    assert await _added(monkeypatch, None, coordinator=coordinator) == []
+
+
+async def test_a_vto_that_does_list_presets_keeps_them(monkeypatch):
+    """Only the refusal is overruled. A device that answers with presets has them."""
+    coordinator = _setup_coordinator(_reply(1, 3), device_class="VTO")
+
+    assert await _added(monkeypatch, None, coordinator=coordinator) == [
+        "DahuaCameraPresetPositionSelect"
+    ]
+
+
+@pytest.mark.parametrize("device_class", ["", "IPC", "NVR", "VTOX"])
+async def test_anything_else_that_refuses_keeps_its_control(monkeypatch, device_class):
+    """Including a device that never said what it is: its model name alone is not
+    enough to take a control away. VTOX is the neighbouring-but-wrong answer."""
+    coordinator = _setup_coordinator(RuntimeError("400"), device_class=device_class)
+
+    assert await _added(monkeypatch, None, coordinator=coordinator) == [
+        "DahuaCameraPresetPositionSelect"
+    ]

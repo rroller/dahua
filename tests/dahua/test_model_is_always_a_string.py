@@ -25,8 +25,8 @@ import pytest
 
 from custom_components.dahua import model_name
 
-
 # --- the ordinary path: something specific was found ------------------------
+
 
 def test_a_specific_model_wins():
     assert model_name("DHI-NVR5464-16P-EI", "IP Camera") == "DHI-NVR5464-16P-EI"
@@ -44,8 +44,9 @@ def test_whitespace_is_not_part_of_the_model():
 
 # --- the roads that used to end in None -------------------------------------
 
+
 def test_an_empty_lookup_keeps_the_generic_value_rather_than_losing_it():
-    """"IP Camera" is not useful, but it is a great deal better than None."""
+    """ "IP Camera" is not useful, but it is a great deal better than None."""
     assert model_name(None, "IP Camera") == "IP Camera"
 
 

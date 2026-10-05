@@ -97,15 +97,16 @@ async def test_get_lighting_scheme_reads_requested_channel_and_profile():
     assert mode == "AIMode"
 
     c._request.assert_awaited_once_with(
-        "/cgi-bin/configManager.cgi?"
-        "action=getConfig&name=LightingScheme",
+        "/cgi-bin/configManager.cgi?" "action=getConfig&name=LightingScheme",
         allow_rpc2=False,
     )
 
 
 async def test_get_lighting_scheme_rejects_missing_mode():
     c = _client()
-    c._request = AsyncMock(return_value={"table.LightingScheme[0][0].LightingMode": "AIMode"})
+    c._request = AsyncMock(
+        return_value={"table.LightingScheme[0][0].LightingMode": "AIMode"}
+    )
 
     with pytest.raises(ValueError):
         await c.async_get_lighting_scheme_mode(0, "2")
@@ -195,8 +196,7 @@ async def test_set_lighting_v2_off_does_not_write_brightness():
     )
 
     c.get.assert_awaited_once_with(
-        "/cgi-bin/configManager.cgi?action=setConfig"
-        "&Lighting_V2[0][2][1].Mode=Off"
+        "/cgi-bin/configManager.cgi?action=setConfig" "&Lighting_V2[0][2][1].Mode=Off"
     )
 
 
@@ -233,8 +233,7 @@ async def test_raw_off_can_be_written_without_brightness():
     )
 
     c.get.assert_awaited_once_with(
-        "/cgi-bin/configManager.cgi?action=setConfig"
-        "&Lighting_V2[0][2][1].Mode=Off"
+        "/cgi-bin/configManager.cgi?action=setConfig" "&Lighting_V2[0][2][1].Mode=Off"
     )
 
 

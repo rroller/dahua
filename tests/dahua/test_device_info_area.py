@@ -17,6 +17,7 @@ through `async_update_device`, because `suggested_area` would be ignored there.
 Home Assistant create a new area called that. So passing the id straight through
 would quietly produce a second area named `front_garden` beside the real one.
 """
+
 from types import SimpleNamespace
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -62,6 +63,7 @@ def _info(area_name=None):
 
 # --- the new key ---------------------------------------------------------------
 
+
 def test_the_chosen_area_is_suggested():
     assert _info("Front Garden")["suggested_area"] == "Front Garden"
 
@@ -79,6 +81,7 @@ def test_an_area_that_no_longer_exists_suggests_nothing():
 
 
 # --- and the six that were already there --------------------------------------
+
 
 def test_the_identity_is_unchanged():
     info = _info("Front Garden")
@@ -102,6 +105,7 @@ def test_an_area_adds_exactly_one_key():
 
 # --- where the name comes from ------------------------------------------------
 
+
 def _coordinator_with(options=None, data=None, areas=None, channel_config=None):
     """A real coordinator, with only the config entry and hass stood in for.
 
@@ -112,7 +116,8 @@ def _coordinator_with(options=None, data=None, areas=None, channel_config=None):
     """
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator.config_entry = SimpleNamespace(
-        options=dict(options or {}), data=dict(data or {}))
+        options=dict(options or {}), data=dict(data or {})
+    )
     coordinator.hass = SimpleNamespace(data={}, _areas=dict(areas or {}))
     if channel_config is not None:
         coordinator._channel_config = dict(channel_config)
@@ -123,7 +128,8 @@ def test_the_area_id_comes_from_the_options_first():
     """Options win over data, like every other setting that can change after
     setup."""
     coordinator = _coordinator_with(
-        options={CONF_AREA: "chosen_later"}, data={CONF_AREA: "chosen_at_setup"})
+        options={CONF_AREA: "chosen_later"}, data={CONF_AREA: "chosen_at_setup"}
+    )
 
     assert coordinator.get_configured_area() == "chosen_later"
 
@@ -145,6 +151,7 @@ def test_a_blank_area_reads_as_none_not_as_an_empty_string():
 
 # --- and on a merged recorder, entry.data belongs to another channel ----------
 
+
 def test_a_channel_does_not_inherit_the_primary_channels_area():
     """The regression #827 left behind, and it cancelled out a guard.
 
@@ -155,8 +162,9 @@ def test_a_channel_does_not_inherit_the_primary_channels_area():
     channel whose area had been popped reported the primary's.
     """
     channel = _coordinator_with(
-        data={CONF_AREA: "living_room"},   # the primary channel's own answer
-        channel_config={"channel": 5})     # this channel chose none
+        data={CONF_AREA: "living_room"},  # the primary channel's own answer
+        channel_config={"channel": 5},
+    )  # this channel chose none
 
     assert channel.get_configured_area() is None
 
@@ -164,7 +172,8 @@ def test_a_channel_does_not_inherit_the_primary_channels_area():
 def test_a_channel_with_its_own_area_keeps_it():
     channel = _coordinator_with(
         data={CONF_AREA: "living_room"},
-        channel_config={"channel": 5, CONF_AREA: "garage"})
+        channel_config={"channel": 5, CONF_AREA: "garage"},
+    )
 
     assert channel.get_configured_area() == "garage"
 
@@ -173,7 +182,8 @@ def test_the_primary_channel_still_gets_the_area_it_chose():
     """Its subentry keeps the key, so it resolves without the fallback at all."""
     primary = _coordinator_with(
         data={CONF_AREA: "living_room"},
-        channel_config={"channel": 0, CONF_AREA: "living_room"})
+        channel_config={"channel": 0, CONF_AREA: "living_room"},
+    )
 
     assert primary.get_configured_area() == "living_room"
 
@@ -186,7 +196,8 @@ def test_an_entry_wide_option_still_reaches_a_channel_that_chose_nothing():
     channel = _coordinator_with(
         options={CONF_AREA: "whole_house"},
         data={CONF_AREA: "living_room"},
-        channel_config={"channel": 5})
+        channel_config={"channel": 5},
+    )
 
     assert channel.get_configured_area() == "whole_house"
 

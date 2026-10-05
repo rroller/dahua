@@ -25,8 +25,11 @@ from custom_components.dahua.rpc2 import DahuaRpc2Client
 
 def rule(rule_id, enabled, name="IVS-1"):
     return {
-        "Id": rule_id, "Class": "Normal", "Name": name,
-        "Type": "CrossLineDetection", "Enable": enabled,
+        "Id": rule_id,
+        "Class": "Normal",
+        "Name": name,
+        "Type": "CrossLineDetection",
+        "Enable": enabled,
         "Points": [{"X": 12, "Y": 34}],
     }
 
@@ -52,14 +55,17 @@ async def test_remote_write_resolves_id_then_writes_only_that_field():
         params={
             "name": "RemoteVideoAnalyseRule[10][1].Enable",
             "table": False,
-            "options": [], "channel": 10,
+            "options": [],
+            "channel": 10,
         },
     )
     assert current[1]["Enable"] is True
     assert current[0]["Points"] == [{"X": 12, "Y": 34}]
 
 
-@pytest.mark.parametrize("table", [[], [rule(2, True)], [rule(1, True), rule(1, False)]])
+@pytest.mark.parametrize(
+    "table", [[], [rule(2, True)], [rule(1, True), rule(1, False)]]
+)
 async def test_missing_or_ambiguous_remote_rule_never_writes(table):
     rpc = object.__new__(DahuaRpc2Client)
     rpc.async_get_remote_ivs_rules = AsyncMock(return_value=table)
@@ -71,11 +77,49 @@ async def test_missing_or_ambiguous_remote_rule_never_writes(table):
 
 def test_remote_discovery_uses_zero_based_channel_and_normal_class():
     table = flatten_rpc2_config(
-        "RemoteVideoAnalyseRule", [rule(1, True), rule(2, False, "IVS-2")],
+        "RemoteVideoAnalyseRule",
+        [rule(1, True), rule(2, False, "IVS-2")],
         "table.RemoteVideoAnalyseRule[10]",
     )
-    assert [r["id"] for r in ivs_rules_for_channel(table, 10, "RemoteVideoAnalyseRule")] == ["1", "2"]
+    assert [
+        r["id"] for r in ivs_rules_for_channel(table, 10, "RemoteVideoAnalyseRule")
+    ] == ["1", "2"]
     assert ivs_rules_for_channel(table, 11, "RemoteVideoAnalyseRule") == []
+
+
+async def test_initial_nvr_discovery_uses_the_per_channel_remote_read(hass):
+    """Initial discovery must use the same per-channel RPC2 shape as the switch.
+
+    The exact RPC2 contract is pinned below by
+    test_remote_read_contract_uses_zero_based_channel_and_only_local_false.
+    This test pins the other half of the chain: coordinator setup must reach
+    that method with the current channel rather than discovering rules through
+    a different whole-table read shape.
+    """
+    from tests.dahua.test_probe_timeouts import _Client, _coordinator
+
+    channel = 10
+    table = flatten_rpc2_config(
+        "RemoteVideoAnalyseRule",
+        [rule(1, True), rule(2, False, "IVS-2")],
+        f"table.RemoteVideoAnalyseRule[{channel}]",
+    )
+    client = _Client()
+    client.async_get_remote_ivs_rules = AsyncMock(return_value=table)
+
+    c = _coordinator(client)
+    c.hass = hass
+    c._channel = channel
+    c._channel_number = channel + 1
+    c.is_nvr_channel = lambda: True
+    # Polling the IVS switches reads the table again; this test isolates discovery.
+    c._wanted_by = lambda *_: False
+
+    await c._async_update_data()
+
+    client.async_get_remote_ivs_rules.assert_awaited_once_with(channel)
+    assert [item["id"] for item in c.get_ivs_rules()] == ["1", "2"]
+    assert all(item.get("remote") is True for item in c.get_ivs_rules())
 
 
 async def test_remote_read_contract_uses_zero_based_channel_and_only_local_false():
@@ -87,9 +131,13 @@ async def test_remote_read_contract_uses_zero_based_channel_and_only_local_false
 
     assert await rpc.async_get_remote_ivs_rules(10) == table
     rpc.login.assert_awaited_once_with()
-    rpc.get_config.assert_awaited_once_with({
-        "name": "RemoteVideoAnalyseRule", "onlyLocal": False, "channel": 10,
-    })
+    rpc.get_config.assert_awaited_once_with(
+        {
+            "name": "RemoteVideoAnalyseRule",
+            "onlyLocal": False,
+            "channel": 10,
+        }
+    )
 
 
 @pytest.mark.parametrize("error", [ConnectionError, ValueError, TimeoutError])
@@ -109,7 +157,9 @@ async def test_remote_poll_reads_channel_table_only_when_switches_enabled(hass):
     from tests.dahua.test_poll_skips_unused import _coordinator
 
     table = flatten_rpc2_config(
-        "RemoteVideoAnalyseRule", [rule(1, False)], "table.RemoteVideoAnalyseRule[10]",
+        "RemoteVideoAnalyseRule",
+        [rule(1, False)],
+        "table.RemoteVideoAnalyseRule[10]",
     )
     for enabled in (True, False):
         c = _coordinator(switch=enabled)
@@ -151,7 +201,8 @@ async def test_concurrent_remote_writes_to_one_channel_preserve_both_changes():
         # could be clobbered by a stale snapshot; the per-field write removes
         # that class of race rather than relying on the lock alone.
         addressed = re.fullmatch(
-            r"RemoteVideoAnalyseRule\[10\]\[(\d+)\]\.Enable", params["name"])
+            r"RemoteVideoAnalyseRule\[10\]\[(\d+)\]\.Enable", params["name"]
+        )
         assert addressed, params["name"]
         table[int(addressed[1])]["Enable"] = params["table"]
         return {"result": True}
@@ -187,14 +238,16 @@ async def test_remote_requests_share_the_host_request_limit(write):
     )
     clients = [_client(rpc) for _ in range(8)]
     if write:
-        await asyncio.gather(*(
-            c.async_set_remote_ivs_rule_by_id(i, "1", False)
-            for i, c in enumerate(clients)
-        ))
+        await asyncio.gather(
+            *(
+                c.async_set_remote_ivs_rule_by_id(i, "1", False)
+                for i, c in enumerate(clients)
+            )
+        )
     else:
-        await asyncio.gather(*(
-            c.async_get_remote_ivs_rules(i) for i, c in enumerate(clients)
-        ))
+        await asyncio.gather(
+            *(c.async_get_remote_ivs_rules(i) for i, c in enumerate(clients))
+        )
 
     assert peak == client_module.MAX_CONCURRENT_REQUESTS_PER_HOST
 

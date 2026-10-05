@@ -45,6 +45,7 @@ def _event(state):
 
 # --- reading the state ------------------------------------------------------
 
+
 def test_the_measured_unlock():
     assert doorbell_state(_event(8)) == 8
 
@@ -54,18 +55,22 @@ def test_the_state_is_read_as_a_number(value, expected):
     assert doorbell_state(_event(value)) == expected
 
 
-@pytest.mark.parametrize("event", [
-    {"Code": "BackKeyLight", "Data": {}},
-    {"Code": "BackKeyLight", "Data": {"State": None}},
-    {"Code": "BackKeyLight", "Data": {"State": "nonsense"}},
-    {"Code": "BackKeyLight", "Data": "not a dict"},
-    {"Code": "BackKeyLight"},
-])
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"Code": "BackKeyLight", "Data": {}},
+        {"Code": "BackKeyLight", "Data": {"State": None}},
+        {"Code": "BackKeyLight", "Data": {"State": "nonsense"}},
+        {"Code": "BackKeyLight", "Data": "not a dict"},
+        {"Code": "BackKeyLight"},
+    ],
+)
 def test_a_state_it_did_not_report(event):
     assert doorbell_state(event) is None
 
 
 # --- what survives translation ----------------------------------------------
+
 
 def test_the_unlock_now_survives():
     """The whole point: something downstream can see the door opened."""
@@ -98,7 +103,8 @@ def test_states_that_are_not_about_the_lock_add_nothing(state):
 def test_an_amcrest_doorbell_is_unaffected():
     """PhoneCallDetect carries no State and must keep behaving as before."""
     codes = _vto().translate_event_code(
-        {"Code": "PhoneCallDetect", "Action": "Pulse", "Data": {}})
+        {"Code": "PhoneCallDetect", "Action": "Pulse", "Data": {}}
+    )
 
     assert codes == ["DoorbellPressed"]
 

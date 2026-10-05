@@ -1,0 +1,41 @@
+# Keeps the workflow actions from going stale, and nothing else.
+#
+# Only github-actions is watched, deliberately. actions/checkout sat on v2 from 2020
+# until it was bumped by hand, which is the failure this catches: an action version
+# going quietly five years out of date, with the only symptom a deprecation warning
+# nobody reads at the end of a passing run.
+#
+# pip is NOT watched. requirements_test.txt pins
+# pytest-homeassistant-custom-component, which tracks Home Assistant's own releases and
+# therefore moves most weeks. That would open a pull request most weeks for a test-only
+# pin, on a repository that already receives plenty. The integration itself declares no
+# requirements in its manifest, so nothing a user installs has a dependency to update.
+#
+# Monthly rather than weekly for the same reason: an action version going a few weeks
+# unnoticed costs nothing, and this should be a quiet reminder rather than a queue.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    # One pull request for all of them rather than one each, since they are almost
+    # always bumped together and reviewed in one go.
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "ci"
+    # No `labels:` key, deliberately. Naming one here replaces Dependabot's
+    # defaults rather than adding to them, and a named label that the repository
+    # does not have is ignored -- which is what happened on the first run:
+    #
+    #   The following labels could not be found: `dependencies`.
+    #   Please create it before Dependabot can add it to a pull request.
+    #
+    # Left unset, Dependabot applies `dependencies` itself and, per its own
+    # documentation, "creates these default labels automatically, as necessary in
+    # your repository". So the label this was asking for arrives without anyone
+    # creating it by hand, which is the outcome the key was added for.
+    open-pull-requests-limit: 2

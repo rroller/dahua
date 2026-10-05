@@ -57,8 +57,9 @@ _UNSET = object()
 
 
 class _Coordinator:
-    def __init__(self, *, data=_UNSET, initialized=True, channel=0,
-                 events=("VideoMotion",)):
+    def __init__(
+        self, *, data=_UNSET, initialized=True, channel=0, events=("VideoMotion",)
+    ):
         self.client = _Client()
         # A sentinel, so a test can express "data is None" - the state a
         # coordinator is in before its first successful refresh.
@@ -132,6 +133,9 @@ class _Coordinator:
     def get_event_list(self):
         return list(self._events)
 
+    def get_storage_disks(self):
+        return []
+
     def is_doorbell(self):
         return False
 
@@ -192,6 +196,7 @@ async def _blob(hass, entry):
 
 # --- the things that must never leak ---------------------------------------
 
+
 async def test_no_credential_appears_anywhere_in_the_dump(hass):
     """Asserted over the whole blob, not per key.
 
@@ -224,8 +229,12 @@ async def test_the_same_device_fingerprints_the_same_across_entries(hass):
     _install(hass, a)
     _install(hass, b)
 
-    fa = (await async_get_config_entry_diagnostics(hass, a))["device"]["serial_fingerprint"]
-    fb = (await async_get_config_entry_diagnostics(hass, b))["device"]["serial_fingerprint"]
+    fa = (await async_get_config_entry_diagnostics(hass, a))["device"][
+        "serial_fingerprint"
+    ]
+    fb = (await async_get_config_entry_diagnostics(hass, b))["device"][
+        "serial_fingerprint"
+    ]
 
     assert fa == fb
 
@@ -243,13 +252,15 @@ async def test_the_digest_state_is_reported_only_as_a_boolean(hass):
 
 # --- it must not fall over, especially when things are broken --------------
 
+
 async def test_the_dump_is_json_serialisable(hass):
     """A non-serialisable field is a silent HTTP 500 with only a log line."""
     entry = _entry(hass)
     _install(hass, entry)
 
-    json.dumps(await async_get_config_entry_diagnostics(hass, entry),
-               cls=ExtendedJSONEncoder)
+    json.dumps(
+        await async_get_config_entry_diagnostics(hass, entry), cls=ExtendedJSONEncoder
+    )
 
 
 async def test_the_dump_survives_a_coordinator_that_never_refreshed(hass):
@@ -281,6 +292,7 @@ async def test_the_dump_survives_a_missing_serial_number(hass):
 
 # --- the content that makes it worth pulling -------------------------------
 
+
 async def test_effective_options_are_reported_not_just_stored_ones(hass):
     entry = _entry(hass)
     _install(hass, entry)
@@ -305,7 +317,7 @@ async def test_a_channels_own_event_list_is_reported_next_to_the_entrys(hass):
     three times. Reporting the first as the second is the kind of mislabel that gets
     believed during triage.
     """
-    entry = _entry(hass)   # the entry's own option is ["VideoMotion"]
+    entry = _entry(hass)  # the entry's own option is ["VideoMotion"]
     entry.runtime_data = {
         0: _Coordinator(channel=0, events=["VideoMotion"]),
         5: _Coordinator(channel=5, events=["CrossLineDetection", "SmartMotionHuman"]),
@@ -314,11 +326,14 @@ async def test_a_channels_own_event_list_is_reported_next_to_the_entrys(hass):
     result = await async_get_config_entry_diagnostics(hass, entry)
 
     assert result["entry"]["entry_level_events"] == ["VideoMotion"]
-    per_channel = {block["channel"]: block["events"]["configured"]
-                   for block in result["channels"]}
+    per_channel = {
+        block["channel"]: block["events"]["configured"] for block in result["channels"]
+    }
     assert per_channel[0] == ["VideoMotion"]
-    assert per_channel[5] == ["CrossLineDetection", "SmartMotionHuman"], \
-        "a channel's own list is not the entry's"
+    assert per_channel[5] == [
+        "CrossLineDetection",
+        "SmartMotionHuman",
+    ], "a channel's own list is not the entry's"
 
 
 async def test_every_capability_flag_is_represented(hass):
@@ -406,13 +421,20 @@ async def test_a_mismatched_host_key_is_visible(hass):
 
 # --- device diagnostics ----------------------------------------------------
 
+
 async def test_device_diagnostics_does_not_publish_the_identifiers(hass):
     entry = _entry(hass)
     _install(hass, entry)
     device = SimpleNamespace(
-        identifiers={(DOMAIN, SERIAL)}, name="Front Door", name_by_user=None,
-        model="IPC", manufacturer="Dahua", sw_version="1.0", area_id=None,
-        disabled_by=None, entry_type=None,
+        identifiers={(DOMAIN, SERIAL)},
+        name="Front Door",
+        name_by_user=None,
+        model="IPC",
+        manufacturer="Dahua",
+        sw_version="1.0",
+        area_id=None,
+        disabled_by=None,
+        entry_type=None,
     )
 
     result = await async_get_device_diagnostics(hass, entry, device)
@@ -423,6 +445,7 @@ async def test_device_diagnostics_does_not_publish_the_identifiers(hass):
 
 
 # --- the questions people keep being asked by hand --------------------------
+
 
 async def test_it_says_which_auth_scheme_the_device_asked_for(hass):
     """#583: a camera that wants Basic looked exactly like a wrong password."""
@@ -463,8 +486,7 @@ async def test_it_reports_the_tables_this_device_refused(hass):
     coordinator = _install(hass, entry)
     # The same key diagnostics builds, getattr and all: this fake client has
     # no _username, and the real one may not either before login.
-    key = (coordinator.client._address,
-           getattr(coordinator.client, "_username", None))
+    key = (coordinator.client._address, getattr(coordinator.client, "_username", None))
     client_module._RPC2_TABLE_UNAVAILABLE.add((key, "LightingScheme"))
     try:
         host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
@@ -484,7 +506,8 @@ async def test_another_devices_refusals_are_not_reported_here(hass):
         host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
     finally:
         client_module._RPC2_TABLE_UNAVAILABLE.discard(
-            (("10.9.9.9", "admin"), "Lighting_V2"))
+            (("10.9.9.9", "admin"), "Lighting_V2")
+        )
 
     assert host["rpc2_tables_refused"] == []
 
@@ -502,6 +525,7 @@ async def test_the_new_fields_carry_nothing_secret(hass):
 
 
 # --- what the channel numbering probe concluded -----------------------------
+
 
 async def test_a_device_found_to_be_zero_indexed_says_so(hass):
     from custom_components.dahua import _HOST_CHANNEL_BASE

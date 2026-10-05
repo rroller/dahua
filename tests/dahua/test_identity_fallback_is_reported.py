@@ -17,6 +17,7 @@ are built on them, so an old camera that has been running as `Generic RTSP`
 for years must keep exactly the identity it has. This adds an explanation, not
 a behaviour.
 """
+
 import aiohttp
 import pytest
 
@@ -33,18 +34,24 @@ def _http(status):
 
 def _refusing(client, status=400):
     """Make every read fail the way a refusing CGI interface does."""
+
     async def get(url, verify_ok=False):
         raise _http(status)
+
     client.get = get
     return client
 
 
 def _messages(caplog):
-    return [r.getMessage() for r in caplog.records
-            if "unidentified camera" in r.getMessage()]
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if "unidentified camera" in r.getMessage()
+    ]
 
 
 # --- the identity still falls back exactly as it did ------------------------
+
 
 async def test_the_model_still_falls_back():
     assert await _refusing(_client()).get_device_type() == {"type": "Generic RTSP"}
@@ -59,6 +66,7 @@ async def test_the_vendor_still_falls_back():
 
 
 # --- but now it says so -----------------------------------------------------
+
 
 async def test_the_status_the_device_gave_is_recorded():
     client = _refusing(_client(), 400)
@@ -85,7 +93,10 @@ async def test_each_question_is_recorded_separately():
     await client.get_vendor()
 
     assert sorted(client._identity_fallbacks) == [
-        "getDeviceType", "getSoftwareVersion", "getVendor"]
+        "getDeviceType",
+        "getSoftwareVersion",
+        "getVendor",
+    ]
 
 
 async def test_it_is_logged(caplog):
@@ -123,6 +134,7 @@ async def test_logged_once_per_question_not_once_per_client(caplog):
 
 # --- and never becomes the failure itself -----------------------------------
 
+
 async def test_a_client_without_the_attribute_starts_one():
     """This runs inside an except branch whose purpose is to keep setup
     alive, so it must never be what raises."""
@@ -150,6 +162,7 @@ async def test_a_timeout_still_propagates():
 
     async def get(url, verify_ok=False):
         raise TimeoutError()
+
     client.get = get
 
     with pytest.raises(TimeoutError):

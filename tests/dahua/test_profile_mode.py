@@ -34,12 +34,15 @@ def _coordinator(channel):
     return coordinator
 
 
-@pytest.mark.parametrize("channel,expected", [
-    (0, "0"),
-    (1, "1"),
-    (4, "2"),
-    (10, "0"),
-])
+@pytest.mark.parametrize(
+    "channel,expected",
+    [
+        (0, "0"),
+        (1, "1"),
+        (4, "2"),
+        (10, "0"),
+    ],
+)
 def test_each_channel_reads_its_own_row(channel, expected):
     """Reading row 0 for every channel gave the whole NVR channel 1's profile."""
     assert _coordinator(channel).read_profile_mode(NVR_TABLE) == expected
@@ -53,6 +56,7 @@ def test_the_profile_is_not_the_same_for_every_channel():
 
 
 # --- a single camera must be untouched --------------------------------------
+
 
 def test_a_single_camera_still_reads_row_zero():
     assert _coordinator(0).read_profile_mode(SINGLE_CAMERA_TABLE) == "1"
@@ -75,13 +79,16 @@ def test_a_channel_with_no_row_of_its_own_does_not_borrow_row_zero():
 
 def test_a_recorder_does_not_give_every_channel_camera_ones_profile():
     """The field case. Camera 1 is on day, channel 6 reports no row at all."""
-    table = {"table.VideoInMode[0].Config[0]": "1",
-             "table.VideoInMode[1].Config[0]": "1"}
+    table = {
+        "table.VideoInMode[0].Config[0]": "1",
+        "table.VideoInMode[1].Config[0]": "1",
+    }
 
     assert _coordinator(0).read_profile_mode(table) == "1"
     assert _coordinator(1).read_profile_mode(table) == "1"
-    assert _coordinator(6).read_profile_mode(table) == "0", (
-        "channel 6 has no row and took camera 1's night profile")
+    assert (
+        _coordinator(6).read_profile_mode(table) == "0"
+    ), "channel 6 has no row and took camera 1's night profile"
 
 
 def test_one_answer_is_never_assembled_from_two_cameras():
@@ -90,14 +97,17 @@ def test_one_answer_is_never_assembled_from_two_cameras():
     Channel 5 has a Config[0] of its own and no ConfigEx. Row 0's ConfigEx said
     night, and taking it turned this channel's day into night.
     """
-    table = {"table.VideoInMode[0].ConfigEx": "night",
-             "table.VideoInMode[0].Config[0]": "1",
-             "table.VideoInMode[5].Config[0]": "0"}
+    table = {
+        "table.VideoInMode[0].ConfigEx": "night",
+        "table.VideoInMode[0].Config[0]": "1",
+        "table.VideoInMode[5].Config[0]": "0",
+    }
 
     assert _coordinator(5).read_profile_mode(table) == "0"
 
 
 # --- the old defaults ------------------------------------------------------
+
 
 def test_an_empty_table_is_the_day_profile():
     assert _coordinator(0).read_profile_mode({}) == "0"
@@ -107,9 +117,9 @@ def test_an_empty_table_is_the_day_profile():
 def test_a_blank_value_is_the_day_profile():
     """The device answering with nothing must not become an empty profile,
     which would then be interpolated into Lighting[channel][]."""
-    assert _coordinator(0).read_profile_mode(
-        {"table.VideoInMode[0].Config[0]": ""}
-    ) == "0"
+    assert (
+        _coordinator(0).read_profile_mode({"table.VideoInMode[0].Config[0]": ""}) == "0"
+    )
 
 
 def test_a_blank_value_on_this_channel_does_not_fall_through_to_row_zero():

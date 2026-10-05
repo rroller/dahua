@@ -35,7 +35,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if not coordinator.supports_cloud_upgrade():
             continue
 
-        async_add_devices([DahuaFirmwareUpdateEntity(coordinator, entry)])
+        async_add_devices(
+            [DahuaFirmwareUpdateEntity(coordinator, entry)],
+            config_subentry_id=coordinator.subentry_id,
+        )
 
 
 class DahuaFirmwareUpdateEntity(DahuaBaseEntity, UpdateEntity):

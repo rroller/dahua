@@ -33,6 +33,9 @@ Why not use the Amcrest integration already provided by Home Assistant? The Amcr
 - **Write on the video.** The channel title, the timestamp and free text overlays can
   be set from an automation, which is how a temperature or a zone name gets burned
   into the recording.
+- **Watch what it recorded.** Recordings on the device's own storage show up in Home
+  Assistant's Media browser under **Dahua**, by camera and then by day, and play back
+  in the dashboard. See [Recordings](#recordings).
 
 ## Installation
 
@@ -42,6 +45,12 @@ ffmpeg:
 ```
 See [ffmpeg](https://www.home-assistant.io/integrations/ffmpeg/) and [stream](https://www.home-assistant.io/integrations/stream/).
 
+
+### Requirements
+
+Home Assistant **2026.8.0** or newer. HACS will not offer the integration on anything
+older, because a recorder's channels are stored as config **subentries** and that needs
+a recent Home Assistant.
 
 ### HACS install
 To install with [HACS](https://hacs.xyz/):
@@ -195,6 +204,40 @@ affected by this: a sub stream camera you are already using stays exactly as it 
 
 ![Dahua Setup](static/setup1.png)
 
+### Upgrading from a version before 1.0
+
+Earlier versions added **one config entry per channel**, so a sixteen channel recorder
+appeared as sixteen separate integrations. From 1.0 a recorder is **one entry with one
+subentry per channel**, which is what lets the channels share a single login and a single
+event connection instead of opening sixteen of each.
+
+The first start after upgrading merges them for you. Nothing needs to be re-added and
+entity ids are kept, so automations and dashboards continue to work.
+
+**A copy of the registries is saved first.** Before anything is changed, these three files
+are copied out of `.storage`:
+
+```
+core.config_entries
+core.device_registry
+core.entity_registry
+```
+
+into a new directory named for the time it ran:
+
+```
+/config/dahua-pre-merge-backup-20260930-142824
+```
+
+The path is written to the log as a warning, so searching the log for
+`dahua-pre-merge-backup` will find it. If the backup cannot be written the merge is **not
+attempted**, and the log says so.
+
+To go back, stop Home Assistant, copy those three files back into `/config/.storage`, and
+start it again. It has to be done with Home Assistant stopped, because it rewrites the
+files on shutdown. The merge cannot be undone from inside Home Assistant, so keep the
+directory until you are happy with the result.
+
 ### If it will not connect
 
 The error on the form names the cause where it can. What each one means:
@@ -220,6 +263,26 @@ Two cases the form cannot diagnose for you:
   as `10.1.1.x`, that Home Assistant cannot route to. Add them through the
   recorder's address and channel number instead of trying to reach them directly.
 
+
+### Diagnostics
+
+Every device page has **Download diagnostics** under the three dot menu. It is the most
+useful thing to attach to an issue, and it is worth looking at yourself first.
+
+Credentials are removed before the file is written: the username, the password, the serial
+number and the unique id are replaced with `**REDACTED**`, and any RTSP URL has its
+credentials swapped for `REDACTED` rather than being included and hidden.
+
+Three fields answer most "my sensors stopped working" questions, all under `events`:
+
+| field | what it tells you |
+| :------------ | :------------ |
+| `configured` | the event codes this channel actually subscribed to. If the code you expect is missing, the device was never asked for it |
+| `subscribed_as` | how the request went out: the list of codes, or `["All"]` if the device refused a list (see below) |
+| `arrived_with_no_listener` | events the device **did** send that nothing was listening for. A non-zero count here means the event is arriving and being dropped, which is a different problem from the device not sending it |
+
+Together they separate the three possibilities: never subscribed, subscribed but the
+device sent nothing, or sent and dropped.
 
 ### Removing it
 
@@ -291,16 +354,45 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 :------------ | :------------ | :------------ | :------------- | :-------------
 | *Amcrest* |
 | | | | Amcrest IP5M-T1179E | Amcrest IPC-Color4K-T
+| *EmpireTech* |
+| | | IPC-Color4M-TZ | | PTZ3E10X-T180 <sup>†</sup>
 | *IMOU* |
 | | IMOU IPC-A26Z / Ranger Pro Z | | IMOU DB61i
 | | IMOU IPC-C26E-V2 <sup>*</sup> |
 | | IMOU IPC-K22A / Cube PoE-322A |
 | *Lorex* |
-| | | | | Lorex E891AB
+| | | | | Lorex E891AB/E893DD
 | | | | | Lorex LNB8005-C
 | | | | | Lorex LNE8964AB
 
 <sup>*</sup> partial support
+
+<sup>†</sup> dual-sensor camera with an 8 MP overview channel and a 4 MP PTZ channel
+
+## Models recognised for a siren or a security light
+
+The tables above are devices someone has confirmed working. This is a different and weaker
+claim: these are model names the integration **looks for by name** when it cannot detect a
+siren or a white security light any other way. If your model is here, the control should
+appear even when the device does not report the capability.
+
+| model | what it gets |
+| :------------ | :------------ |
+| anything containing `AS-PV` | siren and security light |
+| anything containing `L46N` | siren |
+| anything containing `TPC-BF1241` | siren |
+| anything starting `W452ASD` | siren |
+| `AD410`, `DB61I` | security light |
+| anything starting `IP8M-2796E` | security light |
+| anything starting `IPC-COLOR4M-TZ` | security light |
+| anything starting `PTZ3E10X-T180` | security light |
+
+Matching by model name is a fallback, not the first choice, and it is the wrong shape:
+it fails on a device that has the hardware and is not on the list. If yours is missing,
+say so on an issue and include the diagnostics download, which lists what was and was not
+detected under `supports_siren_sources` and
+`supports_security_light_sources`. The
+`manual_siren` and `manual_security_light` options force the control on in the meantime.
 
 ## Doorbell cameras
 
@@ -312,8 +404,38 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | | DHI-VTO2202F-P |
 | | DHI-VTO2211G-P |
 | | DHI-VTO3311Q-WP |
+| | DHI-VTO2211G-WP-S2 |
 | *IMOU* |
 | | IMOU C26EP-V2 | IMOU IPC-K46 | IMOU DB61i
+
+## Indoor monitors (VTH)
+
+Model | Firmware
+:------------ | :------------
+VTH2421F-P | 4.800.0000000.1.R
+
+Add an indoor monitor like any other device, by its address and an account on the
+monitor itself (usually the same as the VTO's). A VTH serves no CGI at all, so the
+integration identifies it over RPC2 and shows its real model and firmware.
+
+What it gets:
+
+- A **Camera for &lt;VTO&gt; calls** select for each VTO it knows: the camera its screen opens on
+  when that VTO calls. `none` is the VTO's own picture; the other options are the cameras in
+  the monitor's own camera list (Monitor > IPC on its screen). The monitor's screen has no
+  control for this on the measured firmware, though its manual describes it.
+- Reboot, firmware version and serial number.
+
+A monitor that reports it has no camera of its own (`SupportVideo` false in its
+`RemoteDevice` table, as on the VTH2421F-P) gets no camera entities, no camera event
+sensors, no event stream, no motion detection switch, no Day/Night select, no Preset
+Position, and no License Plate or Authorized Vehicle entities.
+
+The serial number shown is generated from the address and login, as for every device
+whose CGI does not answer, so that it stays stable; it is not the serial printed on the
+monitor.
+
+To ring a monitor, use [`dahua.vto_call`](#services) on the VTO, not on the monitor.
 
 # Known limitations
 
@@ -484,6 +606,32 @@ To change the selection: **Settings, Devices and Services, Dahua, Configure**, o
 entry you mean. Ticking boxes in the camera's own web interface does not affect which
 Home Assistant entities exist.
 
+### Per-rule IVS binary sensors
+
+Each complete `Class=Normal` rule with a unique Dahua ID creates a binary sensor,
+including rule types such as `StayDetection`. Discovery happens during setup;
+reload the integration after adding rules. Direct cameras use `VideoAnalyseRule`,
+and NVR channels use the per-channel `RemoteVideoAnalyseRule` read. Keep that read
+shape: some NVR firmware reports different IDs when reading the whole recorder.
+
+To activate a per-rule sensor, a Start must carry `Class=Normal` and a matching
+`RuleId` or `RuleID`. The integration does not guess a match from the rule name
+or array position. NVR configuration IDs and event IDs still need comparison on
+real hardware; a discovered entity alone does not prove that its event IDs match.
+A Stop clears all active rules with the same event Code on that channel: Dahua
+emits one Start per rule but a single Stop for the whole code, and that Stop
+names only one rule. The integration clears the rules that code actually lit,
+falling back to the rules' configured Type after a reload. This also handles a
+Stop without usable rule data. Pulse events use the existing short hold before clearing.
+
+The downloaded diagnostics contain an `ivs` section for every configured channel:
+the setup read source, discovered count, skipped row indexes and reasons, and
+unmatched event counts with the most recent channel/code/rule ID. Missing IDs,
+duplicate IDs, and invalid Enable values explain why rows were skipped. Read
+failures report the exception type. Counts cover the current coordinator lifetime.
+Debug logging records the discovery summary and the first unmatched event of each
+reason. These diagnostics use existing reads and do not make extra device requests.
+
 ### Smart Motion is derived from the IVS event
 
 Many cameras never send `SmartMotionHuman` at all. They send `CrossLineDetection` or
@@ -511,6 +659,25 @@ updates the sensor belonging to the channel it came from. If channel 1 has
 `SmartMotionHuman` selected and channel 2 does not, motion on channel 2 appears on the
 bus and updates nothing.
 
+### A device that will not accept a list of event codes
+
+Some firmware serves the event stream perfectly and refuses a long list of codes. Measured
+on two different cameras: an IPC-HFW4300S-V2 answers `codes=[VideoMotion]` with 200 and the
+same request carrying nine codes with **400**, and a Hero A1 answers **500** to those nine.
+
+When that happens the integration notices the refusal and asks again with `codes=[All]`,
+filtering locally instead. **Your event selection is unaffected**, because the filtering
+happens here rather than on the device. It is tried once per stream, and a warning naming
+the status is logged so you can see it happened.
+
+`subscribed_as` in the diagnostics says which form is in use. If it reads `["All"]` and you
+did not select every event, this is why.
+
+This was the cause of [#728](https://github.com/rroller/dahua/issues/728), which read as
+"everyone with a single camera" rather than as a firmware quirk: the workaround existed
+before, but it was chosen by guessing whether a request looked too long instead of waiting
+for the device to say so, and that guess can never be true for a single camera.
+
 ### A sensor that says "no longer being provided"
 
 If you deselect an event, its sensor is not created next time the entry loads, and
@@ -518,7 +685,8 @@ Home Assistant leaves the old entity behind showing `unavailable` with "This ent
 no longer being provided by the dahua integration". That is Home Assistant reporting
 an entity nothing owns any more, not a fault in the integration, and it will never
 update again. Either select the event again, or delete the entity from its own page.
-Reloading or restarting will not clear it.
+Reloading or restarting will not clear it. The same applies to a per-rule IVS
+sensor after its rule is deleted from the device.
 
 ## Example Code Events
 | Code | Description |
@@ -584,6 +752,7 @@ Service | Parameters | Description
 `dahua.enable_ivs_rule` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `index`: The rule index <br /> enabled`: True to enable the IVS rule, False to disable the IVS rule | Enable or disable an IVS rule
 `dahua.vto_open_door` | `target`: camera.cam13_main <br /> `door_id`: The door ID to open, e.g.: 1 <br /> Opens a door via a VTO
 `dahua.vto_cancel_call` | `target`: camera.cam13_main <br />Cancels a call on a VTO device (Doorbell)
+`dahua.vto_call` | `target`: camera.cam13_main <br /> `room`: The room to ring, e.g.: 9901 | Rings an indoor monitor (VTH) from a VTO, as its call button does. `9901#0` is dialled as `9901`, which rings the main monitor and its extensions. Measured on a DHI-VTO2211G-WP-S2
 `dahua.set_video_in_day_night_mode` | `target`: camera.cam13_main <br /> `config_type`: The config type: general, day, night <br /> `mode`: The mode: Auto, Color, BlackWhite. Note Auto is also known as Brightness by Dahua|Set the camera's Day/Night Mode. For example, Color, BlackWhite, or Auto
 `dahua.reboot` | `target`: camera.cam13_main <br />Reboots the device
 `dahua.set_illuminator_mode` | `target`: camera.cam13_main <br /> `mode`: Auto, On, Off <br /> `brightness`: 0 - 100 inclusive | Sets the illuminator (white light) mode. The light entity can only switch it on or off, and off is not the same as automatic, so this is how control is handed back to the camera with Auto
@@ -594,6 +763,24 @@ Service | Parameters | Description
 
 ## Camera
 This will provide a normal HA camera entity (can take snapshots, etc)
+
+## Recordings
+Recordings on the device's own storage (an SD card, or the NVR's disks) are browsable
+from **Media** in the sidebar, under **Dahua**. Pick a camera, then a day, then a clip,
+and it plays in the dashboard the same way a live view does.
+
+Playback uses the device's RTSP `cam/playback` stream, which Home Assistant's `stream`
+integration turns into HLS, so nothing is downloaded to the Home Assistant host.
+
+Two things worth knowing:
+- Days are listed for the last two weeks whether or not each one has a recording, so an
+  empty day opens to an empty folder. Dahua offers no quick "which days have footage"
+  query, so this avoids a round trip to the device for every day just to draw the list.
+- The day folders are Home Assistant's own calendar dates, but each day is asked of the
+  device as midnight-to-midnight on the **recorder's clock**. A clip always plays the
+  exact span it was recorded over, but if the recorder's clock differs from Home
+  Assistant's, a clip recorded near midnight can show up under the neighbouring day.
+  Keep both on NTP and they line up.
 
 ## Switches
 Switch |  Description |
@@ -639,6 +826,7 @@ Select |  Description |
 Security Light | On a doorbell, sets the light to off, on, or strobe. A doorbell's light has three states rather than two, which is why it is a select and not a switch
 Preset Position | Moves a PTZ camera to one of its stored preset positions, and reports the one it is at. Only created on cameras that report presets
 Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dahua also calls Brightness). Readable as well as settable, which is what makes it possible to notice a camera that changed mode by itself, such as one reverting to Auto after a power cut and then rendering black and white at night
+Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
 
 ## Event entities
 
@@ -663,6 +851,46 @@ Firmware | Compares the firmware the device is running against the newest one it
 Change the entity ids to your own. The event based ones use `dahua_event_received`,
 described under [Events](#events); `name` is the device name the integration reports,
 which is also in the event payload if you watch the bus.
+
+**A second doorbell that is not wired to the VTO rings the indoor monitors, showing its own camera.**
+
+Here a KNX push button (`binary_sensor.gate_doorbell`) rings room 9901 through the VTO, and the
+monitors open the call on the gate camera instead of the VTO's picture. They are set back
+afterwards, so the VTO's own button still shows the VTO.
+
+```yaml
+alias: Gate doorbell rings the indoor monitors
+mode: single
+max_exceeded: silent
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.gate_doorbell
+    to: "on"
+actions:
+  - action: select.select_option
+    target:
+      entity_id:
+        - select.vth_hall_camera_for_main_vto_calls
+        - select.vth_upstairs_camera_for_main_vto_calls
+    data:
+      option: Gate
+    continue_on_error: true
+  - action: dahua.vto_call
+    target:
+      entity_id: camera.front_door_main
+    data:
+      room: "9901"
+    continue_on_error: true
+  - delay:
+      seconds: 90
+  - action: select.select_option
+    target:
+      entity_id:
+        - select.vth_hall_camera_for_main_vto_calls
+        - select.vth_upstairs_camera_for_main_vto_calls
+    data:
+      option: none
+```
 
 **Somebody rang the doorbell: notify a phone with a picture.**
 
