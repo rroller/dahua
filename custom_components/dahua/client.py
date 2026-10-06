@@ -4177,6 +4177,20 @@ class DahuaClient:
                 if response is not None:
                     response.close()
 
+    async def async_get_event_indexes_cgi(self, code: str) -> set[int]:
+        """Return every recorder channel currently active for an event code."""
+        data = await self.get_bytes(
+            "/cgi-bin/eventManager.cgi?action=getEventIndexes&code={0}".format(
+                quote(code, safe="")
+            )
+        )
+        indexes = set()
+        for line in data.decode("utf-8", errors="ignore").splitlines():
+            match = re.fullmatch(r"channels\[\d+\]=(\d+)", line.strip())
+            if match:
+                indexes.add(int(match.group(1)))
+        return indexes
+
     async def get(self, url: str, verify_ok=False) -> dict:
         """Get information from the API, sharing the read across this device.
 
