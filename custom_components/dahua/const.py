@@ -65,6 +65,8 @@ CONF_SCAN_INTERVAL = "scan_interval"
 # Prototype: route config reads over RPC2's session instead of a fresh digest
 # handshake per call. Off by default -- see #636.
 CONF_USE_RPC2 = "use_rpc2"
+# Some recorders push IVS/SMD events over the CGI stream but expose ordinary
+# VideoMotion only through eventManager's current-state endpoint.
 CONF_POLL_VIDEO_MOTION = "poll_video_motion"
 CONF_NVR_ACTIVE_DETERRENCE = "nvr_active_deterrence"
 CONF_MANUAL_SIREN = "manual_siren"

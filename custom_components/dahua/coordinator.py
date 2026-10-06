@@ -748,6 +748,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._security_light_detection_failures = []
         self.connected = None
         self.events: list = events
+        # Host-wide: DahuaHostEventStream turns this into one request for the
+        # recorder, regardless of how many channels are configured.
         self.poll_video_motion = entry.options.get(CONF_POLL_VIDEO_MOTION, False)
         self._supports_coaxial_control = False
         # Doorbell call states already complained about, so the warning below is

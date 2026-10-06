@@ -59,6 +59,8 @@ EVENT_STREAM_SHORT_RETRY_SECONDS = 10
 # attempt costs it another one. Back off instead, to this ceiling.
 EVENT_STREAM_MAX_RETRY_SECONDS = 600
 
+# A single CGI request returns every recorder channel currently in ordinary
+# motion. Two seconds matches the integration's existing RPC2 event poller.
 VIDEO_MOTION_POLL_SECONDS = 2
 
 # Camera uptime is host-wide. An NVR may have many config entries, one per
@@ -615,6 +617,9 @@ class DahuaHostEventStream:
     # `_async_run` landed inside its retry loop and hung the test rather than
     # failing it. A default here is one line and cannot be half-applied.
     _using_all_events = False
+    # Bare instances in focused tests predate this optional sidecar. Keeping a
+    # class default makes their old construction contract remain valid.
+    _video_motion_poll_task: asyncio.Task | None = None
 
     # Whether a refusal has already pushed this stream onto codes=[All]. One
     # attempt per stream: a device that refuses the explicit list and then refuses
@@ -757,12 +762,9 @@ class DahuaHostEventStream:
         self._sync_video_motion_poller()
 
     def _should_poll_video_motion(self) -> bool:
-        return (
-            bool(self._events & {"All", "VideoMotion"})
-            and any(
-                getattr(coordinator, "poll_video_motion", False)
-                for coordinator in self.coordinators
-            )
+        return bool(self._events & {"All", "VideoMotion"}) and any(
+            getattr(coordinator, "poll_video_motion", False)
+            for coordinator in self.coordinators
         )
 
     def _sync_video_motion_poller(self) -> None:
@@ -780,7 +782,7 @@ class DahuaHostEventStream:
             self._video_motion_poll_task = None
 
     async def _async_poll_video_motion(self) -> None:
-        """Synthesize VideoMotion edges from one host-wide CGI state request."""
+        """Synthesize VideoMotion edges from one host-wide state request."""
         active: set[int] = set()
         failing = False
         while True:
@@ -791,11 +793,13 @@ class DahuaHostEventStream:
                 )
                 for index in sorted(observed - active):
                     self._dispatch_events(
-                        f"Code=VideoMotion;action=Start;index={index}\r\n".encode()
+                        f"Code=VideoMotion;action=Start;index={index}\r\n".encode(),
+                        video_motion_source="poll",
                     )
                 for index in sorted(active - observed):
                     self._dispatch_events(
-                        f"Code=VideoMotion;action=Stop;index={index}\r\n".encode()
+                        f"Code=VideoMotion;action=Stop;index={index}\r\n".encode(),
+                        video_motion_source="poll",
                     )
                 active = observed
                 if failing:
@@ -960,6 +964,13 @@ class DahuaHostEventStream:
         # refusing to attach.
         self._received_data = True
 
+        self._dispatch_events(data_bytes, video_motion_source="stream")
+
+    def _dispatch_events(
+        self, data_bytes: bytes, video_motion_source: str | None = None
+    ) -> None:
+        """Parse and dispatch events without changing stream health state."""
+
         events = parse_event(data_bytes.decode("utf-8", errors="ignore"))
         if not events:
             return
@@ -1035,6 +1046,16 @@ class DahuaHostEventStream:
             # A channel nobody has configured stays silent, exactly as it did
             # when every coordinator discarded it.
             for coordinator in self._by_channel.get(index, ()):
+                if event.get("Code") == "VideoMotion":
+                    polling = getattr(coordinator, "poll_video_motion", False)
+                    # Polling is authoritative only for coordinators that opted
+                    # into it. This prevents a partial pushed Start with no Stop
+                    # from leaving their motion sensor on forever, while other
+                    # channels retain the original event-stream behaviour.
+                    if (video_motion_source == "stream" and polling) or (
+                        video_motion_source == "poll" and not polling
+                    ):
+                        continue
                 try:
                     coordinator.handle_event(dict(event))
                 except Exception:  # pylint: disable=broad-except

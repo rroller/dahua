@@ -4178,7 +4178,12 @@ class DahuaClient:
                     response.close()
 
     async def async_get_event_indexes_cgi(self, code: str) -> set[int]:
-        """Return every recorder channel currently active for an event code."""
+        """Return active channel indexes from the CGI event state endpoint.
+
+        This deliberately uses get_bytes rather than the shared read cache:
+        event state is short-lived and a five-second cached answer would delay
+        both the Start and Stop edge.
+        """
         data = await self.get_bytes(
             "/cgi-bin/eventManager.cgi?action=getEventIndexes&code={0}".format(
                 quote(code, safe="")
