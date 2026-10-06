@@ -59,6 +59,8 @@ EVENT_STREAM_SHORT_RETRY_SECONDS = 10
 # attempt costs it another one. Back off instead, to this ceiling.
 EVENT_STREAM_MAX_RETRY_SECONDS = 600
 
+VIDEO_MOTION_POLL_SECONDS = 2
+
 # Camera uptime is host-wide. An NVR may have many config entries, one per
 # channel, but they all refer to the same physical recorder uptime.
 #
@@ -635,6 +637,7 @@ class DahuaHostEventStream:
         # the stream even when the union of requested event names is unchanged.
         self._using_all_events = False
         self._task: asyncio.Task | None = None
+        self._video_motion_poll_task: asyncio.Task | None = None
         # Whether the last attach failed, so an outage is reported once.
         self._failing = False
         # How many times running the stream has died on contact, which is what
@@ -742,6 +745,7 @@ class DahuaHostEventStream:
             and wanted == self._events
             and use_all_events == self._using_all_events
         ):
+            self._sync_video_motion_poller()
             return
         self._events = wanted
         self._using_all_events = use_all_events
@@ -750,11 +754,82 @@ class DahuaHostEventStream:
             self._task = None
         if wanted and self._owner is not None:
             self._task = asyncio.create_task(self._async_run())
+        self._sync_video_motion_poller()
+
+    def _should_poll_video_motion(self) -> bool:
+        return (
+            bool(self._events & {"All", "VideoMotion"})
+            and any(
+                getattr(coordinator, "poll_video_motion", False)
+                for coordinator in self.coordinators
+            )
+        )
+
+    def _sync_video_motion_poller(self) -> None:
+        wanted = self._should_poll_video_motion()
+        running = (
+            self._video_motion_poll_task is not None
+            and not self._video_motion_poll_task.done()
+        )
+        if wanted and not running:
+            self._video_motion_poll_task = asyncio.create_task(
+                self._async_poll_video_motion()
+            )
+        elif not wanted and running:
+            self._video_motion_poll_task.cancel()
+            self._video_motion_poll_task = None
+
+    async def _async_poll_video_motion(self) -> None:
+        """Synthesize VideoMotion edges from one host-wide CGI state request."""
+        active: set[int] = set()
+        failing = False
+        while True:
+            started = time.monotonic()
+            try:
+                observed = await self._owner.client.async_get_event_indexes_cgi(
+                    "VideoMotion"
+                )
+                for index in sorted(observed - active):
+                    self._dispatch_events(
+                        f"Code=VideoMotion;action=Start;index={index}\r\n".encode()
+                    )
+                for index in sorted(active - observed):
+                    self._dispatch_events(
+                        f"Code=VideoMotion;action=Stop;index={index}\r\n".encode()
+                    )
+                active = observed
+                if failing:
+                    _LOGGER.info(
+                        "VideoMotion state polling for %s recovered", self._address
+                    )
+                failing = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as ex:  # pylint: disable=broad-except
+                if not failing:
+                    _LOGGER.warning(
+                        "VideoMotion state polling for %s failed: %s",
+                        self._address,
+                        ex,
+                    )
+                else:
+                    _LOGGER.debug(
+                        "VideoMotion state polling for %s still failing: %s",
+                        self._address,
+                        ex,
+                    )
+                failing = True
+            await asyncio.sleep(
+                max(0.0, VIDEO_MOTION_POLL_SECONDS - (time.monotonic() - started))
+            )
 
     async def async_stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
             self._task = None
+        if self._video_motion_poll_task is not None:
+            self._video_motion_poll_task.cancel()
+            self._video_motion_poll_task = None
         self._by_channel.clear()
         self._owner = None
         self._events = frozenset()
