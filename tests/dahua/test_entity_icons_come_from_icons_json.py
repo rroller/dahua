@@ -31,6 +31,7 @@ PLATFORMS = (
     "select",
     "sensor",
     "switch",
+    "update",
 )
 
 # The mdi name each entity's code produced before it moved. Home Assistant shows

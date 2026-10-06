@@ -37,6 +37,7 @@ PLATFORMS = (
     "select",
     "sensor",
     "switch",
+    "update",
 )
 
 # What each entity's `name` property returned before it was translated. The whole
@@ -62,6 +63,7 @@ WAS = {
     ("sensor", "profile"): "Profile",
     ("sensor", "configured_channels"): "Configured Channels",
     ("sensor", "license_plate"): "License Plate",
+    ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
     ("switch", "disarming"): "Disarming",
     ("switch", "event_notifications"): "Event Notifications",

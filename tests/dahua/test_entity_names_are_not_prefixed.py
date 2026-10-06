@@ -37,6 +37,7 @@ PLATFORMS = [
     "select",
     "sensor",
     "switch",
+    "update",
 ]
 
 # Ways the device's name can be reached from an entity.

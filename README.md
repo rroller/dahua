@@ -841,6 +841,11 @@ Reboot | Reboots the device
 Open Door | On a VTO (doorbell), opens the door
 Cancel Call | On a VTO (doorbell), hangs up a call in progress. Reports whether the doorbell agreed, rather than always looking as though it worked
 
+## Update
+Update |  Description |
+:------------ | :------------ |
+Firmware | Compares the firmware the device is running against the newest one its own cloud check found. Informational only: there is no install button, because a wrong or interrupted image bricks the camera, so flashing stays a deliberate act on the device's own web UI or app. The entity is only created on a device whose firmware serves the `_DHCloudUpgrade_` record and that record names a version; reading it is a local request, Home Assistant never contacts Dahua itself
+
 # Example automations
 
 Change the entity ids to your own. The event based ones use `dahua_event_received`,
@@ -1013,7 +1018,7 @@ Configure form.
 Option | Default | Description
 :------------ | :------------ | :------------
 Seconds between device polls | 30 | How often the device is asked for the state of its settings. The minimum is 10. Events do not use this: they arrive on a separate connection and are unaffected by a longer interval. See [How data is updated](#how-data-is-updated)
-Camera, Switch, Light, Select, Binary sensor, Button, Sensor, Event | on | Which platforms this entry creates. These also stop the requests that exist only to feed a platform, so turning one off reduces how much the device is asked, not just how many entities you see
+Camera, Switch, Light, Select, Binary sensor, Button, Sensor, Event, Update | on | Which platforms this entry creates. These also stop the requests that exist only to feed a platform, so turning one off reduces how much the device is asked, not just how many entities you see
 Read configuration over one RPC2 session per device | off | Reads settings over a single logged in RPC2 session instead of a separate authenticated HTTP call each. Far fewer lines in the device's own log. Off by default because not every firmware serves RPC2; leave it off if unsure, and see [Reducing entries in your device's log](#reducing-entries-in-your-devices-log)
 Authorized license plates | empty | A comma separated list, for example `ABC1234, XYZ5678`. The Authorized Vehicle binary sensor exists either way; this is what it matches against, so while the list is empty it never turns on. Needs a camera that reports ANPR to turn on at all
 Authorized vehicle hold time | 60 seconds | How long the Authorized Vehicle sensor stays on after a plate it recognises. It also resumes correctly across a restart, so a car recognised just before a reload does not lose the remaining time

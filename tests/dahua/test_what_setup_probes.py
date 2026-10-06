@@ -27,6 +27,7 @@ from types import SimpleNamespace
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.client import DahuaClient
+from custom_components.dahua.const import UPDATE
 
 # Every question setup asks, and the capability it decides. Taken from the source:
 # each of these is one try block whose handler sets exactly this attribute.
@@ -46,6 +47,7 @@ PROBES = [
         "IPC-COLOR4M-TZ",
     ),
     ("async_get_privacy_mode", "_supports_privacy_mode", None),
+    ("async_get_cloud_upgrade_info", "_supports_cloud_upgrade", None),
 ]
 
 
@@ -61,6 +63,7 @@ SELF_METHODS = (
 )
 
 FLAGS = (
+    "_supports_cloud_upgrade",
     "_supports_coaxial_control",
     "_supports_day_night_color",
     "_supports_disarming_linkage",
@@ -222,6 +225,18 @@ async def test_setup_only_runs_its_probes_once(hass):
     await coordinator._async_update_data()
 
     assert asked == [], "the capability probes ran again on the second poll"
+
+
+async def test_the_cloud_upgrade_probe_is_not_asked_without_the_update_platform(hass):
+    """The record feeds only the informational update entity, so setup must not
+    spend a read on a device that will never show one. The poll half of the same
+    gate is pinned in test_poll_skips_unused.py; this is the setup half."""
+    coordinator = _coordinator(hass)
+    coordinator._wanted_by = lambda *platforms: UPDATE not in platforms
+
+    await coordinator._async_update_data()
+
+    assert "async_get_cloud_upgrade_info" not in coordinator.client.asked
 
 
 # --- a capability that worked and then stopped -------------------------------

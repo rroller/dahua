@@ -20,6 +20,7 @@ from aiohttp import ClientConnectionError, ClientResponseError
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.diagnostics import _capabilities_block
+from custom_components.dahua.rpc2 import Rpc2MethodRefused
 
 
 def _coordinator():
@@ -55,6 +56,25 @@ def test_a_404_is_an_answer_too():
 
     assert c._probe_refusals["ptz_position"]["answered"] is True
     assert c._probe_refusals["ptz_position"]["status"] == 404
+
+
+def test_an_rpc2_refusal_is_an_answer_too():
+    """An RPC2 refusal carries a code rather than an HTTP status, and it is the
+    device answering: this firmware does not serve that method or table."""
+    c = _coordinator()
+
+    c._note_probe_refusal(
+        "cloud_upgrade",
+        Rpc2MethodRefused(
+            "Dahua RPC2 method configManager.getConfig returned result=false",
+            code=268959743,
+            message="Unknown error",
+        ),
+    )
+
+    refusal = c._probe_refusals["cloud_upgrade"]
+    assert refusal["answered"] is True
+    assert refusal["status"] == 268959743
 
 
 # --- the device did not answer ----------------------------------------------

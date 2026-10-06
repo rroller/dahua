@@ -39,6 +39,7 @@ MODULES = (
     "select",
     "sensor",
     "switch",
+    "update",
 )
 
 # Overrides that deliberately replace a base's value rather than adding to it.

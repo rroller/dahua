@@ -47,14 +47,16 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EVENT_DAHUA_ANPR_RECOGNIZED,
+    FIRMWARE_UPGRADE_REFRESH_SECONDS,
     ISSUE_URL,
     LIGHT,
     MIN_SCAN_INTERVAL,
     NUMBER,
     SELECT,
     SWITCH,
+    UPDATE,
 )
-from .dahua_utils import parse_event
+from .dahua_utils import cloud_upgrade_version, parse_event
 from .deterrence import (
     product_definition_supports_security_light,
     product_definition_supports_siren,
@@ -767,6 +769,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._manual_security_light = _channel_first(CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
+        # What the device's own cloud OTA check last found, read from its
+        # _DHCloudUpgrade_ config table. Reading it is local; see
+        # _async_probe_cloud_upgrade.
+        self._supports_cloud_upgrade = False
+        self._cloud_firmware_version: str | None = None
+        self._cloud_upgrade_checked_at: float | None = None
         self._ivs_rules = []
         self._supports_smart_motion_detection = False
         self._supports_ptz_position = False
@@ -1030,6 +1038,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         #690 exists to work around.
         """
         status = getattr(exception, "status", None)
+        if status is None:
+            # An RPC2 refusal carries a code rather than an HTTP status, and a
+            # code is still the device answering -- see Rpc2MethodRefused.
+            status = getattr(exception, "code", None)
         # Self-initialising, because a probe must never be the thing that
         # raises. Coordinators are built with object.__new__ in a dozen
         # tests, which skips __init__, and a capability probe is exactly
@@ -1226,6 +1238,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     "Device supports event notifications=%s",
                     self._supports_event_notifications,
                 )
+
+                if self._wanted_by(UPDATE):
+                    await self._async_probe_cloud_upgrade()
+                    _LOGGER.debug(
+                        "Device supports cloud upgrade=%s",
+                        self._supports_cloud_upgrade,
+                    )
 
                 # PTZ position readback. The SDT4E425 PTZ sensor is controllable,
                 # but firmware V3.200.0000027.6.R returns HTTP 400 for CGI getStatus.
@@ -1667,6 +1686,33 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             for result in results:
                 if result is not None:
                     data.update(result)
+
+            # The cloud OTA record is a local config read, but it is only of
+            # use to the informational update entity, so it is not read at all
+            # when that platform is switched off -- the same rule the coaxial
+            # status followed in #817. It is not read every poll either: the
+            # device rewrites the record only after its own OTA check, so the
+            # answer is reused for hours. A refusal here is not fatal; the last
+            # known answer stands.
+            if (
+                getattr(self, "_supports_cloud_upgrade", False)
+                and self._wanted_by(UPDATE)
+                and self._cloud_upgrade_read_is_due()
+            ):
+                try:
+                    info = await self.client.async_get_cloud_upgrade_info()
+                    version = cloud_upgrade_version(info)
+                    if version is not None:
+                        self._cloud_firmware_version = version
+                except Exception:  # pylint: disable=broad-except
+                    _LOGGER.debug(
+                        "Could not read the cloud upgrade record", exc_info=True
+                    )
+                finally:
+                    # Stamped whether or not the read worked: a device that
+                    # starts refusing stays on the last known answer for the
+                    # refresh interval instead of being retried every poll.
+                    self._cloud_upgrade_checked_at = time.monotonic()
 
             if getattr(
                 self, "_supports_lighting_scheme_illuminator", False
@@ -2325,6 +2371,54 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         profile sensor exists only where the profile is ever updated.
         """
         return self._supports_profile_mode
+
+    def supports_cloud_upgrade(self) -> bool:
+        """Whether the device serves a cloud OTA record to read.
+
+        Set once at setup from the ``_DHCloudUpgrade_`` config table; a
+        firmware without it gets no firmware-update entity, the same gate the
+        profile sensor uses.
+        """
+        return self._supports_cloud_upgrade
+
+    def get_cloud_firmware_version(self) -> str | None:
+        """The newest firmware the device's own cloud check found, or None.
+
+        None means "nothing known", not "up to date". A created entity does not
+        normally see it: setup only offers the entity where the record named a
+        version, so a device whose record is still empty gets no entity rather
+        than one that can only read unknown.
+        """
+        return self._cloud_firmware_version
+
+    async def _async_probe_cloud_upgrade(self) -> None:
+        """Read the device's cached cloud OTA record, once, at setup.
+
+        The record is a local config table, so this costs the device one config
+        read and nothing else: no Dahua server is asked and no separate cloud
+        poll is added. The entity is only offered where the record actually
+        names a version; a table that exists but has not been filled in yet
+        could only ever read unknown, which is the empty entity the profile
+        sensor's gate exists to avoid.
+        """
+        try:
+            info = await self.client.async_get_cloud_upgrade_info()
+        except Exception as probe_error:  # pylint: disable=broad-except
+            self._note_probe_refusal("cloud_upgrade", probe_error)
+            self._supports_cloud_upgrade = False
+            self._cloud_firmware_version = None
+            return
+        version = cloud_upgrade_version(info)
+        self._supports_cloud_upgrade = version is not None
+        self._cloud_firmware_version = version
+        self._cloud_upgrade_checked_at = time.monotonic()
+
+    def _cloud_upgrade_read_is_due(self) -> bool:
+        """Whether the reused cloud upgrade record is old enough to re-read."""
+        checked_at = getattr(self, "_cloud_upgrade_checked_at", None)
+        if checked_at is None:
+            return True
+        return time.monotonic() - checked_at >= FIRMWARE_UPGRADE_REFRESH_SECONDS
 
     async def _async_probe_direct_deterrence(self) -> None:
         """Cache independent positive ProductDefinition and getCaps evidence."""

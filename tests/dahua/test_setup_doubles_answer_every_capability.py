@@ -52,6 +52,7 @@ PLATFORMS = (
     "select",
     "sensor",
     "switch",
+    "update",
 )
 
 # A capability question, as opposed to a plain read like `get_channel()`. Setup

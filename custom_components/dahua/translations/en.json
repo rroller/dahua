@@ -134,7 +134,8 @@
                             "number": "Number enabled",
                             "select": "Select enabled",
                             "sensor": "Sensor enabled",
-                            "switch": "Switch enabled"
+                            "switch": "Switch enabled",
+                            "update": "Update enabled"
                         }
                     }
                 }
@@ -387,6 +388,11 @@
             },
             "alarm": {
                 "name": "Alarm"
+            }
+        },
+        "update": {
+            "firmware_update": {
+                "name": "Firmware Update"
             }
         }
     },
