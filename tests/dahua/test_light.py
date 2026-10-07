@@ -1,7 +1,9 @@
 """light.py had no tests at all, and day/night handling has regressed before."""
 
+from types import SimpleNamespace
 from unittest.mock import Mock
 
+import aiohttp
 import pytest
 
 from custom_components.dahua import dahua_utils
@@ -33,6 +35,9 @@ class _Client:
         # The Lighting_V2 path, which infrared reaches only after v1 refuses.
         self.v2_modes = []
         self.v2_refuses = None
+        # When set to an exception, the CGI setConfig path async_set_lighting_v2
+        # raises it (a 400 models a Lighting_V2 table that is read-only over CGI).
+        self.v2_set_refuses = None
         self.v2_ignores = False
         self.infrared_mode = "Auto"
 
@@ -124,6 +129,8 @@ class _Client:
         light_index=0,
         bank="MiddleLight",
     ):
+        if self.v2_set_refuses is not None:
+            raise self.v2_set_refuses
         self.v2.append(
             (
                 channel,
@@ -327,6 +334,7 @@ def _light(cls, coordinator):
 
     if cls is DahuaIlluminator:
         entity._manual_on = False
+        entity._scheme_fallback = False
         entity._scheme_restore = None
         entity._light_restore = None
         entity._last_brightness = 255
@@ -519,6 +527,51 @@ async def test_channel_scoped_illuminator_routes_to_the_force_method():
     assert c.client.v2 == [] and c.client.v2_raw == [] and c.client.v1 == []
     assert c.client.scheme_calls == []
     assert light.async_write_ha_state.call_count == 2
+
+
+def _cgi_400():
+    return aiohttp.ClientResponseError(
+        SimpleNamespace(real_url="http://10.0.0.5/cgi-bin/configManager.cgi"),
+        (),
+        status=400,
+    )
+
+
+async def test_lighting_v2_400_falls_back_to_the_scheme_path():
+    """A camera whose Lighting_V2 is CGI read-only returns 400 to the plain
+    write. The illuminator must then drive the white light through the two-table
+    LightingScheme path instead, and turn on (#994)."""
+    c = _Coordinator(channel=0, profile_mode="1")  # not scheme, not channel-scoped
+    c.illuminator_index = 1
+    c.client.v2_set_refuses = _cgi_400()
+
+    light = _light(DahuaIlluminator, c)
+    await light.async_turn_on(**{ATTR_BRIGHTNESS: 255})
+
+    assert light._scheme_fallback is True
+    assert light.is_on is True
+    # The two-table path ran with the on command; the dead CGI write recorded
+    # nothing because it was refused before appending.
+    assert c.client.scheme_calls == [(0, True, 100, "1", 1)]
+    assert c.client.v2 == []
+
+
+async def test_a_learned_scheme_fallback_skips_the_cgi_path():
+    """Once learned, both on and off go straight to the two-table path and never
+    touch the refused CGI write again."""
+    c = _Coordinator(channel=0, profile_mode="1")
+    c.illuminator_index = 1
+    c.client.v2_set_refuses = _cgi_400()  # would raise if the CGI path were used
+
+    light = _light(DahuaIlluminator, c)
+    light._scheme_fallback = True
+
+    await light.async_turn_on(**{ATTR_BRIGHTNESS: 255})
+    await light.async_turn_off()
+
+    assert [call[:2] for call in c.client.scheme_calls] == [(0, True), (0, False)]
+    assert c.client.v2 == []
+    assert light.is_on is False
 
 
 async def test_scheme_illuminator_failed_write_preserves_entity_state(monkeypatch):
