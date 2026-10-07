@@ -53,6 +53,7 @@ from .const import (
     DEFAULT_EVENTS,
     CONF_EXTRA_CHANNELS,
     CONF_USE_RPC2,
+    CONF_POLL_VIDEO_MOTION,
     CONF_USE_HTTPS,
     CONF_SCAN_INTERVAL,
     CONF_NVR_ACTIVE_DETERRENCE,
@@ -1556,6 +1557,12 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Required(
                 CONF_USE_RPC2,
                 default=self.options.get(CONF_USE_RPC2, False),
+            )
+        ] = bool
+        schema[
+            vol.Required(
+                CONF_POLL_VIDEO_MOTION,
+                default=self.options.get(CONF_POLL_VIDEO_MOTION, False),
             )
         ] = bool
         schema[

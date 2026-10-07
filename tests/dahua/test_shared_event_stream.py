@@ -44,10 +44,11 @@ async def _stop_host_streams(hass):
 
     pending = []
     for stream in list(dahua_module._HOST_STREAMS.values()):
-        task = getattr(stream, "_task", None)
-        if task is not None and not task.done():
-            task.cancel()
-            pending.append(task)
+        for attribute in ("_task", "_video_motion_poll_task"):
+            task = getattr(stream, attribute, None)
+            if task is not None and not task.done():
+                task.cancel()
+                pending.append(task)
     dahua_module._HOST_STREAMS.clear()
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
@@ -60,6 +61,7 @@ class _Client:
         self.attached_with = []
         self.attach_count = 0
         self.closed = False
+        self.motion_indexes = []
 
     async def stream_events(self, on_receive, events, channel):
         self.attach_count += 1
@@ -68,13 +70,20 @@ class _Client:
             raise RuntimeError("session is closed")
         await asyncio.Event().wait()
 
+    async def async_get_event_indexes_cgi(self, code):
+        assert code == "VideoMotion"
+        if self.motion_indexes:
+            return set(self.motion_indexes.pop(0))
+        await asyncio.Event().wait()
+
 
 class _Coordinator:
-    def __init__(self, channel, events, client=None):
+    def __init__(self, channel, events, client=None, poll_video_motion=False):
         self._channel = channel
         self.events = events
         self.client = client or _Client()
         self.handled = []
+        self.poll_video_motion = poll_video_motion
 
     def get_channel(self):
         return self._channel
@@ -214,6 +223,74 @@ async def test_two_entries_on_one_channel_both_get_it(hass):
     stream.on_receive(MOTION_CH2, 0)
 
     assert len(a.handled) == 1 and len(b.handled) == 1
+
+
+async def test_one_video_motion_poll_covers_every_recorder_channel(hass, monkeypatch):
+    """One host request emits edges to the matching channel coordinators."""
+    monkeypatch.setattr("custom_components.dahua.host.VIDEO_MOTION_POLL_SECONDS", 0.01)
+    client = _Client()
+    client.motion_indexes = [{1, 6}, {6}, set()]
+    stream = _host_stream(hass, ADDRESS)
+    channels = [
+        _Coordinator(i, ["VideoMotion"], client, poll_video_motion=True)
+        for i in range(8)
+    ]
+    for coordinator in channels:
+        stream.register(coordinator)
+
+    for _ in range(20):
+        if len(channels[6].handled) == 2:
+            break
+        await asyncio.sleep(0.01)
+
+    assert [(event["action"], event["index"]) for event in channels[1].handled] == [
+        ("Start", "1"),
+        ("Stop", "1"),
+    ]
+    assert [(event["action"], event["index"]) for event in channels[6].handled] == [
+        ("Start", "6"),
+        ("Stop", "6"),
+    ]
+    assert all(
+        not channel.handled for i, channel in enumerate(channels) if i not in {1, 6}
+    )
+
+
+async def test_video_motion_poller_is_opt_in(hass):
+    stream = _host_stream(hass, ADDRESS)
+    stream.register(_Coordinator(0, ["VideoMotion"]))
+    await _settle()
+
+    assert stream._video_motion_poll_task is None
+
+
+async def test_polled_video_motion_is_authoritative_for_opted_in_channels(hass):
+    """A partial pushed event cannot leave a polling-backed sensor stuck on."""
+    stream = _host_stream(hass, ADDRESS)
+    polled = _Coordinator(0, ["VideoMotion"], poll_video_motion=True)
+    streamed = _Coordinator(0, ["VideoMotion"])
+    stream.register(polled)
+    stream.register(streamed)
+    await _settle()
+
+    stream.on_receive(b"Code=VideoMotion;action=Start;index=0\r\n", 0)
+    stream._dispatch_events(
+        b"Code=VideoMotion;action=Start;index=0\r\n",
+        video_motion_source="poll",
+    )
+    stream._dispatch_events(
+        b"Code=VideoMotion;action=Stop;index=0\r\n",
+        video_motion_source="poll",
+    )
+
+    assert [event["action"] for event in polled.handled] == ["Start", "Stop"]
+    assert [event["action"] for event in streamed.handled] == ["Start"]
+
+
+def test_a_bare_stream_keeps_the_optional_poller_default():
+    stream = DahuaHostEventStream.__new__(DahuaHostEventStream)
+
+    assert stream._video_motion_poll_task is None
 
 
 # --- AlarmLocal: index is a terminal, not a channel (#231) ------------------
