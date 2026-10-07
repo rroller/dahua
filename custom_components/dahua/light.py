@@ -7,6 +7,8 @@ See https://developers.home-assistant.io/docs/core/entity/light
 import asyncio
 import logging
 
+import aiohttp
+
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 from homeassistant.components.light import (
@@ -193,11 +195,18 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     # entity with object.__new__ and set the handful of attributes each one needs.
     # A default on the class is one place rather than a getattr at every read.
     _scheme_unreadable = False
+    _scheme_fallback = False
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
         super().__init__(coordinator, entry)
         self._coordinator = coordinator
         self._scheme_unreadable = False
+        # Set once a plain Lighting_V2 CGI write is refused with 400 on a
+        # camera whose Lighting_V2 table is read-only over CGI (some OEM
+        # firmware, e.g. Intelbras VIPW-1300). From then on this entity drives
+        # the white light through the two-table LightingScheme path instead of
+        # the CGI path, without a model list (#994).
+        self._scheme_fallback = False
         self._entry = entry
         self._restore_store = None
 
@@ -880,8 +889,13 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         index = self._coordinator.get_illuminator_index()
 
         # IPC-Color4M-TZ uses the dedicated full-table LightingScheme API
-        # introduced in 0.9.99. Its state is not a Lighting_V2 override.
-        if self._coordinator.uses_lighting_scheme_illuminator():
+        # introduced in 0.9.99. Its state is not a Lighting_V2 override. A camera
+        # that taught us its Lighting_V2 is CGI read-only (_scheme_fallback, #994)
+        # is driven the same way.
+        if (
+            self._coordinator.uses_lighting_scheme_illuminator()
+            or self._scheme_fallback
+        ):
             await self._coordinator.client.async_set_lighting_scheme_illuminator(
                 channel, True, dahua_brightness, profile_mode, index
             )
@@ -986,14 +1000,40 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         await self._persist_current_restore_snapshot()
 
         # First set WhiteLight parameters.
-        await self._coordinator.client.async_set_lighting_v2(
-            channel,
-            True,
-            dahua_brightness,
-            profile_mode,
-            index,
-            field,
-        )
+        try:
+            await self._coordinator.client.async_set_lighting_v2(
+                channel,
+                True,
+                dahua_brightness,
+                profile_mode,
+                index,
+                field,
+            )
+        except aiohttp.ClientResponseError as err:
+            if err.status != 400:
+                raise
+            # This firmware refuses every CGI setConfig on Lighting_V2 (that
+            # table is read-only over CGI), so the plain path cannot drive the
+            # light. The refused write changed nothing. Switch to the two-table
+            # LightingScheme path, which writes over RPC2, and remember it so
+            # later commands skip the dead CGI write (#994).
+            _LOGGER.info(
+                "Dahua Illuminator: Lighting_V2 CGI write refused (400) on "
+                "channel %s; switching to the LightingScheme two-table path",
+                channel,
+            )
+            self._scheme_fallback = True
+            # The plain path persisted a restore snapshot before this failed
+            # write. It is for the CGI restore we are now abandoning, so clear it
+            # or startup recovery would later try that same refused CGI write.
+            await self._clear_persisted_restore_snapshot()
+            await self._coordinator.client.async_set_lighting_scheme_illuminator(
+                channel, True, dahua_brightness, profile_mode, index
+            )
+            self._manual_on = True
+            await self._coordinator.async_refresh()
+            self.async_write_ha_state()
+            return
 
         # Then force WhiteMode. Some cameras later report AIMode again,
         # but the physical white-light override remains active.
@@ -1077,7 +1117,10 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
     async def async_turn_off(self, **kwargs):
         """Turn off white-light override and restore original Smart Dual Light config."""
 
-        if self._coordinator.uses_lighting_scheme_illuminator():
+        if (
+            self._coordinator.uses_lighting_scheme_illuminator()
+            or self._scheme_fallback
+        ):
             channel = self._coordinator.get_channel()
             profile_mode = self._coordinator.get_profile_mode()
             index = self._coordinator.get_illuminator_index()
