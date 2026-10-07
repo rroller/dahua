@@ -1568,6 +1568,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Motion detection state is read by the camera entity as well as
             # the switch, so it survives either one being enabled.
             coros = []
+            # Encode contains the per-channel audio enable and source values.
+            # Read it only while a configuration control can use it; the
+            # client's short shared cache lets recorder channel entries reuse
+            # the same host-wide response and observe changes made externally.
+            if self._wanted_by(SWITCH, SELECT):
+                coros.append(asyncio.ensure_future(self._async_get_encode_config()))
             if self._wanted_by(CAMERA, SWITCH):
                 coros.append(
                     asyncio.ensure_future(
@@ -3651,6 +3657,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
+
+    async def _async_get_encode_config(self) -> dict:
+        """Read encoder configuration without making it a setup requirement."""
+        try:
+            return await self.client.async_get_config("Encode")
+        except PROBE_FAILED as exception:
+            _LOGGER.debug(
+                "Could not read Encode audio configuration", exc_info=exception
+            )
+            return {}
 
     def is_ptz3e10x_t180(self) -> bool:
         """Return whether this is the verified dual-sensor T180 family."""

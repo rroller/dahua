@@ -792,6 +792,7 @@ Smart Motion Detection | If the device supports it, enables or disables smart mo
 IVS Rule | One switch per IVS rule the camera reports (tripwire, intrusion and so on), each keyed on the rule's own stable Dahua ID, so it is named after the rule as the device names it. Configuration entities
 Alarm Output | A physical alarm or relay output on the device, switched directly
 Privacy Mode | Covers the lens on cameras with a motorised cover. See `dahua.set_privacy_mode`
+Audio | For each encoder format reported by the device, enables or disables audio. The state is polled with the other configuration entities, so changes made in the Dahua UI appear in Home Assistant and can trigger automations
 Disarming Linkage | Newer firmwares introduce a "disarming" feature, accessible from the camera web UI under Event → One-click disarm / Disarming. When enabled, the disarm toggle suppresses the linkage actions configured in the Disarming section specifically, while leaving all other alarm linkage actions untouched. Detection remains fully active throughout. This allows one to turn it on/off.
 
 ## Lights
@@ -827,6 +828,11 @@ Security Light | On a doorbell, sets the light to off, on, or strobe. A doorbell
 Preset Position | Moves a PTZ camera to one of its stored preset positions, and reports the one it is at. Only created on cameras that report presets
 Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dahua also calls Brightness). Readable as well as settable, which is what makes it possible to notice a camera that changed mode by itself, such as one reverting to Auto after a power cut and then rendering black and white at night
 Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
+Audio Source | Selects the source reported by each encoder format (Coaxial or BNC). Only shown when the device exposes that setting
+
+The audio entities read the device's `Encode` table and write only the selected
+field. This makes audio changes visible to Home Assistant automations while
+preserving the recorder's other encoding settings.
 
 ## Event entities
 

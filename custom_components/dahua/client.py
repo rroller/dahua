@@ -517,6 +517,11 @@ _HOST_CACHE: dict = {}
 
 def _cache_lifetime(url: str) -> int:
     """How long this URL's answer stays good for."""
+    # Audio encoder controls are configuration entities. Keep their read-back
+    # short so changes made in the device's web UI are reflected by the next
+    # coordinator poll instead of remaining hidden for the general config TTL.
+    if "name=Encode" in url:
+        return HOST_CACHE_TTL_SECONDS
     if "name=VideoAnalyseRule" in url:
         return HOST_CACHE_TTL_SECONDS
     if "name=VideoInMode" in url:
@@ -1676,6 +1681,39 @@ class DahuaClient:
             return await self.get(url)
         except aiohttp.ClientResponseError as e:
             return {}
+
+    async def async_set_encode_audio_value(
+        self,
+        channel: int,
+        format_type: str,
+        format_index: int,
+        field: str,
+        value: bool | str,
+    ) -> dict:
+        """Set one Encode audio field without replacing the rest of the table."""
+        if format_type not in ("MainFormat", "ExtraFormat"):
+            raise ValueError("Unsupported encoder format")
+        if not 0 <= format_index <= 2:
+            raise ValueError("Unsupported encoder format index")
+        if field == "AudioEnable":
+            if not isinstance(value, bool):
+                raise ValueError("AudioEnable must be a boolean")
+            wire_value = str(value).lower()
+            field_path = field
+        elif field == "Audio.AudioSource":
+            if value not in ("Coaxial", "BNC"):
+                raise ValueError("Unsupported audio source")
+            wire_value = quote(value, safe="")
+            field_path = field
+        else:
+            raise ValueError("Unsupported encoder audio field")
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig&"
+            f"Encode[{int(channel)}].{format_type}[{format_index}]"
+            f".{field_path}={wire_value}"
+        )
+        return await self.get(url, verify_ok=True)
 
     async def async_get_config_lighting(self, channel: int, profile_mode) -> dict:
         """

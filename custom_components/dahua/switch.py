@@ -1,6 +1,7 @@
 """Switch platform for dahua."""
 
 import asyncio
+import re
 
 import aiohttp
 
@@ -30,6 +31,10 @@ SIREN_CONTROL = refusals.SIREN
 # coordinator does not help here, since it only centralises inbound reads and
 # leaves outbound actions uncontrolled.
 PARALLEL_UPDATES = 1
+
+_AUDIO_ENABLE_KEY = re.compile(
+    r"table\.Encode\[(\d+)\]\.(MainFormat|ExtraFormat)\[(\d+)\]\.AudioEnable$"
+)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
@@ -64,6 +69,18 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.supports_alarm_output():
             devices.append(DahuaAlarmOutputSwitch(coordinator, entry, output=0))
 
+        # These are encoder settings, not live audio playback controls. Expose
+        # only fields the device actually returned, so models without an Encode
+        # table do not get switches that can never work.
+        for key in coordinator.data:
+            match = _AUDIO_ENABLE_KEY.fullmatch(key)
+            if match and int(match.group(1)) == coordinator.get_channel():
+                devices.append(
+                    DahuaEncodeAudioSwitch(
+                        coordinator, entry, match.group(2), int(match.group(3)), key
+                    )
+                )
+
         # The coordinator already asked the device this during setup and kept the
         # answer. Asking again here put a network round trip inside platform setup,
         # where a device that is slow to answer eats the entry's setup budget.
@@ -78,6 +95,55 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             for rule in coordinator.get_ivs_rules()
         )
         async_add_devices(devices, config_subentry_id=coordinator.subentry_id)
+
+
+class DahuaEncodeAudioSwitch(DahuaBaseEntity, SwitchEntity):
+    """Enable or disable audio for one Dahua encoder format."""
+
+    _attr_translation_key = "encode_audio"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:volume-high"
+
+    def __init__(self, coordinator, config_entry, format_type, format_index, key):
+        super().__init__(coordinator, config_entry)
+        self._format_type = format_type
+        self._format_index = format_index
+        self._key = key
+        self._attr_unique_id = (
+            f"{coordinator.get_serial_number()}_audio_"
+            f"{format_type.lower()}_{format_index}"
+        )
+        self._attr_translation_placeholders = {
+            "format_type": format_type.replace("Format", ""),
+            "format_index": str(format_index + 1),
+        }
+
+    @property
+    def is_on(self):
+        """Return the audio setting last read from Encode."""
+        return str(self._coordinator.data.get(self._key, "false")).lower() == "true"
+
+    async def async_turn_on(self, **kwargs):
+        """Enable audio for this encoder format."""
+        await self._coordinator.client.async_set_encode_audio_value(
+            self._coordinator.get_channel(),
+            self._format_type,
+            self._format_index,
+            "AudioEnable",
+            True,
+        )
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):
+        """Disable audio for this encoder format."""
+        await self._coordinator.client.async_set_encode_audio_value(
+            self._coordinator.get_channel(),
+            self._format_type,
+            self._format_index,
+            "AudioEnable",
+            False,
+        )
+        await self._coordinator.async_refresh()
 
 
 class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
