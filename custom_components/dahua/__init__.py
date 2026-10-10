@@ -162,6 +162,7 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     describe_update_failure,
     door_index,
     doorbell_state,
+    event_payload,
     failure_backoff,
     get_configured_scan_interval,
     illuminator_brightness_bank,

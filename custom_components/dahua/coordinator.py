@@ -565,17 +565,42 @@ DOORBELL_STATE_EVENTS = {8: "DoorUnlocked", 9: "DoorUnlockFailed"}
 DOORBELL_KNOWN_QUIET_STATES = frozenset({4, 5, 6, 7, 11})
 
 
+def event_payload(event: dict) -> dict:
+    """An event's payload object, whichever transport delivered it.
+
+    The two streams spell it differently. DHIP sends `Data`, and the CGI wire
+    format is `Code=X;action=Y;index=Z;data={json}`, which `parse_event` splits
+    on `=` -- so that path produces a lowercase `data`, as the example payloads
+    in `on_receive`'s docstring show.
+
+    `_dispatch_event` is shared by both, and several of its reads named only
+    `Data`. On the CGI path those found nothing: a `DoorStatus` Pulse read
+    closed while the door stood open, a `BackKeyLight` press never raised the
+    button, and an `AccessControl` card was never handed to `async_scan_tag` --
+    which is the behaviour sharing the function was meant to give that
+    transport. Reachable by any doorbell that does not answer `getDeviceClass`
+    and is not in `is_doorbell`'s model-prefix list, which is the #690 rebadge
+    class.
+
+    Returns {} for a payload that is not a dict. A truncated CGI event leaves
+    the raw string there, and `.get` on a string raises AttributeError -- out
+    of here, out of `handle_event`, out of `on_receive` and out of the stream
+    loop, which wraps it in try/finally with no handler. One malformed event
+    took every channel on the host down that way (#475), and the guards in
+    `translate_event_code` and `_extract_event_details` are the same guard for
+    the same reason.
+    """
+    data = event.get("data", event.get("Data", {}))
+    return data if isinstance(data, dict) else {}
+
+
 def doorbell_state(event: dict):
     """The BackKeyLight State as an int, or None if it did not say.
 
     The payload is JSON over DHIP, so this is normally already an int, but
     nothing guarantees it and a string must not read as a different state.
     """
-    value = (
-        event.get("Data", {}).get("State")
-        if isinstance(event.get("Data"), dict)
-        else None
-    )
+    value = event_payload(event).get("State")
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -592,9 +617,15 @@ def door_index(event: dict) -> int:
     Anything missing, negative or unreadable is the first door. That is what a
     single-door VTO sends -- and `Index: -1` is what the same device puts on a
     BackKeyLight event, so a negative is "not a door number" rather than a door.
+
+    Both casings, for the reason `event_payload` gives: DHIP sends `Index` and
+    the CGI wire format parses to `index`. Reading only the first meant that on
+    the CGI path every door looked like door 0, so a second door's Open and
+    Close wrote to the first door's sensor -- which is exactly what #488 added
+    this function to stop.
     """
     try:
-        index = int(event.get("Index"))
+        index = int(event.get("Index", event.get("index")))
     except (TypeError, ValueError):
         return 0
     return max(0, index)
@@ -2031,8 +2062,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         details = self._extract_event_details(event)
         codes = self.translate_event_code(event)
         raw_code = event.get("Code")
-        data = event.get("data", event.get("Data", {}))
-        if isinstance(data, dict) and data.get("Class") == "Normal":
+        data = event_payload(event)
+        if data.get("Class") == "Normal":
             rule_id = data.get("RuleID")
             if rule_id is None:
                 rule_id = data.get("RuleId")
@@ -2107,7 +2138,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             event_key = self.get_event_key(code)
 
             if code == "AccessControl":
-                card_id = event.get("Data", {}).get("CardNo", "")
+                card_id = event_payload(event).get("CardNo", "")
                 if card_id:
                     card_id_md5 = hashlib.md5(card_id.encode()).hexdigest()
                     self.hass.async_create_task(
@@ -2151,7 +2182,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # and only door 1 may write to it.
                     if door_index(event) != 0:
                         continue
-                    if event.get("Data", {}).get("Status", "") == "Open":
+                    if event_payload(event).get("Status", "") == "Open":
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
                         self._dahua_event_timestamp[event_key] = 0
@@ -2186,7 +2217,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # That project also warns the values vary by model, so this
                     # widens what counts as a ring rather than claiming a
                     # complete mapping.
-                    state = event.get("Data", {}).get("State", 0)
+                    state = event_payload(event).get("State", 0)
                     try:
                         numeric_state = int(state)
                     except (TypeError, ValueError):
@@ -2267,9 +2298,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         dropped rather than surfaced, since it is the device saying it did not
         classify the object, not a useful value for an automation.
         """
-        data = event.get("data", event.get("Data", {}))
-        if not isinstance(data, dict):
-            return {}
+        data = event_payload(event)
         details = {}
         name = data.get("Name")
         if name:
@@ -2294,24 +2323,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         code = event.get("Code", "")
 
         if code == "CrossLineDetection" or code == "CrossRegionDetection":
-            data = event.get("data", event.get("Data", {}))
-            # parse_event turns the payload into a dict, but only when it is
-            # valid JSON. A device whose payload arrives truncated leaves the
-            # raw string here, and .get() on a string raises AttributeError --
-            # out of this call, out of handle_event, out of on_receive, and out
-            # of the stream loop, which wraps it in try/finally with no handler.
-            # One malformed CrossLine event therefore took the event stream for
-            # every channel on the host down with it (#475). A payload we could
-            # not read is a payload with no ObjectType, not a reason to stop
-            # listening.
-            if not isinstance(data, dict):
-                data = {}
+            # `event_payload` is where the "not a dict" guard lives now. It
+            # matters here: parse_event turns the payload into a dict only when
+            # it is valid JSON, a truncated event leaves the raw string, and
+            # .get() on a string raises AttributeError -- out of this call, out
+            # of handle_event, out of on_receive, and out of the stream loop,
+            # which wraps it in try/finally with no handler. One malformed
+            # CrossLine event took the event stream for every channel on the
+            # host down that way (#475). A payload we could not read is a
+            # payload with no ObjectType, not a reason to stop listening.
+            data = event_payload(event)
             # `or {}` rather than a default, because the key being present with a
             # null is not the same as the key being absent: `.get("Object", {})`
             # returns None for `"Object": null` and the next `.get` raises. The
             # device does send nulls -- `"Track": None` is in this module's own
             # example payload -- and a CrossLine event that detected no object is
-            # exactly when it would. Same reasoning as the isinstance guard above,
+            # exactly when it would. Same reasoning as the dict guard above,
             # which #475 added for the other half of this.
             object_type = (data.get("Object") or {}).get("ObjectType", "")
             object_type = (object_type or "").lower()

@@ -16,13 +16,25 @@ whole time, which is how the gap stayed invisible.
 
 Found by comparing against myhomeiot/DahuaVTO, whose single event path has no
 such split.
+
+**The three CGI tests below used to hand the payload in as `Data`**, which is
+the DHIP spelling. The CGI wire format is `Code=X;action=Y;index=Z;data={json}`
+and `parse_event` splits it on `=`, so that path produces a lowercase `data` --
+the example payloads in `on_receive`'s docstring show it. So these exercised the
+lowercase `action` branch and then handed the payload in the one casing the code
+happened to read, and passed while the real CGI path read nothing: the door
+status stayed closed with the door open, the button never raised, and no card
+ever reached async_scan_tag. They feed `data` now, and `event_payload` reads
+both.
 """
 
 import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+import pytest
+
+from custom_components.dahua import DahuaDataUpdateCoordinator, event_payload
 
 
 def _coordinator(channel=0):
@@ -60,7 +72,7 @@ def test_a_pulse_on_the_cgi_path_now_reaches_the_sensor():
     c = _coordinator()
     key = _listening(c, "AccessControl")
 
-    c.handle_event({"Code": "AccessControl", "action": "Pulse", "Data": {"State": 1}})
+    c.handle_event({"Code": "AccessControl", "action": "Pulse", "data": {"State": 1}})
 
     assert c.fired == [key], "a Pulse event updated no sensor at all"
     assert c._dahua_event_timestamp[key] > 0
@@ -79,7 +91,7 @@ async def test_an_access_control_card_is_scanned_on_the_cgi_path():
             {
                 "Code": "AccessControl",
                 "action": "Pulse",
-                "Data": {"State": 1, "CardNo": "1234ABCD"},
+                "data": {"State": 1, "CardNo": "1234ABCD"},
             }
         )
 
@@ -97,7 +109,7 @@ def test_a_pulse_that_is_not_a_press_leaves_the_sensor_off():
     c = _coordinator()
     key = _listening(c, "AccessControl")
 
-    c.handle_event({"Code": "AccessControl", "action": "Pulse", "Data": {"State": 0}})
+    c.handle_event({"Code": "AccessControl", "action": "Pulse", "data": {"State": 0}})
 
     assert c._dahua_event_timestamp[key] == 0
     assert c.fired == [key], "the entity is still told to re-read"
@@ -167,3 +179,139 @@ def test_the_doorbell_path_still_reads_the_button_state():
     )
 
     assert c._dahua_event_timestamp[key] > 0
+
+
+# --- the payload casing, which is what the CGI path was reading nothing from --
+#
+# `_dispatch_event` is shared by both transports, and four of its reads named
+# only `Data`. DHIP sends that; the CGI path sends `data`. So on every camera,
+# every recorder channel, and any doorbell that does not answer getDeviceClass
+# and is not in is_doorbell's model-prefix list (the #690 rebadge class), those
+# four reads found nothing at all.
+
+
+def test_a_door_opening_on_the_cgi_path_raises_the_sensor():
+    c = _coordinator()
+    key = _listening(c, "DoorStatus")
+
+    c.handle_event(
+        {"Code": "DoorStatus", "action": "Pulse", "data": {"Status": "Open"}}
+    )
+
+    assert c._dahua_event_timestamp[key] > 0, "the door read closed while it was open"
+
+
+def test_a_door_closing_on_the_cgi_path_clears_it():
+    c = _coordinator()
+    key = _listening(c, "DoorStatus")
+
+    c.handle_event(
+        {"Code": "DoorStatus", "action": "Pulse", "data": {"Status": "Open"}}
+    )
+    c.handle_event(
+        {"Code": "DoorStatus", "action": "Pulse", "data": {"Status": "Close"}}
+    )
+
+    assert c._dahua_event_timestamp[key] == 0
+
+
+def test_the_cgi_path_keeps_the_door_index_guard_too():
+    """#488 again, on the other transport. The door number arrives as `index`
+    here, so reading only `Index` made every door look like door 0 and a second
+    door's Open wrote to the first door's sensor."""
+    c = _coordinator()
+    key = _listening(c, "DoorStatus")
+
+    c.handle_event(
+        {
+            "Code": "DoorStatus",
+            "action": "Pulse",
+            "data": {"Status": "Open"},
+            "index": 1,
+        }
+    )
+
+    assert c._dahua_event_timestamp.get(key, 0) == 0, "door 2 wrote door 1's sensor"
+
+
+def test_a_button_press_on_the_cgi_path_raises_the_sensor():
+    c = _coordinator()
+    key = _listening(c, "DoorbellPressed")
+
+    c.handle_event({"Code": "BackKeyLight", "action": "Pulse", "data": {"State": 1}})
+
+    assert c._dahua_event_timestamp[key] > 0, "the press never raised the sensor"
+
+
+def test_a_quiet_call_state_on_the_cgi_path_clears_it():
+    """The other half: State 0 is idle, and it has to be read as idle rather
+    than as an absent payload, which also reads as 0."""
+    c = _coordinator()
+    key = _listening(c, "DoorbellPressed")
+
+    c.handle_event({"Code": "BackKeyLight", "action": "Pulse", "data": {"State": 1}})
+    c.handle_event({"Code": "BackKeyLight", "action": "Pulse", "data": {"State": 0}})
+
+    assert c._dahua_event_timestamp[key] == 0
+
+
+async def test_a_card_on_the_dhip_path_is_still_scanned():
+    """The mirror of the CGI card test above, so neither casing can be fixed by
+    breaking the other."""
+    c = _coordinator()
+    _listening(c, "AccessControl")
+
+    with patch(
+        "custom_components.dahua.coordinator.async_scan_tag", new_callable=AsyncMock
+    ) as scan_tag:
+        c.on_receive_vto_event(
+            {
+                "Code": "AccessControl",
+                "Action": "Pulse",
+                "Data": {"State": 1, "CardNo": "1234ABCD"},
+            }
+        )
+
+        for coroutine in c.scanned:
+            await coroutine
+
+        scan_tag.assert_awaited_once_with(
+            c.hass, hashlib.md5(b"1234ABCD").hexdigest(), "Side Gate"
+        )
+
+
+def test_a_truncated_payload_does_not_raise():
+    """parse_event leaves the raw string when the JSON did not parse, and `.get`
+    on a string raises out of the stream loop, which wraps on_receive in
+    try/finally with no handler. That took every channel on a host down once
+    already (#475)."""
+    c = _coordinator()
+    key = _listening(c, "DoorStatus")
+
+    c.handle_event({"Code": "DoorStatus", "action": "Pulse", "data": '{"Status": "Op'})
+
+    assert c._dahua_event_timestamp.get(key, 0) == 0
+
+
+# --- the helper that settles it, as a function -------------------------------
+
+
+@pytest.mark.parametrize(
+    "event, expected",
+    [
+        # The two real shapes.
+        ({"data": {"Status": "Open"}}, {"Status": "Open"}),
+        ({"Data": {"Status": "Open"}}, {"Status": "Open"}),
+        # No payload at all, which is every Start and Stop.
+        ({"Code": "VideoMotion", "action": "Start"}, {}),
+        # parse_event leaves the raw string when the JSON did not parse, and a
+        # `.get` on it raises out of the stream loop (#475).
+        ({"data": '{"Status": "Op'}, {}),
+        # A device really does send nulls: "Track": None is in the coordinator's
+        # own example payload.
+        ({"data": None}, {}),
+        ({"Data": []}, {}),
+    ],
+)
+def test_the_payload_is_read_in_either_casing(event, expected):
+    assert event_payload(event) == expected
