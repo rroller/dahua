@@ -176,3 +176,36 @@ def test_a_vto_that_sends_no_index_is_unchanged():
     )
 
     assert c._dahua_event_timestamp[key] > 0
+
+
+# --- and whichever casing the transport used ---------------------------------
+#
+# `Index` is DHIP's spelling. The CGI wire format is
+# `Code=X;action=Y;index=Z;data={json}`, which parse_event splits on `=`, so
+# that path produces a lowercase `index`. Reading only the capitalised one made
+# every door on that transport look like door 0, which is the bug this file
+# exists to stop, one transport over.
+
+
+def test_the_cgi_spelling_of_the_index_is_read():
+    assert door_index({"Code": "DoorStatus", "index": 1}) == 1
+
+
+def test_the_cgi_spelling_of_the_first_door_is_still_zero():
+    assert door_index({"Code": "DoorStatus", "index": 0}) == 0
+
+
+def test_a_cgi_index_sent_as_text_is_still_a_number():
+    """parse_event never converts: every value off the CGI wire is a string."""
+    assert door_index({"Code": "DoorStatus", "index": "1"}) == 1
+
+
+def test_a_cgi_minus_one_is_not_a_door_either():
+    assert door_index({"Code": "DoorStatus", "index": "-1"}) == 0
+
+
+def test_the_dhip_spelling_wins_when_both_are_present():
+    """Nothing sends both. Pinned so the precedence is a decision rather than
+    whatever dict ordering gave, and because DHIP is the transport the door
+    number was measured on."""
+    assert door_index({"Index": 1, "index": 0}) == 1
