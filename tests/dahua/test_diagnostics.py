@@ -25,10 +25,11 @@ ADDRESS = "10.0.0.1"
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
-    # _HOST_FAILURES is read by the host block and written by anything that
-    # records a failure, so it is cleared here for the same reason as the other
-    # two: tests run under -n auto and a module global carried between them is
-    # a result that depends on ordering.
+    # _HOST_FAILURES is read by the host block now, and conftest.py already
+    # clears it for every test -- it had to, after an address left behind by
+    # another test on the same worker failed two polls at random under -n auto.
+    # Repeated here so this file's assertions do not silently depend on that
+    # fixture staying autouse, which is the only reason they pass.
     dahua_module._HOST_CONNECTORS.clear()
     dahua_module._HOST_FAILURES.clear()
     client_module._HOST_LIMITS.clear()
