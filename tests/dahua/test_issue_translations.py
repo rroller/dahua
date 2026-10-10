@@ -28,13 +28,44 @@ ISSUE_PLACEHOLDERS = {
     "channel_not_added": {"address", "channel", "reason"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
-SIBLINGS_FLOW_PLACEHOLDERS = {
-    "address",
-    "count",
-    "titles",
-    "removed",
-    "dependents_note",
-}
+
+PACKAGE = TRANSLATIONS.parent
+
+
+def _form_placeholders(class_name: str) -> set:
+    """The keys a repair flow's own `async_show_form` supplies.
+
+    Read from `repairs.py` rather than listed here. This was a hand-written set
+    and it went stale the moment the form gained a placeholder: the string and
+    the code agreed, and the test disagreed with both. A literal list of what
+    another file does is a second source of truth, and the whole point of this
+    file is that there should be one.
+    """
+    tree = ast.parse((PACKAGE / "repairs.py").read_text(encoding="utf-8"))
+    flow = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    for node in ast.walk(flow):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "description_placeholders":
+                continue
+            return {
+                key.value
+                for key in keyword.value.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+    raise AssertionError(
+        "%s no longer passes description_placeholders to async_show_form. If the "
+        "form moved, point this at the new place: without it every placeholder "
+        "check below passes vacuously." % class_name
+    )
+
+
+SIBLINGS_FLOW_PLACEHOLDERS = _form_placeholders("RemoveSiblingsRepairFlow")
 
 
 def _placeholders(text: str) -> set:
@@ -160,6 +191,12 @@ def test_no_text_uses_a_placeholder_the_code_does_not_supply(key):
     assert (
         used <= ISSUE_PLACEHOLDERS[key]
     ), f"unsupplied: {used - ISSUE_PLACEHOLDERS[key]}"
+
+
+def test_the_placeholders_were_really_read_from_the_code():
+    """A derivation that quietly returned nothing would make the next test pass
+    whatever the string said."""
+    assert {"address", "count", "titles", "removed"} <= SIBLINGS_FLOW_PLACEHOLDERS
 
 
 def test_the_siblings_flow_only_uses_its_own_placeholders():

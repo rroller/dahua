@@ -180,10 +180,101 @@ async def test_a_camera_that_holds_one_channel_is_a_leftover_however_it_is_shape
 async def test_the_form_still_does_nothing_until_the_button_is_pressed(hass):
     """Opening the card must remain harmless. That is the only reason this was
     recoverable at all: the registry copies the merge writes before it touches
-    anything were still the pre-merge state when the entries went."""
+    anything were still the pre-merge state when the entries went.
+
+    This used to assert a form was shown. It is an abort now, and deliberately:
+    the only entry here holds the whole recorder, so there is nothing this card
+    can remove, and offering a form that promises to remove zero entries is how
+    it came to claim success for doing nothing. The assertion that matters --
+    that opening it changes nothing -- is unchanged and is what the docstring
+    above is about.
+    """
     merged = _merged_entry(hass)
 
     result = await _flow(hass).async_step_confirm()
 
-    assert result["type"] == "form"
+    assert result["type"] == "abort"
+    assert result["reason"] == "nothing_to_remove"
     assert hass.config_entries.async_get_entry(merged.entry_id) is not None
+
+
+# --- the form has to say what the button will do ----------------------------
+
+
+async def test_the_form_names_only_the_entries_that_will_go(hass):
+    """The form counted and listed every entry at the address while the removal
+    loop skipped the merged one. So the card said "This removes the remaining 3
+    for you" and named an entry it would not touch, for the one irreversible
+    action in the file."""
+    _merged_entry(hass)
+    _entry(hass, channel=5, title="Leftover")
+
+    shown = await _flow(hass).async_step_confirm()
+
+    placeholders = shown["description_placeholders"]
+    assert placeholders["count"] == "1", "the count included the protected entry"
+    assert placeholders["titles"] == "Leftover"
+    assert "Gerty New" not in placeholders["titles"]
+
+
+async def test_the_form_says_what_is_being_left_alone(hass):
+    """Naming it only in the log left the user to work out why the count did not
+    match what they could see on the integrations page."""
+    _merged_entry(hass)
+    _entry(hass, channel=5, title="Leftover")
+
+    shown = await _flow(hass).async_step_confirm()
+
+    note = shown["description_placeholders"]["protected_note"]
+    assert "Gerty New" in note
+    assert "integrations page" in note
+
+
+async def test_nothing_protected_means_no_note_at_all(hass):
+    """A whole sentence or nothing, the same rule dependents_note follows."""
+    _entry(hass, channel=5, title="Leftover")
+
+    shown = await _flow(hass).async_step_confirm()
+
+    assert shown["description_placeholders"]["protected_note"] == ""
+
+
+# --- and must not claim to have done it ------------------------------------
+
+
+async def test_a_card_that_can_remove_nothing_says_so(hass):
+    """Where every entry left is a merged recorder, the old flow removed
+    nothing, called async_create_entry -- which Home Assistant renders as the
+    repair having been fixed -- and left the only explanation in the log. The
+    user is told the recorder is gone when it is not."""
+    merged = _merged_entry(hass)
+
+    result = await _flow(hass).async_step_confirm({})
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "nothing_to_remove"
+    assert hass.config_entries.async_get_entry(merged.entry_id) is not None
+
+
+async def test_a_card_that_can_remove_nothing_is_withdrawn(hass):
+    """It cannot become true later: the entry is protected for as long as it
+    holds the whole recorder, so leaving the card up offers the same dead end
+    again after every restart."""
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.dahua import ISSUE_SIBLINGS_REMAIN
+
+    _merged_entry(hass)
+    issue_id = ISSUE_SIBLINGS_REMAIN.format(ADDRESS)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="siblings_remain",
+    )
+
+    await _flow(hass).async_step_confirm({})
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
