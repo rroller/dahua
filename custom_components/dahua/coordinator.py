@@ -1563,7 +1563,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                     try:
                         # Some cams don't support profile modes, check and see... use 2 to check
-                        conf = await self.client.async_get_config("Lighting[0][2]")
+                        #
+                        # This channel's row, not channel 0's. The name was
+                        # hardcoded to `Lighting[0][2]`, so on a merged recorder
+                        # every channel's answer came from camera 1's table. The
+                        # consequence is the one `infrared_profile` and
+                        # `read_profile_mode` each have a paragraph about: with
+                        # this False the poll never reads VideoInMode, so
+                        # `_profile_mode` stays "0", and a camera running Night
+                        # has its lighting read from and written to the Day row,
+                        # where the device accepts the write and renders from
+                        # somewhere else.
+                        conf = await self.client.async_get_config_lighting(
+                            self._channel, 2
+                        )
                         # We'll get back an error like this if it doesn't work:
                         # Error: Error -1 getting param in name=Lighting[0][1]
                         # Otherwise we'll get multiple lines of config back
