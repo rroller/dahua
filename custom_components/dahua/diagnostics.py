@@ -145,6 +145,17 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         # are still decided mostly by the model name, so this is how we find
         # out what the rebadges nobody has measured actually report.
         "device_class": getattr(coordinator, "_device_class", None),
+        # Whether the line above is an answer. An empty device_class means
+        # either "this device does not implement getDeviceClass", which is
+        # settled, or "the call has not been answered yet and the poll is still
+        # asking" -- which is what this PR adds, and the two read identically
+        # without this. The rebadged doorbells are exactly the devices the field
+        # above exists to learn about, so a dump that cannot tell a device that
+        # declines from one still being asked is the dump that cannot answer the
+        # question.
+        "device_class_unanswered": getattr(
+            coordinator, "_device_class_unanswered", None
+        ),
         "machine_name": getattr(coordinator, "machine_name", None),
         "name": _safe(coordinator.get_device_name),
         "firmware": _safe(coordinator.get_firmware_version),
