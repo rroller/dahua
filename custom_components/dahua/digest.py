@@ -1,6 +1,7 @@
 """Dahua Digest Auth Support"""
 
 import base64
+import errno
 import logging
 import os
 import time
@@ -55,6 +56,45 @@ HASH_ALGORITHMS = {
 }
 
 SESSION_SUFFIX = "-SESS"
+
+
+# How deep to follow __cause__ / __context__ looking for the real error.
+# aiohttp wraps the OSError it got from the socket, and asyncio sometimes wraps
+# that again, so the errno is rarely on the exception that reaches us.
+_CAUSE_DEPTH = 5
+
+
+def is_stale_pooled_connection(error: BaseException) -> bool:
+    """Did this fail because the device closed a connection we were reusing?
+
+    Both of these are raised before any byte of a response arrives, so the
+    request was never answered and nothing has been read: the only thing lost
+    is the socket, and asking again opens a new one.
+
+    Measured in #1001 on an Intelbras VIPW-1300-MINI-SD: 17 times in 24 hours,
+    about every 62 minutes and sometimes every 31, while the poll ran every 30
+    seconds. So the device is capping how long one connection may live, not
+    timing out an idle one -- there is no idle period to shorten, and aiohttp
+    has no maximum connection lifetime to set below the device's. That leaves
+    asking again.
+
+    `errno.ECONNRESET` rather than the literal 104: it is 104 on Linux and
+    10054 on Windows, and the tests for this run on both.
+
+    `ServerDisconnectedError` is **not** an OSError -- it descends from
+    ClientError only -- and a bare `ConnectionResetError` carries `errno =
+    None`. So neither an `except OSError` nor an errno comparison alone sees
+    all of this, which is why both are checked by class.
+    """
+    for _ in range(_CAUSE_DEPTH):
+        if error is None:
+            return False
+        if isinstance(error, (aiohttp.ServerDisconnectedError, ConnectionResetError)):
+            return True
+        if isinstance(error, OSError) and error.errno == errno.ECONNRESET:
+            return True
+        error = error.__cause__ or error.__context__
+    return False
 
 
 class DigestAuth:
@@ -114,6 +154,30 @@ class DigestAuth:
     def nonce_count(self, value):
         self._state["nonce_count"] = value
 
+    async def _send(self, method, url, headers, **kwargs):
+        """One request, asked once more if a pooled connection had been closed.
+
+        Separate from the digest loop above on purpose: a dropped socket is not
+        a refused credential, and spending one of MAX_AUTH_ATTEMPTS on it would
+        leave a device that answers a challenge *and* drops a connection with
+        fewer attempts than either problem needs.
+
+        One extra attempt, and the second one's failure is raised untouched, so
+        a device that is actually gone fails exactly as it did before and only
+        pays one more round trip for it.
+        """
+        try:
+            return await self.session.request(method, url, headers=headers, **kwargs)
+        except (aiohttp.ClientError, OSError) as error:
+            if not is_stale_pooled_connection(error):
+                raise
+            _LOGGER.debug(
+                "%s closed a connection we were reusing (%s); asking again",
+                url,
+                error.__class__.__name__,
+            )
+        return await self.session.request(method, url, headers=headers, **kwargs)
+
     async def request(self, method, url, *, headers=None, **kwargs):
         """Makes a request, absorbing digest challenges up to a fixed budget."""
         if headers is None:
@@ -138,9 +202,7 @@ class DigestAuth:
                     # fail every later request too. Drop it and probe instead.
                     self.challenge = None
 
-            response = await self.session.request(
-                method, url, headers=attempt_headers, **kwargs
-            )
+            response = await self._send(method, url, attempt_headers, **kwargs)
 
             if response.status != 401:
                 return response
