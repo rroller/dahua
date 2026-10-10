@@ -195,3 +195,75 @@ def test_a_slot_that_does_not_say_whether_it_is_enabled_is_not_offered():
 
     assert devices[4]["enabled"] is False
     assert dahua_utils.channels_worth_offering(devices) == []
+
+
+# --- and the other spelling the firmwares use -------------------------------
+#
+# This parser matched only the uuid-ish key above, while its two counterparts in
+# coordinator.py (`remote_device_model` and `remote_device_protocol`) have always
+# accepted the plain bracket form as well. So on firmware that uses brackets the
+# coordinator correctly warned that a channel was reached over Onvif, and this
+# returned {} -- which means the add flow offered no channels to discover and
+# `async_channel_refusal` accepted any channel number the user typed, including
+# ones the recorder disowns. One table, one shape rule.
+
+BRACKET = "table.RemoteDevice[{0}].{1}"
+
+
+def _bracket_recorder(slots):
+    data = {}
+    for index, (enabled, protocol) in slots.items():
+        data[BRACKET.format(index, "Enable")] = "true" if enabled else "false"
+        data[BRACKET.format(index, "ProtocolType")] = protocol
+    return data
+
+
+def test_the_bracket_spelling_is_read_too():
+    devices = dahua_utils.parse_remote_devices(
+        _bracket_recorder({0: (True, "Private"), 10: (True, "Onvif")})
+    )
+
+    assert devices == {
+        0: {"enabled": True, "protocol": "private"},
+        10: {"enabled": True, "protocol": "onvif"},
+    }
+
+
+def test_the_bracket_spelling_reaches_the_offer_decision():
+    """The half that actually broke: with the table unread, nothing was offered
+    and a typed channel was never checked against it."""
+    devices = dahua_utils.parse_remote_devices(
+        _bracket_recorder(
+            {0: (True, "Private"), 1: (False, "Private"), 2: (True, "Onvif")}
+        )
+    )
+
+    assert dahua_utils.channels_worth_offering(devices) == [0]
+
+
+def test_the_two_spellings_agree():
+    """Same recorder, same answer, whichever way its firmware spells the key."""
+    slots = {0: (True, "Private"), 10: (True, "Onvif"), 15: (False, "Private")}
+
+    assert dahua_utils.parse_remote_devices(
+        _recorder(slots)
+    ) == dahua_utils.parse_remote_devices(_bracket_recorder(slots))
+
+
+def test_a_nested_field_is_not_mistaken_for_a_slot():
+    """The field part of the pattern cannot span a bracket or a dot, so a
+    sub-field keeps the old behaviour of being ignored rather than inventing a
+    slot."""
+    devices = dahua_utils.parse_remote_devices(
+        {"table.RemoteDevice[3].VideoInputs[0].Enable": "true"}
+    )
+
+    assert devices == {}
+
+
+def test_another_table_with_the_same_shape_is_ignored():
+    """The pattern is anchored on RemoteDevice, so a bracketed key from any
+    other table cannot land here."""
+    devices = dahua_utils.parse_remote_devices({"table.ChannelTitle[0].Name": "FRONT"})
+
+    assert devices == {}
