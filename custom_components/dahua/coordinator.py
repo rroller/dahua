@@ -870,6 +870,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_lighting_v2 = False
         self._supports_lighting_scheme_illuminator = False
         self._supports_channel_scoped_illuminator = False
+        self._encode_audio_keys: tuple[str, ...] = ()
+        self._encode_audio_last_values: dict[str, str] = {}
 
         # Host-wide camera/NVR reboot generation.
         # Multiple NVR channel coordinators share the host uptime read.
@@ -1685,6 +1687,30 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # Start the event listeners for doorbells (VTO)
                     await self.async_start_vto_event_listener()
 
+                # Discover the actual audio fields once, before platforms create
+                # entities. The same host-wide Encode answer is cached for other
+                # recorder channels.
+                if self._wanted_by(SWITCH, SELECT):
+                    try:
+                        encode = await self.client.async_get_config("Encode")
+                    except PROBE_FAILED as probe_error:
+                        self._note_probe_refusal("encode", probe_error)
+                        encode = {}
+                    prefix = f"table.Encode[{self._channel}]."
+                    self._encode_audio_keys = tuple(
+                        key
+                        for key in encode
+                        if key.startswith(prefix)
+                        and (
+                            key.endswith(".AudioEnable")
+                            or key.endswith(".Audio.AudioSource")
+                        )
+                    )
+                    self._encode_audio_last_values = {
+                        key: encode[key] for key in self._encode_audio_keys
+                    }
+                    data.update(self._encode_audio_last_values)
+
                 self.initialized = True
             except ClientResponseError as exception:
                 if exception.status == 401:
@@ -1754,6 +1780,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Motion detection state is read by the camera entity as well as
             # the switch, so it survives either one being enabled.
             coros = []
+            # Only poll Encode where the initialization probe found audio fields.
+            if getattr(self, "_encode_audio_keys", ()) and self._wanted_by(
+                SWITCH, SELECT
+            ):
+                coros.append(asyncio.ensure_future(self._async_get_encode_config()))
             if self._wanted_by(CAMERA, SWITCH):
                 coros.append(
                     asyncio.ensure_future(
@@ -3863,6 +3894,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
+
+    async def _async_get_encode_config(self) -> dict:
+        """Read this channel's audio fields, retaining them on a failed read."""
+        try:
+            encode = await self.client.async_get_config("Encode")
+        except PROBE_FAILED as exception:
+            _LOGGER.debug(
+                "Could not read Encode audio configuration", exc_info=exception
+            )
+            encode = {}
+        # async_get_config also returns {} for HTTP refusals. A failed read is
+        # not evidence that the device turned audio off.
+        self._encode_audio_last_values.update(
+            {key: encode[key] for key in self._encode_audio_keys if key in encode}
+        )
+        return self._encode_audio_last_values.copy()
 
     def is_ptz3e10x_t180(self) -> bool:
         """Return whether this is the verified dual-sensor T180 family."""

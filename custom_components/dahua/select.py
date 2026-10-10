@@ -1,6 +1,7 @@
 """Select entity platform for Dahua."""
 
 import logging
+import re
 
 from homeassistant.core import HomeAssistant
 from homeassistant.components.select import SelectEntity
@@ -20,6 +21,9 @@ from .infrared import (
 from .model_profiles import is_sdt4e425
 
 _LOGGER = logging.getLogger(__package__)
+_AUDIO_SOURCE_KEY = re.compile(
+    r"table\.Encode\[(\d+)\]\.(MainFormat|ExtraFormat)\[(\d+)\]\.Audio\.AudioSource$"
+)
 
 
 # One at a time, because selecting a preset moves the camera and these devices are measurably intolerant of
@@ -110,7 +114,58 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             for vto in links.get("vtos") or {}:
                 devices.append(DahuaVthCameraLinkSelect(coordinator, entry, vto))
 
+        # The initialization probe settles which fields this channel exposes.
+        for key in getattr(coordinator, "_encode_audio_keys", ()):
+            match = _AUDIO_SOURCE_KEY.fullmatch(key)
+            if match and int(match.group(1)) == coordinator.get_channel():
+                devices.append(
+                    DahuaEncodeAudioSourceSelect(
+                        coordinator, entry, match.group(2), int(match.group(3)), key
+                    )
+                )
+
         async_add_devices(devices, config_subentry_id=coordinator.subentry_id)
+
+
+class DahuaEncodeAudioSourceSelect(DahuaBaseEntity, SelectEntity):
+    """Choose the source used by one Dahua encoder format."""
+
+    _attr_translation_key = "encode_audio_source"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = ["Coaxial", "BNC"]
+
+    def __init__(self, coordinator, config_entry, format_type, format_index, key):
+        super().__init__(coordinator, config_entry)
+        self._format_type = format_type
+        self._format_index = format_index
+        self._key = key
+        self._attr_unique_id = (
+            f"{coordinator.get_serial_number()}_audio_source_"
+            f"{format_type.lower()}_{format_index}"
+        )
+        self._attr_translation_placeholders = {
+            "format_type": format_type.replace("Format", ""),
+            "format_index": str(format_index + 1),
+        }
+
+    @property
+    def current_option(self):
+        """Return the source currently reported by Encode."""
+        value = self._coordinator.data.get(self._key)
+        return value if value in self.options else None
+
+    async def async_select_option(self, option):
+        """Set the audio source and refresh its read-back."""
+        if option not in self.options:
+            raise ValueError(f"Unsupported audio source: {option}")
+        await self._coordinator.client.async_set_encode_audio_value(
+            self._coordinator.get_channel(),
+            self._format_type,
+            self._format_index,
+            "Audio.AudioSource",
+            option,
+        )
+        await self._coordinator.async_refresh()
 
 
 async def _async_preset_ids(coordinator):

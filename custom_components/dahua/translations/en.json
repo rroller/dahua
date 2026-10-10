@@ -321,6 +321,9 @@
             }
         },
         "select": {
+            "encode_audio_source": {
+                "name": "{format_type} format {format_index} audio source"
+            },
             "security_light": {
                 "name": "Security Light"
             },
@@ -366,6 +369,9 @@
             }
         },
         "switch": {
+            "encode_audio": {
+                "name": "{format_type} format {format_index} audio"
+            },
             "motion_detection": {
                 "name": "Motion Detection"
             },

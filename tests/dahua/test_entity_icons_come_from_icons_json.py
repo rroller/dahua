@@ -40,10 +40,12 @@ PLATFORMS = (
 WAS = {
     ("binary_sensor", "authorized_vehicle"): "mdi:car-check",
     ("select", "day_night_mode"): "mdi:theme-light-dark",
+    ("select", "encode_audio_source"): "mdi:audio-input-rca",
     ("sensor", "license_plate"): "mdi:car-back",
     ("sensor", "profile"): "mdi:theme-light-dark",
     ("switch", "alarm_output"): "mdi:alarm-light",
     ("switch", "disarming"): "mdi:alarm-check",
+    ("switch", "encode_audio"): "mdi:volume-high",
     ("switch", "event_notifications"): "mdi:bell-ring",
     ("switch", "motion_detection"): "mdi:motion-sensor",
     ("switch", "privacy_mode"): "mdi:shield-lock",
