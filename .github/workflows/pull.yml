@@ -28,7 +28,7 @@ jobs:
         - uses: "actions/setup-python@v7"
           with:
             python-version: "3.x"
-        - run: python3 -m pip install black
+        - run: python3 -m pip install black==26.10.0
         - name: Check formatting of the files this PR changes
           run: |
             base="${{ github.event.pull_request.base.sha }}"
