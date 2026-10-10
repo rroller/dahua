@@ -341,8 +341,16 @@ async def test_the_stored_lighting_state_goes_with_the_entry(hass, hass_storage)
 
 async def test_an_illuminators_own_override_store_goes_too(hass, hass_storage):
     """That one is per entity, so it is found through the entity registry while
-    Home Assistant still has it -- the same window _async_dependents reads in."""
-    gone = _entry(hass, channel=0, add=False)
+    Home Assistant still has it -- the same window _async_dependents reads in.
+
+    The entry is added here, unlike its neighbours above: the entity registry
+    refuses to link a row to a config entry it does not know ("Can't link entity
+    to unknown config entry"), and this is the one test that needs a row. It
+    changes nothing about what is under test -- the lookup is
+    `async_entries_for_config_entry(registry, entry.entry_id)`, which reads the
+    registry, not hass's entry list, so it behaves the same either way.
+    """
+    gone = _entry(hass, channel=0)
     _stored(hass_storage, gone.entry_id, override=True)
     er.async_get(hass).async_get_or_create(
         "light",
