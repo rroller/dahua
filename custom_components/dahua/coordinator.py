@@ -1185,6 +1185,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Reload the camera information"""
         data = {}
 
+        # Whether the one-time block is about to run, read before it does. The
+        # device class retry below needs it: that block and the poll are one
+        # call, so a probe that has just timed out would otherwise be asked
+        # again a few milliseconds later, in the same refresh.
+        first_refresh = not self.initialized
+
         # Do the one time initialization (do this when Home Assistant starts)
         if not self.initialized:
             try:
@@ -1684,8 +1690,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             # Ask again for an identity the device never answered. Only while it
             # has not answered, so a device that serves getDeviceClass and one
-            # that refuses it both pay nothing.
-            if self._device_class_unanswered:
+            # that refuses it both pay nothing -- and not on the refresh whose
+            # own probe just timed out, which would be two calls a moment apart
+            # to a device that is evidently busy.
+            if self._device_class_unanswered and not first_refresh:
                 await self._async_retry_device_class()
 
             # A recorder's disks, refreshed at most hourly because each read is a
