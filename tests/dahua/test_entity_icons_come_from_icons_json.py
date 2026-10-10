@@ -28,6 +28,7 @@ PLATFORMS = (
     "camera",
     "event",
     "light",
+    "number",
     "select",
     "sensor",
     "switch",

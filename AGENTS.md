@@ -257,11 +257,6 @@ a device that does not answer leaves the numbering alone rather than guessing
 - A whole-table `setConfig` over RPC2 is refused for size on at least one recorder
   (`Request length error!`), so writes address one field.
 - The siren turns itself off after 10 to 15 seconds. That is the hardware.
-- `number.py`'s four entities name themselves in English rather than through
-  `translations/`, and the platform is absent from the two platform tuples in
-  `test_entity_names_come_from_translations.py` and
-  `test_entity_icons_come_from_icons_json.py`, so it is not scanned by either.
-  Known gap, not a pattern to copy.
 
 ## Custom Instructions
 

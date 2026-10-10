@@ -39,7 +39,7 @@ class _Coordinator:
         # serves all four. Modelled rather than assumed, because a fake that
         # answers yes to everything is how the #1006 gate would go untested.
         self._fields = (
-            frozenset(field for _key, _name, field in IMAGE_ADJUSTMENTS)
+            frozenset(field for _key, field in IMAGE_ADJUSTMENTS)
             if fields is None
             else frozenset(fields)
         )
@@ -69,8 +69,8 @@ class _Coordinator:
         self.refreshed += 1
 
 
-def _number(coordinator, key="image_brightness", name="Brightness", field="Brightness"):
-    return DahuaImageAdjustmentNumber(coordinator, object(), key, name, field)
+def _number(coordinator, key="image_brightness", field="Brightness"):
+    return DahuaImageAdjustmentNumber(coordinator, object(), key, field)
 
 
 # --- the entity -------------------------------------------------------------
@@ -102,7 +102,7 @@ def test_it_is_unavailable_until_the_poll_has_a_value():
 
 async def test_setting_a_value_writes_the_field_and_refreshes():
     c = _Coordinator(channel=3, values={"Saturation": 50})
-    n = _number(c, key="image_saturation", name="Saturation", field="Saturation")
+    n = _number(c, key="image_saturation", field="Saturation")
 
     await n.async_set_native_value(72.0)
 
