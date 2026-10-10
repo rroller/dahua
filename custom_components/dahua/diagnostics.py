@@ -234,6 +234,14 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
     return {
         "probed": probed,
         "derived_from_model": derived,
+        # Which picture adjustments this channel reported at setup, which is
+        # the whole reason its number entities exist or do not. A device that
+        # refuses the table gets none, so an empty list here beside a
+        # `video_color` entry in `refusals` below is the answer to "where did
+        # my brightness slider go" (#1006).
+        "video_color_fields": _safe(
+            lambda: sorted(getattr(coordinator, "_video_color_fields", None) or ()), []
+        ),
         # Why each probe that failed did. A status is the device
         # answering, and a 400 for a config table is it saying it does
         # not serve that table, which is a fact about the model. No

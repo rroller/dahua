@@ -38,9 +38,18 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         # An indoor monitor without a camera has no picture to adjust.
         if coordinator.is_indoor_monitor_without_video():
             continue
+        # One entity per adjustment the device actually reported for this
+        # channel. These were created unconditionally, which gave four sliders
+        # to every device including the ones whose VideoColor table is refused
+        # outright -- a camera account in the `user` group answers 403 to it
+        # (#1006) -- and a slider that can only read unknown is worse than no
+        # slider (the profile sensor's rule, #641). Per field, because a device
+        # reporting three of the four should get three rather than a fourth that
+        # never resolves.
         numbers = [
             DahuaImageAdjustmentNumber(coordinator, entry, key, name, field)
             for key, name, field in IMAGE_ADJUSTMENTS
+            if coordinator.supports_video_color(field)
         ]
         if numbers:
             async_add_devices(numbers, config_subentry_id=coordinator.subentry_id)

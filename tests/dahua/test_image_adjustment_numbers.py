@@ -28,11 +28,21 @@ class _Client:
 class _Coordinator:
     subentry_id = None
 
-    def __init__(self, *, channel=0, values=None, no_video=False):
+    def __init__(self, *, channel=0, values=None, no_video=False, fields=None):
         self.client = _Client()
         self._channel = channel
         self._values = values or {}
         self._no_video = no_video
+        # Which adjustments the device reported for this channel at setup. The
+        # real coordinator probes VideoColor for them and the platform creates
+        # one entity per field, so the default here is an ordinary camera that
+        # serves all four. Modelled rather than assumed, because a fake that
+        # answers yes to everything is how the #1006 gate would go untested.
+        self._fields = (
+            frozenset(field for _key, _name, field in IMAGE_ADJUSTMENTS)
+            if fields is None
+            else frozenset(fields)
+        )
         self.data = {"id": 1}
         self.last_update_success = True
         self.refreshed = 0
@@ -48,6 +58,9 @@ class _Coordinator:
 
     def get_video_color(self, field):
         return self._values.get(field)
+
+    def supports_video_color(self, field):
+        return field in self._fields
 
     def is_indoor_monitor_without_video(self):
         return self._no_video
@@ -125,3 +138,39 @@ async def test_an_indoor_monitor_without_a_camera_gets_none():
     await async_setup_entry(None, entry, adds_entities(added))
 
     assert added == []
+
+
+async def test_a_device_that_reports_no_adjustments_gets_no_sliders():
+    """#1006. These were created for every device, and VideoColor is not a table
+    every account can read: a camera account in the device's `user` group answers
+    403 to it, deliberately, and two reporters had every entity of a working
+    camera go unavailable because of the four sliders it was never going to feed.
+
+    The read is gated now, and so is the entity. An entity that can only ever
+    read unknown is worse than no entity, which is the rule the profile sensor
+    established in #641.
+    """
+    added = []
+    coordinator = _Coordinator(fields=[])
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
+
+    await async_setup_entry(None, entry, adds_entities(added))
+
+    assert added == []
+
+
+async def test_only_the_adjustments_the_device_reported_are_created():
+    """Per field rather than one yes for the table. A device serving three of the
+    four would otherwise get a fourth slider stuck at unknown for ever, which is
+    the same fault as the whole set, one control over.
+    """
+    added = []
+    coordinator = _Coordinator(fields=["Brightness", "Hue"])
+    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
+
+    await async_setup_entry(None, entry, adds_entities(added))
+
+    assert sorted(n.unique_id for n in added) == [
+        "SERIAL1_image_brightness",
+        "SERIAL1_image_hue",
+    ]
