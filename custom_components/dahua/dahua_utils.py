@@ -62,6 +62,14 @@ def hass_brightness_to_dahua_brightness(hass_brightness: int) -> int:
 _LOGGER = logging.getLogger(__name__)
 
 
+# One slot of the recorder's camera table, in either spelling the firmwares use:
+# a uuid-ish name carrying the index, or a plain bracket. Anchored on
+# RemoteDevice so a nested field of some other table cannot match.
+_REMOTE_DEVICE_FIELD = re.compile(
+    r"RemoteDevice(?:\.uuid:\S*?INFO_|\[)(\d+)\]?\.(\w+)$"
+)
+
+
 def parse_remote_devices(data) -> dict:
     """Which channels a recorder says it has a camera on.
 
@@ -71,16 +79,30 @@ def parse_remote_devices(data) -> dict:
         table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_11.Enable=true
         table.RemoteDevice.uuid:System_CONFIG_NETCAMERA_INFO_11.ProtocolType=Private
 
+    and some firmware uses the plain bracket form instead:
+
+        table.RemoteDevice[11].Enable=true
+        table.RemoteDevice[11].ProtocolType=Private
+
     Returns {index: {"enabled": bool, "protocol": str}}.
 
     Measured on a DHI-NVR5464-16P-EI: sixteen slots, fifteen enabled, one
     of those reached over Onvif. The channel number is the index plus one.
+
+    **Both spellings, because this used to read only the first and its two
+    callers disagreed with it.** `remote_device_model` and
+    `remote_device_protocol` in coordinator.py have always accepted either, so
+    on bracket-form firmware the coordinator correctly warned that a channel
+    was reached over Onvif while this returned {} -- which meant the add flow
+    offered no channels to discover and `async_channel_refusal` accepted any
+    channel number the user typed, including ones the recorder disowns. One
+    table, one shape rule.
     """
     if not isinstance(data, dict):
         return {}
     found = {}
     for key, value in data.items():
-        match = re.search(r"INFO_(\d+)\.(\w+)$", str(key))
+        match = _REMOTE_DEVICE_FIELD.search(str(key))
         if not match:
             continue
         slot = found.setdefault(int(match.group(1)), {})
