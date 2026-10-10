@@ -108,6 +108,33 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
             )
             return self.async_abort(reason="not_configured")
 
+        # Split once, and used by both the form and the removal below, because
+        # they disagreed: the loop skipped a merged entry while the form counted
+        # and named it. So the card said "This removes the remaining 3 for you"
+        # and listed an entry it would not touch -- and where every entry was
+        # protected it removed nothing, said it had succeeded, and left the only
+        # explanation in the log. For the one irreversible action in this file,
+        # the form has to describe what the button does.
+        removable = [entry for entry in entries if len(channel_configs(entry)) == 1]
+        protected = [entry for entry in entries if len(channel_configs(entry)) > 1]
+
+        if not removable:
+            # Nothing this card can do. Saying so is the point: reporting
+            # success for having removed nothing is worse than the card not
+            # existing, because the user believes the recorder is gone.
+            _LOGGER.warning(
+                "Not removing anything for %s: the %d entries left each hold "
+                "every channel of the recorder, so none of them is a leftover. "
+                "Remove it from the integrations page if that is really what "
+                "you want",
+                self._address,
+                len(protected),
+            )
+            ir.async_delete_issue(
+                self.hass, DOMAIN, ISSUE_SIBLINGS_REMAIN.format(self._address)
+            )
+            return self.async_abort(reason="nothing_to_remove")
+
         if user_input is not None:
             # A merged recorder is never a leftover. This card offers to finish a
             # deletion the user started, and the entries it is for are the other
@@ -129,20 +156,17 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
             # after that change would have read as a merged recorder and been
             # protected from a card the user had asked for. Counting says what the
             # guard has always meant, and is right under either shape.
-            merged = [entry for entry in entries if len(channel_configs(entry)) > 1]
-            if merged:
+            if protected:
                 _LOGGER.error(
                     "Not removing %s for %s: it holds every channel of the "
                     "recorder on one entry, so it is not a leftover and removing "
                     "it would delete every entity the recorder has. Remove it from "
                     "the integrations page if that is really what you want",
-                    ", ".join(sorted(e.title or "untitled" for e in merged)),
+                    ", ".join(sorted(e.title or "untitled" for e in protected)),
                     self._address,
                 )
 
-            for entry in entries:
-                if len(channel_configs(entry)) > 1:
-                    continue
+            for entry in removable:
                 await self.hass.config_entries.async_remove(entry.entry_id)
                 # Same reason the HTTPS flow staggers its reloads: a Dahua web
                 # server does not enjoy eleven simultaneous teardowns.
@@ -158,9 +182,24 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
             data_schema=vol.Schema({}),
             description_placeholders={
                 "address": str(self._address),
-                "count": str(len(entries)),
-                "titles": ", ".join(sorted(e.title or "untitled" for e in entries)),
+                # What will actually go, not what is at this address. A
+                # protected entry is named in its own sentence below instead.
+                "count": str(len(removable)),
+                "titles": ", ".join(sorted(e.title or "untitled" for e in removable)),
                 "removed": str(self._removed),
                 "dependents_note": self._dependents_note,
+                # Built here as prose rather than as a translated string, the
+                # same way dependents_note is: a whole sentence or nothing, so
+                # the screen reads correctly either way.
+                "protected_note": (
+                    (
+                        "%s holds every channel of the recorder on one entry, so "
+                        "it is not a leftover and is left alone. Remove it from "
+                        "the integrations page if that is really what you want."
+                        % ", ".join(sorted(e.title or "untitled" for e in protected))
+                    )
+                    if protected
+                    else ""
+                ),
             },
         )

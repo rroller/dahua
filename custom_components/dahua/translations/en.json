@@ -452,11 +452,12 @@
                 "step": {
                     "confirm": {
                         "title": "Remove the other {count} entries for {address}?",
-                        "description": "You removed **{removed}**, and {count} other Dahua configuration entries still use the device at {address}.\n\nA recorder is added one entry per channel, so removing all of it means removing every one. This removes the remaining {count} for you, one at a time:\n\n{titles}\n\n**This cannot be undone.** The entities and their history go with them. If you meant to remove only the one channel, dismiss this instead.\n\n{dependents_note}"
+                        "description": "You removed **{removed}**, and {count} other Dahua configuration entries still use the device at {address}.\n\nA recorder is added one entry per channel, so removing all of it means removing every one. This removes the remaining {count} for you, one at a time:\n\n{titles}\n\n**This cannot be undone.** The entities and their history go with them. If you meant to remove only the one channel, dismiss this instead.\n\n{protected_note}\n\n{dependents_note}"
                     }
                 },
                 "abort": {
-                    "not_configured": "No Dahua configuration entries use {address} any more, so there is nothing left to remove."
+                    "not_configured": "No Dahua configuration entries use {address} any more, so there is nothing left to remove.",
+                    "nothing_to_remove": "Every Dahua configuration entry left for {address} holds the whole recorder on one entry, so none of them is a leftover this can tidy up. Nothing was removed. Remove the recorder from the integrations page if that is what you meant."
                 }
             }
         },
