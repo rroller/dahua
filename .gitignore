@@ -6,6 +6,15 @@ __pycache__
 */dist/*
 
 
+# Generated agent context. `.agents/summary/*` was committed once and then
+# described version 0.9.81 for six months, with a directory tree predating
+# host.py and coordinator.py. A generated summary with no regeneration step is
+# worse than none, because a reader cannot tell stale from current. The
+# agent-facing source of truth is AGENTS.md, with CONTRIBUTING.md beside it.
+# Only summary/ is ignored, so hand-written agent config under .agents/ can
+# still be committed.
+.agents/summary/
+
 # misc
 .coverage
 .vscode
