@@ -1851,12 +1851,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     asyncio.ensure_future(self._async_coaxial_status(coaxial_channel))
                 )
             if getattr(self, "_ivs_rules", []) and self._wanted_by(SWITCH):
-                ivs_read = (
-                    self.client.async_get_remote_ivs_rules(self._channel)
-                    if self.is_nvr_channel()
-                    else self.client.async_get_ivs_rules()
-                )
-                coros.append(asyncio.ensure_future(ivs_read))
+                coros.append(asyncio.ensure_future(self._async_fetch_ivs_rules()))
             if self._supports_smart_motion_detection and self._wanted_by(
                 SWITCH, SELECT
             ):
@@ -4253,6 +4248,48 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 key: value
                 for key, value in previous.items()
                 if key.startswith("table.VideoColor[")
+            }
+            return carried or None
+
+    async def _async_fetch_ivs_rules(self) -> dict | None:
+        """Poll the IVS rules, keeping the last answer on a refusal.
+
+        The recorder branch is the one that needed this. It reads the rules over
+        RPC2, where a declined table arrives as `Rpc2MethodRefused` -- a
+        `ConnectionError` subclass, so nothing in the fan-out treated it as an
+        answer, and a recorder that stopped serving `RemoteVideoAnalyseRule`
+        failed the whole refresh. Measured already in a different form: the same
+        table reports a different rule Id depending on how it is read, so this
+        is a read that genuinely changes its mind between polls.
+
+        The direct-camera branch goes through `async_get_config`, which already
+        returns {} for a refusal, so it was never the exposed one. It is in here
+        anyway, because which branch runs depends on `is_nvr_channel()` and a
+        guard that covers only one of them is the kind that looks present and
+        is not.
+
+        Carries only this table's own keys, for the reason
+        `_async_fetch_video_color` gives: a whole copy of the last poll would
+        let a stale value overwrite a fresh one from another coroutine in the
+        same gather.
+        """
+        try:
+            if self.is_nvr_channel():
+                return await self.client.async_get_remote_ivs_rules(self._channel)
+            return await self.client.async_get_ivs_rules()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the IVS rules for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith(
+                    ("table.VideoAnalyseRule[", "table.RemoteVideoAnalyseRule[")
+                )
             }
             return carried or None
 

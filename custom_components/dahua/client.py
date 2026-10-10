@@ -1600,7 +1600,14 @@ class DahuaClient:
         return ``result=0`` or ``result=1``; the encoding for devices with
         multiple outputs has not yet been verified.
         """
-        data = await self.get("/cgi-bin/alarm.cgi?action=getOutState")
+        try:
+            data = await self.get("/cgi-bin/alarm.cgi?action=getOutState")
+        except aiohttp.ClientResponseError:
+            # Not a getConfig, so it cannot go through async_get_config, but it
+            # is read in the same fan-out and a refusal must not fail it. Empty
+            # rather than a guessed state: the switch reads the key below, and
+            # inventing 0 would report an output as off while it is on.
+            return {}
         return {"status.AlarmOut[0]": data.get("result")}
 
     async def async_set_alarm_output_state(self, output: int, enabled: bool) -> dict:
@@ -1864,8 +1871,10 @@ class DahuaClient:
         table.SmartMotionDetect[0].ObjectTypes.Vehicle=false
         table.SmartMotionDetect[0].Sensitivity=Middle
         """
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
-        return await self.get(url)
+        # Same as async_get_disarming_linkage, and for the same reason. This
+        # one also answers for a table that only exists where the recorder
+        # recognises the camera model, so a refusal is an ordinary answer here.
+        return await self.async_get_config("SmartMotionDetect")
 
     async def async_get_video_color(self) -> dict:
         """The picture adjustments per channel. Example output:
@@ -2677,8 +2686,11 @@ class DahuaClient:
         Example output:
         table.LightGlobal[0].Enable=true
         """
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=LightGlobal[0].Enable"
-        return await self.get(url)
+        # Same as async_get_disarming_linkage, and the most exposed of the
+        # four: the poll reads this one on `is_amcrest_doorbell()` alone, which
+        # is a model-name test with no probe behind it, so the first evidence
+        # that a rebadge does not serve the table was the whole entry failing.
+        return await self.async_get_config("LightGlobal[0].Enable")
 
     async def async_get_floodlightmode(self) -> int:
         """async_get_floodlightmode gets the floodlight mode as its number.
@@ -3449,8 +3461,11 @@ class DahuaClient:
         table.DisableLinkage.Enable=false
         """
 
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=DisableLinkage"
-        return await self.get(url)
+        # Through async_get_config, not self.get: it builds this exact URL and
+        # swallows a ClientResponseError. Read raw, a device that refuses the
+        # table raised into the poll's fan-out, which has no return_exceptions,
+        # and took every entity on the channel with it. That is #1006's shape.
+        return await self.async_get_config("DisableLinkage")
 
     async def async_get_event_notifications(self) -> dict:
         """
@@ -3460,8 +3475,8 @@ class DahuaClient:
         table.DisableEventNotify.Enable=false
         """
 
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=DisableEventNotify"
-        return await self.get(url)
+        # Same as async_get_disarming_linkage above, and for the same reason.
+        return await self.async_get_config("DisableEventNotify")
 
     # A device answering these has no such CGI path at all, so there is
     # nothing to retry and a second transport is worth trying. Deliberately
