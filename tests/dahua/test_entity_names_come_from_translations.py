@@ -154,6 +154,47 @@ def _keys_passed_in(platform):
     return keys
 
 
+def _keys_in_a_table(platform, table):
+    """The first element of every tuple in a module-level table of keys.
+
+    One class with four instances cannot declare a class attribute per name, and
+    the construction passes a loop variable, so neither of the two scans above
+    finds anything. number.py keeps the literals in IMAGE_ADJUSTMENTS instead:
+    `(translation key, VideoColor field)` per row, the key also being the
+    unique-id suffix.
+
+    Read rather than excluded. A blanket "trust the number platform" subtraction
+    would stop this file noticing a dead `number.*` string, which is the whole
+    point of the second test; parsing the table keeps both directions exact.
+    """
+    tree = ast.parse(io.open(PACKAGE / ("%s.py" % platform), encoding="utf-8").read())
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == table
+            for target in node.targets
+        ):
+            continue
+        rows = getattr(node.value, "elts", [])
+        return {
+            row.elts[0].value
+            for row in rows
+            if getattr(row, "elts", None)
+            and isinstance(row.elts[0], ast.Constant)
+            and isinstance(row.elts[0].value, str)
+        }
+    raise AssertionError(
+        "%s.py has no %s table any more. If its keys moved, point this at the new "
+        "place rather than deleting the call: without it the four picture "
+        "adjustment strings read as dead." % (platform, table)
+    )
+
+
+# Platform modules that name their keys in a table instead of per class.
+KEY_TABLES = (("number", "IMAGE_ADJUSTMENTS"),)
+
+
 def _keys_in_code():
     found = {
         (platform, key): cls.name
@@ -163,6 +204,9 @@ def _keys_in_code():
     for platform in PLATFORMS:
         for key in _keys_passed_in(platform):
             found.setdefault((platform, key), "chosen by %s.py" % platform)
+    for platform, table in KEY_TABLES:
+        for key in _keys_in_a_table(platform, table):
+            found.setdefault((platform, key), "%s in %s.py" % (table, platform))
     return found
 
 
