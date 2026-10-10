@@ -649,12 +649,30 @@ def _pop_complete_multipart_part(buffer: bytes, boundary: bytes):
     if start:
         buffer = buffer[start:]
 
-    header_end = buffer.find(b"\r\n\r\n", len(boundary))
+    # How far this part can possibly extend. Everything below stays inside
+    # it, which is the whole of #995: the header search ran to the end of the
+    # buffer, so a part whose headers run straight into its payload -- the
+    # heartbeat on a DH-SD42A212TN-HNI does exactly that, with no blank line
+    # -- found its separator inside the *next* part's headers. The
+    # Content-Length scan below then read a range spanning both parts and
+    # took the first value in it, which was the heartbeat's 9. Applied to the
+    # event that followed, that delivered nine bytes of it: `Code=Cros`.
+    next_boundary = buffer.find(boundary, len(boundary))
+    part_limit = next_boundary if next_boundary != -1 else len(buffer)
+
+    header_end = buffer.find(b"\r\n\r\n", len(boundary), part_limit)
     separator_len = 4
     if header_end == -1:
-        header_end = buffer.find(b"\n\n", len(boundary))
+        header_end = buffer.find(b"\n\n", len(boundary), part_limit)
         separator_len = 2
     if header_end == -1:
+        # No separator anywhere in this part. If the next boundary is already
+        # here the part is malformed and the framing is the only thing left
+        # to trust, so it is delivered whole and the reader makes what it can
+        # of it -- a heartbeat carries no Code and is dropped. Otherwise the
+        # headers may simply still be arriving.
+        if next_boundary != -1:
+            return buffer[:next_boundary], buffer[next_boundary:]
         return None, buffer
 
     payload_start = header_end + separator_len
@@ -672,6 +690,10 @@ def _pop_complete_multipart_part(buffer: bytes, boundary: bytes):
 
     if content_length is not None:
         part_end = payload_start + content_length
+        # Found again from the payload rather than reusing the one above:
+        # that one is the first boundary after this part's own, which for a
+        # well-formed part is the same position, and for a payload that
+        # happens to contain the boundary bytes is not.
         next_boundary = buffer.find(boundary, payload_start)
 
         # If the next part starts before the declared payload end, the length
@@ -3797,6 +3819,10 @@ class DahuaClient:
             # are never split across TCP chunk boundaries.
             boundary = b"--myboundary"
             content_type = response.headers.get("Content-Type", "")
+            # Whether the device *said* this is multipart, which is a better
+            # question than whether any one chunk happens to contain the
+            # delimiter. See the loop below.
+            declared_multipart = "boundary=" in content_type
             if "boundary=" in content_type:
                 b_val = (
                     content_type.split("boundary=")[1]
@@ -3812,7 +3838,16 @@ class DahuaClient:
                 # Buffer multipart parts across TCP chunks. Content-Length lets
                 # us deliver a complete part immediately instead of waiting for
                 # the next boundary (or the next five-second heartbeat).
-                if boundary in data or boundary in buffer:
+                # A declared multipart stream always goes through the
+                # buffer. Asking whether this chunk or the buffer contains
+                # the delimiter loses a boundary split across two TCP
+                # chunks (#995): neither half contains it, so both were
+                # handed straight to the handler and the part they belonged
+                # to was never assembled. A stream that declares no
+                # boundary keeps the old test, because for those the raw
+                # dispatch is the only path and buffering would deliver
+                # nothing at all.
+                if declared_multipart or boundary in data or boundary in buffer:
                     buffer += data
                     while True:
                         complete_part, buffer = _pop_complete_multipart_part(

@@ -445,3 +445,82 @@ async def test_all_is_sent_as_the_word_rather_than_a_list():
         await client.stream_events(lambda data, channel: None, ["All"], 0)
 
     assert "codes=[All]" in session.urls[0], session.urls
+
+
+async def test_a_boundary_split_across_two_chunks_is_still_assembled():
+    """#995's second half.
+
+    The loop used to ask whether this chunk or the buffer contained the
+    delimiter. A boundary split across two TCP chunks is in neither, so both
+    halves went straight to the handler and the part was never assembled --
+    the handler saw fragments of an event instead of the event.
+
+    The device declares the boundary in its Content-Type here, which is the
+    signal the loop now uses.
+    """
+    got = []
+    payload = b"Code=CrossLineDetection;action=Start;index=0"
+    part = (
+        b"--myboundary\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload
+    )
+    # The split falls inside the opening delimiter itself.
+    chunks = [part[:6], part[6:]]
+    client = DahuaClient(
+        "u",
+        "p",
+        "d",
+        80,
+        554,
+        _EndingSession(
+            chunks=chunks,
+            response_headers={
+                "Content-Type": "multipart/x-mixed-replace; boundary=myboundary"
+            },
+        ),
+    )
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
+
+    assert got == [part], "the split boundary was not reassembled: %s" % got
+
+
+async def test_a_heartbeat_with_no_blank_line_does_not_truncate_the_next_event():
+    """#995's first half, through the stream rather than the parser alone.
+
+    Measured on a DH-SD42A212TN-HNI (firmware 2.640.0000000.2.R): the
+    heartbeat part has no blank line between its headers and its payload. The
+    header search ran past the next boundary, found the separator in the
+    event's headers, and applied the heartbeat's `Content-Length: 9` to the
+    event -- delivering nine bytes of it, `Code=Cros`, with no action and no
+    index, so no sensor moved.
+    """
+    got = []
+    heartbeat = (
+        b"--myboundary\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length:9\r\n"
+        b"Heartbeat\r\n"
+    )
+    payload = b"Code=CrossLineDetection;action=Start;index=0"
+    event = (
+        b"--myboundary\r\n"
+        b"Content-Type: text/plain\r\n"
+        b"Content-Length: " + str(len(payload)).encode() + b"\r\n\r\n" + payload
+    )
+    client = DahuaClient(
+        "u", "p", "d", 80, 554, _EndingSession(chunks=[heartbeat + event])
+    )
+
+    with pytest.raises(EventStreamClosed):
+        await client.stream_events(lambda data, channel: got.append(data), ["All"], 0)
+
+    delivered = b"".join(got)
+    assert b"Code=CrossLineDetection;action=Start;index=0" in delivered, (
+        "the event was truncated to the heartbeat's length: %s" % got
+    )
+    assert b"Code=Cros;" not in delivered and not any(
+        part.endswith(b"Code=Cros") for part in got
+    ), ("the heartbeat's Content-Length was applied to the event: %s" % got)
