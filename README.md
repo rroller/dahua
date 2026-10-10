@@ -831,8 +831,10 @@ Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its scre
 Audio Source | Selects the source reported by each encoder format (Coaxial or BNC). Only shown when the device exposes that setting
 
 The audio entities read the device's `Encode` table and write only the selected
-field. This makes audio changes visible to Home Assistant automations while
-preserving the recorder's other encoding settings.
+field. This makes audio changes visible to Home Assistant automations after the
+normal configuration cache expires (up to five minutes), while preserving the
+recorder's other encoding settings. Changes made through these entities clear
+that cache immediately.
 
 ## Event entities
 

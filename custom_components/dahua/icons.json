@@ -23,6 +23,9 @@
             }
         },
         "select": {
+            "encode_audio_source": {
+                "default": "mdi:audio-input-rca"
+            },
             "day_night_mode": {
                 "default": "mdi:theme-light-dark"
             }
@@ -36,6 +39,9 @@
             }
         },
         "switch": {
+            "encode_audio": {
+                "default": "mdi:volume-high"
+            },
             "alarm": {
                 "default": "mdi:bullhorn"
             },

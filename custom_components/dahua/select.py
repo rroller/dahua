@@ -114,9 +114,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             for vto in links.get("vtos") or {}:
                 devices.append(DahuaVthCameraLinkSelect(coordinator, entry, vto))
 
-        # Audio source is part of Encode and is only present on some models.
-        # Keep the selector list limited to fields the device actually reports.
-        for key in coordinator.data:
+        # The initialization probe settles which fields this channel exposes.
+        for key in getattr(coordinator, "_encode_audio_keys", ()):
             match = _AUDIO_SOURCE_KEY.fullmatch(key)
             if match and int(match.group(1)) == coordinator.get_channel():
                 devices.append(
@@ -134,7 +133,6 @@ class DahuaEncodeAudioSourceSelect(DahuaBaseEntity, SelectEntity):
     _attr_translation_key = "encode_audio_source"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_options = ["Coaxial", "BNC"]
-    _attr_icon = "mdi:audio-input-rca"
 
     def __init__(self, coordinator, config_entry, format_type, format_index, key):
         super().__init__(coordinator, config_entry)
