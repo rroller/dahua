@@ -3,82 +3,61 @@ Custom integration to integrate Dahua cameras with Home Assistant.
 """
 
 import asyncio
-from collections import deque
-from typing import Any, Dict
 import logging
-import random
-import re
-import ssl
-import time
 
-from datetime import timedelta
+# Patched as `dahua_module.time` by test_uptime_reboot_detection.py, which is
+# the only reader left after the host and coordinator moves, so it stays a name
+# on this module.
+import time  # noqa: F401  pylint: disable=unused-import
 
-from homeassistant.components.tag import async_scan_tag
-import hashlib
-
-from aiohttp import ClientError, ClientResponseError, ClientSession, TCPConnector
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers import area_registry as ar
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntry
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.typing import ConfigType
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 
-from . import dahua_utils
-from .client import (
+# Kept for the same reason as the two blocks further down, and marked the same
+# way: each of these was a public name of this package before the host and
+# coordinator moves, so something may still reach it as
+# `custom_components.dahua.<name>`. This module itself no longer uses them.
+from . import dahua_utils  # noqa: F401  pylint: disable=unused-import
+from .client import (  # noqa: F401  pylint: disable=unused-import
     _HOST_RPC2_EVENT_POLL,
     _HOST_RPC2_EVENT_STATE,
     DahuaClient,
     clear_host_cache,
 )
-from .ivs import ivs_rules_for_channel, ivs_rule_index
+from .ivs import (  # noqa: F401  pylint: disable=unused-import
+    ivs_rules_for_channel,
+    ivs_rule_index,
+)
 
 from .const import (
-    CONF_EVENTS,
-    CONF_PASSWORD,
-    ISSUE_URL,
-    CONF_PORT,
-    CONF_USERNAME,
     CONF_ADDRESS,
+    CONF_CHANNEL,
+    CONF_EVENTS,
     CONF_NAME,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_RTSP_PORT,
+    CONF_USERNAME,
+    CONF_USE_HTTPS,
+    DEFAULT_EVENTS,
     DOMAIN,
     PLATFORMS,
-    CAMERA,
-    LIGHT,
-    SELECT,
-    SWITCH,
-    CONF_RTSP_PORT,
     STARTUP_MESSAGE,
-    CONF_CHANNEL,
-    CONF_AUTO_DETECT_CHANNEL,
-    CONF_USE_HTTPS,
-    CONF_SCAN_INTERVAL,
-    CONF_USE_RPC2,
-    CONF_NVR_ACTIVE_DETERRENCE,
-    CONF_MANUAL_SIREN,
-    CONF_MANUAL_SECURITY_LIGHT,
-    CONF_AREA,
-    CONF_AUTHORIZED_PLATES,
-    DEFAULT_EVENTS,
-    CONF_AUTHORIZED_HOLD_TIME,
-    DEFAULT_SCAN_INTERVAL,
-    DEFAULT_AUTHORIZED_HOLD_TIME,
-    MIN_SCAN_INTERVAL,
-    EVENT_DAHUA_ANPR_RECOGNIZED,
 )
-from .dahua_utils import parse_event
-from .deterrence import (
+from .dahua_utils import parse_event  # noqa: F401  pylint: disable=unused-import
+from .deterrence import (  # noqa: F401  pylint: disable=unused-import
     product_definition_supports_security_light,
     product_definition_supports_siren,
     siren_definition_failure_reason,
     security_light_definition_failure_reason,
 )
-from .illuminator_restore import IlluminatorRestoreStore
-from .vto import DahuaVTOClient
+from .illuminator_restore import (  # noqa: F401  pylint: disable=unused-import
+    IlluminatorRestoreStore,
+)
+from .vto import DahuaVTOClient  # noqa: F401  pylint: disable=unused-import
 
 # Imported back rather than left behind. Every one of these was a public
 # name of this package: platforms, entity.py, diagnostics and a good part of
@@ -888,7 +867,6 @@ def _async_report_removal(
     described = _describe_dependents(dependents)
 
     if siblings:
-        titles = ", ".join(sorted(e.title or "untitled" for e in siblings))
         ir.async_create_issue(
             hass,
             DOMAIN,
