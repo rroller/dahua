@@ -156,6 +156,7 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     PULSE_STATE_CODES,
     RECENT_EVENT_COUNT,
     SMART_MOTION_ROW,
+    VIDEO_COLOR_FIELDS,
     WHITE_LIGHT,
     day_night_color_name,
     describe_update_failure,
@@ -171,6 +172,7 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     remote_device_model,
     remote_device_protocol,
     smart_motion_row_indices,
+    video_color_fields,
     vto_retry_state,
 )
 

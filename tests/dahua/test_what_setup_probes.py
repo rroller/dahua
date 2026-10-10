@@ -48,7 +48,18 @@ PROBES = [
     ),
     ("async_get_privacy_mode", "_supports_privacy_mode", None),
     ("async_get_cloud_upgrade_info", "_supports_cloud_upgrade", None),
+    # The picture adjustments (#1006). This one was added without a probe at
+    # all: the read sat in the poll's fan-out gated on nothing but the platform,
+    # so a device that refuses the table failed every refresh. Listed here so it
+    # inherits the three properties this file is about, which is exactly what it
+    # did not have.
+    ("async_get_video_color", "_video_color_fields", None),
 ]
+
+# The probes whose capability is a set of field names rather than a bool, so
+# "off" for them is an empty set. Only the picture adjustments: a device can
+# serve three of the four, and a single yes could not say which.
+PROBE_SETS = {"_video_color_fields"}
 
 
 # What setup asks the coordinator about itself. Off, so the fan-out afterwards is
@@ -76,6 +87,7 @@ FLAGS = (
     "_supports_profile_mode",
     "_supports_ptz_position",
     "_supports_smart_motion_detection",
+    "_video_color_fields",
 )
 
 
@@ -329,7 +341,15 @@ async def test_a_refused_probe_turns_its_own_capability_off(hass, method, flag, 
 
     await coordinator._async_update_data()
 
-    assert getattr(coordinator, flag) is False
+    got = getattr(coordinator, flag)
+    # `is False` for the bools rather than `== False`, which would also accept a
+    # 0 or an empty string from a handler that had quietly started storing
+    # something else. The picture adjustments are the one capability that is a
+    # set of field names, so theirs is compared as an empty set.
+    if flag in PROBE_SETS:
+        assert got == frozenset()
+    else:
+        assert got is False
 
 
 @pytest.mark.parametrize("method, flag, model", PROBES)

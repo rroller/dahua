@@ -376,6 +376,37 @@ def day_night_color_name(data: dict, channel: int):
     return DAY_NIGHT_NAMES.get(str(value).strip())
 
 
+# The picture adjustments the number platform offers, as the device spells them
+# in its VideoColor table.
+VIDEO_COLOR_FIELDS = ("Brightness", "Contrast", "Saturation", "Hue")
+
+
+def video_color_fields(data: dict, channel: int) -> frozenset:
+    """Which picture adjustments this channel reports, as a set of field names.
+
+    VideoColor is host-wide and indexed [channel][profile], so a 200 for the
+    table says nothing about whether *this* channel is in it. Judged on the
+    channel's own row for the same reason read_profile_mode and
+    _smart_motion_row are: a recorder answers one request for every channel,
+    and taking another channel's row as evidence is how a control comes to
+    report a camera it is not attached to.
+
+    Per field rather than a single yes, so a device reporting three of the four
+    gets three sliders instead of a fourth that can only ever read unknown.
+
+    Empty when the device named none, which covers both a table it does not
+    have and the empty 200 some firmware answers for one -- the same thing
+    async_detect_lighting_support judges on.
+    """
+    if not isinstance(data, dict):
+        return frozenset()
+    return frozenset(
+        field
+        for field in VIDEO_COLOR_FIELDS
+        if data.get("table.VideoColor[{0}][0].{1}".format(channel, field)) is not None
+    )
+
+
 # DeviceType values that name a class of device rather than a model. Measured on
 # a DHI-NVR5464-16P-EI, which answers "IP Camera" and "IPC" for most channels and
 # a real model for one; the Lorex N843A8 on #669 answers a model for every
@@ -685,6 +716,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # see FloodLight.async_turn_off.
     _floodlight_mode: int = None
 
+    # Which picture adjustments this channel reported at setup. On the class for
+    # the reason the three above are: the suite builds coordinators with
+    # object.__new__ and sets only what each test is about, and both the poll
+    # and the number platform read this. Only ever reassigned, never mutated, so
+    # one shared empty default is safe.
+    _video_color_fields: frozenset = frozenset()
+
     """Class to manage fetching data from the API."""
 
     def __init__(
@@ -784,6 +822,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_ptz_position = False
         self._supports_lighting = False
         self._supports_day_night_color = False
+        self._video_color_fields: frozenset = frozenset()
         # What the device said when a probe failed, keyed by probe name.
         self._probe_refusals: Dict[str, dict] = {}
         self._channel_model = None
@@ -1332,6 +1371,49 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     "Device supports day/night mode=%s", self._supports_day_night_color
                 )
 
+                # The picture adjustments, probed rather than read blind on
+                # every poll. #1006 is a camera account in the device's `user`
+                # group, which answers 403 to this table: the read sat in the
+                # poll's gather with no capability check and no handler, so one
+                # refusal failed the whole refresh, and on the first one that is
+                # ConfigEntryNotReady -- every entity of a working camera
+                # unavailable for four sliders it was never going to serve.
+                #
+                # Judged on this channel's own row, not on the request
+                # succeeding; see video_color_fields. A device that names none
+                # gets no number entities, which is the rule the profile sensor
+                # established (#641): an entity that can only read unknown is
+                # worse than no entity.
+                #
+                # Costs a recorder one request rather than one per channel. The
+                # URL carries no channel, so the shared read cache answers it
+                # once for every channel setting up and holds it for
+                # CONFIG_CACHE_TTL_SECONDS.
+                if self._wanted_by(NUMBER):
+                    try:
+                        self._video_color_fields = video_color_fields(
+                            await self.client.async_get_video_color(), self._channel
+                        )
+                    except PROBE_FAILED as probe_error:
+                        # A timeout is cached as "no" here, like every other
+                        # probe in this block. That is deliberate rather than
+                        # overlooked: it costs the sliders until the entry is
+                        # reloaded, and the alternative -- retrying a capability
+                        # question on a poll path -- is what this fix is
+                        # removing. _note_probe_refusal records whether the
+                        # device answered, so the two are told apart in
+                        # diagnostics.
+                        self._note_probe_refusal("video_color", probe_error)
+                        self._video_color_fields = frozenset()
+                    # Inside the gate, like the cloud upgrade record's: a device
+                    # whose number platform is switched off was never asked, and
+                    # saying it reports none would read as the device refusing.
+                    _LOGGER.debug(
+                        "Channel %s reports picture adjustments %s",
+                        self._channel,
+                        sorted(self._video_color_fields) or "none",
+                    )
+
                 # Which camera is actually on this channel. Every channel of a
                 # recorder reports the recorder's model, so a doorbell behind an
                 # NVR is invisible as one and every model-string capability
@@ -1651,9 +1733,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     asyncio.ensure_future(self.client.async_get_light_global_enabled())
                 )
             # Picture adjustments for the number platform (brightness, contrast,
-            # saturation, hue): one read per poll, only when those entities exist.
-            if self._wanted_by(NUMBER):
-                coros.append(asyncio.ensure_future(self.client.async_get_video_color()))
+            # saturation, hue): one read per poll, and only where the device
+            # actually reported them at setup. Gated on the probe rather than on
+            # the platform alone, so a device that refuses the table is never
+            # asked again, and wrapped, so a permissions change made after setup
+            # cannot take the entry down the way #1006 did.
+            if self._video_color_fields and self._wanted_by(NUMBER):
+                coros.append(asyncio.ensure_future(self._async_fetch_video_color()))
             # Lighting_V2 is the light platform's table -- except that the
             # Amcrest doorbell's "Security Light" is a *select*, and its
             # current_option reads table.Lighting_V2[0][0][1].Mode/.State. A
@@ -2644,6 +2730,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if not self._remote_devices:
             return None
         return sum(1 for slot in self._remote_devices.values() if slot.get("enabled"))
+
+    def supports_video_color(self, field: str) -> bool:
+        """Whether this channel reported this picture adjustment at setup.
+
+        What the number platform creates its entities from. One source of truth,
+        because the poll reads the same answer to decide whether to fetch the
+        table at all: two copies of this rule drifting apart would either spend
+        a request per poll on nothing or leave a slider reading a value nobody
+        fetched.
+        """
+        return field in getattr(self, "_video_color_fields", frozenset())
 
     def get_video_color(self, field: str):
         """A picture adjustment for this channel's general profile, or None.
@@ -3915,6 +4012,36 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_vth_camera_links(self) -> dict | None:
         """The links and cameras vth_camera_links describes, or None before a read."""
         return (getattr(self, "data", None) or {}).get(VTH_CAMERA_LINKS)
+
+    async def _async_fetch_video_color(self) -> dict | None:
+        """Poll the picture adjustments, keeping the last answer on a refusal.
+
+        The probe at setup means this is only asked of a device that served the
+        table, so a refusal here is a change of mind: an account whose rights
+        were narrowed, or a device that has started answering 403 under load.
+        Neither is a reason to fail the refresh and take every entity on the
+        channel with it, which is what #1006 was.
+
+        Carries only this table's own keys, never the whole of the last poll, so
+        a stale value cannot overwrite a fresh one from another coroutine in the
+        same gather -- the same rule _previous_coaxial_status follows. None when
+        there is nothing to carry, which the gather already skips.
+        """
+        try:
+            return await self.client.async_get_video_color()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the picture adjustments for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.VideoColor[")
+            }
+            return carried or None
 
     async def _async_fetch_privacy_mode(self) -> dict:
         """Poll the privacy mode state, keeping the last known value on failure"""
