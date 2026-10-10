@@ -679,7 +679,17 @@ def _async_forget_host(hass: HomeAssistant, address: str) -> None:
     Only correct once the last entry for the address has gone. The failure count
     drives the poll backoff and the two issues are per host, so a host that still
     has entries must keep all of it.
+
+    Normalised here rather than trusted from the caller. Six stores and two
+    repair ids are keyed below, every one of them written under
+    `normalize_address`, so one raw address reaching this leaves all six behind
+    for good and withdraws neither card -- and the single caller happens to
+    normalise, which is what makes that a latent bug rather than a reported
+    one. `normalize_address` says "everything host scoped goes through this",
+    and this is one of the two places where that was a claim rather than a
+    fact.
     """
+    address = normalize_address(address)
     _HOST_FAILURES.pop(address, None)
     _HOST_UPTIME_STATE.pop(address, None)
     _HOST_UPTIME_LOCKS.pop(address, None)

@@ -233,3 +233,36 @@ async def test_an_entry_with_no_address_is_ignored(hass):
     await async_remove_entry(hass, entry)
 
     assert len(_open_issues(hass)) == 2, "nothing to forget, so forget nothing"
+
+
+async def test_an_address_with_a_trailing_slash_is_still_forgotten(hass):
+    """One device, one key -- including on the way out.
+
+    Everything host scoped is stored under normalize_address, and this hook
+    popped six stores with whatever address it was handed. Its one caller
+    normalises, so this is the invariant being made true rather than a reported
+    bug: a future caller passing the address as the user typed it would leave
+    all six behind for ever, and the auth refusal budget is one of them.
+    """
+    from custom_components.dahua import _async_forget_host
+    from custom_components.dahua.host import _HOST_FAILURES, _HOST_UPTIME_STATE
+
+    _HOST_FAILURES[ADDRESS] = {"consecutive": 3, "since": 0, "entry_ids": set()}
+    _HOST_UPTIME_STATE[ADDRESS] = {"generation": 1}
+
+    _async_forget_host(hass, ADDRESS + "/")
+
+    assert ADDRESS not in _HOST_FAILURES
+    assert ADDRESS not in _HOST_UPTIME_STATE
+
+
+async def test_a_padded_address_is_still_forgotten(hass):
+    """The other thing normalize_address strips."""
+    from custom_components.dahua import _async_forget_host
+    from custom_components.dahua.host import _HOST_FAILURES
+
+    _HOST_FAILURES[ADDRESS] = {"consecutive": 1, "since": 0, "entry_ids": set()}
+
+    _async_forget_host(hass, "  " + ADDRESS + "  ")
+
+    assert ADDRESS not in _HOST_FAILURES

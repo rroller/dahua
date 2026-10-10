@@ -333,7 +333,10 @@ async def _async_evaluate_host(hass: HomeAssistant, address: str) -> None:
         for entry in entries
     )
 
-    state = _HOST_FAILURES.get(address)
+    # The other place normalize_address's claim was not enforced. Its one
+    # caller normalises before scheduling this, so a raw address here would
+    # silently find no state, probe nothing and raise no card.
+    state = _HOST_FAILURES.get(normalize_address(address))
     https_is_open = False
     if not already_https and state is not None:
         state["last_probe"] = time.time()
