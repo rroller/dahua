@@ -309,14 +309,55 @@ async def test_all_channels_with_nothing_found_chooses_nothing():
 
 
 async def test_the_form_says_how_many_were_found():
-    """The count is in the label and the description, so it has to be given."""
+    """The count is in the label and the description, so it has to be given.
+
+    Asserted on the count rather than on the whole dict, which is what this
+    used to do. An exact dict here says two things at once -- "the count is
+    right" and "nothing else is passed" -- and it was the second that failed
+    when the form gained a sentence naming the channels skipped for ONVIF.
+    Being told the count is wrong because a different key was added is the
+    kind of failure that gets fixed by editing the expectation.
+
+    The second claim is better made elsewhere and now is:
+    test_config_step_placeholders.py checks the placeholders the steps name
+    against the ones the flow passes, in both directions, which is the thing
+    an exact dict was standing in for.
+    """
     flow = _flow()
     flow._found_channels = {1: "ONE", 4: "FOUR"}
     flow._errors = {}
 
     result = await flow.async_step_channels()
 
-    assert result["description_placeholders"] == {"count": "2"}
+    assert result["description_placeholders"]["count"] == "2"
+
+
+async def test_an_onvif_channel_is_named_rather_than_just_missing():
+    """#577: the reporter counted six channels, was offered four, and had to
+    find a generic sentence about channels that "are not listed" to work out
+    why. The one on ONVIF is named now, by the number the recorder shows."""
+    flow = _flow()
+    flow._found_channels = {1: "ONE"}
+    flow._onvif_channels = [5]
+    flow._errors = {}
+
+    result = await flow.async_step_channels()
+
+    note = result["description_placeholders"]["skipped_note"]
+    assert "Channel 6" in note, "named by recorder channel number, not index"
+    assert "ONVIF" in note
+
+
+async def test_nothing_skipped_means_no_sentence():
+    """A whole sentence or nothing, the rule the repair cards follow."""
+    flow = _flow()
+    flow._found_channels = {1: "ONE"}
+    flow._onvif_channels = []
+    flow._errors = {}
+
+    result = await flow.async_step_channels()
+
+    assert result["description_placeholders"]["skipped_note"] == ""
 
 
 async def test_the_form_offers_the_switch_and_the_list():

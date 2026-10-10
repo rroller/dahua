@@ -473,6 +473,12 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for Dahua Camera API."""
 
     VERSION = 1
+
+    # Which channels the search found and skipped because they are reached over
+    # ONVIF, so the offer can say so by number. Declared on the class because
+    # async_step_channels reads it and the tests reach that step without
+    # running the search.
+    _onvif_channels: list = []
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
     def __init__(self):
@@ -482,6 +488,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self.init_info = None
         # index -> label, for the other channels of a recorder
         self._found_channels = {}
+        self._onvif_channels = []
         # What a DHCP announcement, and the device itself, told us before we asked
         # the user anything. Empty for a manual add.
         self._discovered = {}
@@ -830,6 +837,18 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 for index in dahua_utils.channels_worth_offering(devices)
                 if index != exclude
             ]
+            # Kept so the offer can name them. A channel on ONVIF is enabled and
+            # has a camera on it, so from the user's side it is simply missing,
+            # and the form said only that such channels "are not listed". #577
+            # is somebody counting six channels, being offered four, and having
+            # to find that sentence to work out why.
+            self._onvif_channels = sorted(
+                index
+                for index, slot in devices.items()
+                if slot.get("enabled")
+                and str(slot.get("protocol") or "").lower() == "onvif"
+                and index != exclude
+            )
             _LOGGER.debug(
                 "%s: %d slots, %s worth offering, %d after excluding channel %s",
                 user_input[CONF_ADDRESS],
@@ -919,7 +938,21 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                 }
             ),
-            description_placeholders={"count": str(len(self._found_channels))},
+            description_placeholders={
+                "count": str(len(self._found_channels)),
+                # A whole sentence or nothing, the same rule the repair cards
+                # follow, so the form reads correctly either way.
+                "skipped_note": (
+                    (
+                        "Channel %s is reached over ONVIF, so it is not listed: "
+                        "the recorder does not serve it on its own Dahua paths "
+                        "and this integration cannot drive it."
+                        % ", ".join(str(index + 1) for index in self._onvif_channels)
+                    )
+                    if self._onvif_channels
+                    else ""
+                ),
+            },
             errors=self._errors,
         )
 
