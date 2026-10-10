@@ -557,11 +557,6 @@ SYSTEM_LOAD_TTL_SECONDS = 30
 
 def _cache_lifetime(url: str) -> int:
     """How long this URL's answer stays good for."""
-    # Audio encoder controls are configuration entities. Keep their read-back
-    # short so changes made in the device's web UI are reflected by the next
-    # coordinator poll instead of remaining hidden for the general config TTL.
-    if "name=Encode" in url:
-        return HOST_CACHE_TTL_SECONDS
     if "name=VideoAnalyseRule" in url:
         return HOST_CACHE_TTL_SECONDS
     if "name=VideoInMode" in url:

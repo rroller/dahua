@@ -53,6 +53,10 @@ WAS = {
     ("select", "security_light"): "Security Light",
     ("select", "preset_position"): "Preset Position",
     ("select", "day_night_mode"): "Day/Night Mode",
+    (
+        "select",
+        "encode_audio_source",
+    ): "{format_type} format {format_index} audio source",
     # New with the infrared mode control, so there is no earlier property for it
     # to match. Listed because this table is asserted as equal to the file, which
     # is what makes a rename fail rather than pass quietly.
@@ -76,6 +80,7 @@ WAS = {
     ("number", "image_hue"): "Hue",
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
+    ("switch", "encode_audio"): "{format_type} format {format_index} audio",
     ("switch", "disarming"): "Disarming",
     ("switch", "event_notifications"): "Event Notifications",
     ("switch", "smart_motion_detection"): "Smart Motion Detection",

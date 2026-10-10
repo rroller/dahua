@@ -69,10 +69,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.supports_alarm_output():
             devices.append(DahuaAlarmOutputSwitch(coordinator, entry, output=0))
 
-        # These are encoder settings, not live audio playback controls. Expose
-        # only fields the device actually returned, so models without an Encode
-        # table do not get switches that can never work.
-        for key in coordinator.data:
+        # The initialization probe settles which fields this channel exposes.
+        for key in getattr(coordinator, "_encode_audio_keys", ()):
             match = _AUDIO_ENABLE_KEY.fullmatch(key)
             if match and int(match.group(1)) == coordinator.get_channel():
                 devices.append(
@@ -102,7 +100,6 @@ class DahuaEncodeAudioSwitch(DahuaBaseEntity, SwitchEntity):
 
     _attr_translation_key = "encode_audio"
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_icon = "mdi:volume-high"
 
     def __init__(self, coordinator, config_entry, format_type, format_index, key):
         super().__init__(coordinator, config_entry)
@@ -121,7 +118,8 @@ class DahuaEncodeAudioSwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def is_on(self):
         """Return the audio setting last read from Encode."""
-        return str(self._coordinator.data.get(self._key, "false")).lower() == "true"
+        value = (self._coordinator.data or {}).get(self._key)
+        return None if value is None else str(value).lower() == "true"
 
     async def async_turn_on(self, **kwargs):
         """Enable audio for this encoder format."""
