@@ -148,6 +148,13 @@ def _coordinator(hass, client):
     c._preset_position = "0"
     c._camera_reboot_generation = 0
     c._video_color_fields = frozenset()
+    # The setup block turns _supports_coaxial_control on (the fake answers the
+    # probe), so the poll reaches reads_coaxial_status -> creates_siren_entity ->
+    # supports_nvr_active_deterrence, which reads this. object.__new__ skips
+    # __init__, so an attribute the class sets there does not exist unless it is
+    # named -- and only the recorder branch gets that far, which is why the
+    # refusal tests passed and the answered ones did not.
+    c._nvr_active_deterrence = False
     c.machine_name = ""
     c.model = ""
     c.config_entry = SimpleNamespace(entry_id="e1")
