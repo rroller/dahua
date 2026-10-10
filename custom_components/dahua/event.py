@@ -24,7 +24,8 @@ DOORBELL_PRESSED = "DoorbellPressed"
 #             and DoorbellEventType.RING not in self.event_types):
 #
 # Spelled out rather than imported as DoorbellEventType.RING, because that
-# enum is newer than the 2025.1.2 this integration supports. It is a StrEnum
+# enum is newer than the oldest Home Assistant this integration supports
+# (2026.8.0, per hacs.json). It is a StrEnum
 # with "ring" as its only member, so the literal is the same value.
 EVENT_RING = "ring"
 

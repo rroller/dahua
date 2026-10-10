@@ -4,5 +4,8 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-ruff format .
-ruff check . --fix
+# black, because black is the gate: both CI workflows run `black --check`.
+# This script used to run `ruff format` and `ruff check --fix`, which is a
+# different formatter and an autofixer, so running it before pushing could
+# leave the tree failing the check it was supposed to satisfy.
+black .
