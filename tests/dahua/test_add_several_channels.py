@@ -617,7 +617,7 @@ async def _bounded(monkeypatch, client, budget=0.2):
 
     flow = _flow()
     started = asyncio.get_running_loop().time()
-    found = await flow._async_bounded_discovery()
+    found = await flow._async_discover_channels(_entry_data(), 0)
     return found, asyncio.get_running_loop().time() - started
 
 
@@ -683,7 +683,10 @@ async def test_the_step_moves_on_after_the_search_expires(monkeypatch):
         await asyncio.sleep(5)
         return {"unreachable": "never"}
 
-    flow._async_discover_channels = never_answers
+    # The inner search, so the ceiling around it is still in the path.
+    # Patching _async_discover_channels would replace the ceiling itself and
+    # this test would hang instead of failing.
+    flow._async_search_channels = never_answers
 
     first = await flow.async_step_discover()
     assert first["type"] == FlowResultType.SHOW_PROGRESS

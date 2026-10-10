@@ -719,7 +719,9 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """
         if self._discovery_task is None:
             self._discovery_task = self.hass.async_create_task(
-                self._async_bounded_discovery()
+                self._async_discover_channels(
+                    self.init_info, int(self.init_info[CONF_CHANNEL])
+                )
             )
 
         # Whether the search has finished, not whether it has been started.
@@ -749,19 +751,22 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             next_step_id="channels" if self._found_channels else "name"
         )
 
-    async def _async_bounded_discovery(self) -> dict:
+    async def _async_discover_channels(self, user_input, exclude) -> dict:
         """The search, inside the ceiling the dialog puts on screen.
 
-        Separate from the search itself so the budget covers every read in it
-        rather than one of them. Expiry is an ordinary outcome -- nothing
-        offered, the camera the user asked for still added -- which is what
-        every other failure in here does too.
+        The ceiling lives here rather than around the one call site, so every
+        caller gets it. It was a wrapper above this method for one revision,
+        and `test_a_recorder_that_probes_forever_gives_up` -- which calls this
+        directly -- went from asserting the ceiling to hanging on it, which is
+        a fair description of what a caller stepping past it would do in
+        production too.
+
+        Expiry is an ordinary outcome: nothing offered, and the camera the user
+        asked for still added, which is what every other failure in here does.
         """
         try:
             async with asyncio.timeout(DISCOVERY_TIMEOUT_SECONDS):
-                return await self._async_discover_channels(
-                    self.init_info, int(self.init_info[CONF_CHANNEL])
-                )
+                return await self._async_search_channels(user_input, exclude)
         except (Exception, asyncio.CancelledError):  # pylint: disable=broad-except
             _LOGGER.debug(
                 "The channel search did not finish inside %ss",
@@ -770,7 +775,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             )
             return {}
 
-    async def _async_discover_channels(self, user_input, exclude) -> dict:
+    async def _async_search_channels(self, user_input, exclude) -> dict:
         """Which other channels of this recorder have a live camera on them.
 
         Three things have to agree, and the first two are not enough.
@@ -788,6 +793,10 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         Any failure here means nothing is offered, never a failed setup. Adding
         one camera must not start depending on a recorder-only table.
+
+        The time this may take is bounded by its caller, which is the only
+        caller: `_async_discover_channels` holds the whole of it inside
+        DISCOVERY_TIMEOUT_SECONDS, which is the number the dialog shows.
         """
         session = ClientSession(connector=TCPConnector(ssl=SSL_CONTEXT))
         try:
@@ -855,7 +864,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # for minutes. Nothing here is worth that -- discovery is a
             # convenience, and not offering anything is a fine outcome.
             #
-            # The ceiling itself is in _async_bounded_discovery now, around
+            # The ceiling itself is in _async_discover_channels now, around
             # every read rather than only these. A wait_for here as well would
             # name the same number twice and still not be the real bound.
             answered = await asyncio.gather(*[live(i) for i in candidates])
