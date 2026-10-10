@@ -1939,6 +1939,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.warning("Error calling plate listener: %s", ex)
 
     def on_receive_vto_event(self, event: dict):
+        # First, like the camera path's. _remember_event stores what the device
+        # sent rather than what we enriched it with, and the next line adds the
+        # device name, so the order is the contract.
+        #
+        # This call was missing, so diagnostics' recent-events buffer was empty
+        # for every doorbell -- the one device class whose BackKeyLight state
+        # numbers the buffer exists to capture. #573 and #872 are both "which
+        # number did it send", and the answer was a dump field that always read
+        # as the device having sent nothing.
+        self._remember_event(event)
         event["DeviceName"] = self.get_device_name()
         _LOGGER.debug(f"VTO Data received: {event}")
         self._handle_anpr_plate(event)
