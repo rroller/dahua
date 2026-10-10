@@ -25,10 +25,16 @@ ADDRESS = "10.0.0.1"
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
+    # _HOST_FAILURES is read by the host block and written by anything that
+    # records a failure, so it is cleared here for the same reason as the other
+    # two: tests run under -n auto and a module global carried between them is
+    # a result that depends on ordering.
     dahua_module._HOST_CONNECTORS.clear()
+    dahua_module._HOST_FAILURES.clear()
     client_module._HOST_LIMITS.clear()
     yield
     dahua_module._HOST_CONNECTORS.clear()
+    dahua_module._HOST_FAILURES.clear()
     client_module._HOST_LIMITS.clear()
 
 
@@ -510,6 +516,83 @@ async def test_another_devices_refusals_are_not_reported_here(hass):
         )
 
     assert host["rpc2_tables_refused"] == []
+
+
+async def test_a_healthy_host_reports_no_refusals(hass):
+    """Nothing has failed, so the store has no entry for this host at all and
+    every field here is the default rather than a KeyError."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["auth_refusals"] == 0
+    assert host["auth_refusals_by_source"] == {}
+    assert host["auth_budget_spent"] is False
+    assert host["consecutive_failures"] == 0
+    assert host["failing_since"] is None
+
+
+async def test_a_spent_budget_is_in_the_dump(hass):
+    """The gap this closes. Once the budget is spent the doorbell listener
+    exits, which leaves vto_task_running false and vto_client_connected false --
+    identical to a listener that was never started. The counter that made the
+    decision was recorded and never reported, so a dump could not tell the two
+    apart."""
+    entry = _entry(hass)
+    _install(hass, entry)
+    for _ in range(dahua_module.MAX_AUTH_REFUSALS):
+        dahua_module.async_record_host_auth_refusal(ADDRESS, "vto listener")
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["auth_refusals"] == dahua_module.MAX_AUTH_REFUSALS
+    assert host["auth_budget_spent"] is True
+    assert host["auth_refusal_budget"] == dahua_module.MAX_AUTH_REFUSALS
+
+
+async def test_the_breakdown_says_which_source_spent_it(hass):
+    """Per source, because that is the difference between a wrong password and a
+    bad moment: twelve channels at one each recovers on the next poll, one
+    source at three does not. The host's number is the worst single source, so
+    without the breakdown a reader cannot tell which case they are looking at."""
+    entry = _entry(hass)
+    _install(hass, entry)
+    dahua_module.async_record_host_auth_refusal(ADDRESS, "vto listener")
+    dahua_module.async_record_host_auth_refusal(ADDRESS, "vto listener")
+    dahua_module.async_record_host_auth_refusal(ADDRESS, "entry-abc")
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["auth_refusals_by_source"] == {"vto listener": 2, "entry-abc": 1}
+    assert host["auth_refusals"] == 2, "the host's number is the worst one source saw"
+    assert host["auth_budget_spent"] is False
+
+
+async def test_a_success_clears_what_the_dump_reports(hass):
+    """The store is emptied by the first success, so the dump has to go back to
+    zero with it rather than keeping a number nothing will ever clear."""
+    entry = _entry(hass)
+    _install(hass, entry)
+    dahua_module.async_record_host_auth_refusal(ADDRESS, "vto listener")
+    dahua_module.async_record_host_success(hass, ADDRESS)
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["auth_refusals"] == 0
+    assert host["auth_refusals_by_source"] == {}
+
+
+async def test_another_hosts_refusals_are_not_reported_here(hass):
+    """Keyed per host, like every other field in this block."""
+    entry = _entry(hass)
+    _install(hass, entry)
+    dahua_module.async_record_host_auth_refusal("10.9.9.9", "entry-other")
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["auth_refusals"] == 0
+    assert host["auth_refusals_by_source"] == {}
 
 
 async def test_the_new_fields_carry_nothing_secret(hass):

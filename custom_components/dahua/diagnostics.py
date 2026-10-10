@@ -477,7 +477,12 @@ def _host_block(
     An NVR gets one config entry per channel, so a report titled "my camera
     keeps dropping out" is often the sixth of eleven entries against one host.
     """
-    from . import _HOST_CONNECTORS
+    from . import (
+        _HOST_CONNECTORS,
+        _HOST_FAILURES,
+        MAX_AUTH_REFUSALS,
+        normalize_address,
+    )
     from .client import (
         _HOST_LIMITS,
         _HOST_RPC2,
@@ -500,6 +505,10 @@ def _host_block(
     rpc2_key = (client_address, getattr(coordinator.client, "_username", None))
     rpc2 = _HOST_RPC2.get(rpc2_key)
 
+    # Absent until something fails, so an empty dict is the healthy answer and
+    # every read below is a .get on it.
+    failures = _HOST_FAILURES.get(normalize_address(address) if address else "", {})
+
     return {
         # Presence only, never the session id -- the same rule the digest state
         # is reported under.
@@ -519,6 +528,30 @@ def _host_block(
             table for key, table in _RPC2_TABLE_UNAVAILABLE if key == rpc2_key
         ),
         "address": address,
+        # Why everything on this host may have stopped asking. Recorded since
+        # the budget was introduced and never reported, and once a doorbell
+        # listener gives up on it (this PR) the dump needs it: a spent budget
+        # leaves `vto_task_running` false and `vto_client_connected` false,
+        # which is exactly what a listener that never started looks like.
+        #
+        # Counted per source, so the breakdown is the useful half. Twelve
+        # channels at one each is a recorder having a moment and recovers on the
+        # next poll; one source at three is a password that is wrong, and the
+        # highest single source is what spends the host's budget.
+        #
+        # Source names only -- an entry id or "vto listener". No credential, and
+        # no username, which the digest state is reported under the same rule.
+        "auth_refusals": failures.get("auth_refusals", 0),
+        "auth_refusals_by_source": dict(
+            failures.get("auth_refusals_by_source", {}) or {}
+        ),
+        "auth_refusal_budget": MAX_AUTH_REFUSALS,
+        "auth_budget_spent": failures.get("auth_refusals", 0) >= MAX_AUTH_REFUSALS,
+        # The other half of the same store, for the "my camera keeps dropping
+        # out" reports: a run of plain failures rather than refusals, and when
+        # it started. Cleared together by the first success.
+        "consecutive_failures": failures.get("consecutive", 0),
+        "failing_since": (int(failures["since"]) if failures.get("since") else None),
         "connector_refcount": holder[1] if holder else None,
         "connector_closed": holder[0].closed if holder else None,
         # If these two registries disagree - for example one key with a trailing
