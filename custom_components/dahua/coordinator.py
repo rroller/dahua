@@ -754,6 +754,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # one shared empty default is safe.
     _video_color_fields: frozenset = frozenset()
 
+    # Whether the device never answered what kind of device it is, as opposed to
+    # answering that it does not serve the question. On the class for the reason
+    # the defaults above are: the poll reads it, and the suite builds
+    # coordinators with object.__new__ and sets only what each test is about.
+    _device_class_unanswered: bool = False
+
     """Class to manage fetching data from the API."""
 
     def __init__(
@@ -811,6 +817,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # What the device calls itself, "" when it did not answer. See
         # async_get_device_class.
         self._device_class = ""
+        self._device_class_unanswered = False
         self._siren_detection_sources = []
         self._security_light_detection_sources = []
         self._siren_detection_failures = []
@@ -1221,9 +1228,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # on every poll and from ten other places.
                 try:
                     self._device_class = await self.client.async_get_device_class()
+                    self._device_class_unanswered = False
                 except PROBE_FAILED as probe_error:
                     self._note_probe_refusal("device_class", probe_error)
                     self._device_class = ""
+                    # A status is the device answering: it does not serve
+                    # getDeviceClass, which is a fact about the firmware and
+                    # settled. No status is a device that did not answer, which
+                    # says nothing about what it is -- and this block runs once,
+                    # so a single timeout at startup used to decide the question
+                    # for the life of the entry.
+                    #
+                    # It is not a small question. is_recorder_host() reads this,
+                    # and through it a recorder whose model string does not say
+                    # NVR -- a Lorex N843A8, most OEM rebrands -- reverts to
+                    # being treated as a camera: IVS read from VideoAnalyseRule
+                    # instead of RemoteVideoAnalyseRule, deterrence routed down
+                    # the camera path, and uses_recorder_deterrence() flipped.
+                    # The same #724 shape as the channel-numbering probe, where
+                    # a timeout read as a definite no renumbered a working
+                    # channel.
+                    self._device_class_unanswered = (
+                        getattr(probe_error, "status", None) is None
+                    )
                 _LOGGER.debug(
                     "Device reports class=%s", self._device_class or "<no answer>"
                 )
@@ -1655,6 +1682,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # This is the event loop code that's called every n seconds
         try:
+            # Ask again for an identity the device never answered. Only while it
+            # has not answered, so a device that serves getDeviceClass and one
+            # that refuses it both pay nothing.
+            if self._device_class_unanswered:
+                await self._async_retry_device_class()
+
             # A recorder's disks, refreshed at most hourly because each read is a
             # login the device logs. Gated on disks having been found at setup, so
             # anything that is not a recorder never pays for it (#745).
@@ -2812,6 +2845,57 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return int(raw)
         except (TypeError, ValueError):
             return None
+
+    async def _async_retry_device_class(self) -> None:
+        """Ask again for a device class the device did not answer.
+
+        Called from the poll while `_device_class_unanswered`, which is set only
+        when the setup probe failed without an HTTP status. A device that
+        answered -- including one that answered "I do not serve this" with a 400
+        or a 404 -- never reaches here, so the ordinary case costs nothing.
+
+        Cheap while it does run: the read is `magicBox.cgi?action=getDeviceClass`
+        through the shared read cache, so a recorder's channels polling together
+        make one request between them.
+
+        **What this does not do is rebuild the entity set.** The disk and
+        configured-channel sensors are decided in the one-time block from
+        `is_recorder_host()`, and platforms are forwarded once, so a class that
+        arrives on the fourth poll corrects the behaviour that is re-decided
+        every cycle -- which IVS table is read, which deterrence path a write
+        takes -- and not which entities exist. That needs a reload, which the
+        log line says. Offering half the recovery beats offering none, and
+        rebuilding platforms from a poll is not something to attempt here.
+        """
+        try:
+            answered = await self.client.async_get_device_class()
+        except PROBE_FAILED as probe_error:
+            if getattr(probe_error, "status", None) is not None:
+                # It came back and said it does not serve this. That settles the
+                # question the same way a refusal at setup would, so stop asking
+                # rather than paying for it on every poll for the life of the
+                # entry, and record the reason it finally gave.
+                self._device_class_unanswered = False
+                self._note_probe_refusal("device_class", probe_error)
+                return
+            # Still not answering. Nothing is logged: this runs every poll for
+            # as long as it lasts, and a device that is unreachable is already
+            # saying so through the failure count and its repair card.
+            return
+
+        # It answered, whatever it said, so the question is settled either way.
+        self._device_class_unanswered = False
+        if not answered or answered == self._device_class:
+            return
+        self._device_class = answered
+        _LOGGER.info(
+            "%s did not answer what kind of device it is at setup and has now "
+            "said %s. The behaviour that is decided per poll follows it from "
+            "here; the entities that are decided once at setup, such as a "
+            "recorder's disk sensors, need the entry reloaded",
+            self._address,
+            answered,
+        )
 
     def reported_device_class(self) -> str:
         """The class the device itself answered, folded, or "" if it did not answer.
