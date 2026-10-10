@@ -759,6 +759,8 @@ Service | Parameters | Description
 `dahua.ptz_move` | `target`: camera.cam13_main <br /> `direction`: up, down, left, right, up_left, up_right, down_left, down_right, zoom_in, zoom_out <br /> `speed`: 1 - 8 <br /> `duration`: 0.1 - 10 seconds | Pans, tilts or zooms for a moment. The camera moves while the command runs and is stopped afterwards, so the duration is how far it travels
 `dahua.set_privacy_mode` | `target`: camera.cam13_main <br /> `enabled`: True to cover the lens, False to uncover it | Physically covers the lens on cameras with a motorised cover, so the camera sees nothing at all. Only cameras reporting a `LeLensMask` table have this; on any other camera the call fails. To blank part of the picture instead, use `dahua.set_privacy_masking`
 `dahua.get_overlay_text` | `target`: camera.cam13_main <br /> `group`: 0 - 100, default 0 | Returns the overlay text the camera is currently showing, for when it may have been changed on the camera rather than from Home Assistant. This one responds with data
+`dahua.get_channel_title` | `target`: camera.cam13_main | Returns the channel title overlay this channel is showing, which is the companion to `dahua.set_channel_title`. Returns an empty string for a channel the device does not list. This one responds with data
+`dahua.get_config` | `target`: camera.cam13_main <br /> `name`: a configuration table, e.g.: `Encode`, `Lighting[0][0]`, `General.LocalNo` | Reads any configuration table from the device, for working out what a model does and does not serve. Read only: `getConfig` cannot change anything, which is why this exists where an arbitrary-CGI passthrough does not. This one responds with data
 
 
 ## Camera
