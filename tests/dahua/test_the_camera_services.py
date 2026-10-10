@@ -22,7 +22,10 @@ every recorded name is checked against `DahuaClient` as it is recorded. An inven
 method name has reached CI here before.
 """
 
+from types import SimpleNamespace
+
 import pytest
+from aiohttp import ClientResponseError
 
 from homeassistant.exceptions import HomeAssistantError
 
@@ -86,6 +89,25 @@ class _Coordinator:
 
     def describe_video_profile_shape(self):
         return "ordinary" if self.profile_is_writable else "general"
+
+    def get_channel(self):
+        """The same as the camera entity's logical channel, which is what an
+        ordinary camera or recorder channel looks like. They differ only on the
+        SDT4E425, whose second sensor is another camera entity on one
+        coordinator, and the infrared service branches on exactly that."""
+        return LOGICAL
+
+    def get_address(self):
+        """refusals.key_for reads it, and the infrared write path asks the
+        refusal store before sending anything."""
+        return "10.0.0.5"
+
+    def get_infrared_mode(self):
+        """What the device reports after the write. Empty here, which
+        async_write_infrared_mode treats as "this channel has no Lighting row to
+        compare against" and skips the check -- so the tests below stay about
+        which call the service makes. The test that is about the check sets it."""
+        return ""
 
     def get_infrared_profile(self):
         return "0"
@@ -528,3 +550,99 @@ async def test_rebooting_does_not_refresh():
 
 def test_motion_detection_status_comes_from_the_coordinator():
     assert _camera().motion_detection_enabled is True
+
+
+# --- and the infrared service takes the same path as the light entity --------
+#
+# It called async_set_lighting_v1_mode directly, so it got none of what that
+# path has learnt. async_write_infrared_mode, which the light entity and the
+# mode select both use, falls back to Lighting_V2 when the device refuses the
+# v1 table outright, remembers the refusal so the next press does not ask
+# again, and compares the device's read-back against what was written. A
+# DHI-NVR5464-16P-EI answers 403 `Authority:check failure.` to every Lighting
+# write on every channel over both transports, so on those channels the light
+# entity worked and this service failed silently.
+#
+# For an ordinary camera the request is byte for byte what it was, which is what
+# test_the_infrared_service_sends_the_infrared_profile above still asserts.
+
+
+def _refusal(status=403):
+    return ClientResponseError(
+        request_info=SimpleNamespace(real_url="http://10.0.0.5/cgi-bin/x.cgi"),
+        history=(),
+        status=status,
+    )
+
+
+async def test_the_service_words_reach_the_device_as_the_device_spells_them():
+    """The service offers On/Off/Auto and the select offers auto/manual/off, and
+    they mean the same three words. `On` is Manual, which is what the client
+    method used to do for itself."""
+    for given, expected in (
+        ("On", "Manual"),
+        ("on", "Manual"),
+        ("Auto", "Auto"),
+        ("auto", "Auto"),
+        ("Off", "Off"),
+        ("off", "Off"),
+    ):
+        camera = _camera()
+
+        await camera.async_set_infrared_mode(given, 40)
+
+        assert camera._coordinator.client.only()[1][1] == expected, given
+
+
+async def test_a_refused_write_is_now_reported():
+    """It used to answer the caller happily. A service that cannot say the
+    device refused is one an automation cannot act on."""
+    coordinator = _Coordinator()
+    coordinator.client = _Client(raises={"async_set_lighting_v1_mode": _refusal()})
+
+    with pytest.raises(HomeAssistantError):
+        await _camera(coordinator).async_set_infrared_mode("On", 50)
+
+
+async def test_a_refused_write_falls_back_to_the_other_table():
+    """The recorder channels this exists for: v1 refused, v2 writable. The
+    entity has had this since the infrared transport work; the service had not."""
+    coordinator = _Coordinator()
+    coordinator.get_infrared_v2_row = lambda: ("0", 1, "NearLight")
+    coordinator.client = _Client(raises={"async_set_lighting_v1_mode": _refusal()})
+
+    await _camera(coordinator).async_set_infrared_mode("On", 60)
+
+    assert [call[0] for call in coordinator.client.calls] == [
+        "async_set_lighting_v1_mode",
+        "async_set_lighting_v2_mode",
+    ]
+
+
+async def test_a_write_the_device_accepted_and_ignored_is_reported():
+    """200 and then no change is the shape this device answers with. The read
+    back is what turns it into something the caller sees."""
+    coordinator = _Coordinator()
+    coordinator.get_infrared_mode = lambda: "Auto"
+
+    with pytest.raises(HomeAssistantError):
+        await _camera(coordinator).async_set_infrared_mode("On", 50)
+
+
+async def test_a_second_sensor_on_one_coordinator_keeps_the_direct_write():
+    """The SDT4E425 is two camera entities on one coordinator, so this entity's
+    channel is not the coordinator's. The shared path reads the profile, the
+    bank, the Lighting_V2 row and the refusal store off the coordinator's own
+    channel, so it cannot address this one and its read-back would compare the
+    wrong row. Unchanged, deliberately, and untested on that hardware."""
+    coordinator = _Coordinator()
+    camera = _camera(coordinator)
+    camera._logical_channel = LOGICAL + 1
+
+    await camera.async_set_infrared_mode("On", 50)
+
+    assert coordinator.client.only() == (
+        "async_set_lighting_v1_mode",
+        (LOGICAL + 1, "On", 50, "0", "MiddleLight"),
+        {},
+    )

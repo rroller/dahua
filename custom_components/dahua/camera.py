@@ -16,6 +16,7 @@ from homeassistant.components.camera import Camera, CameraEntityFeature
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 from custom_components.dahua import dahua_utils
 from custom_components.dahua.entity import DahuaBaseEntity
+from custom_components.dahua.infrared import MODE_BY_OPTION, async_write_infrared_mode
 from custom_components.dahua.model_profiles import is_sdt4e425
 from custom_components.dahua.rpc2 import Rpc2MethodRefused
 from custom_components.dahua.vto import CancelCallRefused
@@ -65,6 +66,16 @@ SERVICE_PTZ_MOVE = "ptz_move"
 
 # What ptz.cgi calls each direction. The eight compass moves plus the two
 # zoom directions, which are the same mechanism with a different code.
+# What the set_infrared_mode service's `mode` means to the device. "On" is
+# Manual: the service has always leaned on the client method mapping it, and
+# async_write_infrared_mode compares the device's read-back against the mode it
+# was given, so the translation has to happen before the call rather than inside
+# it.
+# `on` is the alias: the service offers On/Off/Auto and the mode select offers
+# auto/manual/off, and they mean the same three device words. Built from
+# MODE_BY_OPTION so there is one mapping rather than two.
+INFRARED_SERVICE_MODES = {**MODE_BY_OPTION, "on": "Manual"}
+
 PTZ_MOVE_CODES = {
     "up": "Up",
     "down": "Down",
@@ -575,16 +586,39 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         return self._name
 
     async def async_set_infrared_mode(self, mode: str, brightness: int):
-        """Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness"""
-        channel = self._logical_channel
-        await self._coordinator.client.async_set_lighting_v1_mode(
-            channel,
-            mode,
-            brightness,
-            self._coordinator.get_infrared_profile(),
-            self._coordinator.get_infrared_bank(),
+        """Handles the service call from SERVICE_SET_INFRARED_MODE to set infrared mode and brightness
+
+        Through the same path the light entity and the mode select use. This
+        called the v1 client method directly, so it got none of what that path
+        has learnt: the fallback to Lighting_V2 on a channel whose `Lighting`
+        writes the device refuses outright (measured on a DHI-NVR5464-16P-EI,
+        403 `Authority:check failure.` on every channel over both transports),
+        the refusal store that stops asking after one of those, and the
+        read-back check that turns a write the device accepted and ignored into
+        an error the caller sees. So on those channels the light entity worked
+        and this service failed silently.
+        """
+        if self._logical_channel != self._coordinator.get_channel():
+            # The SDT4E425's second sensor is a camera entity on another channel
+            # of one coordinator. async_write_infrared_mode reads the profile,
+            # the brightness bank, the Lighting_V2 row and the refusal store off
+            # the coordinator's own channel, so it cannot address this one, and
+            # its read-back would compare the wrong row. Keep the direct write,
+            # which is what this entity has always done.
+            await self._coordinator.client.async_set_lighting_v1_mode(
+                self._logical_channel,
+                mode,
+                brightness,
+                self._coordinator.get_infrared_profile(),
+                self._coordinator.get_infrared_bank(),
+            )
+            await self._coordinator.async_refresh()
+            return
+
+        # async_write_infrared_mode refreshes the coordinator itself.
+        await async_write_infrared_mode(
+            self._coordinator, INFRARED_SERVICE_MODES[mode.lower()], brightness
         )
-        await self._coordinator.async_refresh()
 
     async def async_set_illuminator_mode(self, mode: str, brightness: int):
         """Handles SERVICE_SET_ILLUMINATOR_MODE: illuminator mode and brightness.
