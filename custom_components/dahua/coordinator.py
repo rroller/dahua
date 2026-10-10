@@ -956,6 +956,50 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Starts the event listeners for doorbells (VTO). This will not work for IP cameras"""
         self._vto_task = asyncio.create_task(self._async_stream_vto_events())
 
+    def _note_vto_login_refusal(self, reason) -> bool:
+        """Count a refused doorbell login, and say whether to stop trying.
+
+        The same budget and the same host-wide counter the polls and the CGI
+        event stream use, so a doorbell cannot keep offering credentials while
+        the coordinator has already given up on them, and any success on this
+        host clears all of it.
+
+        Counted under its own source name. `async_record_host_auth_refusal`
+        returns the worst any one source has reached, so this listener spends
+        its own budget rather than adding to the poll's -- a recorder's twelve
+        channels refusing once each is one refusal, not twelve, and the same
+        reasoning applies here.
+
+        Stopping is the point. A Dahua box locks the source IP for around thirty
+        minutes after repeated failed logins, so a listener that keeps
+        reconnecting keeps renewing the lock, and the password typed into the
+        reauth dialog is then refused along with everything else. Reauth itself
+        is left to the coordinator's own poll, which meets the same 401 on CGI
+        and raises ConfigEntryAuthFailed from `_auth_refused`; this is the
+        same division of labour DahuaHostEventStream already follows.
+        """
+        refusals = async_record_host_auth_refusal(self._address, "vto listener")
+        if refusals < MAX_AUTH_REFUSALS:
+            _LOGGER.warning(
+                "The doorbell at %s refused these credentials (%d of %d), so the "
+                "event connection will be retried more slowly: %s",
+                self._address,
+                refusals,
+                MAX_AUTH_REFUSALS,
+                reason,
+            )
+            return False
+        _LOGGER.warning(
+            "The doorbell at %s has refused these credentials %d times, so Home "
+            "Assistant will stop connecting to its event stream. Repeated failed "
+            "logins can lock a Dahua device out for around thirty minutes, so "
+            "this stops until the credentials are re-entered: %s",
+            self._address,
+            refusals,
+            reason,
+        )
+        return True
+
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
         consecutive_failures = 0
@@ -995,8 +1039,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 await asyncio.sleep(delay)
                 continue
 
+            # A refused login, before the retry arithmetic. The doorbell had no
+            # budget at all: the CGI event stream stops offering credentials a
+            # device keeps refusing, and this listener reconnected within ten
+            # seconds for ever, spending one failed login per attempt against a
+            # box that locks the source IP for about half an hour. That is #729
+            # on the other transport, and it was silent.
+            refused = getattr(protocol, "login_refused", None)
+            if refused is not None and self._note_vto_login_refusal(refused):
+                return
+
             delay, consecutive_failures = vto_retry_state(
-                time.monotonic() - started, consecutive_failures, protocol.received_data
+                time.monotonic() - started,
+                consecutive_failures,
+                # A refused login means the device spoke and the attach achieved
+                # nothing, which is exactly what stream_lifetime separates: the
+                # challenge and the refusal are not a connection that worked, so
+                # this backs off instead of reconnecting at once.
+                protocol.received_data and refused is None,
             )
             if delay:
                 _LOGGER.warning(

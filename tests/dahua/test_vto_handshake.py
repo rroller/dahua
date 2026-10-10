@@ -35,9 +35,20 @@ class _Transport:
     def __init__(self):
         self.written = []
         self.closing = False
+        self.closed = False
 
     def is_closing(self):
         return self.closing
+
+    def close(self):
+        """The real transport has this and `close()` calls it.
+
+        Without it the client's own guard swallowed an AttributeError and the
+        tests still passed, which would have made "did it close the socket"
+        unaskable.
+        """
+        self.closed = True
+        self.closing = True
 
     def write(self, message):
         self.written.append(message)
@@ -797,3 +808,152 @@ async def test_a_transport_that_is_already_gone_does_not_raise_on_connect():
 
     assert client.transport.written == []
     _finish(client)
+
+
+# --- a login the device refuses ---------------------------------------------
+#
+# A refused login answers with no `params` at all, and `handle_login` read
+# `keepAliveInterval` straight off it. That raised AttributeError inside
+# `data_received`, which logs and swallows, so a wrong password produced one
+# "Failed to handle message" line and then nothing: no session, no attach, no
+# keepalive, and nothing anywhere naming the credentials. The socket then sat
+# open until the device dropped it, and because the device *had* spoken, the
+# coordinator read the attempt as a connection that worked and reconnected
+# within ten seconds -- for ever, against a box that locks the source IP for
+# about half an hour after repeated failed logins.
+
+
+def _to_login(client):
+    """Take the client to the point where it has sent the hashed password."""
+    client.connection_made(client.transport)
+    pre_login = _requests_for(client, "global.login")[0]
+    client.data_received(
+        _frame(
+            {
+                "id": pre_login["id"],
+                "session": 1722306858,
+                "error": {
+                    "code": 268632079,
+                    "message": "Component error: login challenge!",
+                },
+                "params": {"random": "1234567890", "realm": "Login to 00408C123456"},
+            }
+        )
+    )
+    return _requests_for(client, "global.login")[1]
+
+
+async def test_a_refused_login_is_recorded_rather_than_swallowed():
+    client = _client()
+    login = _to_login(client)
+
+    client.data_received(
+        _frame(
+            {
+                "id": login["id"],
+                "result": False,
+                "error": {"code": 268632081, "message": "Login error!"},
+            }
+        )
+    )
+
+    assert client.login_refused == "Login error!"
+
+
+async def test_a_refused_login_neither_attaches_nor_starts_a_keepalive():
+    client = _client()
+    login = _to_login(client)
+
+    client.data_received(
+        _frame(
+            {"id": login["id"], "result": False, "error": {"message": "Login error!"}}
+        )
+    )
+
+    assert _requests_for(client, "eventManager.attach") == []
+    assert client._keep_alive_handle is None
+
+
+async def test_a_refused_login_closes_the_connection_rather_than_waiting():
+    """The caller is parked on `disconnected`, and a socket the device holds
+    open keeps it waiting for a connection that will never carry an event."""
+    client = _client()
+    login = _to_login(client)
+
+    client.data_received(
+        _frame(
+            {"id": login["id"], "result": False, "error": {"message": "Login error!"}}
+        )
+    )
+
+    assert client.transport.closed is True
+    assert client.disconnected.done() is True
+
+
+async def test_a_refusal_that_explains_nothing_still_says_something():
+    """`login_refused` is what the coordinator logs, and it decides whether to
+    stop, so it has to be set even when the device gives no message. An empty
+    string there would read as "not refused"."""
+    client = _client()
+    login = _to_login(client)
+
+    client.data_received(_frame({"id": login["id"], "result": False}))
+
+    assert client.login_refused
+    assert isinstance(client.login_refused, str)
+
+
+async def test_a_reply_with_neither_an_interval_nor_an_error_is_not_a_refusal():
+    """The guard on the case above. `test_a_login_reply_without_an_interval_does_not_attach`
+    is deliberately defensive rather than a known device behaviour, so it must
+    not start spending a lockout budget: a reply carrying no verdict is not
+    evidence the credentials were rejected."""
+    client = _client()
+    login = _to_login(client)
+
+    client.data_received(_frame({"id": login["id"], "params": {}}))
+
+    assert client.login_refused is None
+    assert client.transport.closed is False
+    assert client.disconnected.done() is False
+
+
+async def test_a_successful_login_records_no_refusal():
+    """The negative control: nothing above may fire on the happy path."""
+    client = _client()
+    _do_handshake(client)
+    try:
+        assert client.login_refused is None
+        assert client.disconnected.done() is False
+    finally:
+        _finish(client)
+
+
+async def test_a_refusal_before_the_challenge_is_recorded_too():
+    """A device can refuse one round trip earlier than the login proper: an
+    account already locked out answers the pre-login with "user or password not
+    valid!" rather than with a challenge. That branch did nothing at all, so the
+    connection sat open and was then reconnected at once, which is the same
+    unbudgeted loop one step sooner."""
+    client = _client()
+    client.connection_made(client.transport)
+    pre_login = _requests_for(client, "global.login")[0]
+
+    client.data_received(
+        _frame(
+            {
+                "id": pre_login["id"],
+                "error": {
+                    "code": 268632085,
+                    "message": "Component error: user or password not valid!",
+                },
+                "params": {},
+            }
+        )
+    )
+
+    assert client.login_refused == "Component error: user or password not valid!"
+    assert client.transport.closed is True
+    assert client.disconnected.done() is True
+    # And still no second login, which is what the neighbouring test pins.
+    assert len(_requests_for(client, "global.login")) == 1
