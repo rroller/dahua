@@ -10,6 +10,7 @@ import logging
 import sys
 
 import aiohttp
+from custom_components.dahua.digest import is_stale_pooled_connection
 from custom_components.dahua.models import CoaxialControlIOStatus
 from custom_components.dahua.ivs import ivs_rule_index
 
@@ -84,6 +85,26 @@ class DahuaRpc2Client:
         protocol = "https" if use_https else "http"
         self._base = "{0}://{1}:{2}".format(protocol, address, port)
 
+    async def _post(self, url, data):
+        """One POST, asked once more if a pooled connection had been closed.
+
+        The same reason as DigestAuth._send, and the path #1001 was reported
+        on: `rpc2.py` POSTs, the device had closed the connection this session
+        was holding, and the whole poll failed on the first request afterwards
+        rather than on anything the device had refused.
+        """
+        try:
+            return await self._session.post(url, json=data)
+        except (aiohttp.ClientError, OSError) as error:
+            if not is_stale_pooled_connection(error):
+                raise
+            _LOGGER.debug(
+                "RPC2 at %s closed a connection we were reusing (%s); asking again",
+                url,
+                error.__class__.__name__,
+            )
+        return await self._session.post(url, json=data)
+
     async def request(
         self,
         method,
@@ -107,7 +128,7 @@ class DahuaRpc2Client:
         if not url:
             url = "{0}/RPC2".format(self._base)
 
-        resp = await self._session.post(url, json=data)
+        resp = await self._post(url, data)
         try:
             resp_json = json.loads(await resp.text())
         except ValueError as error:
