@@ -524,6 +524,50 @@ async def test_the_new_fields_carry_nothing_secret(hass):
     assert SERIAL not in dumped
 
 
+# --- whether the device class is an answer or an outstanding question -------
+
+
+async def test_a_device_that_declines_to_say_its_class_is_distinguishable(hass):
+    """Settled: the device answered, with nothing. Nothing is still asking."""
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    coordinator._device_class = ""
+    coordinator._device_class_unanswered = False
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["device_class"] == ""
+    assert device["device_class_unanswered"] is False
+
+
+async def test_a_device_class_still_being_asked_for_says_so(hass):
+    """The gap this closes. Both cases dump `device_class: ""`, and the rebadged
+    doorbells are the devices that field exists to learn about, so a reader who
+    cannot tell a device that declines from one still being asked cannot use
+    the answer either way."""
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    coordinator._device_class = ""
+    coordinator._device_class_unanswered = True
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["device_class"] == ""
+    assert device["device_class_unanswered"] is True
+
+
+async def test_a_device_that_answered_is_not_reported_as_outstanding(hass):
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    coordinator._device_class = "VTO"
+    coordinator._device_class_unanswered = False
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["device_class"] == "VTO"
+    assert device["device_class_unanswered"] is False
+
+
 # --- what the channel numbering probe concluded -----------------------------
 
 
