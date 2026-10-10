@@ -27,6 +27,7 @@ from . import (
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .client import SECURITY_LIGHT_TYPE
+from .illuminator_restore import override_store_key
 from .infrared import async_write_infrared_mode
 
 _LOGGER = logging.getLogger(__name__)
@@ -284,14 +285,10 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
                     exc_info=True,
                 )
 
-        store_key = (
-            f"{DOMAIN}.illuminator_restore." f"{self._entry.entry_id}.{self.unique_id}"
-        )
-
         self._restore_store = Store(
             self.hass,
             1,
-            store_key,
+            override_store_key(self._entry.entry_id, self.unique_id),
         )
 
         try:

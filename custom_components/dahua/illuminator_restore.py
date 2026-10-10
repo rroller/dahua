@@ -10,6 +10,47 @@ from .const import DOMAIN
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.illuminator_restore_modes"
 SNAPSHOT_STORAGE_KEY = f"{DOMAIN}.channel_lighting_snapshots"
+# The per-entity override store. One per illuminator rather than per entry,
+# because what it holds is that one channel's own Lighting_V2 row.
+OVERRIDE_STORAGE_KEY = f"{DOMAIN}.illuminator_restore"
+
+# The suffix the illuminator entity's unique_id ends with. Named here because
+# removing an entry has to find those stores by it, and a literal in two places
+# is a literal that can drift.
+OVERRIDE_UNIQUE_ID_SUFFIX = "_illuminator"
+
+
+def override_store_key(entry_id: str, unique_id: str) -> str:
+    """Where one illuminator entity keeps the camera state it overrode.
+
+    Built here so the entity that writes it and the removal that clears it
+    cannot disagree about the name.
+    """
+    return "{0}.{1}.{2}".format(OVERRIDE_STORAGE_KEY, entry_id, unique_id)
+
+
+async def async_forget_entry_storage(hass, entry_id: str, override_unique_ids) -> list:
+    """Delete every store this config entry owns. Returns what was outstanding.
+
+    Three kinds: the lighting-scheme restore modes, the channel snapshots, and
+    one override store per illuminator entity. All three are keyed by config
+    entry id, so removing the entry leaves them unreachable -- a re-add gets a
+    new id -- and they sat in `.storage` for ever.
+
+    The return value is the channels whose tables the channel-scoped override
+    still held. Those cameras are in WhiteMode, and the snapshot that was the
+    only way back is going with the entry, so the caller says so. That was
+    already true of a removal; it was just silent.
+    """
+    snapshots = ChannelLightingSnapshotStore(hass, entry_id)
+    outstanding = await snapshots.async_channels()
+    await snapshots.async_remove_all()
+    await IlluminatorRestoreStore(hass, entry_id).async_remove_all()
+    for unique_id in override_unique_ids:
+        await Store(
+            hass, STORAGE_VERSION, override_store_key(entry_id, unique_id)
+        ).async_remove()
+    return outstanding
 
 
 class IlluminatorRestoreStore:
@@ -124,6 +165,12 @@ class IlluminatorRestoreStore:
                 )
             self._data = updated
 
+    async def async_remove_all(self) -> None:
+        """Delete the file. For a config entry that is being removed."""
+        async with self._lock:
+            await self._store.async_remove()
+            self._data = None
+
     async def _load_fresh_modes(self) -> dict[str, str]:
         """Read storage through a fresh Store to verify the on-disk result."""
         loaded = await self._new_store().async_load()
@@ -212,6 +259,12 @@ class ChannelLightingSnapshotStore:
             del updated[key]
             await self._save_locked(updated)
             self._data = updated
+
+    async def async_remove_all(self) -> None:
+        """Delete the file. For a config entry that is being removed."""
+        async with self._lock:
+            await self._store.async_remove()
+            self._data = None
 
     async def _save_locked(self, snapshots: dict[str, dict]) -> None:
         """Serialize writes until the executor work has finished.

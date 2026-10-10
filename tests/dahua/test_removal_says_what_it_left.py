@@ -21,6 +21,7 @@ sibling offer carries the dependents note when both apply.
 """
 
 import pytest
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -32,6 +33,7 @@ from custom_components.dahua import (
     _describe_dependents,
     async_remove_entry,
 )
+from custom_components.dahua import illuminator_restore
 from custom_components.dahua.const import DOMAIN
 
 ADDRESS = "10.0.0.1"
@@ -297,3 +299,133 @@ def test_three_kinds_use_commas_then_and():
 
 def test_nothing_describes_as_nothing():
     assert _describe_dependents({}) == ""
+
+
+# --- and the lighting state it had stored -----------------------------------
+#
+# Three stores are keyed by config entry id: the lighting-scheme restore modes,
+# the channel snapshots, and one override store per illuminator entity. Removing
+# the entry left all of them in `.storage` for ever, and unreachable with it,
+# because a re-add gets a new entry id.
+
+
+def _stored(hass_storage, entry_id, *, snapshots=None, override=False):
+    """Put the three kinds of store on disk for one entry."""
+    hass_storage["dahua.illuminator_restore_modes.%s" % entry_id] = {
+        "version": 1,
+        "data": {"modes": {"0:0": "AIMode"}},
+    }
+    hass_storage["dahua.channel_lighting_snapshots.%s" % entry_id] = {
+        "version": 1,
+        "data": {"snapshots": snapshots or {}},
+    }
+    if override:
+        hass_storage["dahua.illuminator_restore.%s.SERIAL1_illuminator" % entry_id] = {
+            "version": 1,
+            "data": {"active": True},
+        }
+
+
+def _left(hass_storage, entry_id):
+    return sorted(key for key in hass_storage if entry_id in key)
+
+
+async def test_the_stored_lighting_state_goes_with_the_entry(hass, hass_storage):
+    gone = _entry(hass, channel=0, add=False)
+    _stored(hass_storage, gone.entry_id)
+
+    await async_remove_entry(hass, gone)
+
+    assert _left(hass_storage, gone.entry_id) == []
+
+
+async def test_an_illuminators_own_override_store_goes_too(hass, hass_storage):
+    """That one is per entity, so it is found through the entity registry while
+    Home Assistant still has it -- the same window _async_dependents reads in.
+
+    The entry is added here, unlike its neighbours above: the entity registry
+    refuses to link a row to a config entry it does not know ("Can't link entity
+    to unknown config entry"), and this is the one test that needs a row. It
+    changes nothing about what is under test -- the lookup is
+    `async_entries_for_config_entry(registry, entry.entry_id)`, which reads the
+    registry, not hass's entry list, so it behaves the same either way.
+    """
+    gone = _entry(hass, channel=0)
+    _stored(hass_storage, gone.entry_id, override=True)
+    er.async_get(hass).async_get_or_create(
+        "light",
+        DOMAIN,
+        "SERIAL1_illuminator",
+        config_entry=gone,
+        suggested_object_id="front_illuminator",
+    )
+
+    await async_remove_entry(hass, gone)
+
+    assert _left(hass_storage, gone.entry_id) == []
+
+
+async def test_another_entrys_stores_are_left_alone(hass, hass_storage):
+    gone = _entry(hass, channel=0, add=False)
+    keeper = _entry(hass, channel=1)
+    _stored(hass_storage, gone.entry_id)
+    _stored(hass_storage, keeper.entry_id)
+
+    await async_remove_entry(hass, gone)
+
+    assert _left(hass_storage, gone.entry_id) == []
+    assert len(_left(hass_storage, keeper.entry_id)) == 2
+
+
+async def test_a_channel_still_forced_to_white_light_is_named(
+    hass, hass_storage, caplog
+):
+    """The snapshot is the only copy of what that channel's lighting was, so a
+    removal strands the camera in WhiteMode. It always did; it was silent."""
+    gone = _entry(hass, channel=0, title="Drive", add=False)
+    _stored(hass_storage, gone.entry_id, snapshots={"11": {"LightingScheme": []}})
+
+    await async_remove_entry(hass, gone)
+
+    said = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelname == "WARNING" and "white light" in record.getMessage()
+    ]
+    assert len(said) == 1, said
+    assert "11" in said[0]
+    assert "Drive" in said[0]
+
+
+async def test_nothing_outstanding_says_nothing(hass, hass_storage, caplog):
+    gone = _entry(hass, channel=0, add=False)
+    _stored(hass_storage, gone.entry_id)
+
+    await async_remove_entry(hass, gone)
+
+    assert not [
+        record for record in caplog.records if "white light" in record.getMessage()
+    ]
+
+
+async def test_a_storage_failure_does_not_fail_the_removal(hass, monkeypatch):
+    """Tidying on a teardown path. The host cleanup and the repair card matter
+    more than the files, and an exception from a removal hook is only logged, so
+    a full disk must not cost the user the card that finishes the job.
+
+    The failure is injected into what the helper calls rather than into the
+    helper itself: the guard is inside it, so replacing the whole function would
+    assert the opposite of the point."""
+    gone = _entry(hass, channel=0, add=False)
+    _entry(hass, channel=1)
+
+    async def _boom(*args, **kwargs):
+        raise OSError("disk is full")
+
+    monkeypatch.setattr(illuminator_restore, "async_forget_entry_storage", _boom)
+
+    await async_remove_entry(hass, gone)
+
+    assert (
+        _issue(hass, ISSUE_SIBLINGS_REMAIN.format(ADDRESS)) is not None
+    ), "a storage problem cost the user the card the removal is for"

@@ -859,7 +859,67 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
             address,
         )
 
+    await _async_forget_entry_storage(hass, entry)
+
     _async_report_removal(hass, entry, address, siblings, dependents)
+
+
+async def _async_forget_entry_storage(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the lighting state this entry had stored, and say what it strands.
+
+    Three stores are keyed by config entry id: the lighting-scheme restore
+    modes, the channel snapshots, and one override store per illuminator
+    entity. Removing the entry left all of them in `.storage` for ever, and
+    unreachable with it, because a re-add gets a new entry id.
+
+    The illuminator entities are found through the entity registry, which Home
+    Assistant still has at this point and clears as soon as this hook returns --
+    the same window `_async_dependents` reads in.
+
+    Deliberately forgiving, for the reason that function gives: this is tidying
+    on a teardown path, nothing here is worth failing a removal over, and an
+    exception from a removal hook is only logged anyway.
+
+    A channel whose tables the override still held is named in a warning. Those
+    cameras are left in WhiteMode and the snapshot that was the only way back
+    goes with the entry. Removing an entry always did that; it was silent.
+    """
+    try:
+        # Imported here rather than at module scope: illuminator_restore is a
+        # sibling this module's own importers pull in, and a top-level import
+        # would be circular.
+        from .illuminator_restore import (  # pylint: disable=import-outside-toplevel
+            OVERRIDE_UNIQUE_ID_SUFFIX,
+            async_forget_entry_storage,
+        )
+        from homeassistant.helpers import (  # pylint: disable=import-outside-toplevel
+            entity_registry as er,
+        )
+
+        registry = er.async_get(hass)
+        overrides = [
+            row.unique_id
+            for row in er.async_entries_for_config_entry(registry, entry.entry_id)
+            if row.unique_id.endswith(OVERRIDE_UNIQUE_ID_SUFFIX)
+        ]
+        stranded = await async_forget_entry_storage(hass, entry.entry_id, overrides)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.debug(
+            "Could not clear the stored lighting state for %s",
+            entry.entry_id,
+            exc_info=True,
+        )
+        return
+
+    if stranded:
+        _LOGGER.warning(
+            "%s was removed while Home Assistant was holding the white light on "
+            "for channel(s) %s. Those cameras are still forced to white light, "
+            "and the saved copy of their own lighting settings went with the "
+            "entry, so the mode has to be put back on the device itself",
+            entry.title or entry.entry_id,
+            ", ".join(str(channel) for channel in stranded),
+        )
 
 
 @callback
