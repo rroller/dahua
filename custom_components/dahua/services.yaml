@@ -199,6 +199,33 @@ get_config:
       selector:
         text:
 
+backup_config:
+  name: Back up the settings this integration can change
+  description: >-
+    Reads back every configuration table this integration has a write path for,
+    so there is a record of what a setting was before something changed it. A
+    Dahua config write is often not reversible from Home Assistant, and the
+    device keeps no history of its own. This only reads: it cannot restore by
+    itself, and it cannot change the device. Returns the backup, and with a
+    filename also writes it as JSON.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    filename:
+      name: File name
+      description: >-
+        Where to write the backup, for example
+        /config/dahua_front_door_backup.json. The path must be one Home
+        Assistant is allowed to write to (allowlist_external_dirs, or the
+        config directory). Leave empty to get the backup back without writing
+        anything.
+      required: false
+      example: /config/dahua_front_door_backup.json
+      selector:
+        text:
+
 get_channel_title:
   name: Read the channel title
   description: >-

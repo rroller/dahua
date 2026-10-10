@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import voluptuous as vol
@@ -12,6 +13,7 @@ from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.util import dt as dt_util
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 from custom_components.dahua import dahua_utils
@@ -21,6 +23,7 @@ from custom_components.dahua.rpc2 import Rpc2MethodRefused
 from custom_components.dahua.vto import CancelCallRefused
 
 from .const import (
+    BACKED_UP_TABLES,
     CONF_DISABLE_BACKCHANNEL,
     DOMAIN,
 )
@@ -54,6 +57,7 @@ SERVICE_GOTO_PRESET_POSITION = "goto_preset_position"
 SERVICE_GET_OVERLAY_TEXT = "get_overlay_text"
 SERVICE_GET_CHANNEL_TITLE = "get_channel_title"
 SERVICE_GET_CONFIG = "get_config"
+SERVICE_BACKUP_CONFIG = "backup_config"
 
 # What a configManager config name may contain. A name goes straight into the
 # getConfig URL, so this keeps it from smuggling in another CGI parameter (an
@@ -77,6 +81,12 @@ PTZ_MOVE_CODES = {
     "zoom_in": "ZoomTele",
     "zoom_out": "ZoomWide",
 }
+
+
+def _write_backup(filename: str, backup: dict) -> None:
+    """Write the backup as JSON. Runs in an executor: this blocks."""
+    with open(filename, "w", encoding="utf-8") as handle:
+        json.dump(backup, handle, indent=2, sort_keys=True)
 
 
 # One at a time, because streams and PTZ actions and these devices are measurably intolerant of
@@ -415,6 +425,16 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         {vol.Required("name"): vol.All(str, vol.Match(_CONFIG_NAME))},
         "async_get_config_service",
         supports_response=SupportsResponse.ONLY,
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_BACKUP_CONFIG,
+        {vol.Optional("filename"): vol.All(str, vol.Length(min=1))},
+        "async_backup_config",
+        # OPTIONAL, not ONLY: the backup is useful on screen in Developer
+        # Tools and useful as a file, and which one somebody wants depends on
+        # whether they are looking or keeping.
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     platform.async_register_entity_service(
@@ -862,6 +882,79 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         name could append another CGI parameter.
         """
         return {"config": await self._coordinator.client.async_get_config(name)}
+
+    async def async_backup_config(self, filename: str | None = None) -> dict:
+        """Read back every setting this integration can change.
+
+        Asked for because a Dahua config write is frequently not reversible
+        from here: VideoAnalyseRule enables over CGI and will not disable, and
+        several writes are accepted and then ignored. Once something has
+        changed there is often no way to find out what it used to be, and the
+        device's own interface does not keep history either.
+
+        So this is a backup in the useful sense -- a record of what the
+        settings were -- rather than anything that can restore them by itself.
+        Restoring means setting them back one at a time, and this says what to
+        set them to. Claiming more than that would be a lie: the write side
+        cannot put several of these back.
+
+        Scope is BACKED_UP_TABLES, which is every table with a write path in
+        this integration, kept honest by a test rather than by hand. A table
+        the device does not serve comes back empty -- async_get_config returns
+        {} for a refused read -- so it is reported under `refused` rather than
+        silently missing, because "this model has no such table" and "the
+        backup skipped it" look identical otherwise.
+
+        With a filename it also writes the backup as JSON, through the same
+        allowlist Home Assistant puts on every other path an integration
+        writes to. Without one it just returns, which is what Developer Tools
+        shows.
+        """
+        tables: dict = {}
+        refused: list = []
+        for name in BACKED_UP_TABLES:
+            answer = await self._coordinator.client.async_get_config(name)
+            if answer:
+                tables[name] = answer
+            else:
+                refused.append(name)
+
+        backup = {
+            "created": dt_util.utcnow().isoformat(),
+            "device": {
+                "name": self._coordinator.get_device_name(),
+                "model": self._coordinator.get_model(),
+                "firmware": self._coordinator.get_firmware_version(),
+                "channel": self._coordinator.get_channel(),
+            },
+            "tables": tables,
+            # Named, not omitted. See the docstring.
+            "refused": refused,
+        }
+
+        if filename:
+            # The same check camera snapshots use. Without it a service call
+            # could write anywhere the Home Assistant process can reach.
+            if not self.hass.config.is_allowed_path(filename):
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="backup_path_not_allowed",
+                    translation_placeholders={"filename": filename},
+                )
+            try:
+                await self.hass.async_add_executor_job(_write_backup, filename, backup)
+            except OSError as error:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="backup_could_not_be_written",
+                    translation_placeholders={
+                        "filename": filename,
+                        "reason": str(error),
+                    },
+                ) from error
+            backup["written_to"] = filename
+
+        return backup
 
     async def async_set_service_set_text_overlay(
         self, group: int, text1: str, text2: str, text3: str, text4: str

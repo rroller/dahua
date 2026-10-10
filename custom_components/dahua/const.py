@@ -143,3 +143,45 @@ If you have any issues with this you need to open an issue here:
 {ISSUE_URL}
 -------------------------------------------------------------------
 """
+
+
+# Every configuration table this integration can change, which is what a backup
+# of it has to cover. A Dahua config write is often not reversible from here --
+# VideoAnalyseRule enables over CGI and will not disable, and several writes are
+# accepted and ignored -- so the value of this is being able to read back what a
+# setting was before something changed it.
+#
+# Not hand-maintained: test_the_backup_covers_what_can_be_changed.py reads every
+# setConfig table name out of client.py and fails if one is missing from here.
+# A list of what another file does goes stale the moment that file grows, which
+# is the whole reason the test exists rather than a comment asking nicely.
+#
+# Read-only tables are deliberately absent. A backup is for things that can be
+# put back; diagnostics already reports the rest, and the get_config service
+# reads any table at all.
+BACKED_UP_TABLES = (
+    "ChannelTitle",
+    "DisableEventNotify",
+    "DisableLinkage",
+    "FloodLightMode",
+    # The privacy mask on the cameras that have one, measured on an
+    # IP4M-1041W. Found by the guard test rather than by me: the first
+    # version of its scan only matched a table named straight after
+    # `action=setConfig&`, and this one is appended to the URL further
+    # along, so the backup would have shipped without it.
+    "LeLensMask",
+    "LightGlobal",
+    "Lighting",
+    "LightingScheme",
+    "Lighting_V2",
+    "MotionDetect",
+    "PrivacyMasking",
+    "RecordMode",
+    "SmartMotionDetect",
+    "VideoAnalyseRule",
+    "VideoColor",
+    "VideoInDayNight",
+    "VideoInMode",
+    "VideoInOptions",
+    "VideoWidget",
+)
