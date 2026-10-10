@@ -2186,10 +2186,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
                         self._dahua_event_timestamp[event_key] = 0
-                elif (
-                    code not in PULSE_STATE_CODES
-                    and code not in DOORBELL_STATE_EVENTS.values()
-                ):
+                elif code not in PULSE_STATE_CODES:
                     # A Pulse that is not a door state and not a call state is a
                     # notification that something happened. There is no Stop
                     # coming, so raise it and let the sensor's hold clear it --
@@ -2206,6 +2203,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     momentary.add(event_key)
                     self._dahua_event_timestamp[event_key] = int(time.time())
                 else:
+                    # DoorUnlocked and DoorUnlockFailed used to be excluded from
+                    # the branch above and land here, where the ring check reads
+                    # State 8 as "not 1 or 2" and writes the timestamp to 0. So
+                    # they could never raise anything, whatever listened for
+                    # them. They are moments -- the door unlocked -- rather than
+                    # call states, so the momentary branch is theirs, and only
+                    # DoorbellPressed, which really does carry a state, belongs
+                    # here. PULSE_STATE_CODES is now the whole test.
+                    #
                     # BackKeyLight carries the VTO's call state, and more than
                     # one value means ringing. myhomeiot/DahuaVTO documents
                     # 1 and 2 as Call/Ring (4 voice message, 5 answered,
