@@ -30,23 +30,34 @@ import asyncio
 
 import pytest
 
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components import dahua as dahua_module
+from custom_components.dahua import MAX_AUTH_REFUSALS, DahuaDataUpdateCoordinator
 from custom_components.dahua import coordinator as coordinator_module
 
 ADDRESS = "10.0.0.232"
 
-# What one attempt does. "refused" never connects; the other two connect and then
+# What one attempt does. "refused" never connects; the others connect and then
 # drop, differing only in whether the device said anything first.
 REFUSED = ("refused", None)
 TALKED = ("connected", True)
 SILENT = ("connected", False)
+# The device answered the login and granted no session. `received_data` is True
+# on purpose: it sent the challenge and then the refusal, so it demonstrably
+# spoke, and the old loop read that as a connection that had worked and
+# reconnected within ten seconds -- one failed login per attempt, for ever,
+# against a box that locks the source IP for about half an hour.
+LOGIN_REFUSED = ("login_refused", True)
 
 
 class _Protocol:
     """Stands in for DahuaVTOClient: what the loop reads off it and nothing else."""
 
-    def __init__(self, received_data):
+    def __init__(self, received_data, login_refused=None):
         self.received_data = received_data
+        # What the real client sets when the device refuses the login. Modelled
+        # here rather than left to the loop's `getattr` default, so a stand-in
+        # that answers one of these questions answers both.
+        self.login_refused = login_refused
         self.disconnected = asyncio.get_running_loop().create_future()
         # Already over: the loop awaits this to learn the socket has closed, and
         # every test here is about what happens next.
@@ -72,7 +83,10 @@ class _Attempts:
         kind, talked = self.script.pop(0)
         if kind == "refused":
             raise OSError("connection refused")
-        return None, _Protocol(talked)
+        return None, _Protocol(
+            talked,
+            login_refused=("wrong password" if kind == "login_refused" else None),
+        )
 
 
 def _coordinator():
@@ -293,3 +307,80 @@ async def test_a_wait_before_reconnecting_is_named(retries, connections, caplog)
     await _run(_coordinator())
 
     assert "in 1s" in _warnings(caplog)[0], _warnings(caplog)
+
+
+# --- a doorbell that refuses the credentials ---------------------------------
+#
+# The listener had no budget at all. The CGI event stream stops offering
+# credentials a device keeps refusing (MAX_AUTH_REFUSALS, host-wide, cleared by
+# any success), and the polls raise ConfigEntryAuthFailed at the same ceiling.
+# This loop reconnected inside ten seconds for ever, because a device that sends
+# a login challenge and then a refusal has demonstrably spoken, and `talked` is
+# the only thing the backoff looked at. One failed login per attempt against a
+# box that locks the source IP for about half an hour is #729 on the other
+# transport, and nothing in the log said so.
+
+
+async def test_a_refused_login_is_not_a_connection_that_worked(retries, connections):
+    """The distinction the budget rests on. The device spoke, so `received_data`
+    is True on the protocol, and the loop must still tell the delay function that
+    this attach achieved nothing -- otherwise it reconnects at once."""
+    connections(LOGIN_REFUSED)
+
+    await _run(_coordinator())
+
+    assert [r["received_data"] for r in retries] == [False]
+
+
+async def test_a_refused_login_is_counted_against_the_host(retries, connections):
+    """The same counter the polls and the CGI stream use, so a doorbell cannot
+    keep offering credentials the coordinator has already given up on."""
+    connections(LOGIN_REFUSED)
+
+    await _run(_coordinator())
+
+    assert dahua_module._HOST_FAILURES[ADDRESS]["auth_refusals"] == 1
+
+
+async def test_a_connection_that_worked_counts_no_refusal(retries, connections):
+    """The negative control. Without it this file would pass with the counter
+    incremented on every disconnect, which would spend the budget on a doorbell
+    whose password is perfectly good."""
+    connections(TALKED)
+
+    await _run(_coordinator())
+
+    assert ADDRESS not in dahua_module._HOST_FAILURES
+
+
+async def test_it_keeps_trying_below_the_budget(retries, connections):
+    """One refusal is not proof of a wrong password -- the same reasoning #714
+    established for the polls. The loop has to carry on."""
+    attempts = connections(*([LOGIN_REFUSED] * (MAX_AUTH_REFUSALS - 1)))
+
+    await _run(_coordinator())
+
+    assert attempts.attempts == MAX_AUTH_REFUSALS, "it gave up before the budget"
+
+
+async def test_the_listener_stops_at_the_budget(retries, connections):
+    """The point of the change. It returns rather than raising, which is the
+    loop deciding to stop rather than being cancelled, and it does not ask for
+    one more connection after the budget is spent."""
+    attempts = connections(*([LOGIN_REFUSED] * (MAX_AUTH_REFUSALS + 2)))
+
+    await _coordinator()._async_stream_vto_events()
+
+    assert attempts.attempts == MAX_AUTH_REFUSALS
+
+
+async def test_stopping_says_why_and_mentions_the_lockout(retries, connections, caplog):
+    """The silence was half the bug: a doorbell whose password was wrong looked
+    exactly like one that was simply quiet."""
+    connections(*([LOGIN_REFUSED] * MAX_AUTH_REFUSALS))
+
+    await _coordinator()._async_stream_vto_events()
+
+    last = _warnings(caplog)[-1]
+    assert "refused these credentials" in last, last
+    assert "thirty minutes" in last, last

@@ -64,6 +64,13 @@ class DahuaVTOClient(asyncio.Protocol):
     data_handlers: {}
     buffer: bytearray
 
+    # What the device said when it answered the login and granted no session,
+    # or None while nothing has been refused. Declared on the class because the
+    # coordinator reads it off whatever it got back from `create_connection`,
+    # and the retry tests build a stand-in protocol that sets only the two
+    # attributes that loop used to read.
+    login_refused = None
+
     def __init__(
         self,
         host: str,
@@ -275,6 +282,23 @@ class DahuaVTOClient(asyncio.Protocol):
                     self.sessionId = message.get("session")
 
                     self.login()
+                else:
+                    # A device can refuse before it challenges -- an account
+                    # already locked out answers "user or password not valid!"
+                    # here. This branch did nothing at all, so that connection
+                    # sat open until the device dropped it and then reconnected
+                    # at once, because the device had demonstrably spoken. Same
+                    # unbudgeted loop as a refusal after the challenge, one
+                    # round trip earlier.
+                    self.login_refused = (
+                        str(error_message or "").strip() or "the login was refused"
+                    )
+                    _LOGGER.warning(
+                        "The doorbell at %s refused the login before challenging: %s",
+                        self.host,
+                        self.login_refused,
+                    )
+                    self.close()
 
         request_data = {
             "clientType": "",
@@ -293,7 +317,39 @@ class DahuaVTOClient(asyncio.Protocol):
             if message is None:
                 return
             params = message.get("params")
+            if not isinstance(params, dict):
+                # A refused login answers with no params at all, and reading
+                # `keepAliveInterval` off that None raised AttributeError --
+                # inside `data_received`, which logs and swallows it. So a wrong
+                # password produced "Failed to handle message" and nothing else:
+                # no session, no attach, no keepalive, and nothing telling the
+                # caller the credentials were the problem.
+                params = {}
             keep_alive_interval = params.get("keepAliveInterval")
+
+            if keep_alive_interval is None:
+                # The device answered and granted no session. Judged the way
+                # dhip.py judges the same reply: `result: false`, or an error
+                # where a session should be. A reply carrying neither is left
+                # alone -- it is not evidence of a refusal, and the existing
+                # defensive case (params without an interval) must stay a
+                # no-op rather than start costing a lockout budget.
+                error = message.get("error") or {}
+                if message.get("result") is False or error:
+                    self.login_refused = (
+                        str(error.get("message") or "").strip()
+                        or "the device granted no session"
+                    )
+                    _LOGGER.warning(
+                        "The doorbell at %s refused the login: %s",
+                        self.host,
+                        self.login_refused,
+                    )
+                    # Closed rather than left to time out. The caller is parked
+                    # on `disconnected`, and a socket the device holds open
+                    # keeps it waiting for a connection that will never carry
+                    # an event.
+                    self.close()
 
             if keep_alive_interval is not None:
                 self.keep_alive_interval = keep_alive_interval - 5
