@@ -1669,7 +1669,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     and self._wanted_by(SELECT)
                 )
             ):
-                coros.append(asyncio.ensure_future(self.client.async_get_lighting_v2()))
+                coros.append(asyncio.ensure_future(self._async_fetch_lighting_v2()))
             if getattr(
                 self, "_supports_lighting_scheme_illuminator", False
             ) and self._wanted_by(LIGHT):
@@ -1752,7 +1752,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 and not self._supports_lighting_v2
                 and self._wanted_by(LIGHT)
             ):
-                light_v2 = await self.client.async_get_lighting_v2()
+                # Wrapped, like the fan-out's own read. This line is reached
+                # only when the setup probe failed, so the device that needs it
+                # most is the one whose table is refused outright -- and an
+                # unwrapped read there failed every poll for ever. See
+                # _async_fetch_lighting_v2.
+                light_v2 = await self._async_fetch_lighting_v2()
                 if light_v2 is not None:
                     data.update(light_v2)
 
@@ -3926,6 +3931,53 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self.data.get("privacy_mode_enabled", False) if self.data else False
             )
             return {"privacy_mode_enabled": previous}
+
+    async def _async_fetch_lighting_v2(self) -> dict | None:
+        """Poll the Lighting_V2 table, keeping the last answer on a refusal.
+
+        This is the light platform's table, and it is read on two paths that
+        both used to let a refusal out: the fan-out below, and the fallback
+        further down for a security light or flood light on a device whose
+        setup probe failed. The fan-out has no `return_exceptions`, so either
+        one failed the whole refresh -- every entity on the channel
+        unavailable, a host failure recorded against the count all of a
+        recorder's channels share, and the poll backed off.
+
+        The fallback path is the worse of the two, because it is reached
+        *only* when `_supports_lighting_v2` is False, and that flag is set by a
+        probe catching `(ClientError, TimeoutError)`. So two quite different
+        devices arrive there. One whose table is genuinely refused -- 400 on a
+        recorder channel, or an account without rights to it -- fails every
+        poll for the life of the entry. One whose probe merely timed out does
+        serve the table, and this read is the only thing that recovers its
+        light, which is why the read stays rather than being deleted.
+
+        Deliberately does not stop asking, for the reason `_async_coaxial_status`
+        gives: the refusals measured on the recorder here recovered on their
+        own, so a capability somebody may rely on must not be switched off for
+        the process by one bad answer. What changes is that a refusal costs a
+        stale reading rather than a failed poll.
+
+        Carries only this table's own keys, never the whole of the last poll, so
+        a stale value cannot overwrite a fresh one from another coroutine in the
+        same gather -- the rule `_previous_coaxial_status` states. None when
+        there is nothing to carry, which the gather already skips.
+        """
+        try:
+            return await self.client.async_get_lighting_v2()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read Lighting_V2 for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.Lighting_V2[")
+            }
+            return carried or None
 
     def get_vto_client(self) -> DahuaVTOClient | None:
         """The doorbell's client, or None when there is not a live one.
