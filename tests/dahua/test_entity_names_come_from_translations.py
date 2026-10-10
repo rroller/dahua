@@ -34,6 +34,7 @@ PLATFORMS = (
     "camera",
     "event",
     "light",
+    "number",
     "select",
     "sensor",
     "switch",
@@ -63,6 +64,12 @@ WAS = {
     ("sensor", "profile"): "Profile",
     ("sensor", "configured_channels"): "Configured Channels",
     ("sensor", "license_plate"): "License Plate",
+    # New with the picture adjustments being translated. These are the
+    # words the _attr_name they replaced returned, so no entity is renamed.
+    ("number", "image_brightness"): "Brightness",
+    ("number", "image_contrast"): "Contrast",
+    ("number", "image_saturation"): "Saturation",
+    ("number", "image_hue"): "Hue",
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
     ("switch", "disarming"): "Disarming",

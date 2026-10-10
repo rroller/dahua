@@ -22,13 +22,16 @@ _LOGGER = logging.getLogger(__package__)
 # Writes move the device, so one at a time, like the other acting platforms.
 PARALLEL_UPDATES = 1
 
-# entity key -> (display name, VideoColor field). The key is the unique-id
-# suffix; the field is what the device stores.
+# (translation key, VideoColor field). The key is also the unique-id suffix;
+# the field is what the device stores. The display name used to be a third
+# element, set as _attr_name, which no language file can reach -- the thing
+# CONTRIBUTING forbids and two tests check for, neither of which scanned this
+# platform because it was missing from both their platform lists.
 IMAGE_ADJUSTMENTS = (
-    ("image_brightness", "Brightness", "Brightness"),
-    ("image_contrast", "Contrast", "Contrast"),
-    ("image_saturation", "Saturation", "Saturation"),
-    ("image_hue", "Hue", "Hue"),
+    ("image_brightness", "Brightness"),
+    ("image_contrast", "Contrast"),
+    ("image_saturation", "Saturation"),
+    ("image_hue", "Hue"),
 )
 
 
@@ -47,8 +50,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         # reporting three of the four should get three rather than a fourth that
         # never resolves.
         numbers = [
-            DahuaImageAdjustmentNumber(coordinator, entry, key, name, field)
-            for key, name, field in IMAGE_ADJUSTMENTS
+            DahuaImageAdjustmentNumber(coordinator, entry, key, field)
+            for key, field in IMAGE_ADJUSTMENTS
             if coordinator.supports_video_color(field)
         ]
         if numbers:
@@ -58,20 +61,24 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 class DahuaImageAdjustmentNumber(DahuaBaseEntity, NumberEntity):
     """One picture adjustment (0-100) on a channel's general VideoColor profile."""
 
-    _attr_has_entity_name = True
+    # has_entity_name comes from DahuaBaseEntity, which sets it for every
+    # entity here; repeating it invites the two from drifting apart.
     _attr_entity_category = EntityCategory.CONFIG
     _attr_native_min_value = 0
     _attr_native_max_value = 100
     _attr_native_step = 1
     _attr_mode = NumberMode.SLIDER
 
-    def __init__(self, coordinator, entry, key, name, field):
+    def __init__(self, coordinator, entry, key, field):
         DahuaBaseEntity.__init__(self, coordinator, entry)
         NumberEntity.__init__(self)
         self._coordinator = coordinator
         self._key = key
         self._field = field
-        self._attr_name = name
+        # The key is the translation key and the unique-id suffix both, so the
+        # strings are looked up under the ids people already have and nothing
+        # moves.
+        self._attr_translation_key = key
         self._attr_unique_id = "%s_%s" % (coordinator.get_serial_number(), key)
 
     @property
