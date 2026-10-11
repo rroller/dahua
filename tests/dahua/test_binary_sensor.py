@@ -49,6 +49,15 @@ class _Coordinator:
     def get_serial_number(self):
         return "SERIAL1"
 
+    def get_device_serial_number(self):
+        """The serial without the channel suffix.
+
+        What the disk sensors key on: a disk belongs to the box, not to whichever
+        channel's coordinator is carrying the sensor. On channel 0 the two are the
+        same string, which is this double.
+        """
+        return "SERIAL1"
+
     def get_device_name(self):
         return "Front Door"
 
