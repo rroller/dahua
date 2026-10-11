@@ -177,11 +177,11 @@ def _has_finished_merging(entities, devices, entry) -> bool:
     )
 
 
-def _backup(hass: HomeAssistant) -> str | None:
+def _backup(hass: HomeAssistant, label: str = "pre-merge") -> str | None:
     """Copy the registries somewhere the user can find them. Blocking."""
     storage = hass.config.path(".storage")
     target = hass.config.path(
-        "dahua-pre-merge-backup-%s" % time.strftime("%Y%m%d-%H%M%S")
+        "dahua-%s-backup-%s" % (label, time.strftime("%Y%m%d-%H%M%S"))
     )
     copied = []
     try:
@@ -200,6 +200,71 @@ def _backup(hass: HomeAssistant) -> str | None:
     if not copied:
         return None
     return target
+
+
+async def async_drop_duplicate_disk_sensors(hass: HomeAssistant, entry) -> None:
+    """Remove the disk sensors every channel of a recorder used to create.
+
+    `storageDevice.cgi?action=getDeviceAllInfo` takes no channel: the disks
+    belong to the box. Every channel coordinator answered that question anyway
+    and created its own sensor for each disk, so a twelve channel recorder with
+    four bays carried forty eight entities describing four disks, each filed
+    under a device named after a camera.
+
+    They are created once now, keyed on the device serial. On channel 0 that is
+    the same string as before, so the surviving four keep their ids, their
+    history and anything pointing at them. These are the rest.
+
+    **The safety property, and the reason this is not a pattern match alone: a
+    duplicate is only removed when the surviving id is present.** So if a
+    recorder's entry has no channel 0 -- the canonical id would be one nothing
+    has created yet -- this leaves every row alone rather than deleting the only
+    copy of a disk. Clutter is a better failure than loss, and #891 is why that
+    is spelled out.
+    """
+    registry = er.async_get(hass)
+    rows = er.async_entries_for_config_entry(registry, entry.entry_id)
+    by_unique_id = {row.unique_id: row for row in rows}
+
+    doomed = []
+    for unique_id, row in by_unique_id.items():
+        head, separator, slug = (unique_id or "").partition("_disk_")
+        if not separator or not slug:
+            continue
+        # `<serial>_<channel>_disk_<slug>` is a duplicate; `<serial>_disk_<slug>`
+        # is the one that stays. rpartition so a serial containing an underscore
+        # cannot be mistaken for a channel.
+        serial, underscore, channel = head.rpartition("_")
+        if not underscore or not channel.isdigit():
+            continue
+        survivor = "%s_disk_%s" % (serial, slug)
+        if survivor != unique_id and survivor in by_unique_id:
+            doomed.append(row)
+
+    if not doomed:
+        return
+
+    where = await hass.async_add_executor_job(_backup, hass, "pre-disk-cleanup")
+    if where is None:
+        _LOGGER.warning(
+            "Could not back up the registries, so the %d duplicate Dahua disk "
+            "sensors have been left alone. They are disabled by default and "
+            "harmless; remove them from the entity list if you want them gone",
+            len(doomed),
+        )
+        return
+
+    for row in doomed:
+        registry.async_remove(row.entity_id)
+
+    _LOGGER.info(
+        "Removed %d duplicate disk sensors: a recorder's channels each created "
+        "one per disk, and they are now created once for the device. The ones "
+        "that remain keep their entity ids and history. Registries backed up to "
+        "%s first",
+        len(doomed),
+        where,
+    )
 
 
 async def async_merge_channel_entries(hass: HomeAssistant) -> None:

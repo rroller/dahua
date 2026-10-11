@@ -28,11 +28,21 @@ class _Coordinator:
     # `async_add_entities` wants for an entry that has no subentries.
     subentry_id = None
 
-    def __init__(self, events=(), doorbell=False, channel=0, no_video=False):
+    def __init__(
+        self,
+        events=(),
+        doorbell=False,
+        channel=0,
+        no_video=False,
+        disks=(),
+        serial="SERIAL1",
+    ):
         self._events = list(events)
         self._doorbell = doorbell
         self._channel = channel
         self._no_video = no_video
+        self._disks = [{"name": name} for name in disks]
+        self._serial = serial
 
     def get_event_list(self):
         return self._events
@@ -41,7 +51,11 @@ class _Coordinator:
         return []
 
     def get_storage_disks(self):
-        return []
+        return list(self._disks)
+
+    def get_device_serial_number(self):
+        """The serial without the channel suffix. What a disk is keyed on."""
+        return self._serial
 
     def is_doorbell(self):
         return self._doorbell
@@ -72,8 +86,13 @@ def setup(monkeypatch):
         def __init__(self, coordinator, entry):
             built.append(("vehicle", None, coordinator))
 
+    class _Disk:
+        def __init__(self, coordinator, entry, disk_name):
+            built.append(("disk", disk_name, coordinator))
+
     monkeypatch.setattr(bs, "DahuaEventSensor", _Event)
     monkeypatch.setattr(bs, "DahuaAuthorizedVehicleBinarySensor", _Vehicle)
+    monkeypatch.setattr(bs, "DahuaDiskProblemBinarySensor", _Disk)
 
     async def run(*coordinators):
         added = []
@@ -106,6 +125,64 @@ async def test_every_channel_of_a_recorder_gets_one_too(setup):
     await setup(*[_Coordinator(channel=i) for i in range(11)])
 
     assert len(_names(setup.built, "vehicle")) == 11
+
+
+# --- the disks, which are the device's and not the channel's -------------------
+
+
+async def test_a_recorders_disks_are_created_once(setup):
+    """`storageDevice.cgi` takes no channel, so every coordinator of a recorder
+    answers with the same disks. Creating one sensor each gave a twelve channel
+    recorder with four bays forty eight entities for four disks, filed under
+    devices named after cameras."""
+    disks = ("/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd")
+    await setup(*[_Coordinator(channel=i, disks=disks) for i in range(12)])
+
+    created = [(name, c.get_channel()) for k, name, c in setup.built if k == "disk"]
+
+    assert len(created) == 4, created
+    assert sorted(name for name, _ in created) == sorted(disks)
+
+
+async def test_the_lowest_channel_carries_them(setup):
+    disks = ("/dev/sda",)
+    await setup(*[_Coordinator(channel=i, disks=disks) for i in (3, 0, 7)])
+
+    carriers = {c.get_channel() for k, _n, c in setup.built if k == "disk"}
+
+    assert carriers == {0}
+
+
+async def test_a_recorder_without_channel_zero_still_gets_them(setup):
+    """The lowest channel present, not channel 0 specifically. The ids do not
+    depend on which one it is, because they are keyed on the device serial."""
+    await setup(*[_Coordinator(channel=i, disks=("/dev/sda",)) for i in (5, 9)])
+
+    carriers = {c.get_channel() for k, _n, c in setup.built if k == "disk"}
+
+    assert carriers == {5}
+
+
+async def test_a_camera_gets_no_disk_sensors(setup):
+    """Which is every device that is not a recorder: the read is gated on
+    is_recorder_host(), so get_storage_disks() is empty."""
+    await setup(_Coordinator())
+
+    assert [k for k, _n, _c in setup.built if k == "disk"] == []
+
+
+async def test_a_channel_that_reports_no_disks_is_not_chosen(setup):
+    """Channels of one recorder share the answer, so in practice they all report
+    the same disks. The sensors must still come from a coordinator that has
+    them, or they would describe nothing."""
+    await setup(
+        _Coordinator(channel=0),
+        _Coordinator(channel=1, disks=("/dev/sda",)),
+    )
+
+    carriers = {c.get_channel() for k, _n, c in setup.built if k == "disk"}
+
+    assert carriers == {1}
 
 
 # --- the event sensors --------------------------------------------------------

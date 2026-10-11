@@ -33,8 +33,8 @@ def _load_reporter(coordinators: list):
 
     The processor and memory describe the box, not a channel, and a recorder is
     one entry with a coordinator per channel (#827). So the lowest channel
-    carries them and the rest carry none, which is the opposite of what the
-    disk sensors do -- those appear once per channel today.
+    carries them and the rest carry none, which is what the disk sensors do too
+    since #745's per-channel duplication was fixed.
 
     Returns None when nothing answered the probe.
     """
