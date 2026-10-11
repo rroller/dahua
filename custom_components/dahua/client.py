@@ -514,6 +514,18 @@ CONFIG_CACHE_TTL_SECONDS = 300
 CONFIG_READ_MARKER = "action=getConfig"
 _HOST_CACHE: dict = {}
 
+# The processor and memory reading, per device, as a _SharedRead. Two numbers
+# that describe the box, asked for by every channel of a recorder on every poll,
+# so they are shared the way the config reads are -- including while the request
+# is still in flight, which is the case that matters here. Cleared by
+# clear_host_cache.
+_HOST_SYSTEM_LOAD: dict = {}
+
+# Short enough that a diagnostic sensor still moves, long enough that channels
+# whose polls have drifted apart still share one request. The poll interval
+# itself is 120s by default, so this mostly guards the within-cycle duplicates.
+SYSTEM_LOAD_TTL_SECONDS = 30
+
 
 def _cache_lifetime(url: str) -> int:
     """How long this URL's answer stays good for."""
@@ -600,6 +612,13 @@ def clear_host_cache(scope: str) -> None:
     the connector teardown has only the address, and dropping everything behind
     it is right there because the connector is going too.
     """
+    # The load reading goes too: it is keyed by device key, so match the same
+    # two ways. A write is not a reason to distrust it, but a connector
+    # teardown is, and this helper serves both.
+    for key in [
+        k for k in _HOST_SYSTEM_LOAD if k == scope or str(k).startswith(scope + ":")
+    ]:
+        _HOST_SYSTEM_LOAD.pop(key, None)
     stale = [k for k in _HOST_CACHE if k[0] == scope or k[0].startswith(scope + ":")]
     for key in stale:
         del _HOST_CACHE[key]
@@ -3171,6 +3190,112 @@ class DahuaClient:
                     raise
 
         raise RuntimeError("Unable to read camera uptime")
+
+    async def _async_rpc2_value(self, method: str, timeout: float = 5.0) -> dict:
+        """One parameterless RPC2 getter, over the shared session.
+
+        Through `_rpc2_shared_call` rather than with its own retry, which is the
+        difference between this and `async_get_uptime_last` next door. That one
+        drops the shared login on *any* exception, and a device that simply does
+        not implement a method has a perfectly good session -- so a refusal
+        there spends a fresh login for every channel that asks, on a device that
+        will never answer. `rpc2_refusal_is_a_stale_login` is the discriminator
+        the repo already settled that question with.
+
+        A read is safe to run twice, which is what `_rpc2_shared_call` asks of
+        its action.
+        """
+        if not self._use_rpc2:
+            raise RuntimeError("RPC2 is disabled")
+
+        async def ask(client):
+            async with asyncio.timeout(timeout):
+                response = await client.request(method=method, params=None)
+            return response.get("params") or {}
+
+        return await self._rpc2_shared_call(ask)
+
+    async def async_get_system_load(self) -> dict:
+        """The device's processor and memory: {"usage": %, "free": b, "total": b}.
+
+        Shared per device the way `get` shares a config read, and for a
+        stronger reason than those have. A recorder is one entry with a
+        coordinator per channel (#827) and they refresh *concurrently* -- setup
+        gathers them all -- so "answer, then remember it for a while" would
+        collapse nothing on the cycle that matters: twelve channels would each
+        find nothing remembered and ask, twenty-four requests for two numbers
+        that describe the box. Registering the task before awaiting it is what
+        makes the other eleven wait on the first one's answer instead.
+
+        The CGI reads get this from `get` for nothing, which is why the disk
+        read (`storageDevice.cgi`, one `self.get`) needs none of this. These two
+        are RPC2 calls and do not pass through there at all.
+
+        Keyed on the device rather than the address, for the reason every shared
+        read here is: two boxes behind one IP on different ports are not each
+        other (#664).
+        """
+        now = time.monotonic()
+        entry = _HOST_SYSTEM_LOAD.get(self._device)
+        if entry is None or not entry.is_usable(now):
+            # Registered before it is awaited, which is the whole point: the
+            # other eleven channels reach this line while the first one's
+            # request is still in flight and wait on it rather than asking.
+            entry = _SharedRead(asyncio.ensure_future(self._async_read_system_load()))
+            _HOST_SYSTEM_LOAD[self._device] = entry
+
+        # Shielded so that one channel's cancelled refresh -- a reload, a
+        # timeout -- does not take the reading away from the others.
+        answer = await asyncio.shield(entry.task)
+
+        # Stamped only once it lands. A refusal leaves the expiry unset, so
+        # is_usable rejects it and the next poll asks the device again rather
+        # than being told no for the rest of the TTL.
+        if _HOST_SYSTEM_LOAD.get(self._device) is entry and entry.expires_at is None:
+            entry.expires_at = time.monotonic() + SYSTEM_LOAD_TTL_SECONDS
+
+        return dict(answer)
+
+    async def _async_read_system_load(self) -> dict:
+        """The two reads behind async_get_system_load.
+
+        One caller per shared read reaches here, the same arrangement `get` and
+        `_request` have.
+        """
+        usage = await self.async_get_cpu_usage()
+        memory = await self.async_get_memory_info()
+        return {"usage": usage, **memory}
+
+    async def async_get_cpu_usage(self) -> int:
+        """The recorder's processor load, as a percentage.
+
+        `magicBox.getCPUUsage` answers `{"usage": 28}`. Measured on a
+        DHI-NVR5464-16P-EI, where it agreed with what the device reports over
+        ONVIF to within one point.
+
+        RPC2 only: there is no CGI form of this, so a device with RPC2 switched
+        off has no processor sensor. That is why it is probed rather than
+        assumed.
+        """
+        params = await self._async_rpc2_value("magicBox.getCPUUsage")
+        usage = params.get("usage")
+        if usage is None:
+            raise RuntimeError("magicBox.getCPUUsage returned no usage")
+        return int(usage)
+
+    async def async_get_memory_info(self) -> dict:
+        """The recorder's memory, as {"free": bytes, "total": bytes}.
+
+        `magicBox.getMemoryInfo` answers both as floats -- 540459008.0 of
+        1239031808.0 on the recorder this was measured against -- so they are
+        returned as ints and the percentage is worked out from them rather than
+        read from the device, which does not offer one.
+        """
+        params = await self._async_rpc2_value("magicBox.getMemoryInfo")
+        free, total = params.get("free"), params.get("total")
+        if free is None or total is None:
+            raise RuntimeError("magicBox.getMemoryInfo returned no free/total")
+        return {"free": int(free), "total": int(total)}
 
     async def async_get_lighting_v2_live_state(
         self,

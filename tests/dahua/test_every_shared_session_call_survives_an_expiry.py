@@ -66,8 +66,17 @@ class FakeRpc2:
         if type(self).failures:
             raise type(self).failures.pop(0)
 
+    # The parameterless getters answer in `params`, and their callers read it.
+    # Measured on a DHI-NVR5464-16P-EI.
+    PARAMS = {
+        "magicBox.getCPUUsage": {"usage": 28},
+        "magicBox.getMemoryInfo": {"free": 540459008.0, "total": 1239031808.0},
+    }
+
     async def request(self, method=None, **kwargs):
         self._record(method)
+        if method in self.PARAMS:
+            return {"result": True, "params": dict(self.PARAMS[method])}
         return {"result": True}
 
     async def get_config(self, params):
@@ -122,6 +131,18 @@ CALLERS = {
     "product_definition": (
         lambda client: client.async_get_product_definition_rpc2("MaxExtraStream"),
         "get_product_definition",
+    ),
+    # The device's own load, read for the diagnostic sensors. On the recorder
+    # these were measured against, the session expires every thirty-one minutes
+    # and the poll interval is two, so a reader that did not survive an expiry
+    # would blank the sensors fifteen times a day.
+    "processor_usage": (
+        lambda client: client.async_get_cpu_usage(),
+        "magicBox.getCPUUsage",
+    ),
+    "memory_info": (
+        lambda client: client.async_get_memory_info(),
+        "magicBox.getMemoryInfo",
     ),
 }
 

@@ -10,20 +10,24 @@ pytest_plugins = ["pytest_homeassistant_custom_component"]
 
 @pytest.fixture(autouse=True)
 def _clear_shared_host_reads():
-    """The host read cache is module state and holds tasks.
+    """The host read caches are module state and hold tasks.
 
     A task left behind by one test belongs to that test's event loop, so this
-    has to be cleared for every test, not just the ones that know about it.
+    has to be cleared for every test, not just the ones that know about it. The
+    load reading is the same shape -- a _SharedRead, good for thirty seconds --
+    so a leaked one is usable from a later test, on a loop that has gone.
     """
     from custom_components.dahua import client as client_module
 
     client_module._HOST_CACHE.clear()
     client_module._HOST_LIMITS.clear()
     client_module._HOST_REMOTE_IVS_LOCKS.clear()
+    client_module._HOST_SYSTEM_LOAD.clear()
     yield
     client_module._HOST_CACHE.clear()
     client_module._HOST_LIMITS.clear()
     client_module._HOST_REMOTE_IVS_LOCKS.clear()
+    client_module._HOST_SYSTEM_LOAD.clear()
 
 
 @pytest.fixture(autouse=True)

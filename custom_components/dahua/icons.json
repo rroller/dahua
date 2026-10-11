@@ -31,6 +31,12 @@
             "license_plate": {
                 "default": "mdi:car-back"
             },
+            "memory_used": {
+                "default": "mdi:memory"
+            },
+            "processor_usage": {
+                "default": "mdi:cpu-64-bit"
+            },
             "profile": {
                 "default": "mdi:theme-light-dark"
             }

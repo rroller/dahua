@@ -54,6 +54,12 @@ PROBES = [
     # inherits the three properties this file is about, which is exactly what it
     # did not have.
     ("async_get_video_color", "_video_color_fields", None),
+    # The device's own processor and memory. Both are RPC2 only with no CGI
+    # form, so a device with RPC2 switched off refuses them in a way none of the
+    # others do -- with a RuntimeError, not a ClientResponseError -- which is
+    # why that handler is broader than PROBE_FAILED. Listed here for the three
+    # properties this file is about.
+    ("async_get_system_load", "_supports_system_load", None),
 ]
 
 # The probes whose capability is a set of field names rather than a bool, so
@@ -87,6 +93,7 @@ FLAGS = (
     "_supports_profile_mode",
     "_supports_ptz_position",
     "_supports_smart_motion_detection",
+    "_supports_system_load",
     "_video_color_fields",
 )
 

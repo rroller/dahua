@@ -6,8 +6,8 @@ storage use is the obvious one -- deliberately does not live here, because a
 diagnostic is not worth another login on a device that logs every one.
 """
 
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.const import EntityCategory
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.const import PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
@@ -28,8 +28,35 @@ PROFILE_NAMES = {
 PARALLEL_UPDATES = 0
 
 
+def _load_reporter(coordinators: list):
+    """The one coordinator that should carry the device's load sensors.
+
+    The processor and memory describe the box, not a channel, and a recorder is
+    one entry with a coordinator per channel (#827). So the lowest channel
+    carries them and the rest carry none, which is the opposite of what the
+    disk sensors do -- those appear once per channel today.
+
+    Returns None when nothing answered the probe.
+    """
+    answering = [c for c in coordinators if c.supports_system_load()]
+    if not answering:
+        return None
+    return min(answering, key=lambda c: c.get_channel())
+
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
+    # Once for the device, before the per-channel loop below.
+    reporter = _load_reporter(list(entry_coordinators(entry).values()))
+    if reporter is not None:
+        async_add_devices(
+            [
+                DahuaProcessorUsageSensor(reporter, entry),
+                DahuaMemoryUsedSensor(reporter, entry),
+            ],
+            config_subentry_id=reporter.subentry_id,
+        )
+
     for coordinator in entry_coordinators(entry).values():
         sensors = [
             DahuaFirmwareVersionSensor(coordinator, entry),
@@ -200,3 +227,58 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
     @property
     def should_poll(self) -> bool:
         return False
+
+
+class DahuaProcessorUsageSensor(DahuaBaseEntity, SensorEntity):
+    """How busy the device's processor is, as a percentage.
+
+    `magicBox.getCPUUsage`, which is RPC2 only -- there is no CGI form -- so
+    this exists only where RPC2 is enabled and the device answered the probe.
+    Measured on a DHI-NVR5464-16P-EI, where it agreed with the same recorder's
+    ONVIF reading to within a point.
+    """
+
+    _attr_translation_key = "processor_usage"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_processor_usage"
+
+    @property
+    def native_value(self):
+        return (self.coordinator.data or {}).get("system.cpu_usage")
+
+
+class DahuaMemoryUsedSensor(DahuaBaseEntity, SensorEntity):
+    """How much of the device's memory is in use, as a percentage.
+
+    `magicBox.getMemoryInfo` reports free and total in bytes and no percentage,
+    so the percentage is worked out from them. Both byte figures are attributes
+    rather than their own sensors: three entities to say one thing is how an
+    entity list becomes unreadable.
+    """
+
+    _attr_translation_key = "memory_used"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_memory_used"
+
+    @property
+    def native_value(self):
+        return (self.coordinator.data or {}).get("system.memory_used_percent")
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data or {}
+        return {
+            **(super().extra_state_attributes or {}),
+            "total_bytes": data.get("system.memory_total"),
+            "free_bytes": data.get("system.memory_free"),
+        }
