@@ -2559,6 +2559,32 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         event_key = self.get_event_key(event_name)
         return self._dahua_event_timestamp.get(event_key, 0)
 
+    def latched_events(self) -> list:
+        """(code, channel) for every event showing as on with no Stop in sight.
+
+        A latching event's sensor is on for exactly as long as its timestamp is
+        non-zero, and only a Stop zeroes it. So if the event stream drops
+        between a Start and its Stop, the Stop is never seen and the sensor
+        stays on until a later complete pair or a restart of Home Assistant.
+        Our own diagnostics has reported the symptom for a while -- an event age
+        of 21600 seconds is a sensor that has been on for six hours -- without
+        anything acting on it.
+
+        Momentary codes are excluded because they already clear themselves:
+        `event_is_momentary` is how the sensor knows to expire one, and a Pulse
+        has no Stop coming by design.
+        """
+        suffix = "-{0}".format(self._channel)
+        latched = []
+        for key, started in self._dahua_event_timestamp.items():
+            if not started or not key.endswith(suffix):
+                continue
+            code = key[: -len(suffix)]
+            if not code or self.event_is_momentary(code):
+                continue
+            latched.append((code, self._channel))
+        return latched
+
     def get_event_details(self, event_name: str) -> dict:
         """The rule name, direction and object type of the most recent event for
         this code, for the sensor to expose as attributes (#373). Empty until an

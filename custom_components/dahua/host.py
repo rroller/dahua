@@ -630,6 +630,16 @@ class DahuaHostEventStream:
     # double the requests at a device that is already saying no.
     _tried_all_events = False
 
+    # Which event codes this device's getEventIndexes endpoint has been seen to
+    # report as active. Learned, because an empty answer is ambiguous -- see
+    # _async_reconcile_latched_events.
+    #
+    # A None default rather than an empty set: a mutable class attribute would
+    # be shared by every host, and this must not be. Created on first use so
+    # that an instance built without __init__ -- which the tests here do -- is
+    # still correct.
+    _codes_the_device_reports: set | None = None
+
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         self._hass = hass
         self._address = address
@@ -783,6 +793,96 @@ class DahuaHostEventStream:
         elif not wanted and running:
             self._video_motion_poll_task.cancel()
             self._video_motion_poll_task = None
+
+    async def _async_reconcile_latched_events(self) -> None:
+        """Ask the device about events still showing as on, and close the dead ones.
+
+        Called when the stream is about to re-attach, which is the only moment a
+        Stop can have been lost: the socket was down, the device sent it anyway,
+        and nothing was listening.
+
+        **Costs nothing in the ordinary case.** Nothing is usually latched, so
+        there is nothing to ask about and no request is made. That matters
+        because a failing stream retries often, and this must not add load to a
+        device that is already struggling.
+
+        The hard part is that `getEventIndexes` cannot be taken at face value.
+        Measured on a DHI-NVR5464-16P-EI:
+
+            code=VideoMotion          200  channels[0]=14
+            code=CrossLineDetection   200  Error: No Events
+            code=NotARealCodeAtAll    200  Error: No Events
+
+        A real code with nothing active and a code the endpoint knows nothing
+        about give the **same answer**. So an empty answer is not evidence that
+        an event has ended, and clearing on it would switch off a live sensor
+        for any code the stream reports and this endpoint does not -- the
+        opposite of the bug, and worse.
+
+        So which codes this endpoint actually reports is learned from the device
+        rather than assumed, the same way `event_is_momentary` learns what a
+        Pulse is. A code is trusted only once it has been seen reported as
+        active at least once; until then an empty answer changes nothing.
+
+        That learns itself in the right order. While an event is genuinely on, a
+        reconcile sees it reported, records the code as one this endpoint
+        covers, and clears nothing. The next time the same code is latched and
+        the device does *not* report it, that is a lost Stop and it is closed.
+        """
+        if self._codes_the_device_reports is None:
+            self._codes_the_device_reports = set()
+
+        latched: dict = {}
+        for coordinator in self.coordinators:
+            events = getattr(coordinator, "latched_events", None)
+            if events is None:
+                continue
+            for code, channel in events():
+                latched.setdefault(code, set()).add(channel)
+        if not latched:
+            return
+
+        for code, channels in sorted(latched.items()):
+            try:
+                observed = await self._owner.client.async_get_event_indexes_cgi(code)
+            except Exception as ex:  # pylint: disable=broad-except
+                # A device that will not answer tells us nothing, and nothing is
+                # what we do about it. This runs on a reconnect, which is
+                # frequently a device in trouble.
+                _LOGGER.debug(
+                    "Could not ask %s which %s events are active: %s",
+                    self._address,
+                    code,
+                    ex,
+                )
+                continue
+
+            if observed:
+                # Proof that this endpoint reports this code. Recorded before
+                # the comparison below, so the first genuine activity teaches
+                # us and the lost Stop after it can be closed.
+                self._codes_the_device_reports.add(code)
+
+            if code not in self._codes_the_device_reports:
+                _LOGGER.debug(
+                    "%s reported no active %s events, but has never reported any, "
+                    "so this is not evidence the event ended",
+                    self._address,
+                    code,
+                )
+                continue
+
+            for channel in sorted(channels - observed):
+                _LOGGER.info(
+                    "%s says %s is no longer active on channel %s, so its Stop was "
+                    "lost while the event stream was down. Closing it",
+                    self._address,
+                    code,
+                    channel,
+                )
+                self._dispatch_events(
+                    "Code={0};action=Stop;index={1}\r\n".format(code, channel).encode()
+                )
 
     async def _async_poll_video_motion(self) -> None:
         """Synthesize VideoMotion edges from one host-wide state request."""
@@ -943,6 +1043,10 @@ class DahuaHostEventStream:
             else:
                 self._failing = False
                 self._consecutive_failures = 0
+
+            # Before going back round. A Stop that arrived while the socket was
+            # down is gone, and the sensor it belonged to is still on.
+            await self._async_reconcile_latched_events()
 
             retry_in = event_stream_retry_delay(
                 stream_lifetime(time.monotonic() - start_time, self._received_data),
