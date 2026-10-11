@@ -69,6 +69,11 @@ class DahuaVTOClient(asyncio.Protocol):
     # attributes that loop used to read.
     login_refused = None
 
+    # Whether close() asked for the disconnect that connection_lost is about to
+    # report. On the class as well as in __init__ because several tests build
+    # this client with object.__new__ and reach close() without it.
+    _closing: bool = False
+
     def __init__(
         self,
         host: str,
@@ -95,6 +100,7 @@ class DahuaVTOClient(asyncio.Protocol):
         self.buffer = bytearray()
 
         self._keep_alive_handle = None
+        self._closing = False
 
         # This is the hook back into HA
         self.on_receive_vto_event = on_receive_vto_event
@@ -185,7 +191,33 @@ class DahuaVTOClient(asyncio.Protocol):
             self.disconnected.set_result(True)
 
     def connection_lost(self, exc):
-        _LOGGER.error("server closed the connection")
+        # The reconnect loop logs the disconnect itself -- "Disconnected from VTO
+        # at <address>, reconnecting in <n>s" -- with the address and the delay,
+        # so all this can usefully add is why, and only when the why is a
+        # failure.
+        #
+        # It used to log "server closed the connection" at ERROR for every one
+        # of the three cases below, including the one where the server did not
+        # close anything and we did. Unloading an entry therefore ended with an
+        # ERROR in the log saying the doorbell had dropped us, which is the
+        # opposite of what happened, and it is the line somebody sees after an
+        # upgrade restart and reports as a fault.
+        # Through getattr because this runs in a transport callback, and several
+        # test files build this client with object.__new__ and set only the few
+        # attributes they are about. An AttributeError raised here would be
+        # swallowed by the event loop rather than failing anything visibly.
+        where = getattr(self, "host", None) or "an unknown address"
+
+        if self._closing:
+            _LOGGER.debug("Closed the VTO connection to %s", where)
+        elif exc is None:
+            # The doorbell ended it cleanly. Worth knowing, not worth shouting:
+            # the loop above says so and reconnects.
+            _LOGGER.debug("The VTO at %s closed the event connection", where)
+        else:
+            _LOGGER.warning(
+                "Lost the event connection to the VTO at %s: %s", where, exc
+            )
 
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
@@ -203,6 +235,10 @@ class DahuaVTOClient(asyncio.Protocol):
         itself on every reply, and the doorbell keeps pushing events into an
         entry Home Assistant has already unloaded -- once per reload.
         """
+        # Set before the transport goes, because closing it is what calls
+        # connection_lost, and that is the only way it can tell our own
+        # teardown from the doorbell dropping us.
+        self._closing = True
         if self._keep_alive_handle is not None:
             self._keep_alive_handle.cancel()
             self._keep_alive_handle = None
