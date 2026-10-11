@@ -16,7 +16,9 @@ commented open issue for exactly that reason.
 vto.py was the lowest-covered module in the integration at 31%.
 """
 
+import asyncio
 import json
+import logging
 
 from custom_components.dahua.vto import DahuaVTOClient
 
@@ -623,6 +625,94 @@ async def test_connection_lost_does_the_same():
 
     assert client._keep_alive_handle is None
     assert client.disconnected.done()
+
+
+async def test_a_disconnect_we_asked_for_is_not_logged_as_a_failure(caplog):
+    """An unload or a reload calls close(), which closes the transport, which is
+    what makes asyncio call connection_lost. Reporting that as the server closing
+    on us put an ERROR in the log for a normal shutdown, and it is the line people
+    see after an upgrade restart and report as a fault."""
+    client = _client()
+    _do_handshake(client)
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.dahua"):
+        client.close()
+        client.connection_lost(None)
+
+    assert client._closing is True
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    # Still said something, so this is not a silent close.
+    assert any("Closed the VTO connection" in r.getMessage() for r in caplog.records)
+
+
+async def test_the_doorbell_closing_it_is_not_a_failure_either(caplog):
+    """`exc is None` with no close() of ours means the far end ended the stream.
+    The reconnect loop logs that, with the address and how long it is waiting, so
+    a second line here at ERROR was a duplicate of a better one."""
+    client = _client()
+    _do_handshake(client)
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.dahua"):
+        client.connection_lost(None)
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("closed the event connection" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_connection_lost_to_an_error_says_which_error(caplog):
+    """The one thing the reconnect loop's own message cannot know. The old line
+    said "server closed the connection" whatever had happened, so a reset, a
+    refused socket and a clean shutdown were indistinguishable in a log."""
+    client = _client()
+    _do_handshake(client)
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.dahua"):
+        client.connection_lost(OSError("connection reset by peer"))
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert "connection reset by peer" in warnings[0].getMessage()
+    assert HOST in warnings[0].getMessage()
+
+
+async def test_a_close_still_cancels_the_keepalive_and_reports_the_disconnect():
+    """The behaviour the log change must not disturb: `disconnected` is what the
+    reconnect loop waits on, and a keepalive scheduled after the socket has gone
+    fires into nothing."""
+    client = _client()
+    _do_handshake(client)
+    assert client._keep_alive_handle is not None
+
+    client.close()
+    client.connection_lost(None)
+
+    assert client._keep_alive_handle is None
+    assert client.disconnected.done()
+
+
+async def test_the_callbacks_survive_a_client_built_without_init(caplog):
+    """`connection_lost` runs inside a transport callback, where an AttributeError
+    is swallowed by the event loop rather than failing anything visibly.
+
+    Several files here build this client with `object.__new__` and set only the
+    attributes they are about -- test_vto_stop.py's close() test is one -- so a
+    message that reads `self.host` breaks on them silently. Written because the
+    first version of this change did exactly that.
+    """
+    client = object.__new__(DahuaVTOClient)
+    client.transport = _Transport()
+    client._keep_alive_handle = None
+    client.disconnected = asyncio.get_running_loop().create_future()
+
+    with caplog.at_level(logging.DEBUG, logger="custom_components.dahua"):
+        client.close()
+        client.connection_lost(None)
+        client.connection_lost(OSError("and again, with a reason"))
+
+    assert client.disconnected.done()
+    assert any("Closed the VTO connection" in r.getMessage() for r in caplog.records)
 
 
 async def test_losing_the_connection_twice_does_not_raise():
