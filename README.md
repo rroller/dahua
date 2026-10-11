@@ -484,11 +484,21 @@ What this integration cannot do, as distinct from the bugs and firmware quirks u
   reauth dialog is refused along with everything else. Create the ONVIF user before
   starting the flow rather than discovering the requirement through failed attempts.
 
-  Two other things worth knowing before you add it. Home Assistant's ONVIF integration
-  only offers **H264** profiles, so any channel whose streams are all H.265 produces no
-  camera at all -- the `streams` block in this integration's diagnostics names the codec
-  of each stream, which is the quickest way to tell. And it will create its own camera
-  entities alongside this integration's for the same channels, so expect duplicates.
+  Two other things worth knowing before you add it.
+
+  **Expect far fewer cameras than channels.** Home Assistant's ONVIF integration skips
+  any profile whose video encoding is not exactly `H264`, and a recorder commonly
+  reports no encoding at all. Measured on a DHI-NVR5464-16P-EI: it offers **31 profiles
+  across all twelve channels**, and **28 of them have `Encoding` unset** -- only one
+  channel's three profiles report `H264`, so that is the only channel that becomes a
+  camera. Note the cause: the encoding is *unreported*, not H.265. The channel that
+  worked is the one whose streams happen to be H.264 throughout, which makes the codec
+  look like the reason when it is not, and why the encoder configuration comes back
+  empty for the rest is not something this has established.
+
+  **And it creates its own camera entities** alongside this integration's for the same
+  channels, so expect duplicates -- on that recorder, 101 entities for 3 cameras, 89 of
+  them binary sensors for capabilities it reports generically.
 - **Active deterrence through a recorder is undocumented and unreliable.** Whether an
   NVR passes a siren or white light command through to the camera behind it varies by
   model, and on some it accepts the command and does nothing at all. That is why those
