@@ -315,8 +315,9 @@ Two cases the form cannot diagnose for you:
 - **Some devices have no local API at all.** Cloud-only Imou and Lechange models, and
   some doorbells whose firmware moved to the cloud app, serve no `/cgi-bin/` API.
   There is nothing this integration can do for those; ONVIF or the vendor's cloud
-  integration is the route. A downgrade to earlier firmware has restored the local
-  API for some people.
+  integration is the route -- and ONVIF needs
+  [its own user on the device](#onvif-needs-its-own-user). A downgrade to earlier
+  firmware has restored the local API for some people.
 - **Cameras behind a recorder's own PoE ports** often sit on a private subnet, such
   as `10.1.1.x`, that Home Assistant cannot route to. Add them through the
   recorder's address and channel number instead of trying to reach them directly.
@@ -510,13 +511,52 @@ What this integration cannot do, as distinct from the bugs and firmware quirks u
   `dahua.set_infrared_mode` or `dahua.set_illuminator_mode` to hand Auto back.
 - **A device with no local API cannot be used at all.** Cloud only Imou and Lechange
   models, and some doorbells whose firmware moved to the vendor's app, serve no
-  `/cgi-bin/` API. ONVIF or the vendor's own integration is the route for those.
+  `/cgi-bin/` API. ONVIF or the vendor's own integration is the route for those, and
+  ONVIF needs [its own user on the device](#onvif-needs-its-own-user).
 - **Cameras on a recorder's own PoE ports are usually not reachable directly**, because
   they sit on a private subnet Home Assistant cannot route to. Add them through the
   recorder's address and channel number instead.
 - **Channels a recorder reaches over ONVIF cannot be driven**, and are not offered when
   adding one. This integration speaks Dahua's own API and an ONVIF channel does not
-  answer it.
+  answer it. Home Assistant's own ONVIF integration, pointed at the **recorder**, does
+  reach them -- but see the warning below before you try it.
+
+  <a name="onvif-needs-its-own-user"></a>
+  **If you use ONVIF, create an ONVIF user on the device first.** Dahua keeps ONVIF
+  accounts in a separate list from device accounts, under **System > Account > ONVIF
+  User**. A device account does not authenticate over ONVIF however much else it is
+  granted, so the account this integration uses is not usable there.
+
+  **The two lists can hold the same name, and that is confusing on purpose-built
+  hardware.** An ONVIF user called `admin`, or called the same thing as your device
+  account, is a *different* account with its own password. So a working ONVIF setup
+  whose username matches the one in this integration does not mean the device account
+  was accepted -- it means somebody created an ONVIF user with that name. Worth
+  knowing before concluding from a working setup that no ONVIF user is needed, which
+  is a mistake made while writing this note.
+
+  This matters more than a wrong password usually does. These devices lock the source
+  IP for about **thirty minutes** after repeated failed logins, and Home Assistant
+  makes every one of its requests from one address -- so a few failed ONVIF attempts
+  take **every** Dahua entity offline, including the ones that were working, and the
+  reauth dialog is refused along with everything else. Create the ONVIF user before
+  starting the flow rather than discovering the requirement through failed attempts.
+
+  Two other things worth knowing before you add it.
+
+  **Expect far fewer cameras than channels.** Home Assistant's ONVIF integration skips
+  any profile whose video encoding is not exactly `H264`, and a recorder commonly
+  reports no encoding at all. Measured on a DHI-NVR5464-16P-EI: it offers **31 profiles
+  across all twelve channels**, and **28 of them have `Encoding` unset** -- only one
+  channel's three profiles report `H264`, so that is the only channel that becomes a
+  camera. Note the cause: the encoding is *unreported*, not H.265. The channel that
+  worked is the one whose streams happen to be H.264 throughout, which makes the codec
+  look like the reason when it is not, and why the encoder configuration comes back
+  empty for the rest is not something this has established.
+
+  **And it creates its own camera entities** alongside this integration's for the same
+  channels, so expect duplicates -- on that recorder, 101 entities for 3 cameras, 89 of
+  them binary sensors for capabilities it reports generically.
 - **Active deterrence through a recorder is undocumented and unreliable.** Whether an
   NVR passes a siren or white light command through to the camera behind it varies by
   model, and on some it accepts the command and does nothing at all. That is why those
