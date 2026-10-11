@@ -11,6 +11,8 @@ holds, so it is safe to pull when the device is unreachable, which is exactly
 when someone will pull it.
 """
 
+import logging
+import re
 import time
 from hashlib import sha256
 from typing import Any, Callable, Mapping
@@ -20,6 +22,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntry
+
+_LOGGER: logging.Logger = logging.getLogger(__package__)
 
 from . import dahua_utils, entry_coordinators
 from .const import (
@@ -618,6 +622,70 @@ def _active_issues(hass: HomeAssistant) -> list[dict[str, Any]]:
     ]
 
 
+# "table.Encode[2].ExtraFormat[1].Video.Compression" -> (2, 1)
+_SUB_STREAM_CODEC = re.compile(
+    r"table\.Encode\[(\d+)\]\.ExtraFormat\[(\d+)\]\.Video\.Compression$"
+)
+_MAIN_STREAM_CODEC = "table.Encode[{0}].MainFormat[0].Video.Compression"
+
+
+async def _async_encode_table(coordinator) -> dict:
+    """The Encode table, or {} if the device will not serve it.
+
+    Read once per dump and shared by every channel: it is a whole-table read
+    covering the host. Measured on a DHI-NVR5464-16P-EI at 2530 keys, which is
+    why only the video compression values below are reported and not the table.
+    """
+    try:
+        return await coordinator.client.async_get_config("Encode")
+    except Exception as exception:  # pylint: disable=broad-except
+        _LOGGER.debug("Could not read Encode for diagnostics", exc_info=exception)
+        return {}
+
+
+def _streams_block(coordinator, encode: dict) -> dict:
+    """Which codec each of this channel's streams carries.
+
+    The single most reported fault in this integration is a camera that shows a
+    still image and never a moving one, which is H.265 almost every time:
+    #236, #244, #257, #262 and #272 among others, and HomeKit will not play it
+    at all. Home Assistant's own ONVIF integration sidesteps it by skipping any
+    profile that is not H264.
+
+    Nothing here can fix it -- the remedy is on the device, under Video >
+    Encode -- but a dump that names the codec answers the question instead of
+    starting a conversation about it.
+
+    Deliberately not a warning or a repair card. H.265 is not universally
+    broken: it depends on the player, and the same recorder can serve a working
+    H.264 sub stream beside an unplayable H.265 main one. Saying "your stream
+    will not work" would be wrong often enough to be worse than saying nothing.
+    """
+    channel = coordinator.get_channel()
+    if not encode:
+        # Said rather than left blank. An absent codec and a codec nobody
+        # looked for read the same in a dump, and this one is worth telling
+        # apart: a recorder that refuses Encode is itself a finding.
+        return {"read": False, "why": "the device did not serve the Encode table"}
+
+    main = encode.get(_MAIN_STREAM_CODEC.format(channel))
+    subs = {}
+    for key, value in encode.items():
+        match = _SUB_STREAM_CODEC.match(str(key))
+        if match and int(match.group(1)) == channel:
+            subs[int(match.group(2))] = value
+
+    carried = [codec for codec in [main, *subs.values()] if codec]
+    return {
+        "read": True,
+        "main": main,
+        "sub": [subs[index] for index in sorted(subs)],
+        # One boolean, because it is the question somebody reading a report
+        # about a stream that will not play actually has.
+        "h265_anywhere": any("265" in str(codec) for codec in carried),
+    }
+
+
 def _ivs_channel_block(coordinator) -> dict:
     """Rule discovery and unmatched events for one channel."""
     return {
@@ -670,6 +738,7 @@ async def async_get_config_entry_diagnostics(
     def channel_block(coordinator):
         return {
             "channel": coordinator.get_channel(),
+            "streams": _streams_block(coordinator, encode),
             "coordinator": _coordinator_block(coordinator),
             "device": _device_block(coordinator, config_entry),
             "capabilities": _capabilities_block(coordinator),
@@ -679,6 +748,8 @@ async def async_get_config_entry_diagnostics(
         }
 
     first = coordinators[0]
+    # One whole-table read for the host, shared by every channel's block.
+    encode = await _async_encode_table(first)
     return {
         "entry": _entry_block(config_entry),
         "channel_count": len(coordinators),
@@ -689,6 +760,7 @@ async def async_get_config_entry_diagnostics(
         "capabilities": _capabilities_block(first),
         "client": _client_block(first, config_entry),
         "events": _events_block(first),
+        "streams": _streams_block(first, encode),
         "ivs": _ivs_block(config_entry),
         # Host wide, so it is reported once however many channels there are.
         "host": _host_block(hass, first, config_entry),

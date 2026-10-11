@@ -2,6 +2,8 @@
 
 import json
 import re
+
+import aiohttp
 from types import SimpleNamespace
 
 import pytest
@@ -54,6 +56,21 @@ class _Client:
         self._rpc2_session_instance = None
         self._host_limit = client_module._host_limiter(ADDRESS)
         self.identity_derived_from_credentials = False
+
+    async def async_get_config(self, name):
+        """The dump reads Encode to report each stream's codec. Answering with
+        a real shape rather than {} so the parsing is exercised; a test that
+        wants the refused case overrides this."""
+        if name != "Encode":
+            return {}
+        return {
+            "table.Encode[0].MainFormat[0].Video.Compression": "H.265",
+            "table.Encode[0].MainFormat[0].Audio.Compression": "AAC",
+            "table.Encode[0].ExtraFormat[0].Video.Compression": "H.264",
+            "table.Encode[0].ExtraFormat[1].Video.Compression": "H.265",
+            # Another channel's, which must not leak into channel 0's answer.
+            "table.Encode[3].MainFormat[0].Video.Compression": "MJPEG",
+        }
 
     def get_rtsp_stream_url(self, channel, subtype):
         # Present because the real client has it; the dump must never call it.
@@ -606,6 +623,79 @@ async def test_the_new_fields_carry_nothing_secret(hass):
     assert PASSWORD not in dumped
     assert USERNAME not in dumped
     assert SERIAL not in dumped
+
+
+# --- which codec each stream carries ---------------------------------------
+
+
+async def test_it_says_which_codec_each_stream_carries(hass):
+    """The most reported fault in this integration is a camera that shows a
+    still and never a moving picture, and it is H.265 almost every time (#236,
+    #244, #257, #262, #272). Nothing here can fix it -- the remedy is on the
+    device -- but a dump that names the codec answers the question."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    streams = (await async_get_config_entry_diagnostics(hass, entry))["streams"]
+
+    assert streams["read"] is True
+    assert streams["main"] == "H.265"
+    assert streams["sub"] == ["H.264", "H.265"]
+    assert streams["h265_anywhere"] is True
+
+
+async def test_the_audio_codec_is_not_reported_as_a_stream(hass):
+    """`Audio.Compression` sits beside `Video.Compression` in the same table --
+    AAC and G.711A on the measured recorder -- and an audio codec in a list of
+    video streams would send somebody looking in the wrong place."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    streams = (await async_get_config_entry_diagnostics(hass, entry))["streams"]
+
+    assert "AAC" not in [streams["main"], *streams["sub"]]
+    assert "G.711A" not in [streams["main"], *streams["sub"]]
+
+
+async def test_another_channels_codec_does_not_leak_in(hass):
+    """Encode is a whole-table read covering the host: measured at 2530 keys on
+    a DHI-NVR5464. The fake carries a channel 3 entry that channel 0 must not
+    claim."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    streams = (await async_get_config_entry_diagnostics(hass, entry))["streams"]
+
+    assert "MJPEG" not in [streams["main"], *streams["sub"]]
+
+
+async def test_a_device_that_refuses_encode_says_so(hass):
+    """Rather than reporting no streams, which reads the same as a camera with
+    none. A recorder that will not serve Encode is itself worth knowing."""
+
+    class _NoEncode(_Client):
+        async def async_get_config(self, name):
+            raise aiohttp.ClientResponseError(None, (), status=400)
+
+    entry = _entry(hass)
+    coordinator = _Coordinator()
+    coordinator.client = _NoEncode()
+    _install(hass, entry, coordinator)
+
+    streams = (await async_get_config_entry_diagnostics(hass, entry))["streams"]
+
+    assert streams["read"] is False
+    assert "Encode" in streams["why"]
+
+
+async def test_the_codec_is_reported_per_channel_too(hass):
+    """The per channel blocks are the authoritative part for a recorder."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["channels"][0]["streams"]["main"] == "H.265"
 
 
 # --- whether the device class is an answer or an outstanding question -------
