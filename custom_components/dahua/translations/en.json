@@ -363,6 +363,12 @@
             }
         },
         "sensor": {
+            "processor_usage": {
+                "name": "Processor usage"
+            },
+            "memory_used": {
+                "name": "Memory used"
+            },
             "firmware_version": {
                 "name": "Firmware Version"
             },

@@ -54,6 +54,7 @@ from .const import (
     MIN_SCAN_INTERVAL,
     NUMBER,
     SELECT,
+    SENSOR,
     SWITCH,
     UPDATE,
 )
@@ -725,6 +726,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _storage_disks: list = []
     _storage_last_refresh: float = 0.0
 
+    # Whether this device answered magicBox.getCPUUsage and getMemoryInfo at
+    # setup. Both are RPC2 only with no CGI form, so a device with RPC2 off has
+    # neither sensor -- which is why this is a probe rather than an assumption.
+    _supports_system_load: bool = False
+
     # The recorder's configured camera slots (RemoteDevice), read once at setup
     # like the disks. A diagnostic read is a login the device logs, and the slots
     # change rarely, so it is not polled. Empty on anything that is not a recorder.
@@ -1328,6 +1334,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await self._async_refresh_storage()
                     await self._async_refresh_remote_devices()
 
+                # The processor and memory describe the box, not the
+                # channel. Every channel probes and polls for them, and the
+                # client shares the answer per device for a few seconds, so a
+                # twelve channel recorder still makes one request. Only one
+                # channel gets the sensors -- sensor.py decides which.
+                await self._async_probe_system_load()
+
                 # Some Dahua firmwares index channels from 0, others from 1. The default
                 # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
                 # 0-indexed and reset channel_number accordingly. Users on cameras where this
@@ -1872,6 +1885,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self.client.async_get_light_global_enabled())
                 )
+            # The device's own processor and memory. Every channel asks, and the
+            # client shares the answer per device, so a twelve channel recorder
+            # still makes one request. Gated on the probe, and wrapped, for the
+            # reason every read here is.
+            if self._supports_system_load and self._wanted_by(SENSOR):
+                coros.append(asyncio.ensure_future(self._async_fetch_system_load()))
             # Picture adjustments for the number platform (brightness, contrast,
             # saturation, hue): one read per poll, and only where the device
             # actually reported them at setup. Gated on the probe rather than on
@@ -2885,6 +2904,73 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_storage_disks(self) -> list:
         """The recorder's disks, for the diagnostic disk sensors to read (#745)."""
         return list(self._storage_disks)
+
+    async def _async_probe_system_load(self) -> None:
+        """Ask once whether this device reports its processor and memory.
+
+        Judged on what came back rather than on whether it raised, the rule the
+        other capability probes here follow. Both calls are RPC2 only, so a
+        device with RPC2 switched off simply has no answer and gets no sensors.
+
+        Measured on a DHI-NVR5464-16P-EI: `magicBox.getCPUUsage` answers
+        `{"usage": 28}` and `magicBox.getMemoryInfo` answers free and total in
+        bytes. Note that `magicBox.getUpTime` is **refused** on that same
+        recorder, so answering one of these says nothing about the others.
+        """
+        try:
+            load = await self.client.async_get_system_load()
+        except PROBE_FAILED as exception:
+            self._note_probe_refusal("system load", exception)
+            return
+        except Exception as exception:  # pylint: disable=broad-except
+            # Rpc2MethodRefused is a ConnectionError, and a device with RPC2
+            # disabled raises RuntimeError. Neither is a reason to fail setup.
+            _LOGGER.debug(
+                "No processor or memory reading on %s",
+                self._address,
+                exc_info=exception,
+            )
+            return
+        self._supports_system_load = load.get("usage") is not None
+
+    def supports_system_load(self) -> bool:
+        """Whether the processor and memory sensors should exist."""
+        return self._supports_system_load
+
+    async def _async_fetch_system_load(self) -> dict | None:
+        """Poll the processor and memory, keeping the last answer on a refusal.
+
+        Wrapped for the reason every read in the fan-out is: that gather has no
+        `return_exceptions`, so one refused read would fail the whole refresh
+        and take every entity on the channel with it (#1006, #1024).
+        """
+        try:
+            load = await self.client.async_get_system_load()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the processor or memory for %s",
+                self._address,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("system.")
+            }
+            return carried or None
+        total = load.get("total") or 0
+        used = total - (load.get("free") or 0)
+        return {
+            "system.cpu_usage": load.get("usage"),
+            "system.memory_total": total,
+            "system.memory_free": load.get("free"),
+            # Worked out here rather than read: the device offers free and total
+            # and no percentage.
+            "system.memory_used_percent": (
+                round(used / total * 100, 1) if total else None
+            ),
+        }
 
     async def _async_refresh_remote_devices(self) -> None:
         """Read which channels the recorder has a camera configured on, once.

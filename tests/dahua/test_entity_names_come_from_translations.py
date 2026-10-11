@@ -59,6 +59,10 @@ WAS = {
     ("select", "infrared_mode"): "Infrared Mode",
     ("select", "smart_motion_sensitivity"): "Smart Motion Sensitivity",
     ("select", "vth_camera_link"): "Camera for {vto} calls",
+    # New in this change, so there is nothing they "was": the table is what
+    # stops a later edit renaming them under somebody.
+    ("sensor", "processor_usage"): "Processor usage",
+    ("sensor", "memory_used"): "Memory used",
     ("sensor", "firmware_version"): "Firmware Version",
     ("sensor", "serial_number"): "Serial Number",
     ("sensor", "profile"): "Profile",

@@ -42,6 +42,8 @@ WAS = {
     ("binary_sensor", "authorized_vehicle"): "mdi:car-check",
     ("select", "day_night_mode"): "mdi:theme-light-dark",
     ("sensor", "license_plate"): "mdi:car-back",
+    ("sensor", "memory_used"): "mdi:memory",
+    ("sensor", "processor_usage"): "mdi:cpu-64-bit",
     ("sensor", "profile"): "mdi:theme-light-dark",
     ("switch", "alarm_output"): "mdi:alarm-light",
     ("switch", "disarming"): "mdi:alarm-check",

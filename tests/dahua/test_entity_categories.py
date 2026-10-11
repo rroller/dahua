@@ -75,6 +75,10 @@ def _coordinator():
         # None so the configured-channels sensor is not created here; this
         # double is a camera, not a recorder.
         get_configured_channel_count=lambda: None,
+        # Setup asks every channel this before the per-channel loop, to decide
+        # which one carries the device's processor and memory sensors. False, so
+        # the entities each test below names are the only ones added.
+        supports_system_load=lambda: False,
     )
     return c
 
