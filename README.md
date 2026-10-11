@@ -464,10 +464,13 @@ What this integration cannot do, as distinct from the bugs and firmware quirks u
   reach them -- but see the warning below before you try it.
 
   <a name="onvif-needs-its-own-user"></a>
-  **If you use ONVIF, create an ONVIF user on the device first.** Dahua keeps ONVIF
+  **If ONVIF refuses your account, it needs one of its own.** Dahua keeps ONVIF
   accounts in a separate list from device accounts, under **System > Account > ONVIF
-  User**. An ordinary device account will not authenticate over ONVIF however much
-  else it is granted, so the account this integration uses is not usable there.
+  User**, and that list is where to look when an account that works here is refused
+  there. It is not always required: measured on a DHI-NVR5464-16P-EI, an ordinary
+  device account authenticated over ONVIF without an entry in that list. Whether it
+  does depends on the model and firmware, so treat a refusal as "add an ONVIF user"
+  rather than as a wrong password.
 
   This matters more than a wrong password usually does. These devices lock the source
   IP for about **thirty minutes** after repeated failed logins, and Home Assistant
