@@ -3192,30 +3192,28 @@ class DahuaClient:
         raise RuntimeError("Unable to read camera uptime")
 
     async def _async_rpc2_value(self, method: str, timeout: float = 5.0) -> dict:
-        """One parameterless RPC2 getter, with the uptime read's session handling.
+        """One parameterless RPC2 getter, over the shared session.
 
-        The same two-attempt shape as async_get_uptime_last and for the same
-        reason: a reboot invalidates the RPC2 login, and dropping the login task
-        is what lets the next attempt establish a fresh one rather than reusing
-        a session the device has forgotten.
+        Through `_rpc2_shared_call` rather than with its own retry, which is the
+        difference between this and `async_get_uptime_last` next door. That one
+        drops the shared login on *any* exception, and a device that simply does
+        not implement a method has a perfectly good session -- so a refusal
+        there spends a fresh login for every channel that asks, on a device that
+        will never answer. `rpc2_refusal_is_a_stale_login` is the discriminator
+        the repo already settled that question with.
+
+        A read is safe to run twice, which is what `_rpc2_shared_call` asks of
+        its action.
         """
         if not self._use_rpc2:
             raise RuntimeError("RPC2 is disabled")
 
-        for attempt in (1, 2):
-            try:
-                holder = await self._shared_rpc2()
-                async with asyncio.timeout(timeout):
-                    response = await holder.client.request(method=method, params=None)
-                return response.get("params") or {}
-            except Exception:
-                holder = _HOST_RPC2.get(self._rpc2_key())
-                if holder is not None:
-                    holder.task = None
-                if attempt == 2:
-                    raise
+        async def ask(client):
+            async with asyncio.timeout(timeout):
+                response = await client.request(method=method, params=None)
+            return response.get("params") or {}
 
-        raise RuntimeError("Unable to read %s" % method)
+        return await self._rpc2_shared_call(ask)
 
     async def async_get_system_load(self) -> dict:
         """The device's processor and memory: {"usage": %, "free": b, "total": b}.

@@ -299,6 +299,7 @@ ATTRIBUTES = [
     ("supports_day_night_color", "_supports_day_night_color", True),
     ("supports_disarming_linkage", "_supports_disarming_linkage", True),
     ("supports_profile_mode", "_supports_profile_mode", True),
+    ("supports_system_load", "_supports_system_load", True),
 ]
 
 
