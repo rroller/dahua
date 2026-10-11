@@ -415,7 +415,13 @@
         "video_profile_not_switchable": {
             "message": "The day/night video profile on {device} cannot be switched from Home Assistant: its VideoInMode is the {shape} shape, where the profile is not selected by the field this writes. See issue #458."
         },
-        "backup_could_not_be_written": {
+        "backup_could_not_be_read": {
+      "message": "Could not read the Dahua backup at {filename}: {reason}"
+    },
+    "backup_is_not_a_backup": {
+      "message": "{filename} is not a Dahua backup: it has no `tables` section. Point this at a file written by the Back up action."
+    },
+    "backup_could_not_be_written": {
       "message": "Could not write the Dahua backup to {filename}: {reason}"
     },
     "backup_path_not_allowed": {

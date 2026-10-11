@@ -199,6 +199,29 @@ get_config:
       selector:
         text:
 
+compare_config:
+  name: Compare the device against a backup
+  description: >-
+    Reads the same configuration tables again and reports what has changed since
+    a backup taken with "Back up the settings this integration can change". Use
+    it to see exactly what one change moved, which matters because several Dahua
+    config writes cannot be undone from Home Assistant. Read-only at both ends.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    filename:
+      name: Backup file
+      description: >-
+        The JSON file a previous backup was written to, for example
+        /config/dahua_front_door_backup.json. The path must be one Home
+        Assistant is allowed to read.
+      required: true
+      example: /config/dahua_front_door_backup.json
+      selector:
+        text:
+
 backup_config:
   name: Back up the settings this integration can change
   description: >-

@@ -204,6 +204,64 @@ affected by this: a sub stream camera you are already using stays exactly as it 
 
 ![Dahua Setup](static/setup1.png)
 
+### Taking a backup before you upgrade
+
+Home Assistant will not offer you one, and this integration cannot add it. Worth
+knowing why, because the thing at risk is probably not what you expect.
+
+**What an upgrade puts at risk is your entity and device registry, not the files.**
+Replacing `custom_components/dahua/` is reversible by replacing it again. What is not
+reversible is an entity losing its id, or a repair card offering to remove entries:
+in one measured case confirming such a card deleted **232 entities**, and no copy of
+the integration's own directory would have helped. A Home Assistant backup would.
+
+**Why there is no checkbox.** Home Assistant shows "create a backup before updating"
+only for update entities that declare support for it, which in practice means add-ons
+and the operating system. HACS does not declare it for the integrations it manages,
+and that was asked for and declined:
+[hacs/integration#3538](https://github.com/hacs/integration/issues/3538) — *"Backups
+are not supported by this integration for update entities, and I highly doubt it ever
+will be."* Home Assistant also retired the pre-update backup option generally in
+2025.1.0, because it accumulated backups until people ran out of disk
+([core#134005](https://github.com/home-assistant/core/issues/134005)). The intended
+replacement is automatic backups with a retention policy.
+
+**How to take one anyway.** Home Assistant's backup integration exposes actions you
+can call yourself:
+
+```yaml
+# Script: back up, then update this integration.
+sequence:
+  - action: backup.create_automatic      # obeys your retention settings
+  - action: update.install
+    target:
+      entity_id: update.dahua_update
+```
+
+`backup.create_automatic` rather than `backup.create` for exactly the reason the
+checkbox was removed: it is subject to the retention you have configured instead of
+growing without limit. Passing `backup: true` to `update.install` does nothing here,
+because that option only works on entities that declare support for it.
+
+**Do not keep a copy inside `custom_components/`.** Two directories whose manifest
+declares `"domain": "dahua"` means Home Assistant may serve the *backup's* code, and
+restarting does not help because it is not a cache. This costs real time to diagnose:
+the config flow shows one version while the files on disk show another. Keep rollback
+copies somewhere else, such as `/config/dahua_backup_<date>/`.
+
+This matters beyond your own machine. A rollback script that has circulated on
+[#728](https://github.com/rroller/dahua/issues/728) and
+[#767](https://github.com/rroller/dahua/issues/767) copies to
+`$COMPONENTS_DIR/dahua_backup_<stamp>`, so anyone using it to bisect versions may be
+testing a version they are not actually running — which can make a report of "the last
+working version" point at the wrong release.
+
+**The device's own settings are a separate thing**, and this integration can record
+those: see [`backup_config` and `compare_config`](#services). An upgrade does not
+change them, but a service call or a mistaken switch can, and several Dahua config
+writes cannot be undone from Home Assistant.
+
+
 ### Upgrading from a version before 1.0
 
 Earlier versions added **one config entry per channel**, so a sixteen channel recorder

@@ -36,12 +36,15 @@ class _Client:
     def __init__(self, serves=("VideoColor", "MotionDetect")):
         self.serves = set(serves)
         self.asked = []
+        # Mutable so a comparison test can move one setting and nothing else.
+        self.values: dict = {}
 
     async def async_get_config(self, name):
         self.asked.append(name)
         if name not in self.serves:
             return {}
-        return {"table.%s[0].Enable" % name: "true"}
+        key = "table.%s[0].Enable" % name
+        return {key: self.values.get(key, "true")}
 
 
 class _Coordinator:
@@ -214,3 +217,122 @@ async def test_a_refused_path_still_does_not_leave_a_half_backup(tmp_path):
         await camera.async_backup_config(filename=str(tmp_path / "x.json"))
 
     assert not list(tmp_path.iterdir())
+
+
+# --- comparing against a backup ---------------------------------------------
+
+
+async def _backup_to(tmp_path, camera, name="b.json"):
+    """Take a real backup through the service, so the comparison reads the
+    shape the writer actually produces rather than one invented here."""
+    target = str(tmp_path / name)
+    await camera.async_backup_config(filename=target)
+    return target
+
+
+async def test_nothing_changed_reports_nothing(tmp_path):
+    """The common case, and the one that has to be quiet. A comparison that
+    always finds something is one nobody reads."""
+    camera = _camera(_Client(serves=("VideoColor",)))
+    saved = await _backup_to(tmp_path, camera)
+
+    answer = await camera.async_compare_config(filename=saved)
+
+    assert answer["changed_count"] == 0
+    assert answer["only_in_backup_count"] == 0
+    assert answer["only_on_device_count"] == 0
+    assert answer["listing_truncated"] is False
+
+
+async def test_a_changed_value_is_reported_with_both_sides(tmp_path):
+    """`was` and `now` together, because "VideoColor changed" is not an answer
+    anybody can act on."""
+    client = _Client(serves=("VideoColor",))
+    camera = _camera(client)
+    saved = await _backup_to(tmp_path, camera)
+
+    client.values["table.VideoColor[0].Enable"] = "false"
+
+    answer = await camera.async_compare_config(filename=saved)
+
+    assert answer["changed_count"] == 1
+    assert answer["changed"]["VideoColor"]["table.VideoColor[0].Enable"] == {
+        "was": "true",
+        "now": "false",
+    }
+
+
+async def test_a_table_the_device_stopped_serving_is_not_reported_as_changes(
+    tmp_path,
+):
+    """It is one fact, not several hundred vanished settings. A recorder that
+    stops serving a table mid-day would otherwise read as a catastrophe."""
+    client = _Client(serves=("VideoColor", "MotionDetect"))
+    camera = _camera(client)
+    saved = await _backup_to(tmp_path, camera)
+
+    client.serves.discard("MotionDetect")
+
+    answer = await camera.async_compare_config(filename=saved)
+
+    assert "MotionDetect" in answer["refused_now"]
+    assert "MotionDetect" not in answer["refused_when_backed_up"]
+    assert answer["changed_count"] == 0
+    assert answer["only_in_backup"]["MotionDetect"] == ["table.MotionDetect[0].Enable"]
+
+
+async def test_it_says_when_each_side_was_read(tmp_path):
+    """A comparison with no dates is not evidence of anything."""
+    camera = _camera(_Client(serves=("VideoColor",)))
+    saved = await _backup_to(tmp_path, camera)
+
+    answer = await camera.async_compare_config(filename=saved)
+
+    assert answer["backup_taken"]
+    assert answer["compared_at"]
+    assert answer["backup_device"]["model"] == answer["device"]["model"]
+
+
+# --- and the ways it can be asked the wrong thing ---------------------------
+
+
+async def test_a_path_home_assistant_may_not_read_is_refused(tmp_path):
+    camera = _camera(allowed=False)
+
+    with pytest.raises(HomeAssistantError) as refused:
+        await camera.async_compare_config(filename=str(tmp_path / "x.json"))
+
+    assert refused.value.translation_key == "backup_path_not_allowed"
+
+
+async def test_a_file_that_is_not_there_says_so(tmp_path):
+    camera = _camera()
+
+    with pytest.raises(HomeAssistantError) as missing:
+        await camera.async_compare_config(filename=str(tmp_path / "nope.json"))
+
+    assert missing.value.translation_key == "backup_could_not_be_read"
+
+
+async def test_a_file_that_is_not_json_says_so(tmp_path):
+    target = tmp_path / "junk.json"
+    target.write_text("this is not json", encoding="utf-8")
+    camera = _camera()
+
+    with pytest.raises(HomeAssistantError) as bad:
+        await camera.async_compare_config(filename=str(target))
+
+    assert bad.value.translation_key == "backup_could_not_be_read"
+
+
+async def test_json_that_is_not_a_backup_says_so(tmp_path):
+    """Not treated as an empty backup, which would report every setting as
+    newly appeared and read as a catastrophe."""
+    target = tmp_path / "other.json"
+    target.write_text('{"something": "else"}', encoding="utf-8")
+    camera = _camera()
+
+    with pytest.raises(HomeAssistantError) as wrong:
+        await camera.async_compare_config(filename=str(target))
+
+    assert wrong.value.translation_key == "backup_is_not_a_backup"

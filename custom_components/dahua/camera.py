@@ -59,6 +59,14 @@ SERVICE_GET_OVERLAY_TEXT = "get_overlay_text"
 SERVICE_GET_CHANNEL_TITLE = "get_channel_title"
 SERVICE_GET_CONFIG = "get_config"
 SERVICE_BACKUP_CONFIG = "backup_config"
+SERVICE_COMPARE_CONFIG = "compare_config"
+
+# How many changed keys a comparison will name before it stops listing them.
+# A whole-device backup is a few hundred keys per table, and a comparison
+# across a firmware upgrade can move most of them. The count is always
+# exact; only the listing is capped, because a service response is read by a
+# person.
+COMPARISON_LIMIT = 200
 
 # What a configManager config name may contain. A name goes straight into the
 # getConfig URL, so this keeps it from smuggling in another CGI parameter (an
@@ -92,6 +100,68 @@ PTZ_MOVE_CODES = {
     "zoom_in": "ZoomTele",
     "zoom_out": "ZoomWide",
 }
+
+
+def _read_backup(filename: str) -> dict:
+    """Read a backup written by backup_config. Runs in an executor: this blocks."""
+    with open(filename, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _compare_tables(was: dict, now: dict) -> dict:
+    """What changed between two {table: {key: value}} maps.
+
+    Three kinds, kept apart because they mean different things. A *changed* key
+    is a setting somebody moved. A key only in the backup is one the device has
+    stopped reporting, which is usually a table it no longer serves rather than
+    a setting that vanished. A key only in the device is the reverse.
+    """
+    changed: dict = {}
+    only_in_backup: dict = {}
+    only_on_device: dict = {}
+    for table in sorted(set(was) | set(now)):
+        before = was.get(table) or {}
+        after = now.get(table) or {}
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            continue
+        for key in sorted(set(before) | set(after)):
+            if key not in after:
+                only_in_backup.setdefault(table, []).append(key)
+            elif key not in before:
+                only_on_device.setdefault(table, []).append(key)
+            elif str(before[key]) != str(after[key]):
+                changed.setdefault(table, {})[key] = {
+                    "was": before[key],
+                    "now": after[key],
+                }
+    return {
+        "changed": changed,
+        "only_in_backup": only_in_backup,
+        "only_on_device": only_on_device,
+    }
+
+
+def _count_and_cap(diff: dict, limit: int) -> dict:
+    """Exact counts always; the listing capped so a person can read it."""
+    changed_keys = sum(len(keys) for keys in diff["changed"].values())
+    out = {
+        "changed_count": changed_keys,
+        "only_in_backup_count": sum(len(v) for v in diff["only_in_backup"].values()),
+        "only_on_device_count": sum(len(v) for v in diff["only_on_device"].values()),
+    }
+    listed: dict = {}
+    remaining = limit
+    for table, keys in diff["changed"].items():
+        if remaining <= 0:
+            break
+        take = dict(list(keys.items())[:remaining])
+        listed[table] = take
+        remaining -= len(take)
+    out["changed"] = listed
+    out["listing_truncated"] = changed_keys > limit
+    out["only_in_backup"] = diff["only_in_backup"]
+    out["only_on_device"] = diff["only_on_device"]
+    return out
 
 
 def _write_backup(filename: str, backup: dict) -> None:
@@ -435,6 +505,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         SERVICE_GET_CONFIG,
         {vol.Required("name"): vol.All(str, vol.Match(_CONFIG_NAME))},
         "async_get_config_service",
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_COMPARE_CONFIG,
+        {vol.Required("filename"): vol.All(str, vol.Length(min=1))},
+        "async_compare_config",
         supports_response=SupportsResponse.ONLY,
     )
 
@@ -916,6 +993,63 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         name could append another CGI parameter.
         """
         return {"config": await self._coordinator.client.async_get_config(name)}
+
+    async def async_compare_config(self, filename: str) -> dict:
+        """What has changed on this device since a backup was taken.
+
+        A backup nobody can compare against is a file, not a tool. The question
+        people actually have is "what moved since I took this", and answering it
+        by hand means diffing a few hundred keys across up to nineteen tables.
+
+        It matters more here than in most places because several Dahua config
+        writes cannot be undone from Home Assistant -- VideoAnalyseRule enables
+        over CGI and will not disable, and some writes are accepted and then
+        ignored. The discipline that works on this hardware is to record the
+        settings, make one change, and look at what actually moved. This is the
+        looking.
+
+        Read-only at both ends: it re-reads the same tables `backup_config`
+        reads, and the file is opened through the same allowlist.
+        """
+        if not self.hass.config.is_allowed_path(filename):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="backup_path_not_allowed",
+                translation_placeholders={"filename": filename},
+            )
+        try:
+            saved = await self.hass.async_add_executor_job(_read_backup, filename)
+        except (OSError, ValueError) as error:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="backup_could_not_be_read",
+                translation_placeholders={
+                    "filename": filename,
+                    "reason": str(error),
+                },
+            ) from error
+
+        if not isinstance(saved, dict) or not isinstance(saved.get("tables"), dict):
+            # Named rather than treated as an empty backup, which would report
+            # every setting as newly appeared and read as a catastrophe.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="backup_is_not_a_backup",
+                translation_placeholders={"filename": filename},
+            )
+
+        current = await self.async_backup_config()
+        diff = _compare_tables(saved["tables"], current["tables"])
+        answer = _count_and_cap(diff, COMPARISON_LIMIT)
+        answer["backup_taken"] = saved.get("created")
+        answer["compared_at"] = current["created"]
+        answer["backup_device"] = saved.get("device")
+        answer["device"] = current["device"]
+        # A table the device has stopped serving is reported here rather than as
+        # several hundred vanished keys, because that is what it means.
+        answer["refused_now"] = current["refused"]
+        answer["refused_when_backed_up"] = saved.get("refused", [])
+        return answer
 
     async def async_backup_config(self, filename: str | None = None) -> dict:
         """Read back every setting this integration can change.
