@@ -257,8 +257,9 @@ Two cases the form cannot diagnose for you:
 - **Some devices have no local API at all.** Cloud-only Imou and Lechange models, and
   some doorbells whose firmware moved to the cloud app, serve no `/cgi-bin/` API.
   There is nothing this integration can do for those; ONVIF or the vendor's cloud
-  integration is the route. A downgrade to earlier firmware has restored the local
-  API for some people.
+  integration is the route -- and ONVIF needs
+  [its own user on the device](#onvif-needs-its-own-user). A downgrade to earlier
+  firmware has restored the local API for some people.
 - **Cameras behind a recorder's own PoE ports** often sit on a private subnet, such
   as `10.1.1.x`, that Home Assistant cannot route to. Add them through the
   recorder's address and channel number instead of trying to reach them directly.
@@ -452,13 +453,34 @@ What this integration cannot do, as distinct from the bugs and firmware quirks u
   `dahua.set_infrared_mode` or `dahua.set_illuminator_mode` to hand Auto back.
 - **A device with no local API cannot be used at all.** Cloud only Imou and Lechange
   models, and some doorbells whose firmware moved to the vendor's app, serve no
-  `/cgi-bin/` API. ONVIF or the vendor's own integration is the route for those.
+  `/cgi-bin/` API. ONVIF or the vendor's own integration is the route for those, and
+  ONVIF needs [its own user on the device](#onvif-needs-its-own-user).
 - **Cameras on a recorder's own PoE ports are usually not reachable directly**, because
   they sit on a private subnet Home Assistant cannot route to. Add them through the
   recorder's address and channel number instead.
 - **Channels a recorder reaches over ONVIF cannot be driven**, and are not offered when
   adding one. This integration speaks Dahua's own API and an ONVIF channel does not
-  answer it.
+  answer it. Home Assistant's own ONVIF integration, pointed at the **recorder**, does
+  reach them -- but see the warning below before you try it.
+
+  <a name="onvif-needs-its-own-user"></a>
+  **If you use ONVIF, create an ONVIF user on the device first.** Dahua keeps ONVIF
+  accounts in a separate list from device accounts, under **System > Account > ONVIF
+  User**. An ordinary device account will not authenticate over ONVIF however much
+  else it is granted, so the account this integration uses is not usable there.
+
+  This matters more than a wrong password usually does. These devices lock the source
+  IP for about **thirty minutes** after repeated failed logins, and Home Assistant
+  makes every one of its requests from one address -- so a few failed ONVIF attempts
+  take **every** Dahua entity offline, including the ones that were working, and the
+  reauth dialog is refused along with everything else. Create the ONVIF user before
+  starting the flow rather than discovering the requirement through failed attempts.
+
+  Two other things worth knowing before you add it. Home Assistant's ONVIF integration
+  only offers **H264** profiles, so any channel whose streams are all H.265 produces no
+  camera at all -- the `streams` block in this integration's diagnostics names the codec
+  of each stream, which is the quickest way to tell. And it will create its own camera
+  entities alongside this integration's for the same channels, so expect duplicates.
 - **Active deterrence through a recorder is undocumented and unreliable.** Whether an
   NVR passes a siren or white light command through to the camera behind it varies by
   model, and on some it accepts the command and does nothing at all. That is why those
