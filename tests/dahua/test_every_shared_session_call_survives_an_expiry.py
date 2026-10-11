@@ -254,8 +254,10 @@ HANDLES_EXPIRY_ITSELF = {
     # allow_missing has to tell an absent table apart from an expired session,
     # and only this frame knows which read asked for which.
     "_rpc2_get_config",
-    # Drops the login on any exception, not only a refusal, because a camera
-    # reboot ends this read without ever answering.
+    # Drops the login when the read does not come back at all -- a timeout, a
+    # dropped connection, a reboot ending it mid-flight -- because that is the
+    # case its retry exists for. A refusal is told apart from those and leaves
+    # the session alone (#1039).
     "async_get_uptime_last",
     # The event stream is a long-lived attach, not a request: it recovers by
     # reattaching, and a silent retry here would hide a closed stream.

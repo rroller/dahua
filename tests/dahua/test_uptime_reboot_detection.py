@@ -9,6 +9,7 @@ import pytest
 from custom_components import dahua as dahua_module
 from custom_components.dahua import client as client_module
 from custom_components.dahua.client import DahuaClient
+from custom_components.dahua.rpc2 import Rpc2MethodRefused
 
 
 def _coordinator(address, uptime):
@@ -169,12 +170,19 @@ async def test_failed_uptime_read_is_deduped_for_same_poll_burst():
 #
 # Everything above hands the helper a fake client. These are the real
 # DahuaClient.async_get_uptime_last, which reads magicBox.getUpTime over RPC2 and
-# retries once, dropping the login in between.
+# retries once, dropping the login in between -- but only for a failure that could
+# be a dead session.
 #
 # The reason it retries at all is the thing it is for: a reboot invalidates the old
 # RPC2 login, so the read that would detect the reboot is also the read most likely to
 # fail because of it. Without dropping the login the retry fails the same way, and a
 # rebooted device never reports its new uptime.
+#
+# A *refusal* is not that. The device answered, and its session is fine. Dropping the
+# login for those too cost two extra logins on every poll of a recorder that serves
+# the method name and refuses it (#1039, #577), which is why the two cases are now
+# told apart by `rpc2_refusal_is_a_stale_login` -- the same discriminator the rest of
+# the shared-session callers use.
 
 
 class _Rpc2:
@@ -325,6 +333,164 @@ async def test_it_stops_after_two_attempts(monkeypatch):
         await client.async_get_uptime_last()
 
     assert len(rpc2.calls) == 2, "retried more than once"
+
+
+# --- a refusal is an answer, and answers do not cost a login -----------------
+
+
+REFUSED_BY_THE_PLATFORM = Rpc2MethodRefused(
+    "magicBox.getUpTime returned result=false", code=268632080, message=""
+)
+
+SESSION_EXPIRED = Rpc2MethodRefused(
+    "configManager.getConfig returned result=false",
+    code=287637504,
+    message="session is out of date!",
+)
+
+
+async def test_a_refused_read_leaves_the_shared_login_alone(monkeypatch):
+    """The fix for #1039.
+
+    Measured on a DHI-NVR5464-16P-EI, which lists `magicBox.getUpTime` in
+    `magicBox.listMethod` and refuses it with code 268632080 and an empty message:
+    "served, not supported on this platform". A VTO on the same network does the
+    same. The session is in perfect health, and dropping it meant the next RPC2
+    read on any path had to log in again -- two extra logins per poll cycle, for a
+    value the device will never return.
+    """
+    client, holder, rpc2, seen = _uptime_client(monkeypatch, [REFUSED_BY_THE_PLATFORM])
+    original = holder.task
+
+    with pytest.raises(Rpc2MethodRefused):
+        await client.async_get_uptime_last()
+
+    assert (
+        holder.task is original
+    ), "tore down a session the device never complained about"
+    assert len(rpc2.calls) == 1, "retried a refusal that will be refused again"
+    assert len(seen) == 1
+
+
+async def test_a_session_expiry_is_still_dropped_and_retried(monkeypatch):
+    """The case the teardown was written for, which has to keep working.
+
+    This refusal says the login is dead, so dropping it is right and the retry
+    succeeds on a new one.
+    """
+    client, holder, rpc2, seen = _uptime_client(
+        monkeypatch, [SESSION_EXPIRED, _answer(500)]
+    )
+    original = holder.task
+
+    assert await client.async_get_uptime_last() == 500
+
+    assert len(rpc2.calls) == 2
+    assert seen == [original, None], "the retry reused the dead login"
+
+
+async def test_a_second_expiry_is_not_retried_again(monkeypatch):
+    client, _, rpc2, _ = _uptime_client(monkeypatch, [SESSION_EXPIRED, SESSION_EXPIRED])
+
+    with pytest.raises(Rpc2MethodRefused):
+        await client.async_get_uptime_last()
+
+    assert len(rpc2.calls) == 2
+
+
+async def test_an_answer_in_an_unexpected_shape_keeps_the_session(monkeypatch):
+    """A missing `Last` already raises (above). It must not also cost the login:
+    the device is talking to us, and the next login would get the same shape."""
+    client, holder, _, _ = _uptime_client(monkeypatch, [{"params": {"info": {}}}])
+    original = holder.task
+
+    with pytest.raises(RuntimeError):
+        await client.async_get_uptime_last()
+
+    assert holder.task is original
+
+
+# --- and a device that says no is not asked again ----------------------------
+
+
+async def test_a_device_that_refuses_the_method_is_not_asked_again():
+    """One read per host for the life of the entry, instead of one per poll.
+
+    The read is gated on Lighting_V2 and a 5 second host dedupe, so on a recorder
+    with a Lighting_V2 channel it otherwise runs every poll and fails every time.
+    """
+    coordinator = _coordinator("10.0.0.1", 500)
+    coordinator.client.async_get_uptime_last = AsyncMock(
+        side_effect=REFUSED_BY_THE_PLATFORM
+    )
+
+    with patch.object(
+        dahua_module.time,
+        "monotonic",
+        side_effect=[100.0, 100.0, 1000.0, 1000.0, 2000.0, 2000.0],
+    ):
+        first = await dahua_module._async_get_host_uptime_generation(coordinator)
+        second = await dahua_module._async_get_host_uptime_generation(coordinator)
+        third = await dahua_module._async_get_host_uptime_generation(coordinator)
+
+    assert (first, second, third) == (0, 0, 0)
+    coordinator.client.async_get_uptime_last.assert_awaited_once()
+    assert dahua_module._HOST_UPTIME_STATE["10.0.0.1"]["unsupported"] is True
+
+
+async def test_a_timeout_does_not_decide_the_device_cannot_do_it():
+    """#724's mistake, which this must not repeat: silence is not a no.
+
+    A device that timed out has said nothing about what it supports, and a camera
+    that is slow for one poll must still get its reboot detection.
+    """
+    coordinator = _coordinator("10.0.0.1", 500)
+    coordinator.client.async_get_uptime_last = AsyncMock(side_effect=TimeoutError())
+
+    with patch.object(
+        dahua_module.time,
+        "monotonic",
+        side_effect=[100.0, 100.0, 1000.0, 1000.0],
+    ):
+        await dahua_module._async_get_host_uptime_generation(coordinator)
+        await dahua_module._async_get_host_uptime_generation(coordinator)
+
+    assert coordinator.client.async_get_uptime_last.await_count == 2
+    assert not dahua_module._HOST_UPTIME_STATE["10.0.0.1"].get("unsupported")
+
+
+async def test_an_expired_session_does_not_decide_it_either():
+    """The client retries this one itself. If it still reaches here the session
+    was replaced, not the method missing, so the next poll must try again."""
+    coordinator = _coordinator("10.0.0.1", 500)
+    coordinator.client.async_get_uptime_last = AsyncMock(side_effect=SESSION_EXPIRED)
+
+    with patch.object(
+        dahua_module.time,
+        "monotonic",
+        side_effect=[100.0, 100.0, 1000.0, 1000.0],
+    ):
+        await dahua_module._async_get_host_uptime_generation(coordinator)
+        await dahua_module._async_get_host_uptime_generation(coordinator)
+
+    assert coordinator.client.async_get_uptime_last.await_count == 2
+    assert not dahua_module._HOST_UPTIME_STATE["10.0.0.1"].get("unsupported")
+
+
+async def test_a_host_that_answers_is_not_latched():
+    """The control. A working device must not be caught by any of this."""
+    coordinator = _coordinator("10.0.0.1", [500, 506])
+
+    with patch.object(
+        dahua_module.time,
+        "monotonic",
+        side_effect=[100.0, 100.0, 1000.0, 1000.0],
+    ):
+        await dahua_module._async_get_host_uptime_generation(coordinator)
+        await dahua_module._async_get_host_uptime_generation(coordinator)
+
+    assert coordinator.client.async_get_uptime_last.await_count == 2
+    assert not dahua_module._HOST_UPTIME_STATE["10.0.0.1"].get("unsupported")
 
 
 # --- and the one exception that is not the device's fault --------------------

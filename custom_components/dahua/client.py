@@ -3140,35 +3140,54 @@ class DahuaClient:
             raise RuntimeError("RPC2 is disabled")
 
         for attempt in (1, 2):
-            try:
-                holder = await self._shared_rpc2()
+            holder = await self._shared_rpc2()
+            login_task = getattr(holder, "task", None)
 
+            try:
                 async with asyncio.timeout(5):
                     response = await holder.client.request(
                         method="magicBox.getUpTime",
                         params=None,
                     )
 
-                info = (response.get("params") or {}).get("info") or {}
+            except Rpc2MethodRefused as refused:
+                if attempt == 1 and rpc2_refusal_is_a_stale_login(refused):
+                    # The session died under us, which is exactly what a reboot
+                    # does. Drop it and ask again on a new one.
+                    await drop_stale_rpc2_login(holder, login_task)
+                    continue
 
-                value = info.get("Last")
-
-                if value is None:
-                    raise RuntimeError("magicBox.getUpTime returned no Last value")
-
-                return int(value)
+                # The device answered, and the answer was no. Its session is
+                # fine, so leaving it alone is the whole point: a recorder that
+                # does not serve this method refuses it on every poll, and
+                # tearing the login down each time made the next read on any
+                # path log in again. Measured at two extra logins per poll
+                # cycle on a DHI-NVR5464-16P-EI, which serves the method name
+                # and refuses it with code 268632080 (#1039, #577).
+                raise
 
             except Exception:
-                # A camera reboot invalidates the old RPC2 login.
-                # Drop the login task so the second attempt / next poll
-                # establishes a fresh session.
-                holder = _HOST_RPC2.get(self._rpc2_key())
-
-                if holder is not None:
-                    holder.task = None
+                # No answer at all: a timeout, a dropped connection, a reboot
+                # ending the read mid-flight. This is the case the retry exists
+                # for, and the login we were holding went with it.
+                await drop_stale_rpc2_login(holder, login_task)
 
                 if attempt == 2:
                     raise
+
+                continue
+
+            info = (response.get("params") or {}).get("info") or {}
+
+            value = info.get("Last")
+
+            if value is None:
+                # Outside the handler deliberately. A device that answers in a
+                # shape we do not understand still has a working session, and
+                # asking again on a fresh login would get the same shape back.
+                raise RuntimeError("magicBox.getUpTime returned no Last value")
+
+            return int(value)
 
         raise RuntimeError("Unable to read camera uptime")
 

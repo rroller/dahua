@@ -26,9 +26,10 @@ from aiohttp import ClientError, ClientResponseError, TCPConnector
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
-from .client import clear_host_cache
+from .client import clear_host_cache, rpc2_refusal_is_a_stale_login
 from .const import CONF_ADDRESS, CONF_PORT, CONF_USE_HTTPS, DOMAIN
 from .dahua_utils import parse_event
+from .rpc2 import Rpc2MethodRefused
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -97,6 +98,18 @@ async def _async_get_host_uptime_generation(coordinator) -> int:
     )
 
     async with lock:
+        # A device that does not serve the method says so the same way every
+        # time, so it is asked once and then left alone. Without this the read
+        # runs on every poll for the life of the entry and can never succeed:
+        # on the recorder this was measured against that was most of the
+        # integration's login traffic, because of what the refusal used to do
+        # to the shared session (#1039, #577).
+        #
+        # `.get`, not `[...]`, because this key is newer than some of the state
+        # dicts that exist: removal tests build one by hand.
+        if state.get("unsupported"):
+            return int(state["generation"])
+
         # Another channel may have completed the host read while this
         # coordinator was waiting for the lock.
         now = time.monotonic()
@@ -108,6 +121,24 @@ async def _async_get_host_uptime_generation(coordinator) -> int:
             current = await coordinator.client.async_get_uptime_last()
         except asyncio.CancelledError:
             raise
+        except Rpc2MethodRefused as refused:
+            state["last_read"] = time.monotonic()
+
+            if not rpc2_refusal_is_a_stale_login(refused):
+                # Latched only for a refusal, never for a timeout: a device
+                # that did not answer has not told us anything about what it
+                # supports, and reading silence as a definite no is the #724
+                # mistake.
+                state["unsupported"] = True
+
+                _LOGGER.debug(
+                    "%s does not serve magicBox.getUpTime (%s); "
+                    "not asking again, so reboot detection is off for this host",
+                    address,
+                    refused,
+                )
+
+            return int(state["generation"])
         except Exception:
             # Cache failed attempts too, otherwise every NVR channel may repeat
             # the same failed uptime request during the same poll burst.
