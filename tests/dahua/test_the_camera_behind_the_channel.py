@@ -269,6 +269,49 @@ def test_a_generic_device_type_falls_back_to_the_recorders_model():
     assert info["serial_number"] == "BD01D6APAG74E89"
 
 
+# --- except the one page that is not a camera's -------------------------------
+#
+# `get_serial_number` appends the channel for every channel but the lowest, so
+# the lowest one's identifier is the bare serial, which is the recorder's. There
+# is no separate device for the recorder, so that page is where its own entities
+# are filed: four disk sensors, the two storage warnings, the processor and the
+# memory. Measured on a DHI-NVR5464-16P-EI, where slot 0 reports serial
+# 4L07AD6PAG5F0F2 on firmware 2.622.0000000.31.R while the recorder is
+# BC0A198PAJ779DF on 4.005.0000000.3.R.
+
+
+def test_the_page_the_recorder_shares_stays_the_recorders():
+    """The recorder's disks must not sit under a camera's model and serial.
+
+    The firmware and serial *sensors* on that same page report the recorder, so
+    describing the page as the camera would have it disagree with itself.
+    """
+    info = _info(get_serial_number="NVRSERIAL")
+
+    assert info["model"] == "DHI-NVR5464-16P-EI"
+    assert info["serial_number"] == "NVRSERIAL"
+    assert info["sw_version"] == "4.005.0000000.3.R"
+
+
+def test_the_recorders_page_does_not_claim_the_cameras_mac():
+    """`connections` is how Home Assistant decides two devices are the same
+    hardware, so the camera's MAC on the recorder's page invites a merge with
+    whatever else has already claimed that camera."""
+    info = _info(get_serial_number="NVRSERIAL")
+
+    assert "connections" not in info
+
+
+def test_every_other_channel_is_still_the_camera():
+    """The narrowing is the shared page only. A channel with a device of its own
+    is a camera and says so, which is what #1044 was for."""
+    info = _info(get_serial_number="NVRSERIAL_11")
+
+    assert info["model"] == "H32_VSIPP-6DIRMD-I3"
+    assert info["serial_number"] == "BD01D6APAG74E89"
+    assert info["sw_version"] == "3.140.101B000.0.R"
+
+
 def test_the_identifiers_do_not_move():
     """The device's identity in the registry is the channel-suffixed key. If
     this changed, every existing device would be orphaned and every entity on it

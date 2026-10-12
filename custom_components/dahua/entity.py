@@ -56,19 +56,47 @@ class DahuaBaseEntity(CoordinatorEntity):
         # and for a channel whose DeviceType is a class of thing rather than a
         # model ("IP Camera").
         coordinator = self._coordinator
+
+        # One channel of a recorder has no device of its own. `get_serial_number`
+        # appends the channel for every channel but the lowest, so that one's
+        # identifier is the bare serial, which is the recorder's -- and the
+        # recorder's own entities are filed against it: four disk sensors, the
+        # storage warnings, the processor and the memory. Describing that page
+        # as the camera in the slot would leave the recorder's disks under a
+        # camera's model, serial, firmware and MAC, with the firmware and serial
+        # sensors on the same page still reporting the recorder's.
+        #
+        # Measured on a DHI-NVR5464-16P-EI: slot 0 reports serial
+        # 4L07AD6PAG5F0F2 and firmware 2.622.0000000.31.R while the recorder is
+        # BC0A198PAJ779DF on 4.005.0000000.3.R.
+        #
+        # So that page stays the recorder's. The camera in the lowest slot goes
+        # undescribed until the recorder has a device of its own, which is worth
+        # doing and is not this.
+        shares_the_host_device = (
+            coordinator.get_serial_number() == coordinator.get_device_serial_number()
+        )
+
+        def channel_or_host(channel_value, host_value):
+            if shares_the_host_device:
+                return host_value()
+            return channel_value() or host_value()
+
         info = {
             "identifiers": {(DOMAIN, coordinator.get_serial_number())},
             "name": coordinator.get_device_name(),
-            "model": coordinator.get_channel_model() or coordinator.get_model(),
+            "model": channel_or_host(
+                coordinator.get_channel_model, coordinator.get_model
+            ),
             "manufacturer": "Dahua",
             "configuration_url": coordinator.get_configuration_url(),
-            "sw_version": (
-                coordinator.get_channel_firmware_version()
-                or coordinator.get_firmware_version()
+            "sw_version": channel_or_host(
+                coordinator.get_channel_firmware_version,
+                coordinator.get_firmware_version,
             ),
-            "serial_number": (
-                coordinator.get_channel_serial_number()
-                or coordinator.get_device_serial_number()
+            "serial_number": channel_or_host(
+                coordinator.get_channel_serial_number,
+                coordinator.get_device_serial_number,
             ),
         }
 
@@ -78,7 +106,12 @@ class DahuaBaseEntity(CoordinatorEntity):
         # wants and is worth knowing about rather than discovering: a device
         # another integration has already claimed with this MAC would be the
         # same device, not a second one.
-        mac = coordinator.get_channel_mac()
+        #
+        # Not on the page the recorder shares: that MAC belongs to the camera in
+        # the slot, and `connections` is how Home Assistant decides two devices
+        # are the same hardware, so it would invite a merge with whatever else
+        # has claimed that camera.
+        mac = None if shares_the_host_device else coordinator.get_channel_mac()
         if mac:
             info["connections"] = {(dr.CONNECTION_NETWORK_MAC, mac)}
         # Where the area chosen while adding this device is applied. Home
