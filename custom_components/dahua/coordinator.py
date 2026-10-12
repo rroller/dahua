@@ -745,6 +745,11 @@ CAPABILITY_REFUSED = (400, 404, 501)
 
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
+    # Tests also build coordinators with object.__new__. These defaults are
+    # always replaced per instance before values are stored.
+    _encode_audio_keys: tuple[str, ...] = ()
+    _encode_audio_last_values: dict[str, str] = {}
+
     # Declared on the class, not only assigned in __init__, because a great many
     # tests build a coordinator with object.__new__ and set only the attributes
     # they are about. channel_option reads this, and those tests reach it through
@@ -1991,9 +1996,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # the switch, so it survives either one being enabled.
             coros = []
             # Only poll Encode where the initialization probe found audio fields.
-            if getattr(self, "_encode_audio_keys", ()) and self._wanted_by(
-                SWITCH, SELECT
-            ):
+            if self._encode_audio_keys and self._wanted_by(SWITCH, SELECT):
                 coros.append(asyncio.ensure_future(self._async_get_encode_config()))
             if self._wanted_by(CAMERA, SWITCH):
                 coros.append(
@@ -4441,9 +4444,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             encode = {}
         # async_get_config also returns {} for HTTP refusals. A failed read is
         # not evidence that the device turned audio off.
-        self._encode_audio_last_values.update(
-            {key: encode[key] for key in self._encode_audio_keys if key in encode}
-        )
+        self._encode_audio_last_values = {
+            **self._encode_audio_last_values,
+            **{key: encode[key] for key in self._encode_audio_keys if key in encode},
+        }
         return self._encode_audio_last_values.copy()
 
     def is_ptz3e10x_t180(self) -> bool:
