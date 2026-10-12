@@ -471,9 +471,19 @@ async def test_an_indoor_monitor_gets_one_select_per_vto(monkeypatch):
         select_module, "entry_coordinators", lambda entry: {0: coordinator}
     )
 
-    await select_module.async_setup_entry(None, object(), lambda devices, **kw: None)
+    await select_module.async_setup_entry(
+        None, _entry_double(), lambda devices, **kw: None
+    )
 
     assert made == ["Vto00", "Vto01"]
+
+
+def _entry_double():
+    """A bare object() was enough until setup started keeping a listener for
+    capabilities the device answers about later."""
+    return SimpleNamespace(
+        entry_id="e1", runtime_data={}, async_on_unload=lambda unsub: None
+    )
 
 
 async def test_anything_else_gets_none(monkeypatch):
@@ -490,7 +500,9 @@ async def test_anything_else_gets_none(monkeypatch):
         select_module, "entry_coordinators", lambda entry: {0: coordinator}
     )
 
-    await select_module.async_setup_entry(None, object(), lambda devices, **kw: None)
+    await select_module.async_setup_entry(
+        None, _entry_double(), lambda devices, **kw: None
+    )
 
     assert made == []
 

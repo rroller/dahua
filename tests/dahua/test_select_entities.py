@@ -273,7 +273,13 @@ async def _added_for(coordinator, cgi_presets=None):
     async def _preset_ids(_coordinator):
         return cgi_presets
 
-    entry = SimpleNamespace(entry_id="e1", options={}, runtime_data={0: coordinator})
+    entry = SimpleNamespace(
+        entry_id="e1",
+        options={},
+        runtime_data={0: coordinator},
+        # Setup keeps a listener for capabilities that turn up on a later poll.
+        async_on_unload=lambda unsub: None,
+    )
     added = []
     with patch.multiple(
         select_module,
