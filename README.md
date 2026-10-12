@@ -316,8 +316,9 @@ Two cases the form cannot diagnose for you:
   some doorbells whose firmware moved to the cloud app, serve no `/cgi-bin/` API.
   There is nothing this integration can do for those; ONVIF or the vendor's cloud
   integration is the route -- and ONVIF needs
-  [its own user on the device](#onvif-needs-its-own-user). A downgrade to earlier
-  firmware has restored the local API for some people.
+  [its own user on the device](#onvif-needs-its-own-user) and
+  [delivers less than you would expect](#what-onvif-gave-one-recorder). A downgrade
+  to earlier firmware has restored the local API for some people.
 - **Cameras behind a recorder's own PoE ports** often sit on a private subnet, such
   as `10.1.1.x`, that Home Assistant cannot route to. Add them through the
   recorder's address and channel number instead of trying to reach them directly.
@@ -512,14 +513,18 @@ What this integration cannot do, as distinct from the bugs and firmware quirks u
 - **A device with no local API cannot be used at all.** Cloud only Imou and Lechange
   models, and some doorbells whose firmware moved to the vendor's app, serve no
   `/cgi-bin/` API. ONVIF or the vendor's own integration is the route for those, and
-  ONVIF needs [its own user on the device](#onvif-needs-its-own-user).
+  ONVIF needs [its own user on the device](#onvif-needs-its-own-user). Read
+  [what it gave one recorder](#what-onvif-gave-one-recorder) before counting on it:
+  twelve channels produced one camera.
 - **Cameras on a recorder's own PoE ports are usually not reachable directly**, because
   they sit on a private subnet Home Assistant cannot route to. Add them through the
   recorder's address and channel number instead.
 - **Channels a recorder reaches over ONVIF cannot be driven**, and are not offered when
   adding one. This integration speaks Dahua's own API and an ONVIF channel does not
   answer it. Home Assistant's own ONVIF integration, pointed at the **recorder**, does
-  reach them -- but see the warning below before you try it.
+  reach them, with two caveats below that are worth reading first: it needs its own
+  user on the device, and on the recorder measured here it turned twelve channels into
+  one camera.
 
   <a name="onvif-needs-its-own-user"></a>
   **If you use ONVIF, create an ONVIF user on the device first.** Dahua keeps ONVIF
@@ -544,6 +549,7 @@ What this integration cannot do, as distinct from the bugs and firmware quirks u
 
   Two other things worth knowing before you add it.
 
+  <a name="what-onvif-gave-one-recorder"></a>
   **Expect far fewer cameras than channels.** Home Assistant's ONVIF integration skips
   any profile whose video encoding is not exactly `H264`, and a recorder commonly
   reports no encoding at all. Measured on a DHI-NVR5464-16P-EI: it offers **31 profiles
