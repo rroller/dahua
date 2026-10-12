@@ -13,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
 from .const import DOMAIN
-from .entity import DahuaBaseEntity, DahuaEventDrivenEntity
+from .entity import DahuaBaseEntity, DahuaEventDrivenEntity, DahuaHostEntity
 
 # Maps the camera's lighting profile id to a readable label.
 PROFILE_NAMES = {
@@ -54,7 +54,13 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
                 DahuaProcessorUsageSensor(reporter, entry),
                 DahuaMemoryUsedSensor(reporter, entry),
             ],
-            config_subentry_id=reporter.subentry_id,
+            # The box's own device belongs to the entry, not to one channel's
+            # subentry: the processor is not channel 0's processor. A camera
+            # reporting its SD card has no separate host device, so its
+            # sensors stay where they are, on its own channel.
+            config_subentry_id=(
+                None if reporter.uses_separate_host_device() else reporter.subentry_id
+            ),
         )
 
     for coordinator in entry_coordinators(entry).values():
@@ -229,7 +235,7 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
         return False
 
 
-class DahuaProcessorUsageSensor(DahuaBaseEntity, SensorEntity):
+class DahuaProcessorUsageSensor(DahuaHostEntity, SensorEntity):
     """How busy the device's processor is, as a percentage.
 
     `magicBox.getCPUUsage`, which is RPC2 only -- there is no CGI form -- so
@@ -252,7 +258,7 @@ class DahuaProcessorUsageSensor(DahuaBaseEntity, SensorEntity):
         return (self.coordinator.data or {}).get("system.cpu_usage")
 
 
-class DahuaMemoryUsedSensor(DahuaBaseEntity, SensorEntity):
+class DahuaMemoryUsedSensor(DahuaHostEntity, SensorEntity):
     """How much of the device's memory is in use, as a percentage.
 
     `magicBox.getMemoryInfo` reports free and total in bytes and no percentage,

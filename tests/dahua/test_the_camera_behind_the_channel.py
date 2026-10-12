@@ -174,6 +174,10 @@ RECORDER_CHANNEL = {
     "get_channel_firmware_version": "3.140.101B000.0.R",
     "get_channel_mac": "30:dd:aa:f6:24:9e",
     "configured_area_name": None,
+    # No device of its own, which is the arrangement every assertion in this
+    # file was written against. The recorder that does have one is covered in
+    # test_the_recorder_gets_its_own_device.py.
+    "uses_separate_host_device": False,
 }
 
 
@@ -212,6 +216,9 @@ class _Coordinator:
 
     def get_channel_mac(self):
         return self.values["get_channel_mac"]
+
+    def uses_separate_host_device(self):
+        return self.values["uses_separate_host_device"]
 
     def configured_area_name(self):
         return self.values["configured_area_name"]

@@ -19,7 +19,7 @@ from .const import (
     SOUND_DEVICE_CLASS,
     DOOR_DEVICE_CLASS,
 )
-from .entity import DahuaBaseEntity, DahuaEventDrivenEntity
+from .entity import DahuaBaseEntity, DahuaEventDrivenEntity, DahuaHostEntity
 
 # Override event names. Otherwise we'll generate the name from the event name for example SmartMotionHuman will
 # become "Smart Motion Human"
@@ -198,7 +198,13 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
                 DahuaDiskProblemBinarySensor(reporter, entry, disk["name"])
                 for disk in reporter.get_storage_disks()
             ],
-            config_subentry_id=reporter.subentry_id,
+            # The box's own device belongs to the entry, not to one channel's
+            # subentry: the processor is not channel 0's processor. A camera
+            # reporting its SD card has no separate host device, so its
+            # sensors stay where they are, on its own channel.
+            config_subentry_id=(
+                None if reporter.uses_separate_host_device() else reporter.subentry_id
+            ),
         )
 
     for coordinator in entry_coordinators(entry).values():
@@ -516,7 +522,7 @@ class DahuaAuthorizedVehicleBinarySensor(DahuaEventDrivenEntity, BinarySensorEnt
         return False
 
 
-class DahuaDiskProblemBinarySensor(DahuaBaseEntity, BinarySensorEntity):
+class DahuaDiskProblemBinarySensor(DahuaHostEntity, BinarySensorEntity):
     """A recorder's disk health, as a diagnostic problem sensor (#745).
 
     On when the disk's State is not Success or any partition reports an error.

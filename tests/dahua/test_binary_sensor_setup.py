@@ -36,6 +36,7 @@ class _Coordinator:
         no_video=False,
         disks=(),
         serial="SERIAL1",
+        host_device=False,
     ):
         self._events = list(events)
         self._doorbell = doorbell
@@ -43,6 +44,7 @@ class _Coordinator:
         self._no_video = no_video
         self._disks = [{"name": name} for name in disks]
         self._serial = serial
+        self._host_device = host_device
 
     def get_event_list(self):
         return self._events
@@ -65,6 +67,15 @@ class _Coordinator:
 
     def get_channel(self):
         return self._channel
+
+    def uses_separate_host_device(self):
+        """Whether the box has a device apart from its channels.
+
+        False by default so that every test above this one describes what it
+        always described: a recorder whose class was never answered keeps the
+        old arrangement, with its disks on the lowest channel.
+        """
+        return self._host_device
 
 
 class _Entry:
@@ -161,6 +172,47 @@ async def test_a_recorder_without_channel_zero_still_gets_them(setup):
     carriers = {c.get_channel() for k, _n, c in setup.built if k == "disk"}
 
     assert carriers == {5}
+
+
+async def _filed_under(coordinator):
+    """Which subentry the disk sensors were handed to, if any.
+
+    `adds_entities` accepts `config_subentry_id` and throws it away, which is
+    right for every other test here and useless for this one.
+    """
+    seen = []
+
+    def add(new_entities, update_before_add=False, *, config_subentry_id=None):
+        if new_entities:
+            seen.append(config_subentry_id)
+
+    await bs.async_setup_entry(None, _Entry([coordinator]), add)
+    return seen
+
+
+async def test_the_recorders_disks_are_filed_under_the_entry(monkeypatch):
+    """Not under a channel's subentry.
+
+    A subentry is a channel. Filing the recorder's disks under one would mean
+    that removing that channel took the recorder's disks with it, and the
+    recorder still has them.
+    """
+    monkeypatch.setattr(bs, "DahuaDiskProblemBinarySensor", lambda *a, **k: object())
+
+    recorder = _Coordinator(disks=("sda", "sdb"), host_device=True)
+    recorder.subentry_id = "channel-0"
+
+    assert await _filed_under(recorder) == [None]
+
+
+async def test_a_camera_with_an_sd_card_keeps_its_disk_on_its_own_channel(monkeypatch):
+    """There is no separate device to file it against, so nothing moves."""
+    monkeypatch.setattr(bs, "DahuaDiskProblemBinarySensor", lambda *a, **k: object())
+
+    camera = _Coordinator(disks=("sda",), host_device=False)
+    camera.subentry_id = "channel-0"
+
+    assert await _filed_under(camera) == ["channel-0"]
 
 
 async def test_a_camera_gets_no_disk_sensors(setup):
