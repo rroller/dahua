@@ -4,7 +4,7 @@ import logging
 import re
 import socket
 from copy import deepcopy
-from contextlib import suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 import asyncio
 import time
 import aiohttp
@@ -83,6 +83,34 @@ RPC2_EVENT_HEARTBEAT = b"Heartbeat\r\n"
 # per host, shared across every client for that address.
 MAX_CONCURRENT_REQUESTS_PER_HOST = 2
 _HOST_LIMITS: dict = {}
+
+# How long a request may wait for one of those slots before it gives up.
+#
+# The cap above is this integration's own politeness, not a limit the device
+# announced, so time spent queueing for it must not be charged to the device's
+# clock. It was: every call site started `asyncio.timeout(TIMEOUT_SECONDS)` and
+# *then* queued for the semaphore, so on a recorder with enough channels the
+# back of the queue expired without ever being sent. Measured on a 19 channel
+# Amcrest NV5232E-16P in #1043: 1 channel of 19 set up, and the log filled with
+# timeouts naming a device that was answering everything it was actually asked.
+#
+# The wait needs a ceiling of its own all the same. A device that accepts
+# connections and then says nothing holds each slot for TIMEOUT_SECONDS, and
+# with the queue two wide a deep fan-out would otherwise grow with its own
+# depth: measured at 50s for a hundred reads, and it keeps going up.
+#
+# Three times TIMEOUT_SECONDS, which is a measurement rather than a guess. One
+# getConfig on a DHI-NVR5464-16P-EI costs a median 0.14s, so the deepest poll
+# reported so far -- 19 channels of around twenty reads each -- is 380 reads and
+# drains in about 26s two at a time. That is what has to fit under the ceiling,
+# and at TIMEOUT_SECONDS it did not, which is the bug. 60s leaves better than
+# twice that headroom while still bounding a wedged fan-out at roughly 80s.
+#
+# Longer than DEFAULT_SCAN_INTERVAL on purpose: a coordinator schedules its
+# next refresh when the current one finishes (`_schedule_refresh` is called at
+# the end of `_async_refresh`), so a slow poll delays the next one rather than
+# stacking up behind it.
+MAX_QUEUE_WAIT_SECONDS = 3 * TIMEOUT_SECONDS
 
 # A remote IVS write replaces a whole channel table. Entries for the same NVR
 # must serialize the fresh read and write together, even if they use different
@@ -1781,7 +1809,7 @@ class DahuaClient:
 
     async def async_get_remote_ivs_rules(self, channel: int) -> dict:
         """Read an NVR channel's remote rules in the coordinator's flat shape."""
-        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+        async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
             table = await self._rpc2_shared_call(
                 lambda client: client.async_get_remote_ivs_rules(channel)
             )
@@ -1795,8 +1823,8 @@ class DahuaClient:
         self, channel: int, rule_id: str, enabled: bool
     ) -> None:
         """Write a remote rule through the shared authenticated RPC2 session."""
-        async with asyncio.timeout(TIMEOUT_SECONDS):
-            async with _remote_ivs_lock(self._device, channel), self._host_limit:
+        async with _remote_ivs_lock(self._device, channel), self._request_slot():
+            async with asyncio.timeout(TIMEOUT_SECONDS):
                 await self._rpc2_shared_call(
                     lambda client: client.async_set_remote_ivs_rule_by_id(
                         channel, rule_id, enabled
@@ -2288,9 +2316,9 @@ class DahuaClient:
         even when RPC2 polling is disabled. Partial CGI writes are accepted but
         do not light the emitter.
         """
-        async with self._lighting_scheme_lock, asyncio.timeout(
+        async with self._lighting_scheme_lock, self._request_slot(), asyncio.timeout(
             TIMEOUT_SECONDS
-        ), self._host_limit:
+        ):
             restore_store = self._illuminator_restore_store
             if restore_store is None:
                 raise RuntimeError("Dahua illuminator recovery storage is unavailable")
@@ -2355,9 +2383,9 @@ class DahuaClient:
         restore_store = self._illuminator_restore_store
         if restore_store is None:
             return
-        async with self._lighting_scheme_lock, asyncio.timeout(
+        async with self._lighting_scheme_lock, self._request_slot(), asyncio.timeout(
             TIMEOUT_SECONDS
-        ), self._host_limit:
+        ):
             keys = await restore_store.async_keys()
             if not keys:
                 return
@@ -2419,9 +2447,9 @@ class DahuaClient:
                 lambda client: client.set_config(name, table, channel=channel)
             )
 
-        async with self._lighting_scheme_lock, asyncio.timeout(
+        async with self._lighting_scheme_lock, self._request_slot(), asyncio.timeout(
             TIMEOUT_SECONDS
-        ), self._host_limit:
+        ):
             if enabled:
                 scheme = (await read("LightingScheme")).get("table")
                 lighting = (await read("Lighting_V2")).get("table")
@@ -4340,7 +4368,7 @@ class DahuaClient:
         Raises the same errors async_get_snapshot would.
         """
         url = self._base + "/cgi-bin/snapshot.cgi?channel={0}".format(channel_number)
-        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+        async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
             response = None
             try:
                 auth = DigestAuth(
@@ -4355,9 +4383,9 @@ class DahuaClient:
 
     async def get_bytes(self, url: str) -> bytes:
         """Get information from the API. This will return the raw response and not process it"""
-        # The timeout covers the wait for a slot as well as the request, so a
-        # busy host sheds load instead of building an unbounded queue.
-        async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+        # The slot is taken before the clock starts, so this timeout is the
+        # device's and MAX_QUEUE_WAIT_SECONDS is the queue's.
+        async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
             response = None
             try:
                 auth = DigestAuth(
@@ -4389,6 +4417,24 @@ class DahuaClient:
             if match:
                 indexes.add(int(match.group(1)))
         return indexes
+
+    @asynccontextmanager
+    async def _request_slot(self):
+        """Wait for this host's turn, on a clock of its own.
+
+        Always used as `async with self._request_slot(), asyncio.timeout(...)`
+        and never the other way round. That order is the whole point:
+        TIMEOUT_SECONDS then measures the device, and MAX_QUEUE_WAIT_SECONDS
+        measures the queue this integration put in front of it (#1043).
+
+        The slot is entered through the async context manager protocol rather
+        than acquire/release so that a test may substitute anything that spells
+        it, which several already do.
+        """
+        async with AsyncExitStack() as stack:
+            async with asyncio.timeout(MAX_QUEUE_WAIT_SECONDS):
+                await stack.enter_async_context(self._host_limit)
+            yield
 
     async def get(self, url: str, verify_ok=False) -> dict:
         """Get information from the API, sharing the read across this device.
@@ -4459,7 +4505,7 @@ class DahuaClient:
                 match = None  # this table only; the transport is still good
             if match:
                 try:
-                    async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+                    async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
                         return await self._rpc2_get_config(match.group(1))
                 except Exception as rpc2_exception:  # pylint: disable=broad-except
                     # Either way this read falls through to CGI rather than
@@ -4511,7 +4557,7 @@ class DahuaClient:
                         )
         url = self._base + url
         try:
-            async with asyncio.timeout(TIMEOUT_SECONDS), self._host_limit:
+            async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
                 response = None
                 try:
                     auth = DigestAuth(

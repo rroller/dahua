@@ -688,9 +688,10 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
 #
 # Every entry used to probe this for itself, and the probe is the same URL for
 # all of them -- snapshot.cgi?channel=0. Six entries on one recorder therefore
-# fired six identical requests at setup, through a semaphore two wide, with the
-# timeout covering the wait for a slot as well as the request. On a busy XVR
-# some won and some timed out, and a timeout was read as a definite no:
+# fired six identical requests at setup, through a semaphore two wide, and at
+# the time that semaphore was queued for inside the request's own timeout, so a
+# request could expire having never been sent (separated in #1043). On a busy
+# XVR some won and some timed out, and a timeout was read as a definite no:
 #
 #     PROBE_FAILED = (ClientError, TimeoutError)
 #
