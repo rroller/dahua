@@ -2989,6 +2989,35 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return
         self._remote_devices = dahua_utils.parse_remote_devices(raw)
 
+    def _slot(self) -> dict:
+        """What the recorder said about the camera in this channel's slot."""
+        return self._remote_devices.get(self._channel) or {}
+
+    def get_channel_serial_number(self):
+        """The camera's own serial, or None if the recorder did not say.
+
+        Not get_device_serial_number(), which is the recorder's and is the same
+        for every channel on it.
+        """
+        return self._slot().get("serial") or None
+
+    def get_channel_mac(self):
+        """The camera's MAC, or None. Only a recorder can answer this for a
+        camera on its own PoE network."""
+        return self._slot().get("mac") or None
+
+    def get_channel_firmware_version(self):
+        """The camera's firmware, or None if the recorder did not say.
+
+        The recorder reports it with the build date appended --
+        "3.140.101B000.0.R,2024-11-28" -- and the version alone is what is
+        comparable with what every other Dahua device here reports, so the date
+        is dropped rather than shown on half the devices and not the others.
+        """
+        firmware = self._slot().get("firmware") or ""
+        version = firmware.split(",")[0].strip()
+        return version or None
+
     def get_configured_channel_count(self):
         """How many channels the recorder reports a camera configured on, or None.
 

@@ -4,6 +4,7 @@ from custom_components.dahua import (
     DahuaDataUpdateCoordinator,
     async_host_is_unreachable,
 )
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN, ATTRIBUTION
 
@@ -44,14 +45,42 @@ class DahuaBaseEntity(CoordinatorEntity):
     # https://developers.home-assistant.io/docs/device_registry_index
     @property
     def device_info(self):
+        # A channel of a recorder is a camera, and until now its device page
+        # described the recorder: the recorder's model, the recorder's firmware.
+        # The recorder knows better and says so in RemoteDevice, which is the
+        # only place that can answer -- a PoE camera is on the recorder's own
+        # network and nothing else on the LAN can reach it to ask.
+        #
+        # Each one falls back to what the device itself reports, which is right
+        # for a standalone camera, for a slot the recorder said nothing about,
+        # and for a channel whose DeviceType is a class of thing rather than a
+        # model ("IP Camera").
+        coordinator = self._coordinator
         info = {
-            "identifiers": {(DOMAIN, self._coordinator.get_serial_number())},
-            "name": self._coordinator.get_device_name(),
-            "model": self._coordinator.get_model(),
+            "identifiers": {(DOMAIN, coordinator.get_serial_number())},
+            "name": coordinator.get_device_name(),
+            "model": coordinator.get_channel_model() or coordinator.get_model(),
             "manufacturer": "Dahua",
-            "configuration_url": self._coordinator.get_configuration_url(),
-            "sw_version": self._coordinator.get_firmware_version(),
+            "configuration_url": coordinator.get_configuration_url(),
+            "sw_version": (
+                coordinator.get_channel_firmware_version()
+                or coordinator.get_firmware_version()
+            ),
+            "serial_number": (
+                coordinator.get_channel_serial_number()
+                or coordinator.get_device_serial_number()
+            ),
         }
+
+        # The MAC goes in `connections` because that is the only field Home
+        # Assistant renders it in. It also lets Home Assistant recognise the
+        # same hardware reached another way, which is usually what someone
+        # wants and is worth knowing about rather than discovering: a device
+        # another integration has already claimed with this MAC would be the
+        # same device, not a second one.
+        mac = coordinator.get_channel_mac()
+        if mac:
+            info["connections"] = {(dr.CONNECTION_NETWORK_MAC, mac)}
         # Where the area chosen while adding this device is applied. Home
         # Assistant honours suggested_area only when it *creates* the device, so
         # this files a new one and never argues with a device the user has since

@@ -77,7 +77,11 @@ def test_the_fixture_matches_what_the_recorder_reports():
     parsed = dahua_utils.parse_remote_devices(TABLE)
 
     assert sorted(parsed) == list(range(16))
-    assert parsed[3] == {"enabled": True, "protocol": "private"}
+    # The two fields this file is about. Not the whole slot: it also carries the
+    # camera's model, serial, MAC and firmware, and none of that decides whether
+    # a channel is worth offering.
+    assert parsed[3]["enabled"] is True
+    assert parsed[3]["protocol"] == "private"
     assert parsed[10]["enabled"] is False
     assert parsed[14]["protocol"] == "onvif"
 

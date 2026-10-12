@@ -57,11 +57,15 @@ def test_every_slot_is_parsed():
 
 
 def test_enable_and_protocol_are_read():
+    """Named fields rather than the whole slot, which also carries the camera's
+    own model, serial, MAC and firmware. Those are pinned in
+    test_the_camera_behind_the_channel.py; what matters here is the two fields
+    that decide which channels get offered."""
     devices = dahua_utils.parse_remote_devices(_the_real_recorder())
 
-    assert devices[0] == {"enabled": True, "protocol": "private"}
-    assert devices[10] == {"enabled": True, "protocol": "onvif"}
-    assert devices[15] == {"enabled": False, "protocol": "private"}
+    assert (devices[0]["enabled"], devices[0]["protocol"]) == (True, "private")
+    assert (devices[10]["enabled"], devices[10]["protocol"]) == (True, "onvif")
+    assert (devices[15]["enabled"], devices[15]["protocol"]) == (False, "private")
 
 
 def test_a_device_with_no_such_table_parses_to_nothing():
@@ -74,7 +78,8 @@ def test_a_device_with_no_such_table_parses_to_nothing():
 def test_a_slot_missing_a_field_still_parses():
     devices = dahua_utils.parse_remote_devices({INFO.format(3, "Enable"): "true"})
 
-    assert devices[3] == {"enabled": True, "protocol": ""}
+    assert devices[3]["enabled"] is True
+    assert devices[3]["protocol"] == "", "a field nobody sent must read as absent"
 
 
 # --- deciding what to offer -------------------------------------------------
