@@ -112,3 +112,75 @@ def test_the_request_failure_line_passes_the_description():
         "_describe_client_error(exception)" in source
     ), "the ClientError debug line no longer reports what the device answered"
     assert "ClientError fetching information from %s: %s" in source
+
+
+# --- and so does the line that reports a device failing to come up -----------
+
+
+def test_the_initialize_failure_line_describes_the_exception():
+    """#1055 arrived as a line with nothing after the colon:
+
+        Failed to initialize device at x.x.x.x:
+
+    which is what `"%s" % exception` produces for a bare TimeoutError, whose
+    str() is empty. That is the failure the line reports most often, so it said
+    nothing exactly when it was needed, and the reporter could not tell us what
+    the exception had been because the line had already discarded it.
+
+    Derived from the call rather than from a copy of the message: every
+    _LOGGER call in the package whose format begins this way has to hand its
+    exception through the describer, wherever that call lives.
+    """
+    import ast
+
+    offenders = []
+    for path, text in modules().items():
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "warning"):
+                continue
+            if not node.args or not isinstance(node.args[0], ast.Constant):
+                continue
+            if not str(node.args[0].value).startswith("Failed to initialize device"):
+                continue
+            described = [
+                argument
+                for argument in node.args[1:]
+                if isinstance(argument, ast.Call)
+                and getattr(argument.func, "id", "") == "_describe_client_error"
+            ]
+            if not described:
+                offenders.append("%s:%d" % (path.name, node.lineno))
+
+    assert not offenders, (
+        "these report a failed device by interpolating the exception, which is "
+        "blank for a bare TimeoutError: %s" % offenders
+    )
+
+
+def test_the_scan_above_finds_the_lines_it_is_policing():
+    """Otherwise a renamed message makes the guard pass by matching nothing."""
+    import ast
+
+    found = 0
+    for _path, text in modules().items():
+        for node in ast.walk(ast.parse(text)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "warning"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and str(node.args[0].value).startswith("Failed to initialize device")
+            ):
+                found += 1
+
+    assert found >= 2, "expected the two initialize-failure lines, found %d" % found
+
+
+def test_a_bare_timeout_is_what_made_the_line_blank():
+    """The premise of the two tests above, stated rather than assumed."""
+    assert str(TimeoutError()) == ""
+    assert _describe_client_error(TimeoutError()) == "TimeoutError"
