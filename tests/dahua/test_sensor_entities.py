@@ -66,6 +66,19 @@ class _Coordinator:
     def get_serial_number(self):
         return "SERIAL1"
 
+    # A standalone camera: one device, no channel suffix, and nothing read a
+    # recorder's slot table for it. So its page is the box's page, and the
+    # firmware and serial sensors report what the device says about itself,
+    # which is what every assertion in this file was written against.
+    def stands_in_for_the_host(self):
+        return True
+
+    def get_channel_firmware_version(self):
+        return None
+
+    def get_channel_serial_number(self):
+        return None
+
     def get_device_name(self):
         return "Front Door"
 

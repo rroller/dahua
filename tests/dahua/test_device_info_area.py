@@ -62,6 +62,13 @@ class _Coordinator:
     def host_device_identifier(self):
         return SERIAL + "_host"
 
+    def stands_in_for_the_host(self):
+        """Computed the way the real one is, rather than stated separately."""
+        return (
+            self.get_serial_number() == self.get_device_serial_number()
+            and not self.uses_separate_host_device()
+        )
+
     # A standalone camera: the recorder's camera table says nothing about it, so
     # every one of these is None and device_info falls back to what the device
     # reports about itself. The recorder case is covered in
