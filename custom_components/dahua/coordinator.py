@@ -2899,6 +2899,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return
         self._storage_disks = parse_storage_disks(raw)
+
+        # What those disks are, which only RPC2 answers. Entirely optional: a
+        # recorder with RPC2 off keeps the state and capacity it already had.
+        # Wrapped broadly on purpose -- a diagnostic attribute is never worth
+        # losing the disk sensors over, and this is the read that a device
+        # without the service refuses.
+        try:
+            details = await self.client.async_get_storage_device_details()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug("No disk hardware detail on %s", self._address, exc_info=True)
+            return
+        for disk in self._storage_disks:
+            detail = details.get(disk.get("name"))
+            if detail:
+                disk.update(detail)
         self._storage_last_refresh = time.time()
 
     def get_storage_disks(self) -> list:

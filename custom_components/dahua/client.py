@@ -779,6 +779,52 @@ def _storage_int(value) -> int:
         return 0
 
 
+def parse_storage_device_details(params: dict) -> dict:
+    """What each disk *is*, from RPC2 StorageDeviceManager.getDeviceInfos.
+
+    The CGI read behind parse_storage_disks answers state and capacity and
+    nothing about the hardware. This method answers the rest, and measured on a
+    DHI-NVR5464-16P-EI it is served while every health-shaped method on the same
+    service is refused (268632080), so the SMART ceiling in parse_storage_disks
+    stands -- this is identity, not health:
+
+        {"device": [{"Name": "/dev/sda", "Module": "ST6000VX00232EF110",
+                     "SerialNo": "ZAD3KYFP", "Firmware": "SC60", "BUS": "SATA",
+                     "Media": "DISK", "PowerMode": "Active",
+                     "Capacity": 6001175126016.0, "Partitions": [...]}, ...]}
+
+    Keyed by the name the CGI read uses, so the two can be joined. Returns {}
+    for anything unexpected rather than raising: this is an enhancement to a
+    diagnostic sensor and must never be the reason one disappears.
+
+    Note the capacity disagrees with the CGI's summed partitions -- 6001175126016
+    against 5923181428736 for the same disk -- because one is the disk and the
+    other is what is formatted on it. Both are reported, under names that say
+    which is which.
+    """
+    if not isinstance(params, dict):
+        return {}
+    devices = params.get("device")
+    if not isinstance(devices, list):
+        return {}
+    found = {}
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        name = device.get("Name")
+        if not name:
+            continue
+        found[str(name)] = {
+            "model": str(device.get("Module") or "").strip() or None,
+            "serial": str(device.get("SerialNo") or "").strip() or None,
+            "firmware": str(device.get("Firmware") or "").strip() or None,
+            "bus": str(device.get("BUS") or "").strip() or None,
+            "power_mode": str(device.get("PowerMode") or "").strip() or None,
+            "capacity_bytes": _storage_int(device.get("Capacity")),
+        }
+    return found
+
+
 def parse_storage_disks(data: dict) -> list:
     """Per physical disk, from storageDevice.cgi getDeviceAllInfo (#745).
 
@@ -1946,6 +1992,17 @@ class DahuaClient:
         """
         url = "/cgi-bin/storageDevice.cgi?action=getDeviceAllInfo"
         return await self.get(url)
+
+    async def async_get_storage_device_details(self) -> dict:
+        """What each disk is, by name. RPC2 only; {} when it cannot be read.
+
+        There is no CGI form of this, so a recorder with RPC2 switched off keeps
+        the state and capacity it already had and gains nothing, which is why
+        the caller treats an empty answer as "nothing more to say" rather than
+        as a failure.
+        """
+        params = await self._async_rpc2_value("StorageDeviceManager.getDeviceInfos")
+        return parse_storage_device_details(params)
 
     async def async_get_ptz_position(self) -> dict:
         """
