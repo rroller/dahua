@@ -6,11 +6,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.components.select import SelectEntity
 from homeassistant.const import EntityCategory
 from homeassistant.exceptions import HomeAssistantError
-from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
+from custom_components.dahua import DahuaDataUpdateCoordinator
 
-from . import dahua_utils
+from . import dahua_utils, entry_coordinators
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
+from .late import async_add_and_keep_watching
 from .infrared import (
     MODE_BY_OPTION,
     OPTION_BY_MODE,
@@ -32,7 +33,16 @@ PARALLEL_UPDATES = 1
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup select platform."""
-    for coordinator in entry_coordinators(entry).values():
+
+    async def build(coordinator):
+        """Which selects this channel warrants, as the device answers today.
+
+        Called again when a capability turns up on a later poll, so a camera
+        whose infrared probe timed out at setup gets its Infrared Mode select
+        when the device finally answers rather than at the next reload
+        (#1057). That rebuild re-reads the preset list, which is why the
+        signal names one channel rather than the whole entry.
+        """
         devices = []
 
         if coordinator.is_amcrest_doorbell() and coordinator.supports_security_light():
@@ -110,7 +120,11 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             for vto in links.get("vtos") or {}:
                 devices.append(DahuaVthCameraLinkSelect(coordinator, entry, vto))
 
-        async_add_devices(devices, config_subentry_id=coordinator.subentry_id)
+        return devices
+
+    await async_add_and_keep_watching(
+        hass, entry, build, async_add_devices, entry_coordinators
+    )
 
 
 async def _async_preset_ids(coordinator):

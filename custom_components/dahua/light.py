@@ -26,6 +26,7 @@ from . import (
 )
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
+from .late import async_add_and_keep_watching
 from .client import SECURITY_LIGHT_TYPE
 from .illuminator_restore import override_store_key
 from .infrared import async_write_infrared_mode
@@ -43,7 +44,14 @@ PARALLEL_UPDATES = 1
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
     """Setup light platform."""
-    for coordinator in entry_coordinators(entry).values():
+
+    async def build(coordinator):
+        """Which lights this channel warrants, as the device answers today.
+
+        Called again when a capability turns up on a later poll, so a camera
+        whose infrared probe timed out at setup gets its light when the device
+        finally answers rather than at the next reload (#1057).
+        """
         entities = []
         if coordinator.supports_infrared_light():
             entities.append(DahuaInfraredLight(coordinator, entry))
@@ -73,7 +81,11 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities):
         if coordinator.is_amcrest_doorbell():
             entities.append(AmcrestRingLight(coordinator, entry))
 
-        async_add_entities(entities, config_subentry_id=coordinator.subentry_id)
+        return entities
+
+    await async_add_and_keep_watching(
+        hass, entry, build, async_add_entities, entry_coordinators
+    )
 
 
 class DahuaInfraredLight(DahuaBaseEntity, LightEntity):

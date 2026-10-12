@@ -37,6 +37,7 @@ from .client import (
     parse_storage_disks,
     rpc2_refusal_is_a_stale_login,
 )
+from .late import async_notify_capability_discovered
 from .rpc2 import Rpc2MethodRefused
 from .const import (
     CAMERA,
@@ -101,6 +102,15 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 # config entry with ConfigEntryNotReady. One slow capability check took the
 # device down and Home Assistant retried it forever. See #594 and #631.
 PROBE_FAILED = (ClientError, TimeoutError)
+
+# How many later polls will re-ask a capability question the device never
+# answered. Silence is not an answer (#1057), but it cannot be chased for ever
+# either: on the recorder in #1043 twelve probes went unanswered, and asking all
+# of them on every poll would spend twelve timeouts a cycle instead of twelve
+# once. Three is chosen from what that install measured, where the set of probes
+# that failed was different on every run, so an answer that exists turns up
+# within a couple of attempts or the device is genuinely mute.
+MAX_CAPABILITY_RETRIES = 3
 
 # One card per device, naming the channels whose main stream a browser cannot
 # be given.
@@ -1231,6 +1241,95 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "error": type(exception).__name__,
         }
 
+    def _note_probe_answered(self, name: str) -> None:
+        """Forget that a probe once went unanswered, because it just did.
+
+        Only silence is forgotten. A refusal carrying a status stays on the
+        record: that is the device saying what it does not do, and it is the
+        half `_note_probe_refusal` exists to keep.
+        """
+        refusals = getattr(self, "_probe_refusals", None) or {}
+        if not refusals.get(name, {}).get("answered", True):
+            refusals.pop(name, None)
+
+    def probes_that_did_not_answer(self) -> set:
+        """Capability questions this device has not answered either way.
+
+        Derived from the refusals already recorded rather than tracked beside
+        them, so the two cannot come to disagree about what happened.
+        """
+        refusals = getattr(self, "_probe_refusals", None) or {}
+        return {
+            name for name, refusal in refusals.items() if not refusal.get("answered")
+        }
+
+    async def _async_retry_lighting(self) -> bool:
+        """Whether an infrared light turned up that was missed at setup."""
+        if await self.async_detect_lighting_support() and not self._supports_lighting:
+            self._supports_lighting = True
+            return True
+        return False
+
+    async def _async_retry_lighting_v2(self) -> bool:
+        """Whether an illuminator turned up that was missed at setup."""
+        try:
+            await self.client.async_get_lighting_v2()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("lighting_v2", probe_error)
+            return False
+        self._note_probe_answered("lighting_v2")
+        if not self._supports_lighting_v2:
+            self._supports_lighting_v2 = True
+            return True
+        return False
+
+    async def _async_retry_unanswered_capabilities(self) -> None:
+        """Ask again for a capability the device never answered.
+
+        Not at setup. Each of these costs a full timeout when it fails, and the
+        install that reported it was already waiting four minutes to start
+        (#1043). By a later poll the setup storm is over and the same reads are
+        fast: 0.06s measured on an idle recorder, against 20s of timeout.
+
+        A capability that turns up here creates its entities straight away,
+        through the signal at the end. Before that the answer was simply lost:
+        the entity set was decided at setup and nothing ever asked again.
+
+        Only the probes in RETRYABLE_CAPABILITIES. Every capability deserves
+        this eventually, and wiring them one at a time with a test each is how
+        it stays reviewable.
+        """
+        pending = self.probes_that_did_not_answer() & set(RETRYABLE_CAPABILITIES)
+        if not pending:
+            return
+
+        attempts = getattr(self, "_capability_retries", None)
+        if attempts is None:
+            attempts = self._capability_retries = {}
+
+        discovered = False
+        for name in sorted(pending):
+            if attempts.get(name, 0) >= MAX_CAPABILITY_RETRIES:
+                continue
+            attempts[name] = attempts.get(name, 0) + 1
+            try:
+                if await RETRYABLE_CAPABILITIES[name](self):
+                    discovered = True
+            except PROBE_FAILED:
+                # Still silent. The attempt is spent and the refusal it
+                # recorded stands; nothing here may fail the poll.
+                pass
+
+        if discovered:
+            _LOGGER.info(
+                "%s answered a capability question it had not answered before, so "
+                "the entities it gates are being created now",
+                self._address,
+            )
+            async_notify_capability_discovered(
+                self.hass, self.config_entry.entry_id, self.get_serial_number()
+            )
+
     def _auth_refused(self, exception) -> Exception:
         """What to raise when the device refuses these credentials.
 
@@ -1819,6 +1918,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # to a device that is evidently busy.
             if self._device_class_unanswered and not first_refresh:
                 await self._async_retry_device_class()
+
+            # The same rule as the device class above: never on the refresh
+            # that ran the probes, or a question that has just timed out is
+            # asked again milliseconds later, inside the storm that lost it.
+            if not first_refresh:
+                await self._async_retry_unanswered_capabilities()
 
             # A recorder's disks, refreshed at most hourly because each read is a
             # login the device logs. Gated on disks having been found at setup, so
@@ -4276,6 +4381,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("lighting", probe_error)
             return False
+        # It answered, whichever way. An empty table is this device saying it
+        # has no infrared light, which is worth keeping; what must not survive
+        # is the record of it having said nothing at all (#1057).
+        self._note_probe_answered("lighting")
         return len(conf) > 0
 
     def get_camera_reboot_generation(self) -> int:
@@ -4707,3 +4816,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if v is None:
             v = self.data.get(f"status.{key}", "")
         return v
+
+
+# Which capability questions are worth asking a second time, and how.
+#
+# Keyed by the name `_note_probe_refusal` records, so a probe is retried by the
+# same name it failed under and the two cannot drift apart. Defined here rather
+# than inside the class because the values are unbound methods of it.
+#
+# Both of these gate entities: an infrared light and, through
+# `supports_infrared_light`, the Infrared Mode select. They are the pair
+# reported in #1043, where two identical cameras on one recorder ended up with
+# different entities because one probe expired and the other did not.
+RETRYABLE_CAPABILITIES = {
+    "lighting": DahuaDataUpdateCoordinator._async_retry_lighting,
+    "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
+}
