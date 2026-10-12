@@ -69,6 +69,17 @@ _REMOTE_DEVICE_FIELD = re.compile(
     r"RemoteDevice(?:\.uuid:\S*?INFO_|\[)(\d+)\]?\.(\w+)$"
 )
 
+# What the recorder knows about the camera in a slot, and what to call it here.
+# Deliberately not UserName or Password: the slot holds the camera's own login
+# in clear, and nothing in this integration needs it.
+_CAMERA_FIELDS = {
+    "DeviceType": "model",
+    "SerialNo": "serial",
+    "Mac": "mac",
+    "Version": "firmware",
+    "Vendor": "vendor",
+}
+
 
 def parse_remote_devices(data) -> dict:
     """Which channels a recorder says it has a camera on.
@@ -84,10 +95,18 @@ def parse_remote_devices(data) -> dict:
         table.RemoteDevice[11].Enable=true
         table.RemoteDevice[11].ProtocolType=Private
 
-    Returns {index: {"enabled": bool, "protocol": str}}.
+    Returns {index: {"enabled": bool, "protocol": str, "model": str,
+    "serial": str, "mac": str, "firmware": str, "vendor": str}}.
 
-    Measured on a DHI-NVR5464-16P-EI: sixteen slots, fifteen enabled, one
-    of those reached over Onvif. The channel number is the index plus one.
+    Everything after "protocol" describes the *camera*, not the recorder, and
+    the recorder is the only thing that can say it: a PoE camera sits on the
+    recorder's own network (10.2.2.x here) and nothing else on the LAN can ask
+    it anything. Measured on a DHI-NVR5464-16P-EI, where the slot for channel
+    11 carries DeviceType H32_VSIPP-6DIRMD-I3, SerialNo BD01D6APAG74E89, Mac
+    30:dd:aa:f6:24:9e and Version "3.140.101B000.0.R,2024-11-28" while the
+    recorder itself reports 4.005.0000000.3.R. Sixteen slots on that recorder,
+    fifteen enabled, one of those reached over Onvif. The channel number is the
+    index plus one.
 
     **Both spellings, because this used to read only the first and its two
     callers disagreed with it.** `remote_device_model` and
@@ -111,9 +130,13 @@ def parse_remote_devices(data) -> dict:
             slot["enabled"] = str(value).strip().lower() == "true"
         elif field == "ProtocolType":
             slot["protocol"] = str(value).strip().lower()
+        elif field in _CAMERA_FIELDS:
+            slot[_CAMERA_FIELDS[field]] = str(value or "").strip()
     for slot in found.values():
         slot.setdefault("enabled", False)
         slot.setdefault("protocol", "")
+        for name in _CAMERA_FIELDS.values():
+            slot.setdefault(name, "")
     return found
 
 
