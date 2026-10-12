@@ -417,6 +417,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             exc_info=True,
         )
 
+    # The recorder's disks used to be enumerated once per channel. Cheap when
+    # there is nothing to do, which is every camera and every already-cleaned
+    # recorder, and it must never stop a device setting up: duplicate entities
+    # are a papercut, cameras being offline is not.
+    try:
+        from .migrate import async_drop_duplicate_disk_sensors
+
+        await async_drop_duplicate_disk_sensors(hass, entry)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not tidy up the duplicate Dahua disk sensors for %s. They are "
+            "disabled by default and harmless, and the integration will set up "
+            "normally",
+            entry.data.get(CONF_ADDRESS),
+        )
+
     # One coordinator per channel. A single camera has one, a merged recorder has
     # one per subentry (#827), and channel_configs hands back the same shape for
     # both so there is a single path here.
