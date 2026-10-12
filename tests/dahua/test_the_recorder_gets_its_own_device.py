@@ -70,6 +70,13 @@ class _Coordinator:
     def host_device_identifier(self):
         return self.values["host_device_identifier"]
 
+    def stands_in_for_the_host(self):
+        """Computed the way the real one is, rather than stated separately."""
+        return (
+            self.get_serial_number() == self.get_device_serial_number()
+            and not self.uses_separate_host_device()
+        )
+
     def uses_separate_host_device(self):
         return self.values["uses_separate_host_device"]
 

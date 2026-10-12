@@ -83,6 +83,15 @@ def _coordinator():
         # subentry or the entry itself. Never reached while the answer above is
         # False, but a setup double answers every question its platform asks.
         uses_separate_host_device=lambda: False,
+        # A channel of a recorder: its entity key carries the suffix, so this
+        # page is the camera's and not the box's. The firmware and serial
+        # sensors read this to decide which identity to report.
+        stands_in_for_the_host=lambda: False,
+        # Nothing read the recorder's slot table for this double, so both fall
+        # back to what the device reports about itself, which is what every
+        # assertion in this file was written against.
+        get_channel_firmware_version=lambda: None,
+        get_channel_serial_number=lambda: None,
     )
     return c
 
@@ -118,8 +127,17 @@ def test_the_profile_sensor_reports_the_named_profile():
     assert _sensor(DahuaProfileSensor, _coordinator()).native_value == "Night"
 
 
-def test_the_serial_sensor_reports_the_device_serial_not_the_entity_key():
-    """Every channel of one NVR is the same box and must say the same serial."""
+def test_the_serial_sensor_reports_a_serial_not_the_entity_key():
+    """`get_serial_number` appends the channel so that each channel's entities
+    get distinct keys. That composite is this integration's bookkeeping and is
+    not a serial number, so it must never be what the sensor shows.
+
+    This used to say "every channel of one NVR is the same box and must say the
+    same serial", which stopped being the behaviour when a channel's device page
+    started describing the camera in that slot. Which identity it reports is
+    covered in test_the_sensors_agree_with_their_page.py; what survives here is
+    that it is a serial either way.
+    """
     value = _sensor(DahuaSerialNumberSensor, _coordinator()).native_value
 
     assert value == "SERIAL1"

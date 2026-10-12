@@ -106,12 +106,34 @@ class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):
 
     @property
     def native_value(self):
-        return self._coordinator.get_firmware_version()
+        """The firmware of whatever this page describes.
+
+        A recorder channel is a camera, and since #1044 its device page says so.
+        This sensor went on reporting the recorder's firmware, so one page
+        showed 2.460.AC01.0.R at the top and 4.000.00AC000.0.R underneath it
+        (#1043). The page was right.
+        """
+        coordinator = self._coordinator
+        if coordinator.stands_in_for_the_host():
+            return coordinator.get_firmware_version()
+        return (
+            coordinator.get_channel_firmware_version()
+            or coordinator.get_firmware_version()
+        )
 
     @property
     def extra_state_attributes(self):
-        """Expose the build date when the camera reports one."""
+        """Expose the build date when the camera reports one.
+
+        Only alongside the host's own firmware. `get_build_date` is the box's,
+        and the camera's version from the recorder's slot table has its date
+        stripped (#1044), so pairing them would put the recorder's build date
+        next to a camera's version. That is the same disagreement this sensor
+        was just fixed for, one level quieter.
+        """
         attrs = super().extra_state_attributes
+        if self.native_value != self._coordinator.get_firmware_version():
+            return attrs
         build_date = self._coordinator.get_build_date()
         if build_date:
             attrs["build_date"] = build_date
@@ -131,9 +153,25 @@ class DahuaSerialNumberSensor(DahuaBaseEntity, SensorEntity):
 
     @property
     def native_value(self):
-        # The device's own serial, not the channel-suffixed entity key: every
-        # channel of one NVR is the same physical box and should say so.
-        return self._coordinator.get_device_serial_number()
+        """The serial of whatever this page describes.
+
+        Never the channel-suffixed entity key, which is this integration's
+        bookkeeping and not a serial number.
+
+        It used to be the box's serial on every channel, on the reasoning that
+        every channel of one NVR is the same physical box. The page disagrees
+        with that now: since #1044 a channel's device page describes the camera
+        in that slot, and since #1054 the box has a page of its own to be
+        described on. A sensor saying the recorder's serial underneath a page
+        saying the camera's is the inconsistency reported in #1043.
+        """
+        coordinator = self._coordinator
+        if coordinator.stands_in_for_the_host():
+            return coordinator.get_device_serial_number()
+        return (
+            coordinator.get_channel_serial_number()
+            or coordinator.get_device_serial_number()
+        )
 
 
 class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):

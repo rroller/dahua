@@ -3739,6 +3739,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return self.is_recorder_host()
 
+    def stands_in_for_the_host(self) -> bool:
+        """Whether this channel's device page is also the box's page.
+
+        True only for the lowest channel of a device that has no separate host
+        device: `get_serial_number` gives that one the bare serial, which is
+        what the box is keyed on. Everything on such a page has to describe the
+        box, because the box has nowhere else to be described.
+
+        False everywhere else, including the lowest channel of a recorder that
+        now has a device of its own, which is the point of having one.
+
+        One definition, read by `device_info` and by the firmware and serial
+        sensors. They disagreed when it was written out twice: the page said
+        the camera and the sensors on it said the recorder (#1043).
+        """
+        return (
+            self.get_serial_number() == self.get_device_serial_number()
+            and not self.uses_separate_host_device()
+        )
+
     def host_device_identifier(self) -> str:
         """The identifier of the device that stands for the box itself.
 

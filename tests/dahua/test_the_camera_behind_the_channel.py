@@ -223,6 +223,13 @@ class _Coordinator:
     def host_device_identifier(self):
         return self.values["get_device_serial_number"] + "_host"
 
+    def stands_in_for_the_host(self):
+        """Computed the way the real one is, rather than stated separately."""
+        return (
+            self.get_serial_number() == self.get_device_serial_number()
+            and not self.uses_separate_host_device()
+        )
+
     def configured_area_name(self):
         return self.values["configured_area_name"]
 

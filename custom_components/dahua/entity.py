@@ -74,10 +74,7 @@ class DahuaBaseEntity(CoordinatorEntity):
         # device of its own, which is what `uses_separate_host_device` answers.
         # Once the disks and the load sensors have somewhere else to live, this
         # page is only the camera in the lowest slot, and it says so again.
-        shares_the_host_device = (
-            coordinator.get_serial_number() == coordinator.get_device_serial_number()
-            and not coordinator.uses_separate_host_device()
-        )
+        shares_the_host_device = coordinator.stands_in_for_the_host()
 
         def channel_or_host(channel_value, host_value):
             if shares_the_host_device:
