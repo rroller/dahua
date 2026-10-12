@@ -88,6 +88,13 @@ CONF_AUTHORIZED_HOLD_TIME = "authorized_hold_time"
 # test_channel_options_survive_the_merge.py scans the package for every key read
 # through channel_option, _channel_first or events_for_channel and fails if one is
 # missing from here, so a new per-channel option cannot be added without it.
+# Labels to put on every device this entry creates. Entry wide on purpose: a
+# recorder's twelve channels are twelve devices and the point of the option is
+# to label them together. Deliberately NOT in CHANNEL_OPTION_KEYS below, which
+# is for settings that differ per channel -- the area is one of those, this is
+# not.
+CONF_LABELS = "labels"
+
 CHANNEL_OPTION_KEYS = frozenset(
     {
         CONF_AREA,

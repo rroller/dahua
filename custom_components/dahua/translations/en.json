@@ -41,10 +41,12 @@
                 "title": "Name this camera",
                 "description": "Give it a name you will recognise in your dashboards and automations. If this is not the camera you meant to add, close this dialog and start again with a different channel number.\n\n{preview}",
                 "data": {
-                    "name": "Device Name"
+                    "name": "Device Name",
+                    "labels": "Labels"
                 },
                 "data_description": {
-                    "name": "Used for the device and as the prefix for every entity it creates."
+                    "name": "Used for the device and as the prefix for every entity it creates.",
+                    "labels": "Put on every device this adds, including each channel of a recorder. Change it later under Configure, where unticking a label removes it again. A label you add to a camera yourself is left alone."
                 }
             },
             "reauth_confirm": {
@@ -116,7 +118,8 @@
                     "disable_backchannel": "Don't open the two-way audio channel when streaming (fixes a doorbell stuck in a call, or talkback in the Dahua/Amcrest app; disables talking from Home Assistant)",
                     "authorized_plates": "Authorized license plates (comma-separated, e.g. ABC1234, XYZ5678)",
                     "authorized_hold_time": "Authorized vehicle hold time (seconds to remain ON)",
-                    "area": "Area (moves this device to it)"
+                    "area": "Area (moves this device to it)",
+                    "labels": "Labels (applied to every camera on this device)"
                 },
                 "data_description": {
                     "manual_siren": "Enable this if your camera has a working siren, but the integration did not create the Siren entity.",

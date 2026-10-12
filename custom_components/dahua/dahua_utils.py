@@ -140,6 +140,29 @@ def parse_remote_devices(data) -> dict:
     return found
 
 
+def labels_for_device(existing, previously_chosen, chosen) -> set:
+    """The labels a device should end up with.
+
+    Three sets, and the middle one is why this is not just a union. `existing`
+    is what the device has now, including anything somebody added by hand, and
+    `previously_chosen` is what this option said last time. Take away what the
+    option used to ask for, then add what it asks for now.
+
+    So unticking a label removes it, which is what somebody expects of a list
+    they have just edited, while a label they put on a camera themselves was
+    never in `previously_chosen` and is left alone -- by that and by a reload.
+
+    Written as `existing - (previously_chosen - chosen)` at first, to say "drop
+    only what we have stopped asking for". That is the same set: anything in all
+    three is re-added by the union either way. A mutation test could not tell
+    the two apart, which is the argument for the shorter one.
+    """
+    existing = set(existing or ())
+    previously_chosen = set(previously_chosen or ())
+    chosen = set(chosen or ())
+    return (existing - previously_chosen) | chosen
+
+
 def parse_channel_titles(data) -> dict:
     """The name a recorder holds for each channel, by index.
 
