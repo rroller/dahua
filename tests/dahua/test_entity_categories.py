@@ -79,6 +79,10 @@ def _coordinator():
         # which one carries the device's processor and memory sensors. False, so
         # the entities each test below names are the only ones added.
         supports_system_load=lambda: False,
+        # And this decides whether those sensors go under the channel's
+        # subentry or the entry itself. Never reached while the answer above is
+        # False, but a setup double answers every question its platform asks.
+        uses_separate_host_device=lambda: False,
     )
     return c
 

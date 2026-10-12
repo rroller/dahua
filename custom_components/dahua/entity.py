@@ -70,11 +70,13 @@ class DahuaBaseEntity(CoordinatorEntity):
         # 4L07AD6PAG5F0F2 and firmware 2.622.0000000.31.R while the recorder is
         # BC0A198PAJ779DF on 4.005.0000000.3.R.
         #
-        # So that page stays the recorder's. The camera in the lowest slot goes
-        # undescribed until the recorder has a device of its own, which is worth
-        # doing and is not this.
+        # So that page stays the recorder's -- unless the recorder now has a
+        # device of its own, which is what `uses_separate_host_device` answers.
+        # Once the disks and the load sensors have somewhere else to live, this
+        # page is only the camera in the lowest slot, and it says so again.
         shares_the_host_device = (
             coordinator.get_serial_number() == coordinator.get_device_serial_number()
+            and not coordinator.uses_separate_host_device()
         )
 
         def channel_or_host(channel_value, host_value):
@@ -133,6 +135,43 @@ class DahuaBaseEntity(CoordinatorEntity):
         return {
             "id": str(self.coordinator.data.get("id")),
             "integration": DOMAIN,
+        }
+
+
+class DahuaHostEntity(DahuaBaseEntity):
+    """An entity that describes the box rather than one of its channels.
+
+    The disks are the recorder's disks and there is one processor in the
+    chassis, so these are created once per entry rather than once per channel.
+    Until now they were filed against the lowest channel, because that channel
+    holds the bare serial and so is the only thing resembling a device for the
+    box -- which left a recorder's disks on a page named after a camera.
+
+    The fallback matters as much as the main path: a camera with an SD card
+    gets a disk sensor too, and a camera is already its own device. There is
+    nothing to separate, so it keeps the page it has.
+    """
+
+    @property
+    def device_info(self):
+        coordinator = self._coordinator
+        if not coordinator.uses_separate_host_device():
+            return super().device_info
+
+        # No `connections`: the only MAC read here is the camera's, out of the
+        # recorder's slot table, and claiming it for the recorder would tell
+        # Home Assistant the two are the same hardware.
+        #
+        # No `suggested_area` either. The area is a per channel option and
+        # means "where this camera points"; the recorder is somewhere else.
+        return {
+            "identifiers": {(DOMAIN, coordinator.host_device_identifier())},
+            "name": self.config_entry.title or coordinator.get_model(),
+            "model": coordinator.get_model(),
+            "manufacturer": "Dahua",
+            "configuration_url": coordinator.get_configuration_url(),
+            "sw_version": coordinator.get_firmware_version(),
+            "serial_number": coordinator.get_device_serial_number(),
         }
 
 

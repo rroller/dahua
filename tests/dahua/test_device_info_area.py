@@ -54,6 +54,14 @@ class _Coordinator:
     def get_device_serial_number(self):
         return SERIAL
 
+    # A recorder now has a device of its own, so device_info asks whether
+    # this channel is still standing in for the box.
+    def uses_separate_host_device(self):
+        return False
+
+    def host_device_identifier(self):
+        return SERIAL + "_host"
+
     # A standalone camera: the recorder's camera table says nothing about it, so
     # every one of these is None and device_info falls back to what the device
     # reports about itself. The recorder case is covered in

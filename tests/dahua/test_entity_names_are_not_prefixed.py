@@ -87,13 +87,16 @@ def test_every_entity_class_inherits_the_base():
         ):
             classname, bases = match.groups()
             # DahuaEventSensor inherits DahuaEventDrivenEntity, and per-rule
-            # IVS sensors inherit DahuaEventSensor.
+            # IVS sensors inherit DahuaEventSensor. DahuaHostEntity is the base
+            # for the entities that describe the box rather than a channel, and
+            # is itself a DahuaBaseEntity, so the attribute is still set once.
             if not any(
                 base in bases
                 for base in (
                     "DahuaBaseEntity",
                     "DahuaEventDrivenEntity",
                     "DahuaEventSensor",
+                    "DahuaHostEntity",
                 )
             ):
                 offenders.append("%s.%s" % (name, classname))

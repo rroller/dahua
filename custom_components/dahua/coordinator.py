@@ -3701,6 +3701,36 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return self._serial_number
 
+    def uses_separate_host_device(self) -> bool:
+        """Whether the box itself gets a device, apart from its channels.
+
+        Only a recorder. A camera is one device already: the box and the
+        channel are the same thing, so a parent above it would hold two
+        entities over a child holding thirty, which is worse than what it
+        replaced. `is_recorder_host` reads the class the device reported
+        (NVR/DVR/XVR/HCVR) rather than matching its model name, which is the
+        bug class in #570, #676 and #690.
+
+        A recorder that never answered the class question gets no host device
+        and keeps the old arrangement. `_async_retry_device_class` asks again on
+        later polls, but the entity set is decided at setup, so the recorder
+        appears after a reload rather than during a poll.
+        """
+        return self.is_recorder_host()
+
+    def host_device_identifier(self) -> str:
+        """The identifier of the device that stands for the box itself.
+
+        Deliberately not the bare serial, which `get_serial_number` already
+        gives to the lowest channel. Taking it would mean renaming the device
+        somebody has named after a camera and moving its entities off it, and a
+        migration that orphans a device on this integration's registry has gone
+        badly before: see the #827 merge card, which destroyed 232 entities.
+        This adds a device and moves ten or so entities onto it, and nothing
+        that exists today changes its identity.
+        """
+        return "{0}_host".format(self._serial_number)
+
     def channel_option(self, key: str, default=None):
         """One channel's setting, preferring its own over the entry's.
 
