@@ -577,7 +577,7 @@ class DahuaDiskProblemBinarySensor(DahuaBaseEntity, BinarySensorEntity):
         disk = self._disk()
         if disk is None:
             return super().extra_state_attributes
-        return {
+        attributes = {
             **(super().extra_state_attributes or {}),
             "disk": disk["name"],
             "state": disk["state"],
@@ -586,3 +586,21 @@ class DahuaDiskProblemBinarySensor(DahuaBaseEntity, BinarySensorEntity):
             "partition_error": disk["has_error"],
             "health_flag": disk["health_flag"],
         }
+
+        # What the disk is, when RPC2 answered for it. Added only where there is
+        # a value, so a recorder that cannot say does not grow a row of
+        # "unknown" on a diagnostic sensor. `capacity_gb` is the disk itself;
+        # `total_gb` above is what is formatted on it, and the two differ by a
+        # few percent.
+        for key, name in (
+            ("model", "model"),
+            ("serial", "disk_serial"),
+            ("firmware", "disk_firmware"),
+            ("bus", "bus"),
+            ("power_mode", "power_mode"),
+        ):
+            if disk.get(key):
+                attributes[name] = disk[key]
+        if disk.get("capacity_bytes"):
+            attributes["capacity_gb"] = round(disk["capacity_bytes"] / 1_000_000_000, 1)
+        return attributes
