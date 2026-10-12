@@ -2994,7 +2994,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return
         self._stream_codecs = dahua_utils.parse_stream_codecs(encode, self._channel)
-        self._async_report_unplayable_stream()
+
+        # Guarded separately from the read, and for a different reason: the
+        # codecs are already stored and feed the camera attributes, so a card
+        # that cannot be raised must cost the card and nothing else. Raising one
+        # is the last thing setup does with this and the least important.
+        try:
+            self._async_report_unplayable_stream()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not report the unplayable stream on %s",
+                self._address,
+                exc_info=exception,
+            )
 
     @callback
     def _async_report_unplayable_stream(self) -> None:

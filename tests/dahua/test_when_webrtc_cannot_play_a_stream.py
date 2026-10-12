@@ -23,6 +23,8 @@ out of it. Nothing else changed: same resolution, frame rate and bitrate.
 So the pair is reported, never the codec alone.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from custom_components.dahua.dahua_utils import (
@@ -248,6 +250,40 @@ def test_a_device_that_said_nothing_raises_nothing(monkeypatch):
     coordinator._async_report_unplayable_stream()
 
     assert raised == []
+
+
+async def test_a_card_that_cannot_be_raised_does_not_fail_setup(monkeypatch):
+    """The whole read is an enhancement to a diagnostic, and the card is the
+    least important part of it. A registry that will not take the issue must
+    cost the card and nothing else.
+
+    Not hypothetical: calling the report outside the guard failed 40 tests in
+    CI with "isn't fully initialized yet", because several build a coordinator
+    whose `hass` is a stand-in that the issue registry cannot use. A real
+    device would have lost its setup the same way.
+    """
+    from custom_components.dahua import coordinator as coordinator_module
+
+    coordinator, _raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+
+    def _explode(*args, **kwargs):
+        raise AttributeError("hass has no issue registry")
+
+    monkeypatch.setattr(coordinator_module.ir, "async_create_issue", _explode)
+
+    async def _encode(_name):
+        return {
+            "table.Encode[11].MainFormat[0].Video.Compression": "H.265",
+            "table.Encode[11].MainFormat[0].AudioEnable": "false",
+        }
+
+    coordinator.client = SimpleNamespace(async_get_config=_encode)
+
+    await coordinator._async_read_stream_codecs()
+
+    # The codecs still landed, which is what the camera attributes read.
+    assert coordinator.get_stream_codec(0) == "H.265"
+    assert coordinator.get_stream_has_audio(0) is False
 
 
 # --- and the camera says what it carries -------------------------------------
