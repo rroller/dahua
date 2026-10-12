@@ -505,7 +505,11 @@ async def test_entity_creation_uses_host_class_not_channel(
     added = []
     await module.async_setup_entry(
         SimpleNamespace(data={}),
-        SimpleNamespace(entry_id="entry", runtime_data={0: c}),
+        SimpleNamespace(
+            entry_id="entry",
+            runtime_data={0: c},
+            async_on_unload=lambda unsub: None,
+        ),
         adds_entities(added),
     )
     assert ("deterrence" in added) is expected

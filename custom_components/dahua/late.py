@@ -61,6 +61,23 @@ def async_notify_capability_discovered(hass, entry_id: str, channel_key: str) ->
     async_dispatcher_send(hass, capability_discovered_signal(entry_id), channel_key)
 
 
+def _key(entity):
+    """What identifies an entity for the purpose of not creating it twice.
+
+    `getattr` rather than `entity.unique_id`, and None meaning "add it", for
+    two different reasons. A Home Assistant entity may legitimately carry no
+    unique_id, and two of those are not the same entity, so deduplicating them
+    against each other would drop one. And a great many tests here replace an
+    entity class with a marker to record that setup decided to create it; that
+    is a reasonable thing for a test to do, and a mechanism that forbids it is
+    a mechanism nobody will adopt for the other dozen capabilities.
+
+    Everything this integration creates defines a unique_id, so the real path
+    is always the deduplicated one.
+    """
+    return getattr(entity, "unique_id", None)
+
+
 async def async_add_and_keep_watching(
     hass, entry, build, async_add_entities, coordinators
 ) -> None:
@@ -92,11 +109,11 @@ async def async_add_and_keep_watching(
             fresh = [
                 entity
                 for entity in await build(coordinator)
-                if entity.unique_id not in created
+                if _key(entity) is None or _key(entity) not in created
             ]
             if not fresh:
                 continue
-            created.update(entity.unique_id for entity in fresh)
+            created.update(key for key in map(_key, fresh) if key is not None)
             async_add_entities(fresh, config_subentry_id=coordinator.subentry_id)
 
     await _add_whatever_is_missing()

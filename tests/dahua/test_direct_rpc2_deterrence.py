@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua.coordinator import MAX_CAPABILITY_RETRIES
 from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.light import DahuaSecurityLight
 from custom_components.dahua.rpc2 import DahuaRpc2Client
@@ -295,7 +296,7 @@ async def test_rpc2_security_light_skips_lighting_v2_fallback():
     client.async_get_lighting_v2 = AsyncMock(side_effect=TimeoutError)
     c = _coordinator(client)
 
-    for poll_count in (1, 2):
+    for poll_count in range(1, 8):
         data = await c._async_update_data()
         assert c.initialized
         assert c.supports_security_light()
@@ -303,8 +304,12 @@ async def test_rpc2_security_light_skips_lighting_v2_fallback():
         assert c._supports_lighting_v2 is False
         assert data["status.WhiteLight"] == "On"
         assert client.async_get_coaxial_control_io_status_rpc2.await_count == poll_count
-        # The failed initial capability probe must be the only Lighting_V2 read.
-        client.async_get_lighting_v2.assert_awaited_once_with()
+
+    # The probe timed out, and a timeout is not the device saying no (#1057),
+    # so it is asked again. What this test has always been about is that it is
+    # not asked on every poll for the life of the entry: seven polls here, and
+    # the reads stop at the initial probe plus the bounded retries.
+    assert client.async_get_lighting_v2.await_count == 1 + MAX_CAPABILITY_RETRIES
     client.async_get_coaxial_control_io_caps_rpc2.assert_awaited_once_with()
 
 

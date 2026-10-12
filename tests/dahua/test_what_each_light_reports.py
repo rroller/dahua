@@ -172,7 +172,11 @@ def test_each_light_reads_its_own_state(cls, attribute, state):
 async def _built(hass, **capabilities):
     added = []
     entry = SimpleNamespace(
-        entry_id="e1", runtime_data={0: _Coordinator(**capabilities)}
+        entry_id="e1",
+        runtime_data={0: _Coordinator(**capabilities)},
+        # Setup keeps a listener for capabilities the device answers about on a
+        # later poll, and registers it to be dropped with the entry.
+        async_on_unload=lambda unsub: None,
     )
     await async_setup_entry(hass, entry, adds_entities(added))
     return [type(entity) for entity in added]
@@ -218,6 +222,7 @@ async def test_a_recorder_calls_its_deterrence_light_a_warning_light(hass):
     added = []
     entry = SimpleNamespace(
         entry_id="e1",
+        async_on_unload=lambda unsub: None,
         runtime_data={
             0: _Coordinator(
                 creates_security_light_entity=True, uses_recorder_deterrence=True
@@ -235,6 +240,7 @@ async def test_a_camera_calls_it_a_security_light(hass):
     added = []
     entry = SimpleNamespace(
         entry_id="e1",
+        async_on_unload=lambda unsub: None,
         runtime_data={0: _Coordinator(creates_security_light_entity=True)},
     )
 
