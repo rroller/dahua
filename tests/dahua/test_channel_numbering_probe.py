@@ -12,10 +12,12 @@ Each entry probed `snapshot.cgi?channel=0` for itself, and a failure meant
     PROBE_FAILED = (ClientError, TimeoutError)
 
 Six entries on one recorder therefore sent six identical requests through a
-semaphore two wide, with the timeout covering the wait for a slot as well as the
-request. Whoever timed out kept `channel + 1` and pointed at the next channel's
-video, while the neighbour that won pointed at its own. Hence one camera shown
-twice, one missing, and a different result every restart.
+semaphore two wide, which at the time was queued for inside the request's own
+timeout, so a request could expire without ever being sent (that ordering is
+#1043, since separated). Whoever timed out kept `channel + 1` and pointed at
+the next channel's video, while the neighbour that won pointed at its own.
+Hence one camera shown twice, one missing, and a different result every
+restart.
 
 A timeout is not the device saying no. Only an HTTP status is.
 """
