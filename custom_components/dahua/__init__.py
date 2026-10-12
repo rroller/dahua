@@ -12,6 +12,7 @@ import time  # noqa: F401  pylint: disable=unused-import
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
@@ -36,6 +37,7 @@ from .const import (
     CONF_ADDRESS,
     CONF_CHANNEL,
     CONF_EVENTS,
+    CONF_LABELS,
     CONF_NAME,
     CONF_PASSWORD,
     CONF_PORT,
@@ -533,6 +535,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     if wanted:
         await hass.config_entries.async_forward_entry_setups(entry, wanted)
 
+    # Labels the user chose for this entry's devices. Home Assistant has no
+    # DeviceInfo field for labels, unlike suggested_area, so they can only be
+    # put on through the registry -- and only once the devices exist, which is
+    # after the platforms have been forwarded.
+    #
+    # Add only here, and that falls out of the helper rather than being a
+    # second rule: nothing has changed since last time, so the "stop asking
+    # for" set is empty and a label somebody removed by hand is not re-added
+    # until they change the option. The options flow passes the real previous
+    # selection and so can also remove.
+    _async_label_devices(hass, entry, coordinators)
+
     # Wrapped, because unloading does not clear an entry's update listeners.
     # A plain add_update_listener leaves one behind on every reload, and then a
     # single options change fires as many reloads as the entry has ever had --
@@ -627,6 +641,33 @@ async def async_migrate_synthesised_unique_id(hass, entry) -> None:
         serial,
     )
     hass.config_entries.async_update_entry(entry, unique_id=wanted)
+
+
+@callback
+def _async_label_devices(hass: HomeAssistant, entry, coordinators) -> None:
+    """Put the entry's chosen labels on each of its devices.
+
+    Quiet about everything: a device that is not in the registry yet, a registry
+    that will not take the update, no labels chosen at all. None of it is worth
+    a camera failing to set up over, which is the mistake #1048 made with a
+    repair card.
+    """
+    chosen = entry.options.get(CONF_LABELS, entry.data.get(CONF_LABELS)) or []
+    if not chosen:
+        return
+    try:
+        registry = dr.async_get(hass)
+        for coordinator in coordinators:
+            device = registry.async_get_device(
+                identifiers={(DOMAIN, coordinator.get_serial_number())}
+            )
+            if device is None:
+                continue
+            wanted = dahua_utils.labels_for_device(device.labels, chosen, chosen)
+            if wanted != set(device.labels):
+                registry.async_update_device(device.id, labels=wanted)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.debug("Could not label the devices for %s", entry.title, exc_info=True)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bool:

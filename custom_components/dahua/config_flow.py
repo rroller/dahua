@@ -50,6 +50,7 @@ from .const import (
     CONF_AUTO_DETECT_CHANNEL,
     CONF_ALL_CHANNELS,
     CONF_AREA,
+    CONF_LABELS,
     DEFAULT_EVENTS,
     CONF_EXTRA_CHANNELS,
     CONF_USE_RPC2,
@@ -1117,6 +1118,10 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         subentries = []
         for index in [self.init_info[CONF_CHANNEL]] + list(self._extra_channels):
             data = dict(self.init_info)
+            # Entry wide, so it lives in the entry's own data and not in each
+            # channel's. Leaving it here would read as a per-channel setting,
+            # which is what CHANNEL_OPTION_KEYS is for and this is not.
+            data.pop(CONF_LABELS, None)
             data[CONF_CHANNEL] = index
             if index != self.init_info[CONF_CHANNEL]:
                 data[CONF_NAME] = self._found_channels.get(
@@ -1427,6 +1432,14 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_NAME, default=user_input[CONF_NAME]): str,
+                    # Entry wide, and the last step is the only one every device
+                    # reaches: the areas step appears only when extra channels
+                    # were chosen, so a single camera would never be asked.
+                    vol.Optional(
+                        CONF_LABELS, default=user_input.get(CONF_LABELS, [])
+                    ): selector.LabelSelector(
+                        selector.LabelSelectorConfig(multiple=True)
+                    ),
                 }
             ),
             description_placeholders={"preview": await self._async_preview_markdown()},
@@ -1605,6 +1618,7 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             flat = _flatten_sections(user_input)
             await self._async_move_device(flat.get(CONF_AREA))
+            await self._async_apply_labels(flat.get(CONF_LABELS))
             self.options.update(flat)
             return await self._update_options()
 
@@ -1710,6 +1724,17 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
             )
         ] = selector.AreaSelector()
+        # Entry wide, so it sits with the entry's own options rather than on the
+        # per-channel subentry form -- which is also where the first version of
+        # this put it, and that form has no `options` to read a default from.
+        schema[
+            vol.Optional(
+                CONF_LABELS,
+                default=self.options.get(
+                    CONF_LABELS, self.config_entry.data.get(CONF_LABELS, [])
+                ),
+            )
+        ] = selector.LabelSelector(selector.LabelSelectorConfig(multiple=True))
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(schema),
@@ -1742,6 +1767,42 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
         )
         if device is not None:
             registry.async_update_device(device.id, area_id=area_id)
+
+    async def _async_apply_labels(self, chosen):
+        """Put the chosen labels on every device of this entry.
+
+        Every device, not the first one: a recorder's channels are separate
+        devices and the point of an entry wide option is to label them
+        together. That is the one way this differs from the area above, which
+        is a per channel setting.
+
+        Home Assistant has no DeviceInfo field for labels -- unlike
+        `suggested_area` -- so they can only be put on through the registry,
+        which also means they are applied here rather than when the device is
+        created.
+
+        Unticking a label removes it; a label somebody put on a camera by hand
+        is left alone. `labels_for_device` is where that distinction lives.
+        """
+        if chosen is None:
+            return
+        previously = self.options.get(
+            CONF_LABELS, self.config_entry.data.get(CONF_LABELS, [])
+        )
+        if set(chosen) == set(previously or ()):
+            return
+
+        registry = dr.async_get(self.hass)
+        for coordinator in entry_coordinators(self.config_entry).values():
+            device = registry.async_get_device(
+                identifiers={(DOMAIN, coordinator.get_serial_number())}
+            )
+            if device is None:
+                continue
+            registry.async_update_device(
+                device.id,
+                labels=dahua_utils.labels_for_device(device.labels, previously, chosen),
+            )
 
     async def _update_options(self):
         """Update config entry options."""
