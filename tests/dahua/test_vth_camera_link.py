@@ -450,7 +450,7 @@ async def test_a_write_the_vth_ignored_says_so_after_refreshing():
 # --- which selects an indoor monitor gets ---------------------------------------
 
 
-async def test_an_indoor_monitor_gets_one_select_per_vto(monkeypatch):
+async def test_an_indoor_monitor_gets_one_select_per_vto(hass, monkeypatch):
     from custom_components.dahua import select as select_module
 
     links = {
@@ -472,7 +472,7 @@ async def test_an_indoor_monitor_gets_one_select_per_vto(monkeypatch):
     )
 
     await select_module.async_setup_entry(
-        None, _entry_double(), lambda devices, **kw: None
+        hass, _entry_double(), lambda devices, **kw: None
     )
 
     assert made == ["Vto00", "Vto01"]
@@ -480,13 +480,17 @@ async def test_an_indoor_monitor_gets_one_select_per_vto(monkeypatch):
 
 def _entry_double():
     """A bare object() was enough until setup started keeping a listener for
-    capabilities the device answers about later."""
+    capabilities the device answers about later.
+
+    That listener also means a real `hass` rather than None: connecting to the
+    dispatcher reads `hass.data`.
+    """
     return SimpleNamespace(
         entry_id="e1", runtime_data={}, async_on_unload=lambda unsub: None
     )
 
 
-async def test_anything_else_gets_none(monkeypatch):
+async def test_anything_else_gets_none(hass, monkeypatch):
     from custom_components.dahua import select as select_module
 
     made = []
@@ -501,7 +505,7 @@ async def test_anything_else_gets_none(monkeypatch):
     )
 
     await select_module.async_setup_entry(
-        None, _entry_double(), lambda devices, **kw: None
+        hass, _entry_double(), lambda devices, **kw: None
     )
 
     assert made == []
