@@ -83,6 +83,57 @@ def _looks_like_a_coordinator(node) -> bool:
     return "get_serial_number" in body or "get_channel" in body
 
 
+# The attribute a double is assigned to when it is handed to an entity.
+_COORDINATOR_ATTRS = {"coordinator", "_coordinator"}
+
+
+def _namespace_doubles(tree) -> list:
+    """Every coordinator double built with SimpleNamespace, as (label, provided).
+
+    The class scan below cannot see these: `SimpleNamespace(get_model=...)` has
+    no class body to read members from, and it is the commoner idiom in this
+    suite. So this guard passed while test_device_page_link.py's double was
+    short of what `device_info` had just started reading, and the failure
+    arrived from CI as an AttributeError instead -- the exact thing this file
+    exists to prevent, missed for a shape rather than for a reason.
+
+    **Judged on where the namespace is handed, not on what it answers.** A
+    namespace that happens to answer `get_channel` may be standing in for an
+    argument to an ordinary function, as `_reporter_candidate` in
+    test_the_recorders_load.py does, and nothing inherited is ever read off
+    that. What matters is being given to an entity as its coordinator, which is
+    one of two shapes:
+
+        entity._coordinator = SimpleNamespace(...)
+        DahuaSomethingEntity(SimpleNamespace(...), entry)
+    """
+    found = []
+    for node in ast.walk(tree):
+        namespace = None
+
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Attribute) and target.attr in _COORDINATOR_ATTRS
+            for target in node.targets
+        ):
+            namespace = node.value
+
+        elif isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name and name.startswith("Dahua") and node.args:
+                namespace = node.args[0]
+
+        if not isinstance(namespace, ast.Call):
+            continue
+        built = getattr(namespace.func, "id", None) or getattr(
+            namespace.func, "attr", None
+        )
+        if built != "SimpleNamespace":
+            continue
+        provided = {keyword.arg for keyword in namespace.keywords if keyword.arg}
+        found.append(("SimpleNamespace at line %d" % namespace.lineno, provided))
+    return found
+
+
 def _provides(node) -> set:
     """Everything this class answers: methods, class attributes, and `self.x = `.
 
@@ -142,10 +193,20 @@ def test_every_double_answers_what_its_own_file_asks_of_it():
             continue
         wanted = set().union(*(members[name] for name in exercised))
 
-        classes = [
-            node for node in ast.parse(source).body if isinstance(node, ast.ClassDef)
-        ]
+        tree = ast.parse(source)
+        classes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
         by_name = {node.name: node for node in classes}
+
+        for label, provided in _namespace_doubles(tree):
+            if (path.name, label) in EXEMPT:
+                continue
+            missing = sorted(wanted - provided)
+            if missing:
+                short.append(
+                    "%s::%s is read for %s and does not answer %s"
+                    % (path.name, label, sorted(exercised), missing)
+                )
+
         for node in classes:
             if not _looks_like_a_coordinator(node):
                 continue
@@ -163,6 +224,74 @@ def test_every_double_answers_what_its_own_file_asks_of_it():
         "from inside Home Assistant, which says nothing about the change that "
         "caused it:\n  %s" % "\n  ".join(short)
     )
+
+
+def test_the_namespace_scan_really_finds_one():
+    """The guard on the guard.
+
+    `test_device_page_link.py` builds its coordinator with SimpleNamespace and
+    reads `device_info` off an entity, which is the shape that got past this
+    file once. If the scan stops finding it, this file goes back to passing for
+    the wrong reason and nothing says so.
+    """
+    source = io.open(TESTS / "test_device_page_link.py", encoding="utf-8").read()
+    tree = ast.parse(source)
+
+    found = _namespace_doubles(tree)
+
+    assert found, "the SimpleNamespace scan found no double in a file that has one"
+    provided = set().union(*(names for _label, names in found))
+    assert "get_serial_number" in provided
+    # Named from what device_info reads today rather than from a member that
+    # happens to exist: if the scan finds a namespace but not the one standing
+    # in for a coordinator, this is the assertion that notices.
+    assert "get_model" in provided, provided
+
+
+# --- and what the namespace scan does and does not count --------------------
+#
+# Written because a mutation showed the constructor half of the rule was not
+# exercised by any file in the suite, and an untested branch in a guard is worse
+# than no branch at all. These pin the rule itself rather than relying on some
+# file continuing to be written a particular way.
+
+
+def _scan(source):
+    return {
+        name
+        for _label, provided in _namespace_doubles(ast.parse(source))
+        for name in provided
+    }
+
+
+def test_a_namespace_assigned_as_a_coordinator_is_counted():
+    assert _scan("entity._coordinator = SimpleNamespace(get_model=lambda: 'x')") == {
+        "get_model"
+    }
+
+
+def test_a_namespace_handed_to_an_entity_constructor_is_counted():
+    """`DahuaSomething(SimpleNamespace(...), entry)` is the other way a double
+    reaches an entity, and nothing in the suite is written that way today."""
+    assert _scan("sensor = DahuaMemoryUsedSensor(SimpleNamespace(data={}), entry)") == {
+        "data"
+    }
+
+
+def test_a_namespace_that_is_not_a_coordinator_is_ignored():
+    """The false positive the first version of this had. `_reporter_candidate`
+    in test_the_recorders_load.py answers `get_channel` and is a stand-in for an
+    argument to an ordinary function: nothing inherited is ever read off it, so
+    demanding `data` of it would be asking for a member it has no use for.
+
+    Judged on where a namespace is handed, never on what it answers.
+    """
+    source = """
+def candidate():
+    return SimpleNamespace(get_channel=lambda: 0, get_serial_number=lambda: "x")
+"""
+
+    assert _scan(source) == set()
 
 
 def test_nothing_is_exempt_without_a_reason():
