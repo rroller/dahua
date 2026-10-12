@@ -1724,6 +1724,17 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
                 ),
             )
         ] = selector.AreaSelector()
+        # Entry wide, so it sits with the entry's own options rather than on the
+        # per-channel subentry form -- which is also where the first version of
+        # this put it, and that form has no `options` to read a default from.
+        schema[
+            vol.Optional(
+                CONF_LABELS,
+                default=self.options.get(
+                    CONF_LABELS, self.config_entry.data.get(CONF_LABELS, [])
+                ),
+            )
+        ] = selector.LabelSelector(selector.LabelSelectorConfig(multiple=True))
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(schema),
@@ -1874,14 +1885,6 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
                         CONF_NAME, default="Channel {0}".format(next_free + 1)
                     ): str,
                     vol.Optional(CONF_AREA, default=""): selector.AreaSelector(),
-                    vol.Optional(
-                        CONF_LABELS,
-                        default=self.options.get(
-                            CONF_LABELS, self.config_entry.data.get(CONF_LABELS, [])
-                        ),
-                    ): selector.LabelSelector(
-                        selector.LabelSelectorConfig(multiple=True)
-                    ),
                     vol.Optional(CONF_EVENTS, default=DEFAULT_EVENTS): cv.multi_select(
                         ALL_EVENTS
                     ),

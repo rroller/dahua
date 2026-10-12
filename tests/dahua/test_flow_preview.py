@@ -137,7 +137,9 @@ async def test_the_form_still_asks_for_a_name_alongside_the_picture():
 
     result = await handler._show_config_form_name(handler.init_info)
 
-    assert [str(key) for key in result["data_schema"].schema] == [CONF_NAME]
+    # The field this test is about, not the whole form: it also offers labels
+    # for the devices being added, and this test is not about those.
+    assert CONF_NAME in [str(key) for key in result["data_schema"].schema]
     assert result["step_id"] == "name"
 
 
@@ -150,7 +152,7 @@ async def test_a_device_that_gives_no_picture_still_gets_a_form(monkeypatch):
     result = await handler._show_config_form_name(handler.init_info)
 
     assert result["description_placeholders"] == {"preview": ""}
-    assert [str(key) for key in result["data_schema"].schema] == [CONF_NAME]
+    assert CONF_NAME in [str(key) for key in result["data_schema"].schema]
 
 
 async def test_nothing_is_stored_when_there_is_no_picture(monkeypatch):
