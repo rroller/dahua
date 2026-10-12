@@ -23,9 +23,10 @@ from aiohttp import ClientError, ClientResponseError, ClientSession
 
 from homeassistant.components.tag import async_scan_tag
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import CALLBACK_TYPE, HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import dahua_utils
@@ -95,6 +96,22 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 # config entry with ConfigEntryNotReady. One slow capability check took the
 # device down and Home Assistant retried it forever. See #594 and #631.
 PROBE_FAILED = (ClientError, TimeoutError)
+
+# One card per device, naming the channels whose main stream a browser cannot
+# be given.
+#
+# Per channel was the first shape and it was wrong. Measured on a
+# DHI-NVR5464-16P-EI: eight of its twelve channels carry H.265 with no audio,
+# so that would raise eight cards on an install whose owner views sub streams
+# and has never noticed. One card that names them is the same information
+# without the pile.
+ISSUE_WEBRTC_CANNOT_PLAY = "webrtc_cannot_play_{0}"
+
+# Which channels of each host are in that state, so the one card can name them.
+# Channels of a recorder set up concurrently, so each adds its own verdict and
+# the card is rewritten each time: an early partial list is replaced rather than
+# duplicated, because the issue id is the same.
+_HOST_UNPLAYABLE: dict = {}
 
 # Where an indoor monitor's camera links live in the poll's data: see
 # client.vth_camera_links for the shape.
@@ -732,6 +749,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # neither sensor -- which is why this is a probe rather than an assumption.
     _supports_system_load: bool = False
 
+    # What each of this channel's streams carries, from the Encode table read
+    # once at setup: {index: {"codec": str, "audio": bool}}. On the class as
+    # well as in use because the camera entities read it and a great many tests
+    # build a coordinator with object.__new__.
+    _stream_codecs: dict = {}
+
     # The recorder's configured camera slots (RemoteDevice), read once at setup
     # like the disks. A diagnostic read is a login the device logs, and the slots
     # change rarely, so it is not polled. Empty on anything that is not a recorder.
@@ -1341,6 +1364,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # twelve channel recorder still makes one request. Only one
                 # channel gets the sensors -- sensor.py decides which.
                 await self._async_probe_system_load()
+
+                # Which codec each stream carries, and whether it has audio.
+                # Read once: it only changes when somebody changes it on the
+                # device, and the camera entities and the repair card below
+                # both want it.
+                await self._async_read_stream_codecs()
 
                 # Some Dahua firmwares index channels from 0, others from 1. The default
                 # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
@@ -2948,6 +2977,82 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return
         self._supports_system_load = load.get("usage") is not None
+
+    async def _async_read_stream_codecs(self) -> None:
+        """Read the Encode table once, for the codec and audio of each stream.
+
+        One getConfig, shared per device, so a twelve channel recorder makes one
+        request for all of them. Never raises: a device that will not serve
+        Encode simply has nothing to say about its codecs, and that is not a
+        reason for it to fail setup.
+        """
+        try:
+            encode = await self.client.async_get_config("Encode")
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read Encode on %s", self._address, exc_info=exception
+            )
+            return
+        self._stream_codecs = dahua_utils.parse_stream_codecs(encode, self._channel)
+
+        # Guarded separately from the read, and for a different reason: the
+        # codecs are already stored and feed the camera attributes, so a card
+        # that cannot be raised must cost the card and nothing else. Raising one
+        # is the last thing setup does with this and the least important.
+        try:
+            self._async_report_unplayable_stream()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not report the unplayable stream on %s",
+                self._address,
+                exc_info=exception,
+            )
+
+    @callback
+    def _async_report_unplayable_stream(self) -> None:
+        """Raise a card when this channel's main stream cannot be played.
+
+        H.265 **and** no audio track, which is the pair that fails rather than
+        the codec alone -- see webrtc_cannot_play for why both are required and
+        what was measured. The card names the fix, which is on the device: that
+        channel's encoding.
+
+        Deleted rather than left standing when the condition clears, so somebody
+        who changes the codec and reloads sees it go.
+        """
+        issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(self._address)
+        affected = _HOST_UNPLAYABLE.setdefault(self._address, set())
+
+        if dahua_utils.webrtc_cannot_play(self._stream_codecs):
+            affected.add(self._channel)
+        else:
+            affected.discard(self._channel)
+
+        if not affected:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="webrtc_cannot_play",
+            translation_placeholders={
+                "address": self._address,
+                "channels": ", ".join(str(channel) for channel in sorted(affected)),
+                "count": str(len(affected)),
+            },
+        )
+
+    def get_stream_codec(self, stream_index: int):
+        """The codec one stream carries, or None if the device did not say."""
+        return (self._stream_codecs.get(stream_index) or {}).get("codec")
+
+    def get_stream_has_audio(self, stream_index: int):
+        """Whether one stream carries audio, or None if the device did not say."""
+        return (self._stream_codecs.get(stream_index) or {}).get("audio")
 
     def supports_system_load(self) -> bool:
         """Whether the processor and memory sensors should exist."""

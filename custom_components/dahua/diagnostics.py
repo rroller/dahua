@@ -683,6 +683,13 @@ def _streams_block(coordinator, encode: dict) -> dict:
         # One boolean, because it is the question somebody reading a report
         # about a stream that will not play actually has.
         "h265_anywhere": any("265" in str(codec) for codec in carried),
+        # And the narrower one that is not a matter of taste: H.265 with no
+        # audio track cannot be given to a browser at all, because there is no
+        # H.264 producer for it and no audio for the transcoder to convert.
+        # This is the condition the repair card is raised on.
+        "webrtc_cannot_play_main": dahua_utils.webrtc_cannot_play(
+            dahua_utils.parse_stream_codecs(encode, channel)
+        ),
     }
 
 
