@@ -228,10 +228,11 @@ def test_the_bracket_spelling_is_read_too():
         _bracket_recorder({0: (True, "Private"), 10: (True, "Onvif")})
     )
 
-    assert devices == {
-        0: {"enabled": True, "protocol": "private"},
-        10: {"enabled": True, "protocol": "onvif"},
-    }
+    # The two fields this file is about, not the whole slot: it also carries
+    # the camera's model, serial, MAC and firmware now.
+    assert sorted(devices) == [0, 10]
+    assert (devices[0]["enabled"], devices[0]["protocol"]) == (True, "private")
+    assert (devices[10]["enabled"], devices[10]["protocol"]) == (True, "onvif")
 
 
 def test_the_bracket_spelling_reaches_the_offer_decision():

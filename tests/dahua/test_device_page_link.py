@@ -74,11 +74,19 @@ def _device_info(url):
     entity = object.__new__(DahuaBaseEntity)
     entity._coordinator = SimpleNamespace(
         get_serial_number=lambda: "SER123",
+        get_device_serial_number=lambda: "SER123",
         get_device_name=lambda: "Front Door",
         get_model=lambda: "IPC-HDW5831R",
         get_firmware_version=lambda: "2.800",
         get_configuration_url=lambda: url,
         configured_area_name=lambda: None,
+        # A standalone camera: the recorder's camera table says nothing about
+        # it, so device_info falls back to what the device reports about
+        # itself. The recorder case is in test_the_camera_behind_the_channel.py.
+        get_channel_model=lambda: None,
+        get_channel_serial_number=lambda: None,
+        get_channel_firmware_version=lambda: None,
+        get_channel_mac=lambda: None,
     )
     return entity.device_info
 
