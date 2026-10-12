@@ -31,7 +31,12 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from . import dahua_utils
 from . import refusals
-from .client import DahuaClient, parse_storage_disks, rpc2_refusal_is_a_stale_login
+from .client import (
+    DahuaClient,
+    _describe_client_error,
+    parse_storage_disks,
+    rpc2_refusal_is_a_stale_login,
+)
 from .rpc2 import Rpc2MethodRefused
 from .const import (
     CAMERA,
@@ -1765,8 +1770,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             except ClientResponseError as exception:
                 if exception.status == 401:
                     raise self._auth_refused(exception) from exception
+                # Described rather than interpolated. A bare TimeoutError has
+                # an empty str(), so this line read "Failed to initialize device
+                # at 10.0.0.5:" with nothing after the colon, on the one failure
+                # it is most often reporting (#1055). The reporter had to be
+                # asked what the exception was, and could not tell us, because
+                # the line had already thrown it away.
                 _LOGGER.warning(
-                    "Failed to initialize device at %s: %s", self._address, exception
+                    "Failed to initialize device at %s: %s",
+                    self._address,
+                    _describe_client_error(exception),
                 )
                 self._back_off_poll_interval(
                     async_record_host_failure(
@@ -1777,8 +1790,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     "Dahua device at " + self._address + " isn't fully initialized yet"
                 )
             except Exception as exception:
+                # Described rather than interpolated. A bare TimeoutError has
+                # an empty str(), so this line read "Failed to initialize device
+                # at 10.0.0.5:" with nothing after the colon, on the one failure
+                # it is most often reporting (#1055). The reporter had to be
+                # asked what the exception was, and could not tell us, because
+                # the line had already thrown it away.
                 _LOGGER.warning(
-                    "Failed to initialize device at %s: %s", self._address, exception
+                    "Failed to initialize device at %s: %s",
+                    self._address,
+                    _describe_client_error(exception),
                 )
                 self._back_off_poll_interval(
                     async_record_host_failure(
