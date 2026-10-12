@@ -190,6 +190,22 @@ async def _filed_under(coordinator):
     return seen
 
 
+def _stub_the_entities(monkeypatch):
+    """Every class this setup builds, not just the one under test.
+
+    The per-channel loop runs too, and the real
+    DahuaAuthorizedVehicleBinarySensor reads `get_serial_number` off the
+    coordinator in its constructor. Stubbing only the disk sensor left that one
+    real, which is an AttributeError about a method this test is not about.
+    """
+    for name in (
+        "DahuaDiskProblemBinarySensor",
+        "DahuaAuthorizedVehicleBinarySensor",
+        "DahuaEventSensor",
+    ):
+        monkeypatch.setattr(bs, name, lambda *a, **k: object())
+
+
 async def test_the_recorders_disks_are_filed_under_the_entry(monkeypatch):
     """Not under a channel's subentry.
 
@@ -197,7 +213,7 @@ async def test_the_recorders_disks_are_filed_under_the_entry(monkeypatch):
     that removing that channel took the recorder's disks with it, and the
     recorder still has them.
     """
-    monkeypatch.setattr(bs, "DahuaDiskProblemBinarySensor", lambda *a, **k: object())
+    _stub_the_entities(monkeypatch)
 
     recorder = _Coordinator(disks=("sda", "sdb"), host_device=True)
     recorder.subentry_id = "channel-0"
@@ -207,7 +223,7 @@ async def test_the_recorders_disks_are_filed_under_the_entry(monkeypatch):
 
 async def test_a_camera_with_an_sd_card_keeps_its_disk_on_its_own_channel(monkeypatch):
     """There is no separate device to file it against, so nothing moves."""
-    monkeypatch.setattr(bs, "DahuaDiskProblemBinarySensor", lambda *a, **k: object())
+    _stub_the_entities(monkeypatch)
 
     camera = _Coordinator(disks=("sda",), host_device=False)
     camera.subentry_id = "channel-0"

@@ -76,6 +76,7 @@ def _device_info(url):
         get_serial_number=lambda: "SER123",
         get_device_serial_number=lambda: "SER123",
         uses_separate_host_device=lambda: False,
+        host_device_identifier=lambda: "SER123_host",
         get_device_name=lambda: "Front Door",
         get_model=lambda: "IPC-HDW5831R",
         get_firmware_version=lambda: "2.800",

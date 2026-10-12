@@ -220,6 +220,9 @@ class _Coordinator:
     def uses_separate_host_device(self):
         return self.values["uses_separate_host_device"]
 
+    def host_device_identifier(self):
+        return self.values["get_device_serial_number"] + "_host"
+
     def configured_area_name(self):
         return self.values["configured_area_name"]
 
