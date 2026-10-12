@@ -163,6 +163,71 @@ def labels_for_device(existing, previously_chosen, chosen) -> set:
     return (existing - previously_chosen) | chosen
 
 
+# One channel's streams in the Encode table. MainFormat[0] is the stream the
+# integration calls index 0, and ExtraFormat[n] is index n+1, which is the
+# numbering `to_stream_name` already uses.
+_MAIN_FORMAT = "table.Encode[{0}].MainFormat[0]."
+_EXTRA_FORMAT = re.compile(r"table\.Encode\[(\d+)\]\.ExtraFormat\[(\d+)\]\.")
+
+
+def parse_stream_codecs(encode, channel: int) -> dict:
+    """What each of one channel's streams carries: codec, and whether audio is on.
+
+        {0: {"codec": "H.265", "audio": False}, 1: {...}}
+
+    Keyed by the stream index this integration uses everywhere else, so a camera
+    entity can look up its own stream without translating anything.
+
+    The audio half matters as much as the codec and is easy to miss. A browser
+    cannot take H.265 over WebRTC, so go2rtc falls back to a transcoding source
+    that Home Assistant registers as `ffmpeg:<stream>#audio=opus`, and that
+    source asks go2rtc for the stream's **audio-only** view. A camera with
+    `AudioEnable` false has no audio track, go2rtc answers 404, and the whole
+    attempt fails. Measured on a DHI-NVR5464-16P-EI: with both true the WebRTC
+    offer returned 500 and the recorded error, and moving that channel to H.264
+    turned it into a 200 carrying video with the audio line marked inactive.
+
+    Returns {} for anything that is not a table, so a device that refuses Encode
+    is told apart from one that answers emptily by the caller, not here.
+    """
+    if not isinstance(encode, dict):
+        return {}
+    found = {}
+    prefix = _MAIN_FORMAT.format(channel)
+    for key, value in encode.items():
+        key = str(key)
+        index = None
+        if key.startswith(prefix):
+            index, field = 0, key[len(prefix) :]
+        else:
+            match = _EXTRA_FORMAT.match(key)
+            if match and int(match.group(1)) == channel:
+                index, field = int(match.group(2)) + 1, key[match.end() :]
+        if index is None:
+            continue
+        stream = found.setdefault(index, {"codec": None, "audio": None})
+        if field == "Video.Compression":
+            stream["codec"] = str(value).strip() or None
+        elif field == "AudioEnable":
+            stream["audio"] = str(value).strip().lower() == "true"
+    return found
+
+
+def webrtc_cannot_play(streams: dict, index: int = 0) -> bool:
+    """Whether this stream is the combination a browser cannot be given.
+
+    H.265 **and** no audio track. Deliberately both: H.265 on its own is not
+    universally broken -- it depends on the player, and the same recorder serves
+    a working H.264 sub stream beside an unplayable H.265 main one -- so saying
+    so on the codec alone would be wrong often enough to be worse than silence.
+    This pair is not a matter of taste: there is no H.264 producer for the
+    browser and no audio track for the transcoder, so the attempt fails.
+    """
+    stream = (streams or {}).get(index) or {}
+    codec = str(stream.get("codec") or "")
+    return "265" in codec and stream.get("audio") is False
+
+
 def parse_channel_titles(data) -> dict:
     """The name a recorder holds for each channel, by index.
 

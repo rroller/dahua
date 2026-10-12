@@ -26,6 +26,7 @@ ISSUE_PLACEHOLDERS = {
     "siblings_remain": {"address", "count"},
     "removal_broke_things": {"removed", "dependents", "names"},
     "channel_not_added": {"address", "channel", "reason"},
+    "webrtc_cannot_play": {"address", "channels", "count"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
 

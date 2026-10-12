@@ -552,6 +552,25 @@ def rtsp_stream_source(url: str, disable_backchannel: bool) -> str:
 class DahuaCamera(DahuaBaseEntity, Camera):
     """An implementation of a Dahua IP camera."""
 
+    @property
+    def extra_state_attributes(self):
+        """The base attributes, plus what this stream actually carries.
+
+        Put here rather than on a sensor of its own because a recorder has one
+        camera entity per stream already, and twelve channels would otherwise
+        mean twelve more entities to say something about streams that are right
+        there. Added only where the device said, so a camera whose Encode table
+        was refused grows nothing.
+        """
+        attributes = dict(super().extra_state_attributes or {})
+        codec = self._coordinator.get_stream_codec(self._stream_index)
+        if codec:
+            attributes["video_codec"] = codec
+        audio = self._coordinator.get_stream_has_audio(self._stream_index)
+        if audio is not None:
+            attributes["audio"] = audio
+        return attributes
+
     def __init__(
         self,
         coordinator: DahuaDataUpdateCoordinator,
