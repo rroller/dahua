@@ -1283,6 +1283,47 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return True
         return False
 
+    async def _async_probe_day_night_color(self) -> bool:
+        """Ask this channel whether it has a Day/Night mode, and remember it.
+
+        One judgment, used by setup and by the later retry, because the rule it
+        applies is easy to get subtly different in two places: the answer is
+        whether *this channel's row* came back, not whether the request raised.
+        `async_get_config` swallows a `ClientResponseError` and returns {}, and
+        a device can answer 200 with an empty body for a table it does not
+        have. Both of those are the device answering, and `_note_probe_answered`
+        is what stops them being asked again.
+
+        Only silence leaves the question open. Setting the flag False with it
+        is what setup always did, and is safe to keep here: the flag starts
+        False and a retry only runs for a probe that has never answered, so
+        there is no earlier yes for this to overwrite.
+        """
+        try:
+            options = await self.client.async_get_video_in_options()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("day_night_color", probe_error)
+            self._supports_day_night_color = False
+            return False
+        self._note_probe_answered("day_night_color")
+        self._supports_day_night_color = (
+            day_night_color_name(options, self._channel) is not None
+        )
+        return self._supports_day_night_color
+
+    async def _async_retry_day_night_color(self) -> bool:
+        """Whether a Day/Night mode turned up that was missed at setup.
+
+        The Day/Night select is the entity this gates, and the poll decides
+        each cycle whether to read the table, so the control works from the
+        next poll rather than reading unknown until a reload.
+
+        What the flag said is read first, because the probe is the thing that
+        writes it: asking afterwards would compare the answer with itself.
+        """
+        already = self._supports_day_night_color
+        return await self._async_probe_day_night_color() and not already
+
     async def _async_retry_unanswered_capabilities(self) -> None:
         """Ask again for a capability the device never answered.
 
@@ -1626,18 +1667,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     }
                 _LOGGER.debug("Device IVS rules=%s", self._ivs_rules)
 
-                # Day/Night mode. Judged by whether this channel's row came
-                # back, not by whether the request raised: async_get_config
-                # swallows a ClientResponseError and returns {}, and a device
-                # can answer 200 with an empty body for a table it lacks.
-                try:
-                    options = await self.client.async_get_video_in_options()
-                    self._supports_day_night_color = (
-                        day_night_color_name(options, self._channel) is not None
-                    )
-                except PROBE_FAILED as probe_error:
-                    self._note_probe_refusal("day_night_color", probe_error)
-                    self._supports_day_night_color = False
+                # Day/Night mode. The same probe a later poll re-asks when this
+                # one goes unanswered, so setup and the retry cannot come to
+                # disagree about how the answer is read (#1057).
+                await self._async_probe_day_night_color()
                 _LOGGER.debug(
                     "Device supports day/night mode=%s", self._supports_day_night_color
                 )
@@ -4824,11 +4857,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 # same name it failed under and the two cannot drift apart. Defined here rather
 # than inside the class because the values are unbound methods of it.
 #
-# Both of these gate entities: an infrared light and, through
-# `supports_infrared_light`, the Infrared Mode select. They are the pair
+# Every one of these gates entities: an infrared light and, through
+# `supports_infrared_light`, the Infrared Mode select, which are the pair
 # reported in #1043, where two identical cameras on one recorder ended up with
-# different entities because one probe expired and the other did not.
+# different entities because one probe expired and the other did not; and the
+# Day/Night mode select, whose table is a host-wide read, so on a recorder one
+# channel's late answer is served from the shared cache the next asks.
 RETRYABLE_CAPABILITIES = {
+    "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
     "lighting": DahuaDataUpdateCoordinator._async_retry_lighting,
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
 }
