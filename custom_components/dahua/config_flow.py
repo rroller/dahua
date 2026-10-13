@@ -215,6 +215,22 @@ def redirected_to_https(exception: BaseException) -> bool:
     return getattr(url, "scheme", None) == "https"
 
 
+def https_redirect_port(exception: BaseException) -> str | None:
+    """The port a device redirected us to, when it redirected us to HTTPS.
+
+    The device is the authority on where its HTTPS lives. Dahua sends 443 and
+    that is the fallback for the probe path, which has no redirect to read, but
+    a recorder reached through a port mapping can name another and typing 443
+    would be wrong. `URL.port` fills in 443 for a bare `https://` URL, which is
+    the same answer the device would have given.
+    """
+    if not redirected_to_https(exception):
+        return None
+    url = getattr(getattr(exception, "request_info", None), "url", None)
+    port = getattr(url, "port", None)
+    return str(port) if port else None
+
+
 def describe_setup_failure(exception: BaseException) -> str:
     """Which translation key explains why a device could not be added.
 
@@ -284,6 +300,22 @@ CHANNEL_ERRORS = ("channel_not_on_device", "channel_disabled", "channel_is_onvif
 # something specific about itself. Showing somebody the port and HTTPS fields after
 # one of these would point them away from the actual problem.
 TRANSPORT_WORKED = ("auth",) + CHANNEL_ERRORS
+
+# The port Dahua serves HTTPS on, and the fallback when there is no redirect to
+# read the real one from.
+DEFAULT_HTTPS_PORT = "443"
+
+# The reasons that mean "this device answers over HTTPS, not here". Both are
+# the device saying where it is rather than refusing anything: `https_redirect`
+# is its own Location header, `https_available` is a TCP probe finding 443 open
+# after nothing answered on the port given.
+SWITCH_TO_HTTPS_REASONS = ("https_redirect", "https_available")
+
+# Where `_test_credentials` reports a transport it had to correct to get an
+# answer, for the caller to store. A key rather than a third return value
+# because every caller unpacks a pair, and it is popped rather than read, so it
+# cannot reach entry data as a nested dict.
+TRANSPORT_FIX = "transport_fix"
 
 
 async def async_channel_refusal(client, channel):
@@ -680,6 +712,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 check_channel=True,
             )
             if data is not None:
+                # Whatever had to be corrected to get an answer, stored before
+                # anything else reads these fields: the channel search builds its
+                # own client from them, and entry.data is what the coordinator
+                # uses afterwards.
+                user_input.update(data.pop(TRANSPORT_FIX, None) or {})
                 # Only allow a camera to be setup once
                 if "serialNumber" in data and data["serialNumber"] is not None:
                     unique_id = channel_unique_id(
@@ -1058,6 +1095,8 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             self._async_report_channel_not_added(import_data, error)
             return self.async_abort(reason="channel_not_added")
 
+        import_data.update(data.pop(TRANSPORT_FIX, None) or {})
+
         serial = data.get("serialNumber")
         if serial:
             unique_id = channel_unique_id(serial, import_data[CONF_CHANNEL])
@@ -1204,7 +1243,11 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             if data is not None:
                 self.hass.config_entries.async_update_entry(
                     entry,
-                    data={**entry.data, **user_input},
+                    data={
+                        **entry.data,
+                        **user_input,
+                        **(data.pop(TRANSPORT_FIX, None) or {}),
+                    },
                 )
                 await self.hass.config_entries.async_reload(entry.entry_id)
                 return self.async_abort(reason="reauth_successful")
@@ -1285,6 +1328,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 check_channel=True,
             )
             if data is not None:
+                user_input.update(data.pop(TRANSPORT_FIX, None) or {})
                 # The channel is on this form, and changing it used to leave the
                 # unique_id behind. Two things went wrong with that: another entry
                 # could then be added for the channel this one had moved to, so two
@@ -1505,6 +1549,88 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     ):
         """Return (data, error) -- the device's name and serial, or why not.
 
+        A device that answers only over HTTPS is followed rather than described.
+        With HTTPS switched on, a Dahua box answers port 80 with a redirect to
+        itself on 443, and the credentials never reach it: aiohttp drops the
+        Authorization header when a redirect changes origin, which a change of
+        scheme and port is (`aiohttp/client.py`, "Invalid redirect URL origin").
+        So the user was told their password was rejected, and the fix was to
+        tick HTTPS and retype the port, by hand, twice if they got it wrong.
+
+        The device had already said where it was. Asking it there is one more
+        request, only on a path that has already failed, and because the first
+        attempt offered no credentials at all this is the first login the device
+        is given rather than a second: the same reasoning
+        `async_explain_http_service_off` uses for its one DHIP attempt.
+
+        What succeeded is reported under TRANSPORT_FIX for the caller to store,
+        because an entry created on the port that does not answer comes up
+        broken and raises the `http_dead_https_available` repair instead.
+        """
+        already_https = bool(use_https) or str(port) == DEFAULT_HTTPS_PORT
+        data, error, switch_to = await self._async_ask_device(
+            username,
+            password,
+            address,
+            port,
+            rtsp_port,
+            channel,
+            use_https,
+            check_channel,
+            may_retry=not already_https,
+        )
+        if switch_to is None:
+            return data, error
+
+        _LOGGER.debug(
+            "%s says its HTTPS is on port %s, so asking there before giving up",
+            address,
+            switch_to,
+        )
+        retried, retry_error, _ = await self._async_ask_device(
+            username,
+            password,
+            address,
+            switch_to,
+            rtsp_port,
+            channel,
+            True,
+            check_channel,
+            is_retry=True,
+        )
+        if retried is None:
+            # The retry's own reason, not the one that sent us here. "Tick HTTPS
+            # and use 443" is no longer advice once that has been tried: what
+            # the user needs to see is how the HTTPS attempt failed.
+            return None, retry_error
+        _LOGGER.info(
+            "%s answered over HTTPS on port %s, so that is what the entry uses",
+            address,
+            switch_to,
+        )
+        retried[TRANSPORT_FIX] = {CONF_PORT: switch_to, CONF_USE_HTTPS: True}
+        return retried, None
+
+    async def _async_ask_device(
+        self,
+        username,
+        password,
+        address,
+        port,
+        rtsp_port,
+        channel,
+        use_https=None,
+        check_channel=False,
+        may_retry=False,
+        is_retry=False,
+    ):
+        """One attempt. Returns (data, error, switch_to).
+
+        `switch_to` is the port to ask over HTTPS instead, set only when the
+        failure was the device saying where it answers and the caller said it
+        may act on that. `is_retry` marks the attempt that acted on it, which
+        is the one that must not pay for the refinement twice.
+
         The error is a translation key, because every failure used to arrive as
         "Username, Password, or Address is wrong". A device that refuses the
         connection, one on the wrong port, one that wants HTTPS and one that is
@@ -1540,7 +1666,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 if check_channel:
                     refusal = await async_channel_refusal(client, channel)
                     if refusal:
-                        return None, refusal
+                        return None, refusal, None
                 if is_synthesised_identity(data.get("serialNumber")):
                     # The identity is a hash of the credentials, so it changes whenever
                     # the password does and the same camera comes back as a new device
@@ -1561,11 +1687,41 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     # Only what the user is shown. The identity above is separate: a
                     # device can give a usable serial and still have no readable name.
                     data["name"] = fallback_device_name(address, channel)
-                return data, None
+                return data, None, None
             # It answered, but not with anything recognisable.
-            return None, "unexpected_reply"
+            return None, "unexpected_reply", None
         except Exception as exception:  # pylint: disable=broad-except
             reason = describe_setup_failure(exception)
+            if is_retry:
+                # Refining costs TCP probes and, on `http_service_off`, one DHIP
+                # login, and the lockout argument in
+                # `async_explain_http_service_off` rests on that happening once.
+                # The attempt that sent us here has already paid for both.
+                _LOGGER.error(
+                    "Dahua device at %s would not answer over HTTPS on port %s "
+                    "either (%s)",
+                    address,
+                    port,
+                    reason,
+                    exc_info=exception,
+                )
+                return None, reason, None
+            # Always, and not only when a retry may follow: this is what turns
+            # "nothing answered" into https_available or http_service_off at all.
+            reason = await async_refine_connection_failure(address, reason)
+            if may_retry and reason in SWITCH_TO_HTTPS_REASONS:
+                _LOGGER.debug(
+                    "Dahua device at %s did not answer on port %s (%s)",
+                    address,
+                    port,
+                    reason,
+                    exc_info=exception,
+                )
+                return (
+                    None,
+                    reason,
+                    https_redirect_port(exception) or DEFAULT_HTTPS_PORT,
+                )
             _LOGGER.error(
                 "Could not connect to Dahua device at %s (%s). For iMou devices "
                 "see https://github.com/rroller/dahua/issues/6",
@@ -1573,9 +1729,12 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 reason,
                 exc_info=exception,
             )
-            reason = await async_refine_connection_failure(address, reason)
-            return None, await async_explain_http_service_off(
-                address, username, password, reason
+            return (
+                None,
+                await async_explain_http_service_off(
+                    address, username, password, reason
+                ),
+                None,
             )
         finally:
             await session.close()
