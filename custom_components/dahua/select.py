@@ -163,6 +163,17 @@ class DahuaEncodeAudioSourceSelect(DahuaBaseEntity, SelectEntity):
         }
 
     @property
+    def unique_id(self):
+        """Return this format's own id, not the device's.
+
+        `DahuaBaseEntity` defines `unique_id` and is first in the MRO, so
+        without this the id assigned above is never read and every encoder
+        control on a channel reports the same serial. Home Assistant then
+        registers one of them and drops the rest.
+        """
+        return self._attr_unique_id
+
+    @property
     def current_option(self):
         """Return the source currently reported by Encode."""
         value = self._coordinator.data.get(self._key)
