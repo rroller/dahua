@@ -13,6 +13,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinato
 from . import dahua_utils, refusals
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
+from .late import async_add_and_keep_watching
 from .client import SIREN_TYPE
 
 # What a device answers a siren write with when it cannot be reached, as opposed
@@ -34,7 +35,15 @@ PARALLEL_UPDATES = 1
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup sensor platform."""
-    for coordinator in entry_coordinators(entry).values():
+
+    async def build(coordinator):
+        """Which switches this channel warrants, as the device answers today.
+
+        Called again when a capability turns up on a later poll, so a channel
+        whose SmartMotionDetect read timed out at setup gets its switch when
+        the device finally answers rather than at the next reload (#1057).
+        Nothing in here talks to the device, so a rebuild costs no request.
+        """
         # I think most cameras have a motion sensor so we'll blindly add a switch for it.
         # Not an indoor monitor without a camera: there is no picture to detect motion in.
         devices = []
@@ -77,7 +86,11 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             DahuaIVSRuleSwitch(coordinator, entry, rule)
             for rule in coordinator.get_ivs_rules()
         )
-        async_add_devices(devices, config_subentry_id=coordinator.subentry_id)
+        return devices
+
+    await async_add_and_keep_watching(
+        hass, entry, build, async_add_devices, entry_coordinators
+    )
 
 
 class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
