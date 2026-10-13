@@ -23,16 +23,26 @@ not be asked twice. An HTTP refusal never reaches the probe at all, because
 `async_get_config` turns a `ClientResponseError` into `{}`, and a 200 carrying
 no row for this channel is equally an answer. Only silence stays open.
 
-Mutations these are written against:
+Six mutations, each applied to the real source and each named with the tests
+that failed, not with the tests that ought to:
 
 | reintroduced | caught by |
 | --- | --- |
-| the registry entry removed | the select appears, and the derive check |
-| a no-row answer treated as supported | a table without this channel's row |
-| a no-row answer left pending | the same test's refusals assertion |
-| `_note_probe_answered` not called after a good read | asked again for ever |
-| a timeout treated as the device saying no | silence is not an answer |
-| the setup probe inlined again rather than shared | one judgment, one place |
+| the registry entry removed | `late_gates_its_select`, `not_announced_again`, `stays_silent_is_let_go` |
+| a no-row answer treated as supported | `a_table_without_this_channels_row` |
+| the good read not recorded as an answer | `late_gates_its_select`, `not_announced_again` |
+| silence not recorded as pending | `timed_out_probe_leaves_the_question_open`, and four others |
+| the retry reading the flag its own probe just wrote | `late_gates_its_select`, `not_announced_again` |
+| the setup probe inlined again rather than shared | `judgment_is_made_in_exactly_one_place` |
+
+The derive check below catches none of those, which is worth saying because it
+looks like it should: it asserts the registry is a subset of the probe names,
+so a key that is *missing* passes it. It is there for a key that is misspelled.
+
+Those runs were of these assertions against the methods lifted out of
+`coordinator.py` with ast, since the module cannot be imported without Home
+Assistant. That proves the logic and not the wiring, so the file itself ran for
+the first time on CI.
 """
 
 import re
