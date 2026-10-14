@@ -17,6 +17,7 @@ Nothing about what is asked, or when, changes here.
 
 import logging
 
+import aiohttp
 import pytest
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -28,27 +29,32 @@ CHANNEL = 14
 
 
 class _Client:
-    """The one read the lighting_v2 probe makes, as the test dictates."""
+    """The one read the lighting_v2 probe makes, as the test dictates.
 
-    def __init__(self, answer):
-        self.answer = answer
+    Answers are consumed in order and the last one repeats, so a test can say
+    "silent, silent, then the device finally says no" without counting calls.
+    """
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
         self.reads = 0
 
     async def async_get_lighting_v2(self):
         self.reads += 1
-        if isinstance(self.answer, Exception):
-            raise self.answer
-        return dict(self.answer)
+        answer = self.answers[0] if len(self.answers) == 1 else self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return dict(answer)
 
 
-def _coordinator(answer):
+def _coordinator(*answers):
     """A coordinator carrying the retry machinery and nothing else.
 
     `lighting_v2` is the question, because it is the one #1043 measured timing
     out on twelve channels of a nineteen channel recorder.
     """
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
-    coordinator.client = _Client(answer)
+    coordinator.client = _Client(*answers)
     coordinator._channel = CHANNEL
     coordinator._address = ADDRESS
     coordinator._supports_lighting_v2 = False
@@ -147,6 +153,30 @@ async def test_every_attempt_is_visible_in_debug(caplog):
     assert len(attempts) == MAX_CAPABILITY_RETRIES
     assert "attempt 1 of %s" % MAX_CAPABILITY_RETRIES in attempts[0]
     assert "still nothing" in attempts[0]
+
+
+async def test_a_device_that_finally_says_no_is_not_reported_as_silent(caplog):
+    """The distinction the give-up line rests on.
+
+    A refusal carrying a status is the device answering, and an answer is not
+    a loss even when the answer is no: the entities it gates are correctly not
+    created, and nothing was lost by asking. Only a question still unanswered
+    when the budget runs out is worth a line.
+
+    Silent twice and then refused on the last attempt is the only input that
+    reaches this: a refusal on an earlier attempt takes the question out of
+    the pending set, so it never gets to the budget at all.
+    """
+    refused = aiohttp.ClientResponseError(None, (), status=400)
+    coordinator = _coordinator(TimeoutError(), TimeoutError(), refused)
+
+    with caplog.at_level(logging.INFO, logger="custom_components.dahua.coordinator"):
+        await _ask_until_it_gives_up(coordinator)
+
+    assert coordinator._probe_refusals["lighting_v2"]["answered"] is True
+    assert not [
+        record for record in caplog.records if "did not answer about" in record.message
+    ], "the device answered, so there is nothing to report as unanswered"
 
 
 # --- and the dump -----------------------------------------------------------

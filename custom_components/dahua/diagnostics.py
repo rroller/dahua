@@ -271,7 +271,9 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
         # stayed silent, which is a different report from one that was never
         # asked at all -- and from outside the log there was no way to tell
         # those apart (#1057).
-        "capability_retries": dict(getattr(coordinator, "_capability_retries", {})),
+        "capability_retries": dict(
+            getattr(coordinator, "_capability_retries", None) or {}
+        ),
         "capability_retry_budget": MAX_CAPABILITY_RETRIES,
     }
 
