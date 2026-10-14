@@ -117,6 +117,15 @@ MAX_QUEUE_WAIT_SECONDS = 3 * TIMEOUT_SECONDS
 # RPC2 sessions or credentials.
 _HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 
+# One lock per device over its lighting tables. Keyed by device rather than
+# held on the client, because LightingScheme and Lighting_V2 are the device's
+# and a client is per channel: two channels of one recorder each holding their
+# own lock excluded each other from nothing. The turn-on saves its recovery
+# mode before it writes the camera, on purpose, so without this another
+# channel's poll can reconcile that key away in the gap and leave the camera
+# in WhiteMode with nothing to go back to.
+_HOST_LIGHTING_SCHEME_LOCKS: dict[str, asyncio.Lock] = {}
+
 
 def _describe_client_error(exception) -> str:
     """The shortest thing that says whether asking again could ever work.
@@ -191,6 +200,15 @@ def _remote_ivs_lock(device: str, channel: int) -> asyncio.Lock:
     if lock is None:
         lock = asyncio.Lock()
         _HOST_REMOTE_IVS_LOCKS[key] = lock
+    return lock
+
+
+def _lighting_scheme_lock(device: str) -> asyncio.Lock:
+    """This device's lighting tables, shared by every channel's client."""
+    lock = _HOST_LIGHTING_SCHEME_LOCKS.get(device)
+    if lock is None:
+        lock = asyncio.Lock()
+        _HOST_LIGHTING_SCHEME_LOCKS[device] = lock
     return lock
 
 
@@ -1361,7 +1379,7 @@ class DahuaClient:
         # a channel/profile. Camera config survives HA restarts, so this must.
         self._illuminator_restore_store = illuminator_restore_store
         self._channel_snapshot_store = channel_snapshot_store
-        self._lighting_scheme_lock = asyncio.Lock()
+        self._lighting_scheme_lock = _lighting_scheme_lock(self._device)
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
         # includes the password, so the identity changes if the password does.
