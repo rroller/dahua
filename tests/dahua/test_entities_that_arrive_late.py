@@ -88,6 +88,10 @@ class _Retrying:
         self._capability_retries = {}
         self._supports_lighting = False
         self._address = "10.0.0.5"
+        # A coordinator is per channel and the real one always has this. The
+        # retry names it when it reports what a device would not answer, so a
+        # recorder's nineteen channels are told apart in the log.
+        self._channel = 14
         self.attempts = 0
         self._answers_on = answers_on_attempt
         self.signalled = []
