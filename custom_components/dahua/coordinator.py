@@ -1524,6 +1524,49 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         already = self._supports_event_notifications
         return await self._async_probe_event_notifications() and not already
 
+    async def _async_probe_coaxial_control(self) -> bool:
+        """Ask for the coaxial control status, and remember what came back.
+
+        One judgment for setup and for the later retry. The handler stays
+        narrower than the others on purpose: `PROBE_REFUSED` is an HTTP
+        response or a timeout, so a connection failure here still fails setup
+        rather than being read as a camera without the feature. #854 is what
+        the HTTP half is for, three AD410s that never finished setup because
+        an RPC2 refusal of this status was treated as fatal.
+
+        No entity is gated on this. `supports_siren` and
+        `supports_security_light` decide that from the model and from the RPC2
+        deterrence probe, and this flag decides whether the poll reads the
+        status those entities show. A channel that lost it has a siren switch
+        and a security light that can only ever read off, and on a flood light
+        it is the `WhiteLight` field of this same status that says whether the
+        lamp is lit.
+        """
+        try:
+            await self.client.async_get_coaxial_control_io_status(
+                self.get_coaxial_status_channel()
+            )
+        except PROBE_REFUSED as probe_error:
+            self._note_probe_refusal("coaxial_control", probe_error)
+            self._supports_coaxial_control = False
+            return False
+        self._note_probe_answered("coaxial_control")
+        self._supports_coaxial_control = True
+        return True
+
+    async def _async_retry_coaxial_control(self) -> bool:
+        """Whether the coaxial status turned up after going unanswered.
+
+        Not asked again where setup never asked: a channel whose light and
+        switch platforms are both switched off, or one that drives deterrence
+        over RPC2, records no refusal, and only a recorded refusal is retried.
+
+        What the gate said is read first, because the probe is the thing that
+        writes it: asking afterwards would compare the answer with itself.
+        """
+        already = self._supports_coaxial_control
+        return await self._async_probe_coaxial_control() and not already
+
     async def _async_retry_unanswered_capabilities(self) -> None:
         """Ask again for a capability the device never answered.
 
@@ -1779,16 +1822,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
 
                 await self._async_probe_direct_deterrence()
+                # The same probe a later poll re-asks when this one goes
+                # unanswered, so setup and the retry cannot come to disagree
+                # about what the device said (#1057).
                 if self._wanted_by(LIGHT, SWITCH) and not self.uses_rpc2_deterrence():
-                    try:
-                        coaxial_channel = self.get_coaxial_status_channel()
-                        await self.client.async_get_coaxial_control_io_status(
-                            coaxial_channel
-                        )
-                        self._supports_coaxial_control = True
-                    except PROBE_REFUSED as probe_error:
-                        self._note_probe_refusal("coaxial_control", probe_error)
-                        self._supports_coaxial_control = False
+                    await self._async_probe_coaxial_control()
                 _LOGGER.debug(
                     "Device supports Coaxial Control=%s", self._supports_coaxial_control
                 )
@@ -5079,6 +5117,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 # together, so a channel that lost that probe lost both of its controls.
 RETRYABLE_CAPABILITIES = {
     "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
+    "coaxial_control": DahuaDataUpdateCoordinator._async_retry_coaxial_control,
     "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
     "disarming_linkage": DahuaDataUpdateCoordinator._async_retry_disarming_linkage,
     "event_notifications": DahuaDataUpdateCoordinator._async_retry_event_notifications,
