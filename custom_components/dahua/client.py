@@ -652,6 +652,64 @@ def clear_host_cache(scope: str) -> None:
         del _HOST_CACHE[key]
 
 
+async def cancel_reads_issued_on(session) -> None:
+    """Stop the reads still in flight on a session that is about to close.
+
+    `clear_host_cache` forgets a shared read, which is all a write needs: the
+    request is still wanted by whoever is waiting on it, and it finishes into
+    their hands. Shutdown is the other case. There the session the read is
+    using is about to be closed under it, and forgetting the task leaves it
+    running against a session that is no longer there, with nobody left to
+    collect what it raises:
+
+        AssertionError: assert self._connector is not None
+        RuntimeError: Session is closed
+        ERROR Error doing job: AssertionError exception in shielded future
+
+    Reported on a restart in #1043. Nothing is lost by cancelling one of these:
+    the client that issued it is stopping and the answer has nowhere to go.
+
+    **By session, not by device.** One read of one URL is shared by every entry
+    on the device, and they do not share a session: there is one per
+    coordinator, closed by that coordinator. Cancelling everything for the
+    device would take away a read another entry is waiting on and is still
+    running, which is a worse bug than the one being fixed.
+
+    A read that has already landed is left where it is. Its answer does not
+    depend on any session, and dropping it would make the next entry on this
+    device ask the hardware again for something it has just been told.
+    """
+    if session is None:
+        return
+
+    cancelled = []
+
+    for store in (_HOST_SYSTEM_LOAD, _HOST_CACHE):
+        for key, entry in list(store.items()):
+            owner = getattr(entry, "owner", None)
+            if owner is None or owner is not session:
+                # None is "nobody said", which must never match: a client with
+                # no session of its own would otherwise cancel every read that
+                # also had none.
+                continue
+            task = getattr(entry, "task", None)
+            if task is None:
+                continue
+            if not task.done():
+                store.pop(key, None)
+                task.cancel()
+                cancelled.append(task)
+            elif not task.cancelled() and task.exception() is not None:
+                # Reading `.exception()` is itself what marks it retrieved, so
+                # the failure that was already there does not become the log
+                # line this exists to remove. The entry goes with it: a read
+                # that failed was never usable anyway.
+                store.pop(key, None)
+
+    if cancelled:
+        await asyncio.gather(*cancelled, return_exceptions=True)
+
+
 class _SharedRead:
     """One read of one URL, shared by every entry on the host that wants it.
 
@@ -659,11 +717,14 @@ class _SharedRead:
     than issuing their own. Once it lands, it answers again for the TTL.
     """
 
-    __slots__ = ("task", "expires_at")
+    __slots__ = ("task", "expires_at", "owner")
 
-    def __init__(self, task: asyncio.Task) -> None:
+    def __init__(self, task: asyncio.Task, owner=None) -> None:
         self.task = task
         self.expires_at = None  # stamped when the request lands
+        # The session the request was issued on, so that a client closing can
+        # stop its own reads without touching another entry's (#1043).
+        self.owner = owner
 
     def is_usable(self, now: float) -> bool:
         if not self.task.done():
@@ -1222,6 +1283,12 @@ class DahuaClient:
 
     events is the list of events used to monitor on the camera (For example, motion detection)
     """
+
+    # Tests build clients with `object.__new__` and set only what the case
+    # under test needs, so a read of this on an instance that skipped
+    # `__init__` must not raise. One class default rather than `getattr` at
+    # each use.
+    _session = None
 
     def __init__(
         self,
@@ -2650,6 +2717,11 @@ class DahuaClient:
         closed cleanly: a failed close must not leave a second call able to
         decrement the host's refcount again.
         """
+        # First, because everything below takes away what a read in flight is
+        # using. A read that outlives the session it was issued on fails in a
+        # way nobody is waiting for (#1043).
+        await cancel_reads_issued_on(self._session)
+
         if self._rpc2_acquired and not self._rpc2_released:
             self._rpc2_released = True
             await _release_rpc2(self._rpc2_key())
@@ -3345,7 +3417,9 @@ class DahuaClient:
             # Registered before it is awaited, which is the whole point: the
             # other eleven channels reach this line while the first one's
             # request is still in flight and wait on it rather than asking.
-            entry = _SharedRead(asyncio.ensure_future(self._async_read_system_load()))
+            entry = _SharedRead(
+                asyncio.ensure_future(self._async_read_system_load()), self._session
+            )
             _HOST_SYSTEM_LOAD[self._device] = entry
 
         # Shielded so that one channel's cancelled refresh -- a reload, a
@@ -4523,7 +4597,9 @@ class DahuaClient:
             # Registering before the request starts is what makes this work:
             # the per-host limiter queues callers inside _request, so by the
             # time the first one has a slot the rest are already sharing it.
-            entry = _SharedRead(asyncio.ensure_future(self._request(url, verify_ok)))
+            entry = _SharedRead(
+                asyncio.ensure_future(self._request(url, verify_ok)), self._session
+            )
             _HOST_CACHE[key] = entry
 
         # Shielded so that one entry's cancelled refresh -- a reload, a
