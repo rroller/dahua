@@ -5,6 +5,8 @@ table (0-100, measured on a DHI-NVR5464 and a VTO); the entity reads the poll's
 value and writes the channel's general profile on change.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from custom_components.dahua import number as number_module
@@ -110,15 +112,35 @@ async def test_setting_a_value_writes_the_field_and_refreshes():
     assert c.refreshed == 1
 
 
+def _hass():
+    """Enough hass for the dispatcher the platform now listens on.
+
+    Setup keeps a listener for capabilities that turn up on a later poll, and
+    `async_dispatcher_connect` reaches `hass.data`. These tests handed setup
+    None, which was true of what it did before (#1057).
+    """
+    return SimpleNamespace(data={})
+
+
 # --- the platform -----------------------------------------------------------
 
 
 async def test_a_camera_gets_the_four_adjustments():
     added = []
     coordinator = _Coordinator()
-    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            # Setup keeps a listener for capabilities that turn up on a later
+            # poll, and registers its removal here (#1057).
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
 
-    await async_setup_entry(None, entry, adds_entities(added))
+    await async_setup_entry(_hass(), entry, adds_entities(added))
 
     keys = sorted(n.unique_id for n in added)
     assert keys == [
@@ -133,9 +155,19 @@ async def test_a_camera_gets_the_four_adjustments():
 async def test_an_indoor_monitor_without_a_camera_gets_none():
     added = []
     coordinator = _Coordinator(no_video=True)
-    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            # Setup keeps a listener for capabilities that turn up on a later
+            # poll, and registers its removal here (#1057).
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
 
-    await async_setup_entry(None, entry, adds_entities(added))
+    await async_setup_entry(_hass(), entry, adds_entities(added))
 
     assert added == []
 
@@ -152,9 +184,19 @@ async def test_a_device_that_reports_no_adjustments_gets_no_sliders():
     """
     added = []
     coordinator = _Coordinator(fields=[])
-    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            # Setup keeps a listener for capabilities that turn up on a later
+            # poll, and registers its removal here (#1057).
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
 
-    await async_setup_entry(None, entry, adds_entities(added))
+    await async_setup_entry(_hass(), entry, adds_entities(added))
 
     assert added == []
 
@@ -166,11 +208,59 @@ async def test_only_the_adjustments_the_device_reported_are_created():
     """
     added = []
     coordinator = _Coordinator(fields=["Brightness", "Hue"])
-    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            # Setup keeps a listener for capabilities that turn up on a later
+            # poll, and registers its removal here (#1057).
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
 
-    await async_setup_entry(None, entry, adds_entities(added))
+    await async_setup_entry(_hass(), entry, adds_entities(added))
 
     assert sorted(n.unique_id for n in added) == [
         "SERIAL1_image_brightness",
         "SERIAL1_image_hue",
+    ]
+
+
+async def test_sliders_arrive_when_the_table_finally_answers(hass):
+    """The platform's half of #1057, through the real dispatcher.
+
+    The coordinator asking VideoColor again is only half of it: nothing
+    creates a slider from a late answer unless this platform is listening for
+    one. Driven through the real `hass`, the real `async_dispatcher_connect`
+    and the real `async_dispatcher_send`, because the bug #1063 fixed in the
+    same mechanism was invisible to every test that faked them.
+    """
+    from custom_components.dahua import late
+
+    added = []
+    coordinator = _Coordinator(fields=())
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
+
+    await async_setup_entry(hass, entry, adds_entities(added))
+    assert added == [], "the device reported no adjustments at setup"
+
+    # The device answers on a later poll, and the coordinator says which
+    # channel it was.
+    coordinator._fields = frozenset(["Brightness", "Contrast"])
+    late.async_notify_capability_discovered(hass, "e1", "SERIAL1")
+    await hass.async_block_till_done()
+
+    assert sorted(n.unique_id for n in added) == [
+        "SERIAL1_image_brightness",
+        "SERIAL1_image_contrast",
     ]

@@ -20,6 +20,7 @@ from custom_components.dahua import entry_coordinators
 
 from .dahua_utils import clean_firmware_version, firmware_is_newer
 from .entity import DahuaBaseEntity
+from .late import async_add_and_keep_watching
 
 # Nothing here sends a command; every value comes from the coordinator.
 PARALLEL_UPDATES = 0
@@ -27,18 +28,25 @@ PARALLEL_UPDATES = 0
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the update platform."""
-    for coordinator in entry_coordinators(entry).values():
-        # No curated table and no separate cloud call: the entity exists only
-        # where the device answered the cloud OTA record read at setup. On a
-        # device that did not, an update entity could only ever read "unknown",
-        # which is worse than no entity at all (the profile sensor's rule).
-        if not coordinator.supports_cloud_upgrade():
-            continue
 
-        async_add_devices(
-            [DahuaFirmwareUpdateEntity(coordinator, entry)],
-            config_subentry_id=coordinator.subentry_id,
-        )
+    async def build(coordinator):
+        """The update entity, where the device has a cloud OTA record.
+
+        Called again when that record finally answers on a later poll, so a
+        device whose probe timed out at setup gets its entity then rather than
+        at the next reload (#1057).
+        """
+        # No curated table and no separate cloud call: the entity exists only
+        # where the device answered the cloud OTA record read. On a device that
+        # did not, an update entity could only ever read "unknown", which is
+        # worse than no entity at all (the profile sensor's rule).
+        if not coordinator.supports_cloud_upgrade():
+            return []
+        return [DahuaFirmwareUpdateEntity(coordinator, entry)]
+
+    await async_add_and_keep_watching(
+        hass, entry, build, async_add_devices, entry_coordinators
+    )
 
 
 class DahuaFirmwareUpdateEntity(DahuaBaseEntity, UpdateEntity):

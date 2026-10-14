@@ -14,6 +14,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinato
 
 from .const import DOMAIN
 from .entity import DahuaBaseEntity, DahuaEventDrivenEntity, DahuaHostEntity
+from .late import async_add_and_keep_watching
 
 # Maps the camera's lighting profile id to a readable label.
 PROFILE_NAMES = {
@@ -63,7 +64,18 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             ),
         )
 
-    for coordinator in entry_coordinators(entry).values():
+    async def build(coordinator):
+        """Which sensors this channel warrants, as the device answers today.
+
+        Called again when a capability turns up on a later poll, so a channel
+        whose Lighting profile read timed out at setup gets its profile sensor
+        then rather than at the next reload (#1057). Nothing in here talks to
+        the device, so a rebuild costs no request.
+
+        The processor and memory sensors above are not in here on purpose:
+        they describe the box rather than a channel, one channel is chosen to
+        carry them, and rebuilding per channel is the wrong shape for that.
+        """
         sensors = [
             DahuaFirmwareVersionSensor(coordinator, entry),
             DahuaSerialNumberSensor(coordinator, entry),
@@ -85,7 +97,11 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.get_configured_channel_count() is not None:
             sensors.append(DahuaConfiguredChannelsSensor(coordinator, entry))
 
-        async_add_devices(sensors, config_subentry_id=coordinator.subentry_id)
+        return sensors
+
+    await async_add_and_keep_watching(
+        hass, entry, build, async_add_devices, entry_coordinators
+    )
 
 
 class DahuaFirmwareVersionSensor(DahuaBaseEntity, SensorEntity):

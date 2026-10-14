@@ -16,6 +16,7 @@ from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinato
 
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
+from .late import async_add_and_keep_watching
 
 _LOGGER = logging.getLogger(__package__)
 
@@ -37,10 +38,18 @@ IMAGE_ADJUSTMENTS = (
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Set up the number platform."""
-    for coordinator in entry_coordinators(entry).values():
+
+    async def build(coordinator):
+        """Which sliders this channel warrants, as the device answers today.
+
+        Called again when the VideoColor read finally answers on a later poll,
+        so a channel whose probe timed out at setup gets its sliders then
+        rather than at the next reload (#1057). Nothing in here talks to the
+        device, so a rebuild costs no request.
+        """
         # An indoor monitor without a camera has no picture to adjust.
         if coordinator.is_indoor_monitor_without_video():
-            continue
+            return []
         # One entity per adjustment the device actually reported for this
         # channel. These were created unconditionally, which gave four sliders
         # to every device including the ones whose VideoColor table is refused
@@ -49,13 +58,15 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         # slider (the profile sensor's rule, #641). Per field, because a device
         # reporting three of the four should get three rather than a fourth that
         # never resolves.
-        numbers = [
+        return [
             DahuaImageAdjustmentNumber(coordinator, entry, key, field)
             for key, field in IMAGE_ADJUSTMENTS
             if coordinator.supports_video_color(field)
         ]
-        if numbers:
-            async_add_devices(numbers, config_subentry_id=coordinator.subentry_id)
+
+    await async_add_and_keep_watching(
+        hass, entry, build, async_add_devices, entry_coordinators
+    )
 
 
 class DahuaImageAdjustmentNumber(DahuaBaseEntity, NumberEntity):
