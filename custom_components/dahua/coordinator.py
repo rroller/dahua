@@ -1324,6 +1324,55 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         already = self._supports_day_night_color
         return await self._async_probe_day_night_color() and not already
 
+    async def _async_probe_smart_motion_detect(self) -> bool:
+        """Ask for the SmartMotionDetect table, and remember what came back.
+
+        One judgment for setup and for the later retry, because the rule is
+        easy to get subtly different in two places. The table is host wide and
+        sparse: only the channels that can do it get a row, so this channel's
+        row is the capability, and `supports_smart_motion_detection` reads that
+        row straight out of `data`.
+
+        Which is why the answer goes into `data` rather than beside it. The
+        retry runs at the top of a poll and the platform rebuild it asks for is
+        a task, so that rebuild can run before this poll's own read of the
+        table has landed. A switch and a select that found no row then would
+        never be created, and nothing would ask a second time.
+
+        Judged on what came back, not on whether it raised. `async_get_config`
+        turns a `ClientResponseError` into {}, and a 200 carrying rows for
+        other channels is the device answering about this one as well. Both are
+        the device saying no and `_note_probe_answered` stops them being asked
+        again. Only silence leaves the question open.
+        """
+        try:
+            table = await self.client.async_get_smart_motion_detection()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("smart_motion_detect", probe_error)
+            self._supports_smart_motion_detection = False
+            return False
+        self._note_probe_answered("smart_motion_detect")
+        self._supports_smart_motion_detection = True
+        if getattr(self, "data", None) is None:
+            self.data = {}
+        self.data.update(table)
+        return self.supports_smart_motion_detection()
+
+    async def _async_retry_smart_motion_detect(self) -> bool:
+        """Whether a smart motion row turned up that was missed at setup.
+
+        The smart motion switch and the Sensitivity select are the entities
+        this gates, and the poll decides each cycle whether to read the table,
+        so both work from the next poll rather than reading unknown until a
+        reload.
+
+        What the gate said is read first, because the probe is the thing that
+        writes what the gate reads: asking afterwards would compare the answer
+        with itself.
+        """
+        already = self.supports_smart_motion_detection()
+        return await self._async_probe_smart_motion_detect() and not already
+
     async def _async_retry_unanswered_capabilities(self) -> None:
         """Ask again for a capability the device never answered.
 
@@ -1620,13 +1669,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # Smart motion detection is enabled/disabled/fetched differently on Dahua devices compared to Amcrest
                 # The following lines are for Dahua devices
                 smart_motion_rows = None
-                try:
-                    table = await self.client.async_get_smart_motion_detection()
-                    self._supports_smart_motion_detection = True
-                    smart_motion_rows = smart_motion_row_indices(table)
-                except PROBE_FAILED as probe_error:
-                    self._note_probe_refusal("smart_motion_detect", probe_error)
-                    self._supports_smart_motion_detection = False
+                await self._async_probe_smart_motion_detect()
+                if self._supports_smart_motion_detection:
+                    smart_motion_rows = smart_motion_row_indices(self.data)
                 _LOGGER.debug(
                     "Device supports smart motion detection=%s",
                     self._supports_smart_motion_detection,
@@ -4862,9 +4907,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 # reported in #1043, where two identical cameras on one recorder ended up with
 # different entities because one probe expired and the other did not; and the
 # Day/Night mode select, whose table is a host-wide read, so on a recorder one
-# channel's late answer is served from the shared cache the next asks.
+# channel's late answer is served from the shared cache the next asks; and
+# smart motion detection, which gates a switch and the Sensitivity select
+# together, so a channel that lost that probe lost both of its controls.
 RETRYABLE_CAPABILITIES = {
     "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
     "lighting": DahuaDataUpdateCoordinator._async_retry_lighting,
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
+    "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
 }

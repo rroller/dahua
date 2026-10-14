@@ -227,7 +227,11 @@ class TestIVSActions:
         with patch.object(DahuaBaseEntity, "__init__", init):
             await async_setup_entry(
                 hass,
-                SimpleNamespace(entry_id="entry", runtime_data={0: c}),
+                SimpleNamespace(
+                    entry_id="entry",
+                    runtime_data={0: c},
+                    async_on_unload=lambda unsub: None,
+                ),
                 adds_entities(added),
             )
         rules = [s for s in added if isinstance(s, DahuaIVSRuleSwitch)]

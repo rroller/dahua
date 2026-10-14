@@ -292,7 +292,13 @@ async def test_setup_asks_the_device_nothing():
     coordinator.supports_disarming_linkage = lambda: True
 
     hass = SimpleNamespace(data={})
-    entry = SimpleNamespace(entry_id="e1", options={}, runtime_data={0: coordinator})
+    entry = SimpleNamespace(
+        entry_id="e1",
+        options={},
+        runtime_data={0: coordinator},
+        # Setup keeps a listener for capabilities that turn up on a later poll.
+        async_on_unload=lambda unsub: None,
+    )
     added = []
 
     # The decision is what changed here, not how the entities are built.
@@ -334,7 +340,12 @@ async def test_the_disarming_switches_follow_what_the_device_answered():
     ):
         await switch_module.async_setup_entry(
             hass,
-            SimpleNamespace(entry_id="e1", options={}, runtime_data={0: coordinator}),
+            SimpleNamespace(
+                entry_id="e1",
+                options={},
+                runtime_data={0: coordinator},
+                async_on_unload=lambda unsub: None,
+            ),
             adds_entities(added),
         )
 
@@ -483,7 +494,13 @@ async def _added_for(coordinator):
         if not hasattr(coordinator, name):
             setattr(coordinator, name, lambda: False)
 
-    entry = SimpleNamespace(entry_id="e1", options={}, runtime_data={0: coordinator})
+    entry = SimpleNamespace(
+        entry_id="e1",
+        options={},
+        runtime_data={0: coordinator},
+        # Setup keeps a listener for capabilities that turn up on a later poll.
+        async_on_unload=lambda unsub: None,
+    )
     added = []
     with patch.multiple(
         switch_module,
@@ -549,7 +566,13 @@ async def _switches_for(coordinator):
     coordinator.supports_siren = lambda: False
     coordinator.supports_smart_motion_detection = lambda: False
     coordinator.supports_disarming_linkage = lambda: False
-    entry = SimpleNamespace(entry_id="e1", options={}, runtime_data={0: coordinator})
+    entry = SimpleNamespace(
+        entry_id="e1",
+        options={},
+        runtime_data={0: coordinator},
+        # Setup keeps a listener for capabilities that turn up on a later poll.
+        async_on_unload=lambda unsub: None,
+    )
     added = []
     with patch.multiple(
         switch_module,
