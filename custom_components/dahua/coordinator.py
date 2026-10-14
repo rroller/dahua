@@ -1567,6 +1567,109 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         already = self._supports_coaxial_control
         return await self._async_probe_coaxial_control() and not already
 
+    async def _async_probe_video_color(self) -> bool:
+        """Ask which picture adjustments this channel reports, and remember.
+
+        One judgment for setup and for the later retry. Judged on this
+        channel's own fields rather than on the request succeeding: see
+        `video_color_fields`. A device that names none gets no sliders, which
+        is the rule the profile sensor established (#641).
+
+        #1006 is why there is a probe at all: a camera account in the device's
+        `user` group answers 403 to this table, and the read sat in the poll's
+        gather with no capability check and no handler, so one refusal failed
+        the whole refresh.
+
+        Costs a recorder one request rather than one per channel. The URL
+        carries no channel, so the shared read cache answers it once for every
+        channel setting up.
+        """
+        try:
+            table = await self.client.async_get_video_color()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("video_color", probe_error)
+            self._video_color_fields = frozenset()
+            return False
+        self._note_probe_answered("video_color")
+        self._video_color_fields = video_color_fields(table, self._channel)
+        _LOGGER.debug(
+            "Channel %s reports picture adjustments %s",
+            self._channel,
+            sorted(self._video_color_fields) or "none",
+        )
+        return bool(self._video_color_fields)
+
+    async def _async_retry_video_color(self) -> bool:
+        """Whether picture adjustments turned up that were missed at setup.
+
+        Four sliders are gated on this, one per field, and the poll decides
+        each cycle whether to read the table, so they work from the next poll
+        rather than reading unknown until a reload.
+
+        What the gate said is read first, because the probe is the thing that
+        writes it: asking afterwards would compare the answer with itself.
+        """
+        already = bool(self._video_color_fields)
+        return await self._async_probe_video_color() and not already
+
+    async def _async_probe_profile_mode(self) -> bool:
+        """Ask whether this channel has selectable day/night/general profiles.
+
+        One judgment for setup and for the later retry, and judged on the
+        answer's content: `async_get_config_lighting` turns a 400 into {}, and
+        a device without profiles answers
+
+            Error: Error -1 getting param in name=Lighting[0][1]
+
+        so more than one line back is the capability. Profile 2 is the one
+        asked for because every device that has profiles has that one.
+
+        This channel's row, not channel 0's. The name was hardcoded to
+        `Lighting[0][2]`, so on a merged recorder every channel's answer came
+        from camera 1's table. The consequence is the one `infrared_profile`
+        and `read_profile_mode` each have a paragraph about: with this False
+        the poll never reads VideoInMode, so `_profile_mode` stays "0", and a
+        camera running Night has its lighting read from and written to the Day
+        row, where the device accepts the write and renders from somewhere
+        else.
+        """
+        try:
+            conf = await self.client.async_get_config_lighting(self._channel, 2)
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("profile_mode", probe_error)
+            _LOGGER.debug("Cam does not support profile mode. Will use mode 0")
+            self._supports_profile_mode = False
+            return False
+        self._note_probe_answered("profile_mode")
+        self._supports_profile_mode = len(conf) > 1
+        _LOGGER.debug("Device supports profile mode=%s", self._supports_profile_mode)
+        return self._supports_profile_mode
+
+    async def _async_retry_profile_mode(self) -> bool:
+        """Whether a profile mode turned up that was missed at setup.
+
+        The profile sensor is the entity this gates, and the flag also decides
+        whether the poll reads VideoInMode at all, so a channel that lost this
+        probe was reading and writing its lighting against the wrong profile
+        row as well as missing a sensor.
+        """
+        already = self._supports_profile_mode
+        return await self._async_probe_profile_mode() and not already
+
+    async def _async_retry_cloud_upgrade(self) -> bool:
+        """Whether a cloud OTA record turned up that was missed at setup.
+
+        The update entity is what this gates. The record is a local config
+        table, so the retry costs one config read and asks no Dahua server.
+
+        `_async_probe_cloud_upgrade` catches `Exception` rather than
+        PROBE_FAILED, because the read can arrive over RPC2, so silence and a
+        refusal both reach `_note_probe_refusal` and are told apart there by
+        whether a status came with it.
+        """
+        already = self._supports_cloud_upgrade
+        return await self._async_probe_cloud_upgrade() and not already
+
     async def _async_retry_unanswered_capabilities(self) -> None:
         """Ask again for a capability the device never answered.
 
@@ -1934,30 +2037,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # URL carries no channel, so the shared read cache answers it
                 # once for every channel setting up and holds it for
                 # CONFIG_CACHE_TTL_SECONDS.
+                # Inside the gate: a device whose number platform is switched
+                # off is never asked, and saying it reports none would read as
+                # the device refusing. The probe itself is shared with the
+                # retry a later poll makes (#1057).
                 if self._wanted_by(NUMBER):
-                    try:
-                        self._video_color_fields = video_color_fields(
-                            await self.client.async_get_video_color(), self._channel
-                        )
-                    except PROBE_FAILED as probe_error:
-                        # A timeout is cached as "no" here, like every other
-                        # probe in this block. That is deliberate rather than
-                        # overlooked: it costs the sliders until the entry is
-                        # reloaded, and the alternative -- retrying a capability
-                        # question on a poll path -- is what this fix is
-                        # removing. _note_probe_refusal records whether the
-                        # device answered, so the two are told apart in
-                        # diagnostics.
-                        self._note_probe_refusal("video_color", probe_error)
-                        self._video_color_fields = frozenset()
-                    # Inside the gate, like the cloud upgrade record's: a device
-                    # whose number platform is switched off was never asked, and
-                    # saying it reports none would read as the device refusing.
-                    _LOGGER.debug(
-                        "Channel %s reports picture adjustments %s",
-                        self._channel,
-                        sorted(self._video_color_fields) or "none",
-                    )
+                    await self._async_probe_video_color()
 
                 # Which camera is actually on this channel. Every channel of a
                 # recorder reports the recorder's model, so a doorbell behind an
@@ -2106,35 +2191,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # Start the event listeners for IP cameras
                     await self.async_start_event_listener()
 
-                    try:
-                        # Some cams don't support profile modes, check and see... use 2 to check
-                        #
-                        # This channel's row, not channel 0's. The name was
-                        # hardcoded to `Lighting[0][2]`, so on a merged recorder
-                        # every channel's answer came from camera 1's table. The
-                        # consequence is the one `infrared_profile` and
-                        # `read_profile_mode` each have a paragraph about: with
-                        # this False the poll never reads VideoInMode, so
-                        # `_profile_mode` stays "0", and a camera running Night
-                        # has its lighting read from and written to the Day row,
-                        # where the device accepts the write and renders from
-                        # somewhere else.
-                        conf = await self.client.async_get_config_lighting(
-                            self._channel, 2
-                        )
-                        # We'll get back an error like this if it doesn't work:
-                        # Error: Error -1 getting param in name=Lighting[0][1]
-                        # Otherwise we'll get multiple lines of config back
-                        self._supports_profile_mode = len(conf) > 1
-                    except PROBE_FAILED as probe_error:
-                        self._note_probe_refusal("profile_mode", probe_error)
-                        _LOGGER.debug(
-                            "Cam does not support profile mode. Will use mode 0"
-                        )
-                        self._supports_profile_mode = False
-                    _LOGGER.debug(
-                        "Device supports profile mode=%s", self._supports_profile_mode
-                    )
+                    await self._async_probe_profile_mode()
                 else:
                     # Start the event listeners for doorbells (VTO)
                     await self.async_start_vto_event_listener()
@@ -3122,7 +3179,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return self._cloud_firmware_version
 
-    async def _async_probe_cloud_upgrade(self) -> None:
+    async def _async_probe_cloud_upgrade(self) -> bool:
         """Read the device's cached cloud OTA record, once, at setup.
 
         The record is a local config table, so this costs the device one config
@@ -3138,11 +3195,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._note_probe_refusal("cloud_upgrade", probe_error)
             self._supports_cloud_upgrade = False
             self._cloud_firmware_version = None
-            return
+            return False
+        self._note_probe_answered("cloud_upgrade")
         version = cloud_upgrade_version(info)
         self._supports_cloud_upgrade = version is not None
         self._cloud_firmware_version = version
         self._cloud_upgrade_checked_at = time.monotonic()
+        return self._supports_cloud_upgrade
 
     def _cloud_upgrade_read_is_due(self) -> bool:
         """Whether the reused cloud upgrade record is old enough to re-read."""
@@ -5118,10 +5177,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 RETRYABLE_CAPABILITIES = {
     "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
     "coaxial_control": DahuaDataUpdateCoordinator._async_retry_coaxial_control,
+    "cloud_upgrade": DahuaDataUpdateCoordinator._async_retry_cloud_upgrade,
     "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
     "disarming_linkage": DahuaDataUpdateCoordinator._async_retry_disarming_linkage,
     "event_notifications": DahuaDataUpdateCoordinator._async_retry_event_notifications,
     "lighting": DahuaDataUpdateCoordinator._async_retry_lighting,
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
+    "profile_mode": DahuaDataUpdateCoordinator._async_retry_profile_mode,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
+    "video_color": DahuaDataUpdateCoordinator._async_retry_video_color,
 }

@@ -137,7 +137,17 @@ def _coordinator(
 def _setup(coordinator):
     hass = type("H", (), {"data": {}})()
     # One entry owns one coordinator per channel, and setup walks them all.
-    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            # Setup keeps a listener for capabilities that turn up on a later
+            # poll, and registers its removal here (#1057).
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
     added = []
     return hass, entry, added
 
@@ -327,3 +337,37 @@ async def test_the_rpc2_read_rejects_a_table_it_cannot_use(payload):
 
     with pytest.raises(ValueError):
         await client.get_cloud_upgrade_info()
+
+
+async def test_the_update_entity_arrives_when_the_record_finally_answers(hass):
+    """The platform's half of #1057, through the real dispatcher.
+
+    The coordinator asking again is only half of it: nothing creates the
+    entity from a late answer unless this platform is listening. Driven
+    through the real `hass` and the real dispatcher, because the bug #1063
+    fixed in the same mechanism was invisible to every test that faked them.
+    """
+    from custom_components.dahua import late
+
+    answered = {"yet": False}
+    coordinator = _coordinator()
+    coordinator.supports_cloud_upgrade = lambda: answered["yet"]
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
+    added = []
+
+    await update_module.async_setup_entry(hass, entry, adds_entities(added))
+    assert added == [], "the device had not answered the cloud record read"
+
+    answered["yet"] = True
+    late.async_notify_capability_discovered(hass, "e1", "SERIAL1")
+    await hass.async_block_till_done()
+
+    assert [type(entity).__name__ for entity in added] == ["DahuaFirmwareUpdateEntity"]

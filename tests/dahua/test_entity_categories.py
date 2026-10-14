@@ -194,7 +194,17 @@ def _setup_coordinator(profile_support, no_video=False):
 
 def _setup(coordinator):
     hass = type("H", (), {"data": {}})()
-    entry = type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})()
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            # Setup keeps a listener for capabilities that turn up on a later
+            # poll, and registers its removal here (#1057).
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
     added = []
     return hass, entry, added
 
@@ -203,6 +213,43 @@ async def test_the_profile_sensor_is_only_added_when_profile_mode_is_supported()
     hass, entry, added = _setup(_setup_coordinator(profile_support=True))
     await sensor_module.async_setup_entry(hass, entry, adds_entities(added))
     assert any(isinstance(s, DahuaProfileSensor) for s in added)
+
+
+async def test_the_profile_sensor_arrives_when_the_probe_finally_answers(hass):
+    """The platform's half of #1057, through the real dispatcher.
+
+    The coordinator asking the Lighting profile again is only half of it:
+    nothing creates the sensor from a late answer unless this platform is
+    listening for one. Driven through the real `hass` and the real
+    dispatcher, because the bug #1063 fixed in the same mechanism was
+    invisible to every test that faked them.
+    """
+    from custom_components.dahua import late
+
+    answered = {"yet": False}
+    coordinator = _setup_coordinator(profile_support=False)
+    coordinator.supports_profile_mode = lambda: answered["yet"]
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
+    added = []
+
+    await sensor_module.async_setup_entry(hass, entry, adds_entities(added))
+    assert not any(isinstance(s, DahuaProfileSensor) for s in added)
+
+    answered["yet"] = True
+    late.async_notify_capability_discovered(hass, "e1", coordinator.get_serial_number())
+    await hass.async_block_till_done()
+
+    assert any(
+        isinstance(s, DahuaProfileSensor) for s in added
+    ), "the device answered and the sensor it gates was not created"
 
 
 async def test_no_profile_sensor_without_profile_support():
