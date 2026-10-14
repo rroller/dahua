@@ -22,13 +22,15 @@ twice. For the alarm output that includes answering "two outputs", which is a
 fact about the hardware and a definite no to the switch, and answering with a
 body that is not a number at all.
 
-The judgment these two reads make is deliberately left as setup has always
-made it. `async_get_disarming_linkage` goes through `async_get_config`, which
-turns an HTTP refusal into `{}`, so a device without the table reads as having
-it and gets two switches that can only read off. That is worth fixing and is
-not what this is: tightening it would take those switches away from devices
-that have them today, which wants its own change and its own measurement. The
-tests below pin the current judgment so that change has to be deliberate.
+The judgment these two reads make changed with the measurement that was
+missing. `async_get_disarming_linkage` goes through `async_get_config`, which
+turns any HTTP refusal into `{}`, so a device without the table raised nothing
+and was recorded as having it. The VTO2000A here is such a device: both of
+those getConfig reads answer HTTP 500 with the body `Error` while MotionDetect
+on the same device answers 200, and it was given both switches anyway, each
+reading off since the day it was created and each writing into a table that is
+not there. The probes ask for the key the switch reads now, which is the rule
+AGENTS.md states, and the recorder that does report it is unaffected.
 
 Reintroduced one at a time against the real source, each named with the tests
 that actually failed:
@@ -219,15 +221,57 @@ async def test_a_timed_out_linkage_probe_leaves_the_question_open():
     assert coordinator.probes_that_did_not_answer() == {"disarming_linkage"}
 
 
-async def test_an_empty_answer_still_counts_as_the_table_being_there():
-    """Pinned rather than endorsed. `async_get_config` turns a refusal into
-    `{}`, so this is what setup has always concluded, and the retry must not
-    quietly decide otherwise while nobody is looking at the difference."""
+async def test_a_device_that_does_not_report_the_key_gets_no_switch():
+    """The judgment this probe makes, and the reason it changed.
+
+    `async_get_config` turns any HTTP refusal into `{}`, so a device without
+    the table raised nothing and was recorded as having it. Measured on the
+    VTO2000A here: `getConfig&name=DisableLinkage` answers HTTP 500 with the
+    body `Error`, and so does DisableEventNotify, while `MotionDetect` on the
+    same device answers 200. It was given both switches anyway and both have
+    read off since the day they were created.
+
+    So the probe asks for the key the switch will read. An answer that does
+    not carry it is still an answer, and the question is closed.
+    """
     coordinator = _coordinator(linkage=({},))
 
-    assert await coordinator._async_probe_disarming_linkage() is True
-    assert coordinator.supports_disarming_linkage() is True
+    assert await coordinator._async_probe_disarming_linkage() is False
+    assert coordinator.supports_disarming_linkage() is False
     assert coordinator.probes_that_did_not_answer() == set()
+
+
+async def test_a_device_that_reports_the_key_keeps_its_switch():
+    """The other half, and the one that must not regress: a recorder answers
+    `table.DisableLinkage.Enable=false` for the whole box, measured on a
+    DHI-NVR5464-16P-EI, and every channel keeps both switches."""
+    coordinator = _coordinator()
+
+    assert await coordinator._async_probe_disarming_linkage() is True
+    assert await coordinator._async_probe_event_notifications() is True
+    assert coordinator.supports_disarming_linkage() is True
+    assert coordinator.supports_event_notifications() is True
+
+
+async def test_the_key_the_probe_asks_for_is_the_key_the_switch_reads():
+    """Derived rather than restated. Two spellings of one key is how an
+    entity comes to exist and read nothing, which is the bug above."""
+    assert coordinator_module.DISARMING_LINKAGE_ENABLE in LINKAGE
+    assert coordinator_module.EVENT_NOTIFY_ENABLE in NOTIFICATIONS
+    assert _SOURCE.count('"table.DisableLinkage.Enable"') == 1
+    assert _SOURCE.count('"table.DisableEventNotify.Enable"') == 1
+
+
+async def test_one_table_without_the_other_creates_one_switch():
+    """They are two tables and a device may serve one of them. Both switches
+    used to be created from the linkage answer alone."""
+    coordinator = _coordinator(notify=({},))
+
+    await coordinator._async_probe_disarming_linkage()
+    await coordinator._async_probe_event_notifications()
+
+    assert coordinator.supports_disarming_linkage() is True
+    assert coordinator.supports_event_notifications() is False
 
 
 async def test_a_linkage_that_arrives_late_gates_its_two_switches(discoveries):

@@ -132,6 +132,17 @@ _HOST_UNPLAYABLE: dict = {}
 # client.vth_camera_links for the shape.
 VTH_CAMERA_LINKS = "vth.camera_links"
 
+# The one key each disarming switch reads, named once so the probe that decides
+# whether to create the switch and the accessor that fills it cannot drift. A
+# device that does not report the key cannot answer the switch, so the probe
+# asks for exactly what the accessor will go looking for.
+#
+# Both tables are unindexed, measured on a DHI-NVR5464-16P-EI:
+# `table.DisableLinkage.Enable=false` for the whole box rather than per
+# channel.
+DISARMING_LINKAGE_ENABLE = "table.DisableLinkage.Enable"
+EVENT_NOTIFY_ENABLE = "table.DisableEventNotify.Enable"
+
 # The coaxial probe deliberately only treats an HTTP error response as "not
 # supported"; a connection failure there should still fail setup. Timeouts join
 # it for the reason above, without widening the rest.
@@ -805,6 +816,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # coordinators with object.__new__ and sets only what each test is about.
     _device_class_unanswered: bool = False
 
+    # Whether this device reports the key the event notifications switch reads.
+    # On the class for the same reason: switch.py asks about this table in its
+    # own right now rather than creating that switch from the linkage answer,
+    # so every coordinator the platform is handed has to be able to answer it,
+    # including the ones the suite builds with object.__new__.
+    _supports_event_notifications: bool = False
+
     """Class to manage fetching data from the API."""
 
     def __init__(
@@ -1424,20 +1442,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_probe_disarming_linkage(self) -> bool:
         """Ask for the DisableLinkage table, and remember what came back.
 
-        One judgment for setup and for the later retry. Judged on whether the
-        read raised, which is what setup has always done here and is left
-        alone deliberately: this read goes through `async_get_config`, so an
-        HTTP refusal arrives as {} rather than as an exception, and treating
-        an empty answer as "no table" would take the two switches away from
-        devices that have them today. That distinction is worth making and is
-        not this change; see the note on the poll's gate.
+        One judgment for setup and for the later retry, and judged on the key
+        the switch will read rather than on whether the read raised. This read
+        goes through `async_get_config`, which turns any HTTP refusal into {},
+        so a device without the table raised nothing and was recorded as
+        having it.
 
-        So what the retry adds is only the half that was lost: a probe that
-        timed out told us nothing, and used to be remembered as a no for the
-        life of the entry.
+        Measured on a VTO2000A door station: `getConfig&name=DisableLinkage`
+        answers HTTP 500 with the body `Error`, and so does DisableEventNotify,
+        while `MotionDetect` on the same device answers 200. So the device is
+        reachable, the credentials are right and the path is served; those two
+        tables are simply not there. It was given both switches anyway, and
+        both have read off since the day they were created, because the key
+        they read never arrives. A write would address the same absent table.
+
+        That is the rule AGENTS.md states, applied here: an entity that can
+        only ever read unknown is worse than no entity. A device that does
+        report the key is unaffected, measured on a DHI-NVR5464-16P-EI, which
+        answers 200 with `table.DisableLinkage.Enable=false` for every channel.
         """
         try:
-            await self.client.async_get_disarming_linkage()
+            table = await self.client.async_get_disarming_linkage()
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("disarming_linkage", probe_error)
             self._supports_disarming_linkage = False
@@ -1446,11 +1471,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return False
         self._note_probe_answered("disarming_linkage")
-        self._supports_disarming_linkage = True
+        self._supports_disarming_linkage = DISARMING_LINKAGE_ENABLE in table
         _LOGGER.debug(
             "Device supports disarming linkage=%s", self._supports_disarming_linkage
         )
-        return True
+        return self._supports_disarming_linkage
 
     async def _async_retry_disarming_linkage(self) -> bool:
         """Whether a disarming linkage turned up that was missed at setup.
@@ -1466,11 +1491,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_probe_event_notifications(self) -> bool:
         """Ask for the DisableEventNotify table, and remember what came back.
 
-        The same shape and the same deliberate judgment as
-        `_async_probe_disarming_linkage`, one table along.
+        The same shape and the same judgment as
+        `_async_probe_disarming_linkage`, one table along, and refused by the
+        same door station in the same way.
         """
         try:
-            await self.client.async_get_event_notifications()
+            table = await self.client.async_get_event_notifications()
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("event_notifications", probe_error)
             self._supports_event_notifications = False
@@ -1480,12 +1506,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return False
         self._note_probe_answered("event_notifications")
-        self._supports_event_notifications = True
+        self._supports_event_notifications = EVENT_NOTIFY_ENABLE in table
         _LOGGER.debug(
             "Device supports event notifications=%s",
             self._supports_event_notifications,
         )
-        return True
+        return self._supports_event_notifications
 
     async def _async_retry_event_notifications(self) -> bool:
         """Whether event notifications turned up that were missed at setup.
@@ -2970,8 +2996,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return remove
 
     def supports_disarming_linkage(self) -> bool:
-        """Whether the device answered the disarming linkage read during setup."""
+        """Whether this device reports the key the disarming switch reads."""
         return self._supports_disarming_linkage
+
+    def supports_event_notifications(self) -> bool:
+        """Whether this device reports the key the notifications switch reads.
+
+        Separate from the linkage above because the two are separate tables
+        and a device may serve one without the other. They were one question
+        while both switches were created from one flag.
+        """
+        return self._supports_event_notifications
 
     def supports_alarm_output(self) -> bool:
         """Whether a safely decodable single alarm output is available."""
@@ -3818,11 +3853,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def is_disarming_linkage_enabled(self) -> bool:
         """Returns true if disarming linkage is enable"""
-        return self.data.get("table.DisableLinkage.Enable", "").lower() == "true"
+        return self.data.get(DISARMING_LINKAGE_ENABLE, "").lower() == "true"
 
     def is_event_notifications_enabled(self) -> bool:
         """Returns true if event notifications is enable"""
-        return self.data.get("table.DisableEventNotify.Enable", "").lower() == "false"
+        return self.data.get(EVENT_NOTIFY_ENABLE, "").lower() == "false"
 
     def _smart_motion_row(self):
         """This channel's row in the SmartMotionDetect table, or None.

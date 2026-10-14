@@ -491,6 +491,7 @@ async def test_entity_creation_uses_host_class_not_channel(
         "supports_privacy_mode",
         "supports_alarm_output",
         "supports_disarming_linkage",
+        "supports_event_notifications",
     ):
         setattr(c, name, lambda: False)
     monkeypatch.setattr(
