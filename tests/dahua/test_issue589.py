@@ -76,12 +76,14 @@ class _CapturedCamera:
         media_channel=None,
         display_name=None,
         unique_suffix=None,
+        stream_stills=False,
     ):
         self.stream_index = stream_index
         self.logical_channel = logical_channel
         self.media_channel = media_channel
         self.display_name = display_name
         self.unique_suffix = unique_suffix
+        self.stream_stills = stream_stills
 
 
 def test_model_profile_is_narrow():
