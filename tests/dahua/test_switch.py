@@ -75,6 +75,15 @@ class _Coordinator:
     def uses_rpc2_deterrence(self, dahua_type=None):
         return False
 
+    def supports_event_notifications(self):
+        """Its own table now, rather than riding on the linkage answer.
+
+        A VTO2000A answers HTTP 500 to both of those getConfig reads while
+        serving MotionDetect, so the two switches it was given could only ever
+        read off. switch.py asks about each table separately since.
+        """
+        return False
+
     def get_ivs_rules(self):
         return []
 
@@ -290,6 +299,7 @@ async def test_setup_asks_the_device_nothing():
     coordinator.supports_siren = lambda: False
     coordinator.supports_smart_motion_detection = lambda: False
     coordinator.supports_disarming_linkage = lambda: True
+    coordinator.supports_event_notifications = lambda: True
 
     hass = SimpleNamespace(data={})
     entry = SimpleNamespace(
@@ -352,6 +362,50 @@ async def test_the_disarming_switches_follow_what_the_device_answered():
     assert "disarming" not in added
     assert "notifications" not in added
     assert coordinator.client.calls == []
+
+
+async def test_each_disarming_switch_follows_its_own_table():
+    """DisableLinkage and DisableEventNotify are two tables, and a device may
+    serve one of them. Both switches were created from the linkage answer, so
+    a device that serves only that one got a notifications switch reading a
+    key it never reports.
+
+    Measured on the hardware here: a VTO2000A answers HTTP 500 to both reads
+    while serving MotionDetect, and a DHI-NVR5464-16P-EI answers 200 to both.
+    Neither is the mixed case, which is why it is asserted rather than
+    assumed.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from custom_components.dahua import switch as switch_module
+
+    coordinator = _Coordinator()
+    coordinator.supports_siren = lambda: False
+    coordinator.supports_smart_motion_detection = lambda: False
+    coordinator.supports_disarming_linkage = lambda: True
+    coordinator.supports_event_notifications = lambda: False
+
+    added = []
+    with patch.multiple(
+        switch_module,
+        DahuaMotionDetectionBinarySwitch=lambda *a, **k: "motion",
+        DahuaDisarmingLinkageBinarySwitch=lambda *a, **k: "disarming",
+        DahuaDisarmingEventNotificationsLinkageBinarySwitch=lambda *a, **k: "notifications",
+    ):
+        await switch_module.async_setup_entry(
+            SimpleNamespace(data={}),
+            SimpleNamespace(
+                entry_id="e1",
+                options={},
+                runtime_data={0: coordinator},
+                async_on_unload=lambda unsub: None,
+            ),
+            adds_entities(added),
+        )
+
+    assert "disarming" in added
+    assert "notifications" not in added
 
 
 # --- the alarm output relay ---------------------------------------------------
@@ -490,6 +544,7 @@ async def _added_for(coordinator):
         "supports_siren",
         "supports_smart_motion_detection",
         "supports_disarming_linkage",
+        "supports_event_notifications",
     ):
         if not hasattr(coordinator, name):
             setattr(coordinator, name, lambda: False)

@@ -160,21 +160,30 @@ async def test_a_queued_request_is_not_charged_to_the_device(monkeypatch):
     queue expired without ever being sent, and the log blamed a device that had
     never been asked: one channel of nineteen set up.
     """
-    monkeypatch.setattr(client_module, "TIMEOUT_SECONDS", 0.2)
-    probe = _ConcurrencyProbe(hold=0.02)
+    monkeypatch.setattr(client_module, "TIMEOUT_SECONDS", 0.5)
+    probe = _ConcurrencyProbe(hold=0.2)
     c = _client("10.0.0.1", probe)
 
-    # Sixty reads at two at a time is 0.6s of queue against a 0.2s timeout, so
-    # most of these expire while waiting if the wait is on the device's clock.
+    # Ten reads at two at a time is 1.0s of queue against a 0.5s timeout, so
+    # the back half expires while waiting if the wait is on the device's clock.
+    #
+    # Few and slow rather than many and fast, which is how this was first
+    # written: sixty reads holding 0.02s each against a 0.2s timeout is the
+    # same 5x ratio on paper and is not the same test. Scheduling sixty
+    # coroutines costs time inside each one's own timeout, measured here at up
+    # to 0.25s of a 0.2s budget, so the test failed on a loaded machine for a
+    # reason that had nothing to do with the queue. The ratio that matters is
+    # the one between a single read and the timeout, and ten reads keep it at
+    # 2x where sixty left it below 1.
     results = await asyncio.gather(
-        *(c.get("/cgi-bin/x") for _ in range(60)), return_exceptions=True
+        *(c.get("/cgi-bin/x") for _ in range(10)), return_exceptions=True
     )
 
     expired = [r for r in results if isinstance(r, asyncio.TimeoutError)]
-    assert not expired, "%d of 60 expired while queued, having never been sent" % len(
+    assert not expired, "%d of 10 expired while queued, having never been sent" % len(
         expired
     )
-    assert probe.calls == 60, "every request must reach the device"
+    assert probe.calls == 10, "every request must reach the device"
 
 
 async def test_the_wait_for_a_slot_has_a_ceiling_of_its_own(monkeypatch):
@@ -197,8 +206,18 @@ async def test_the_wait_for_a_slot_has_a_ceiling_of_its_own(monkeypatch):
     elapsed = asyncio.get_running_loop().time() - started
 
     assert all(isinstance(r, asyncio.TimeoutError) for r in results)
+    # What the ceiling does, counted rather than timed. A request that waited
+    # it out gives up without being sent, so with slots freeing every 0.1s only
+    # the first few waves ever reach the device: measured at 8 of 40, against
+    # 40 of 40 with the ceiling lifted. The clock below says the same thing and
+    # says it less reliably, because the 40 expiries cost real time of their
+    # own -- each logs a warning -- and that cost is not what is being claimed.
+    assert probe.calls <= 12, (
+        "%d of 40 reached the device, so the queue was not bounded" % probe.calls
+    )
     # Ungoverned this is 40 / 2 * 0.1 = 2.0s and grows with every extra read.
-    assert elapsed < 1.2, (
+    # Measured at 0.7s with the ceiling and 2.3s without it on the same box.
+    assert elapsed < 1.6, (
         "the fan-out took %.1fs, so the ceiling did not hold" % elapsed
     )
 
