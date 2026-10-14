@@ -1398,17 +1398,57 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             attempts = self._capability_retries = {}
 
         discovered = False
+        # Named here rather than counted afterwards, so the line below reports
+        # the questions this poll gave up on and not every question that was
+        # ever given up on.
+        given_up = []
         for name in sorted(pending):
-            if attempts.get(name, 0) >= MAX_CAPABILITY_RETRIES:
+            spent = attempts.get(name, 0)
+            if spent >= MAX_CAPABILITY_RETRIES:
                 continue
-            attempts[name] = attempts.get(name, 0) + 1
+            spent = attempts[name] = spent + 1
             try:
-                if await RETRYABLE_CAPABILITIES[name](self):
-                    discovered = True
+                answered = await RETRYABLE_CAPABILITIES[name](self)
             except PROBE_FAILED:
                 # Still silent. The attempt is spent and the refusal it
                 # recorded stands; nothing here may fail the poll.
-                pass
+                answered = False
+
+            _LOGGER.debug(
+                "Channel %s asked %s again about %s (attempt %s of %s): %s",
+                self._channel,
+                self._address,
+                name,
+                spent,
+                MAX_CAPABILITY_RETRIES,
+                "answered" if answered else "still nothing",
+            )
+
+            if answered:
+                discovered = True
+            elif (
+                spent >= MAX_CAPABILITY_RETRIES
+                and name in self.probes_that_did_not_answer()
+            ):
+                # The budget is spent and the device still has not said
+                # anything either way. Distinct from a probe that answered no,
+                # which leaves `pending` and is not a loss.
+                given_up.append(name)
+
+        if given_up:
+            # The one line a user who is not running debug gets. Without it
+            # the mechanism is silent in exactly the case it was built for:
+            # the entities never appear, nothing is logged, and there is no
+            # way to tell "asked and got nothing" from "never asked" (#1057).
+            _LOGGER.info(
+                "Channel %s of %s did not answer about %s in %s attempts, so the "
+                "entities those gate are not being created. Reloading the entry "
+                "asks again",
+                self._channel,
+                self._address,
+                ", ".join(given_up),
+                MAX_CAPABILITY_RETRIES,
+            )
 
         if discovered:
             _LOGGER.info(

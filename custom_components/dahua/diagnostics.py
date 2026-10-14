@@ -223,6 +223,8 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
     Together these decide which entities exist, so "why do I have no siren
     entity" is answerable from this block alone.
     """
+    from .coordinator import MAX_CAPABILITY_RETRIES
+
     probed = {
         name.lstrip("_").removeprefix("supports_"): getattr(coordinator, name)
         for name in vars(coordinator)
@@ -263,6 +265,14 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
         # status means it did not answer, which is a fact about that
         # moment only. "supports x = False" cannot tell them apart.
         "refusals": dict(getattr(coordinator, "_probe_refusals", {})),
+        # How many times each unanswered question has been asked again since
+        # setup, against the budget. A capability sitting at the budget with
+        # `answered` false in `refusals` above is a device that was asked and
+        # stayed silent, which is a different report from one that was never
+        # asked at all -- and from outside the log there was no way to tell
+        # those apart (#1057).
+        "capability_retries": dict(getattr(coordinator, "_capability_retries", {})),
+        "capability_retry_budget": MAX_CAPABILITY_RETRIES,
     }
 
 
