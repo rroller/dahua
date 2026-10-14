@@ -1373,6 +1373,131 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         already = self.supports_smart_motion_detection()
         return await self._async_probe_smart_motion_detect() and not already
 
+    async def _async_probe_alarm_output(self) -> bool:
+        """Ask how many alarm outputs this device has, and remember the answer.
+
+        One judgment for setup and for the later retry. The capability is not
+        "the read worked", it is "the device reports exactly one output":
+        `supports_alarm_output` wants one because the multi-output getOutState
+        encoding has never been verified here, and a switch built on a guess
+        would report an output as off while it is on.
+
+        A body that does not parse as a number is the device answering with
+        something this cannot use, which is a settled fact about the firmware
+        rather than a question still open. Only silence stays open.
+        """
+        try:
+            answer = await self.client.async_get_alarm_output_slots()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("alarm_output", probe_error)
+            self._alarm_output_slots = 0
+            _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
+            return False
+        self._note_probe_answered("alarm_output")
+        try:
+            self._alarm_output_slots = max(0, int(answer.get("result", "0")))
+        except (ValueError, TypeError):
+            self._alarm_output_slots = 0
+        _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
+        if self._alarm_output_slots > 1:
+            _LOGGER.debug(
+                "Device reports %s alarm outputs; entities are not created because "
+                "the multi-output getOutState encoding is not yet verified",
+                self._alarm_output_slots,
+            )
+        return self.supports_alarm_output()
+
+    async def _async_retry_alarm_output(self) -> bool:
+        """Whether an alarm output turned up that was missed at setup.
+
+        The alarm output switch is the entity this gates, and the poll decides
+        each cycle whether to read its state, so a switch created from a late
+        answer reads a real value from the next poll.
+
+        What the gate said is read first, because the probe is the thing that
+        writes what the gate reads: asking afterwards would compare the answer
+        with itself.
+        """
+        already = self.supports_alarm_output()
+        return await self._async_probe_alarm_output() and not already
+
+    async def _async_probe_disarming_linkage(self) -> bool:
+        """Ask for the DisableLinkage table, and remember what came back.
+
+        One judgment for setup and for the later retry. Judged on whether the
+        read raised, which is what setup has always done here and is left
+        alone deliberately: this read goes through `async_get_config`, so an
+        HTTP refusal arrives as {} rather than as an exception, and treating
+        an empty answer as "no table" would take the two switches away from
+        devices that have them today. That distinction is worth making and is
+        not this change; see the note on the poll's gate.
+
+        So what the retry adds is only the half that was lost: a probe that
+        timed out told us nothing, and used to be remembered as a no for the
+        life of the entry.
+        """
+        try:
+            await self.client.async_get_disarming_linkage()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("disarming_linkage", probe_error)
+            self._supports_disarming_linkage = False
+            _LOGGER.debug(
+                "Device supports disarming linkage=%s", self._supports_disarming_linkage
+            )
+            return False
+        self._note_probe_answered("disarming_linkage")
+        self._supports_disarming_linkage = True
+        _LOGGER.debug(
+            "Device supports disarming linkage=%s", self._supports_disarming_linkage
+        )
+        return True
+
+    async def _async_retry_disarming_linkage(self) -> bool:
+        """Whether a disarming linkage turned up that was missed at setup.
+
+        Two switches are gated on this, the linkage itself and the event
+        notifications beside it, and the poll decides each cycle whether to
+        read the table, so both work from the next poll rather than reading
+        nothing until a reload.
+        """
+        already = self._supports_disarming_linkage
+        return await self._async_probe_disarming_linkage() and not already
+
+    async def _async_probe_event_notifications(self) -> bool:
+        """Ask for the DisableEventNotify table, and remember what came back.
+
+        The same shape and the same deliberate judgment as
+        `_async_probe_disarming_linkage`, one table along.
+        """
+        try:
+            await self.client.async_get_event_notifications()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("event_notifications", probe_error)
+            self._supports_event_notifications = False
+            _LOGGER.debug(
+                "Device supports event notifications=%s",
+                self._supports_event_notifications,
+            )
+            return False
+        self._note_probe_answered("event_notifications")
+        self._supports_event_notifications = True
+        _LOGGER.debug(
+            "Device supports event notifications=%s",
+            self._supports_event_notifications,
+        )
+        return True
+
+    async def _async_retry_event_notifications(self) -> bool:
+        """Whether event notifications turned up that were missed at setup.
+
+        No entity is gated on this one. The switch beside the disarming
+        linkage is created with it, and this flag decides whether the poll
+        reads the value that switch shows, so a channel whose probe went
+        silent had a switch that could only ever read off.
+        """
+        already = self._supports_event_notifications
+        return await self._async_probe_event_notifications() and not already
+
     async def _async_retry_unanswered_capabilities(self) -> None:
         """Ask again for a capability the device never answered.
 
@@ -1602,46 +1727,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     "Device supports Coaxial Control=%s", self._supports_coaxial_control
                 )
 
-                try:
-                    alarm_output_data = await self.client.async_get_alarm_output_slots()
-                    try:
-                        self._alarm_output_slots = max(
-                            0, int(alarm_output_data.get("result", "0"))
-                        )
-                    except (ValueError, TypeError):
-                        self._alarm_output_slots = 0
-                except PROBE_FAILED as probe_error:
-                    self._note_probe_refusal("alarm_output", probe_error)
-                    self._alarm_output_slots = 0
-                _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
-                if self._alarm_output_slots > 1:
-                    _LOGGER.debug(
-                        "Device reports %s alarm outputs; entities are not created because "
-                        "the multi-output getOutState encoding is not yet verified",
-                        self._alarm_output_slots,
-                    )
-
-                try:
-                    await self.client.async_get_disarming_linkage()
-                    self._supports_disarming_linkage = True
-                except PROBE_FAILED as probe_error:
-                    self._note_probe_refusal("disarming_linkage", probe_error)
-                    self._supports_disarming_linkage = False
-                _LOGGER.debug(
-                    "Device supports disarming linkage=%s",
-                    self._supports_disarming_linkage,
-                )
-
-                try:
-                    await self.client.async_get_event_notifications()
-                    self._supports_event_notifications = True
-                except PROBE_FAILED as probe_error:
-                    self._note_probe_refusal("event_notifications", probe_error)
-                    self._supports_event_notifications = False
-                _LOGGER.debug(
-                    "Device supports event notifications=%s",
-                    self._supports_event_notifications,
-                )
+                # The three the switch platform waits on. Each is the same probe
+                # a later poll re-asks when this one goes unanswered, so setup
+                # and the retry cannot come to disagree about what the device
+                # said (#1057).
+                await self._async_probe_alarm_output()
+                await self._async_probe_disarming_linkage()
+                await self._async_probe_event_notifications()
 
                 if self._wanted_by(UPDATE):
                     await self._async_probe_cloud_upgrade()
@@ -4911,7 +5003,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 # smart motion detection, which gates a switch and the Sensitivity select
 # together, so a channel that lost that probe lost both of its controls.
 RETRYABLE_CAPABILITIES = {
+    "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
     "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
+    "disarming_linkage": DahuaDataUpdateCoordinator._async_retry_disarming_linkage,
+    "event_notifications": DahuaDataUpdateCoordinator._async_retry_event_notifications,
     "lighting": DahuaDataUpdateCoordinator._async_retry_lighting,
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
