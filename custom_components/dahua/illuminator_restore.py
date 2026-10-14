@@ -20,6 +20,47 @@ OVERRIDE_STORAGE_KEY = f"{DOMAIN}.illuminator_restore"
 OVERRIDE_UNIQUE_ID_SUFFIX = "_illuminator"
 
 
+class _FileState:
+    """One lock and one cache for one file on disk.
+
+    Both stores below are built in `DahuaDataUpdateCoordinator.__init__` and a
+    recorder has one coordinator per channel (#827), so twelve channels of one
+    entry hold twelve store objects over the one file their entry id names.
+    Keeping the lock and the cache on the instance made that twelve caches and
+    twelve locks that excluded nobody: each channel wrote the file from the
+    copy it happened to be holding, so the last writer erased what the others
+    had saved, and a lock per object does not serialise two of them at all.
+
+    What that costs is what these stores exist to prevent. The camera's
+    WhiteMode write is persistent and this is the only record of what was
+    there before it, so a channel whose record is lost is a camera left in a
+    mode nobody chose with nothing left that knows how to put it back. In
+    memory it looks fine until the next restart, because the losing instance
+    still holds its own copy.
+    """
+
+    __slots__ = ("lock", "data")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.data = None
+
+
+# Keyed by the store key, which carries the entry id, so two entries share
+# nothing. An entry that goes away leaves one empty holder behind rather than
+# being popped: the store objects of a live entry hold a reference to theirs,
+# and swapping it under them would put the caches back as they were.
+_FILES: dict[str, _FileState] = {}
+
+
+def _file_state(store_key: str) -> _FileState:
+    """The lock and cache for this file, shared by everyone who opens it."""
+    state = _FILES.get(store_key)
+    if state is None:
+        state = _FILES[store_key] = _FileState()
+    return state
+
+
 def override_store_key(entry_id: str, unique_id: str) -> str:
     """Where one illuminator entity keeps the camera state it overrode.
 
@@ -63,8 +104,9 @@ class IlluminatorRestoreStore:
         self._hass = hass
         self._store_key = f"{STORAGE_KEY}.{entry_id}"
         self._store = self._new_store()
-        self._lock = asyncio.Lock()
-        self._data: dict[str, str] | None = None
+        # Shared with every other store object over this same file. See
+        # _FileState: a recorder builds one of these per channel.
+        self._file = _file_state(self._store_key)
 
     def _new_store(self) -> Store:
         """Return a Store instance for this config entry."""
@@ -83,19 +125,19 @@ class IlluminatorRestoreStore:
         return f"{channel}:{profile}"
 
     async def _async_load_locked(self) -> dict[str, str]:
-        if self._data is None:
+        if self._file.data is None:
             loaded = await self._store.async_load()
             if not isinstance(loaded, dict):
                 loaded = {}
             modes = loaded.get("modes")
             if not isinstance(modes, dict):
                 modes = {}
-            self._data = {
+            self._file.data = {
                 key: mode
                 for key, mode in modes.items()
                 if isinstance(key, str) and isinstance(mode, str) and mode
             }
-        return self._data
+        return self._file.data
 
     async def _async_save_locked(self, modes: dict[str, str]) -> None:
         """Keep writes serialized until their executor work has finished."""
@@ -117,13 +159,13 @@ class IlluminatorRestoreStore:
 
     async def async_get(self, channel: int, profile: int) -> str | None:
         """Return the saved mode for one entry/channel/profile."""
-        async with self._lock:
+        async with self._file.lock:
             data = await self._async_load_locked()
             return data.get(self._mode_key(channel, profile))
 
     async def async_keys(self) -> list[tuple[int, int]]:
         """Return valid channel/profile keys with outstanding recovery state."""
-        async with self._lock:
+        async with self._file.lock:
             data = await self._async_load_locked()
             result = []
             for key in data:
@@ -136,7 +178,7 @@ class IlluminatorRestoreStore:
 
     async def async_set(self, channel: int, profile: int, mode: str) -> None:
         """Durably save a recovery mode before changing the camera."""
-        async with self._lock:
+        async with self._file.lock:
             data = await self._async_load_locked()
             updated = dict(data)
             key = self._mode_key(channel, profile)
@@ -145,11 +187,11 @@ class IlluminatorRestoreStore:
             persisted = await self._load_fresh_modes()
             if persisted.get(key) != mode:
                 raise RuntimeError("Could not verify saved illuminator recovery state")
-            self._data = updated
+            self._file.data = updated
 
     async def async_remove(self, channel: int, profile: int) -> None:
         """Remove a recovery mode after restore or stale-state reconciliation."""
-        async with self._lock:
+        async with self._file.lock:
             data = await self._async_load_locked()
             key = self._mode_key(channel, profile)
             if key not in data:
@@ -163,13 +205,13 @@ class IlluminatorRestoreStore:
                 raise RuntimeError(
                     "Could not verify cleared illuminator recovery state"
                 )
-            self._data = updated
+            self._file.data = updated
 
     async def async_remove_all(self) -> None:
         """Delete the file. For a config entry that is being removed."""
-        async with self._lock:
+        async with self._file.lock:
             await self._store.async_remove()
-            self._data = None
+            self._file.data = None
 
     async def _load_fresh_modes(self) -> dict[str, str]:
         """Read storage through a fresh Store to verify the on-disk result."""
@@ -203,33 +245,32 @@ class ChannelLightingSnapshotStore:
         self._hass = hass
         self._store_key = f"{SNAPSHOT_STORAGE_KEY}.{entry_id}"
         self._store = self._new_store()
-        self._lock = asyncio.Lock()
-        self._data: dict[str, dict] | None = None
+        self._file = _file_state(self._store_key)
 
     def _new_store(self) -> Store:
         return Store(self._hass, STORAGE_VERSION, self._store_key, atomic_writes=True)
 
     async def _load_locked(self) -> dict[str, dict]:
-        if self._data is None:
+        if self._file.data is None:
             loaded = await self._store.async_load()
             snaps = loaded.get("snapshots") if isinstance(loaded, dict) else None
-            self._data = {
+            self._file.data = {
                 key: snap
                 for key, snap in (snaps.items() if isinstance(snaps, dict) else [])
                 if isinstance(key, str) and isinstance(snap, dict)
             }
-        return self._data
+        return self._file.data
 
     async def async_get(self, channel: int) -> dict | None:
         """The saved tables for one channel, or None if none is held."""
-        async with self._lock:
+        async with self._file.lock:
             data = await self._load_locked()
             snap = data.get(str(channel))
             return snap if isinstance(snap, dict) else None
 
     async def async_channels(self) -> list[int]:
         """Channels with an outstanding snapshot, for startup recovery."""
-        async with self._lock:
+        async with self._file.lock:
             data = await self._load_locked()
             out = []
             for key in data:
@@ -241,16 +282,16 @@ class ChannelLightingSnapshotStore:
 
     async def async_set(self, channel: int, snapshot: dict) -> None:
         """Save the exact tables before the override changes the camera."""
-        async with self._lock:
+        async with self._file.lock:
             data = await self._load_locked()
             updated = dict(data)
             updated[str(channel)] = snapshot
             await self._save_locked(updated)
-            self._data = updated
+            self._file.data = updated
 
     async def async_remove(self, channel: int) -> None:
         """Forget a snapshot once the camera has been restored."""
-        async with self._lock:
+        async with self._file.lock:
             data = await self._load_locked()
             key = str(channel)
             if key not in data:
@@ -258,13 +299,13 @@ class ChannelLightingSnapshotStore:
             updated = dict(data)
             del updated[key]
             await self._save_locked(updated)
-            self._data = updated
+            self._file.data = updated
 
     async def async_remove_all(self) -> None:
         """Delete the file. For a config entry that is being removed."""
-        async with self._lock:
+        async with self._file.lock:
             await self._store.async_remove()
-            self._data = None
+            self._file.data = None
 
     async def _save_locked(self, snapshots: dict[str, dict]) -> None:
         """Serialize writes until the executor work has finished.
