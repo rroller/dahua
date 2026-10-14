@@ -710,6 +710,26 @@ async def cancel_reads_issued_on(session) -> None:
         await asyncio.gather(*cancelled, return_exceptions=True)
 
 
+class ReadAfterClose(asyncio.CancelledError):
+    """A read asked for after its client started closing.
+
+    `cancel_reads_issued_on` stops the reads that were already out when a
+    client closed. This is the other half: the reads that had not gone out
+    yet. A poll is a fan-out of many reads, and the entry can stop in the
+    middle of one, so a branch that has not reached its read yet will reach it
+    with the session on its way out and fail the way #1043 reported.
+
+    A `CancelledError` rather than a connection error, for the same reason
+    #1064 left a cancelled waiter alone: a cancellation unwinds the poll in
+    silence, while an error raises `Exception fetching information from ...`
+    once per branch, which is the noise this exists to remove. It also passes
+    straight through the `except Exception` handlers that would otherwise read
+    it as the device's verdict: `_note_probe_refusal` would record a
+    capability as absent, and the RPC2 fallback would write the transport off
+    for the host. Both of those outlive the entry that is stopping.
+    """
+
+
 class _SharedRead:
     """One read of one URL, shared by every entry on the host that wants it.
 
@@ -1289,6 +1309,10 @@ class DahuaClient:
     # `__init__` must not raise. One class default rather than `getattr` at
     # each use.
     _session = None
+
+    # Set by `close()` before it awaits anything, and never cleared: a closed
+    # client does not reopen. See `_refuse_if_closing`.
+    _closing = False
 
     def __init__(
         self,
@@ -2165,6 +2189,11 @@ class DahuaClient:
         can survive a failed setup; a task started in a synchronous constructor
         cannot, and that is the leak #620 was about.
         """
+        # A closing client has already given its reference back, so a login
+        # taken here would be one nobody is left to release, on a device that
+        # logs every one of them (#577).
+        self._refuse_if_closing()
+
         key = self._rpc2_key()
         holder = _HOST_RPC2.get(key)
         if holder is None:
@@ -2710,6 +2739,26 @@ class DahuaClient:
             self._rpc2_session_instance = self._new_rpc2_session()
         return self._rpc2_session_instance
 
+    def _refuse_if_closing(self) -> None:
+        """Refuse a read this client is no longer in a position to make.
+
+        Between the flag below and `cancel_reads_issued_on`, every read of a
+        closing client falls on one side or the other, and that partition is
+        the point of setting the flag synchronously. A read registered before
+        the flag is in the cache when the sweep runs, so the sweep stops it. A
+        read asked for after the flag never starts. Nothing in `get` awaits
+        between this check and registering the entry, so there is no third
+        case.
+
+        Checking `self._session.closed` instead would leave one: `close()`
+        awaits three times before the coordinator closes the session, and a
+        read issued during those awaits sees a session that is open, registers
+        itself after the sweep has already passed, and fails exactly as
+        reported.
+        """
+        if self._closing:
+            raise ReadAfterClose(f"{self._address} is closing")
+
     async def close(self) -> None:
         """Releases anything this client owns. Safe to call more than once.
 
@@ -2717,6 +2766,10 @@ class DahuaClient:
         closed cleanly: a failed close must not leave a second call able to
         decrement the host's refcount again.
         """
+        # Before the first await, so that no read can be registered after the
+        # sweep below has looked for it. See `_refuse_if_closing`.
+        self._closing = True
+
         # First, because everything below takes away what a read in flight is
         # using. A read that outlives the session it was issued on fails in a
         # way nobody is waiting for (#1043).
@@ -3411,6 +3464,8 @@ class DahuaClient:
         read here is: two boxes behind one IP on different ports are not each
         other (#664).
         """
+        self._refuse_if_closing()
+
         now = time.monotonic()
         entry = _HOST_SYSTEM_LOAD.get(self._device)
         if entry is None or not entry.is_usable(now):
@@ -4587,6 +4642,11 @@ class DahuaClient:
             clear_host_cache(self._device)
             return await self._request(url, verify_ok, reject_declined=True)
 
+        # Reads only, and before the cache is touched. A read registered here
+        # by a client that is closing would be waited on by every other entry
+        # on this device, so it fails theirs too, not just its own.
+        self._refuse_if_closing()
+
         # Credentials are part of the key: entries for one device may be
         # configured with different users, and a successful read is not
         # otherwise scoped to who made it.
@@ -4620,6 +4680,13 @@ class DahuaClient:
         self, url: str, verify_ok=False, allow_rpc2=True, reject_declined=False
     ) -> dict:
         """Make the request. One caller per shared read reaches here."""
+        # Reads reach here from `get` and from a few callers of their own, and
+        # a write is left to fail as an ordinary error: somebody pressed
+        # something, and a cancellation nobody asked for is the wrong answer
+        # to give them.
+        if not reject_declined:
+            self._refuse_if_closing()
+
         # Per-rule camera writes use CGI array indexes. Resolve and poll that
         # same CGI table even when other config reads prefer RPC2.
         if url == "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule":
