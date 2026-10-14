@@ -202,3 +202,46 @@ async def test_the_system_load_read_is_refused_too():
         await client.async_get_system_load()
 
     assert client_module._HOST_SYSTEM_LOAD == {}
+
+
+# --- the ordering this now depends on ---------------------------------------
+
+
+async def test_the_event_stream_is_handed_over_before_the_client_closes(monkeypatch):
+    """The one place the refusal above could do harm, and the reason it does
+    not.
+
+    The shared event stream runs on its owner's client, and the RPC2 poller
+    asks `_shared_rpc2` at the top of every cycle. host.py's loop treats a
+    `CancelledError` as "stop", so a poller left on a closing client would now
+    end quietly rather than reconnect, and a surviving entry at the same
+    address would lose its events.
+
+    It cannot, because `async_stop` releases the stream first, and releasing
+    it hands ownership to a coordinator that is still here. This asserts that
+    order rather than restating it in a comment.
+    """
+    from types import SimpleNamespace
+
+    from custom_components.dahua import coordinator as coordinator_module
+    from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
+
+    order = []
+
+    async def _release(coordinator):
+        order.append("the stream was handed over")
+
+    async def _close():
+        order.append("the client closed")
+
+    monkeypatch.setattr(coordinator_module, "_release_host_stream", _release)
+
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._address = "10.0.0.1"
+    coordinator.client = SimpleNamespace(close=_close)
+    coordinator._session = None
+    coordinator._vto_task = None
+
+    await coordinator.async_stop()
+
+    assert order == ["the stream was handed over", "the client closed"]
