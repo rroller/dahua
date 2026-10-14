@@ -22,6 +22,7 @@ def _clear_shared_host_reads():
     client_module._HOST_CACHE.clear()
     client_module._HOST_LIMITS.clear()
     client_module._HOST_REMOTE_IVS_LOCKS.clear()
+    client_module._HOST_LIGHTING_SCHEME_LOCKS.clear()
     client_module._HOST_SYSTEM_LOAD.clear()
     from custom_components.dahua import coordinator as coordinator_module
 
@@ -30,6 +31,7 @@ def _clear_shared_host_reads():
     client_module._HOST_CACHE.clear()
     client_module._HOST_LIMITS.clear()
     client_module._HOST_REMOTE_IVS_LOCKS.clear()
+    client_module._HOST_LIGHTING_SCHEME_LOCKS.clear()
     client_module._HOST_SYSTEM_LOAD.clear()
     coordinator_module._HOST_UNPLAYABLE.clear()
 

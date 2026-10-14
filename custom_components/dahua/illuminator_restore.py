@@ -153,8 +153,16 @@ class IlluminatorRestoreStore:
                 # older one. Repeated cancellations must not break the drain.
                 if cancelled_error is None:
                     cancelled_error = err
-        save_task.result()
+        try:
+            save_task.result()
+        except BaseException:
+            # The cache is shared and outlives a reload now, so a write whose
+            # outcome is unknown must not leave everyone holding the copy it
+            # tried to replace. None means "ask the disk again".
+            self._file.data = None
+            raise
         if cancelled_error is not None:
+            self._file.data = None
             raise cancelled_error
 
     async def async_get(self, channel: int, profile: int) -> str | None:
@@ -324,6 +332,14 @@ class ChannelLightingSnapshotStore:
             except asyncio.CancelledError as err:
                 if cancelled_error is None:
                     cancelled_error = err
-        save_task.result()
+        try:
+            save_task.result()
+        except BaseException:
+            # The cache is shared and outlives a reload now, so a write whose
+            # outcome is unknown must not leave everyone holding the copy it
+            # tried to replace. None means "ask the disk again".
+            self._file.data = None
+            raise
         if cancelled_error is not None:
+            self._file.data = None
             raise cancelled_error
