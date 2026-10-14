@@ -393,13 +393,13 @@ async def test_cancelled_store_write_finishes_before_newer_write(hass):
         set_task = asyncio.create_task(restore_store.async_set(0, 1, "InfraredMode"))
         await asyncio.sleep(0)
 
-        assert restore_store._lock.locked()
+        assert restore_store._file.lock.locked()
         assert not remove_task.done()
         assert not set_task.done()
 
         remove_task.cancel()
         await asyncio.sleep(0)
-        assert restore_store._lock.locked()
+        assert restore_store._file.lock.locked()
         assert not remove_task.done()
         assert not set_task.done()
 
