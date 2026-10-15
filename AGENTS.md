@@ -126,7 +126,7 @@ reachable rather than on the last poll.
 | Add an API call | `client.py` → `DahuaClient` |
 | Add an entity | the platform file, then CONTRIBUTING's entity checklist |
 | Add a service | `camera.py` → `async_setup_entry`, then `services.yaml` |
-| Add an event code | `config_flow.py` → `ALL_EVENTS`, and `TRANSLATED_EVENTS` in `binary_sensor.py` |
+| Add an event code | `const.py` → `ALL_EVENTS`, then a string in `translations/en.json` |
 | Change capability detection | `coordinator.py`, the `if not self.initialized` block |
 | Host-wide behaviour | `host.py` |
 

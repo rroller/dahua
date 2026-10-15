@@ -33,6 +33,7 @@ from custom_components.dahua.binary_sensor import (
     event_display_name,
     event_translation_key,
 )
+from custom_components.dahua.binary_sensor import DOORBELL_EVENTS
 from custom_components.dahua.config_flow import ALL_EVENTS
 
 PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
@@ -189,3 +190,31 @@ def test_the_regex_splits_on_a_capital_after_a_lower_case_letter_only():
     assert event_display_name("IVS") == "IVS"
     assert event_display_name("NTPAdjustTime") == "NTPAdjust Time"
     assert event_display_name("MDResult") == "MDResult"
+
+
+# --- one list, not two -------------------------------------------------------
+
+
+def test_the_event_codes_live_in_one_place():
+    """`ALL_EVENTS` was a 41 line literal in config_flow.py and a second copy of
+    the same 41 codes inside `TRANSLATED_EVENTS` in binary_sensor.py. Adding an
+    event code meant editing both, and nothing failed if you edited one.
+
+    Identity rather than equality: a module that pastes the list back in would
+    still be equal, and that is the regression worth catching.
+    """
+    from custom_components.dahua import client, config_flow, const
+
+    assert config_flow.ALL_EVENTS is const.ALL_EVENTS
+    assert client.ALL_EVENTS is const.ALL_EVENTS
+
+
+def test_the_translated_set_is_the_selectable_codes_plus_the_doorbell_four():
+    """What the derivation claims, stated once where a reader will find it.
+
+    `All` is the device's catch-all rather than a code it sends, so it has no
+    sensor and needs no string.
+    """
+    assert TRANSLATED_EVENTS == (frozenset(ALL_EVENTS) - {"All"}) | DOORBELL_EVENTS
+    assert "All" not in TRANSLATED_EVENTS
+    assert DOORBELL_EVENTS <= TRANSLATED_EVENTS

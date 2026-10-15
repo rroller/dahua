@@ -192,3 +192,59 @@ BACKED_UP_TABLES = (
     "VideoInOptions",
     "VideoWidget",
 )
+
+
+# Every event code a user can subscribe to, in the order the selection list
+# shows them. `All` is the device's own catch-all rather than a code it ever
+# sends, which is why every consumer filters it out.
+#
+# Here rather than in config_flow.py, which is where it used to live, because
+# three other modules need the same list: binary_sensor.py builds the set of
+# codes it ships a translation for from it, client.py expands `All` for the
+# RPC2 event poll, and the config flow offers it. binary_sensor.py held its
+# own copy of all 41 codes, so adding one meant editing two files and nothing
+# failed if you edited one.
+ALL_EVENTS = [
+    "VideoMotion",
+    "VideoLoss",
+    "AlarmLocal",
+    "CrossLineDetection",
+    "CrossRegionDetection",
+    "AudioMutation",
+    "SmartMotionHuman",
+    "SmartMotionVehicle",
+    "VideoBlind",
+    "AudioAnomaly",
+    "VideoMotionInfo",
+    "NewFile",
+    "IntelliFrame",
+    "LeftDetection",
+    "TakenAwayDetection",
+    "VideoAbnormalDetection",
+    "FaceDetection",
+    "FaceRecognition",
+    "HumanTrait",
+    "VideoUnFocus",
+    "WanderDetection",
+    "RioterDetection",
+    "ParkingDetection",
+    "MoveDetection",
+    "StorageNotExist",
+    "StorageFailure",
+    "StorageLowSpace",
+    "AlarmOutput",
+    "InterVideoAccess",
+    "NTPAdjustTime",
+    "TimeChange",
+    "MDResult",
+    "HeatImagingTemper",
+    "CrowdDetection",
+    "FireWarning",
+    "FireWarningInfo",
+    "ObjectPlacementDetection",
+    "ObjectRemovalDetection",
+    "All",
+    "Traffic",
+    "TrafficJunction",
+    "TrafficSnapshot",
+]
