@@ -25,6 +25,7 @@ from custom_components.dahua.vto import CancelCallRefused
 
 from .const import (
     BACKED_UP_TABLES,
+    REDACTED_BACKUP_FIELDS,
     CONF_DISABLE_BACKCHANNEL,
     DOMAIN,
 )
@@ -162,6 +163,21 @@ def _count_and_cap(diff: dict, limit: int) -> dict:
     out["only_in_backup"] = diff["only_in_backup"]
     out["only_on_device"] = diff["only_on_device"]
     return out
+
+
+def _redacted(table: dict) -> dict:
+    """A table with its secrets replaced, ready to be written to a file.
+
+    The backup exists to say what a setting used to be. A cloud key, a cloud
+    login and the device's serial are none of those, and VSP_PaaS carries all
+    three beside the one flag the cloud switch writes. Diagnostics already
+    redacts the serial for the same reason; this is that rule on the one other
+    thing the integration hands to a person to send on.
+    """
+    return {
+        key: ("REDACTED" if key.rsplit(".", 1)[-1] in REDACTED_BACKUP_FIELDS else value)
+        for key, value in table.items()
+    }
 
 
 def _write_backup(filename: str, backup: dict) -> None:
@@ -1110,7 +1126,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         for name in BACKED_UP_TABLES:
             answer = await self._coordinator.client.async_get_config(name)
             if answer:
-                tables[name] = answer
+                tables[name] = _redacted(answer)
             else:
                 refused.append(name)
 

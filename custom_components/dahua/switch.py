@@ -12,7 +12,7 @@ from custom_components.dahua import entry_coordinators
 
 from . import dahua_utils, refusals
 from .const import DOMAIN
-from .entity import DahuaBaseEntity
+from .entity import DahuaBaseEntity, DahuaHostEntity
 from .late import async_add_and_keep_watching
 from .client import SIREN_TYPE
 
@@ -33,8 +33,45 @@ SIREN_CONTROL = refusals.SIREN
 PARALLEL_UPDATES = 1
 
 
+def _cloud_reporter(coordinators: list):
+    """The one coordinator that should carry the device's cloud switch.
+
+    The cloud connection is the box's, not a channel's: VSP_PaaS is served
+    host wide and carries one Enable for the whole device. A recorder is one
+    entry with a coordinator per channel (#827), so without this every channel
+    would get its own copy of the same switch, and sixteen switches would
+    fight over one flag. The lowest channel that reported the key carries it,
+    which is what the processor and memory sensors already do.
+
+    Returns None when no channel reported the table.
+    """
+    answering = [c for c in coordinators if c.supports_cloud_connection()]
+    if not answering:
+        return None
+    return min(answering, key=lambda c: c.get_channel())
+
+
+def _filed_under(entity, coordinator):
+    """Which subentry this entity belongs to, as `late.py` asks.
+
+    The cloud connection is the box's rather than one channel's, so its switch
+    belongs to the device the recorder has of its own. A camera has no separate
+    host device, so its switch stays on its own channel. Same rule as the
+    processor and memory sensors in sensor.py, and the same helper shape.
+    """
+    if isinstance(entity, DahuaHostEntity) and coordinator.uses_separate_host_device():
+        return None
+    return coordinator.subentry_id
+
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup sensor platform."""
+
+    # Keep the selected reporter for this setup's lifetime: its serial is part
+    # of the switch's unique id, so a lower channel answering later must not
+    # create a second one. Reloading the entry makes a fresh selection. The
+    # same rule the load sensors follow since #1076.
+    cloud_reporter = _cloud_reporter(list(entry_coordinators(entry).values()))
 
     async def build(coordinator):
         """Which switches this channel warrants, as the device answers today.
@@ -46,7 +83,21 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         """
         # I think most cameras have a motion sensor so we'll blindly add a switch for it.
         # Not an indoor monitor without a camera: there is no picture to detect motion in.
+        nonlocal cloud_reporter
+
         devices = []
+
+        # The cloud connection is the box's, so one channel carries the switch
+        # and `_cloud_reporter` picks which. Built here rather than once at
+        # setup so that a device whose VSP_PaaS read timed out gets the switch
+        # when it finally answers, instead of at the next reload (#1057): the
+        # retry announces the capability and this is what the announcement
+        # rebuilds. `_filed_under` keeps it on the box's own device page.
+        if cloud_reporter is None and coordinator.supports_cloud_connection():
+            cloud_reporter = coordinator
+        if cloud_reporter is coordinator:
+            devices.append(DahuaCloudConnectionSwitch(coordinator, entry))
+
         if not coordinator.is_indoor_monitor_without_video():
             devices.append(DahuaMotionDetectionBinarySwitch(coordinator, entry))
 
@@ -93,7 +144,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         return devices
 
     await async_add_and_keep_watching(
-        hass, entry, build, async_add_devices, entry_coordinators
+        hass,
+        entry,
+        build,
+        async_add_devices,
+        entry_coordinators,
+        subentry_for=_filed_under,
     )
 
 
@@ -135,6 +191,47 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         Value is fetched from api.get_motion_detection_config
         """
         return self._coordinator.is_motion_detection_enabled()
+
+
+class DahuaCloudConnectionSwitch(DahuaHostEntity, SwitchEntity):
+    """The device's connection to Dahua's cloud, which DMSS calls arrive over.
+
+    Asked for in #591, where @ScratMan was driving `VSP_PaaS.Enable` from a
+    `shell_command` curl to stop a doorbell ringing the DMSS app while someone
+    was home.
+
+    Worth knowing before using it: this is the whole cloud connection, not the
+    ringing. Turning it off stops remote viewing through DMSS as well, which
+    @ScratMan confirmed on a VTO2311R-WP. For events rather than calls, the
+    Event Notifications switch is the lighter tool.
+
+    A host entity rather than a channel one: there is one cloud connection per
+    box. See `_cloud_reporter`.
+    """
+
+    _attr_translation_key = "cloud_connection"
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
+        """Connect the device to the cloud again."""
+        await self._coordinator.client.async_set_cloud_connection(True)
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
+        """Disconnect the device from the cloud."""
+        await self._coordinator.client.async_set_cloud_connection(False)
+        await self._coordinator.async_refresh()
+
+    @property
+    def unique_id(self):
+        """Unique within the platform, and per device rather than per channel."""
+        return self._coordinator.get_serial_number() + "_cloud_connection"
+
+    @property
+    def is_on(self):
+        """Whether the device says its cloud connection is on."""
+        return self._coordinator.is_cloud_connection_enabled()
 
 
 class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):

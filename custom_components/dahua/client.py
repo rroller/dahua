@@ -2398,6 +2398,20 @@ class DahuaClient:
                     raise
         return {}
 
+    async def _rpc2_set_config_field(self, name: str, value) -> dict:
+        """Write one addressed config field over RPC2, on the shared session.
+
+        The narrow sibling of `_rpc2_set_config_value` below, which reads the
+        whole table and puts it back. Use this one where the field can be
+        addressed directly: it sends no credentials or neighbouring settings
+        back to the device, and it is not refused for size.
+        """
+
+        async def write(client):
+            return await client.set_config_field(name, value)
+
+        return await self._rpc2_shared_call(write)
+
     async def _rpc2_set_config_value(
         self, name: str, channel: int, key: str, value
     ) -> dict:
@@ -3885,6 +3899,56 @@ class DahuaClient:
         # table raised into the poll's fan-out, which has no return_exceptions,
         # and took every entity on the channel with it. That is #1006's shape.
         return await self.async_get_config("DisableLinkage")
+
+    async def async_get_cloud_connection(self) -> dict:
+        """Read the device's cloud table (Dahua's easy4ip / DMSS connection).
+
+        Host wide rather than per channel, and served under two different
+        names by two different devices, which is why the caller judges on the
+        key rather than on the read succeeding. Measured on a VTO2311R-WP,
+        which serves both:
+
+            table.VSP_PaaS.Enable=false     the DMSS connection itself
+            table.T2UServer.Enable=false    the P2P registration beside it
+
+        and on a VTO2000A, which answers HTTP 500 to VSP_PaaS while serving
+        T2UServer and four other tables on the same request. The two are not
+        the same feature: @ScratMan measured that disabling T2UServer alone
+        does not stop a DMSS call, and VSP_PaaS does, so only VSP_PaaS is read
+        here and a device without it gets no switch.
+
+        Through async_get_config, so a refusal arrives as {} rather than
+        raising into the poll's fan-out, which has no return_exceptions.
+        """
+        return await self.async_get_config("VSP_PaaS")
+
+    async def async_set_cloud_connection(self, enabled: bool) -> dict:
+        """Turn the device's cloud connection on or off, one field at a time.
+
+        Addressed as `VSP_PaaS.Enable` rather than writing the table back: it
+        carries the device's cloud credentials and server list, and a
+        whole-table write is refused for size on at least one recorder (see
+        `DahuaRpc2Client.set_config_field`).
+
+        CGI first, with the same RPC2 fallback the smart motion writes use, so
+        a device that serves no /cgi-bin/ config path at all can still be
+        switched.
+        """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VSP_PaaS.Enable={0}".format(
+            str(bool(enabled)).lower()
+        )
+        try:
+            return await self.get(url, True)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting the cloud "
+                "connection over RPC2",
+                cgi_error.status,
+                self._address,
+            )
+            return await self._rpc2_set_config_field("VSP_PaaS.Enable", bool(enabled))
 
     async def async_get_event_notifications(self) -> dict:
         """

@@ -47,6 +47,9 @@ PROBES = [
         "IPC-COLOR4M-TZ",
     ),
     ("async_get_privacy_mode", "_supports_privacy_mode", None),
+    # The device's cloud connection, which a VTO2000A refuses with a 500
+    # while serving four other tables on the same request (#591).
+    ("async_get_cloud_connection", "_supports_cloud_connection", None),
     ("async_get_cloud_upgrade_info", "_supports_cloud_upgrade", None),
     # The picture adjustments (#1006). This one was added without a probe at
     # all: the read sat in the poll's fan-out gated on nothing but the platform,
