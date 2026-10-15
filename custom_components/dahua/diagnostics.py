@@ -518,6 +518,7 @@ def _host_block(
         MAX_AUTH_REFUSALS,
         normalize_address,
     )
+    from .host import _HOST_UPTIME_STATE
     from .client import (
         _HOST_LIMITS,
         _HOST_RPC2,
@@ -544,6 +545,10 @@ def _host_block(
     # every read below is a .get on it.
     failures = _HOST_FAILURES.get(normalize_address(address) if address else "", {})
 
+    # Same shape: absent until the first uptime read, and every field below is
+    # a .get on it.
+    uptime = _HOST_UPTIME_STATE.get(client_address or address or "", {})
+
     return {
         # Presence only, never the session id -- the same rule the digest state
         # is reported under.
@@ -562,6 +567,28 @@ def _host_block(
         "rpc2_tables_refused": sorted(
             table for key, table in _RPC2_TABLE_UNAVAILABLE if key == rpc2_key
         ),
+        # Whether this host's reboot detection is running, and what it has
+        # seen. A device that refuses magicBox.getUpTime is asked once and then
+        # left alone (#1039), which is right -- the refusal used to cost most
+        # of the integration's login traffic on a recorder -- and it silently
+        # switches the feature off: the generation stays 0 for the life of the
+        # entry, so the illuminator never restores a camera's pre-override
+        # lighting scheme after a reboot.
+        #
+        # Nothing surfaced that. The latch lives in memory, the refusal is
+        # logged at debug, and the feature simply does not run, which is the
+        # shape of the bug in #1039 and the reason it took a code read rather
+        # than a dump to find.
+        "reboot_detection_unsupported": bool(uptime.get("unsupported", False)),
+        # 0 means "no reboot seen since Home Assistant started", which on a
+        # host with the line above true is not the same claim at all.
+        "reboot_generation": int(uptime.get("generation", 0)),
+        # The device's own last answer, in whatever unit it reports, or None
+        # where it has never answered one. A reboot is inferred from this
+        # going backwards, so a host that reports the same number every poll
+        # is the other way this can quietly do nothing.
+        "host_uptime_last": uptime.get("uptime"),
+        "host_uptime_read": bool(uptime.get("last_read", 0)),
         "address": address,
         # Why everything on this host may have stopped asking. Recorded since
         # the budget was introduced and never reported, and once a doorbell
