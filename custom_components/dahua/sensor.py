@@ -60,6 +60,10 @@ def _filed_under(entity, coordinator):
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
+    # Keep the selected reporter for this setup's lifetime: its serial is
+    # part of the sensors' unique IDs. A lower channel answering later must
+    # not create another pair. Reloading the entry makes a fresh selection.
+    load_reporter = _load_reporter(list(entry_coordinators(entry).values()))
 
     async def build(coordinator):
         """Which sensors this channel warrants, as the device answers today.
@@ -71,20 +75,22 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 
         The processor and memory describe the box rather than a channel, so
         they are not created for whichever coordinator asks: `_load_reporter`
-        picks one channel and only that one carries them. They are built here
-        all the same, so that a device whose processor read timed out at setup
+        picks one channel at setup and only that one carries them. If none
+        answered then, the first channel rebuilt with an answer carries them.
+        They are built here so a device whose processor read timed out at setup
         gets them when it finally answers (#1057), and `_filed_under` keeps
         them on the box's own device page rather than that channel's.
         """
+        nonlocal load_reporter
+
         sensors = [
             DahuaFirmwareVersionSensor(coordinator, entry),
             DahuaSerialNumberSensor(coordinator, entry),
         ]
 
-        # Recomputed on every build rather than captured once: a late answer
-        # may mean a channel now answers that did not at setup, and the lowest
-        # answering channel is the one that should carry these.
-        if _load_reporter(list(entry_coordinators(entry).values())) is coordinator:
+        if load_reporter is None and coordinator.supports_system_load():
+            load_reporter = coordinator
+        if load_reporter is coordinator:
             sensors.append(DahuaProcessorUsageSensor(coordinator, entry))
             sensors.append(DahuaMemoryUsedSensor(coordinator, entry))
         # A plate is read from a picture, which an indoor monitor without a

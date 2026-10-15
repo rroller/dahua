@@ -620,3 +620,54 @@ async def test_only_one_channel_carries_them_however_many_answer(_sensor_dispatc
     added = await _setup_sensors(_SensorHass(), _sensor_entry(channels))
 
     assert len(_load_sensors(added)) == 2
+
+
+@pytest.mark.parametrize("answered_at_setup", [True, False])
+async def test_a_lower_channel_answering_late_keeps_the_existing_pair(
+    hass, answered_at_setup
+):
+    """A later answer must not change the reporter and create new unique IDs.
+
+    Exercise the real dispatcher, both when the first pair exists at setup
+    and when both channels initially time out.
+    """
+    from custom_components.dahua import late
+
+    channels = [_Channel(0), _Channel(1, load=answered_at_setup)]
+    entry = _sensor_entry(channels)
+    added = []
+
+    def add(entities, update_before_add=False, config_subentry_id=None):
+        added.extend(
+            (entity.unique_id, config_subentry_id)
+            for entity in entities
+            if isinstance(
+                entity,
+                (
+                    sensor_module.DahuaProcessorUsageSensor,
+                    sensor_module.DahuaMemoryUsedSensor,
+                ),
+            )
+        )
+
+    await sensor_module.async_setup_entry(hass, entry, add)
+    if not answered_at_setup:
+        assert added == []
+        channels[1]._load = True
+        late.async_notify_capability_discovered(hass, entry.entry_id, "SERIAL1_1")
+        await hass.async_block_till_done()
+
+    expected = [
+        ("SERIAL1_1_processor_usage", None),
+        ("SERIAL1_1_memory_used", None),
+    ]
+    assert added == expected
+
+    channels[0]._load = True
+    late.async_notify_capability_discovered(hass, entry.entry_id, "SERIAL1_0")
+    await hass.async_block_till_done()
+    assert added == expected
+
+    late.async_notify_capability_discovered(hass, entry.entry_id, "SERIAL1_1")
+    await hass.async_block_till_done()
+    assert added == expected
