@@ -12,9 +12,8 @@ from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 
-from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
+from custom_components.dahua import entry_coordinators
 
-from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .late import async_add_and_keep_watching
 
