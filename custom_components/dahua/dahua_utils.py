@@ -81,6 +81,44 @@ _CAMERA_FIELDS = {
 }
 
 
+# What a recorder puts in a slot's Mac field when it does not know one. Both
+# are addresses no camera can have: ff:ff:ff:ff:ff:ff is the broadcast address
+# and 00:00:00:00:00:00 is the unspecified one.
+_PLACEHOLDER_MACS = frozenset({"ffffffffffff", "000000000000"})
+
+
+def usable_mac(value) -> str | None:
+    """The MAC as the device reported it, or None when it is not an address.
+
+    #1078: a DH-NVR4232-EI reports `ff:ff:ff:ff:ff:ff` for a channel whose
+    camera it cannot name. That went into the device page's `connections`,
+    which is how Home Assistant decides two devices are the same hardware, so
+    every channel the recorder could not name claimed to be the same device
+    and Home Assistant refused the second one:
+
+        Invalid device info ... connections: {('mac', 'ff:ff:ff:ff:ff:ff')}
+        ... are already registered for device ... of the same config entry
+
+    The camera was fine; its device simply could not be created. Judged on the
+    value rather than on how many channels share it, because one channel with
+    a broadcast MAC is already wrong and the second is what makes it visible.
+
+    Anything that is not twelve hex digits is also refused. A malformed MAC in
+    `connections` is worse than no MAC at all: it is the field that merges
+    devices together.
+    """
+    if not value:
+        return None
+    digits = str(value).strip().lower()
+    for separator in (":", "-", "."):
+        digits = digits.replace(separator, "")
+    if len(digits) != 12 or any(c not in "0123456789abcdef" for c in digits):
+        return None
+    if digits in _PLACEHOLDER_MACS:
+        return None
+    return str(value).strip()
+
+
 def parse_remote_devices(data) -> dict:
     """Which channels a recorder says it has a camera on.
 
