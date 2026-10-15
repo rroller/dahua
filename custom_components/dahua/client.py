@@ -1314,6 +1314,21 @@ def _is_login_refused(exception: aiohttp.ClientResponseError) -> bool:
     return exception.status == 401
 
 
+# The four diagonals, which carry the speed in arg1 as well as in arg2.
+#
+# A straight move sends arg1=0 and the speed in arg2 only. A diagonal sent that
+# way reached the camera with one of its two components zeroed, which is what
+# #491 reported: the four straight directions and zoom steer the camera and the
+# diagonals do not. ZoneMinder's Dahua driver makes the same split, straight
+# moves with arg1 0 and every diagonal with arg1 and arg2 both set to the speed
+# (scripts/ZoneMinder/lib/ZoneMinder/Control/Dahua.pm, moveCon* and moveRel*).
+#
+# Which axis arg1 names is not documented anywhere this could be checked, so
+# nothing here assumes one: the diagonals get the same speed in both, which is
+# right either way round.
+PTZ_DIAGONAL_CODES = frozenset({"LeftUp", "RightUp", "LeftDown", "RightDown"})
+
+
 class DahuaClient:
     """
     DahuaClient is the client for accessing Dahua IP Cameras. The APIs were discovered from the "API of HTTP Protocol Specification" V2.76 2019-07-25 document
@@ -3122,15 +3137,20 @@ class DahuaClient:
         how far it goes. That is also why the stop is in a finally. A
         request that fails after the start would otherwise leave the
         camera turning until something else stopped it.
+
+        A diagonal carries the speed in both arg1 and arg2, a straight move
+        and a zoom in arg2 alone. See PTZ_DIAGONAL_CODES.
         """
+        arg1 = speed if code in PTZ_DIAGONAL_CODES else 0
         base = (
-            "/cgi-bin/ptz.cgi?action={0}&channel={1}&code={2}" "&arg1=0&arg2={3}&arg3=0"
+            "/cgi-bin/ptz.cgi?action={0}&channel={1}&code={2}"
+            "&arg1={3}&arg2={4}&arg3=0"
         )
-        await self.get(base.format("start", channel, code, speed))
+        await self.get(base.format("start", channel, code, arg1, speed))
         try:
             await asyncio.sleep(duration)
         finally:
-            await self.get(base.format("stop", channel, code, speed))
+            await self.get(base.format("stop", channel, code, arg1, speed))
 
     async def async_set_video_profile_mode(self, channel: int, mode: str):
         """

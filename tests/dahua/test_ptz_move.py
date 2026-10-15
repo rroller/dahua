@@ -15,7 +15,7 @@ import asyncio
 import yaml
 
 from custom_components.dahua.camera import PTZ_MOVE_CODES
-from custom_components.dahua.client import DahuaClient
+from custom_components.dahua.client import DahuaClient, PTZ_DIAGONAL_CODES
 
 
 class _Client(DahuaClient):
@@ -55,7 +55,7 @@ async def test_both_halves_name_the_same_move():
     await client.async_ptz_move(2, "RightUp", 6, 0.01)
 
     start, stop = (_params(u) for u in client.urls)
-    for field in ("channel", "code", "arg2"):
+    for field in ("channel", "code", "arg1", "arg2"):
         assert start[field] == stop[field], "%s differs between start and stop" % field
     assert start["channel"] == "2"
     assert start["code"] == "RightUp"
@@ -123,3 +123,70 @@ def test_the_service_offers_exactly_the_directions_it_can_do():
     ]
 
     assert sorted(offered) == sorted(PTZ_MOVE_CODES)
+
+
+# --- the diagonals ----------------------------------------------------------
+#
+# #491 reported the four straight directions and both zooms steering a
+# PTZ3E10X-T180 while the diagonals did not. Every move was sent with arg1=0 and
+# the speed in arg2, which is right for a straight move and leaves a diagonal
+# with one of its two components at zero. ZoneMinder's Dahua driver splits them
+# the same way: `_sendMomentaryPtzCommand("Up", 0, 1, 0, 0)` for a straight move
+# against `_sendMomentaryPtzCommand("LeftUp", 1, 1, 0, 0)` for a diagonal, in
+# scripts/ZoneMinder/lib/ZoneMinder/Control/Dahua.pm.
+#
+# Derived from the direction names rather than listed again here, so a diagonal
+# added to the service cannot quietly miss this.
+
+DIAGONAL_DIRECTIONS = sorted(
+    name
+    for name in PTZ_MOVE_CODES
+    if "_" in name
+    and name.split("_")[0] in ("up", "down")
+    and name.split("_")[1] in ("left", "right")
+)
+
+
+def test_the_scan_finds_the_diagonals():
+    """The derivation above is the subject of the two tests below, so a change
+    of naming that silently matched nothing would make them pass vacuously."""
+    assert DIAGONAL_DIRECTIONS == [
+        "down_left",
+        "down_right",
+        "up_left",
+        "up_right",
+    ]
+
+
+def test_the_client_knows_the_same_four():
+    """The service names the direction, the client decides how to send it. One
+    set behind both, or a diagonal is spelled in one place and not the other."""
+    assert PTZ_DIAGONAL_CODES == {PTZ_MOVE_CODES[d] for d in DIAGONAL_DIRECTIONS}
+
+
+async def test_a_diagonal_carries_the_speed_in_both_arguments():
+    for direction in DIAGONAL_DIRECTIONS:
+        client = _Client()
+
+        await client.async_ptz_move(1, PTZ_MOVE_CODES[direction], 5, 0.01)
+
+        assert len(client.urls) == 2, direction
+        for url in client.urls:
+            sent = _params(url)
+            assert sent["arg1"] == "5", "%s moves on one axis only" % direction
+            assert sent["arg2"] == "5", direction
+
+
+async def test_a_straight_move_or_a_zoom_sends_the_speed_once():
+    """The half that works today, and the half this must not disturb."""
+    for direction, code in PTZ_MOVE_CODES.items():
+        if direction in DIAGONAL_DIRECTIONS:
+            continue
+        client = _Client()
+
+        await client.async_ptz_move(1, code, 7, 0.01)
+
+        for url in client.urls:
+            sent = _params(url)
+            assert sent["arg1"] == "0", direction
+            assert sent["arg2"] == "7", direction
