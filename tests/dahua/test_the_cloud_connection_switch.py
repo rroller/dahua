@@ -529,3 +529,118 @@ def test_the_redaction_is_by_field_name_not_by_table():
         "table.T2UServer.Key": "REDACTED",
         "table.T2UServer.UUID": "REDACTED",
     }
+
+
+# --- the answer that arrives late -------------------------------------------
+#
+# The switch was created once at setup, outside the rebuild, so a device whose
+# VSP_PaaS read timed out got nothing: the retry announced the capability and
+# the announcement rebuilds `build`, which did not create this entity. Found in
+# review of #1074 and reproduced exactly as below.
+#
+# Driven through a real `hass` and the real dispatcher rather than a fake one,
+# because the failure was in what the announcement reaches, and a fake
+# dispatcher that calls the listener directly would have passed either way.
+
+
+def _recording_add(added):
+    def add(entities, update_before_add=False, *, config_subentry_id=None):
+        added.extend((entity, config_subentry_id) for entity in entities)
+
+    return add
+
+
+def _cloud(added):
+    return [
+        (entity, where)
+        for entity, where in added
+        if isinstance(entity, switch_module.DahuaCloudConnectionSwitch)
+    ]
+
+
+async def test_a_cloud_table_that_arrives_late_creates_the_switch(hass):
+    """The blocker from the #1074 review. A device too busy to answer at setup
+    got no switch until somebody reloaded the entry."""
+    from custom_components.dahua import late
+
+    added = []
+    coordinator = _PlatformCoordinator(0, cloud=False)
+    entry = _entry([coordinator])
+
+    await switch_module.async_setup_entry(hass, entry, _recording_add(added))
+    assert _cloud(added) == []
+
+    coordinator._cloud = True
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await hass.async_block_till_done()
+
+    assert len(_cloud(added)) == 1, "the retry answered and nothing was created"
+
+
+async def test_the_late_switch_is_filed_on_the_box(hass):
+    """A recorder has a device of its own, and the cloud connection is the
+    box's rather than the channel's, whether the answer arrives at setup or
+    later."""
+    from custom_components.dahua import late
+
+    added = []
+    coordinator = _PlatformCoordinator(0, cloud=False)
+    entry = _entry([coordinator])
+    await switch_module.async_setup_entry(hass, entry, _recording_add(added))
+
+    coordinator._cloud = True
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await hass.async_block_till_done()
+
+    assert [where for _entity, where in _cloud(added)] == [None]
+
+
+async def test_a_lower_channel_answering_later_does_not_add_a_second(hass):
+    """The fault #1076 was sent back for, one platform along: the serial of the
+    chosen channel is part of the unique id, so a reporter that changes after a
+    late answer means two switches over one flag."""
+    from custom_components.dahua import late
+
+    added = []
+    channels = [
+        _PlatformCoordinator(0, cloud=False),
+        _PlatformCoordinator(1, cloud=True),
+    ]
+    entry = _entry(channels)
+
+    await switch_module.async_setup_entry(hass, entry, _recording_add(added))
+    assert len(_cloud(added)) == 1
+
+    channels[0]._cloud = True
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, channels[0].get_serial_number()
+    )
+    await hass.async_block_till_done()
+
+    switches = _cloud(added)
+    assert len(switches) == 1, "one cloud connection, one switch"
+    assert switches[0][0].unique_id == "%s_1_cloud_connection" % SERIAL
+
+
+async def test_nothing_is_created_twice_on_repeated_announcements(hass):
+    """`build` runs again on every announcement and returns what already
+    exists; a second copy would collide on unique_id."""
+    from custom_components.dahua import late
+
+    added = []
+    coordinator = _PlatformCoordinator(0, cloud=True)
+    entry = _entry([coordinator])
+    await switch_module.async_setup_entry(hass, entry, _recording_add(added))
+    assert len(_cloud(added)) == 1
+
+    for _ in range(3):
+        late.async_notify_capability_discovered(
+            hass, entry.entry_id, coordinator.get_serial_number()
+        )
+        await hass.async_block_till_done()
+
+    assert len(_cloud(added)) == 1

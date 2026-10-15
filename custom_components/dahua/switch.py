@@ -51,21 +51,27 @@ def _cloud_reporter(coordinators: list):
     return min(answering, key=lambda c: c.get_channel())
 
 
+def _filed_under(entity, coordinator):
+    """Which subentry this entity belongs to, as `late.py` asks.
+
+    The cloud connection is the box's rather than one channel's, so its switch
+    belongs to the device the recorder has of its own. A camera has no separate
+    host device, so its switch stays on its own channel. Same rule as the
+    processor and memory sensors in sensor.py, and the same helper shape.
+    """
+    if isinstance(entity, DahuaHostEntity) and coordinator.uses_separate_host_device():
+        return None
+    return coordinator.subentry_id
+
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup sensor platform."""
 
-    # Once for the device, before the per-channel rebuilds below. Not inside
-    # build(): this one describes the box, one channel is chosen to carry it,
-    # and rebuilding it per channel is the wrong shape, the same reasoning as
-    # the processor and memory sensors.
-    reporter = _cloud_reporter(list(entry_coordinators(entry).values()))
-    if reporter is not None:
-        async_add_devices(
-            [DahuaCloudConnectionSwitch(reporter, entry)],
-            config_subentry_id=(
-                None if reporter.uses_separate_host_device() else reporter.subentry_id
-            ),
-        )
+    # Keep the selected reporter for this setup's lifetime: its serial is part
+    # of the switch's unique id, so a lower channel answering later must not
+    # create a second one. Reloading the entry makes a fresh selection. The
+    # same rule the load sensors follow since #1076.
+    cloud_reporter = _cloud_reporter(list(entry_coordinators(entry).values()))
 
     async def build(coordinator):
         """Which switches this channel warrants, as the device answers today.
@@ -77,7 +83,21 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         """
         # I think most cameras have a motion sensor so we'll blindly add a switch for it.
         # Not an indoor monitor without a camera: there is no picture to detect motion in.
+        nonlocal cloud_reporter
+
         devices = []
+
+        # The cloud connection is the box's, so one channel carries the switch
+        # and `_cloud_reporter` picks which. Built here rather than once at
+        # setup so that a device whose VSP_PaaS read timed out gets the switch
+        # when it finally answers, instead of at the next reload (#1057): the
+        # retry announces the capability and this is what the announcement
+        # rebuilds. `_filed_under` keeps it on the box's own device page.
+        if cloud_reporter is None and coordinator.supports_cloud_connection():
+            cloud_reporter = coordinator
+        if cloud_reporter is coordinator:
+            devices.append(DahuaCloudConnectionSwitch(coordinator, entry))
+
         if not coordinator.is_indoor_monitor_without_video():
             devices.append(DahuaMotionDetectionBinarySwitch(coordinator, entry))
 
@@ -124,7 +144,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         return devices
 
     await async_add_and_keep_watching(
-        hass, entry, build, async_add_devices, entry_coordinators
+        hass,
+        entry,
+        build,
+        async_add_devices,
+        entry_coordinators,
+        subentry_for=_filed_under,
     )
 
 
