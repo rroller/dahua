@@ -185,6 +185,10 @@ BACKED_UP_TABLES = (
     "PrivacyMasking",
     "RecordMode",
     "SmartMotionDetect",
+    # The cloud connection the cloud switch writes (#591). Its neighbours
+    # in that table are not settings, which is what REDACTED_BACKUP_FIELDS
+    # below is for.
+    "VSP_PaaS",
     "VideoAnalyseRule",
     "VideoColor",
     "VideoInDayNight",
@@ -248,3 +252,11 @@ ALL_EVENTS = [
     "TrafficJunction",
     "TrafficSnapshot",
 ]
+# Fields that identify the device to Dahua's cloud rather than configure
+# anything. A backup is a file somebody attaches to a bug report, and
+# VSP_PaaS carries the device's cloud key, its serial and its cloud login.
+# Matched on the field name, the part after the last dot, so the same rule
+# covers a table added later that carries one of them.
+REDACTED_BACKUP_FIELDS = frozenset(
+    {"AbHash", "CheckCode", "Key", "Password", "SN", "UUID", "Username"}
+)

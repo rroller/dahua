@@ -387,6 +387,23 @@ class DahuaRpc2Client:
             },
         )
 
+    async def set_config_field(self, name: str, value) -> dict:
+        """Write one addressed config field, rather than the table it sits in.
+
+        `name` is the address the device uses in its own answers, for example
+        `VSP_PaaS.Enable`, and `value` is that field's new value.
+
+        Addressed rather than whole-table for the reason
+        `async_set_remote_ivs_rule_by_id` explains above: a DHI-NVR5464 refuses
+        a 9KB to 22KB `setConfig` with `errCode 287638033, "Request length
+        error!"`, so a write that sends the surrounding table back is refused
+        on exactly the devices with the most to say. This sends the one field.
+        """
+        return await self.request(
+            method="configManager.setConfig",
+            params={"name": name, "table": value, "options": []},
+        )
+
     async def set_configs(self, configs: list[tuple[str, list]]) -> dict:
         """Commit complete config tables together through system.multicall."""
         calls = []

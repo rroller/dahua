@@ -395,6 +395,9 @@
             "disarming": {
                 "name": "Disarming"
             },
+            "cloud_connection": {
+                "name": "Cloud Connection"
+            },
             "event_notifications": {
                 "name": "Event Notifications"
             },

@@ -76,6 +76,7 @@ WAS = {
     ("number", "image_hue"): "Hue",
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
+    ("switch", "cloud_connection"): "Cloud Connection",
     ("switch", "disarming"): "Disarming",
     ("switch", "event_notifications"): "Event Notifications",
     ("switch", "smart_motion_detection"): "Smart Motion Detection",
