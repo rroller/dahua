@@ -91,8 +91,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         # The coordinator already asked the device this during setup and kept the
         # answer. Asking again here put a network round trip inside platform setup,
         # where a device that is slow to answer eats the entry's setup budget.
+        # One switch per table, rather than both from the linkage answer. They
+        # are two tables and a device can serve one without the other, and the
+        # poll already decides separately whether to read each of them.
         if coordinator.supports_disarming_linkage():
             devices.append(DahuaDisarmingLinkageBinarySwitch(coordinator, entry))
+        if coordinator.supports_event_notifications():
             devices.append(
                 DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry)
             )

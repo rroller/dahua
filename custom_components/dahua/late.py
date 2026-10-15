@@ -30,6 +30,7 @@ up late. It must be safe to call repeatedly: entities whose `unique_id` already
 exists are dropped rather than added twice.
 """
 
+from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
     async_dispatcher_send,
@@ -118,7 +119,20 @@ async def async_add_and_keep_watching(
 
     await _add_whatever_is_missing()
 
+    @callback
     def _on_discovery(channel_key: str) -> None:
+        """Start the rebuild. The decorator is the whole of #1043's second report.
+
+        Home Assistant decides where to run a dispatcher target by looking at
+        the target: a coroutine function becomes a task, a `@callback` runs on
+        the event loop, and anything else is treated as blocking and handed to
+        a worker thread. Without the decorator this ran in `SyncWorker_N`, and
+        `hass.async_create_task` refuses to be called from there, so every late
+        answer on that install raised and created nothing.
+
+        A task rather than awaiting here, because the retry runs at the top of
+        a poll: the rebuild must look at `data` after the poll has written it.
+        """
         hass.async_create_task(_add_whatever_is_missing(channel_key))
 
     entry.async_on_unload(

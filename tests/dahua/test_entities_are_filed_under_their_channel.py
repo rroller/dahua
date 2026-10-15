@@ -58,16 +58,42 @@ def _add_calls():
     return found
 
 
+def _delegating_modules():
+    """Modules that hand their entities to `async_add_and_keep_watching`.
+
+    That helper calls the add callback itself, with the coordinator's
+    subentry, so a platform that delegates to it files its entities correctly
+    without naming the callback at all. Six platforms do now (#1057), which is
+    why the scan below counts them: without this it would look as though
+    platforms had stopped filing their entities under a channel, when what
+    changed is who makes the call.
+    """
+    found = set()
+    for path, source in modules().items():
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Call):
+                continue
+            name = (
+                node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else getattr(node.func, "id", None)
+            )
+            if name == "async_add_and_keep_watching" and path.name != "late.py":
+                found.add(path.name)
+    return found
+
+
 def test_the_scan_finds_the_platforms():
     """A scan that matched nothing would make the assertion below pass while saying
     nothing, which is how a source-reading test quietly stops testing. There are
     eight platforms and one of them adds cameras twice."""
     calls = _add_calls()
+    delegating = _delegating_modules()
 
     assert len(calls) >= 8, calls
-    assert len({name for name, _line, _passed in calls}) >= 7, sorted(
-        {name for name, _line, _passed in calls}
-    )
+    assert delegating, "no platform reaches the shared add helper at all"
+    files = {name for name, _line, _passed in calls} | delegating
+    assert len(files) >= 7, sorted(files)
 
 
 def test_every_platform_files_its_entities_under_a_subentry():

@@ -21,6 +21,8 @@ Three rules hold this together, and each has a test below:
 
 import pytest
 
+from homeassistant.core import HassJobType, get_hassjob_callable_job_type
+
 from custom_components.dahua import DahuaDataUpdateCoordinator, late
 from custom_components.dahua import coordinator as coordinator_module
 
@@ -86,6 +88,10 @@ class _Retrying:
         self._capability_retries = {}
         self._supports_lighting = False
         self._address = "10.0.0.5"
+        # A coordinator is per channel and the real one always has this. The
+        # retry names it when it reports what a device would not answer, so a
+        # recorder's nineteen channels are told apart in the log.
+        self._channel = 14
         self.attempts = 0
         self._answers_on = answers_on_attempt
         self.signalled = []
@@ -192,6 +198,16 @@ def _dispatcher(monkeypatch):
     connected = {}
 
     def connect(hass, signal, callback):
+        # Calling the target directly is the one thing the real dispatcher does
+        # not promise, and the difference cost #1043 every late entity it was
+        # owed. Home Assistant decides where a target runs by inspecting it,
+        # and hands anything that is neither a coroutine function nor a
+        # `@callback` to a worker thread, where the rebuild cannot be started.
+        # Asking Home Assistant's own classifier keeps that rule here rather
+        # than a copy of it, and makes every test below a guard.
+        assert (
+            get_hassjob_callable_job_type(callback) is not HassJobType.Executor
+        ), "the real dispatcher would run this on a worker thread"
         connected.setdefault(signal, []).append(callback)
         return lambda: connected[signal].remove(callback)
 
@@ -316,3 +332,42 @@ async def test_the_listener_is_dropped_when_the_entry_unloads(
     await _wire(_Hass(), entry, _two_channels, [])
 
     assert entry.unloads, "nothing registered an unload"
+
+
+async def test_a_late_answer_arrives_through_the_real_dispatcher(hass):
+    """The same thing again, with nothing faked between here and the loop.
+
+    Every test above replaces the dispatcher, so until #1043 was reported on a
+    1.3.0 install none of this had ever run against the real one. It did not
+    work: the listener was handed to a worker thread, `hass.async_create_task`
+    refused to be called from there, and five channels that finally answered
+    created nothing.
+
+        RuntimeError: Detected that custom integration 'dahua' calls
+        hass.async_create_task from a thread other than the event loop
+
+    So one test uses the real `hass`, the real `async_dispatcher_connect` and
+    the real `async_dispatcher_send`, and asserts the entity exists at the end.
+    """
+    channels = [_Coordinator(SERIAL, "sub-0"), _Coordinator(SERIAL + "_15", "sub-15")]
+    entry, added = _Entry(channels), []
+
+    async def build(coordinator):
+        return [
+            _Entity(coordinator.get_serial_number() + suffix)
+            for suffix in coordinator.extras
+        ]
+
+    def add(entities, config_subentry_id=None):
+        added.extend((e.unique_id, config_subentry_id) for e in entities)
+
+    await late.async_add_and_keep_watching(
+        hass, entry, build, add, lambda e: e.runtime_data
+    )
+    assert added == []
+
+    channels[1].extras = ["_infrared_mode"]
+    late.async_notify_capability_discovered(hass, entry.entry_id, SERIAL + "_15")
+    await hass.async_block_till_done()
+
+    assert added == [(SERIAL + "_15_infrared_mode", "sub-15")]

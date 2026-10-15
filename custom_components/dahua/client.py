@@ -117,6 +117,15 @@ MAX_QUEUE_WAIT_SECONDS = 3 * TIMEOUT_SECONDS
 # RPC2 sessions or credentials.
 _HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 
+# One lock per device over its lighting tables. Keyed by device rather than
+# held on the client, because LightingScheme and Lighting_V2 are the device's
+# and a client is per channel: two channels of one recorder each holding their
+# own lock excluded each other from nothing. The turn-on saves its recovery
+# mode before it writes the camera, on purpose, so without this another
+# channel's poll can reconcile that key away in the gap and leave the camera
+# in WhiteMode with nothing to go back to.
+_HOST_LIGHTING_SCHEME_LOCKS: dict[str, asyncio.Lock] = {}
+
 
 def _describe_client_error(exception) -> str:
     """The shortest thing that says whether asking again could ever work.
@@ -191,6 +200,15 @@ def _remote_ivs_lock(device: str, channel: int) -> asyncio.Lock:
     if lock is None:
         lock = asyncio.Lock()
         _HOST_REMOTE_IVS_LOCKS[key] = lock
+    return lock
+
+
+def _lighting_scheme_lock(device: str) -> asyncio.Lock:
+    """This device's lighting tables, shared by every channel's client."""
+    lock = _HOST_LIGHTING_SCHEME_LOCKS.get(device)
+    if lock is None:
+        lock = asyncio.Lock()
+        _HOST_LIGHTING_SCHEME_LOCKS[device] = lock
     return lock
 
 
@@ -652,6 +670,84 @@ def clear_host_cache(scope: str) -> None:
         del _HOST_CACHE[key]
 
 
+async def cancel_reads_issued_on(session) -> None:
+    """Stop the reads still in flight on a session that is about to close.
+
+    `clear_host_cache` forgets a shared read, which is all a write needs: the
+    request is still wanted by whoever is waiting on it, and it finishes into
+    their hands. Shutdown is the other case. There the session the read is
+    using is about to be closed under it, and forgetting the task leaves it
+    running against a session that is no longer there, with nobody left to
+    collect what it raises:
+
+        AssertionError: assert self._connector is not None
+        RuntimeError: Session is closed
+        ERROR Error doing job: AssertionError exception in shielded future
+
+    Reported on a restart in #1043. Nothing is lost by cancelling one of these:
+    the client that issued it is stopping and the answer has nowhere to go.
+
+    **By session, not by device.** One read of one URL is shared by every entry
+    on the device, and they do not share a session: there is one per
+    coordinator, closed by that coordinator. Cancelling everything for the
+    device would take away a read another entry is waiting on and is still
+    running, which is a worse bug than the one being fixed.
+
+    A read that has already landed is left where it is. Its answer does not
+    depend on any session, and dropping it would make the next entry on this
+    device ask the hardware again for something it has just been told.
+    """
+    if session is None:
+        return
+
+    cancelled = []
+
+    for store in (_HOST_SYSTEM_LOAD, _HOST_CACHE):
+        for key, entry in list(store.items()):
+            owner = getattr(entry, "owner", None)
+            if owner is None or owner is not session:
+                # None is "nobody said", which must never match: a client with
+                # no session of its own would otherwise cancel every read that
+                # also had none.
+                continue
+            task = getattr(entry, "task", None)
+            if task is None:
+                continue
+            if not task.done():
+                store.pop(key, None)
+                task.cancel()
+                cancelled.append(task)
+            elif not task.cancelled() and task.exception() is not None:
+                # Reading `.exception()` is itself what marks it retrieved, so
+                # the failure that was already there does not become the log
+                # line this exists to remove. The entry goes with it: a read
+                # that failed was never usable anyway.
+                store.pop(key, None)
+
+    if cancelled:
+        await asyncio.gather(*cancelled, return_exceptions=True)
+
+
+class ReadAfterClose(asyncio.CancelledError):
+    """A read asked for after its client started closing.
+
+    `cancel_reads_issued_on` stops the reads that were already out when a
+    client closed. This is the other half: the reads that had not gone out
+    yet. A poll is a fan-out of many reads, and the entry can stop in the
+    middle of one, so a branch that has not reached its read yet will reach it
+    with the session on its way out and fail the way #1043 reported.
+
+    A `CancelledError` rather than a connection error, for the same reason
+    #1064 left a cancelled waiter alone: a cancellation unwinds the poll in
+    silence, while an error raises `Exception fetching information from ...`
+    once per branch, which is the noise this exists to remove. It also passes
+    straight through the `except Exception` handlers that would otherwise read
+    it as the device's verdict: `_note_probe_refusal` would record a
+    capability as absent, and the RPC2 fallback would write the transport off
+    for the host. Both of those outlive the entry that is stopping.
+    """
+
+
 class _SharedRead:
     """One read of one URL, shared by every entry on the host that wants it.
 
@@ -659,11 +755,14 @@ class _SharedRead:
     than issuing their own. Once it lands, it answers again for the TTL.
     """
 
-    __slots__ = ("task", "expires_at")
+    __slots__ = ("task", "expires_at", "owner")
 
-    def __init__(self, task: asyncio.Task) -> None:
+    def __init__(self, task: asyncio.Task, owner=None) -> None:
         self.task = task
         self.expires_at = None  # stamped when the request lands
+        # The session the request was issued on, so that a client closing can
+        # stop its own reads without touching another entry's (#1043).
+        self.owner = owner
 
     def is_usable(self, now: float) -> bool:
         if not self.task.done():
@@ -1215,6 +1314,21 @@ def _is_login_refused(exception: aiohttp.ClientResponseError) -> bool:
     return exception.status == 401
 
 
+# The four diagonals, which carry the speed in arg1 as well as in arg2.
+#
+# A straight move sends arg1=0 and the speed in arg2 only. A diagonal sent that
+# way reached the camera with one of its two components zeroed, which is what
+# #491 reported: the four straight directions and zoom steer the camera and the
+# diagonals do not. ZoneMinder's Dahua driver makes the same split, straight
+# moves with arg1 0 and every diagonal with arg1 and arg2 both set to the speed
+# (scripts/ZoneMinder/lib/ZoneMinder/Control/Dahua.pm, moveCon* and moveRel*).
+#
+# Which axis arg1 names is not documented anywhere this could be checked, so
+# nothing here assumes one: the diagonals get the same speed in both, which is
+# right either way round.
+PTZ_DIAGONAL_CODES = frozenset({"LeftUp", "RightUp", "LeftDown", "RightDown"})
+
+
 class DahuaClient:
     """
     DahuaClient is the client for accessing Dahua IP Cameras. The APIs were discovered from the "API of HTTP Protocol Specification" V2.76 2019-07-25 document
@@ -1222,6 +1336,16 @@ class DahuaClient:
 
     events is the list of events used to monitor on the camera (For example, motion detection)
     """
+
+    # Tests build clients with `object.__new__` and set only what the case
+    # under test needs, so a read of this on an instance that skipped
+    # `__init__` must not raise. One class default rather than `getattr` at
+    # each use.
+    _session = None
+
+    # Set by `close()` before it awaits anything, and never cleared: a closed
+    # client does not reopen. See `_refuse_if_closing`.
+    _closing = False
 
     def __init__(
         self,
@@ -1270,7 +1394,7 @@ class DahuaClient:
         # a channel/profile. Camera config survives HA restarts, so this must.
         self._illuminator_restore_store = illuminator_restore_store
         self._channel_snapshot_store = channel_snapshot_store
-        self._lighting_scheme_lock = asyncio.Lock()
+        self._lighting_scheme_lock = _lighting_scheme_lock(self._device)
         # True once this device has failed to report a serial number and we have had
         # to derive its identity from the connection details instead. That derivation
         # includes the password, so the identity changes if the password does.
@@ -2131,6 +2255,11 @@ class DahuaClient:
         can survive a failed setup; a task started in a synchronous constructor
         cannot, and that is the leak #620 was about.
         """
+        # A closing client has already given its reference back, so a login
+        # taken here would be one nobody is left to release, on a device that
+        # logs every one of them (#577).
+        self._refuse_if_closing()
+
         key = self._rpc2_key()
         holder = _HOST_RPC2.get(key)
         if holder is None:
@@ -2676,6 +2805,26 @@ class DahuaClient:
             self._rpc2_session_instance = self._new_rpc2_session()
         return self._rpc2_session_instance
 
+    def _refuse_if_closing(self) -> None:
+        """Refuse a read this client is no longer in a position to make.
+
+        Between the flag below and `cancel_reads_issued_on`, every read of a
+        closing client falls on one side or the other, and that partition is
+        the point of setting the flag synchronously. A read registered before
+        the flag is in the cache when the sweep runs, so the sweep stops it. A
+        read asked for after the flag never starts. Nothing in `get` awaits
+        between this check and registering the entry, so there is no third
+        case.
+
+        Checking `self._session.closed` instead would leave one: `close()`
+        awaits three times before the coordinator closes the session, and a
+        read issued during those awaits sees a session that is open, registers
+        itself after the sweep has already passed, and fails exactly as
+        reported.
+        """
+        if self._closing:
+            raise ReadAfterClose(f"{self._address} is closing")
+
     async def close(self) -> None:
         """Releases anything this client owns. Safe to call more than once.
 
@@ -2683,6 +2832,15 @@ class DahuaClient:
         closed cleanly: a failed close must not leave a second call able to
         decrement the host's refcount again.
         """
+        # Before the first await, so that no read can be registered after the
+        # sweep below has looked for it. See `_refuse_if_closing`.
+        self._closing = True
+
+        # First, because everything below takes away what a read in flight is
+        # using. A read that outlives the session it was issued on fails in a
+        # way nobody is waiting for (#1043).
+        await cancel_reads_issued_on(self._session)
+
         if self._rpc2_acquired and not self._rpc2_released:
             self._rpc2_released = True
             await _release_rpc2(self._rpc2_key())
@@ -3012,15 +3170,20 @@ class DahuaClient:
         how far it goes. That is also why the stop is in a finally. A
         request that fails after the start would otherwise leave the
         camera turning until something else stopped it.
+
+        A diagonal carries the speed in both arg1 and arg2, a straight move
+        and a zoom in arg2 alone. See PTZ_DIAGONAL_CODES.
         """
+        arg1 = speed if code in PTZ_DIAGONAL_CODES else 0
         base = (
-            "/cgi-bin/ptz.cgi?action={0}&channel={1}&code={2}" "&arg1=0&arg2={3}&arg3=0"
+            "/cgi-bin/ptz.cgi?action={0}&channel={1}&code={2}"
+            "&arg1={3}&arg2={4}&arg3=0"
         )
-        await self.get(base.format("start", channel, code, speed))
+        await self.get(base.format("start", channel, code, arg1, speed))
         try:
             await asyncio.sleep(duration)
         finally:
-            await self.get(base.format("stop", channel, code, speed))
+            await self.get(base.format("stop", channel, code, arg1, speed))
 
     async def async_set_video_profile_mode(self, channel: int, mode: str):
         """
@@ -3372,13 +3535,17 @@ class DahuaClient:
         read here is: two boxes behind one IP on different ports are not each
         other (#664).
         """
+        self._refuse_if_closing()
+
         now = time.monotonic()
         entry = _HOST_SYSTEM_LOAD.get(self._device)
         if entry is None or not entry.is_usable(now):
             # Registered before it is awaited, which is the whole point: the
             # other eleven channels reach this line while the first one's
             # request is still in flight and wait on it rather than asking.
-            entry = _SharedRead(asyncio.ensure_future(self._async_read_system_load()))
+            entry = _SharedRead(
+                asyncio.ensure_future(self._async_read_system_load()), self._session
+            )
             _HOST_SYSTEM_LOAD[self._device] = entry
 
         # Shielded so that one channel's cancelled refresh -- a reload, a
@@ -4546,6 +4713,11 @@ class DahuaClient:
             clear_host_cache(self._device)
             return await self._request(url, verify_ok, reject_declined=True)
 
+        # Reads only, and before the cache is touched. A read registered here
+        # by a client that is closing would be waited on by every other entry
+        # on this device, so it fails theirs too, not just its own.
+        self._refuse_if_closing()
+
         # Credentials are part of the key: entries for one device may be
         # configured with different users, and a successful read is not
         # otherwise scoped to who made it.
@@ -4556,7 +4728,9 @@ class DahuaClient:
             # Registering before the request starts is what makes this work:
             # the per-host limiter queues callers inside _request, so by the
             # time the first one has a slot the rest are already sharing it.
-            entry = _SharedRead(asyncio.ensure_future(self._request(url, verify_ok)))
+            entry = _SharedRead(
+                asyncio.ensure_future(self._request(url, verify_ok)), self._session
+            )
             _HOST_CACHE[key] = entry
 
         # Shielded so that one entry's cancelled refresh -- a reload, a
@@ -4577,6 +4751,13 @@ class DahuaClient:
         self, url: str, verify_ok=False, allow_rpc2=True, reject_declined=False
     ) -> dict:
         """Make the request. One caller per shared read reaches here."""
+        # Reads reach here from `get` and from a few callers of their own, and
+        # a write is left to fail as an ordinary error: somebody pressed
+        # something, and a cancellation nobody asked for is the wrong answer
+        # to give them.
+        if not reject_declined:
+            self._refuse_if_closing()
+
         # Per-rule camera writes use CGI array indexes. Resolve and poll that
         # same CGI table even when other config reads prefer RPC2.
         if url == "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule":
