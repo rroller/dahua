@@ -349,3 +349,274 @@ def test_a_device_that_has_not_answered_yet_reports_nothing():
         sensor_module.DahuaMemoryUsedSensor,
     ):
         assert _entity(cls, {}).native_value is None, cls.__name__
+
+
+# --- the answer that arrives late -------------------------------------------
+#
+# The last of the #1057 conversions that gates entities. A recorder too busy to
+# answer `magicBox.getCPUUsage` at setup had no processor or memory sensor
+# until somebody reloaded the entry, and #1043 measured the set of probes that
+# expired being different on every run.
+#
+# This one is shaped differently from the other ten. The sensors are the box's
+# rather than a channel's, so one channel carries them and `_load_reporter`
+# picks which. A late answer has to go back through that choice rather than
+# hanging a second pair off whichever channel answered later.
+
+
+def test_the_capability_is_in_the_retry_registry():
+    from custom_components.dahua.coordinator import RETRYABLE_CAPABILITIES
+
+    assert "system load" in RETRYABLE_CAPABILITIES, (
+        "the registry is keyed by the name _note_probe_refusal records, and "
+        "this probe records it with a space"
+    )
+
+
+def _probing_coordinator(client):
+    """A coordinator with the real probe bookkeeping rather than the no-op.
+
+    `_coordinator` above silences `_note_probe_refusal`, which is right for
+    the tests about reading the numbers and wrong for every test here: what a
+    refusal recorded is the whole subject.
+    """
+    coordinator = _coordinator(client)
+    coordinator._probe_refusals = {}
+    coordinator._supports_system_load = False
+    coordinator._note_probe_refusal = (
+        DahuaDataUpdateCoordinator._note_probe_refusal.__get__(coordinator)
+    )
+    return coordinator
+
+
+async def test_a_probe_that_answers_is_not_asked_again():
+    """The retry is for silence. A device that answered has said something."""
+    coordinator = _probing_coordinator(_client())
+
+    await coordinator._async_probe_system_load()
+
+    assert coordinator.supports_system_load() is True
+    assert coordinator.probes_that_did_not_answer() == set()
+
+
+async def test_silence_leaves_the_question_open_and_a_late_answer_closes_it():
+    """Driven from a timeout first. `probes_that_did_not_answer` derives from
+    the refusals recorded, so a device that has never been asked reports
+    nothing pending whatever the probe concluded, and starting there would
+    pass with the answer never being noted at all.
+    """
+    client = _client(raises=asyncio.TimeoutError())
+    coordinator = _probing_coordinator(client)
+
+    await coordinator._async_probe_system_load()
+    assert coordinator.probes_that_did_not_answer() == {"system load"}
+    assert coordinator.supports_system_load() is False
+
+    client.async_get_cpu_usage = _client().async_get_cpu_usage
+    turned_up = await coordinator._async_retry_system_load()
+
+    assert turned_up is True
+    assert coordinator.supports_system_load() is True
+    assert coordinator.probes_that_did_not_answer() == set()
+
+
+async def test_a_capability_already_known_is_not_announced_again():
+    """The retry reports a change rather than a state. Announcing on every
+    poll would rebuild every platform of a recorder for ever."""
+    coordinator = _probing_coordinator(_client())
+    await coordinator._async_probe_system_load()
+
+    assert await coordinator._async_retry_system_load() is False
+
+
+# --- and the sensors it gates -----------------------------------------------
+
+
+class _SensorHass:
+    def __init__(self):
+        self.tasks = []
+
+    def async_create_task(self, coro):
+        self.tasks.append(coro)
+        return coro
+
+    async def run_pending(self):
+        pending, self.tasks = self.tasks, []
+        for coro in pending:
+            await coro
+
+
+class _Channel:
+    """A coordinator as the sensor platform asks about one."""
+
+    def __init__(self, channel, load=False, separate_host=True):
+        self._channel = channel
+        self._load = load
+        self._separate_host = separate_host
+        self.subentry_id = "sub-%d" % channel
+        # What the entity base classes read off a coordinator. A double short
+        # of one of these fails as an AttributeError from inside Home
+        # Assistant, which says nothing about the change that caused it, so
+        # another guard in this suite requires them.
+        self.data = {}
+
+    def supports_system_load(self):
+        return self._load
+
+    def uses_separate_host_device(self):
+        return self._separate_host
+
+    def get_channel(self):
+        return self._channel
+
+    def get_serial_number(self):
+        return "SERIAL1_%d" % self._channel
+
+    def get_device_name(self):
+        return "Recorder"
+
+    def get_firmware_version(self):
+        return "4.005.0000000.3.R"
+
+    def get_profile_mode(self):
+        return "0"
+
+    def get_configured_channel_count(self):
+        return None
+
+    def supports_profile_mode(self):
+        return False
+
+    def is_indoor_monitor_without_video(self):
+        return False
+
+    def stands_in_for_the_host(self):
+        return False
+
+    def get_channel_firmware_version(self):
+        return None
+
+    def get_channel_serial_number(self):
+        return None
+
+    def get_device_serial_number(self):
+        return "SERIAL1"
+
+
+def _sensor_entry(channels):
+    return SimpleNamespace(
+        entry_id="entry-1",
+        runtime_data={channel.get_channel(): channel for channel in channels},
+        async_on_unload=lambda unsub: None,
+    )
+
+
+@pytest.fixture
+def _sensor_dispatcher(monkeypatch):
+    """The same fake as test_entities_that_arrive_late.py, and the same guard.
+
+    A target the real dispatcher would hand to a worker thread cannot start
+    the rebuild, which is the whole of #1063.
+    """
+    from homeassistant.core import HassJobType, get_hassjob_callable_job_type
+
+    from custom_components.dahua import late
+
+    connected = {}
+
+    def connect(hass, signal, callback):
+        assert (
+            get_hassjob_callable_job_type(callback) is not HassJobType.Executor
+        ), "the real dispatcher would run this on a worker thread"
+        connected.setdefault(signal, []).append(callback)
+        return lambda: connected[signal].remove(callback)
+
+    def send(hass, signal, *args):
+        for callback in list(connected.get(signal, [])):
+            callback(*args)
+
+    monkeypatch.setattr(late, "async_dispatcher_connect", connect)
+    monkeypatch.setattr(late, "async_dispatcher_send", send)
+    return connected
+
+
+async def _setup_sensors(hass, entry):
+    from custom_components.dahua import sensor as sensor_module
+
+    added = []
+
+    def add(entities, update_before_add=False, config_subentry_id=None):
+        added.extend((type(e).__name__, config_subentry_id) for e in entities)
+
+    await sensor_module.async_setup_entry(hass, entry, add)
+    return added
+
+
+def _load_sensors(added):
+    return [
+        row
+        for row in added
+        if row[0] in ("DahuaProcessorUsageSensor", "DahuaMemoryUsedSensor")
+    ]
+
+
+async def test_a_recorder_that_answers_late_gets_its_load_sensors(_sensor_dispatcher):
+    """What the conversion is for. Before it the answer arrived, the retry
+    announced it, and these two were never built, because they were created
+    outside the rebuild the announcement starts."""
+    from custom_components.dahua import late
+
+    channels = [_Channel(0), _Channel(1)]
+    hass, entry = _SensorHass(), _sensor_entry(channels)
+    added = await _setup_sensors(hass, entry)
+    assert _load_sensors(added) == []
+
+    channels[0]._load = True
+    late.async_notify_capability_discovered(hass, entry.entry_id, "SERIAL1_0")
+    await hass.run_pending()
+
+    assert sorted(name for name, _where in _load_sensors(added)) == [
+        "DahuaMemoryUsedSensor",
+        "DahuaProcessorUsageSensor",
+    ]
+
+
+async def test_the_late_sensors_land_on_the_box_not_the_channel(_sensor_dispatcher):
+    """The processor is not channel 0's processor. A recorder has a device of
+    its own since #1054 and these belong on it, whether they arrive at setup
+    or later. The channel's own sensors beside them do not move."""
+    from custom_components.dahua import late
+
+    channels = [_Channel(0)]
+    hass, entry = _SensorHass(), _sensor_entry(channels)
+    added = await _setup_sensors(hass, entry)
+
+    channels[0]._load = True
+    late.async_notify_capability_discovered(hass, entry.entry_id, "SERIAL1_0")
+    await hass.run_pending()
+
+    assert {where for _name, where in _load_sensors(added)} == {None}
+    assert (
+        "DahuaFirmwareVersionSensor",
+        "sub-0",
+    ) in added, "the channel's own sensors still belong to the channel"
+
+
+async def test_a_camera_keeps_them_on_its_own_page(_sensor_dispatcher):
+    """A camera reporting its own load has no separate host device, so there
+    is nothing to move them to."""
+    channels = [_Channel(0, load=True, separate_host=False)]
+
+    added = await _setup_sensors(_SensorHass(), _sensor_entry(channels))
+
+    assert {where for _name, where in _load_sensors(added)} == {"sub-0"}
+
+
+async def test_only_one_channel_carries_them_however_many_answer(_sensor_dispatcher):
+    """Twelve channels of one recorder all answer, because it is one box
+    answering twelve times. Two sensors, not twenty-four."""
+    channels = [_Channel(index, load=True) for index in range(12)]
+
+    added = await _setup_sensors(_SensorHass(), _sensor_entry(channels))
+
+    assert len(_load_sensors(added)) == 2

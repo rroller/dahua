@@ -45,24 +45,21 @@ def _load_reporter(coordinators: list):
     return min(answering, key=lambda c: c.get_channel())
 
 
+def _filed_under(entity, coordinator):
+    """Which subentry this entity belongs to, as `late.py` asks.
+
+    The box's own device belongs to the entry, not to one channel's subentry:
+    the processor is not channel 0's processor. A camera reporting its SD card
+    has no separate host device, so its sensors stay where they are, on its
+    own channel.
+    """
+    if isinstance(entity, DahuaHostEntity) and coordinator.uses_separate_host_device():
+        return None
+    return coordinator.subentry_id
+
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup the sensor platform."""
-    # Once for the device, before the per-channel loop below.
-    reporter = _load_reporter(list(entry_coordinators(entry).values()))
-    if reporter is not None:
-        async_add_devices(
-            [
-                DahuaProcessorUsageSensor(reporter, entry),
-                DahuaMemoryUsedSensor(reporter, entry),
-            ],
-            # The box's own device belongs to the entry, not to one channel's
-            # subentry: the processor is not channel 0's processor. A camera
-            # reporting its SD card has no separate host device, so its
-            # sensors stay where they are, on its own channel.
-            config_subentry_id=(
-                None if reporter.uses_separate_host_device() else reporter.subentry_id
-            ),
-        )
 
     async def build(coordinator):
         """Which sensors this channel warrants, as the device answers today.
@@ -72,14 +69,24 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         then rather than at the next reload (#1057). Nothing in here talks to
         the device, so a rebuild costs no request.
 
-        The processor and memory sensors above are not in here on purpose:
-        they describe the box rather than a channel, one channel is chosen to
-        carry them, and rebuilding per channel is the wrong shape for that.
+        The processor and memory describe the box rather than a channel, so
+        they are not created for whichever coordinator asks: `_load_reporter`
+        picks one channel and only that one carries them. They are built here
+        all the same, so that a device whose processor read timed out at setup
+        gets them when it finally answers (#1057), and `_filed_under` keeps
+        them on the box's own device page rather than that channel's.
         """
         sensors = [
             DahuaFirmwareVersionSensor(coordinator, entry),
             DahuaSerialNumberSensor(coordinator, entry),
         ]
+
+        # Recomputed on every build rather than captured once: a late answer
+        # may mean a channel now answers that did not at setup, and the lowest
+        # answering channel is the one that should carry these.
+        if _load_reporter(list(entry_coordinators(entry).values())) is coordinator:
+            sensors.append(DahuaProcessorUsageSensor(coordinator, entry))
+            sensors.append(DahuaMemoryUsedSensor(coordinator, entry))
         # A plate is read from a picture, which an indoor monitor without a
         # camera does not have.
         if not coordinator.is_indoor_monitor_without_video():
@@ -100,7 +107,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         return sensors
 
     await async_add_and_keep_watching(
-        hass, entry, build, async_add_devices, entry_coordinators
+        hass,
+        entry,
+        build,
+        async_add_devices,
+        entry_coordinators,
+        subentry_for=_filed_under,
     )
 
 
