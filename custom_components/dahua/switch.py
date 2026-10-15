@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.const import EntityCategory
-from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
+from custom_components.dahua import entry_coordinators
 
 from . import dahua_utils, refusals
 from .const import DOMAIN

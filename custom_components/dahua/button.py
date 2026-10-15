@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
+from custom_components.dahua import entry_coordinators
 from custom_components.dahua.vto import CancelCallRefused
 
 from .const import DOMAIN

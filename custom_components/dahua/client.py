@@ -9,6 +9,7 @@ import asyncio
 import time
 import aiohttp
 
+from .const import ALL_EVENTS
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
 from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
@@ -1906,7 +1907,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=General.MachineName"
         try:
             return await self.get(url)
-        except aiohttp.ClientResponseError as e:
+        except aiohttp.ClientResponseError:
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(
                 self._address, self._rtsp_port, self._username, self._password
@@ -1920,7 +1921,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name={0}".format(name)
         try:
             return await self.get(url)
-        except aiohttp.ClientResponseError as e:
+        except aiohttp.ClientResponseError:
             return {}
 
     async def async_get_config_lighting(self, channel: int, profile_mode) -> dict:
@@ -1955,7 +1956,7 @@ class DahuaClient:
         """
         try:
             return await self.async_get_config("MotionDetect")
-        except aiohttp.ClientResponseError as e:
+        except aiohttp.ClientResponseError:
             return {"table.MotionDetect[0].Enable": "false"}
 
     async def async_get_video_analyse_rules_for_amcrest(self):
@@ -1966,7 +1967,7 @@ class DahuaClient:
         """
         try:
             return await self.async_get_config("VideoAnalyseRule[0][0].Enable")
-        except aiohttp.ClientResponseError as e:
+        except aiohttp.ClientResponseError:
             return {"table.VideoAnalyseRule[0][0].Enable": "false"}
 
     async def async_get_ivs_rules(self):
@@ -4317,11 +4318,6 @@ class DahuaClient:
         codes = [code for code in events if code and code != "All"]
         if not codes:
             # "All" cannot be polled, so expand it rather than watch nothing.
-            # Imported here because config_flow imports this module.
-            from .config_flow import (
-                ALL_EVENTS,
-            )  # pylint: disable=import-outside-toplevel
-
             codes = [code for code in ALL_EVENTS if code != "All"]
 
         cycle = max(

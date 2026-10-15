@@ -12,7 +12,6 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
-from .const import DOMAIN
 from .entity import DahuaBaseEntity, DahuaEventDrivenEntity, DahuaHostEntity
 from .late import async_add_and_keep_watching
 

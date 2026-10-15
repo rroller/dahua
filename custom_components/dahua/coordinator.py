@@ -1170,7 +1170,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await self._session.close()
                 self._session = None
-            except Exception as e:
+            except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("serverConnect - failed to close session")
             finally:
                 await _release_connector(self._address)

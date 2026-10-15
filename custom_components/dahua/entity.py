@@ -6,7 +6,7 @@ from custom_components.dahua import (
 )
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from .const import DOMAIN, ATTRIBUTION
+from .const import DOMAIN
 
 """
 For a list of entity types, see https://developers.home-assistant.io/docs/core/entity/
