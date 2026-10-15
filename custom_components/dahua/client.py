@@ -1934,7 +1934,14 @@ class DahuaClient:
         """Set one Encode audio field without replacing the rest of the table."""
         if format_type not in ("MainFormat", "ExtraFormat"):
             raise ValueError("Unsupported encoder format")
-        if not 0 <= format_index <= 2:
+        # Whatever index the device reported, rather than a ceiling written
+        # here. Discovery keeps every `table.Encode[c].*.AudioEnable` key the
+        # device serves and the platform's regex matches any number, so a
+        # device reporting MainFormat[3] gets a switch, and a ceiling of 2
+        # meant that switch raised on every press while reading a real value
+        # (#997 review). The check that is left is the one that catches a
+        # caller passing something that is not an index at all.
+        if not isinstance(format_index, int) or format_index < 0:
             raise ValueError("Unsupported encoder format index")
         if field == "AudioEnable":
             if not isinstance(value, bool):
