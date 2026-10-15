@@ -3612,8 +3612,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_channel_mac(self):
         """The camera's MAC, or None. Only a recorder can answer this for a
-        camera on its own PoE network."""
-        return self._slot().get("mac") or None
+        camera on its own PoE network.
+
+        None also for a slot whose MAC is a placeholder rather than an
+        address: a recorder that cannot name the camera reports
+        `ff:ff:ff:ff:ff:ff`, and claiming that as a connection told Home
+        Assistant every such channel was the same hardware (#1078). See
+        `dahua_utils.usable_mac`.
+        """
+        return dahua_utils.usable_mac(self._slot().get("mac"))
 
     def get_channel_firmware_version(self):
         """The camera's firmware, or None if the recorder did not say.
