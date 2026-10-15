@@ -3444,7 +3444,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 exc_info=exception,
             )
             return
+        self._note_probe_answered("system load")
         self._supports_system_load = load.get("usage") is not None
+
+    async def _async_retry_system_load(self) -> bool:
+        """Whether the processor and memory turned up after setup missed them.
+
+        The last of the #1057 conversions that gates entities. It differs from
+        the others in where those entities live: the processor and the memory
+        are the box's, not a channel's, so one channel carries them and
+        sensor.py decides which. A late answer therefore has to rebuild
+        through the same choice rather than hanging two more sensors off
+        whichever channel happened to answer second.
+
+        Both reads are RPC2 only, so a device with RPC2 switched off refuses
+        in a way that is not a `PROBE_FAILED` at all and is never recorded as
+        unanswered. That device is not retried, which is right: it has said
+        what it does.
+        """
+        already = self._supports_system_load
+        await self._async_probe_system_load()
+        return self._supports_system_load and not already
 
     async def _async_read_stream_codecs(self) -> None:
         """Read the Encode table once, for the codec and audio of each stream.
@@ -5185,5 +5205,10 @@ RETRYABLE_CAPABILITIES = {
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
     "profile_mode": DahuaDataUpdateCoordinator._async_retry_profile_mode,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
+    # Spelled with a space because that is the name `_note_probe_refusal`
+    # already records it under, and the registry is keyed by that name so a
+    # probe is retried under the name it failed under. Renaming it would
+    # also rename the field the diagnostics dump has been reporting.
+    "system load": DahuaDataUpdateCoordinator._async_retry_system_load,
     "video_color": DahuaDataUpdateCoordinator._async_retry_video_color,
 }

@@ -80,7 +80,7 @@ def _key(entity):
 
 
 async def async_add_and_keep_watching(
-    hass, entry, build, async_add_entities, coordinators
+    hass, entry, build, async_add_entities, coordinators, subentry_for=None
 ) -> None:
     """Add what each coordinator warrants, now and whenever that changes.
 
@@ -97,6 +97,13 @@ async def async_add_and_keep_watching(
     than imported here. Importing it would be a cycle, since the package imports
     the platforms, and resolving it late would quietly bypass the platforms'
     tests, several of which replace that name to choose what setup sees.
+
+    `subentry_for(entity, coordinator)` overrides that filing for a platform
+    that creates both kinds in one build. A recorder's processor and memory
+    sensors describe the box rather than the channel that carries them, and
+    they are filed on the entry; the channel's own sensors beside them are
+    not. Without this the two could not be built together, which is what kept
+    the load sensors out of the rebuild and so out of #1057 entirely.
     """
     created: set = set()
 
@@ -115,7 +122,18 @@ async def async_add_and_keep_watching(
             if not fresh:
                 continue
             created.update(key for key in map(_key, fresh) if key is not None)
-            async_add_entities(fresh, config_subentry_id=coordinator.subentry_id)
+            # One call per destination, which is one call in all but the
+            # recorder case above.
+            filed: dict = {}
+            for entity in fresh:
+                where = (
+                    subentry_for(entity, coordinator)
+                    if subentry_for is not None
+                    else coordinator.subentry_id
+                )
+                filed.setdefault(where, []).append(entity)
+            for where, entities in filed.items():
+                async_add_entities(entities, config_subentry_id=where)
 
     await _add_whatever_is_missing()
 
