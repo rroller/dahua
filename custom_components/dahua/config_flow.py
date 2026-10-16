@@ -27,6 +27,7 @@ from . import dahua_utils
 from . import (
     ISSUE_CHANNEL_NOT_ADDED,
     _async_probe_tcp,
+    _async_probe_tls,
     entry_coordinators,
     is_synthesised_identity,
 )
@@ -350,7 +351,7 @@ async def async_refine_connection_failure(address: str, reason: str) -> str:
     # Checked first because it has a concrete action attached, and because the
     # repair card that already detects this (http_dead_https_available) only
     # exists for an entry that has been created.
-    if await _async_probe_tcp(address, 443, FAILURE_PROBE_TIMEOUT_SECONDS):
+    if await _async_probe_tls(address, 443, FAILURE_PROBE_TIMEOUT_SECONDS):
         return "https_available"
 
     for port in DAHUA_PRIVATE_PORTS:

@@ -82,6 +82,7 @@ WAS = {
     ("switch", "motion_detection"): "Motion Detection",
     ("switch", "encode_audio"): "{format_type} format {format_index} audio",
     ("switch", "cloud_connection"): "Cloud Connection",
+    ("switch", "intelli_tour"): "AI Tour",
     ("switch", "disarming"): "Disarming",
     ("switch", "event_notifications"): "Event Notifications",
     ("switch", "smart_motion_detection"): "Smart Motion Detection",

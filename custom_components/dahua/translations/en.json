@@ -404,6 +404,9 @@
             "cloud_connection": {
                 "name": "Cloud Connection"
             },
+            "intelli_tour": {
+                "name": "AI Tour"
+            },
             "event_notifications": {
                 "name": "Event Notifications"
             },

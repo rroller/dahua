@@ -150,6 +150,13 @@ EVENT_NOTIFY_ENABLE = "table.DisableEventNotify.Enable"
 # DMSS call (#591).
 CLOUD_CONNECTION_ENABLE = "table.VSP_PaaS.Enable"
 
+# The one key the AI tour switch reads, per channel. IntelliTour is indexed by
+# channel and a channel with no tour plan is reported as a null row rather than
+# left out, so the presence of this exact key is what says the channel has a
+# tour (#1051, measured on a DH-SDT6E432-8P-MB-A-PV1 whose row [0] is null and
+# whose row [1] carries Enable).
+INTELLI_TOUR_ENABLE = "table.IntelliTour[{0}].Enable"
+
 # The coaxial probe deliberately only treats an HTTP error response as "not
 # supported"; a connection failure there should still fail setup. Timeouts join
 # it for the reason above, without widening the rest.
@@ -839,6 +846,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # On the class for the same reason as the line above.
     _supports_cloud_connection: bool = False
 
+    # Whether THIS CHANNEL reports the key the AI tour switch reads. Per
+    # channel rather than per device: a dual sensor camera carries the tour on
+    # its PTZ channel only. On the class for the same reason as the line above.
+    _supports_intelli_tour: bool = False
+
     """Class to manage fetching data from the API."""
 
     def __init__(
@@ -929,6 +941,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._supports_cloud_connection = False
+        self._supports_intelli_tour = False
         # What the device's own cloud OTA check last found, read from its
         # _DHCloudUpgrade_ config table. Reading it is local; see
         # _async_probe_cloud_upgrade.
@@ -1487,6 +1500,43 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         already = self._supports_cloud_connection
         return await self._async_probe_cloud_connection() and not already
 
+    async def _async_probe_intelli_tour(self) -> bool:
+        """Ask for the tour table, and judge on this channel's own row.
+
+        The read is the whole table, because the device serves it that way and
+        the shared cache then costs one request for every channel. What is
+        judged is one key: `table.IntelliTour[<this channel>].Enable`.
+
+        Three ways this would be wrong if it judged anything else:
+
+        * on whether the read raised. `async_get_config` turns a refusal into
+          {}, so every device would be said to have a tour.
+        * on the table being non-empty. A dual sensor camera serves one table
+          with a row per channel, so the panorama channel would get a switch
+          that writes to a row it does not have.
+        * on the row existing. Row [0] of the measured camera is `null`, which
+          is a row without the key rather than no row.
+        """
+        try:
+            table = await self.client.async_get_intelli_tour()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("intelli_tour", probe_error)
+            self._supports_intelli_tour = False
+            return False
+        self._note_probe_answered("intelli_tour")
+        self._supports_intelli_tour = INTELLI_TOUR_ENABLE.format(self._channel) in table
+        _LOGGER.debug(
+            "Channel %s supports an AI tour switch=%s",
+            self._channel,
+            self._supports_intelli_tour,
+        )
+        return self._supports_intelli_tour
+
+    async def _async_retry_intelli_tour(self) -> bool:
+        """Whether a tour row turned up that was missed at setup."""
+        already = self._supports_intelli_tour
+        return await self._async_probe_intelli_tour() and not already
+
     async def _async_probe_disarming_linkage(self) -> bool:
         """Ask for the DisableLinkage table, and remember what came back.
 
@@ -1994,6 +2044,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # off is never asked.
                 if self._wanted_by(SWITCH):
                     await self._async_probe_cloud_connection()
+                    # Per channel, unlike the line above: the tour belongs to
+                    # the channel whose row carries Enable.
+                    await self._async_probe_intelli_tour()
 
                 if self._wanted_by(UPDATE):
                     await self._async_probe_cloud_upgrade()
@@ -2409,6 +2462,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_cloud_connection())
                 )
+            if self._supports_intelli_tour and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self._async_fetch_intelli_tour()))
             if self.supports_alarm_output() and self._wanted_by(SWITCH):
                 coros.append(
                     asyncio.ensure_future(self.client.async_get_alarm_output_state())
@@ -3659,6 +3714,37 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             value = (getattr(self, "data", None) or {}).get(CLOUD_CONNECTION_ENABLE)
         return None if value is None else {CLOUD_CONNECTION_ENABLE: value}
 
+    async def _async_fetch_intelli_tour(self) -> dict | None:
+        """Poll this channel's tour flag, and keep nothing else from the table.
+
+        Trimmed to the one key for the same two reasons the cloud fetch is.
+        The rest of the row is the tour itself -- `TourPlan`, `TourPriMode`,
+        `SceneSwitchingTime`, `IdleWaitingTime` -- which no entity reads, and
+        every answer in this fan-out is merged into `data` and dumped by
+        diagnostics. On a recorder the table also carries every other
+        channel's row, so returning it whole would put sixteen channels'
+        state into each of sixteen coordinators.
+
+        Wrapped because the gather has no `return_exceptions`: one refused
+        read would fail the whole refresh and take every entity on the channel
+        with it (#1006, #1024). A read that says nothing carries the previous
+        answer, so a momentary refusal does not report the tour as stopped.
+        """
+        try:
+            table = await self.client.async_get_intelli_tour()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the AI tour on %s",
+                self._address,
+                exc_info=exception,
+            )
+            table = {}
+        key = INTELLI_TOUR_ENABLE.format(self._channel)
+        value = table.get(key)
+        if value is None:
+            value = (getattr(self, "data", None) or {}).get(key)
+        return None if value is None else {key: value}
+
     async def _async_fetch_system_load(self) -> dict | None:
         """Poll the processor and memory, keeping the last answer on a refusal.
 
@@ -4135,6 +4221,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def is_cloud_connection_enabled(self) -> bool:
         """Whether the device's cloud connection is switched on."""
         return str(self.data.get(CLOUD_CONNECTION_ENABLE, "")).lower() == "true"
+
+    def supports_intelli_tour(self) -> bool:
+        """Whether this channel reports the key the AI tour switch reads."""
+        return self._supports_intelli_tour
+
+    def is_intelli_tour_enabled(self) -> bool:
+        """Whether this channel's AI tour plan is running."""
+        return (
+            str(self.data.get(INTELLI_TOUR_ENABLE.format(self._channel), "")).lower()
+            == "true"
+        )
 
     def is_disarming_linkage_enabled(self) -> bool:
         """Returns true if disarming linkage is enable"""
@@ -5380,6 +5477,7 @@ RETRYABLE_CAPABILITIES = {
     "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
     "coaxial_control": DahuaDataUpdateCoordinator._async_retry_coaxial_control,
     "cloud_connection": DahuaDataUpdateCoordinator._async_retry_cloud_connection,
+    "intelli_tour": DahuaDataUpdateCoordinator._async_retry_intelli_tour,
     "cloud_upgrade": DahuaDataUpdateCoordinator._async_retry_cloud_upgrade,
     "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
     "disarming_linkage": DahuaDataUpdateCoordinator._async_retry_disarming_linkage,
