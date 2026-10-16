@@ -98,6 +98,7 @@ from .host import (  # noqa: F401  pylint: disable=unused-import
     _async_evaluate_host,
     _async_get_host_uptime_generation,
     _async_probe_tcp,
+    _async_probe_tls,
     _entries_for_address,
     _host_stream,
     _release_connector,

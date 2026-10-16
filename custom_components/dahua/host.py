@@ -324,8 +324,44 @@ def _entries_for_address(hass: HomeAssistant, address: str) -> list:
     ]
 
 
+async def _async_probe_tls(address: str, port: int, timeout: float = 5.0) -> bool:
+    """Does something complete a TLS handshake here? No HTTP, no credentials.
+
+    An open socket is not an HTTPS server, and the difference is not academic.
+    #489 is a camera that accepts a connection on 443 and closes it without
+    saying anything, which an open-socket check reads as "this device is
+    serving HTTPS, tick the HTTPS box and use 443" and sends the reporter
+    round a loop while the more accurate answer, that Dahua's own ports are
+    the only thing answering, sits one check further down.
+
+    The handshake is the cheapest thing that distinguishes them. The
+    certificate is not verified, for the reason SSL_CONTEXT exists: these
+    devices ship self-signed certificates, and this is a reachability probe
+    rather than a trust decision.
+    """
+    writer = None
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(address, port, ssl=SSL_CONTEXT), timeout
+        )
+        return True
+    except Exception:  # pylint: disable=broad-except
+        return False
+    finally:
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+
 async def _async_probe_tcp(address: str, port: int, timeout: float = 5.0) -> bool:
-    """Can we open a TCP connection? No HTTP, no credentials, no retry."""
+    """Can we open a TCP connection? No HTTP, no credentials, no retry.
+
+    Right for Dahua's own ports, where answering at all is the signal, and
+    wrong for 443: see `_async_probe_tls`.
+    """
     writer = None
     try:
         _, writer = await asyncio.wait_for(

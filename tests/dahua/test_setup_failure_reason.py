@@ -137,6 +137,7 @@ async def test_a_dahua_port_answering_means_http_is_switched_off(monkeypatch):
     """Measured on three cameras here: 5000 and 37777 open, and nothing at all on
     any of 27 scanned HTTP ports."""
     monkeypatch.setattr(config_flow, "_async_probe_tcp", _probe_opening({37777}))
+    monkeypatch.setattr(config_flow, "_async_probe_tls", _probe_opening(set()))
 
     assert (
         await config_flow.async_refine_connection_failure("1.2.3.4", "cannot_connect")
@@ -146,6 +147,7 @@ async def test_a_dahua_port_answering_means_http_is_switched_off(monkeypatch):
 
 async def test_dhip_on_its_own_is_enough(monkeypatch):
     monkeypatch.setattr(config_flow, "_async_probe_tcp", _probe_opening({5000}))
+    monkeypatch.setattr(config_flow, "_async_probe_tls", _probe_opening(set()))
 
     assert (
         await config_flow.async_refine_connection_failure("1.2.3.4", "cannot_connect")
@@ -153,9 +155,15 @@ async def test_dhip_on_its_own_is_enough(monkeypatch):
     )
 
 
-async def test_443_open_suggests_https_and_takes_precedence(monkeypatch):
-    """Of the two, HTTPS is the one with a port to hand the user."""
+async def test_443_answering_as_https_takes_precedence(monkeypatch):
+    """Of the two, HTTPS is the one with a port to hand the user.
+
+    The 443 check is a TLS handshake rather than an open socket since #489,
+    where a camera accepted a connection there and said nothing; see
+    test_an_open_socket_is_not_https.py.
+    """
     monkeypatch.setattr(config_flow, "_async_probe_tcp", _probe_opening({443, 37777}))
+    monkeypatch.setattr(config_flow, "_async_probe_tls", _probe_opening({443}))
 
     assert (
         await config_flow.async_refine_connection_failure("1.2.3.4", "cannot_connect")
@@ -166,6 +174,7 @@ async def test_443_open_suggests_https_and_takes_precedence(monkeypatch):
 async def test_nothing_listening_stays_cannot_connect(monkeypatch):
     """The message is right when the device really is unreachable."""
     monkeypatch.setattr(config_flow, "_async_probe_tcp", _probe_opening(set()))
+    monkeypatch.setattr(config_flow, "_async_probe_tls", _probe_opening(set()))
 
     assert (
         await config_flow.async_refine_connection_failure("1.2.3.4", "cannot_connect")
