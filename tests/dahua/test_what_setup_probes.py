@@ -51,6 +51,9 @@ PROBES = [
     # while serving four other tables on the same request (#591).
     ("async_get_cloud_connection", "_supports_cloud_connection", None),
     ("async_get_cloud_upgrade_info", "_supports_cloud_upgrade", None),
+    # A PTZ camera's AI tour plan (#1051). Judged on this channel's own row,
+    # since the table is indexed by channel and one row of it can be null.
+    ("async_get_intelli_tour", "_supports_intelli_tour", None),
     # The picture adjustments (#1006). This one was added without a probe at
     # all: the read sat in the poll's fan-out gated on nothing but the platform,
     # so a device that refuses the table failed every refresh. Listed here so it
@@ -88,6 +91,7 @@ FLAGS = (
     "_supports_day_night_color",
     "_supports_disarming_linkage",
     "_supports_event_notifications",
+    "_supports_intelli_tour",
     "_supports_floodlightmode",
     "_supports_lighting",
     "_supports_lighting_scheme_illuminator",

@@ -51,6 +51,9 @@
             "cloud_connection": {
                 "default": "mdi:cloud-outline"
             },
+            "intelli_tour": {
+                "default": "mdi:rotate-360"
+            },
             "disarming": {
                 "default": "mdi:alarm-check"
             },

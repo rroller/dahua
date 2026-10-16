@@ -124,6 +124,13 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.supports_alarm_output():
             devices.append(DahuaAlarmOutputSwitch(coordinator, entry, output=0))
 
+        # Per channel, and on purpose: IntelliTour is indexed by channel, so a
+        # dual sensor camera gets the switch on its PTZ channel only and a
+        # recorder with two PTZ cameras gets two switches rather than one that
+        # writes to the wrong row (#1051).
+        if coordinator.supports_intelli_tour():
+            devices.append(DahuaIntelliTourSwitch(coordinator, entry))
+
         # The coordinator already asked the device this during setup and kept the
         # answer. Asking again here put a network round trip inside platform setup,
         # where a device that is slow to answer eats the entry's setup budget.
@@ -232,6 +239,55 @@ class DahuaCloudConnectionSwitch(DahuaHostEntity, SwitchEntity):
     def is_on(self):
         """Whether the device says its cloud connection is on."""
         return self._coordinator.is_cloud_connection_enabled()
+
+
+class DahuaIntelliTourSwitch(DahuaBaseEntity, SwitchEntity):
+    """Start and stop a PTZ camera's AI tour plan.
+
+    Asked for in #1051 by @MassakerGU, who was driving `IntelliTour[1].Enable`
+    from outside Home Assistant on a DH-SDT6E432-8P-MB-A-PV1 and wanted the
+    tour to stop while someone was in the garden.
+
+    What it does and does not do. It toggles the plan the camera already has;
+    it does not create, edit or schedule one, and it touches nothing else in
+    the row. The plan, its presets, its dwell times and the camera's PTZ
+    behaviour are left exactly as the camera's own interface set them, which
+    is what @MassakerGU asked for.
+
+    A channel entity rather than a host one. `IntelliTour` is indexed by
+    channel: on the measured camera, row [0] is null for the panorama sensor
+    and row [1] carries the tour for the PTZ sensor, and Home Assistant shows
+    those as two channels in that order.
+    """
+
+    _attr_translation_key = "intelli_tour"
+
+    # Configuration rather than a control: this changes how the camera behaves
+    # from now on rather than doing one thing now. Same reasoning as the motion
+    # detection switch above.
+    _attr_entity_category = EntityCategory.CONFIG
+
+    async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
+        """Start this channel's tour plan."""
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_intelli_tour(channel, True)
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
+        """Stop this channel's tour plan."""
+        channel = self._coordinator.get_channel()
+        await self._coordinator.client.async_set_intelli_tour(channel, False)
+        await self._coordinator.async_refresh()
+
+    @property
+    def unique_id(self):
+        """Unique within the platform. The serial already carries the channel."""
+        return self._coordinator.get_serial_number() + "_intelli_tour"
+
+    @property
+    def is_on(self):
+        """Whether the camera says this channel's tour is running."""
+        return self._coordinator.is_intelli_tour_enabled()
 
 
 class DahuaDisarmingLinkageBinarySwitch(DahuaBaseEntity, SwitchEntity):

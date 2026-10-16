@@ -47,6 +47,7 @@ WAS = {
     ("sensor", "profile"): "mdi:theme-light-dark",
     ("switch", "alarm_output"): "mdi:alarm-light",
     ("switch", "cloud_connection"): "mdi:cloud-outline",
+    ("switch", "intelli_tour"): "mdi:rotate-360",
     ("switch", "disarming"): "mdi:alarm-check",
     ("switch", "event_notifications"): "mdi:bell-ring",
     ("switch", "motion_detection"): "mdi:motion-sensor",

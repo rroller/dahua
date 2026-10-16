@@ -171,6 +171,10 @@ BACKED_UP_TABLES = (
     "DisableEventNotify",
     "DisableLinkage",
     "FloodLightMode",
+    # The AI tour plan the tour switch starts and stops (#1051). The switch
+    # writes only Enable, but the backup takes the table, so a restore brings
+    # back the plan itself as well.
+    "IntelliTour",
     # The privacy mask on the cameras that have one, measured on an
     # IP4M-1041W. Found by the guard test rather than by me: the first
     # version of its scan only matched a table named straight after

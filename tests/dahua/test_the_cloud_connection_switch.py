@@ -367,6 +367,9 @@ class _PlatformCoordinator:
     def supports_disarming_linkage(self):
         return False
 
+    def supports_intelli_tour(self):
+        return False
+
     def supports_event_notifications(self):
         return False
 
