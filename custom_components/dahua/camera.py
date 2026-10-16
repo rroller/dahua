@@ -12,6 +12,7 @@ from aiohttp import ClientError
 from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
+from homeassistant.helpers import config_validation as cv
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.util import dt as dt_util
 
@@ -387,6 +388,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Optional("text2", default=""): str,
             vol.Optional("text3", default=""): str,
             vol.Optional("text4", default=""): str,
+            vol.Optional("lines"): vol.All(cv.ensure_list, [cv.string]),
         },
         "async_set_service_set_text_overlay",
     )
@@ -1184,12 +1186,36 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         return backup
 
     async def async_set_service_set_text_overlay(
-        self, group: int, text1: str, text2: str, text3: str, text4: str
+        self,
+        group: int,
+        text1: str = "",
+        text2: str = "",
+        text3: str = "",
+        text4: str = "",
+        lines: list | None = None,
     ):
-        """Handles the service call from SERVICE_SET_TEXT_OVERLAY to set profile mode to day/night"""
+        """Handles the service call from SERVICE_SET_TEXT_OVERLAY.
+
+        `lines` is the way to write more than four (#312): the four numbered
+        fields were the whole service until now, and a camera in that issue
+        takes fourteen. They are kept so every existing automation calls this
+        exactly as before.
+
+        Giving both is refused rather than resolved. Either answer throws away
+        text somebody typed, and a service that quietly drops half its input
+        is the failure this issue is already about.
+        """
+        numbered = [text1, text2, text3, text4]
+
+        if lines is not None and any(numbered):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="overlay_lines_and_numbered_text",
+            )
+
         channel = self._logical_channel
         await self._coordinator.client.async_set_service_set_text_overlay(
-            channel, group, text1, text2, text3, text4
+            channel, group, *(numbered if lines is None else lines)
         )
 
     async def async_set_service_set_custom_overlay(

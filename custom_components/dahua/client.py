@@ -3308,10 +3308,18 @@ class DahuaClient:
             raise Exception("Could not set text")
 
     async def async_set_service_set_text_overlay(
-        self, channel: int, group: int, text1: str, text2: str, text3: str, text4: str
+        self, channel: int, group: int, *lines: str
     ):
-        """async_set_service_set_text_overlay sets the video text overlay"""
-        text = _overlay_text(text1, text2, text3, text4)
+        """async_set_service_set_text_overlay sets the video text overlay
+
+        Variadic because the number of lines is the device's to decide, not
+        ours (#312). Dahua joins them with a pipe and imposes its own cap:
+        four on some models, five on one recorder's UI, fourteen on the camera
+        in that issue. A device given more than it has answers the write with
+        `Error`, which the check below turns into a raise, so the limit
+        surfaces as a failed action rather than as a silently shorter overlay.
+        """
+        text = _overlay_text(*lines)
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].CustomTitle[{1}].Text={2}".format(
             channel, group, text
         )
