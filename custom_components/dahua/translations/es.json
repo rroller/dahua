@@ -68,5 +68,17 @@
                 }
             }
         }
+    },
+    "entity": {
+        "select": {
+            "encode_audio_source": {
+                "name": "Fuente de audio formato {format_type} {format_index}"
+            }
+        },
+        "switch": {
+            "encode_audio": {
+                "name": "Audio formato {format_type} {format_index}"
+            }
+        }
     }
 }

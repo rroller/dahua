@@ -770,6 +770,11 @@ CAPABILITY_REFUSED = (400, 404, 501)
 
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
+    # Tests also build coordinators with object.__new__. These defaults are
+    # always replaced per instance before values are stored.
+    _encode_audio_keys: tuple[str, ...] = ()
+    _encode_audio_last_values: dict[str, str] = {}
+
     # Declared on the class, not only assigned in __init__, because a great many
     # tests build a coordinator with object.__new__ and set only the attributes
     # they are about. channel_option reads this, and those tests reach it through
@@ -965,6 +970,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_lighting_v2 = False
         self._supports_lighting_scheme_illuminator = False
         self._supports_channel_scoped_illuminator = False
+        self._encode_audio_keys: tuple[str, ...] = ()
+        self._encode_audio_last_values: dict[str, str] = {}
 
         # Host-wide camera/NVR reboot generation.
         # Multiple NVR channel coordinators share the host uptime read.
@@ -2295,6 +2302,30 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # Start the event listeners for doorbells (VTO)
                     await self.async_start_vto_event_listener()
 
+                # Discover the actual audio fields once, before platforms create
+                # entities. The same host-wide Encode answer is cached for other
+                # recorder channels.
+                if self._wanted_by(SWITCH, SELECT):
+                    try:
+                        encode = await self.client.async_get_config("Encode")
+                    except PROBE_FAILED as probe_error:
+                        self._note_probe_refusal("encode", probe_error)
+                        encode = {}
+                    prefix = f"table.Encode[{self._channel}]."
+                    self._encode_audio_keys = tuple(
+                        key
+                        for key in encode
+                        if key.startswith(prefix)
+                        and (
+                            key.endswith(".AudioEnable")
+                            or key.endswith(".Audio.AudioSource")
+                        )
+                    )
+                    self._encode_audio_last_values = {
+                        key: encode[key] for key in self._encode_audio_keys
+                    }
+                    data.update(self._encode_audio_last_values)
+
                 self.initialized = True
             except ClientResponseError as exception:
                 if exception.status == 401:
@@ -2394,6 +2425,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Motion detection state is read by the camera entity as well as
             # the switch, so it survives either one being enabled.
             coros = []
+            # Only poll Encode where the initialization probe found audio fields.
+            if self._encode_audio_keys and self._wanted_by(SWITCH, SELECT):
+                coros.append(asyncio.ensure_future(self._async_get_encode_config()))
             if self._wanted_by(CAMERA, SWITCH):
                 coros.append(
                     asyncio.ensure_future(
@@ -4951,6 +4985,60 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_channel(self) -> int:
         """returns the channel index of this camera. 0 based. Channel index 0 is channel number 1"""
         return self._channel
+
+    async def _async_get_encode_config(self) -> dict:
+        """Read this channel's audio fields, retaining them on a failed read."""
+        try:
+            encode = await self.client.async_get_config("Encode")
+        except PROBE_FAILED as exception:
+            _LOGGER.debug(
+                "Could not read Encode audio configuration", exc_info=exception
+            )
+            encode = {}
+        # async_get_config also returns {} for HTTP refusals. A failed read is
+        # not evidence that the device turned audio off.
+        self._encode_audio_last_values = {
+            **self._encode_audio_last_values,
+            **{key: encode[key] for key in self._encode_audio_keys if key in encode},
+        }
+        self._async_refresh_stream_codecs(encode)
+        return self._encode_audio_last_values.copy()
+
+    @callback
+    def _async_refresh_stream_codecs(self, encode: dict) -> None:
+        """Keep the codec metadata current from an Encode answer already in hand.
+
+        `_stream_codecs` was written once, by `_async_read_stream_codecs` during
+        initialisation, and never again. Turning a stream's audio on with the
+        switch this poll feeds therefore left `get_stream_has_audio` reporting
+        False until the entry was reloaded, and left the `webrtc_cannot_play`
+        card standing after the thing it complains about was fixed (#997
+        review).
+
+        Costs no request: this is the same `Encode` answer the audio poll just
+        read, and `parse_stream_codecs` takes exactly that shape.
+
+        An empty answer keeps what is held, for the same reason the audio
+        values above do: `async_get_config` returns {} for a refusal as well as
+        for a device with nothing to say, and discarding the codecs on a
+        momentary refusal would raise the card rather than clear it.
+
+        Nothing here may fail the poll. The fan-out has no `return_exceptions`,
+        so the card is guarded separately from the parse exactly as it is at
+        setup: the codecs are what the camera attributes read, and a card that
+        cannot be raised must cost the card and nothing else.
+        """
+        if not encode:
+            return
+        self._stream_codecs = dahua_utils.parse_stream_codecs(encode, self._channel)
+        try:
+            self._async_report_unplayable_stream()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not report the unplayable stream on %s",
+                self._address,
+                exc_info=exception,
+            )
 
     def is_ptz3e10x_t180(self) -> bool:
         """Return whether this is the verified dual-sensor T180 family."""

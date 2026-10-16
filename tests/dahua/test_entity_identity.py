@@ -43,11 +43,13 @@ from custom_components.dahua.light import (
 from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
     DahuaDayNightModeSelect,
+    DahuaEncodeAudioSourceSelect,
     DahuaInfraredModeSelect,
     DahuaDoorbellLightSelect,
 )
 from custom_components.dahua.switch import (
     DahuaAlarmOutputSwitch,
+    DahuaEncodeAudioSwitch,
     DahuaDisarmingEventNotificationsLinkageBinarySwitch,
     DahuaDisarmingLinkageBinarySwitch,
     DahuaMotionDetectionBinarySwitch,
@@ -161,6 +163,21 @@ def _skip_ha_plumbing(monkeypatch):
     monkeypatch.setattr(camera_module.Camera, "__init__", lambda self: None)
 
 
+def _audio_key(coordinator, format_type, format_index, field="AudioEnable"):
+    """The Encode key the device answers with for one format's audio field.
+
+    Spelled the way the coordinator stores it, since the entity keeps it to
+    read its own value. It plays no part in the id, which is the point: a key
+    and an id are different promises and this file only guards the second.
+    """
+    return "table.Encode[%s].%s[%s].%s" % (
+        coordinator.get_channel(),
+        format_type,
+        format_index,
+        field,
+    )
+
+
 def _bare(cls, coordinator):
     """A class whose id comes from the base entity and takes no constructor."""
     entity = object.__new__(cls)
@@ -207,6 +224,27 @@ GOLDEN_SUFFIXES = [
     ("_siren", lambda c: _bare(DahuaSirenBinarySwitch, c)),
     ("_privacy_mode", lambda c: _bare(DahuaPrivacyModeBinarySwitch, c)),
     ("_alarm_output_0", lambda c: DahuaAlarmOutputSwitch(c, _Entry(), output=0)),
+    # One per audio field the channel reports under Encode. A channel can hold
+    # MainFormat[0..3] and ExtraFormat[0..2] at once, so these are the entities
+    # that collide with each other when an id is not read.
+    (
+        "_audio_mainformat_0",
+        lambda c: DahuaEncodeAudioSwitch(
+            c, _Entry(), "MainFormat", 0, _audio_key(c, "MainFormat", 0)
+        ),
+    ),
+    (
+        "_audio_extraformat_0",
+        lambda c: DahuaEncodeAudioSwitch(
+            c, _Entry(), "ExtraFormat", 0, _audio_key(c, "ExtraFormat", 0)
+        ),
+    ),
+    (
+        "_audio_extraformat_1",
+        lambda c: DahuaEncodeAudioSwitch(
+            c, _Entry(), "ExtraFormat", 1, _audio_key(c, "ExtraFormat", 1)
+        ),
+    ),
     # light.py
     ("_infrared", lambda c: DahuaInfraredLight(c, _Entry())),
     ("_illuminator", lambda c: DahuaIlluminator(c, _Entry())),
@@ -229,6 +267,36 @@ GOLDEN_SUFFIXES = [
     ),
     ("_day_night_mode", lambda c: DahuaDayNightModeSelect(c, _Entry())),
     ("_infrared_mode", lambda c: DahuaInfraredModeSelect(c, _Entry())),
+    (
+        "_audio_source_mainformat_0",
+        lambda c: DahuaEncodeAudioSourceSelect(
+            c,
+            _Entry(),
+            "MainFormat",
+            0,
+            _audio_key(c, "MainFormat", 0, "Audio.AudioSource"),
+        ),
+    ),
+    (
+        "_audio_source_extraformat_0",
+        lambda c: DahuaEncodeAudioSourceSelect(
+            c,
+            _Entry(),
+            "ExtraFormat",
+            0,
+            _audio_key(c, "ExtraFormat", 0, "Audio.AudioSource"),
+        ),
+    ),
+    (
+        "_audio_source_extraformat_1",
+        lambda c: DahuaEncodeAudioSourceSelect(
+            c,
+            _Entry(),
+            "ExtraFormat",
+            1,
+            _audio_key(c, "ExtraFormat", 1, "Audio.AudioSource"),
+        ),
+    ),
     # update.py
     ("_firmware_update", lambda c: _bare(DahuaFirmwareUpdateEntity, c)),
 ]
@@ -269,6 +337,9 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_siren",
         "4L03CB4PAZC9E8F_2_privacy_mode",
         "4L03CB4PAZC9E8F_2_alarm_output_0",
+        "4L03CB4PAZC9E8F_2_audio_mainformat_0",
+        "4L03CB4PAZC9E8F_2_audio_extraformat_0",
+        "4L03CB4PAZC9E8F_2_audio_extraformat_1",
         "4L03CB4PAZC9E8F_2_infrared",
         "4L03CB4PAZC9E8F_2_illuminator",
         "4L03CB4PAZC9E8F_2_ring_light",
@@ -282,6 +353,9 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_1_preset_position",
         "4L03CB4PAZC9E8F_2_day_night_mode",
         "4L03CB4PAZC9E8F_2_infrared_mode",
+        "4L03CB4PAZC9E8F_2_audio_source_mainformat_0",
+        "4L03CB4PAZC9E8F_2_audio_source_extraformat_0",
+        "4L03CB4PAZC9E8F_2_audio_source_extraformat_1",
         "4L03CB4PAZC9E8F_2_firmware_update",
     }
 
