@@ -786,6 +786,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # change rarely, so it is not polled. Empty on anything that is not a recorder.
     _remote_devices: dict = {}
 
+    # How the recorder reaches the camera on this channel, lowercased, or None
+    # where it did not say. Read from the same RemoteDevice table as
+    # _channel_model, in the same place, so it costs no extra request.
+    _channel_protocol: str | None = None
+
     # Which subentry of the entry this channel is, or None for a single camera.
     # Declared on the class for the same reason as the line above: a great many
     # tests build a coordinator with object.__new__, and the platforms read this
@@ -2053,6 +2058,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     remote = await self.client.async_get_config("RemoteDevice")
                     self._channel_model = remote_device_model(remote, self._channel)
+                    self._channel_protocol = remote_device_protocol(
+                        remote, self._channel
+                    )
                     if is_onvif_channel(remote, self._channel):
                         # Say it once, plainly, instead of leaving a camera
                         # entity that answers 400 for the life of the entry.
@@ -3606,6 +3614,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         firmware = self._slot().get("firmware") or ""
         version = firmware.split(",")[0].strip()
         return version or None
+
+    def get_channel_protocol(self):
+        """How the recorder reaches the camera on this channel, or None.
+
+        Lowercased, as remote_device_protocol returns it: "private" for the
+        recorder's own protocol, "onvif" or "general" for a camera attached over
+        something else. None where the table did not say, which is a standalone
+        camera, a recorder that would not serve the table, or a read that failed.
+
+        Read once at setup beside _channel_model, and settled before the
+        platforms are forwarded, so a platform can ask this while building its
+        entities.
+        """
+        return self._channel_protocol
 
     def get_configured_channel_count(self):
         """How many channels the recorder reports a camera configured on, or None.

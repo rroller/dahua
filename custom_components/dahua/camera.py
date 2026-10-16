@@ -12,7 +12,11 @@ from aiohttp import ClientError
 from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
-from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.components.camera import (
+    Camera,
+    CameraEntityFeature,
+    async_get_still_stream,
+)
 from homeassistant.util import dt as dt_util
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
@@ -178,86 +182,40 @@ def _write_backup(filename: str, backup: dict) -> None:
 PARALLEL_UPDATES = 1
 
 
-async def _async_stream_still_coordinators(coordinators) -> set:
-    """The channels whose stills have to be rendered from the stream.
+def _stills_come_from_the_stream(coordinator) -> bool:
+    """Whether this channel's stills have to be rendered from its stream.
 
-    A recorder does not serve `snapshot.cgi` for a channel it reaches over
-    anything but its own Dahua protocol. `is_onvif_channel` already records that
-    for ONVIF, measured on a DHI-NVR5464-16P-EI: snapshot.cgi answers 400 for the
-    ONVIF channel while every Dahua-protocol channel on the same recorder returns
-    an image. A channel added as generic RTSP (`ProtocolType=General`) behaves the
-    same way; measured on a DHI-NVR5232-16P-EI, that one stalls for 10-15s and
-    then answers 500, never an image.
+    A recorder serves no `snapshot.cgi` for a channel it does not reach over its
+    own Dahua protocol. `is_onvif_channel` records that for ONVIF, measured on a
+    DHI-NVR5464-16P-EI: snapshot.cgi answers 400 there while every
+    Dahua-protocol channel on the same recorder returns an image. A channel
+    attached as generic RTSP answers the same way -- measured on a
+    DHI-NVR5232-16P-EI, `ProtocolType=General` stalls 10-15s and then answers
+    500, never an image.
 
     Being slow is not the whole cost. MAX_CONCURRENT_REQUESTS_PER_HOST is 2, so
-    for those seconds one channel that cannot produce an image holds half the
-    host's request budget and the channels that do work are starved: all 14
-    stills of that recorder requested together returned 10/14, and 14/14 once
-    those two entities stopped asking.
+    one channel that cannot produce an image holds half the host's request budget
+    for those seconds and starves the channels that do: all 14 stills of that
+    recorder requested together returned 10/14, and 14/14 once those two entities
+    stopped asking.
 
-    What such a channel does serve is RTSP. On the recorder above, channel 2 is a
-    third-party camera attached as generic RTSP, and the recorder streams it as
-    `hevc 2592x1944` on the main substream and `hevc 800x600` on the sub. A still
-    needs no more than that, so Home Assistant is asked to render it from the
-    stream and `snapshot.cgi` is never called for that channel. For those cameras
-    it is the difference between no image in Home Assistant and an image.
+    What a `General` channel does serve is RTSP -- `hevc 2592x1944` on the main
+    substream and `hevc 800x600` on the sub, straight off the recorder -- so the
+    still is rendered from the stream instead. For those cameras it is the
+    difference between no image in Home Assistant and an image.
 
-    The table is read here rather than taken from the coordinator's
-    `_remote_devices`, because that is only filled behind `is_recorder_host()`,
-    which depends on a `getDeviceClass` probe. Where that probe does not answer
-    the table stays empty, and this would then quietly do nothing. One `getConfig`
-    per host at setup is cheap -- the client's shared read cache answers it once
-    for all of a recorder's channels -- and it cannot be switched off by an
-    unrelated probe.
+    `general` positively, rather than everything that is not `private`, because
+    ONVIF is measured the other way: `is_onvif_channel` records that its RTSP
+    path times out as well, so sending an ONVIF channel down here would trade a
+    snapshot that fails fast for a stream worker that never produces a frame. A
+    negative rule would also be deciding for every spelling of this field that
+    nobody has measured yet.
 
-    A slot whose `ProtocolType` the table did not state is left out, so a table
-    that could not be read changes nothing and every channel keeps the behaviour
-    it has today.
+    The protocol is read off the coordinator, which already holds it from the
+    RemoteDevice read it does at setup for _channel_model, settled before the
+    platforms are forwarded. So this costs no request of its own.
     """
-    by_host: dict = {}
-    chosen = set()
-    for coordinator in coordinators:
-        # getattr in the spirit of the is_indoor_monitor_without_video check in
-        # async_setup_entry: the stand-in coordinators in the tests predate this
-        # question, and a coordinator that cannot be asked keeps the behaviour it
-        # has today rather than failing the platform's setup.
-        address_of = getattr(coordinator, "get_address", None)
-        channel_of = getattr(coordinator, "get_channel", None)
-        if address_of is None or channel_of is None:
-            continue
-        address = address_of()
-        if address not in by_host:
-            probe = getattr(coordinator.client, "async_get_remote_devices", None)
-            if probe is None:
-                by_host[address] = set()
-            else:
-                try:
-                    raw = await probe()
-                except Exception:  # pylint: disable=broad-except
-                    _LOGGER.debug(
-                        "Could not read the remote device table on %s, so every "
-                        "channel there keeps asking snapshot.cgi for its stills",
-                        address,
-                        exc_info=True,
-                    )
-                    by_host[address] = set()
-                else:
-                    by_host[address] = {
-                        index
-                        for index, slot in dahua_utils.parse_remote_devices(raw).items()
-                        if (slot.get("protocol") or "") not in ("", "private")
-                    }
-                    if by_host[address]:
-                        _LOGGER.debug(
-                            "%s does not serve snapshots for channel index(es) %s, "
-                            "which it reaches over another protocol; their stills "
-                            "will be rendered from the stream",
-                            address,
-                            sorted(by_host[address]),
-                        )
-        if channel_of() in by_host[address]:
-            chosen.add(coordinator)
-    return chosen
+    return coordinator.get_channel_protocol() == "general"
 
 
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
@@ -266,11 +224,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     # Listed once: the capability checks further down need every channel, not
     # whichever one the loop below happened to leave behind.
     coordinators = list(entry_coordinators(config_entry).values())
-
-    # Which channels cannot answer snapshot.cgi, asked once per host before the
-    # first entity exists: use_stream_for_stills is read on the very first still
-    # and is not a coroutine, so it cannot go and find out for itself.
-    stream_stills = await _async_stream_still_coordinators(coordinators)
 
     for coordinator in coordinators:
         # An indoor monitor that says it has no camera gets no camera entities.
@@ -305,7 +258,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
                             media_channel=media_channel,
                             display_name=display_name,
                             unique_suffix=f"{unique_prefix}{stream_name}",
-                            stream_stills=coordinator in stream_stills,
+                            stream_stills=_stills_come_from_the_stream(coordinator),
                         )
                     )
             async_add_entities(entities, config_subentry_id=coordinator.subentry_id)
@@ -319,7 +272,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
                             coordinator,
                             stream_index,
                             config_entry,
-                            stream_stills=coordinator in stream_stills,
+                            stream_stills=_stills_come_from_the_stream(coordinator),
                         )
                     ],
                     config_subentry_id=coordinator.subentry_id,
@@ -753,11 +706,51 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     def use_stream_for_stills(self) -> bool:
         """Whether this channel's still is rendered from its stream.
 
-        True only for a channel the recorder reaches over another protocol and
-        therefore serves no snapshot for. Decided once at setup -- see
-        _async_stream_still_coordinators.
+        Decided once at setup -- see _stills_come_from_the_stream.
         """
         return self._stream_stills
+
+    async def _async_stream_image(self) -> bytes | None:
+        """This channel's still, rendered from its stream.
+
+        What Home Assistant does for a camera with use_stream_for_stills, in the
+        order it does it: the WebRTC provider where there is one, the decode
+        worker otherwise. Written out rather than imported, because the function
+        Home Assistant does it with is private to its camera component.
+        `wait_for_next_keyframe` is False because this answers every frame of an
+        MJPEG response, not a one-off snapshot.
+        """
+        if (provider := self.webrtc_provider) and (
+            image := await provider.async_get_image(self)
+        ) is not None:
+            return image
+        if not self.stream and CameraEntityFeature.STREAM in self.supported_features:
+            self.stream = await self.async_create_stream()
+        if self.stream:
+            return await self.stream.async_get_image(wait_for_next_keyframe=False)
+        return None
+
+    async def handle_async_still_stream(self, request, interval):
+        """Serve the MJPEG stream from wherever this channel's stills come from.
+
+        Home Assistant consults `use_stream_for_stills` in `async_get_image` and
+        in the snapshot service, but not here: this handler hands
+        `async_camera_image` to `async_get_still_stream` directly, and
+        `handle_async_mjpeg_stream` is built on this one. So a channel the
+        recorder serves no snapshot for produced a blank
+        `/api/camera_proxy_stream/` response however the flag was set -- and
+        spent a recorder request on every frame of it, which is the starvation
+        the flag exists to stop.
+
+        Reported by rroller on #1072, who reproduced the first-frame callback
+        against Home Assistant 2026.8: one snapshot call, no stream-image call,
+        and no image despite an available stream.
+        """
+        if not self.use_stream_for_stills:
+            return await super().handle_async_still_stream(request, interval)
+        return await async_get_still_stream(
+            request, self._async_stream_image, self.content_type, interval
+        )
 
     @property
     def supported_features(self):

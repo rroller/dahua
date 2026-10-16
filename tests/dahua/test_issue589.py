@@ -58,6 +58,14 @@ class _FakeCoordinator:
     def get_max_streams(self):
         return 3
 
+    def get_channel_protocol(self):
+        """The recorder's own protocol, which is what nearly every channel is."""
+        return "private"
+
+    def get_serial_number(self):
+        """What the entity's unique id is built from, which this file exercises."""
+        return "SERIAL"
+
     def supports_infrared_light(self):
         return False
 
