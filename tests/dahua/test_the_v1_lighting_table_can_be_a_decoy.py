@@ -46,10 +46,13 @@ Mutation table, each caught by the test named after it:
 * writing the v2 fallback to profile 0 while the camera is on night
 * choosing the brightness bank by the table being read instead of the one
   being written
+* telling the user the control has stopped while the fallback is driving it
 """
 
+import logging
 from unittest.mock import AsyncMock
 
+import aiohttp
 import pytest
 
 from homeassistant.exceptions import HomeAssistantError
@@ -58,6 +61,22 @@ from custom_components.dahua import DahuaDataUpdateCoordinator, refusals
 from custom_components.dahua.infrared import async_write_infrared_mode
 
 ADDRESS = "192.168.0.60"
+
+
+def _response_error(status, message):
+    """A refusal shaped the way the device's really arrives. `request_info` is
+    not optional: aiohttp reads `real_url` while formatting one."""
+    return aiohttp.ClientResponseError(
+        aiohttp.RequestInfo(
+            url="http://camera/cgi-bin/configManager.cgi",
+            method="GET",
+            headers=aiohttp.typedefs.CIMultiDict(),
+            real_url="http://camera/cgi-bin/configManager.cgi",
+        ),
+        (),
+        status=status,
+        message=message,
+    )
 
 
 def _rows(
@@ -335,6 +354,43 @@ async def test_a_fallback_that_is_also_ignored_is_reported_not_remembered():
     assert device.v1_writes and device.v2_writes
     assert _v1_refused(coordinator) is True
     assert _v2_refused(coordinator) is False
+
+
+async def test_the_warning_does_not_claim_a_working_control_has_stopped(caplog):
+    """The refusals store is in memory, so this warning is emitted again on the
+    first press after every restart. Saying "Home Assistant will stop asking,
+    reload the entry" to a user whose light has just come on is false twice
+    over, and it is the only thing about the fallback they will ever see."""
+    device = _Device(_rows())
+    coordinator = _coordinator(device)
+
+    with caplog.at_level(logging.WARNING):
+        await async_write_infrared_mode(coordinator, "Manual", 100)
+
+    warned = " ".join(
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+    )
+    assert "will use infrared_v2 instead" in warned
+    assert "stop asking" not in warned
+    assert "Reload the entry" not in warned
+
+
+async def test_the_last_path_still_says_the_control_has_stopped(caplog):
+    """The wording that was always right stays right where it applies: an
+    outright refusal with nowhere left to go does end the control."""
+    device = _Device({"table.Lighting[0][0].Mode": "Auto"})
+    coordinator = _coordinator(device)
+    coordinator.client.async_set_lighting_v1_mode = AsyncMock(
+        side_effect=_response_error(403, "Forbidden")
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(HomeAssistantError):
+            await async_write_infrared_mode(coordinator, "Manual", 100)
+
+    assert "stop asking" in caplog.text
 
 
 async def test_a_channel_reporting_no_lighting_at_all_raises_nothing():

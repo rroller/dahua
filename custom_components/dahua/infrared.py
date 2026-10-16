@@ -121,6 +121,9 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
     last = None
     reported = None
     for position, path in enumerate(untried):
+        # What the warnings below may promise. None means this is the last path
+        # there is, so a refusal here really does end the control.
+        instead = untried[position + 1] if position + 1 < len(untried) else None
         try:
             if path == refusals.INFRARED_V2:
                 profile, index, bank = coordinator.get_infrared_v2_row()
@@ -141,7 +144,10 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
                 # Learnt, and the next path is tried in the same press rather
                 # than making the user click again to discover the fallback.
                 refusals.remember(
-                    coordinator, path, dahua_utils.describe_write_refusal(err)
+                    coordinator,
+                    path,
+                    dahua_utils.describe_write_refusal(err),
+                    instead=instead,
                 )
                 continue
             # Not a refusal -- a timeout or a dropped connection says nothing
@@ -163,7 +169,7 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
             # every press for a device this entity should not exist on.
             return
 
-        if position + 1 == len(untried):
+        if instead is None:
             # The last path there is. Nothing is learnt here: a write can be
             # ignored for a reason that does not last, and marking the only
             # remaining path refused would take the control away on the strength
@@ -182,9 +188,9 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
             mode,
             channel,
             reported,
-            untried[position + 1],
+            instead,
         )
-        refusals.remember(coordinator, path, ACCEPTED_AND_IGNORED)
+        refusals.remember(coordinator, path, ACCEPTED_AND_IGNORED, instead=instead)
     else:
         raise HomeAssistantError(
             translation_domain=DOMAIN,
