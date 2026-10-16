@@ -24,7 +24,6 @@ from . import (
     entry_coordinators,
     scheme_blocking_white_light,
 )
-from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .late import async_add_and_keep_watching
 from .client import SECURITY_LIGHT_TYPE

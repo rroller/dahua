@@ -336,3 +336,45 @@ async def test_json_that_is_not_a_backup_says_so(tmp_path):
         await camera.async_compare_config(filename=str(target))
 
     assert wrong.value.translation_key == "backup_is_not_a_backup"
+
+
+# --- what must not be in it -------------------------------------------------
+
+
+class _CloudClient:
+    """A device serving the cloud table as a VTO2311R-WP does, trimmed.
+
+    The real one has twenty-six fields and four of them identify the device to
+    Dahua's cloud rather than configure anything (#591).
+    """
+
+    def __init__(self):
+        self.asked = []
+
+    async def async_get_config(self, name):
+        self.asked.append(name)
+        if name != "VSP_PaaS":
+            return {}
+        return {
+            "table.VSP_PaaS.Enable": "false",
+            "table.VSP_PaaS.DMSServerAddr": "devicehttpproxy-fk.easy4ipcloud.com",
+            "table.VSP_PaaS.SN": "CC0000000000D2",
+            "table.VSP_PaaS.AbHash": "418000000",
+            "table.VSP_PaaS.CheckCode": "secret",
+        }
+
+
+async def test_the_cloud_credentials_do_not_reach_the_backup():
+    """A backup is a file somebody attaches to a bug report. The flag the
+    cloud switch writes is a setting and belongs here; the device's cloud key,
+    its serial and its cloud login are not settings and do not."""
+    camera = _camera(_CloudClient())
+
+    backup = await camera.async_backup_config()
+    table = backup["tables"]["VSP_PaaS"]
+
+    assert table["table.VSP_PaaS.Enable"] == "false"
+    assert table["table.VSP_PaaS.SN"] == "REDACTED"
+    assert table["table.VSP_PaaS.AbHash"] == "REDACTED"
+    assert table["table.VSP_PaaS.CheckCode"] == "REDACTED"
+    assert "CC0000000000D2" not in json.dumps(backup)

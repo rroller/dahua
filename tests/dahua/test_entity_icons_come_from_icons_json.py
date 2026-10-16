@@ -47,6 +47,7 @@ WAS = {
     ("sensor", "processor_usage"): "mdi:cpu-64-bit",
     ("sensor", "profile"): "mdi:theme-light-dark",
     ("switch", "alarm_output"): "mdi:alarm-light",
+    ("switch", "cloud_connection"): "mdi:cloud-outline",
     ("switch", "disarming"): "mdi:alarm-check",
     ("switch", "encode_audio"): "mdi:volume-high",
     ("switch", "event_notifications"): "mdi:bell-ring",

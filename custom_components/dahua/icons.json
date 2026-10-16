@@ -54,6 +54,9 @@
             "alarm_output": {
                 "default": "mdi:alarm-light"
             },
+            "cloud_connection": {
+                "default": "mdi:cloud-outline"
+            },
             "disarming": {
                 "default": "mdi:alarm-check"
             },

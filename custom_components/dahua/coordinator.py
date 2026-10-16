@@ -143,6 +143,13 @@ VTH_CAMERA_LINKS = "vth.camera_links"
 DISARMING_LINKAGE_ENABLE = "table.DisableLinkage.Enable"
 EVENT_NOTIFY_ENABLE = "table.DisableEventNotify.Enable"
 
+# The one key the cloud connection switch reads, and the one its probe judges
+# on. VSP_PaaS is Dahua's easy4ip connection, the one a DMSS call arrives
+# over. A VTO2000A answers HTTP 500 for this table while serving T2UServer,
+# and T2UServer is a different feature: turning that one off does not stop a
+# DMSS call (#591).
+CLOUD_CONNECTION_ENABLE = "table.VSP_PaaS.Enable"
+
 # The coaxial probe deliberately only treats an HTTP error response as "not
 # supported"; a connection failure there should still fail setup. Timeouts join
 # it for the reason above, without widening the rest.
@@ -828,6 +835,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # including the ones the suite builds with object.__new__.
     _supports_event_notifications: bool = False
 
+    # Whether this device reports the key the cloud connection switch reads.
+    # On the class for the same reason as the line above.
+    _supports_cloud_connection: bool = False
+
     """Class to manage fetching data from the API."""
 
     def __init__(
@@ -917,6 +928,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._manual_security_light = _channel_first(CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
+        self._supports_cloud_connection = False
         # What the device's own cloud OTA check last found, read from its
         # _DHCloudUpgrade_ config table. Reading it is local; see
         # _async_probe_cloud_upgrade.
@@ -1177,7 +1189,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await self._session.close()
                 self._session = None
-            except Exception as e:
+            except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("serverConnect - failed to close session")
             finally:
                 await _release_connector(self._address)
@@ -1445,6 +1457,35 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         already = self.supports_alarm_output()
         return await self._async_probe_alarm_output() and not already
+
+    async def _async_probe_cloud_connection(self) -> bool:
+        """Ask for the cloud table, and judge on the key the switch reads.
+
+        `async_get_config` turns an HTTP refusal into {}, so a probe written as
+        "did the read raise" concludes that every device has this. Measured on
+        a VTO2000A, which answers HTTP 500 for VSP_PaaS while four other tables
+        answer 200 on the same request with the same credentials, and on a
+        VTO2311R-WP, which answers with the table, `table.VSP_PaaS.Enable`
+        included.
+        """
+        try:
+            table = await self.client.async_get_cloud_connection()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("cloud_connection", probe_error)
+            self._supports_cloud_connection = False
+            return False
+        self._note_probe_answered("cloud_connection")
+        self._supports_cloud_connection = CLOUD_CONNECTION_ENABLE in table
+        _LOGGER.debug(
+            "Device supports a cloud connection switch=%s",
+            self._supports_cloud_connection,
+        )
+        return self._supports_cloud_connection
+
+    async def _async_retry_cloud_connection(self) -> bool:
+        """Whether a cloud table turned up that was missed at setup."""
+        already = self._supports_cloud_connection
+        return await self._async_probe_cloud_connection() and not already
 
     async def _async_probe_disarming_linkage(self) -> bool:
         """Ask for the DisableLinkage table, and remember what came back.
@@ -1948,6 +1989,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 await self._async_probe_alarm_output()
                 await self._async_probe_disarming_linkage()
                 await self._async_probe_event_notifications()
+                # Host wide rather than per channel, and only the switch
+                # platform reads it, so a device whose switches are turned
+                # off is never asked.
+                if self._wanted_by(SWITCH):
+                    await self._async_probe_cloud_connection()
 
                 if self._wanted_by(UPDATE):
                     await self._async_probe_cloud_upgrade()
@@ -2358,6 +2404,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if self._supports_event_notifications and self._wanted_by(SWITCH):
                 coros.append(
                     asyncio.ensure_future(self.client.async_get_event_notifications())
+                )
+            if self._supports_cloud_connection and self._wanted_by(SWITCH):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_cloud_connection())
                 )
             if self.supports_alarm_output() and self._wanted_by(SWITCH):
                 coros.append(
@@ -3478,7 +3528,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 exc_info=exception,
             )
             return
+        self._note_probe_answered("system load")
         self._supports_system_load = load.get("usage") is not None
+
+    async def _async_retry_system_load(self) -> bool:
+        """Whether the processor and memory turned up after setup missed them.
+
+        The last of the #1057 conversions that gates entities. It differs from
+        the others in where those entities live: the processor and the memory
+        are the box's, not a channel's, so one channel carries them and
+        sensor.py decides which. A late answer therefore has to rebuild
+        through the same choice rather than hanging two more sensors off
+        whichever channel happened to answer second.
+
+        Both reads are RPC2 only, so a device with RPC2 switched off refuses
+        in a way that is not a `PROBE_FAILED` at all and is never recorded as
+        unanswered. That device is not retried, which is right: it has said
+        what it does.
+        """
+        already = self._supports_system_load
+        await self._async_probe_system_load()
+        return self._supports_system_load and not already
 
     async def _async_read_stream_codecs(self) -> None:
         """Read the Encode table once, for the codec and audio of each stream.
@@ -3560,6 +3630,35 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether the processor and memory sensors should exist."""
         return self._supports_system_load
 
+    async def _async_fetch_cloud_connection(self) -> dict | None:
+        """Poll the cloud flag, and keep nothing else from that table.
+
+        Two reasons for the trim rather than returning what came back. The
+        table carries the device's own cloud credentials -- `SN`, `Key`,
+        `AbHash`, `Username` -- and every answer in this fan-out is merged into
+        `data`, which the diagnostics download dumps. And a value no entity
+        reads has no business being polled into state at all.
+
+        Wrapped for the reason every read here is: the gather has no
+        `return_exceptions`, so one refused read would fail the whole refresh
+        and take every entity on the channel with it (#1006, #1024). A read
+        that says nothing carries the previous answer, so a momentary refusal
+        does not report the cloud as switched off.
+        """
+        try:
+            table = await self.client.async_get_cloud_connection()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the cloud connection on %s",
+                self._address,
+                exc_info=exception,
+            )
+            table = {}
+        value = table.get(CLOUD_CONNECTION_ENABLE)
+        if value is None:
+            value = (getattr(self, "data", None) or {}).get(CLOUD_CONNECTION_ENABLE)
+        return None if value is None else {CLOUD_CONNECTION_ENABLE: value}
+
     async def _async_fetch_system_load(self) -> dict | None:
         """Poll the processor and memory, keeping the last answer on a refusal.
 
@@ -3626,8 +3725,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_channel_mac(self):
         """The camera's MAC, or None. Only a recorder can answer this for a
-        camera on its own PoE network."""
-        return self._slot().get("mac") or None
+        camera on its own PoE network.
+
+        None also for a slot whose MAC is a placeholder rather than an
+        address: a recorder that cannot name the camera reports
+        `ff:ff:ff:ff:ff:ff`, and claiming that as a connection told Home
+        Assistant every such channel was the same hardware (#1078). See
+        `dahua_utils.usable_mac`.
+        """
+        return dahua_utils.usable_mac(self._slot().get("mac"))
 
     def get_channel_firmware_version(self):
         """The camera's firmware, or None if the recorder did not say.
@@ -4021,6 +4127,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             ).lower()
             == "true"
         )
+
+    def supports_cloud_connection(self) -> bool:
+        """Whether this device reports the key the cloud switch reads."""
+        return self._supports_cloud_connection
+
+    def is_cloud_connection_enabled(self) -> bool:
+        """Whether the device's cloud connection is switched on."""
+        return str(self.data.get(CLOUD_CONNECTION_ENABLE, "")).lower() == "true"
 
     def is_disarming_linkage_enabled(self) -> bool:
         """Returns true if disarming linkage is enable"""
@@ -5228,6 +5342,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 RETRYABLE_CAPABILITIES = {
     "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
     "coaxial_control": DahuaDataUpdateCoordinator._async_retry_coaxial_control,
+    "cloud_connection": DahuaDataUpdateCoordinator._async_retry_cloud_connection,
     "cloud_upgrade": DahuaDataUpdateCoordinator._async_retry_cloud_upgrade,
     "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
     "disarming_linkage": DahuaDataUpdateCoordinator._async_retry_disarming_linkage,
@@ -5236,5 +5351,10 @@ RETRYABLE_CAPABILITIES = {
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
     "profile_mode": DahuaDataUpdateCoordinator._async_retry_profile_mode,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
+    # Spelled with a space because that is the name `_note_probe_refusal`
+    # already records it under, and the registry is keyed by that name so a
+    # probe is retried under the name it failed under. Renaming it would
+    # also rename the field the diagnostics dump has been reporting.
+    "system load": DahuaDataUpdateCoordinator._async_retry_system_load,
     "video_color": DahuaDataUpdateCoordinator._async_retry_video_color,
 }

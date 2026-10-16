@@ -81,6 +81,7 @@ WAS = {
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
     ("switch", "encode_audio"): "{format_type} format {format_index} audio",
+    ("switch", "cloud_connection"): "Cloud Connection",
     ("switch", "disarming"): "Disarming",
     ("switch", "event_notifications"): "Event Notifications",
     ("switch", "smart_motion_detection"): "Smart Motion Detection",
