@@ -9,7 +9,7 @@ import re
 import voluptuous as vol
 from aiohttp import ClientError
 
-from homeassistant.core import HomeAssistant, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers import config_validation as cv
@@ -195,6 +195,59 @@ def _write_backup(filename: str, backup: dict) -> None:
 PARALLEL_UPDATES = 1
 
 
+# The last `vto_open_door` call each doorbell was asked to act on, keyed by the
+# device rather than by the address, so one press opens the door once.
+#
+# `client.device_key` and not `get_address()`: two Dahua boxes can sit behind one
+# IP on different ports, which `_device_key` in client.py exists for, and keying
+# on the address alone would open whichever of them answered first and silently
+# skip the other.
+#
+# **Why this is needed.** A camera entity is created per stream, and an entity
+# service runs on every entity the call resolves to. Aiming `vto_open_door` at
+# the *device*, which is what Developer tools offers first, therefore sends one
+# `openDoor` per enabled stream. Measured on a DHI-VTO2201F-P (#154): the first
+# request opened the gate and the second, 365ms later, was answered
+# `400 Bad Request`, so the error the user saw belonged to a door that had just
+# opened. Two back-to-back `openDoor` requests by curl reproduce the 400 with no
+# Home Assistant involved, so the device is entitled to refuse the second one.
+#
+# **Why the call itself is the key.** Home Assistant hands *the same*
+# `ServiceCall` object to every entity one call fans out to, and builds a new
+# one per call even inside a script, where the `Context` is shared between
+# steps. So identity separates "this press reaching a second camera" from "a
+# second press", which neither a timer nor the context id can do.
+#
+# Only the door. `vto_call`, `vto_cancel_call`, `reboot` and the rest fan out
+# the same way; none of them is a device that refuses to be told twice.
+_OPEN_DOOR_CALLS: dict[str, ServiceCall] = {}
+
+
+async def _async_open_door_once(entity, call: ServiceCall) -> None:
+    """Open the door for the first camera entity this call reaches on a device.
+
+    Registered as a callable rather than by method name, which is what makes
+    Home Assistant hand over the `ServiceCall` instead of its data.
+
+    The entity method is left alone and still does the work, so a call aimed at
+    one entity behaves exactly as it always has, including when that entity is a
+    sub stream nobody else targeted.
+    """
+    device = entity._coordinator.client.device_key  # pylint: disable=protected-access
+    if _OPEN_DOOR_CALLS.get(device) is call:
+        # A sibling stream of this doorbell already opened it for this press.
+        _LOGGER.debug(
+            "%s: door already opened for this call, %s is not asking again",
+            device,
+            entity.entity_id,
+        )
+        return
+    # Recorded before the await, so two entities of one fan-out cannot both get
+    # past this while the first request is in flight.
+    _OPEN_DOOR_CALLS[device] = call
+    await entity.async_vto_open_door(call.data["door_id"])
+
+
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
@@ -357,7 +410,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         {
             vol.Required("door_id", default=1): int,
         },
-        "async_vto_open_door",
+        _async_open_door_once,
     )
 
     platform.async_register_entity_service(
