@@ -258,11 +258,21 @@ def test_the_capability_is_in_the_retry_registry():
     assert "intelli_tour" in RETRYABLE_CAPABILITIES
 
 
-def test_the_registry_key_is_what_the_probe_records():
-    """These are two literals in two files and nothing but this ties them
-    together. A probe that records "intellitour" and a registry keyed
-    "intelli_tour" never retries and never says so."""
-    assert set(RETRYABLE_CAPABILITIES) >= {"intelli_tour"}
+async def test_the_name_the_probe_records_is_the_name_the_registry_is_keyed_by():
+    """Two literals in two files, and nothing else ties them together. A probe
+    recording "intellitour" against a registry keyed "intelli_tour" leaves a
+    question marked unanswered that the retry can never pick up, and says
+    nothing about it. That is what the system load probe did (#1057).
+
+    Read from the refusal the probe actually recorded, rather than from the
+    literal, so a rename on one side alone fails here."""
+    coordinator = _coordinator(tour=(TimeoutError(),))
+    await coordinator._async_probe_intelli_tour()
+
+    unanswered = coordinator.probes_that_did_not_answer()
+
+    assert unanswered, "nothing was recorded, so the retry has nothing to find"
+    assert unanswered <= set(RETRYABLE_CAPABILITIES)
 
 
 async def test_a_tour_that_arrives_late_gates_the_switch(discoveries):
