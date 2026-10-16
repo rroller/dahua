@@ -2405,11 +2405,21 @@ class DahuaClient:
         whole table and puts it back. Use this one where the field can be
         addressed directly: it sends no credentials or neighbouring settings
         back to the device, and it is not refused for size.
+
+        Clears the device's shared read cache, as the CGI write path in `get`
+        does. A device reached this way serves no /cgi-bin/ config path, so its
+        `getConfig` reads were answered over RPC2 and cached under the CGI URL
+        for CONFIG_CACHE_TTL_SECONDS. Without this a switch writes, refreshes,
+        reads back the answer from before the write and snaps to its old state
+        for five minutes, which looks exactly like a device refusing the
+        change. The cloud connection switch has the same fallback and had the
+        same hole.
         """
 
         async def write(client):
             return await client.set_config_field(name, value)
 
+        clear_host_cache(self._device)
         return await self._rpc2_shared_call(write)
 
     async def _rpc2_set_config_value(
@@ -3949,6 +3959,66 @@ class DahuaClient:
                 self._address,
             )
             return await self._rpc2_set_config_field("VSP_PaaS.Enable", bool(enabled))
+
+    async def async_get_intelli_tour(self) -> dict:
+        """Read the AI tour plan table, every channel of it in one request.
+
+        Measured by @MassakerGU on a DH-SDT6E432-8P-MB-A-PV1, firmware
+        V3.200.0000028.0.R, a dual sensor camera that Home Assistant shows as
+        two channels:
+
+            table.IntelliTour[0]            null
+            table.IntelliTour[1].Enable     true
+            table.IntelliTour[1].TourPlan   ...
+
+        So the table is indexed by channel and a channel with no tour is
+        reported as nothing rather than omitted, which is why the caller judges
+        on `table.IntelliTour[<channel>].Enable` being present for its own
+        channel rather than on the table being non-empty.
+
+        One request for the whole table rather than one per channel: this goes
+        through the shared read cache, so a recorder's sixteen coordinators
+        asking at once cost one round trip between them.
+
+        Through async_get_config, so a refusal arrives as {} rather than
+        raising into the poll's fan-out, which has no return_exceptions.
+        """
+        return await self.async_get_config("IntelliTour")
+
+    async def async_set_intelli_tour(self, channel: int, enabled: bool) -> dict:
+        """Start or stop one channel's AI tour plan, addressing that row only.
+
+        Both transports measured by @MassakerGU on the SDT6E432 (#1051):
+
+            /cgi-bin/configManager.cgi?action=setConfig&IntelliTour[1].Enable=true
+            {"method": "configManager.setConfig",
+             "params": {"name": "IntelliTour[1].Enable", "table": true}}
+
+        The row is addressed rather than written back whole, which is what
+        keeps the tour's own plan, its presets and its timings untouched: this
+        switch starts and stops the tour and changes nothing about it. A
+        whole-table write would also be refused for size on at least one
+        recorder (see `DahuaRpc2Client.set_config_field`).
+
+        CGI first with the RPC2 field write as the fallback, in that order,
+        because that is the order the rest of the config writes here use and
+        both were measured working on the same camera.
+        """
+        field = "IntelliTour[{0}].Enable".format(channel)
+        url = "/cgi-bin/configManager.cgi?action=setConfig&{0}={1}".format(
+            field, str(bool(enabled)).lower()
+        )
+        try:
+            return await self.get(url, True)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting the tour over RPC2",
+                cgi_error.status,
+                self._address,
+            )
+            return await self._rpc2_set_config_field(field, bool(enabled))
 
     async def async_get_event_notifications(self) -> dict:
         """

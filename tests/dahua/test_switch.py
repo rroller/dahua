@@ -93,6 +93,14 @@ class _Coordinator:
         """
         return self.states.get("has_cloud_connection", False)
 
+    def supports_intelli_tour(self):
+        """Whether this channel reports IntelliTour, which the tour switch writes.
+
+        Off unless a test says otherwise: the tour belongs to a PTZ channel and
+        most channels do not have one. Its own file covers the rest (#1051).
+        """
+        return self.states.get("has_intelli_tour", False)
+
     def uses_separate_host_device(self):
         """Only read when the cloud switch is created, to decide whether it is
         filed under the channel's subentry or the entry itself."""
