@@ -151,61 +151,73 @@ def _recording_stream(camera, image):
     return async_get_image
 
 
-async def test_the_mjpeg_callback_renders_from_the_stream(monkeypatch):
-    """The regression rroller reported: this used to ask snapshot.cgi."""
-    captured = {}
+def _handed_to_still_stream(monkeypatch) -> dict:
+    """Record which image callback reaches `async_get_still_stream`.
 
-    async def _fake_still_stream(request, image_cb, content_type, interval):
-        captured["image"] = await image_cb()
+    Both names are replaced: the one this module imported, which the override
+    calls, and the one in Home Assistant's camera module, which the base handler
+    calls. Patching only ours let the base handler through to the real
+    `async_get_still_stream`, so removing the override failed these tests with an
+    `AttributeError` out of aiohttp -- the stub request is not a web request --
+    instead of saying which callback was handed over. Raised by zios0007 on
+    #1072: a test that catches a regression should also name it.
+    """
+    handed: dict = {}
+
+    async def _fake(request, image_cb, content_type, interval):
+        handed["callback"] = image_cb
         return "response"
 
-    monkeypatch.setattr(
-        "custom_components.dahua.camera.async_get_still_stream", _fake_still_stream
+    for name in (
+        "custom_components.dahua.camera.async_get_still_stream",
+        "homeassistant.components.camera.async_get_still_stream",
+    ):
+        monkeypatch.setattr(name, _fake)
+    return handed
+
+
+def _stream_callback(handed, camera):
+    """The callback the handler gave away, once it is the stream one.
+
+    Asserted before it is called, so a handler that gave away
+    `async_camera_image` says so here rather than failing further in, somewhere
+    inside the snapshot path it should never have reached.
+    """
+    assert handed["callback"] == camera._async_stream_image, (
+        "a channel the recorder serves no snapshot for must have its MJPEG "
+        "frames rendered from the stream; this handed over %r" % (handed["callback"],)
     )
+    return handed["callback"]
+
+
+async def test_the_mjpeg_callback_renders_from_the_stream(monkeypatch):
+    """The regression rroller reported: this used to hand over snapshot.cgi."""
+    handed = _handed_to_still_stream(monkeypatch)
     camera = _camera(True, monkeypatch)
 
-    async def _never(*args, **kwargs):
-        raise AssertionError("snapshot.cgi must not be asked for this channel")
-
-    monkeypatch.setattr(camera, "async_camera_image", _never)
-
     assert await camera.handle_async_still_stream(object(), 0.5) == "response"
-    assert captured["image"] == b"from-the-stream"
+    assert await _stream_callback(handed, camera)() == b"from-the-stream"
     assert camera.stream_calls == 1
 
 
 async def test_the_mjpeg_frame_does_not_wait_for_a_keyframe(monkeypatch):
     """Every frame of a stream, not a one-off snapshot."""
-
-    async def _fake_still_stream(request, image_cb, content_type, interval):
-        await image_cb()
-        return "response"
-
-    monkeypatch.setattr(
-        "custom_components.dahua.camera.async_get_still_stream", _fake_still_stream
-    )
+    handed = _handed_to_still_stream(monkeypatch)
     camera = _camera(True, monkeypatch)
 
     await camera.handle_async_still_stream(object(), 0.5)
+    await _stream_callback(handed, camera)()
 
     assert camera.stream_keyframe_waits is False
 
 
-async def test_an_ordinary_channel_keeps_home_assistants_own_handler(monkeypatch):
+async def test_an_ordinary_channel_hands_over_the_snapshot(monkeypatch):
     """Nothing changes for a channel the recorder does photograph."""
-    called = {}
-
-    async def _super(self, request, interval):
-        called["super"] = True
-        return "ha-response"
-
-    monkeypatch.setattr(
-        "homeassistant.components.camera.Camera.handle_async_still_stream", _super
-    )
+    handed = _handed_to_still_stream(monkeypatch)
     camera = _camera(False, monkeypatch)
 
-    assert await camera.handle_async_still_stream(object(), 0.5) == "ha-response"
-    assert called == {"super": True}
+    assert await camera.handle_async_still_stream(object(), 0.5) == "response"
+    assert handed["callback"] == camera.async_camera_image
     assert getattr(camera, "stream_calls", 0) == 0
 
 
