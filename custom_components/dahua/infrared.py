@@ -35,6 +35,10 @@ OPTION_BY_MODE = {mode: option for option, mode in MODE_BY_OPTION.items()}
 # The failures a device answers a lighting write with, as opposed to a bug here.
 WRITE_FAILED = (aiohttp.ClientError, ConnectionError, asyncio.TimeoutError)
 
+# What is recorded against a path that answered OK and then changed nothing. It
+# is shown as the reason in the refusals warning, so it is phrased as one.
+ACCEPTED_AND_IGNORED = "it accepted the write and the light did not move"
+
 # Which control this is, in refusals.py's store. Named rather than inferred so a
 # recorder refusing its infrared does not silence its siren on the same channel.
 # Kept as the v1 name so nothing that imported it has to change.
@@ -90,6 +94,12 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
     reports rather than what it was asked, and reads the *mode* rather than
     `is_on`: an ignored turn-off leaves a channel on `Auto`, which is not
     `Manual` either, so `is_on` would agree with the write that failed.
+
+    The check runs per path rather than once at the end, because a device has two
+    ways of saying no and only one of them raises. The second is to answer `OK`,
+    store the value and leave the light alone, and a path that does that is
+    remembered and stepped over exactly as an outright refusal is. The last
+    remaining path is exempt: see the comment on that branch.
     """
     device = coordinator.get_device_name()
     channel = coordinator.get_channel()
@@ -109,7 +119,8 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
         )
 
     last = None
-    for path in untried:
+    reported = None
+    for position, path in enumerate(untried):
         try:
             if path == refusals.INFRARED_V2:
                 profile, index, bank = coordinator.get_infrared_v2_row()
@@ -143,7 +154,37 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
                     "reason": dahua_utils.describe_write_refusal(err),
                 },
             ) from err
-        break
+
+        await coordinator.async_refresh()
+        reported = coordinator.get_infrared_mode()
+        if not reported or reported == mode:
+            # Empty means no Lighting row for this channel at all, so there is
+            # nothing to compare against, and raising would put an error on
+            # every press for a device this entity should not exist on.
+            return
+
+        if position + 1 == len(untried):
+            # The last path there is. Nothing is learnt here: a write can be
+            # ignored for a reason that does not last, and marking the only
+            # remaining path refused would take the control away on the strength
+            # of a single press. Say so instead.
+            break
+
+        # Accepted, and nothing moved. That is the device saying no in the other
+        # voice it has, so it is remembered exactly as an outright refusal is and
+        # the next path is tried in the same press. Measured on the
+        # IPC-T5442TM-AS-6mm in #647, whose v1 table stores the mode, answers
+        # `OK` and drives nothing, while its v2 row drives the emitter.
+        _LOGGER.debug(
+            "%s accepted %s mode %s on channel %s and still reports %s, trying %s",
+            device,
+            path,
+            mode,
+            channel,
+            reported,
+            untried[position + 1],
+        )
+        refusals.remember(coordinator, path, ACCEPTED_AND_IGNORED)
     else:
         raise HomeAssistantError(
             translation_domain=DOMAIN,
@@ -154,28 +195,19 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
             },
         ) from last
 
-    await coordinator.async_refresh()
-
-    reported = coordinator.get_infrared_mode()
-    if not reported:
-        # No Lighting row for this channel at all, so there is nothing to
-        # compare against. Raising here would put an error on every press for a
-        # device this entity should not have been created on.
-        return
-    if reported != mode:
-        _LOGGER.debug(
-            "%s accepted Lighting mode %s on channel %s and still reports %s",
-            device,
-            mode,
-            coordinator.get_channel(),
-            reported,
-        )
-        raise HomeAssistantError(
-            translation_domain=DOMAIN,
-            translation_key="infrared_write_ignored",
-            translation_placeholders={
-                "device": device,
-                "wanted": mode,
-                "reported": reported,
-            },
-        )
+    _LOGGER.debug(
+        "%s accepted Lighting mode %s on channel %s and still reports %s",
+        device,
+        mode,
+        channel,
+        reported,
+    )
+    raise HomeAssistantError(
+        translation_domain=DOMAIN,
+        translation_key="infrared_write_ignored",
+        translation_placeholders={
+            "device": device,
+            "wanted": mode,
+            "reported": reported,
+        },
+    )

@@ -338,19 +338,35 @@ def infrared_transport(v2_row, v1_refused: bool) -> str:
 
     **The order matters and the obvious rule is wrong.** The first version of this
     preferred v2 wherever a v2 row existed, which decides from what a device
-    *reports it has*. Measured on a DHI-NVR5464-16P-EI that is right -- v1 is
-    refused there and v2 works. But #647 carries a directly connected
-    IPC-T5442TM-AS-6mm reporting three v2 InfraredLight rows while its v1 table is
-    presumably accepted, and that issue's whole complaint is "the CGI values change
-    and the physical LEDs do not". Moving every camera that merely reports a v2 row
-    onto a table nobody has verified drives its emitter is that complaint, shipped.
+    *reports it has*. Deciding from what the device *accepts* instead keeps every
+    working camera where it is and only moves the ones that have actually refused.
+    That is the shape this codebase has arrived at independently three times --
+    `_HOST_CGI_CONFIG_ABSENT`, `_RPC2_TABLE_UNAVAILABLE` and `refusals` all learn
+    from the device rather than from a claim -- while the fifteen capabilities
+    still gated on a model string are the recurring bug class (#570, #676, #690).
 
-    Deciding from what the device *accepts* keeps every working camera where it is
-    and only moves the ones that have actually refused. It is also the shape this
-    codebase has arrived at independently three times -- `_HOST_CGI_CONFIG_ABSENT`,
-    `_RPC2_TABLE_UNAVAILABLE` and `refusals` all learn from a refusal rather than
-    from a claim -- while the fifteen capabilities still gated on a model string are
-    the recurring bug class (#570, #676, #690).
+    **But "refused" is not the only way a device says no, and this rule used to
+    miss the other way.** It was written when the IPC-T5442TM-AS-6mm in #647 was
+    only *presumed* to accept v1, and the note here said a v2 write had been proved
+    to move the mode but never the light. Both halves have since been measured on
+    that camera, and they go the other way:
+
+        setConfig&Lighting[0][0].Mode=Manual        200 'OK'
+        getConfig&name=Lighting       [0][0].Mode=Manual   <- the write is stored
+        getConfig&name=Lighting_V2 [0][0][0].Mode=Off      <- and the LED is dark
+        setConfig&Lighting_V2[0][0][0].Mode=Manual  turns the physical emitter on
+
+    So on that firmware the two tables are unlinked -- they do not even carry the
+    same number of profiles, four against three -- and v1 is a store that answers
+    `OK` and drives nothing. A rule that only learns from a refusal can never leave
+    it, because it is never refused.
+
+    This function is unchanged by that, deliberately: v1 still goes first, and no
+    camera is moved on the strength of a row it merely reports. What changed is
+    that `async_write_infrared_mode` now checks the v2 row after a v1 write and
+    counts "accepted and then nothing moved" as a refusal too, so the device still
+    gets to decide. There is as yet no measured device with a v2 InfraredLight row
+    whose emitter v1 actually drives; if one appears, it keeps v1 under this rule.
     """
     if v1_refused and v2_row is not None:
         return "v2"
@@ -4606,14 +4622,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         rather than flattened, because a caller checking whether a write landed
         has to be able to see that it did not.
 
-        Read from Lighting_V2 when this channel has a row there, because that is
-        the table the write goes to and the two can disagree -- a channel can
-        report `ZoomPrio` in v2 and something else in v1. Reading one and writing
-        the other is how a control reports a state it is not setting.
+        Read from Lighting_V2 whenever this channel has a row there, whichever
+        table the write went to. The two tables can disagree, and on firmware
+        that does not link them the v1 table is the one that lies: measured on an
+        EmpireTech IPC-T5442TM-AS-6mm (#647), a `Lighting[0][0].Mode=Manual`
+        write answers `OK` and reads back `Manual` while
+        `Lighting_V2[0][0][0].Mode` stays `Off` and the emitter stays dark.
+
+        Reading whichever table was written is what made that invisible: the
+        check after a write compared the v1 value against the v1 value it had
+        just stored and agreed with itself. The emitter follows v2 wherever v2
+        exists, so that is the honest thing to report, even on a channel still
+        being written through v1.
 
         Empty when this channel reports no lighting at all.
         """
-        if self.infrared_uses_lighting_v2():
+        if self.infrared_reads_lighting_v2():
             profile, index, _bank = self.get_infrared_v2_row()
             return self.data.get(
                 "table.Lighting_V2[{0}][{1}][{2}].Mode".format(
@@ -4649,8 +4673,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return infrared_v2_row(self.data, self._channel, self.get_profile_mode())
 
+    def infrared_reads_lighting_v2(self) -> bool:
+        """Whether this channel's infrared state should be *read* from Lighting_V2.
+
+        Wherever the device serves a row, which is a weaker test than the one the
+        *write* uses. The two are deliberately different: a write has to go to a
+        table the device will accept, while a read has to come from the table the
+        emitter follows, and on firmware that does not link them those are not
+        the same table (#647). Reading v2 while still writing v1 is what lets the
+        write check in infrared.py notice that an accepted write changed nothing.
+        """
+        return self.get_infrared_v2_row() is not None
+
     def infrared_uses_lighting_v2(self) -> bool:
-        """Whether this channel's infrared is driven through Lighting_V2.
+        """Whether this channel's infrared is *written* through Lighting_V2.
 
         Only once the v1 table has been refused for this channel, and only when the
         device serves a v2 row to fall back to. See `infrared_transport` for why it
@@ -4684,7 +4720,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         None rather than a number when the channel reports none, so the attribute
         says "not known" instead of claiming the emitter is at zero.
         """
-        if self.infrared_uses_lighting_v2():
+        if self.infrared_reads_lighting_v2():
             profile, index, bank = self.get_infrared_v2_row()
             level = self.data.get(
                 "table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
