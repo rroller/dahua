@@ -138,6 +138,20 @@ class _Coordinator:
     def is_motion_detection_enabled(self):
         return True
 
+    def infrared_reads_lighting_v2(self):
+        """Whether the mode is read from Lighting_V2, which is wherever a row
+        exists. Calls `get_infrared_v2_row` rather than reading a stored value,
+        so a test that swaps that method in still gets a consistent answer."""
+        return self.get_infrared_v2_row() is not None
+
+    def lighting_v2_samples(self):
+        """How many real Lighting_V2 readings the poll has taken. Every refresh
+        here is one, because this double's device always answers; the case
+        where a failed read carries the previous table forward is covered
+        against the real coordinator in
+        test_the_v1_lighting_table_can_be_a_decoy.py."""
+        return self.refreshed
+
     async def async_refresh(self):
         self.refreshed += 1
 

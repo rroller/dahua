@@ -72,6 +72,31 @@ def infrared_write_is_refused(coordinator) -> bool:
     )
 
 
+def _readback_is_fresh(coordinator, samples_before: int) -> bool:
+    """Whether a real Lighting_V2 reading arrived during the refresh just done.
+
+    The check after a write compares what was asked against what the device
+    reports, and that is only evidence when the reading is newer than the write.
+    Three things give a reading that is not, and none of them shows in the data:
+
+    * `_async_fetch_lighting_v2` catches a read failure and carries the previous
+      table forward, deliberately, so one bad answer costs a stale value rather
+      than the whole poll;
+    * a refresh that fails outright leaves `data` exactly as it was;
+    * a poll that did not want the table never read it.
+
+    The coordinator counts the readings that really came from the device, so a
+    count that has not moved means none of them was this one. Counted rather
+    than timestamped because the question is "did one arrive", and a clock
+    invites a tolerance nobody can choose correctly.
+
+    Only meaningful where the check reads Lighting_V2. A channel whose mode
+    comes from the v1 table is judged exactly as it always was, so no device
+    that works today changes behaviour because of this.
+    """
+    return coordinator.lighting_v2_samples() > samples_before
+
+
 def forget_refused_infrared_writes(coordinator=None) -> None:
     """Drop what was learnt, so the device is asked again.
 
@@ -161,6 +186,12 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
                 },
             ) from err
 
+        # Only where the check will read Lighting_V2, because that is the only
+        # reading whose freshness this can establish, and asking a question
+        # whose answer is never used is how a coordinator ends up required to
+        # answer it.
+        reads_v2 = coordinator.infrared_reads_lighting_v2()
+        samples_before = coordinator.lighting_v2_samples() if reads_v2 else 0
         await coordinator.async_refresh()
         reported = coordinator.get_infrared_mode()
         if not reported or reported == mode:
@@ -168,6 +199,33 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
             # nothing to compare against, and raising would put an error on
             # every press for a device this entity should not exist on.
             return
+
+        if reads_v2 and not _readback_is_fresh(coordinator, samples_before):
+            # The reading that disagrees with the write may predate it, so it is
+            # not evidence about this path. The poll carries the previous
+            # Lighting_V2 table when its read fails, and leaves `data` alone
+            # entirely when the whole refresh fails; neither is distinguishable
+            # from a real answer in the data itself.
+            #
+            # Nothing is learnt, and nothing is raised. A check that could not
+            # run has not found a fault, and "it still reports Off" would be
+            # quoting a reading the device never gave. Learning here condemned a
+            # working v1 because its verification read timed out, and a refused
+            # v2 behind it then blocked the control until reload.
+            #
+            # The remaining paths are still tried, because the write may really
+            # have been ignored and the user asked for the light.
+            _LOGGER.debug(
+                "%s could not confirm %s mode %s on channel %s against a fresh "
+                "reading, so nothing is learnt about that path",
+                device,
+                path,
+                mode,
+                channel,
+            )
+            if instead is None:
+                return
+            continue
 
         if instead is None:
             # The last path there is. Nothing is learnt here: a write can be

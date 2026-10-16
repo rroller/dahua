@@ -800,6 +800,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _storage_disks: list = []
     _storage_last_refresh: float = 0.0
 
+    # How many times the poll has read Lighting_V2 and got a real answer. It is
+    # a count rather than a flag because the question callers ask is "did a
+    # fresh sample arrive across this refresh", and only a value that moves can
+    # answer that: `_async_fetch_lighting_v2` carries the previous table on a
+    # read failure, and a refresh that fails outright leaves `data` untouched
+    # without calling it at all. Both look identical in the data itself.
+    #
+    # On the class as well as in __init__ because a great many tests build a
+    # coordinator with object.__new__ and set only what they are about.
+    _lighting_v2_samples: int = 0
+
     # Whether this device answered magicBox.getCPUUsage and getMemoryInfo at
     # setup. Both are RPC2 only with no CGI form, so a device with RPC2 off has
     # neither sensor -- which is why this is a probe rather than an assumption.
@@ -4664,6 +4675,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self.data, self._channel, self.get_infrared_profile()
         )
 
+    def lighting_v2_samples(self) -> int:
+        """How many real Lighting_V2 readings this channel's poll has taken.
+
+        Only useful as a before-and-after pair around `async_refresh`: equal
+        means no fresh sample arrived, whether because the read failed and the
+        last table was carried, because the whole refresh failed and `data` was
+        left as it was, or because this poll did not ask for the table at all.
+        """
+        return self._lighting_v2_samples
+
     def get_infrared_v2_row(self):
         """(profile, index, bank) for infrared in Lighting_V2, or None.
 
@@ -5367,7 +5388,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         there is nothing to carry, which the gather already skips.
         """
         try:
-            return await self.client.async_get_lighting_v2()
+            table = await self.client.async_get_lighting_v2()
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.debug(
                 "Could not read Lighting_V2 for channel %s",
@@ -5381,6 +5402,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if key.startswith("table.Lighting_V2[")
             }
             return carried or None
+        # Counted only here, on the path that really spoke to the device. A
+        # caller comparing the count across a refresh can then tell a fresh
+        # reading from the carried one above, which is otherwise invisible: see
+        # `async_write_infrared_mode`, which must not learn a permanent refusal
+        # from a sample that may predate the write it is checking.
+        self._lighting_v2_samples += 1
+        return table
 
     def get_vto_client(self) -> DahuaVTOClient | None:
         """The doorbell's client, or None when there is not a live one.

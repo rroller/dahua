@@ -47,6 +47,8 @@ Mutation table, each caught by the test named after it:
 * choosing the brightness bank by the table being read instead of the one
   being written
 * telling the user the control has stopped while the fallback is driving it
+* learning from a reading that may predate the write, which condemns a working
+  path whose verification read merely timed out (found by @rroller in review)
 """
 
 import logging
@@ -58,7 +60,10 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, refusals
-from custom_components.dahua.infrared import async_write_infrared_mode
+from custom_components.dahua.infrared import (
+    async_write_infrared_mode,
+    infrared_write_is_refused,
+)
 
 ADDRESS = "192.168.0.60"
 
@@ -110,14 +115,38 @@ def _rows(
 
 
 class _Device:
-    """A camera whose two lighting tables are, or are not, wired together."""
+    """A camera whose two lighting tables are, or are not, wired together.
 
-    def __init__(self, data, linked=False, v2_ignores=False):
+    Holds the device's own state. The coordinator gets a **separate** snapshot,
+    updated only by a refresh, because sharing one dict makes a write visible to
+    the check before any read happens and no staleness can be expressed at all.
+    """
+
+    def __init__(
+        self,
+        data,
+        linked=False,
+        v2_ignores=False,
+        v2_read_raises=None,
+        v2_write_raises=None,
+    ):
         self.data = data
         self.linked = linked
         self.v2_ignores = v2_ignores
+        self.v2_read_raises = v2_read_raises
+        self.v2_write_raises = v2_write_raises
         self.v1_writes = []
         self.v2_writes = []
+
+    async def async_get_lighting_v2(self):
+        """The poll's read of the v2 table, which is allowed to fail."""
+        if self.v2_read_raises is not None:
+            raise self.v2_read_raises
+        return {
+            key: value
+            for key, value in self.data.items()
+            if key.startswith("table.Lighting_V2[")
+        }
 
     async def async_set_lighting_v1_mode(
         self, channel, mode, brightness, profile, bank
@@ -134,24 +163,50 @@ class _Device:
         self, channel, mode, brightness, profile, index, bank
     ):
         self.v2_writes.append((channel, mode, brightness, profile, index, bank))
+        if self.v2_write_raises is not None:
+            raise self.v2_write_raises
         if not self.v2_ignores:
             self.data[
                 "table.Lighting_V2[%d][%s][%d].Mode" % (channel, profile, index)
             ] = mode
 
 
-def _coordinator(device, profile="0", channel=0):
-    """The real coordinator, so the real accessors decide which table is read."""
+def _coordinator(device, profile="0", channel=0, refresh_fails=False):
+    """The real coordinator, so the real accessors decide which table is read.
+
+    `async_refresh` runs the real `_async_fetch_lighting_v2`, which is the whole
+    point: that is the method that carries the previous table forward when the
+    read fails, and a double that returned the device's truth regardless would
+    hide exactly the bug this guards.
+
+    `refresh_fails` models a refresh that failed outright, where Home Assistant
+    leaves `data` as it was and the v2 read never runs.
+    """
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator._channel = channel
     coordinator._profile_mode = profile
     coordinator._address = ADDRESS
-    coordinator.data = device.data
     coordinator.client = device
-    # The device mutates the same dict the coordinator holds, so a refresh has
-    # nothing to fetch. Faking the transport, not the reading of it.
-    coordinator.async_refresh = AsyncMock()
+    coordinator.data = dict(device.data)
     coordinator.get_device_name = lambda: "Driveway"
+
+    async def _refresh():
+        if refresh_fails:
+            return
+        # The v1 table is not what is under test here, so it is copied straight
+        # across. The v2 table goes through the real wrapper.
+        coordinator.data.update(
+            {
+                key: value
+                for key, value in device.data.items()
+                if key.startswith("table.Lighting[")
+            }
+        )
+        table = await DahuaDataUpdateCoordinator._async_fetch_lighting_v2(coordinator)
+        if table is not None:
+            coordinator.data.update(table)
+
+    coordinator.async_refresh = _refresh
     return coordinator
 
 
@@ -391,6 +446,113 @@ async def test_the_last_path_still_says_the_control_has_stopped(caplog):
             await async_write_infrared_mode(coordinator, "Manual", 100)
 
     assert "stop asking" in caplog.text
+
+
+# --- nothing is learnt from a reading that may predate the write ---------------
+
+
+async def test_a_timed_out_readback_does_not_condemn_a_working_path():
+    """The regression @rroller found in review.
+
+    `_async_fetch_lighting_v2` carries the previous table forward when its read
+    fails, by design, so one bad answer costs a stale value instead of the whole
+    poll. That stale value is indistinguishable from a real one. Here v1 works
+    and the device really does reach Manual, but the verification read times out
+    and the carried `Off` arrives instead. Learning from it marks a working path
+    refused for ever.
+    """
+    device = _Device(_rows(), linked=True, v2_read_raises=TimeoutError())
+    coordinator = _coordinator(device)
+
+    await async_write_infrared_mode(coordinator, "Manual", 100)
+
+    assert (
+        device.data["table.Lighting_V2[0][0][0].Mode"] == "Manual"
+    ), "the write reached the device; only the reading back of it failed"
+    assert _v1_refused(coordinator) is False
+    assert _v2_refused(coordinator) is False
+
+
+async def test_an_unconfirmable_press_leaves_the_control_askable():
+    """The consequence @rroller traced: v1 condemned on a stale reading and v2
+    then refused outright left every later press raising
+    `infrared_write_already_refused`, on a camera whose v1 was working."""
+    device = _Device(
+        _rows(),
+        linked=True,
+        v2_read_raises=TimeoutError(),
+        v2_write_raises=_response_error(403, "Forbidden"),
+    )
+    coordinator = _coordinator(device)
+
+    with pytest.raises(HomeAssistantError) as caught:
+        await async_write_infrared_mode(coordinator, "Manual", 100)
+
+    # v2 is genuinely refused and may be remembered. v1 must not be, so the
+    # channel still has a path and the next press still reaches the device.
+    assert _v1_refused(coordinator) is False
+    assert infrared_write_is_refused(coordinator) is False
+    assert caught.value.translation_key == "infrared_write_refused"
+
+    device.v1_writes.clear()
+    device.v2_read_raises = None
+    await async_write_infrared_mode(coordinator, "Manual", 100)
+    assert device.v1_writes, "the next press must still try v1"
+
+
+async def test_a_refresh_that_failed_outright_teaches_nothing_either():
+    """The other way a reading can predate the write: the refresh fails, Home
+    Assistant keeps the last data, and the v2 read never runs at all. The data
+    looks exactly the same as a successful poll's."""
+    device = _Device(_rows(), linked=True)
+    coordinator = _coordinator(device, refresh_fails=True)
+
+    await async_write_infrared_mode(coordinator, "Manual", 100)
+
+    assert _v1_refused(coordinator) is False
+    assert _v2_refused(coordinator) is False
+
+
+async def test_an_unconfirmable_press_still_tries_the_other_path():
+    """Not knowing is not a reason to stop. The user asked for the light, the
+    write may really have been ignored, so the press still does what it can.
+    What it must not do is write that down as a fact."""
+    device = _Device(_rows(), v2_read_raises=TimeoutError())
+    coordinator = _coordinator(device)
+
+    await async_write_infrared_mode(coordinator, "Manual", 100)
+
+    assert device.v2_writes == [(0, "Manual", 100, "0", 0, "MiddleLight")]
+    assert _v1_refused(coordinator) is False
+
+
+async def test_a_fresh_reading_is_still_learnt_from():
+    """The positive control. Without it every test above is satisfied by a fix
+    that simply never learns anything, which would restore the original bug."""
+    device = _Device(_rows())
+    coordinator = _coordinator(device)
+
+    await async_write_infrared_mode(coordinator, "Manual", 100)
+
+    assert _v1_refused(coordinator) is True
+
+
+def test_the_real_coordinator_answers_both_questions_the_write_path_asks():
+    """Three test doubles now model `infrared_reads_lighting_v2` and
+    `lighting_v2_samples`. If the real class ever loses one, only the doubles
+    would still have it and the suite would stay green while production raised
+    AttributeError on the first press."""
+    for name in ("infrared_reads_lighting_v2", "lighting_v2_samples"):
+        assert callable(getattr(DahuaDataUpdateCoordinator, name, None)), name
+
+
+def test_the_sample_count_has_a_class_default():
+    """Read before any poll has run, and on the many coordinators tests build
+    with object.__new__. Without a default on the class this raises instead of
+    answering, and it raises inside a write rather than at import."""
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+
+    assert coordinator.lighting_v2_samples() == 0
 
 
 async def test_a_channel_reporting_no_lighting_at_all_raises_nothing():
