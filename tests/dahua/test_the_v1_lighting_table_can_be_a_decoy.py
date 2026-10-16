@@ -188,10 +188,12 @@ def _coordinator(device, profile="0", channel=0, refresh_fails=False):
     coordinator._address = ADDRESS
     coordinator.client = device
     coordinator.data = dict(device.data)
+    coordinator.last_update_success = True
     coordinator.get_device_name = lambda: "Driveway"
 
     async def _refresh():
         if refresh_fails:
+            coordinator.last_update_success = False
             return
         # The v1 table is not what is under test here, so it is copied straight
         # across. The v2 table goes through the real wrapper.
@@ -205,6 +207,7 @@ def _coordinator(device, profile="0", channel=0, refresh_fails=False):
         table = await DahuaDataUpdateCoordinator._async_fetch_lighting_v2(coordinator)
         if table is not None:
             coordinator.data.update(table)
+        coordinator.last_update_success = True
 
     coordinator.async_refresh = _refresh
     return coordinator
@@ -511,6 +514,72 @@ async def test_a_refresh_that_failed_outright_teaches_nothing_either():
 
     assert _v1_refused(coordinator) is False
     assert _v2_refused(coordinator) is False
+
+
+@pytest.mark.parametrize("fallback_refused", [False, True])
+async def test_a_lighting_sample_discarded_by_a_failed_poll_is_not_evidence(
+    hass, fallback_refused
+):
+    """Run the real HA refresh: the read succeeds but its data is not published.
+
+    A sibling read failing after Lighting_V2 must not turn the old Off value
+    into evidence that the working v1 write was ignored.
+    """
+    from homeassistant.helpers.update_coordinator import (
+        DataUpdateCoordinator,
+        UpdateFailed,
+    )
+
+    device = _Device(
+        _rows(),
+        linked=True,
+        v2_write_raises=(
+            _response_error(403, "Forbidden") if fallback_refused else None
+        ),
+    )
+    coordinator = _coordinator(device)
+    fail_poll = True
+
+    async def poll():
+        table = await coordinator._async_fetch_lighting_v2()
+        if fail_poll:
+            raise UpdateFailed("another poll read failed after Lighting_V2")
+        return dict(device.data, **(table or {}))
+
+    polling = DataUpdateCoordinator(
+        hass,
+        logging.getLogger(__name__),
+        name="infrared readback",
+        update_method=poll,
+        config_entry=None,
+    )
+    polling.data = coordinator.data
+
+    async def refresh():
+        await polling.async_refresh()
+        coordinator.data = polling.data
+        coordinator.last_update_success = polling.last_update_success
+
+    coordinator.async_refresh = refresh
+    if fallback_refused:
+        with pytest.raises(HomeAssistantError):
+            await async_write_infrared_mode(coordinator, "Manual", 100)
+    else:
+        await async_write_infrared_mode(coordinator, "Manual", 100)
+
+    assert coordinator.lighting_v2_samples() > 0
+    assert polling.last_update_success is False
+    assert coordinator.get_infrared_mode() == "Off"
+    assert device.data["table.Lighting_V2[0][0][0].Mode"] == "Manual"
+    assert _v1_refused(coordinator) is False
+    assert infrared_write_is_refused(coordinator) is False
+
+    # Once polling recovers, the next press still uses the working path.
+    fail_poll = False
+    device.v1_writes.clear()
+    await async_write_infrared_mode(coordinator, "Manual", 100)
+    assert device.v1_writes == [(0, "Manual", 100, "0", "MiddleLight")]
+    assert coordinator.get_infrared_mode() == "Manual"
 
 
 async def test_an_unconfirmable_press_still_tries_the_other_path():

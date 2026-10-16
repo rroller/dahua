@@ -4678,10 +4678,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def lighting_v2_samples(self) -> int:
         """How many real Lighting_V2 readings this channel's poll has taken.
 
-        Only useful as a before-and-after pair around `async_refresh`: equal
-        means no fresh sample arrived, whether because the read failed and the
-        last table was carried, because the whole refresh failed and `data` was
-        left as it was, or because this poll did not ask for the table at all.
+        Compare before and after a successful `async_refresh`. Equal means no
+        new reading arrived: the read failed and carried the previous table,
+        or the poll did not ask for the table at all.
+        An increased count alone does not guarantee publication: another read
+        can fail the overall refresh after the lighting branch has succeeded.
         """
         return self._lighting_v2_samples
 

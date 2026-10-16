@@ -73,7 +73,7 @@ def infrared_write_is_refused(coordinator) -> bool:
 
 
 def _readback_is_fresh(coordinator, samples_before: int) -> bool:
-    """Whether a real Lighting_V2 reading arrived during the refresh just done.
+    """Whether the completed refresh published a real Lighting_V2 reading.
 
     The check after a write compares what was asked against what the device
     reports, and that is only evidence when the reading is newer than the write.
@@ -90,11 +90,19 @@ def _readback_is_fresh(coordinator, samples_before: int) -> bool:
     than timestamped because the question is "did one arrive", and a clock
     invites a tolerance nobody can choose correctly.
 
+    The overall refresh must also succeed. A lighting read can increment the
+    count before another branch fails, in which case Home Assistant keeps the
+    previous data. That unpublished sample cannot validate the mode read from
+    the old data, even though the count moved.
+
     Only meaningful where the check reads Lighting_V2. A channel whose mode
     comes from the v1 table is judged exactly as it always was, so no device
     that works today changes behaviour because of this.
     """
-    return coordinator.lighting_v2_samples() > samples_before
+    return (
+        coordinator.last_update_success
+        and coordinator.lighting_v2_samples() > samples_before
+    )
 
 
 def forget_refused_infrared_writes(coordinator=None) -> None:

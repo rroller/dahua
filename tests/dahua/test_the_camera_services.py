@@ -72,6 +72,7 @@ class _Coordinator:
     def __init__(self, model="IPC-HDW1234", vto_client=None, profile_is_writable=True):
         self.client = _Client()
         self.refreshed = 0
+        self.last_update_success = True
         self.model = model
         self.profile_is_writable = profile_is_writable
         self.vto_client = vto_client
