@@ -4904,7 +4904,44 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             **self._encode_audio_last_values,
             **{key: encode[key] for key in self._encode_audio_keys if key in encode},
         }
+        self._async_refresh_stream_codecs(encode)
         return self._encode_audio_last_values.copy()
+
+    @callback
+    def _async_refresh_stream_codecs(self, encode: dict) -> None:
+        """Keep the codec metadata current from an Encode answer already in hand.
+
+        `_stream_codecs` was written once, by `_async_read_stream_codecs` during
+        initialisation, and never again. Turning a stream's audio on with the
+        switch this poll feeds therefore left `get_stream_has_audio` reporting
+        False until the entry was reloaded, and left the `webrtc_cannot_play`
+        card standing after the thing it complains about was fixed (#997
+        review).
+
+        Costs no request: this is the same `Encode` answer the audio poll just
+        read, and `parse_stream_codecs` takes exactly that shape.
+
+        An empty answer keeps what is held, for the same reason the audio
+        values above do: `async_get_config` returns {} for a refusal as well as
+        for a device with nothing to say, and discarding the codecs on a
+        momentary refusal would raise the card rather than clear it.
+
+        Nothing here may fail the poll. The fan-out has no `return_exceptions`,
+        so the card is guarded separately from the parse exactly as it is at
+        setup: the codecs are what the camera attributes read, and a card that
+        cannot be raised must cost the card and nothing else.
+        """
+        if not encode:
+            return
+        self._stream_codecs = dahua_utils.parse_stream_codecs(encode, self._channel)
+        try:
+            self._async_report_unplayable_stream()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not report the unplayable stream on %s",
+                self._address,
+                exc_info=exception,
+            )
 
     def is_ptz3e10x_t180(self) -> bool:
         """Return whether this is the verified dual-sensor T180 family."""
