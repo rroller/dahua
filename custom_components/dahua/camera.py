@@ -196,7 +196,12 @@ PARALLEL_UPDATES = 1
 
 
 # The last `vto_open_door` call each doorbell was asked to act on, keyed by the
-# device's address, so one press opens the door once.
+# device rather than by the address, so one press opens the door once.
+#
+# `client.device_key` and not `get_address()`: two Dahua boxes can sit behind one
+# IP on different ports, which `_device_key` in client.py exists for, and keying
+# on the address alone would open whichever of them answered first and silently
+# skip the other.
 #
 # **Why this is needed.** A camera entity is created per stream, and an entity
 # service runs on every entity the call resolves to. Aiming `vto_open_door` at
@@ -228,18 +233,18 @@ async def _async_open_door_once(entity, call: ServiceCall) -> None:
     one entity behaves exactly as it always has, including when that entity is a
     sub stream nobody else targeted.
     """
-    address = entity._coordinator.get_address()  # pylint: disable=protected-access
-    if _OPEN_DOOR_CALLS.get(address) is call:
+    device = entity._coordinator.client.device_key  # pylint: disable=protected-access
+    if _OPEN_DOOR_CALLS.get(device) is call:
         # A sibling stream of this doorbell already opened it for this press.
         _LOGGER.debug(
             "%s: door already opened for this call, %s is not asking again",
-            address,
+            device,
             entity.entity_id,
         )
         return
     # Recorded before the await, so two entities of one fan-out cannot both get
     # past this while the first request is in flight.
-    _OPEN_DOOR_CALLS[address] = call
+    _OPEN_DOOR_CALLS[device] = call
     await entity.async_vto_open_door(call.data["door_id"])
 
 

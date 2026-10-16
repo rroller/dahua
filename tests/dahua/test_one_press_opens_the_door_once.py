@@ -42,6 +42,7 @@ from homeassistant.helpers.service import entity_service_call
 
 from custom_components.dahua import camera as camera_module
 from custom_components.dahua.camera import DahuaCamera
+from custom_components.dahua.client import _device_key
 
 ADDRESS = "192.168.1.200"
 
@@ -49,8 +50,11 @@ ADDRESS = "192.168.1.200"
 class _Client:
     """Records the door requests, and refuses a second one as the VTO does."""
 
-    def __init__(self):
+    def __init__(self, address=ADDRESS, port=80):
         self.opened = []
+        # Built by the real helper rather than spelled out here, so a change to
+        # how a device is identified reaches this test instead of passing it by.
+        self.device_key = _device_key(address, port)
 
     async def async_access_control_open_door(self, door_id):
         self.opened.append(door_id)
@@ -78,15 +82,16 @@ class _Coordinator:
     device, which is the whole reason a second request reaches it at all.
     """
 
-    def __init__(self, client):
+    def __init__(self, client, address=ADDRESS):
         self.client = client
+        self._address = address
         self._channel = 0
         self.data = {}
         # Read by CoordinatorEntity.available, which the real fan-out filters on.
         self.last_update_success = True
 
     def get_address(self):
-        return ADDRESS
+        return self._address
 
     def get_device_name(self):
         return "Cancello"
@@ -126,23 +131,23 @@ class _Coordinator:
         return None
 
 
-def _cameras(hass):
+def _cameras(hass, name="cancello", address=ADDRESS, port=80):
     """A doorbell's main and sub camera entities, both enabled.
 
     Both, because a sub stream is created disabled by default
     (`entity_registry_enabled_default` is `self._stream_index == 0`) and this
     bug only reaches a user who turned theirs on, which @Dieghito72 had.
     """
-    client = _Client()
-    coordinator = _Coordinator(client)
+    client = _Client(address, port)
+    coordinator = _Coordinator(client, address)
     entry = type("Entry", (), {"entry_id": "an-entry", "data": {}, "options": {}})()
 
     cameras = {}
-    for index, entity_id in ((0, "camera.cancello_main"), (1, "camera.cancello_sub")):
+    for index, suffix in ((0, "main"), (1, "sub")):
         entity = DahuaCamera(coordinator, index, entry)
         entity.hass = hass
-        entity.entity_id = entity_id
-        cameras[entity_id] = entity
+        entity.entity_id = "camera.%s_%s" % (name, suffix)
+        cameras[entity.entity_id] = entity
     return client, cameras
 
 
@@ -243,21 +248,37 @@ async def test_two_doorbells_in_one_call_each_open_once(hass):
     An action aimed at an area holding two doorbells must open both, once each.
     """
     client_a, cameras_a = _cameras(hass)
-    client_b, cameras_b = _cameras(hass)
+    client_b, cameras_b = _cameras(hass, "portone", "192.168.1.201")
 
-    cameras = {}
-    for entity_id, entity in cameras_a.items():
-        cameras[entity_id] = entity
-    for entity_id, entity in cameras_b.items():
-        new_id = entity_id.replace("cancello", "portone")
-        entity.entity_id = new_id
-        entity._coordinator.get_address = lambda: "192.168.1.201"
-        cameras[new_id] = entity
-
+    cameras = {**cameras_a, **cameras_b}
     await _fan_out(hass, cameras, _call(hass, list(cameras)))
 
     assert client_a.opened == [1]
     assert client_b.opened == [1]
+
+
+async def test_two_doorbells_behind_one_address_each_open_once(hass):
+    """Two boxes on one IP, different ports, are two devices.
+
+    A bridge forwarding 80 to one doorbell and 8081 to another is what
+    `_device_key` in client.py exists for, and it is a supported setup. Keyed on
+    the address alone, the second doorbell's entities all take themselves for
+    the first one's siblings, so that gate never opens and nothing is raised:
+    the action reports success and the visitor stays outside.
+    """
+    client_a, cameras_a = _cameras(hass, port=80)
+    client_b, cameras_b = _cameras(hass, "portone", port=8081)
+    assert client_a.device_key != client_b.device_key, "the premise of this test"
+    assert (
+        cameras_a["camera.cancello_main"]._coordinator.get_address()
+        == cameras_b["camera.portone_main"]._coordinator.get_address()
+    ), "and they really do share an address"
+
+    cameras = {**cameras_a, **cameras_b}
+    await _fan_out(hass, cameras, _call(hass, list(cameras)))
+
+    assert client_a.opened == [1]
+    assert client_b.opened == [1], "the second doorbell is a different door"
 
 
 async def test_the_entity_method_is_untouched_by_the_wrapper(hass):
