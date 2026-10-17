@@ -143,6 +143,20 @@ VTH_CAMERA_LINKS = "vth.camera_links"
 DISARMING_LINKAGE_ENABLE = "table.DisableLinkage.Enable"
 EVENT_NOTIFY_ENABLE = "table.DisableEventNotify.Enable"
 
+# The one key the cloud connection switch reads, and the one its probe judges
+# on. VSP_PaaS is Dahua's easy4ip connection, the one a DMSS call arrives
+# over. A VTO2000A answers HTTP 500 for this table while serving T2UServer,
+# and T2UServer is a different feature: turning that one off does not stop a
+# DMSS call (#591).
+CLOUD_CONNECTION_ENABLE = "table.VSP_PaaS.Enable"
+
+# The one key the AI tour switch reads, per channel. IntelliTour is indexed by
+# channel and a channel with no tour plan is reported as a null row rather than
+# left out, so the presence of this exact key is what says the channel has a
+# tour (#1051, measured on a DH-SDT6E432-8P-MB-A-PV1 whose row [0] is null and
+# whose row [1] carries Enable).
+INTELLI_TOUR_ENABLE = "table.IntelliTour[{0}].Enable"
+
 # The coaxial probe deliberately only treats an HTTP error response as "not
 # supported"; a connection failure there should still fail setup. Timeouts join
 # it for the reason above, without widening the rest.
@@ -324,19 +338,35 @@ def infrared_transport(v2_row, v1_refused: bool) -> str:
 
     **The order matters and the obvious rule is wrong.** The first version of this
     preferred v2 wherever a v2 row existed, which decides from what a device
-    *reports it has*. Measured on a DHI-NVR5464-16P-EI that is right -- v1 is
-    refused there and v2 works. But #647 carries a directly connected
-    IPC-T5442TM-AS-6mm reporting three v2 InfraredLight rows while its v1 table is
-    presumably accepted, and that issue's whole complaint is "the CGI values change
-    and the physical LEDs do not". Moving every camera that merely reports a v2 row
-    onto a table nobody has verified drives its emitter is that complaint, shipped.
+    *reports it has*. Deciding from what the device *accepts* instead keeps every
+    working camera where it is and only moves the ones that have actually refused.
+    That is the shape this codebase has arrived at independently three times --
+    `_HOST_CGI_CONFIG_ABSENT`, `_RPC2_TABLE_UNAVAILABLE` and `refusals` all learn
+    from the device rather than from a claim -- while the fifteen capabilities
+    still gated on a model string are the recurring bug class (#570, #676, #690).
 
-    Deciding from what the device *accepts* keeps every working camera where it is
-    and only moves the ones that have actually refused. It is also the shape this
-    codebase has arrived at independently three times -- `_HOST_CGI_CONFIG_ABSENT`,
-    `_RPC2_TABLE_UNAVAILABLE` and `refusals` all learn from a refusal rather than
-    from a claim -- while the fifteen capabilities still gated on a model string are
-    the recurring bug class (#570, #676, #690).
+    **But "refused" is not the only way a device says no, and this rule used to
+    miss the other way.** It was written when the IPC-T5442TM-AS-6mm in #647 was
+    only *presumed* to accept v1, and the note here said a v2 write had been proved
+    to move the mode but never the light. Both halves have since been measured on
+    that camera, and they go the other way:
+
+        setConfig&Lighting[0][0].Mode=Manual        200 'OK'
+        getConfig&name=Lighting       [0][0].Mode=Manual   <- the write is stored
+        getConfig&name=Lighting_V2 [0][0][0].Mode=Off      <- and the LED is dark
+        setConfig&Lighting_V2[0][0][0].Mode=Manual  turns the physical emitter on
+
+    So on that firmware the two tables are unlinked -- they do not even carry the
+    same number of profiles, four against three -- and v1 is a store that answers
+    `OK` and drives nothing. A rule that only learns from a refusal can never leave
+    it, because it is never refused.
+
+    This function is unchanged by that, deliberately: v1 still goes first, and no
+    camera is moved on the strength of a row it merely reports. What changed is
+    that `async_write_infrared_mode` now checks the v2 row after a v1 write and
+    counts "accepted and then nothing moved" as a refusal too, so the device still
+    gets to decide. There is as yet no measured device with a v2 InfraredLight row
+    whose emitter v1 actually drives; if one appears, it keeps v1 under this rule.
     """
     if v1_refused and v2_row is not None:
         return "v2"
@@ -770,6 +800,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _storage_disks: list = []
     _storage_last_refresh: float = 0.0
 
+    # How many times the poll has read Lighting_V2 and got a real answer. It is
+    # a count rather than a flag because the question callers ask is "did a
+    # fresh sample arrive across this refresh", and only a value that moves can
+    # answer that: `_async_fetch_lighting_v2` carries the previous table on a
+    # read failure, and a refresh that fails outright leaves `data` untouched
+    # without calling it at all. Both look identical in the data itself.
+    #
+    # On the class as well as in __init__ because a great many tests build a
+    # coordinator with object.__new__ and set only what they are about.
+    _lighting_v2_samples: int = 0
+
     # Whether this device answered magicBox.getCPUUsage and getMemoryInfo at
     # setup. Both are RPC2 only with no CGI form, so a device with RPC2 off has
     # neither sensor -- which is why this is a probe rather than an assumption.
@@ -827,6 +868,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # so every coordinator the platform is handed has to be able to answer it,
     # including the ones the suite builds with object.__new__.
     _supports_event_notifications: bool = False
+
+    # Whether this device reports the key the cloud connection switch reads.
+    # On the class for the same reason as the line above.
+    _supports_cloud_connection: bool = False
+
+    # Whether THIS CHANNEL reports the key the AI tour switch reads. Per
+    # channel rather than per device: a dual sensor camera carries the tour on
+    # its PTZ channel only. On the class for the same reason as the line above.
+    _supports_intelli_tour: bool = False
 
     """Class to manage fetching data from the API."""
 
@@ -917,6 +967,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._manual_security_light = _channel_first(CONF_MANUAL_SECURITY_LIGHT, False)
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
+        self._supports_cloud_connection = False
+        self._supports_intelli_tour = False
         # What the device's own cloud OTA check last found, read from its
         # _DHCloudUpgrade_ config table. Reading it is local; see
         # _async_probe_cloud_upgrade.
@@ -1175,7 +1227,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 await self._session.close()
                 self._session = None
-            except Exception as e:
+            except Exception:  # pylint: disable=broad-except
                 _LOGGER.exception("serverConnect - failed to close session")
             finally:
                 await _release_connector(self._address)
@@ -1443,6 +1495,72 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         already = self.supports_alarm_output()
         return await self._async_probe_alarm_output() and not already
+
+    async def _async_probe_cloud_connection(self) -> bool:
+        """Ask for the cloud table, and judge on the key the switch reads.
+
+        `async_get_config` turns an HTTP refusal into {}, so a probe written as
+        "did the read raise" concludes that every device has this. Measured on
+        a VTO2000A, which answers HTTP 500 for VSP_PaaS while four other tables
+        answer 200 on the same request with the same credentials, and on a
+        VTO2311R-WP, which answers with the table, `table.VSP_PaaS.Enable`
+        included.
+        """
+        try:
+            table = await self.client.async_get_cloud_connection()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("cloud_connection", probe_error)
+            self._supports_cloud_connection = False
+            return False
+        self._note_probe_answered("cloud_connection")
+        self._supports_cloud_connection = CLOUD_CONNECTION_ENABLE in table
+        _LOGGER.debug(
+            "Device supports a cloud connection switch=%s",
+            self._supports_cloud_connection,
+        )
+        return self._supports_cloud_connection
+
+    async def _async_retry_cloud_connection(self) -> bool:
+        """Whether a cloud table turned up that was missed at setup."""
+        already = self._supports_cloud_connection
+        return await self._async_probe_cloud_connection() and not already
+
+    async def _async_probe_intelli_tour(self) -> bool:
+        """Ask for the tour table, and judge on this channel's own row.
+
+        The read is the whole table, because the device serves it that way and
+        the shared cache then costs one request for every channel. What is
+        judged is one key: `table.IntelliTour[<this channel>].Enable`.
+
+        Three ways this would be wrong if it judged anything else:
+
+        * on whether the read raised. `async_get_config` turns a refusal into
+          {}, so every device would be said to have a tour.
+        * on the table being non-empty. A dual sensor camera serves one table
+          with a row per channel, so the panorama channel would get a switch
+          that writes to a row it does not have.
+        * on the row existing. Row [0] of the measured camera is `null`, which
+          is a row without the key rather than no row.
+        """
+        try:
+            table = await self.client.async_get_intelli_tour()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("intelli_tour", probe_error)
+            self._supports_intelli_tour = False
+            return False
+        self._note_probe_answered("intelli_tour")
+        self._supports_intelli_tour = INTELLI_TOUR_ENABLE.format(self._channel) in table
+        _LOGGER.debug(
+            "Channel %s supports an AI tour switch=%s",
+            self._channel,
+            self._supports_intelli_tour,
+        )
+        return self._supports_intelli_tour
+
+    async def _async_retry_intelli_tour(self) -> bool:
+        """Whether a tour row turned up that was missed at setup."""
+        already = self._supports_intelli_tour
+        return await self._async_probe_intelli_tour() and not already
 
     async def _async_probe_disarming_linkage(self) -> bool:
         """Ask for the DisableLinkage table, and remember what came back.
@@ -1946,6 +2064,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 await self._async_probe_alarm_output()
                 await self._async_probe_disarming_linkage()
                 await self._async_probe_event_notifications()
+                # Host wide rather than per channel, and only the switch
+                # platform reads it, so a device whose switches are turned
+                # off is never asked.
+                if self._wanted_by(SWITCH):
+                    await self._async_probe_cloud_connection()
+                    # Per channel, unlike the line above: the tour belongs to
+                    # the channel whose row carries Enable.
+                    await self._async_probe_intelli_tour()
 
                 if self._wanted_by(UPDATE):
                     await self._async_probe_cloud_upgrade()
@@ -2333,6 +2459,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self.client.async_get_event_notifications())
                 )
+            if self._supports_cloud_connection and self._wanted_by(SWITCH):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_cloud_connection())
+                )
+            if self._supports_intelli_tour and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self._async_fetch_intelli_tour()))
             if self.supports_alarm_output() and self._wanted_by(SWITCH):
                 coros.append(
                     asyncio.ensure_future(self.client.async_get_alarm_output_state())
@@ -3452,7 +3584,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 exc_info=exception,
             )
             return
+        self._note_probe_answered("system load")
         self._supports_system_load = load.get("usage") is not None
+
+    async def _async_retry_system_load(self) -> bool:
+        """Whether the processor and memory turned up after setup missed them.
+
+        The last of the #1057 conversions that gates entities. It differs from
+        the others in where those entities live: the processor and the memory
+        are the box's, not a channel's, so one channel carries them and
+        sensor.py decides which. A late answer therefore has to rebuild
+        through the same choice rather than hanging two more sensors off
+        whichever channel happened to answer second.
+
+        Both reads are RPC2 only, so a device with RPC2 switched off refuses
+        in a way that is not a `PROBE_FAILED` at all and is never recorded as
+        unanswered. That device is not retried, which is right: it has said
+        what it does.
+        """
+        already = self._supports_system_load
+        await self._async_probe_system_load()
+        return self._supports_system_load and not already
 
     async def _async_read_stream_codecs(self) -> None:
         """Read the Encode table once, for the codec and audio of each stream.
@@ -3534,6 +3686,66 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether the processor and memory sensors should exist."""
         return self._supports_system_load
 
+    async def _async_fetch_cloud_connection(self) -> dict | None:
+        """Poll the cloud flag, and keep nothing else from that table.
+
+        Two reasons for the trim rather than returning what came back. The
+        table carries the device's own cloud credentials -- `SN`, `Key`,
+        `AbHash`, `Username` -- and every answer in this fan-out is merged into
+        `data`, which the diagnostics download dumps. And a value no entity
+        reads has no business being polled into state at all.
+
+        Wrapped for the reason every read here is: the gather has no
+        `return_exceptions`, so one refused read would fail the whole refresh
+        and take every entity on the channel with it (#1006, #1024). A read
+        that says nothing carries the previous answer, so a momentary refusal
+        does not report the cloud as switched off.
+        """
+        try:
+            table = await self.client.async_get_cloud_connection()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the cloud connection on %s",
+                self._address,
+                exc_info=exception,
+            )
+            table = {}
+        value = table.get(CLOUD_CONNECTION_ENABLE)
+        if value is None:
+            value = (getattr(self, "data", None) or {}).get(CLOUD_CONNECTION_ENABLE)
+        return None if value is None else {CLOUD_CONNECTION_ENABLE: value}
+
+    async def _async_fetch_intelli_tour(self) -> dict | None:
+        """Poll this channel's tour flag, and keep nothing else from the table.
+
+        Trimmed to the one key for the same two reasons the cloud fetch is.
+        The rest of the row is the tour itself -- `TourPlan`, `TourPriMode`,
+        `SceneSwitchingTime`, `IdleWaitingTime` -- which no entity reads, and
+        every answer in this fan-out is merged into `data` and dumped by
+        diagnostics. On a recorder the table also carries every other
+        channel's row, so returning it whole would put sixteen channels'
+        state into each of sixteen coordinators.
+
+        Wrapped because the gather has no `return_exceptions`: one refused
+        read would fail the whole refresh and take every entity on the channel
+        with it (#1006, #1024). A read that says nothing carries the previous
+        answer, so a momentary refusal does not report the tour as stopped.
+        """
+        try:
+            table = await self.client.async_get_intelli_tour()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the AI tour on %s",
+                self._address,
+                exc_info=exception,
+            )
+            table = {}
+        key = INTELLI_TOUR_ENABLE.format(self._channel)
+        value = table.get(key)
+        if value is None:
+            value = (getattr(self, "data", None) or {}).get(key)
+        return None if value is None else {key: value}
+
     async def _async_fetch_system_load(self) -> dict | None:
         """Poll the processor and memory, keeping the last answer on a refusal.
 
@@ -3600,8 +3812,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_channel_mac(self):
         """The camera's MAC, or None. Only a recorder can answer this for a
-        camera on its own PoE network."""
-        return self._slot().get("mac") or None
+        camera on its own PoE network.
+
+        None also for a slot whose MAC is a placeholder rather than an
+        address: a recorder that cannot name the camera reports
+        `ff:ff:ff:ff:ff:ff`, and claiming that as a connection told Home
+        Assistant every such channel was the same hardware (#1078). See
+        `dahua_utils.usable_mac`.
+        """
+        return dahua_utils.usable_mac(self._slot().get("mac"))
 
     def get_channel_firmware_version(self):
         """The camera's firmware, or None if the recorder did not say.
@@ -4007,6 +4226,25 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self.data.get(
                 "table.MotionDetect[{0}].Enable".format(self._channel), ""
             ).lower()
+            == "true"
+        )
+
+    def supports_cloud_connection(self) -> bool:
+        """Whether this device reports the key the cloud switch reads."""
+        return self._supports_cloud_connection
+
+    def is_cloud_connection_enabled(self) -> bool:
+        """Whether the device's cloud connection is switched on."""
+        return str(self.data.get(CLOUD_CONNECTION_ENABLE, "")).lower() == "true"
+
+    def supports_intelli_tour(self) -> bool:
+        """Whether this channel reports the key the AI tour switch reads."""
+        return self._supports_intelli_tour
+
+    def is_intelli_tour_enabled(self) -> bool:
+        """Whether this channel's AI tour plan is running."""
+        return (
+            str(self.data.get(INTELLI_TOUR_ENABLE.format(self._channel), "")).lower()
             == "true"
         )
 
@@ -4417,14 +4655,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         rather than flattened, because a caller checking whether a write landed
         has to be able to see that it did not.
 
-        Read from Lighting_V2 when this channel has a row there, because that is
-        the table the write goes to and the two can disagree -- a channel can
-        report `ZoomPrio` in v2 and something else in v1. Reading one and writing
-        the other is how a control reports a state it is not setting.
+        Read from Lighting_V2 whenever this channel has a row there, whichever
+        table the write went to. The two tables can disagree, and on firmware
+        that does not link them the v1 table is the one that lies: measured on an
+        EmpireTech IPC-T5442TM-AS-6mm (#647), a `Lighting[0][0].Mode=Manual`
+        write answers `OK` and reads back `Manual` while
+        `Lighting_V2[0][0][0].Mode` stays `Off` and the emitter stays dark.
+
+        Reading whichever table was written is what made that invisible: the
+        check after a write compared the v1 value against the v1 value it had
+        just stored and agreed with itself. The emitter follows v2 wherever v2
+        exists, so that is the honest thing to report, even on a channel still
+        being written through v1.
 
         Empty when this channel reports no lighting at all.
         """
-        if self.infrared_uses_lighting_v2():
+        if self.infrared_reads_lighting_v2():
             profile, index, _bank = self.get_infrared_v2_row()
             return self.data.get(
                 "table.Lighting_V2[{0}][{1}][{2}].Mode".format(
@@ -4451,6 +4697,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self.data, self._channel, self.get_infrared_profile()
         )
 
+    def lighting_v2_samples(self) -> int:
+        """How many real Lighting_V2 readings this channel's poll has taken.
+
+        Compare before and after a successful `async_refresh`. Equal means no
+        new reading arrived: the read failed and carried the previous table,
+        or the poll did not ask for the table at all.
+        An increased count alone does not guarantee publication: another read
+        can fail the overall refresh after the lighting branch has succeeded.
+        """
+        return self._lighting_v2_samples
+
     def get_infrared_v2_row(self):
         """(profile, index, bank) for infrared in Lighting_V2, or None.
 
@@ -4460,8 +4717,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return infrared_v2_row(self.data, self._channel, self.get_profile_mode())
 
+    def infrared_reads_lighting_v2(self) -> bool:
+        """Whether this channel's infrared state should be *read* from Lighting_V2.
+
+        Wherever the device serves a row, which is a weaker test than the one the
+        *write* uses. The two are deliberately different: a write has to go to a
+        table the device will accept, while a read has to come from the table the
+        emitter follows, and on firmware that does not link them those are not
+        the same table (#647). Reading v2 while still writing v1 is what lets the
+        write check in infrared.py notice that an accepted write changed nothing.
+        """
+        return self.get_infrared_v2_row() is not None
+
     def infrared_uses_lighting_v2(self) -> bool:
-        """Whether this channel's infrared is driven through Lighting_V2.
+        """Whether this channel's infrared is *written* through Lighting_V2.
 
         Only once the v1 table has been refused for this channel, and only when the
         device serves a v2 row to fall back to. See `infrared_transport` for why it
@@ -4495,7 +4764,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         None rather than a number when the channel reports none, so the attribute
         says "not known" instead of claiming the emitter is at zero.
         """
-        if self.infrared_uses_lighting_v2():
+        if self.infrared_reads_lighting_v2():
             profile, index, bank = self.get_infrared_v2_row()
             level = self.data.get(
                 "table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
@@ -5142,7 +5411,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         there is nothing to carry, which the gather already skips.
         """
         try:
-            return await self.client.async_get_lighting_v2()
+            table = await self.client.async_get_lighting_v2()
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.debug(
                 "Could not read Lighting_V2 for channel %s",
@@ -5156,6 +5425,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if key.startswith("table.Lighting_V2[")
             }
             return carried or None
+        # Counted only here, on the path that really spoke to the device. A
+        # caller comparing the count across a refresh can then tell a fresh
+        # reading from the carried one above, which is otherwise invisible: see
+        # `async_write_infrared_mode`, which must not learn a permanent refusal
+        # from a sample that may predate the write it is checking.
+        self._lighting_v2_samples += 1
+        return table
 
     def get_vto_client(self) -> DahuaVTOClient | None:
         """The doorbell's client, or None when there is not a live one.
@@ -5199,6 +5475,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 RETRYABLE_CAPABILITIES = {
     "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
     "coaxial_control": DahuaDataUpdateCoordinator._async_retry_coaxial_control,
+    "cloud_connection": DahuaDataUpdateCoordinator._async_retry_cloud_connection,
+    "intelli_tour": DahuaDataUpdateCoordinator._async_retry_intelli_tour,
     "cloud_upgrade": DahuaDataUpdateCoordinator._async_retry_cloud_upgrade,
     "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
     "disarming_linkage": DahuaDataUpdateCoordinator._async_retry_disarming_linkage,
@@ -5207,5 +5485,10 @@ RETRYABLE_CAPABILITIES = {
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
     "profile_mode": DahuaDataUpdateCoordinator._async_retry_profile_mode,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
+    # Spelled with a space because that is the name `_note_probe_refusal`
+    # already records it under, and the registry is keyed by that name so a
+    # probe is retried under the name it failed under. Renaming it would
+    # also rename the field the diagnostics dump has been reporting.
+    "system load": DahuaDataUpdateCoordinator._async_retry_system_load,
     "video_color": DahuaDataUpdateCoordinator._async_retry_video_color,
 }

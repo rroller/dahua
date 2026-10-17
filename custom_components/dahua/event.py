@@ -8,9 +8,8 @@ import logging
 from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.core import HomeAssistant, callback
 
-from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
+from custom_components.dahua import entry_coordinators
 
-from .const import DOMAIN
 from .entity import DahuaEventDrivenEntity
 
 _LOGGER = logging.getLogger(__package__)

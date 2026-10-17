@@ -171,6 +171,10 @@ BACKED_UP_TABLES = (
     "DisableEventNotify",
     "DisableLinkage",
     "FloodLightMode",
+    # The AI tour plan the tour switch starts and stops (#1051). The switch
+    # writes only Enable, but the backup takes the table, so a restore brings
+    # back the plan itself as well.
+    "IntelliTour",
     # The privacy mask on the cameras that have one, measured on an
     # IP4M-1041W. Found by the guard test rather than by me: the first
     # version of its scan only matched a table named straight after
@@ -185,10 +189,78 @@ BACKED_UP_TABLES = (
     "PrivacyMasking",
     "RecordMode",
     "SmartMotionDetect",
+    # The cloud connection the cloud switch writes (#591). Its neighbours
+    # in that table are not settings, which is what REDACTED_BACKUP_FIELDS
+    # below is for.
+    "VSP_PaaS",
     "VideoAnalyseRule",
     "VideoColor",
     "VideoInDayNight",
     "VideoInMode",
     "VideoInOptions",
     "VideoWidget",
+)
+
+
+# Every event code a user can subscribe to, in the order the selection list
+# shows them. `All` is the device's own catch-all rather than a code it ever
+# sends, which is why every consumer filters it out.
+#
+# Here rather than in config_flow.py, which is where it used to live, because
+# three other modules need the same list: binary_sensor.py builds the set of
+# codes it ships a translation for from it, client.py expands `All` for the
+# RPC2 event poll, and the config flow offers it. binary_sensor.py held its
+# own copy of all 41 codes, so adding one meant editing two files and nothing
+# failed if you edited one.
+ALL_EVENTS = [
+    "VideoMotion",
+    "VideoLoss",
+    "AlarmLocal",
+    "CrossLineDetection",
+    "CrossRegionDetection",
+    "AudioMutation",
+    "SmartMotionHuman",
+    "SmartMotionVehicle",
+    "VideoBlind",
+    "AudioAnomaly",
+    "VideoMotionInfo",
+    "NewFile",
+    "IntelliFrame",
+    "LeftDetection",
+    "TakenAwayDetection",
+    "VideoAbnormalDetection",
+    "FaceDetection",
+    "FaceRecognition",
+    "HumanTrait",
+    "VideoUnFocus",
+    "WanderDetection",
+    "RioterDetection",
+    "ParkingDetection",
+    "MoveDetection",
+    "StorageNotExist",
+    "StorageFailure",
+    "StorageLowSpace",
+    "AlarmOutput",
+    "InterVideoAccess",
+    "NTPAdjustTime",
+    "TimeChange",
+    "MDResult",
+    "HeatImagingTemper",
+    "CrowdDetection",
+    "FireWarning",
+    "FireWarningInfo",
+    "ObjectPlacementDetection",
+    "ObjectRemovalDetection",
+    "All",
+    "Traffic",
+    "TrafficJunction",
+    "TrafficSnapshot",
+]
+# Fields that identify the device to Dahua's cloud rather than configure
+# anything. A backup is a file somebody attaches to a bug report, and
+# VSP_PaaS carries the device's cloud key, its serial and its cloud login.
+# Matched on the field name, the part after the last dot, so the same rule
+# covers a table added later that carries one of them.
+REDACTED_BACKUP_FIELDS = frozenset(
+    {"AbHash", "CheckCode", "Key", "Password", "SN", "UUID", "Username"}
 )

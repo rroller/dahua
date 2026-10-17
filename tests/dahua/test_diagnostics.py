@@ -811,3 +811,117 @@ async def test_a_client_without_a_device_key_does_not_break_diagnostics(hass):
     device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
 
     assert device["device_is_zero_indexed"] is None
+
+
+# --- whether reboot detection is running at all ------------------------------
+#
+# #1039. A device that refuses magicBox.getUpTime is asked once and then left
+# alone, which is right: that refusal used to tear down the shared RPC2 login
+# and cost most of the integration's login traffic on a recorder. What it also
+# does is switch a feature off for the life of the entry, and nothing said so.
+# The latch lives in memory, the refusal is logged at debug, and the
+# illuminator simply stops restoring a camera's lighting scheme after a reboot.
+#
+# Driven through the real host function rather than by writing the state dict
+# by hand, so a field renamed on one side of this fails here.
+
+
+class _UptimeHost:
+    """The two things `_async_get_host_uptime_generation` reads."""
+
+    def __init__(self, answers):
+        self._address = ADDRESS
+        self._answers = list(answers)
+        self.client = SimpleNamespace(async_get_uptime_last=self._read)
+
+    async def _read(self):
+        answer = self._answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+async def _host_uptime(answers):
+    """Run the real read once per answer.
+
+    The dedupe window is cleared *between* reads and not after the last one:
+    `last_read` is what tells the dump this host has been asked at all, and a
+    helper that zeroed it at the end would be answering its own question.
+    """
+    from custom_components.dahua import host as host_module
+
+    host = _UptimeHost(answers)
+    for index in range(len(answers)):
+        if index:
+            host_module._HOST_UPTIME_STATE[ADDRESS]["last_read"] = 0.0
+        await host_module._async_get_host_uptime_generation(host)
+
+
+async def test_a_host_nobody_has_asked_is_not_reported_as_refusing(hass):
+    """Before the first read, "off" and "no reboot seen" look identical, and
+    the dump has to be able to tell them apart."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["reboot_detection_unsupported"] is False
+    assert host["host_uptime_read"] is False
+    assert host["host_uptime_last"] is None
+    assert host["reboot_generation"] == 0
+
+
+async def test_a_host_that_refuses_the_read_says_reboot_detection_is_off(hass):
+    """The recorder and the doorbell measured in #1039 both answer
+    `code=268632080` with an empty message, which is "served, not supported on
+    this platform" rather than a session problem."""
+    from custom_components.dahua.rpc2 import Rpc2MethodRefused
+
+    entry = _entry(hass)
+    _install(hass, entry)
+    await _host_uptime([Rpc2MethodRefused("getUpTime", code=268632080, message="")])
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["reboot_detection_unsupported"] is True
+    assert host["reboot_generation"] == 0
+    assert host["host_uptime_last"] is None
+
+
+async def test_a_host_that_answers_reports_its_sample(hass):
+    entry = _entry(hass)
+    _install(hass, entry)
+    await _host_uptime([1038879, 1038999])
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["reboot_detection_unsupported"] is False
+    assert host["host_uptime_read"] is True
+    assert host["host_uptime_last"] == 1038999
+    assert host["reboot_generation"] == 0
+
+
+async def test_a_reboot_shows_up_as_a_generation(hass):
+    """Uptime going backwards is the whole signal."""
+    entry = _entry(hass)
+    _install(hass, entry)
+    await _host_uptime([1038879, 42])
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["reboot_generation"] == 1
+    assert host["host_uptime_last"] == 42
+
+
+async def test_silence_does_not_switch_the_feature_off(hass):
+    """A device that did not answer has said nothing about what it supports,
+    and reading that as a definite no is the #724 mistake. The dump has to
+    agree with the latch, or it would report a healthy host as unsupported."""
+    entry = _entry(hass)
+    _install(hass, entry)
+    await _host_uptime([TimeoutError()])
+
+    host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
+
+    assert host["reboot_detection_unsupported"] is False
+    assert host["host_uptime_read"] is True, "it was asked, and said nothing"

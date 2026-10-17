@@ -293,6 +293,23 @@ class _Coordinator:
         against; test_driving_infrared_through_lighting_v2.py covers the other."""
         return self.infrared_v2_row
 
+    def infrared_reads_lighting_v2(self):
+        """Whether the mode is read from Lighting_V2, which is wherever a row
+        exists. Weaker than the test the *write* uses, deliberately: see
+        test_the_v1_lighting_table_can_be_a_decoy.py."""
+        return self.get_infrared_v2_row() is not None
+
+    def lighting_v2_samples(self):
+        """How many real Lighting_V2 readings the poll has taken.
+
+        Modelled on `refreshed`, so every refresh here counts as one: this
+        double's device always answers. A device whose read fails carries the
+        previous table forward and does *not* count, which is the case
+        test_the_v1_lighting_table_can_be_a_decoy.py covers against the real
+        coordinator rather than here.
+        """
+        return self.refreshed
+
     def is_illuminator_on(self):
         return self.illuminator_on
 

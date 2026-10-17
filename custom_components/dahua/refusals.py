@@ -105,9 +105,27 @@ def is_refused(coordinator, control: str) -> bool:
     return key_for(coordinator, control) in _REFUSED
 
 
-def remember(coordinator, control: str, described: str) -> None:
-    """Record a refusal, and say so once rather than on every press."""
+def remember(coordinator, control: str, described: str, instead: str = None) -> None:
+    """Record a refusal, and say so once rather than on every press.
+
+    `instead` names the path the caller is about to try in this control's place,
+    and it changes what the warning can honestly claim. Without one, this is the
+    end of the road and Home Assistant really will stop asking. With one, it is
+    a step in a fallback: the control still works, nothing needs reloading, and
+    the old wording told a user whose light had just come on that it would not.
+    """
     _REFUSED.add(key_for(coordinator, control))
+    if instead is not None:
+        _LOGGER.warning(
+            "%s will not operate its %s on channel %s (%s), so Home Assistant "
+            "will use %s instead",
+            coordinator.get_address(),
+            control,
+            coordinator.get_channel(),
+            described,
+            instead,
+        )
+        return
     _LOGGER.warning(
         "%s will not operate its %s on channel %s (%s), so Home Assistant will "
         "stop asking. Reload the entry to try again after changing anything on "

@@ -9,6 +9,7 @@ import asyncio
 import time
 import aiohttp
 
+from .const import ALL_EVENTS
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
 from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
@@ -1314,6 +1315,21 @@ def _is_login_refused(exception: aiohttp.ClientResponseError) -> bool:
     return exception.status == 401
 
 
+# The four diagonals, which carry the speed in arg1 as well as in arg2.
+#
+# A straight move sends arg1=0 and the speed in arg2 only. A diagonal sent that
+# way reached the camera with one of its two components zeroed, which is what
+# #491 reported: the four straight directions and zoom steer the camera and the
+# diagonals do not. ZoneMinder's Dahua driver makes the same split, straight
+# moves with arg1 0 and every diagonal with arg1 and arg2 both set to the speed
+# (scripts/ZoneMinder/lib/ZoneMinder/Control/Dahua.pm, moveCon* and moveRel*).
+#
+# Which axis arg1 names is not documented anywhere this could be checked, so
+# nothing here assumes one: the diagonals get the same speed in both, which is
+# right either way round.
+PTZ_DIAGONAL_CODES = frozenset({"LeftUp", "RightUp", "LeftDown", "RightDown"})
+
+
 class DahuaClient:
     """
     DahuaClient is the client for accessing Dahua IP Cameras. The APIs were discovered from the "API of HTTP Protocol Specification" V2.76 2019-07-25 document
@@ -1891,7 +1907,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=General.MachineName"
         try:
             return await self.get(url)
-        except aiohttp.ClientResponseError as e:
+        except aiohttp.ClientResponseError:
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(
                 self._address, self._rtsp_port, self._username, self._password
@@ -1905,7 +1921,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name={0}".format(name)
         try:
             return await self.get(url)
-        except aiohttp.ClientResponseError as e:
+        except aiohttp.ClientResponseError:
             return {}
 
     async def async_get_config_lighting(self, channel: int, profile_mode) -> dict:
@@ -1940,7 +1956,7 @@ class DahuaClient:
         """
         try:
             return await self.async_get_config("MotionDetect")
-        except aiohttp.ClientResponseError as e:
+        except aiohttp.ClientResponseError:
             return {"table.MotionDetect[0].Enable": "false"}
 
     async def async_get_video_analyse_rules_for_amcrest(self):
@@ -1951,7 +1967,7 @@ class DahuaClient:
         """
         try:
             return await self.async_get_config("VideoAnalyseRule[0][0].Enable")
-        except aiohttp.ClientResponseError as e:
+        except aiohttp.ClientResponseError:
             return {"table.VideoAnalyseRule[0][0].Enable": "false"}
 
     async def async_get_ivs_rules(self):
@@ -2381,6 +2397,30 @@ class DahuaClient:
                 if attempt == 2:
                     raise
         return {}
+
+    async def _rpc2_set_config_field(self, name: str, value) -> dict:
+        """Write one addressed config field over RPC2, on the shared session.
+
+        The narrow sibling of `_rpc2_set_config_value` below, which reads the
+        whole table and puts it back. Use this one where the field can be
+        addressed directly: it sends no credentials or neighbouring settings
+        back to the device, and it is not refused for size.
+
+        Clears the device's shared read cache, as the CGI write path in `get`
+        does. A device reached this way serves no /cgi-bin/ config path, so its
+        `getConfig` reads were answered over RPC2 and cached under the CGI URL
+        for CONFIG_CACHE_TTL_SECONDS. Without this a switch writes, refreshes,
+        reads back the answer from before the write and snaps to its old state
+        for five minutes, which looks exactly like a device refusing the
+        change. The cloud connection switch has the same fallback and had the
+        same hole.
+        """
+
+        async def write(client):
+            return await client.set_config_field(name, value)
+
+        clear_host_cache(self._device)
+        return await self._rpc2_shared_call(write)
 
     async def _rpc2_set_config_value(
         self, name: str, channel: int, key: str, value
@@ -3122,15 +3162,20 @@ class DahuaClient:
         how far it goes. That is also why the stop is in a finally. A
         request that fails after the start would otherwise leave the
         camera turning until something else stopped it.
+
+        A diagonal carries the speed in both arg1 and arg2, a straight move
+        and a zoom in arg2 alone. See PTZ_DIAGONAL_CODES.
         """
+        arg1 = speed if code in PTZ_DIAGONAL_CODES else 0
         base = (
-            "/cgi-bin/ptz.cgi?action={0}&channel={1}&code={2}" "&arg1=0&arg2={3}&arg3=0"
+            "/cgi-bin/ptz.cgi?action={0}&channel={1}&code={2}"
+            "&arg1={3}&arg2={4}&arg3=0"
         )
-        await self.get(base.format("start", channel, code, speed))
+        await self.get(base.format("start", channel, code, arg1, speed))
         try:
             await asyncio.sleep(duration)
         finally:
-            await self.get(base.format("stop", channel, code, speed))
+            await self.get(base.format("stop", channel, code, arg1, speed))
 
     async def async_set_video_profile_mode(self, channel: int, mode: str):
         """
@@ -3263,10 +3308,18 @@ class DahuaClient:
             raise Exception("Could not set text")
 
     async def async_set_service_set_text_overlay(
-        self, channel: int, group: int, text1: str, text2: str, text3: str, text4: str
+        self, channel: int, group: int, *lines: str
     ):
-        """async_set_service_set_text_overlay sets the video text overlay"""
-        text = _overlay_text(text1, text2, text3, text4)
+        """async_set_service_set_text_overlay sets the video text overlay
+
+        Variadic because the number of lines is the device's to decide, not
+        ours (#312). Dahua joins them with a pipe and imposes its own cap:
+        four on some models, five on one recorder's UI, fourteen on the camera
+        in that issue. A device given more than it has answers the write with
+        `Error`, which the check below turns into a raise, so the limit
+        surfaces as a failed action rather than as a silently shorter overlay.
+        """
+        text = _overlay_text(*lines)
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoWidget[{0}].CustomTitle[{1}].Text={2}".format(
             channel, group, text
         )
@@ -3865,6 +3918,116 @@ class DahuaClient:
         # and took every entity on the channel with it. That is #1006's shape.
         return await self.async_get_config("DisableLinkage")
 
+    async def async_get_cloud_connection(self) -> dict:
+        """Read the device's cloud table (Dahua's easy4ip / DMSS connection).
+
+        Host wide rather than per channel, and served under two different
+        names by two different devices, which is why the caller judges on the
+        key rather than on the read succeeding. Measured on a VTO2311R-WP,
+        which serves both:
+
+            table.VSP_PaaS.Enable=false     the DMSS connection itself
+            table.T2UServer.Enable=false    the P2P registration beside it
+
+        and on a VTO2000A, which answers HTTP 500 to VSP_PaaS while serving
+        T2UServer and four other tables on the same request. The two are not
+        the same feature: @ScratMan measured that disabling T2UServer alone
+        does not stop a DMSS call, and VSP_PaaS does, so only VSP_PaaS is read
+        here and a device without it gets no switch.
+
+        Through async_get_config, so a refusal arrives as {} rather than
+        raising into the poll's fan-out, which has no return_exceptions.
+        """
+        return await self.async_get_config("VSP_PaaS")
+
+    async def async_set_cloud_connection(self, enabled: bool) -> dict:
+        """Turn the device's cloud connection on or off, one field at a time.
+
+        Addressed as `VSP_PaaS.Enable` rather than writing the table back: it
+        carries the device's cloud credentials and server list, and a
+        whole-table write is refused for size on at least one recorder (see
+        `DahuaRpc2Client.set_config_field`).
+
+        CGI first, with the same RPC2 fallback the smart motion writes use, so
+        a device that serves no /cgi-bin/ config path at all can still be
+        switched.
+        """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&VSP_PaaS.Enable={0}".format(
+            str(bool(enabled)).lower()
+        )
+        try:
+            return await self.get(url, True)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting the cloud "
+                "connection over RPC2",
+                cgi_error.status,
+                self._address,
+            )
+            return await self._rpc2_set_config_field("VSP_PaaS.Enable", bool(enabled))
+
+    async def async_get_intelli_tour(self) -> dict:
+        """Read the AI tour plan table, every channel of it in one request.
+
+        Measured by @MassakerGU on a DH-SDT6E432-8P-MB-A-PV1, firmware
+        V3.200.0000028.0.R, a dual sensor camera that Home Assistant shows as
+        two channels:
+
+            table.IntelliTour[0]            null
+            table.IntelliTour[1].Enable     true
+            table.IntelliTour[1].TourPlan   ...
+
+        So the table is indexed by channel and a channel with no tour is
+        reported as nothing rather than omitted, which is why the caller judges
+        on `table.IntelliTour[<channel>].Enable` being present for its own
+        channel rather than on the table being non-empty.
+
+        One request for the whole table rather than one per channel: this goes
+        through the shared read cache, so a recorder's sixteen coordinators
+        asking at once cost one round trip between them.
+
+        Through async_get_config, so a refusal arrives as {} rather than
+        raising into the poll's fan-out, which has no return_exceptions.
+        """
+        return await self.async_get_config("IntelliTour")
+
+    async def async_set_intelli_tour(self, channel: int, enabled: bool) -> dict:
+        """Start or stop one channel's AI tour plan, addressing that row only.
+
+        Both transports measured by @MassakerGU on the SDT6E432 (#1051):
+
+            /cgi-bin/configManager.cgi?action=setConfig&IntelliTour[1].Enable=true
+            {"method": "configManager.setConfig",
+             "params": {"name": "IntelliTour[1].Enable", "table": true}}
+
+        The row is addressed rather than written back whole, which is what
+        keeps the tour's own plan, its presets and its timings untouched: this
+        switch starts and stops the tour and changes nothing about it. A
+        whole-table write would also be refused for size on at least one
+        recorder (see `DahuaRpc2Client.set_config_field`).
+
+        CGI first with the RPC2 field write as the fallback, in that order,
+        because that is the order the rest of the config writes here use and
+        both were measured working on the same camera.
+        """
+        field = "IntelliTour[{0}].Enable".format(channel)
+        url = "/cgi-bin/configManager.cgi?action=setConfig&{0}={1}".format(
+            field, str(bool(enabled)).lower()
+        )
+        try:
+            return await self.get(url, True)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting the tour over RPC2",
+                cgi_error.status,
+                self._address,
+            )
+            return await self._rpc2_set_config_field(field, bool(enabled))
+
     async def async_get_event_notifications(self) -> dict:
         """
         async_get_event_notifications will return false if the event notifications in disarmed state are enabled
@@ -4297,11 +4460,6 @@ class DahuaClient:
         codes = [code for code in events if code and code != "All"]
         if not codes:
             # "All" cannot be polled, so expand it rather than watch nothing.
-            # Imported here because config_flow imports this module.
-            from .config_flow import (
-                ALL_EVENTS,
-            )  # pylint: disable=import-outside-toplevel
-
             codes = [code for code in ALL_EVENTS if code != "All"]
 
         cycle = max(

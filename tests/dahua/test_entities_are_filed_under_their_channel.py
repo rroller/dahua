@@ -85,15 +85,25 @@ def _delegating_modules():
 
 def test_the_scan_finds_the_platforms():
     """A scan that matched nothing would make the assertion below pass while saying
-    nothing, which is how a source-reading test quietly stops testing. There are
-    eight platforms and one of them adds cameras twice."""
+    nothing, which is how a source-reading test quietly stops testing.
+
+    Counted against `PLATFORMS` rather than against a number written here. The
+    number was 8 direct calls, and it stopped being that the moment a platform
+    put its last add behind the shared helper, which is a change of who makes
+    the call rather than of what is being checked. Every platform has to turn
+    up through one route or the other.
+    """
+    from custom_components.dahua.const import PLATFORMS
+
     calls = _add_calls()
     delegating = _delegating_modules()
 
-    assert len(calls) >= 8, calls
+    assert calls, "no platform adds entities at all"
     assert delegating, "no platform reaches the shared add helper at all"
     files = {name for name, _line, _passed in calls} | delegating
-    assert len(files) >= 7, sorted(files)
+    missing = ["%s.py" % platform for platform in PLATFORMS]
+    missing = [name for name in missing if name not in files]
+    assert not missing, "these platforms add no entities by either route: %s" % missing
 
 
 def test_every_platform_files_its_entities_under_a_subentry():

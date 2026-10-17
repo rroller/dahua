@@ -400,6 +400,18 @@ set_text_overlay:
       default: ""
       selector:
         text:
+    lines:
+      name: Lines
+      description: >-
+        All the overlay lines at once, for a camera that takes more than four.
+        Give this or text1-text4, not both. How many lines a device accepts is
+        the device's own limit, and one that will not take them all refuses the
+        whole write.
+      example: '["Line 1", "Line 2", "Line 3", "Line 4", "Line 5"]'
+      required: false
+      selector:
+        text:
+          multiple: true
 
 set_video_in_day_night_mode:
   name: Set the Day or Night Color Mode

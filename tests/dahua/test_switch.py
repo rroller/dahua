@@ -84,6 +84,28 @@ class _Coordinator:
         """
         return False
 
+    def supports_cloud_connection(self):
+        """Whether the device reports VSP_PaaS, which the cloud switch writes.
+
+        Off here: that switch is the box's rather than this channel's, and the
+        setup this double drives is about the per-channel ones. Its own file
+        covers which channel carries it (#591).
+        """
+        return self.states.get("has_cloud_connection", False)
+
+    def supports_intelli_tour(self):
+        """Whether this channel reports IntelliTour, which the tour switch writes.
+
+        Off unless a test says otherwise: the tour belongs to a PTZ channel and
+        most channels do not have one. Its own file covers the rest (#1051).
+        """
+        return self.states.get("has_intelli_tour", False)
+
+    def uses_separate_host_device(self):
+        """Only read when the cloud switch is created, to decide whether it is
+        filed under the channel's subentry or the entry itself."""
+        return False
+
     def get_ivs_rules(self):
         return []
 

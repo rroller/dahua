@@ -11,8 +11,8 @@ from homeassistant.helpers.event import async_call_later
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 
 from .const import (
+    ALL_EVENTS,
     MOTION_SENSOR_DEVICE_CLASS,
-    DOMAIN,
     SAFETY_DEVICE_CLASS,
     TAMPER_DEVICE_CLASS,
     CONNECTIVITY_DEVICE_CLASS,
@@ -29,9 +29,22 @@ NAME_OVERRIDES = {
     "DoorbellPressed": "Button Pressed",  # For VTO/Doorbell devices
 }
 
+# The four codes the platform adds for a doorbell whatever the user selected.
+# A literal, and deliberately so: test_event_sensor_names_are_translated.py
+# finds them by reading the DahuaEventSensor calls in async_setup_entry below,
+# so a fifth added there and not here fails that test. A shared constant would
+# make the two agree by construction and check nothing.
+DOORBELL_EVENTS = frozenset(
+    {"DoorbellPressed", "Invite", "DoorStatus", "CallNoAnswered"}
+)
+
 # Event codes with a name in translations/en.json, so their sensors can be named
-# in any language. ALL_EVENTS plus the four the platform adds for a doorbell, as a
-# literal because the entity has to decide without reading its own translations.
+# in any language: everything a user can select, plus the doorbell four.
+#
+# Derived from ALL_EVENTS rather than repeated. This used to be its own copy of
+# all 41 codes, which meant adding an event code was an edit in two files with
+# nothing to fail if you made only one. `All` is dropped because it is the
+# device's catch-all rather than a code it sends.
 #
 # A code outside this set still gets a sensor: `get_event_list` reads the config
 # entry and nothing stops a hand edited .storage naming something else. It keeps
@@ -39,55 +52,7 @@ NAME_OVERRIDES = {
 # test_event_sensor_names_are_translated.py asserts this matches both the file and
 # the codes the platform can produce, so the fallback cannot be reached by adding
 # a code to ALL_EVENTS and forgetting the string.
-TRANSLATED_EVENTS = frozenset(
-    {
-        "VideoMotion",
-        "VideoLoss",
-        "AlarmLocal",
-        "CrossLineDetection",
-        "CrossRegionDetection",
-        "AudioMutation",
-        "SmartMotionHuman",
-        "SmartMotionVehicle",
-        "VideoBlind",
-        "AudioAnomaly",
-        "VideoMotionInfo",
-        "NewFile",
-        "IntelliFrame",
-        "LeftDetection",
-        "TakenAwayDetection",
-        "VideoAbnormalDetection",
-        "FaceDetection",
-        "FaceRecognition",
-        "HumanTrait",
-        "VideoUnFocus",
-        "WanderDetection",
-        "RioterDetection",
-        "ParkingDetection",
-        "MoveDetection",
-        "StorageNotExist",
-        "StorageFailure",
-        "StorageLowSpace",
-        "AlarmOutput",
-        "InterVideoAccess",
-        "NTPAdjustTime",
-        "TimeChange",
-        "MDResult",
-        "HeatImagingTemper",
-        "CrowdDetection",
-        "FireWarning",
-        "FireWarningInfo",
-        "ObjectPlacementDetection",
-        "ObjectRemovalDetection",
-        "Traffic",
-        "TrafficJunction",
-        "TrafficSnapshot",
-        "DoorbellPressed",
-        "Invite",
-        "DoorStatus",
-        "CallNoAnswered",
-    }
-)
+TRANSLATED_EVENTS = (frozenset(ALL_EVENTS) - {"All"}) | DOORBELL_EVENTS
 
 
 def event_display_name(event_name: str) -> str:

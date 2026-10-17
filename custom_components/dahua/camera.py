@@ -9,9 +9,10 @@ import re
 import voluptuous as vol
 from aiohttp import ClientError
 
-from homeassistant.core import HomeAssistant, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
+from homeassistant.helpers import config_validation as cv
 from homeassistant.components.camera import (
     Camera,
     CameraEntityFeature,
@@ -29,6 +30,7 @@ from custom_components.dahua.vto import CancelCallRefused
 
 from .const import (
     BACKED_UP_TABLES,
+    REDACTED_BACKUP_FIELDS,
     CONF_DISABLE_BACKCHANNEL,
     DOMAIN,
 )
@@ -168,6 +170,21 @@ def _count_and_cap(diff: dict, limit: int) -> dict:
     return out
 
 
+def _redacted(table: dict) -> dict:
+    """A table with its secrets replaced, ready to be written to a file.
+
+    The backup exists to say what a setting used to be. A cloud key, a cloud
+    login and the device's serial are none of those, and VSP_PaaS carries all
+    three beside the one flag the cloud switch writes. Diagnostics already
+    redacts the serial for the same reason; this is that rule on the one other
+    thing the integration hands to a person to send on.
+    """
+    return {
+        key: ("REDACTED" if key.rsplit(".", 1)[-1] in REDACTED_BACKUP_FIELDS else value)
+        for key, value in table.items()
+    }
+
+
 def _write_backup(filename: str, backup: dict) -> None:
     """Write the backup as JSON. Runs in an executor: this blocks."""
     with open(filename, "w", encoding="utf-8") as handle:
@@ -180,6 +197,59 @@ def _write_backup(filename: str, backup: dict) -> None:
 # coordinator does not help here, since it only centralises inbound reads and
 # leaves outbound actions uncontrolled.
 PARALLEL_UPDATES = 1
+
+
+# The last `vto_open_door` call each doorbell was asked to act on, keyed by the
+# device rather than by the address, so one press opens the door once.
+#
+# `client.device_key` and not `get_address()`: two Dahua boxes can sit behind one
+# IP on different ports, which `_device_key` in client.py exists for, and keying
+# on the address alone would open whichever of them answered first and silently
+# skip the other.
+#
+# **Why this is needed.** A camera entity is created per stream, and an entity
+# service runs on every entity the call resolves to. Aiming `vto_open_door` at
+# the *device*, which is what Developer tools offers first, therefore sends one
+# `openDoor` per enabled stream. Measured on a DHI-VTO2201F-P (#154): the first
+# request opened the gate and the second, 365ms later, was answered
+# `400 Bad Request`, so the error the user saw belonged to a door that had just
+# opened. Two back-to-back `openDoor` requests by curl reproduce the 400 with no
+# Home Assistant involved, so the device is entitled to refuse the second one.
+#
+# **Why the call itself is the key.** Home Assistant hands *the same*
+# `ServiceCall` object to every entity one call fans out to, and builds a new
+# one per call even inside a script, where the `Context` is shared between
+# steps. So identity separates "this press reaching a second camera" from "a
+# second press", which neither a timer nor the context id can do.
+#
+# Only the door. `vto_call`, `vto_cancel_call`, `reboot` and the rest fan out
+# the same way; none of them is a device that refuses to be told twice.
+_OPEN_DOOR_CALLS: dict[str, ServiceCall] = {}
+
+
+async def _async_open_door_once(entity, call: ServiceCall) -> None:
+    """Open the door for the first camera entity this call reaches on a device.
+
+    Registered as a callable rather than by method name, which is what makes
+    Home Assistant hand over the `ServiceCall` instead of its data.
+
+    The entity method is left alone and still does the work, so a call aimed at
+    one entity behaves exactly as it always has, including when that entity is a
+    sub stream nobody else targeted.
+    """
+    device = entity._coordinator.client.device_key  # pylint: disable=protected-access
+    if _OPEN_DOOR_CALLS.get(device) is call:
+        # A sibling stream of this doorbell already opened it for this press.
+        _LOGGER.debug(
+            "%s: door already opened for this call, %s is not asking again",
+            device,
+            entity.entity_id,
+        )
+        return
+    # Recorded before the await, so two entities of one fan-out cannot both get
+    # past this while the first request is in flight.
+    _OPEN_DOOR_CALLS[device] = call
+    await entity.async_vto_open_door(call.data["door_id"])
 
 
 def _stills_come_from_the_stream(coordinator) -> bool:
@@ -382,7 +452,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         {
             vol.Required("door_id", default=1): int,
         },
-        "async_vto_open_door",
+        _async_open_door_once,
     )
 
     platform.async_register_entity_service(
@@ -413,6 +483,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Optional("text2", default=""): str,
             vol.Optional("text3", default=""): str,
             vol.Optional("text4", default=""): str,
+            vol.Optional("lines"): vol.All(cv.ensure_list, [cv.string]),
         },
         "async_set_service_set_text_overlay",
     )
@@ -1204,7 +1275,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         for name in BACKED_UP_TABLES:
             answer = await self._coordinator.client.async_get_config(name)
             if answer:
-                tables[name] = answer
+                tables[name] = _redacted(answer)
             else:
                 refused.append(name)
 
@@ -1262,12 +1333,36 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         return backup
 
     async def async_set_service_set_text_overlay(
-        self, group: int, text1: str, text2: str, text3: str, text4: str
+        self,
+        group: int,
+        text1: str = "",
+        text2: str = "",
+        text3: str = "",
+        text4: str = "",
+        lines: list | None = None,
     ):
-        """Handles the service call from SERVICE_SET_TEXT_OVERLAY to set profile mode to day/night"""
+        """Handles the service call from SERVICE_SET_TEXT_OVERLAY.
+
+        `lines` is the way to write more than four (#312): the four numbered
+        fields were the whole service until now, and a camera in that issue
+        takes fourteen. They are kept so every existing automation calls this
+        exactly as before.
+
+        Giving both is refused rather than resolved. Either answer throws away
+        text somebody typed, and a service that quietly drops half its input
+        is the failure this issue is already about.
+        """
+        numbered = [text1, text2, text3, text4]
+
+        if lines is not None and any(numbered):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="overlay_lines_and_numbered_text",
+            )
+
         channel = self._logical_channel
         await self._coordinator.client.async_set_service_set_text_overlay(
-            channel, group, text1, text2, text3, text4
+            channel, group, *(numbered if lines is None else lines)
         )
 
     async def async_set_service_set_custom_overlay(

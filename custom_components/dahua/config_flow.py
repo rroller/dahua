@@ -18,7 +18,6 @@ from homeassistant import config_entries
 from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.data_entry_flow import section
 from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
@@ -28,6 +27,7 @@ from . import dahua_utils
 from . import (
     ISSUE_CHANNEL_NOT_ADDED,
     _async_probe_tcp,
+    _async_probe_tls,
     entry_coordinators,
     is_synthesised_identity,
 )
@@ -37,6 +37,7 @@ from .dhip import DhipLoginRefused, async_dhip_session
 from .migrate import CHANNEL_SUBENTRY
 from .flow_preview import async_drop_preview, async_store_preview, preview_url
 from .const import (
+    ALL_EVENTS,
     CONF_PASSWORD,
     CONF_USERNAME,
     CONF_ADDRESS,
@@ -97,50 +98,6 @@ FAILURE_PROBE_TIMEOUT_SECONDS = 3.0
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
-ALL_EVENTS = [
-    "VideoMotion",
-    "VideoLoss",
-    "AlarmLocal",
-    "CrossLineDetection",
-    "CrossRegionDetection",
-    "AudioMutation",
-    "SmartMotionHuman",
-    "SmartMotionVehicle",
-    "VideoBlind",
-    "AudioAnomaly",
-    "VideoMotionInfo",
-    "NewFile",
-    "IntelliFrame",
-    "LeftDetection",
-    "TakenAwayDetection",
-    "VideoAbnormalDetection",
-    "FaceDetection",
-    "FaceRecognition",
-    "HumanTrait",
-    "VideoUnFocus",
-    "WanderDetection",
-    "RioterDetection",
-    "ParkingDetection",
-    "MoveDetection",
-    "StorageNotExist",
-    "StorageFailure",
-    "StorageLowSpace",
-    "AlarmOutput",
-    "InterVideoAccess",
-    "NTPAdjustTime",
-    "TimeChange",
-    "MDResult",
-    "HeatImagingTemper",
-    "CrowdDetection",
-    "FireWarning",
-    "FireWarningInfo",
-    "ObjectPlacementDetection",
-    "ObjectRemovalDetection",
-    "All",
-    "Traffic",
-    "TrafficJunction",
-    "TrafficSnapshot",
-]
 
 """
 https://developers.home-assistant.io/docs/data_entry_flow_index
@@ -394,7 +351,7 @@ async def async_refine_connection_failure(address: str, reason: str) -> str:
     # Checked first because it has a concrete action attached, and because the
     # repair card that already detects this (http_dead_https_available) only
     # exists for an entry that has been created.
-    if await _async_probe_tcp(address, 443, FAILURE_PROBE_TIMEOUT_SECONDS):
+    if await _async_probe_tls(address, 443, FAILURE_PROBE_TIMEOUT_SECONDS):
         return "https_available"
 
     for port in DAHUA_PRIVATE_PORTS:
