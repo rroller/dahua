@@ -58,6 +58,14 @@ class _FakeCoordinator:
     def get_max_streams(self):
         return 3
 
+    def get_channel_protocol(self):
+        """The recorder's own protocol, which is what nearly every channel is."""
+        return "private"
+
+    def get_serial_number(self):
+        """What the entity's unique id is built from, which this file exercises."""
+        return "SERIAL"
+
     def supports_infrared_light(self):
         return False
 
@@ -76,12 +84,14 @@ class _CapturedCamera:
         media_channel=None,
         display_name=None,
         unique_suffix=None,
+        stream_stills=False,
     ):
         self.stream_index = stream_index
         self.logical_channel = logical_channel
         self.media_channel = media_channel
         self.display_name = display_name
         self.unique_suffix = unique_suffix
+        self.stream_stills = stream_stills
 
 
 def test_model_profile_is_narrow():

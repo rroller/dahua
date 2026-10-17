@@ -81,6 +81,10 @@ class _Coordinator:
     def get_channel(self):
         return self._channel
 
+    def get_channel_protocol(self):
+        """The recorder's own protocol, which is what nearly every channel is."""
+        return "private"
+
     def get_channel_number(self):
         return self._number
 
