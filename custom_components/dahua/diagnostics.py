@@ -26,6 +26,8 @@ from homeassistant.helpers.device_registry import DeviceEntry
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 from . import dahua_utils, entry_coordinators
+from .client import _device_key
+from .host import normalize_address
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
@@ -334,7 +336,9 @@ def _stream_block(coordinator) -> dict[str, Any]:
     from . import _HOST_STREAMS
 
     address = getattr(coordinator, "_address", None)
-    stream = _HOST_STREAMS.get(address)
+    stream = _HOST_STREAMS.get(
+        _device_key(normalize_address(address), getattr(coordinator, "_port", 80))
+    )
     if stream is None:
         # Not an error. No configured events means no stream is started.
         return {"registered": False}
@@ -386,7 +390,11 @@ def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
         return "rpc2_poll"
     from . import _HOST_STREAMS
 
-    if _HOST_STREAMS.get(getattr(coordinator, "_address", None)) is not None:
+    key = _device_key(
+        normalize_address(getattr(coordinator, "_address", None)),
+        getattr(coordinator, "_port", 80),
+    )
+    if _HOST_STREAMS.get(key) is not None:
         return "cgi_stream"
     # No events were configured, so nothing was started. Not a fault.
     return None
@@ -409,7 +417,8 @@ def _rpc2_poll_block(coordinator) -> dict[str, Any]:
     from .client import _HOST_RPC2_EVENT_POLL, _HOST_RPC2_EVENT_STATE
 
     address = getattr(coordinator, "_address", None)
-    described = _HOST_RPC2_EVENT_POLL.get(address)
+    key = _device_key(normalize_address(address), getattr(coordinator, "_port", 80))
+    described = _HOST_RPC2_EVENT_POLL.get(key)
     if described is None:
         return {"used": False}
 
@@ -432,7 +441,7 @@ def _rpc2_poll_block(coordinator) -> dict[str, Any]:
         # Stop for. A code stuck in here is a sensor stuck on.
         "active": sorted(
             "%s-%s" % (code, index)
-            for code, index in _HOST_RPC2_EVENT_STATE.get(address, ()) or ()
+            for code, index in _HOST_RPC2_EVENT_STATE.get(key, ()) or ()
         ),
     }
 

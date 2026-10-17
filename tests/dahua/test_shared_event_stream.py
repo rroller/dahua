@@ -161,7 +161,7 @@ async def test_the_last_channel_leaving_stops_the_stream(hass):
     await _settle()
 
     assert task.cancelled() or task.done()
-    assert ADDRESS not in dahua_module._HOST_STREAMS
+    assert f"{ADDRESS}:80" not in dahua_module._HOST_STREAMS
 
 
 async def test_the_stream_moves_off_a_departing_owner(hass):

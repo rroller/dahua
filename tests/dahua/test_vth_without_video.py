@@ -316,7 +316,7 @@ async def test_no_event_stream_is_started_for_it(monkeypatch):
     monkeypatch.setattr(
         coordinator_module,
         "_host_stream",
-        lambda hass, address: type(
+        lambda hass, address, port=80: type(
             "S", (), {"register": staticmethod(registered.append)}
         )(),
     )
@@ -335,7 +335,7 @@ async def test_a_camera_still_starts_its_event_stream(monkeypatch):
     monkeypatch.setattr(
         coordinator_module,
         "_host_stream",
-        lambda hass, address: type(
+        lambda hass, address, port=80: type(
             "S", (), {"register": staticmethod(registered.append)}
         )(),
     )

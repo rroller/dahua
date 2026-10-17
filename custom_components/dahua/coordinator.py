@@ -907,6 +907,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         self._channel_config = dict(channel_config or {})
         self.subentry_id = subentry_id
+        self._port = port
         # Self signed certs are used over HTTPS so we'll disable SSL verification.
         # connector_owner=False keeps the shared pool alive when this session closes.
         self._session = ClientSession(
@@ -1077,7 +1078,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Join this host's stream rather than opening another one. The
             # device sends every channel's events down any stream, so one is
             # enough no matter how many channels are configured.
-            _host_stream(self.hass, self._address).register(self)
+            _host_stream(self.hass, self._address, getattr(self, "_port", 80)).register(
+                self
+            )
 
     async def async_start_vto_event_listener(self):
         """Starts the event listeners for doorbells (VTO). This will not work for IP cameras"""
@@ -2443,7 +2446,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
             if self._supports_ptz_position and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(_ptz_position()))
-            if self.supports_infrared_light() and self._wanted_by(LIGHT):
+            if self.supports_infrared_light() and self._wanted_by(LIGHT, SELECT):
                 coros.append(
                     asyncio.ensure_future(
                         self.client.async_get_config_lighting(
@@ -2526,18 +2529,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # cannot take the entry down the way #1006 did.
             if self._video_color_fields and self._wanted_by(NUMBER):
                 coros.append(asyncio.ensure_future(self._async_fetch_video_color()))
-            # Lighting_V2 is the light platform's table -- except that the
-            # Amcrest doorbell's "Security Light" is a *select*, and its
-            # current_option reads table.Lighting_V2[0][0][1].Mode/.State. A
-            # select is not a light, so gating this on LIGHT alone left that
-            # entity reading an absent table and reporting "Off" forever for
-            # anyone who turned the light platform off. The condition mirrors
-            # the one select.py creates it under, so nothing else over-fetches.
+            # Both Infrared Mode and an Amcrest doorbell's Security Light
+            # select read this table even when the light platform is disabled.
             if self._supports_lighting_v2 and (
                 self._wanted_by(LIGHT)
                 or (
-                    self.is_amcrest_doorbell()
-                    and self.supports_security_light()
+                    (
+                        self.supports_infrared_light()
+                        or (
+                            self.is_amcrest_doorbell()
+                            and self.supports_security_light()
+                        )
+                    )
                     and self._wanted_by(SELECT)
                 )
             ):

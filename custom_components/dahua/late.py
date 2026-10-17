@@ -30,6 +30,8 @@ up late. It must be safe to call repeatedly: entities whose `unique_id` already
 exists are dropped rather than added twice.
 """
 
+import asyncio
+
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
@@ -106,36 +108,38 @@ async def async_add_and_keep_watching(
     the load sensors out of the rebuild and so out of #1057 entirely.
     """
     created: set = set()
+    build_lock = asyncio.Lock()
+    initializing = True
+    pending: set[str] = set()
 
     async def _add_whatever_is_missing(channel_key=None) -> None:
-        for coordinator in coordinators(entry).values():
-            if (
-                channel_key is not None
-                and coordinator.get_serial_number() != channel_key
-            ):
-                continue
-            fresh = [
-                entity
-                for entity in await build(coordinator)
-                if _key(entity) is None or _key(entity) not in created
-            ]
-            if not fresh:
-                continue
-            created.update(key for key in map(_key, fresh) if key is not None)
-            # One call per destination, which is one call in all but the
-            # recorder case above.
-            filed: dict = {}
-            for entity in fresh:
-                where = (
-                    subentry_for(entity, coordinator)
-                    if subentry_for is not None
-                    else coordinator.subentry_id
-                )
-                filed.setdefault(where, []).append(entity)
-            for where, entities in filed.items():
-                async_add_entities(entities, config_subentry_id=where)
-
-    await _add_whatever_is_missing()
+        async with build_lock:
+            for coordinator in coordinators(entry).values():
+                if (
+                    channel_key is not None
+                    and coordinator.get_serial_number() != channel_key
+                ):
+                    continue
+                fresh = [
+                    entity
+                    for entity in await build(coordinator)
+                    if _key(entity) is None or _key(entity) not in created
+                ]
+                if not fresh:
+                    continue
+                created.update(key for key in map(_key, fresh) if key is not None)
+                # One call per destination, which is one call in all but the
+                # recorder case above.
+                filed: dict = {}
+                for entity in fresh:
+                    where = (
+                        subentry_for(entity, coordinator)
+                        if subentry_for is not None
+                        else coordinator.subentry_id
+                    )
+                    filed.setdefault(where, []).append(entity)
+                for where, entities in filed.items():
+                    async_add_entities(entities, config_subentry_id=where)
 
     @callback
     def _on_discovery(channel_key: str) -> None:
@@ -151,10 +155,23 @@ async def async_add_and_keep_watching(
         A task rather than awaiting here, because the retry runs at the top of
         a poll: the rebuild must look at `data` after the poll has written it.
         """
-        hass.async_create_task(_add_whatever_is_missing(channel_key))
+        if initializing:
+            pending.add(channel_key)
+        else:
+            hass.async_create_task(_add_whatever_is_missing(channel_key))
 
-    entry.async_on_unload(
-        async_dispatcher_connect(
-            hass, capability_discovered_signal(entry.entry_id), _on_discovery
-        )
+    disconnect = async_dispatcher_connect(
+        hass, capability_discovered_signal(entry.entry_id), _on_discovery
     )
+    try:
+        await _add_whatever_is_missing()
+        # Device reads in build() can yield while another channel discovers a
+        # capability. Drain those signals before switching to normal rebuilds.
+        while pending:
+            channel_key = pending.pop()
+            await _add_whatever_is_missing(channel_key)
+    except BaseException:
+        disconnect()
+        raise
+    initializing = False
+    entry.async_on_unload(disconnect)

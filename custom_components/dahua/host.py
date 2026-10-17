@@ -1,10 +1,11 @@
 """One host, however many channels of it are configured.
 
-Everything in here is keyed by address rather than by config entry: whether the
+Shared state is keyed by address rather than by config entry: whether the
 host is reachable, how many times it has refused credentials, the shared HTTP
 connector, the uptime sample that tells a channel apart from a reboot, whether the
 device numbers its channels from zero, and the one event stream every channel of a
-host reads from.
+host reads from. Event streams additionally include the HTTP port so separate
+devices sharing an address do not share events.
 
 Split out of __init__.py, which had reached four thousand lines holding three
 separate things: this, the coordinator, and the config entry lifecycle. Nothing
@@ -26,7 +27,7 @@ from aiohttp import ClientError, ClientResponseError, TCPConnector
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
-from .client import clear_host_cache, rpc2_refusal_is_a_stale_login
+from .client import _device_key, clear_host_cache, rpc2_refusal_is_a_stale_login
 from .const import CONF_ADDRESS, CONF_PORT, CONF_USE_HTTPS, DOMAIN
 from .dahua_utils import parse_event
 from .rpc2 import Rpc2MethodRefused
@@ -1253,22 +1254,24 @@ class DahuaHostEventStream:
                     )
 
 
-# address -> DahuaHostEventStream
+# device key (address + HTTP port) -> DahuaHostEventStream
 _HOST_STREAMS: Dict[str, DahuaHostEventStream] = {}
 
 
-def _host_stream(hass: HomeAssistant, address: str) -> DahuaHostEventStream:
+def _host_stream(hass: HomeAssistant, address: str, port=80) -> DahuaHostEventStream:
     address = normalize_address(address)
-    stream = _HOST_STREAMS.get(address)
+    key = _device_key(address, port)
+    stream = _HOST_STREAMS.get(key)
     if stream is None:
-        stream = _HOST_STREAMS[address] = DahuaHostEventStream(hass, address)
+        stream = _HOST_STREAMS[key] = DahuaHostEventStream(hass, address)
     return stream
 
 
 async def _release_host_stream(coordinator) -> None:
     address = normalize_address(coordinator.get_address())
-    stream = _HOST_STREAMS.get(address)
+    key = _device_key(address, getattr(coordinator, "_port", 80))
+    stream = _HOST_STREAMS.get(key)
     if stream is None:
         return
     if await stream.unregister(coordinator):
-        _HOST_STREAMS.pop(address, None)
+        _HOST_STREAMS.pop(key, None)

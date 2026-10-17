@@ -261,7 +261,7 @@ _HOST_DIGEST_STATE: dict = {}
 # scoped to that user's rights, so it is even less shareable than a challenge.
 _HOST_RPC2: dict = {}
 
-# What the RPC2 poll last reported active, per host, as {(code, index)}.
+# What the RPC2 poll last reported active, per device (address and HTTP port), as {(code, index)}.
 #
 # This is module state on purpose. The set used to be local to the poller, so
 # every restart began empty -- and a Start that was followed by a transport
@@ -4493,7 +4493,7 @@ class DahuaClient:
         # record that this transport is in use at all and a log line is not what a
         # reporter pastes. Written before the loop so the description exists even if
         # the first cycle never completes.
-        described = _HOST_RPC2_EVENT_POLL.setdefault(self._address, {})
+        described = _HOST_RPC2_EVENT_POLL.setdefault(self.device_key, {})
         described.update(
             {
                 "code_count": len(codes),
@@ -4507,7 +4507,7 @@ class DahuaClient:
         # failure or the scheduled recycle is still owed one, and the first
         # inactive snapshot below is what pays it.
         active: set[tuple[str, int]] = _HOST_RPC2_EVENT_STATE.setdefault(
-            self._address, set()
+            self.device_key, set()
         )
 
         # A code that is no longer polled can never be observed inactive again,

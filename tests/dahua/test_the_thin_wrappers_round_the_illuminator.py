@@ -159,7 +159,7 @@ async def test_a_channel_with_events_joins_the_hosts_stream():
     import custom_components.dahua.coordinator as module
 
     original = module._host_stream
-    module._host_stream = lambda hass, address: _Stream()
+    module._host_stream = lambda hass, address, port=80: _Stream()
     try:
         await coordinator.async_start_event_listener()
     finally:
