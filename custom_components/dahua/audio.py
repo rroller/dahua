@@ -244,11 +244,16 @@ async def async_transcode(
     try:
         async with asyncio.timeout(TRANSCODE_TIMEOUT_SECONDS):
             audio, errors = await process.communicate()
-    except TimeoutError:
-        process.kill()
+    except (TimeoutError, asyncio.CancelledError) as error:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass  # The child exited just before the cancellation arrived.
         # Reaped rather than left behind: without this the child stays as a
         # zombie and its pipes stay open for the life of Home Assistant.
         await process.wait()
+        if isinstance(error, asyncio.CancelledError):
+            raise
         raise HomeAssistantError(
             translation_domain=DOMAIN,
             translation_key="audio_conversion_timed_out",

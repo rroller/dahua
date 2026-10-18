@@ -262,6 +262,20 @@ async def test_a_conversion_that_hangs_is_killed_and_reaped(monkeypatch):
     assert process.waited, "a killed child still has to be waited on"
 
 
+async def test_cancelling_a_conversion_kills_and_reaps_ffmpeg(monkeypatch):
+    process = _FakeProcess(hang=True)
+    _record_subprocess(monkeypatch, process)
+    task = asyncio.create_task(
+        async_transcode(None, "http://host/slow.mp3", resolve_format(None))
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert process.killed, "service cancellation must not leave ffmpeg running"
+    assert process.waited, "a cancelled conversion must reap its child"
+
+
 def test_a_missing_ffmpeg_integration_says_so_rather_than_raising_valueerror():
     """`get_ffmpeg_manager` raises ValueError on an install without it, which
     reaches the user as "unknown error" in the service dialog."""
