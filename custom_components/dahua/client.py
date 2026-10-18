@@ -152,10 +152,9 @@ AUDIO_WRITES_PER_SECOND = 10
 # the whole clip. Four, because that is the size of the mistake actually on
 # offer: 16-bit PCM at 16 kHz is 32000 bytes a second and A-law at 8 kHz is
 # 8000, so a caller who names the wrong one of those two is out by exactly this
-# factor. Tolerating it matters more than it sounds -- the failure mode of a
-# push given up on part way is a wedged device, not a truncated clip, so a
-# caller who guesses the rate high should hear slow audio rather than hang the
-# intercom (memory: postAudio can wedge the whole device).
+# factor. Tolerating it matters more than it sounds: a push given up on part
+# way is the shape a VTO2000A was found hung after, so a caller who guesses the
+# rate high should hear slow audio rather than risk that.
 AUDIO_SLOWEST_TOLERATED = 4.0
 
 # No progress at all for this long means the device has stopped taking audio,
@@ -4173,13 +4172,31 @@ class DahuaClient:
         **Two limits, because they catch different things.** The send is not
         bounded by the clip's own length, which would make a declared rate
         that is too high end the push part way: the device would still be
-        playing, the socket would be abandoned mid-clip, and that is the one
-        thing that hung a VTO2000A outright for ten minutes. Instead a device
+        playing and the socket would be abandoned mid-clip, which is the shape
+        a VTO2000A was found hung after. Once, and the sequence there was that
+        the device stopped taking bytes, the stalled session was held for about
+        ten minutes, and it was then killed -- any of the three could have been
+        what hung it, and nothing measured tells them apart. The design does
+        not rest on knowing which: tolerating a slow drain is right under all
+        three readings. Instead a device
         is allowed to drain as slowly as `AUDIO_SLOWEST_TOLERATED` times the
         declared rate before the clip is given up on, while a device that has
         stopped taking bytes altogether is cut off after
         `AUDIO_STALL_SECONDS`. A wrong rate then costs slow audio, and only a
         device that has genuinely stopped is abandoned.
+
+        **What the stall window can and cannot see.** Three buffers sit
+        between handing a piece over and the device having it: aiohttp's
+        writer, which only waits once 64 KiB has built up (`LIMIT` in its
+        `http_writer`), the asyncio transport, and the kernel's send buffer.
+        So progress means "the socket took it", not "the device took it", and
+        a clip smaller than those buffers is reported as played whether the
+        device consumed it or not. Nothing here can do better: postAudio
+        answers nothing at all, so there is no acknowledgement to wait for.
+        Measured against a real server that stopped reading: an 8 MB push is
+        noticed and raised, while a short one is not. Treat the stall window
+        as the backstop that stops a long push hanging, rather than as proof
+        the clip was heard.
 
         **Not inside `_request_slot`.** An announcement lasts as long as it
         lasts, and holding one of this host's two request slots for it would

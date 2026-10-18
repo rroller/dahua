@@ -38,7 +38,7 @@ What follows, and what this file exists to hold in place.
   four apart, so a built-in constant would play one device's audio at four
   times or a quarter of its speed.
 * **Being wrong about it must not abandon the push.** A clip given up on part
-  way through is what hung a VTO2000A outright for ten minutes, so a device
+  way through is the shape a VTO2000A was found hung after, so a device
   draining slower than it was told gets the whole clip, and only one that has
   stopped is cut off.
 * **Nothing the device sends back can be taken at face value.** It answers
@@ -689,8 +689,10 @@ async def test_a_device_draining_slower_than_it_was_told_still_gets_it_all(
     A-law at 8 kHz is 8000 -- so a caller who picks the wrong one declares a
     clip four times shorter than the device will take to play it. Bounded by
     the clip's own length plus a flat allowance, that ends as a push given up
-    on part way through, and an abandoned postAudio is what hung a VTO2000A
-    outright for ten minutes.
+    on part way through, which is the shape a VTO2000A was found hung after.
+    What hung it is not actually known -- the device stopped taking bytes, the
+    stalled session was held for about ten minutes, and it was then killed --
+    but tolerating a slow drain is right under every reading of that.
 
     So the device here drains at a quarter of the rate it was told, which is
     exactly the size of the mistake on offer, and the whole clip still has to

@@ -12,17 +12,18 @@ Two of these are load bearing rather than tidy:
   speed, and there is no feedback from the device to notice it by. It is
   derived from the encoding here rather than written down twice.
 * **The default has to be the slow end.** Declaring a rate higher than the
-  device plays at makes the push outlast its welcome, and an abandoned
-  postAudio is what hung a VTO2000A for ten minutes. Declaring one too low
-  just finishes early.
+  device plays at makes the push outlast its own clip, which is the shape a
+  VTO2000A was found hung after. Declaring one too low just finishes early.
 """
 
 import asyncio
+import shutil
 
 import pytest
 import yaml
 
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.setup import async_setup_component
 
 from custom_components.dahua import audio as audio_module
 from custom_components.dahua import camera as camera_module
@@ -30,6 +31,7 @@ from custom_components.dahua.audio import (
     AUDIO_FORMATS,
     DEFAULT_AUDIO_FORMAT,
     MAX_CLIP_SECONDS,
+    async_resolve_media,
     async_transcode,
     resolve_format,
 )
@@ -57,7 +59,7 @@ def test_every_formats_width_matches_the_encoding_it_asks_ffmpeg_for(name):
     actually requested, and nothing downstream would notice. A format
     declaring two bytes a sample while asking ffmpeg for A-law paces the push
     at twice the rate the device plays it, which is the direction that ends
-    in an abandoned stream.
+    in a push abandoned part way through.
     """
     audio_format = AUDIO_FORMATS[name]
     assert audio_format.ffmpeg_format in SAMPLE_WIDTHS, (
@@ -80,9 +82,9 @@ def test_the_default_is_the_lowest_rate_on_the_table():
     """Being wrong downwards is cheap and being wrong upwards hangs a device.
 
     A declared rate above what the speaker really plays at makes the push
-    take longer than its own clip, which is the shape that ends in an
-    abandoned stream. So whichever format is the default, it should be the
-    one that cannot do that to any of the others.
+    take longer than its own clip, which is the shape that ends in one
+    abandoned part way through. So whichever format is the default, it should
+    be the one that cannot do that to any of the others.
     """
     slowest = min(fmt.byte_rate for fmt in AUDIO_FORMATS.values())
     assert AUDIO_FORMATS[DEFAULT_AUDIO_FORMAT].byte_rate == slowest
@@ -408,3 +410,128 @@ async def test_an_unknown_format_is_refused_before_anything_is_fetched(monkeypat
         )
 
     assert fetched == []
+
+
+# --- working out what was pointed at ----------------------------------------
+#
+# Every test above patches this out, so these are the only ones that run it.
+# It is also where a Home Assistant signature is most likely to have moved
+# under us, which a mock would hide rather than catch.
+
+
+async def test_a_plain_url_is_handed_to_ffmpeg_as_it_stands(hass):
+    assert (
+        await async_resolve_media(hass, "http://example.com/chime.mp3")
+        == "http://example.com/chime.mp3"
+    )
+
+
+async def test_a_url_relative_to_this_instance_is_made_absolute(hass):
+    """What `tts.speak` leaves behind. ffmpeg has no idea what host to ask."""
+    await async_setup_component(hass, "homeassistant", {})
+    hass.config.internal_url = "http://192.168.0.210:8123"
+
+    resolved = await async_resolve_media(hass, "/api/tts_proxy/abc123.mp3")
+
+    assert resolved == "http://192.168.0.210:8123/api/tts_proxy/abc123.mp3"
+
+
+async def test_a_media_source_id_is_resolved_to_its_url(hass, monkeypatch):
+    """What the media selector in the service dialog produces.
+
+    The resolving itself belongs to Home Assistant; what is asserted here is
+    that this reaches for it at all, and passes on the URL it gets rather
+    than the id.
+    """
+    from homeassistant.components import media_source
+
+    async def fake_resolve(inner_hass, media_content_id, target):
+        assert media_content_id == "media-source://tts/tts.google_en_com?message=hi"
+        return media_source.models.PlayMedia("/api/tts_proxy/x.mp3", "audio/mpeg")
+
+    monkeypatch.setattr(media_source, "async_resolve_media", fake_resolve)
+    await async_setup_component(hass, "homeassistant", {})
+    hass.config.internal_url = "http://192.168.0.210:8123"
+
+    resolved = await async_resolve_media(
+        hass, "media-source://tts/tts.google_en_com?message=hi"
+    )
+
+    # Resolved and then made absolute, because what comes back from a media
+    # source is itself relative to this instance.
+    assert resolved == "http://192.168.0.210:8123/api/tts_proxy/x.mp3"
+
+
+# --- against a real ffmpeg --------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+@pytest.mark.parametrize("name", sorted(AUDIO_FORMATS))
+async def test_a_second_of_audio_really_is_byte_rate_bytes(hass, name, tmp_path):
+    """The format table, checked against ffmpeg rather than against itself.
+
+    Everything else here asserts that the right arguments were assembled.
+    This is the only thing that says those arguments produce what the pacing
+    assumes they produce, which is the claim the whole push rests on: one
+    second of audio must be exactly `byte_rate` bytes, or the clip plays at
+    the wrong speed on every device.
+
+    Skipped where ffmpeg is missing, which includes some CI images. It does
+    not run on the machine this was written on either, and that is recorded
+    rather than papered over.
+    """
+    audio_format = AUDIO_FORMATS[name]
+    source = tmp_path / "tone.wav"
+    generate = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=1000:duration=1",
+        str(source),
+    )
+    await generate.wait()
+
+    audio = await async_transcode(hass, str(source), audio_format)
+
+    assert len(audio) == audio_format.byte_rate
+
+
+async def test_a_file_outside_the_allowlist_is_refused(hass):
+    """The same gate the backup services and camera snapshots use."""
+    with pytest.raises(HomeAssistantError) as raised:
+        await async_resolve_media(hass, "/etc/shadow")
+
+    assert raised.value.translation_key == "audio_path_not_allowed"
+
+
+async def test_an_ffmpeg_pseudo_protocol_does_not_pass_as_a_url(hass):
+    """`concat:` and friends look like schemes and read local files.
+
+    Allowing any string with a scheme in it would hand a service call the run
+    of the disk through ffmpeg, so the schemes are named rather than the
+    exclusions.
+    """
+    with pytest.raises(HomeAssistantError) as raised:
+        await async_resolve_media(hass, "concat:/etc/passwd|/etc/shadow")
+
+    assert raised.value.translation_key == "audio_path_not_allowed"
+
+
+async def test_a_file_inside_the_allowlist_is_passed_straight_through(hass, tmp_path):
+    chime = tmp_path / "chime.mp3"
+    chime.write_bytes(b"not really an mp3")
+    hass.config.allowlist_external_dirs = {str(tmp_path)}
+
+    assert await async_resolve_media(hass, str(chime)) == str(chime)
+
+
+async def test_an_rtsp_source_is_left_alone(hass):
+    """A camera's own stream is a legitimate thing to announce from."""
+    assert (
+        await async_resolve_media(hass, "rtsp://192.168.0.232:554/live")
+        == "rtsp://192.168.0.232:554/live"
+    )

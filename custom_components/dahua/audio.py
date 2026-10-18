@@ -18,9 +18,9 @@ want something else.
 
 The default also errs in the safe direction. Declaring a rate higher than the
 device plays at makes the push outlast its welcome, and a push abandoned part
-way through is the thing that hung a VTO2000A for ten minutes; declaring one
-too low only makes the audio arrive faster than it plays. A-law at 8 kHz is
-the lowest rate on the table.
+way through is the shape that preceded a VTO2000A hanging outright, while
+declaring one too low only makes the audio arrive faster than it plays. A-law
+at 8 kHz is the lowest rate on the table.
 
 **ffmpeg is not required to be present.** It is only reached for when the clip
 needs converting, and a clip already in the device's format is sent straight
@@ -31,6 +31,7 @@ plainly when it is missing.
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 
 from homeassistant.core import HomeAssistant
@@ -108,6 +109,11 @@ AUDIO_FORMATS: dict[str, AudioFormat] = {
 
 DEFAULT_AUDIO_FORMAT = "g711a_8000"
 
+# The schemes a clip may name. Everything else is read as a path and checked
+# against Home Assistant's allowlist, because ffmpeg's own pseudo-protocols
+# (`concat:`, `subfile:` and the rest) look like schemes and read local files.
+SAFE_SCHEMES = ("http://", "https://", "rtsp://", "rtsps://")
+
 # Nothing longer than this is converted. A service call pointed at a live
 # stream rather than a clip would otherwise read until the host ran out of
 # memory, and the whole clip is held in memory because the push needs its
@@ -139,26 +145,57 @@ def resolve_format(name: str | None) -> AudioFormat:
 async def async_resolve_media(hass: HomeAssistant, media_content_id: str) -> str:
     """A media content id to something ffmpeg can open.
 
-    Three shapes arrive here. A `media-source://` id, which is what the media
+    Four shapes arrive here. A `media-source://` id, which is what the media
     selector in the service dialog produces and what a TTS announcement comes
-    as; a Home Assistant URL that is relative to this instance, which is what
-    `tts.speak` leaves behind; and a plain http URL or file path, which is
-    what somebody typing into YAML writes.
+    as; a Home Assistant URL relative to this instance, which is what
+    `tts.speak` leaves behind; a plain http or rtsp URL; and a file on disk,
+    which is what somebody with a chime in `www/` writes.
+
+    **Anything that is not one of those is treated as a path and has to be in
+    the allowlist.** ffmpeg takes more than URLs: `concat:`, `subfile:` and
+    friends are pseudo-protocols that read local files, so "it has a scheme,
+    therefore it is a URL" would hand a service call the run of the disk.
+    Naming the schemes that are allowed, rather than the ones that are not,
+    is what keeps that closed. It is the same allowlist the backup services
+    and camera snapshots use.
     """
     from homeassistant.components import media_source
     from homeassistant.components.media_player.browse_media import (
         async_process_play_media_url,
     )
 
-    url = media_content_id
     if media_source.is_media_source_id(media_content_id):
+        # Home Assistant resolved this one, so it is as trustworthy as the
+        # media source that produced it.
         resolved = await media_source.async_resolve_media(hass, media_content_id, None)
-        url = resolved.url
+        return _absolute(hass, resolved.url, async_process_play_media_url)
+
+    url = media_content_id
+    if url.startswith(SAFE_SCHEMES):
+        return url
     if url.startswith("/"):
-        # Relative to this instance. Making it absolute needs an external URL
-        # to be known, which `async_process_play_media_url` works out.
-        url = async_process_play_media_url(hass, url)
+        # Ambiguous: `/api/tts_proxy/x.mp3` is a URL on this instance and
+        # `/media/chime.mp3` is a file. Whether it exists decides, because a
+        # URL path that happens to name a real file would be served from that
+        # file anyway.
+        if not await hass.async_add_executor_job(os.path.isfile, url):
+            return _absolute(hass, url, async_process_play_media_url)
+    if not hass.config.is_allowed_path(url):
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="audio_path_not_allowed",
+            translation_placeholders={"path": url},
+        )
     return url
+
+
+def _absolute(hass: HomeAssistant, url: str, process) -> str:
+    """A URL relative to this instance, made absolute for ffmpeg.
+
+    ffmpeg is a separate process with no idea which host Home Assistant is,
+    and `async_process_play_media_url` is what works that out.
+    """
+    return process(hass, url) if url.startswith("/") else url
 
 
 async def async_transcode(

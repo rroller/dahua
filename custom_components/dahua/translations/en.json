@@ -427,6 +427,9 @@
         }
     },
     "exceptions": {
+        "audio_path_not_allowed": {
+            "message": "Home Assistant is not allowed to read {path}. Use a media source, a URL, or a file inside the config directory or one listed in allowlist_external_dirs."
+        },
         "audio_format_unknown": {
             "message": "Unknown audio format {format}. Known formats: {known}"
         },
