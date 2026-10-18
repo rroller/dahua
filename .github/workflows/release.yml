@@ -45,10 +45,14 @@ jobs:
   zip:
     runs-on: "ubuntu-latest"
     name: Attach dahua.zip to the release
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - name: Work out which tag this is for
         id: which
-        run: echo "tag=${{ github.event.release.tag_name || inputs.tag }}" >> "$GITHUB_OUTPUT"
+        run: |
+          git check-ref-format "refs/tags/$RELEASE_TAG"
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Check out that tag
         uses: "actions/checkout@v7"
@@ -103,5 +107,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ steps.which.outputs.tag }}" dahua.zip \
-            --clobber --repo "${{ github.repository }}"
+          gh release upload --clobber --repo "$GITHUB_REPOSITORY" \
+            -- "$RELEASE_TAG" dahua.zip
