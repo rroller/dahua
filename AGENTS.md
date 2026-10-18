@@ -225,7 +225,12 @@ a device that does not answer leaves the numbering alone rather than guessing
 - **CI** (`.github/workflows/`): HACS validation, hassfest, `black --check`, and
   pytest. `pull.yml` checks formatting only on the Python files the PR touches;
   `push.yml` checks the whole tree. `tag.yml` fails a tag whose name does not
-  match `manifest.json`.
+  match `manifest.json`. `release.yml` attaches `dahua.zip` to a published
+  release, and that asset is required rather than decorative: `hacs.json` sets
+  `zip_release`, so HACS installs by extracting it and does **not** fall back to
+  fetching the files one by one. A release published without the asset cannot be
+  installed at all, so re-run the job with `workflow_dispatch` before announcing
+  a release whose zip job failed.
 - **Formatting is black.** `scripts/lint` runs it, which is the same gate CI uses.
 - **Tests** need Python 3.14, because that is what `requirements_test.txt`'s pin of
   `pytest-homeassistant-custom-component` requires. That version moves; read the
