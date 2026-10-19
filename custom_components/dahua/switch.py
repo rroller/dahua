@@ -51,6 +51,28 @@ def _cloud_reporter(coordinators: list):
     return min(answering, key=lambda c: c.get_channel())
 
 
+def _alarm_output_reporter(coordinators: list):
+    """The one coordinator that should carry the box's relay switches.
+
+    `AlarmOut` and `alarm.cgi` take no channel: the relays are screwed to the
+    back of the box. Same problem `_cloud_reporter` solves and the same
+    answer, and it matters more here than it looks -- lifting the
+    single-output restriction without this would give a twelve channel
+    recorder with six relays seventy two switches, all of them writing to the
+    same six rows.
+
+    Returns None when no channel reported any relay, which is most cameras.
+    """
+    answering = [
+        c
+        for c in coordinators
+        if getattr(c, "supports_alarm_output", None) and c.supports_alarm_output()
+    ]
+    if not answering:
+        return None
+    return min(answering, key=lambda c: c.get_channel())
+
+
 def _filed_under(entity, coordinator):
     """Which subentry this entity belongs to, as `late.py` asks.
 
@@ -72,6 +94,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     # create a second one. Reloading the entry makes a fresh selection. The
     # same rule the load sensors follow since #1076.
     cloud_reporter = _cloud_reporter(list(entry_coordinators(entry).values()))
+    alarm_output_reporter = _alarm_output_reporter(
+        list(entry_coordinators(entry).values())
+    )
 
     async def build(coordinator):
         """Which switches this channel warrants, as the device answers today.
@@ -83,7 +108,11 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         """
         # I think most cameras have a motion sensor so we'll blindly add a switch for it.
         # Not an indoor monitor without a camera: there is no picture to detect motion in.
-        nonlocal cloud_reporter
+        nonlocal cloud_reporter, alarm_output_reporter
+        if alarm_output_reporter is None and coordinator.supports_alarm_output():
+            # A relay that turned up on a later poll, the same way the cloud
+            # switch below is allowed to.
+            alarm_output_reporter = coordinator
 
         devices = []
 
@@ -121,8 +150,17 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             devices.append(DahuaSmartMotionDetectionBinarySwitch(coordinator, entry))
         if coordinator.supports_privacy_mode():
             devices.append(DahuaPrivacyModeBinarySwitch(coordinator, entry))
-        if coordinator.supports_alarm_output():
-            devices.append(DahuaAlarmOutputSwitch(coordinator, entry, output=0))
+        # The relays belong to the box, so one channel carries them all. A
+        # camera is its own box and nothing moves; a recorder gets them on its
+        # own device instead of a copy per channel.
+        if alarm_output_reporter is coordinator:
+            slots = coordinator.get_alarm_output_slots()
+            build_output = (
+                DahuaAlarmOutputSwitch if slots == 1 else DahuaNamedAlarmOutputSwitch
+            )
+            devices.extend(
+                build_output(coordinator, entry, output) for output in range(slots)
+            )
 
         # Per channel, and on purpose: IntelliTour is indexed by channel, so a
         # dual sensor camera gets the switch on its PTZ channel only and a
@@ -572,10 +610,27 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
         return self._coordinator.is_siren_on()
 
 
-class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
-    """Switch for a physical alarm/relay output."""
+class DahuaAlarmOutputSwitch(DahuaHostEntity, SwitchEntity):
+    """Switch for a physical alarm/relay output.
+
+    `AlarmOut` takes no channel: the relays are screwed to the back of the
+    box, like the alarm inputs beside them. On a recorder this is a host
+    entity, filed against the recorder rather than a camera. On a camera
+    there is nothing to separate and it keeps the page it has.
+
+    **State is read back rather than assumed.** These devices will accept a
+    write, answer `OK` and drive nothing, so `is_on` comes from
+    `alarm.cgi?action=getOutState` and never from what was last written.
+    Measured on a DHI-NVR5464-16P-EI: forcing `AlarmOut[5].Mode = 1` makes
+    that read answer 32, which is 1<<5, and the relay really closes.
+    """
 
     _attr_device_class = SwitchDeviceClass.SWITCH
+    # The name a single-relay device has always had, in every language it has
+    # always had it in. A box with several relays cannot use this, because one
+    # string cannot tell six entities apart -- that is
+    # DahuaNamedAlarmOutputSwitch below, and the two are separate classes
+    # because an entity that sets `_attr_name` never reads its translation.
     _attr_translation_key = "alarm_output"
 
     def __init__(self, coordinator, entry, output: int):
@@ -594,15 +649,59 @@ class DahuaAlarmOutputSwitch(DahuaBaseEntity, SwitchEntity):
 
     @property
     def unique_id(self):
-        """Return a stable unique ID for this alarm output."""
+        """Return a stable unique ID for this alarm output.
+
+        The device's serial rather than `get_serial_number()`, which appends
+        the channel. A relay belongs to the box, so its identity must not
+        depend on which channel's coordinator happens to be carrying the
+        switch -- otherwise removing channel 0 from a recorder would rename
+        every one. The same rule, and the same wording, as the disk sensors.
+
+        On a camera and on channel 0 the two are the same string, so the ids
+        that exist today and survive this are byte for byte what they were.
+        """
         return (
-            self._coordinator.get_serial_number() + "_alarm_output_" + str(self._output)
+            self._coordinator.get_device_serial_number()
+            + "_alarm_output_"
+            + str(self._output)
         )
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            **(super().extra_state_attributes or {}),
+            # Both numbers, as for the alarm inputs: the device indexes from
+            # zero and prints from one, and which a reader means depends on
+            # whether they are looking at the chassis or at the config.
+            "alarm_output_index": self._output,
+            "alarm_output_number": self._output + 1,
+        }
 
     @property
     def is_on(self):
         """Return the physical state from alarm.cgi?action=getOutState."""
-        return self._coordinator.is_alarm_output_on()
+        return self._coordinator.is_alarm_output_on(self._output)
+
+
+class DahuaNamedAlarmOutputSwitch(DahuaAlarmOutputSwitch):
+    """One relay of several, named rather than translated.
+
+    A box with six relays cannot name them all "Alarm Output". The name has
+    to come from the device or from the relay's number, and neither is
+    something a translation file can hold -- so this names itself, the way
+    the disk sensors and the per-rule IVS sensors do.
+
+    Separate from its parent rather than a branch inside it because setting
+    `_attr_name` makes Home Assistant ignore the translation key entirely:
+    a class doing both silently keeps its English name in every language, and
+    there is a test asserting none of them does.
+    """
+
+    _attr_translation_key = None
+
+    def __init__(self, coordinator, entry, output: int):
+        super().__init__(coordinator, entry, output)
+        self._attr_name = coordinator.get_alarm_output_name(output)
 
 
 class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):

@@ -847,6 +847,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _alarm_inputs: list = []
     _alarm_input_slots: int = 0
 
+    # What the device calls each relay output, keyed by index. On the class
+    # for the same reason as everything above it: the switches read it and
+    # the many object.__new__ tests do not set it. Reassigned, never mutated.
+    _alarm_output_names: dict = {}
+
     # How many times the poll has read Lighting_V2 and got a real answer. It is
     # a count rather than a flag because the question callers ask is "did a
     # fresh sample arrive across this refresh", and only a value that moves can
@@ -1499,10 +1504,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Ask how many alarm outputs this device has, and remember the answer.
 
         One judgment for setup and for the later retry. The capability is not
-        "the read worked", it is "the device reports exactly one output":
-        `supports_alarm_output` wants one because the multi-output getOutState
-        encoding has never been verified here, and a switch built on a guess
-        would report an output as off while it is on.
+        "the read worked", it is "the device reports at least one output".
+
+        It used to insist on exactly one, because the multi-output
+        `getOutState` encoding was unverified. It is a bitmask: forcing
+        `AlarmOut[5].Mode = 1` on a six-relay DHI-NVR5464-16P-EI makes the
+        answer 32 and returning it to 0 makes it 0 again. So a recorder's
+        relays are readable now rather than withheld.
 
         A body that does not parse as a number is the device answering with
         something this cannot use, which is a settled fact about the firmware
@@ -1521,12 +1529,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         except (ValueError, TypeError):
             self._alarm_output_slots = 0
         _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
-        if self._alarm_output_slots > 1:
-            _LOGGER.debug(
-                "Device reports %s alarm outputs; entities are not created because "
-                "the multi-output getOutState encoding is not yet verified",
-                self._alarm_output_slots,
-            )
+        if self._alarm_output_slots:
+            # Only for the names, and only when there is something to name.
+            # Entirely optional: a relay with no name still gets a switch,
+            # numbered the way the device numbers it.
+            try:
+                self._alarm_output_names = (
+                    await self.client.async_get_alarm_output_names()
+                )
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug(
+                    "No alarm output names on %s", self._address, exc_info=True
+                )
         return self.supports_alarm_output()
 
     async def _async_retry_alarm_output(self) -> bool:
@@ -2515,7 +2529,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self._async_fetch_intelli_tour()))
             if self.supports_alarm_output() and self._wanted_by(SWITCH):
                 coros.append(
-                    asyncio.ensure_future(self.client.async_get_alarm_output_state())
+                    asyncio.ensure_future(
+                        self.client.async_get_alarm_output_state(
+                            self._alarm_output_slots
+                        )
+                    )
                 )
             # The siren switch and the security light both read this one, over
             # RPC2 on a direct camera and over CGI otherwise. Both go through
@@ -3344,12 +3362,44 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._supports_event_notifications
 
     def supports_alarm_output(self) -> bool:
-        """Whether a safely decodable single alarm output is available."""
-        return self._alarm_output_slots == 1
+        """Whether this device reports any relay output we can read back.
 
-    def is_alarm_output_on(self) -> bool:
+        This used to insist on exactly one, because `getOutState`'s encoding
+        for several was unverified and a switch built on a guess would report
+        a relay as open while it is closed. It is a bitmask, measured on a
+        DHI-NVR5464-16P-EI by forcing one relay of six and watching the answer
+        go to 32 and back, so the restriction is lifted.
+        """
+        return self._alarm_output_slots >= 1
+
+    def get_alarm_output_slots(self) -> int:
+        """How many relay outputs the device reported."""
+        return self._alarm_output_slots
+
+    def get_alarm_output_name(self, output: int = 0) -> str:
+        """What to call one relay: the device's name, or a number.
+
+        **The device's name is used only when it distinguishes this relay
+        from the others.** Every one of the six on the recorder measured is
+        called `"Beep"` out of the factory -- the default for all of them
+        rather than a description of any one -- and six entities all named
+        "Beep" is worse than six numbered ones.
+
+        So a name shared with another relay is discarded and the relay is
+        numbered, counting from one the way the device's own interface does.
+        An owner who renames one to "Gate" gets "Gate", and its five
+        still-default neighbours stay numbered.
+        """
+        names = self._alarm_output_names or {}
+        name = names.get(output)
+        if name and sum(1 for other in names.values() if other == name) == 1:
+            return name
+        return "Alarm output %d" % (output + 1)
+
+    def is_alarm_output_on(self, output: int = 0) -> bool | None:
         """Return the physical state reported by getOutState."""
-        return self.data.get("status.AlarmOut[0]") == "1"
+        value = self.data.get("status.AlarmOut[%d]" % output)
+        return {"0": False, "1": True}.get(value)
 
     def supports_profile_mode(self) -> bool:
         """Whether this device has selectable day/night/general profiles.

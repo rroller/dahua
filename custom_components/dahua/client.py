@@ -1974,22 +1974,50 @@ class DahuaClient:
         """Return the number of physical alarm-output slots reported by the device."""
         return await self.get("/cgi-bin/alarm.cgi?action=getOutSlots")
 
-    async def async_get_alarm_output_state(self) -> dict:
-        """Return the physical alarm-output state.
+    async def async_get_alarm_output_state(self, slots: int = 1) -> dict:
+        """Return the physical alarm-output state, one key per output.
 
-        The response is deliberately left unmodified. Single-output devices
-        return ``result=0`` or ``result=1``; the encoding for devices with
-        multiple outputs has not yet been verified.
+        **The multi-output encoding is a bitmask, and it is now measured.**
+        This used to be capped at a single output because it was not: forcing
+        `AlarmOut[5].Mode = 1` on a DHI-NVR5464-16P-EI with six relays makes
+        `getOutState` answer `result=32`, which is 1<<5, and returning it to 0
+        makes it answer `result=0` again. The same shape as `getInState`,
+        where terminal 3 read 8 and terminal 14 read 16384.
+
+        A one-output device is unaffected by construction: its only possible
+        answers are 0 and 1, and 1<<0 is 1, so the key this produces for
+        output 0 is byte for byte what it produced before.
         """
         try:
             data = await self.get("/cgi-bin/alarm.cgi?action=getOutState")
-        except aiohttp.ClientResponseError:
+            active = parse_alarm_state_bitmask(data, slots)
+        except (aiohttp.ClientError, TimeoutError, ValueError):
             # Not a getConfig, so it cannot go through async_get_config, but it
             # is read in the same fan-out and a refusal must not fail it. Empty
-            # rather than a guessed state: the switch reads the key below, and
+            # rather than a guessed state: the switch reads the keys below, and
             # inventing 0 would report an output as off while it is on.
             return {}
-        return {"status.AlarmOut[0]": data.get("result")}
+        return {
+            "status.AlarmOut[%d]" % index: ("1" if index in active else "0")
+            for index in range(max(slots, 1))
+        }
+
+    async def async_get_alarm_output_names(self) -> dict:
+        """What the device calls each relay, keyed by output index.
+
+        Worth reading even though it is usually useless: every one of the six
+        on the recorder measured is named `"Beep"`, which is the factory
+        default for all of them rather than a description of any one. But an
+        owner who renames a relay to "Gate" in the web interface should see
+        "Gate" here, and nothing else can tell us that.
+        """
+        data = await self.async_get_config("AlarmOut")
+        names = {}
+        for key, value in data.items():
+            match = re.fullmatch(r"table\.AlarmOut\[(\d+)\]\.Name", key)
+            if match:
+                names[int(match.group(1))] = str(value)
+        return names
 
     async def async_set_alarm_output_state(self, output: int, enabled: bool) -> dict:
         """Force one alarm output on or off.
