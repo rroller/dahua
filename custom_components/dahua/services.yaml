@@ -566,8 +566,6 @@ play_audio:
               value: g711u_8000
             - label: "16-bit PCM, 8 kHz"
               value: pcm_8000
-            - label: "16-bit PCM, 16 kHz"
-              value: pcm_16000
 
 vto_cancel_call:
   name: Cancel VTO call

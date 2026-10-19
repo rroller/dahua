@@ -90,6 +90,47 @@ def test_the_default_is_the_lowest_rate_on_the_table():
     assert AUDIO_FORMATS[DEFAULT_AUDIO_FORMAT].byte_rate == slowest
 
 
+def test_no_format_asks_the_device_to_swallow_more_than_it_drains():
+    """The format table cannot offer a rate that has been seen hanging a device.
+
+    Measured on a VTO2000A: the speaker consumes 8,000 samples a second, so
+    16,000 B/s is the ceiling for a two-byte format and 8,000 for a one-byte
+    one. A `pcm_16000` row used to sit here declaring 32,000 B/s, and that is
+    the one rate present in two of the three times postAudio has left that
+    device hung with HTTP, RTSP and DHIP all dead.
+
+    This is a guard against reintroducing it, including the tempting version
+    with the byte order corrected: the endianness was a separate bug and the
+    rate is the dangerous half.
+    """
+    for name, audio_format in AUDIO_FORMATS.items():
+        assert audio_format.sample_rate <= 8000, (
+            "%s plays faster than the speaker runs; a clip generated for a "
+            "higher rate comes out fast and unintelligible" % name
+        )
+        assert (
+            audio_format.byte_rate <= 16000
+        ), "%s declares %d B/s, above what the device drains" % (
+            name,
+            audio_format.byte_rate,
+        )
+
+
+def test_pcm_is_little_endian_whatever_the_microphone_does():
+    """Measured by ear, and the opposite of what the receive side suggests.
+
+    The device's own microphone serves `pcm_s16be` at 16 kHz, and reasoning
+    from that to the speaker is what put `s16be` here in the first place. The
+    same chime sent big-endian came back "fast and kind of like white noise";
+    sent little-endian it came back as "a tune".
+    """
+    for name, audio_format in AUDIO_FORMATS.items():
+        if audio_format.bytes_per_sample == 2:
+            assert audio_format.ffmpeg_format == "s16le", (
+                "%s is big-endian; that plays as loud noise on a VTO2000A" % name
+            )
+
+
 def test_an_unknown_format_says_what_the_known_ones_are():
     with pytest.raises(HomeAssistantError) as raised:
         resolve_format("mp3")
@@ -185,13 +226,13 @@ async def test_the_conversion_asks_for_the_format_that_was_chosen(monkeypatch):
     """
     captured = _record_subprocess(monkeypatch, _FakeProcess(stdout=b"x"))
 
-    await async_transcode(None, "http://host/clip.mp3", resolve_format("pcm_16000"))
+    await async_transcode(None, "http://host/clip.mp3", resolve_format("pcm_8000"))
 
     argv = captured["argv"]
     pairs = list(zip(argv, argv[1:]))
-    assert ("-ar", "16000") in pairs, "the sample rate is not being asked for"
+    assert ("-ar", "8000") in pairs, "the sample rate is not being asked for"
     assert ("-ac", "1") in pairs, "a stereo clip would be sent to a mono speaker"
-    assert ("-f", "s16be") in pairs, "the wrong byte order is loud, not silent"
+    assert ("-f", "s16le") in pairs, "big-endian plays as noise, measured by ear"
     assert ("-i", "http://host/clip.mp3") in pairs
     assert argv[-1] == "pipe:1", "the audio has to come back on stdout"
 
@@ -341,12 +382,12 @@ async def test_the_device_is_told_the_format_the_clip_was_made_in(monkeypatch):
     client = _Client()
 
     await camera_module.DahuaCamera.async_play_audio(
-        _camera(client), "media-source://tts/x", "pcm_16000"
+        _camera(client), "media-source://tts/x", "pcm_8000"
     )
 
     _, content_type, byte_rate, _ = client.calls[0]
-    assert content_type == AUDIO_FORMATS["pcm_16000"].content_type
-    assert byte_rate == AUDIO_FORMATS["pcm_16000"].byte_rate
+    assert content_type == AUDIO_FORMATS["pcm_8000"].content_type
+    assert byte_rate == AUDIO_FORMATS["pcm_8000"].byte_rate
 
 
 async def test_the_clip_goes_to_this_channels_speaker(monkeypatch):

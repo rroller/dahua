@@ -86,25 +86,27 @@ AUDIO_FORMATS: dict[str, AudioFormat] = {
         description="G.711 mu-law, 8 kHz",
     ),
     "pcm_8000": AudioFormat(
+        # LITTLE-endian, measured by ear on a VTO2000A: the same chime sent
+        # big-endian came back "fast and kind of like white noise", and sent
+        # little-endian came back as "a tune". This row used to say `s16be`,
+        # reasoned from the device's own microphone being `pcm_s16be 16000`.
+        # That inference is wrong in both halves -- the receive side is 16 kHz
+        # big-endian and the send side is 8 kHz little-endian -- and it is one
+        # more way the two halves of this device's audio do not match.
         content_type="Audio/PCM",
         sample_rate=8000,
         bytes_per_sample=2,
-        ffmpeg_format="s16be",
-        description="16-bit PCM, 8 kHz",
+        ffmpeg_format="s16le",
+        description="16-bit little-endian PCM, 8 kHz",
     ),
-    "pcm_16000": AudioFormat(
-        # Big-endian, which is not a guess: the VTO2000A's own RTSP audio
-        # track is `pcm_s16be 16000`, and its `getAudio` stream answers
-        # `Audio/PCM` at 32,000 bytes a second. Sending the other order is a
-        # quieter bug than it sounds -- a byte-swapped sine is still periodic
-        # at the same pitch, so it does not arrive as obvious noise, it
-        # arrives as something loud and wrong.
-        content_type="Audio/PCM",
-        sample_rate=16000,
-        bytes_per_sample=2,
-        ffmpeg_format="s16be",
-        description="16-bit big-endian PCM, 16 kHz. What a VTO2000A's own microphone produces",
-    ),
+    # There was a `pcm_16000` row here and it is deliberately gone. Two
+    # measurements killed it. It played as noise, because the speaker runs at
+    # 8 kHz whatever the microphone does, so a clip generated for 16 kHz is
+    # twice as fast. And at two bytes a sample it declares a 32,000 B/s push,
+    # which is double what the device drains: that is the one rate present in
+    # two of the three times a VTO2000A has been left hung by postAudio here,
+    # and the hang takes HTTP, RTSP and DHIP with it. Do not reintroduce it
+    # with the byte order corrected; the rate is the dangerous half.
 }
 
 DEFAULT_AUDIO_FORMAT = "g711a_8000"
