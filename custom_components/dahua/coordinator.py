@@ -2396,6 +2396,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if self._storage_disks and time.time() - self._storage_last_refresh >= 3600:
                 await self._async_refresh_storage()
 
+            # Whether this device detects motion it never pushes (#728). Rate
+            # limited and bounded inside the stream, and in the ordinary case
+            # it makes no request at all: one pushed VideoMotion settles the
+            # question for the life of the host.
+            await self._async_check_video_motion_is_pushed()
+
             # We need the profile mode (0=day, 1=night, 2=scene)
             if self._supports_profile_mode and not self.is_doorbell():
                 try:
@@ -3553,6 +3559,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if detail:
                 disk.update(detail)
         self._storage_last_refresh = time.time()
+
+    async def _async_check_video_motion_is_pushed(self) -> None:
+        """Hand the question to the host stream, which owns the evidence.
+
+        Wrapped, because the poll's fan-out has no `return_exceptions` and
+        this is the least important thing in it: a suggestion about a setting
+        must never be what takes an entry down.
+        """
+        try:
+            await _host_stream(
+                self.hass, self._address
+            ).async_check_video_motion_is_pushed()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "The motion push check failed on %s", self._address, exc_info=True
+            )
 
     def get_storage_disks(self) -> list:
         """The recorder's disks, for the diagnostic disk sensors to read (#745)."""
