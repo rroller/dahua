@@ -463,3 +463,64 @@ async def test_a_recorder_with_no_host_device_keeps_them_on_its_channel(monkeypa
     recorder.subentry_id = "channel-0"
 
     assert await _terminals_filed_under(recorder) == ["channel-0"]
+
+
+async def test_a_recorders_channels_lose_their_alarm_local_sensors(setup):
+    """Superseded by the terminal sensors, so not created at all.
+
+    On a multi-channel recorder these never showed their own channel's
+    state: the only thing that ever fed them was the terminal number being
+    read as a channel. Leaving them to sit at off for ever is worse than
+    removing them, because Home Assistant marks an entity a platform has
+    stopped providing as unavailable and offers to delete it, which somebody
+    notices, where a stale "off" is indistinguishable from a quiet alarm.
+    """
+    await setup(
+        *[
+            _Coordinator(
+                channel=i, events=["VideoMotion", "AlarmLocal"], alarm_inputs=TERMINALS
+            )
+            for i in range(3)
+        ]
+    )
+
+    assert "AlarmLocal" not in _names(setup.built)
+    assert (
+        _names(setup.built).count("VideoMotion") == 3
+    ), "only the superseded code is dropped, not the channel's other sensors"
+
+
+async def test_a_camera_keeps_its_alarm_local_sensor(setup):
+    """A camera's own alarm terminal has nowhere else to go, and #231's
+    single-channel branch still delivers it. Taking this away would remove a
+    working sensor from every doorbell and camera that has one."""
+    await setup(_Coordinator(events=["AlarmLocal"]))
+
+    assert "AlarmLocal" in _names(setup.built)
+
+
+async def test_a_recorder_with_no_terminals_keeps_them_too():
+    """Nothing supersedes them there, so nothing is removed. A recorder whose
+    probe found no terminals must not quietly lose a sensor."""
+    import pytest as _pytest  # noqa: F401
+
+    coordinators = [_Coordinator(channel=i, events=["AlarmLocal"]) for i in range(3)]
+    built = []
+
+    class _Event:
+        def __init__(self, coordinator, entry, event_name):
+            built.append(event_name)
+
+    import custom_components.dahua.binary_sensor as _bs
+    from unittest.mock import patch
+
+    with patch.multiple(
+        _bs,
+        DahuaEventSensor=_Event,
+        DahuaAuthorizedVehicleBinarySensor=lambda *a, **k: object(),
+        DahuaDiskProblemBinarySensor=lambda *a, **k: object(),
+        DahuaAlarmInputBinarySensor=lambda *a, **k: object(),
+    ):
+        await _bs.async_setup_entry(None, _Entry(coordinators), adds_entities([]))
+
+    assert built.count("AlarmLocal") == 3
