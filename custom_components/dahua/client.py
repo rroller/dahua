@@ -1923,17 +1923,12 @@ class DahuaClient:
         """
         try:
             data = await self.get("/cgi-bin/alarm.cgi?action=getOutState")
-        except aiohttp.ClientResponseError:
+            active = parse_alarm_state_bitmask(data, slots)
+        except (aiohttp.ClientError, TimeoutError, ValueError):
             # Not a getConfig, so it cannot go through async_get_config, but it
             # is read in the same fan-out and a refusal must not fail it. Empty
             # rather than a guessed state: the switch reads the keys below, and
             # inventing 0 would report an output as off while it is on.
-            return {}
-        active = parse_alarm_state_bitmask(data, slots)
-        if not active and data.get("result") is None:
-            # The device answered with something that is not a number at all.
-            # Same reasoning as the refusal above: no keys rather than a page
-            # of zeroes that read as "every relay is open".
             return {}
         return {
             "status.AlarmOut[%d]" % index: ("1" if index in active else "0")

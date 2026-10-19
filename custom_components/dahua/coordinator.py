@@ -3396,9 +3396,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return name
         return "Alarm output %d" % (output + 1)
 
-    def is_alarm_output_on(self, output: int = 0) -> bool:
+    def is_alarm_output_on(self, output: int = 0) -> bool | None:
         """Return the physical state reported by getOutState."""
-        return self.data.get("status.AlarmOut[%d]" % output) == "1"
+        value = self.data.get("status.AlarmOut[%d]" % output)
+        return {"0": False, "1": True}.get(value)
 
     def supports_profile_mode(self) -> bool:
         """Whether this device has selectable day/night/general profiles.
