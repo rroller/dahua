@@ -363,6 +363,14 @@
                     "manual": "Manual",
                     "off": "Off"
                 }
+            },
+            "lighting_scheme": {
+                "name": "Illumination mode",
+                "state": {
+                    "infrared": "Infrared",
+                    "white": "White light",
+                    "smart_dual": "Smart Dual Light"
+                }
             }
         },
         "sensor": {
@@ -427,6 +435,15 @@
         }
     },
     "exceptions": {
+        "lighting_scheme_held_by_illuminator": {
+            "message": "The illumination mode cannot be changed while the Illuminator is holding this channel. Turn the Illuminator off first, which puts the camera back to the mode it was in, then choose the mode you want."
+        },
+        "lighting_scheme_not_accepted": {
+            "message": "The camera did not take {mode} as its illumination mode and still reports {got}. Some Dahua devices answer OK to a setting they do not apply, so this is the camera refusing rather than a connection problem."
+        },
+        "lighting_scheme_unknown": {
+            "message": "{mode} is not an illumination mode this camera offers. It reports: {known}."
+        },
         "audio_path_not_allowed": {
             "message": "Home Assistant is not allowed to read {path}. Use a media source, a URL, or a file inside the config directory or one listed in allowlist_external_dirs."
         },

@@ -9,7 +9,9 @@ import asyncio
 import time
 import aiohttp
 
-from .const import ALL_EVENTS
+from homeassistant.exceptions import HomeAssistantError
+
+from .const import ALL_EVENTS, DOMAIN
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
 from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
@@ -2936,6 +2938,128 @@ class DahuaClient:
                     "keeping the snapshot for another attempt" % channel
                 )
             await store.async_remove(channel)
+
+    async def async_get_lighting_schemes(self, channel: int) -> list[str] | None:
+        """The illumination modes this channel's camera reports having.
+
+        Read-only setup probe. Returns the device's own spellings, or None
+        where the camera does not offer the dual-light solution, so a channel
+        this was not built for simply gets no entity. Any refusal is a no:
+        a capability question must never be the thing that fails setup.
+        """
+        try:
+            return await self._rpc2_shared_call(
+                lambda client: client.get_lighting_schemes(channel)
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "No lighting scheme capability on channel %s", channel, exc_info=error
+            )
+            return None
+
+    async def async_get_channel_lighting_scheme(self, channel: int) -> dict:
+        """Read this channel's scene modes for the illumination selector."""
+        async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
+            response = await self._rpc2_shared_call(
+                lambda client: client.get_config(
+                    {"name": "LightingScheme", "onlyLocal": False, "channel": channel}
+                )
+            )
+        table = response.get("table")
+        if (
+            not isinstance(table, list)
+            or not table
+            or not all(
+                isinstance(profile, dict)
+                and isinstance(profile.get("LightingMode"), str)
+                for profile in table
+            )
+        ):
+            raise ValueError("The channel did not return its LightingScheme scenes")
+        return flatten_rpc2_config(
+            "LightingScheme", table, "table.LightingScheme[%d]" % channel
+        )
+
+    async def async_set_channel_scoped_lighting_scheme(
+        self, channel: int, mode: str
+    ) -> None:
+        """Write one illumination mode to every scene of a recorder channel.
+
+        Every scene rather than the live one. Resolving which scene is live
+        means reading `VideoInMode`, which carries three different shapes on
+        one recorder (#458), and getting that resolution wrong is most of
+        what #959 was. Setting all nine needs no resolution and matches what
+        the camera's own interface does.
+
+        Refused outright while the white-light override owns the channel: its
+        restore reverts a scene only where it is still `WhiteMode`, so a mode
+        chosen here would be silently undone by the next Illuminator OFF, or
+        overwritten by the snapshot replayed at startup. Sharing
+        `_lighting_scheme_lock` keeps the two from interleaving once past
+        that check.
+
+        Measured on a DHI-NVR5464-16P-EI driving a VSIPP-6DIRMD-I3: all three
+        of `InfraredMode`, `WhiteMode` and `AIMode` write and read back, and
+        the original restores cleanly.
+        """
+
+        def read():
+            return self._rpc2_shared_call(
+                lambda client: client.get_config(
+                    {"name": "LightingScheme", "onlyLocal": False, "channel": channel}
+                )
+            )
+
+        async with self._lighting_scheme_lock, self._request_slot(), asyncio.timeout(
+            TIMEOUT_SECONDS
+        ):
+            store = self._channel_snapshot_store
+            if store is not None and await store.async_get(channel) is not None:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="lighting_scheme_held_by_illuminator",
+                )
+            scheme = (await read()).get("table")
+            if not isinstance(scheme, list) or not scheme:
+                raise ValueError(
+                    "Dahua channel %s does not serve a LightingScheme table" % channel
+                )
+            wanted = [dict(profile) for profile in scheme]
+            for profile in wanted:
+                profile["LightingMode"] = mode
+            await self._rpc2_shared_call(
+                lambda client: client.set_config(
+                    "LightingScheme", wanted, channel=channel
+                )
+            )
+            # Cleared so the check below is a real read rather than the copy
+            # that was cached before the write.
+            clear_host_cache(self._address)
+            back = (await read()).get("table") or []
+            got = {
+                profile.get("LightingMode")
+                for profile in back
+                if isinstance(profile, dict)
+            }
+            if (
+                len(back) != len(wanted)
+                or not all(
+                    isinstance(profile, dict) and profile.get("LightingMode") == mode
+                    for profile in back
+                )
+                or got != {mode}
+            ):
+                # Accepted and ignored is a refusal here. These devices answer
+                # OK to writes they do not act on, so the read-back is the
+                # only thing that distinguishes the two.
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="lighting_scheme_not_accepted",
+                    translation_placeholders={
+                        "mode": mode,
+                        "got": ", ".join(sorted(str(value) for value in got)),
+                    },
+                )
 
     async def async_channel_scoped_white_light_supported(self, channel: int) -> bool:
         """Whether this channel's LightingScheme + Lighting_V2 answer per channel

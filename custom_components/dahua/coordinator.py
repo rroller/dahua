@@ -932,6 +932,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     """Class to manage fetching data from the API."""
 
+    # The illumination modes this channel reports, or None where it reports
+    # none and for every coordinator the suite builds with object.__new__ and
+    # only some attributes set. A class default covers every reader at once;
+    # scattering getattr over the call sites is how #1006 happened.
+    _lighting_schemes: list[str] | None = None
+
+    # Read bare by the lighting scheme probe below. It is assigned in
+    # __init__, but the probe suites build coordinators with object.__new__
+    # and set only the attributes their own case needs, so a bare read of it
+    # raises AttributeError there. One class default serves every reader;
+    # the scattered getattr the neighbouring code uses for the same flag is
+    # the pattern #1006 came out of.
+    _supports_channel_scoped_illuminator: bool = False
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -1049,6 +1063,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_lighting_v2 = False
         self._supports_lighting_scheme_illuminator = False
         self._supports_channel_scoped_illuminator = False
+        self._lighting_schemes = None
 
         # Host-wide camera/NVR reboot generation.
         # Multiple NVR channel coordinators share the host uptime read.
@@ -2369,6 +2384,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._supports_channel_scoped_illuminator,
                     )
 
+                # Which illumination modes the camera offers, asked ONLY where
+                # the channel-scoped lighting path is already known to work.
+                # That keeps it to the channels that can act on the answer: on
+                # a twelve channel recorder here, one. Asking every channel
+                # would spend three RPC2 calls apiece at setup to be told no
+                # eleven times.
+                #
+                # Measured on a DHI-NVR5464-16P-EI: the capability is reported
+                # per camera rather than host-wide, and it agreed with whether
+                # LightingScheme could actually be read channel-scoped on all
+                # eight channels tried. Capability and transport are separate
+                # questions in general (#942), so this is gated on both rather
+                # than on the capability alone.
+                if self._supports_channel_scoped_illuminator:
+                    self._lighting_schemes = (
+                        await self.client.async_get_lighting_schemes(self._channel)
+                    )
+                    _LOGGER.debug(
+                        "Channel %s lighting schemes: %s",
+                        self._channel,
+                        self._lighting_schemes,
+                    )
+
                 # Checking privacy mode (LeLensMask) support. This is RPC2 only and many models lack it.
                 # Deliberately broader than PROBE_FAILED: a camera without LeLensMask answers with an
                 # RPC2 result=false, which surfaces as ConnectionError, and a malformed table raises
@@ -2491,6 +2529,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Motion detection state is read by the camera entity as well as
             # the switch, so it survives either one being enabled.
             coros = []
+            if self.supports_lighting_schemes() and self._wanted_by(SELECT):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_channel_lighting_scheme())
+                )
             if self._wanted_by(CAMERA, SWITCH):
                 coros.append(
                     asyncio.ensure_future(
@@ -4392,6 +4434,57 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if not named:
             return True
         return WHITE_LIGHT in named
+
+    async def _async_fetch_channel_lighting_scheme(self) -> dict:
+        """Keep only this channel's previous scene modes if its read fails."""
+        try:
+            return await self.client.async_get_channel_lighting_scheme(self._channel)
+        except Exception:
+            _LOGGER.debug("Could not read channel illumination modes", exc_info=True)
+            prefix = "table.LightingScheme[%d][" % self._channel
+            return {
+                key: value
+                for key, value in (self.data or {}).items()
+                if key.startswith(prefix)
+            }
+
+    def supports_lighting_schemes(self) -> bool:
+        """Whether this channel named any illumination modes it can be put in.
+
+        Split from the getter so the platform gate keeps the `supports_`
+        prefix every other capability question here uses. That is not
+        cosmetic: `test_setup_doubles_answer_every_capability` finds setup
+        doubles by that prefix, and a capability named outside it is added
+        without any of them being told.
+        """
+        return bool(self._lighting_schemes)
+
+    def get_lighting_schemes(self) -> list[str] | None:
+        """The illumination modes this channel offers, or None where it has none.
+
+        The device's own spellings, so callers write back exactly what was
+        read. `AIMode` is what the web interface calls Smart Dual Light.
+        """
+        return self._lighting_schemes
+
+    def get_lighting_scheme(self) -> str | None:
+        """The mode every scene agrees on, or None where they disagree.
+
+        A camera holds nine scenes and each carries its own mode. Reporting
+        the "active" one would mean resolving which scene is live, and that
+        resolution is exactly what #959 kept getting wrong -- VideoInMode has
+        three shapes on one recorder. Unanimity needs no such resolution, and
+        a split set genuinely is not one mode, so None is the honest answer.
+        """
+        prefix = "table.LightingScheme[{0}][".format(self._channel)
+        modes = {
+            value
+            for key, value in (self.data or {}).items()
+            if key.startswith(prefix) and key.endswith("].LightingMode")
+        }
+        if len(modes) != 1:
+            return None
+        return next(iter(modes))
 
     def uses_lighting_scheme_illuminator(self) -> bool:
         """Whether this device needs the two-table white-light contract."""

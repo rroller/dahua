@@ -57,6 +57,10 @@ WAS = {
     # to match. Listed because this table is asserted as equal to the file, which
     # is what makes a rename fail rather than pass quietly.
     ("select", "infrared_mode"): "Infrared Mode",
+    # New with the illumination mode control. Named "Illumination mode"
+    # rather than "Lighting scheme" because the latter is Dahua's word for
+    # it, not one a user would recognise from the camera's own interface.
+    ("select", "lighting_scheme"): "Illumination mode",
     ("select", "smart_motion_sensitivity"): "Smart Motion Sensitivity",
     ("select", "vth_camera_link"): "Camera for {vto} calls",
     # New in this change, so there is nothing they "was": the table is what

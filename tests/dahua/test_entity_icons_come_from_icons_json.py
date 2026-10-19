@@ -41,6 +41,7 @@ PLATFORMS = (
 WAS = {
     ("binary_sensor", "authorized_vehicle"): "mdi:car-check",
     ("select", "day_night_mode"): "mdi:theme-light-dark",
+    ("select", "lighting_scheme"): "mdi:lightbulb-auto",
     ("sensor", "license_plate"): "mdi:car-back",
     ("sensor", "memory_used"): "mdi:memory",
     ("sensor", "processor_usage"): "mdi:cpu-64-bit",
