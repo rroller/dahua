@@ -22,6 +22,14 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 from custom_components.dahua import dahua_utils
+from custom_components.dahua.audio import (
+    AUDIO_FORMATS,
+    DEFAULT_AUDIO_FORMAT,
+    async_resolve_media,
+    async_transcode,
+    resolve_format,
+)
+from custom_components.dahua.client import DahuaWriteDeclined
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.infrared import MODE_BY_OPTION, async_write_infrared_mode
 from custom_components.dahua.model_profiles import is_sdt4e425
@@ -55,6 +63,7 @@ SERVICE_ENABLE_TEXT_OVERLAY = "enable_text_overlay"
 SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
 SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
+SERVICE_PLAY_AUDIO = "play_audio"
 SERVICE_VTO_OPEN_DOOR = "vto_open_door"
 SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_VTO_CALL = "vto_call"
@@ -453,6 +462,20 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Required("door_id", default=1): int,
         },
         _async_open_door_once,
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_PLAY_AUDIO,
+        {
+            vol.Required("media_content_id"): cv.string,
+            # Validated here as well as in `resolve_format`, so a typo is
+            # refused by the service dialog rather than after a file has been
+            # fetched and converted.
+            vol.Optional("audio_format", default=DEFAULT_AUDIO_FORMAT): vol.In(
+                sorted(AUDIO_FORMATS)
+            ),
+        },
+        "async_play_audio",
     )
 
     platform.async_register_entity_service(
@@ -948,6 +971,59 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             channel, config_type, mode
         )
         await self._coordinator.async_refresh()
+
+    async def async_play_audio(self, media_content_id: str, audio_format: str = None):
+        """Play a clip through this channel's own speaker (#177).
+
+        Three steps, each of which can fail for its own reason and says so:
+        work out what was pointed at, convert it to the format asked for, and
+        push it. The conversion uses Home Assistant's configured ffmpeg
+        binary for every clip.
+
+        `audio_format` is the caller's, with a default rather than a probe,
+        because nothing measured so far says what a given speaker accepts.
+        `audio.py` has the reasoning and the table.
+        """
+        clip_format = resolve_format(audio_format)
+        url = await async_resolve_media(self.hass, media_content_id)
+        audio = await async_transcode(self.hass, url, clip_format)
+        try:
+            await self._coordinator.client.async_play_audio(
+                audio,
+                clip_format.content_type,
+                clip_format.byte_rate,
+                self._channel_number,
+            )
+        except DahuaWriteDeclined as declined:
+            # The device said no, which for this CGI can arrive as a 200.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="audio_declined",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(declined),
+                },
+            ) from declined
+        except (TimeoutError, asyncio.TimeoutError) as timeout:
+            # Carries its own account of which limit ran out and why, and
+            # that is the useful half of this message.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="audio_stopped",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(timeout) or "it stopped taking audio",
+                },
+            ) from timeout
+        except ClientError as error:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="audio_could_not_be_sent",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(error),
+                },
+            ) from error
 
     async def async_reboot(self):
         """Handles the service call from SERVICE_REBOOT to reboot the device"""
