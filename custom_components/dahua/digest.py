@@ -154,6 +154,32 @@ class DigestAuth:
     def nonce_count(self, value):
         self._state["nonce_count"] = value
 
+    def cached_authorization(self, method, url):
+        """The header this device's remembered challenge allows, or None.
+
+        For the one request that cannot take a 401: `request` answers a
+        challenge by sending the whole thing again, and a body generated as it
+        goes has been consumed by then, so the retry would arrive empty. Such
+        a caller asks for the header up front instead.
+
+        **What this is, and is not.** It is the best available guess, not a
+        guarantee. Some of these devices refuse a cached challenge on every
+        call and reissue the same nonce instead -- measured on a VTO2000A and
+        on a DHI-NVR5464-16P-EI, which answered 401 then 200 four times in a
+        row -- so a caller that cannot replay has to be able to live with the
+        401. The one audio path measured so far never challenges at all, so
+        the header is unused there; it exists for firmware that does.
+
+        Raises `aiohttp.ClientError` for a challenge whose qop this module
+        cannot satisfy, the same as building a header for any other request
+        would.
+        """
+        if self.scheme == BASIC:
+            return self._build_basic_header()
+        if self.challenge:
+            return self._build_digest_header(method.upper(), url)
+        return None
+
     async def _send(self, method, url, headers, **kwargs):
         """One request, asked once more if a pooled connection had been closed.
 
