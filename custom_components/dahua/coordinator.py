@@ -34,6 +34,7 @@ from . import refusals
 from .client import (
     DahuaClient,
     _describe_client_error,
+    parse_alarm_inputs,
     parse_storage_disks,
     rpc2_refusal_is_a_stale_login,
 )
@@ -338,19 +339,35 @@ def infrared_transport(v2_row, v1_refused: bool) -> str:
 
     **The order matters and the obvious rule is wrong.** The first version of this
     preferred v2 wherever a v2 row existed, which decides from what a device
-    *reports it has*. Measured on a DHI-NVR5464-16P-EI that is right -- v1 is
-    refused there and v2 works. But #647 carries a directly connected
-    IPC-T5442TM-AS-6mm reporting three v2 InfraredLight rows while its v1 table is
-    presumably accepted, and that issue's whole complaint is "the CGI values change
-    and the physical LEDs do not". Moving every camera that merely reports a v2 row
-    onto a table nobody has verified drives its emitter is that complaint, shipped.
+    *reports it has*. Deciding from what the device *accepts* instead keeps every
+    working camera where it is and only moves the ones that have actually refused.
+    That is the shape this codebase has arrived at independently three times --
+    `_HOST_CGI_CONFIG_ABSENT`, `_RPC2_TABLE_UNAVAILABLE` and `refusals` all learn
+    from the device rather than from a claim -- while the fifteen capabilities
+    still gated on a model string are the recurring bug class (#570, #676, #690).
 
-    Deciding from what the device *accepts* keeps every working camera where it is
-    and only moves the ones that have actually refused. It is also the shape this
-    codebase has arrived at independently three times -- `_HOST_CGI_CONFIG_ABSENT`,
-    `_RPC2_TABLE_UNAVAILABLE` and `refusals` all learn from a refusal rather than
-    from a claim -- while the fifteen capabilities still gated on a model string are
-    the recurring bug class (#570, #676, #690).
+    **But "refused" is not the only way a device says no, and this rule used to
+    miss the other way.** It was written when the IPC-T5442TM-AS-6mm in #647 was
+    only *presumed* to accept v1, and the note here said a v2 write had been proved
+    to move the mode but never the light. Both halves have since been measured on
+    that camera, and they go the other way:
+
+        setConfig&Lighting[0][0].Mode=Manual        200 'OK'
+        getConfig&name=Lighting       [0][0].Mode=Manual   <- the write is stored
+        getConfig&name=Lighting_V2 [0][0][0].Mode=Off      <- and the LED is dark
+        setConfig&Lighting_V2[0][0][0].Mode=Manual  turns the physical emitter on
+
+    So on that firmware the two tables are unlinked -- they do not even carry the
+    same number of profiles, four against three -- and v1 is a store that answers
+    `OK` and drives nothing. A rule that only learns from a refusal can never leave
+    it, because it is never refused.
+
+    This function is unchanged by that, deliberately: v1 still goes first, and no
+    camera is moved on the strength of a row it merely reports. What changed is
+    that `async_write_infrared_mode` now checks the v2 row after a v1 write and
+    counts "accepted and then nothing moved" as a refusal too, so the device still
+    gets to decide. There is as yet no measured device with a v2 InfraredLight row
+    whose emitter v1 actually drives; if one appears, it keeps v1 under this rule.
     """
     if v1_refused and v2_row is not None:
         return "v2"
@@ -768,6 +785,45 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
 CAPABILITY_REFUSED = (400, 404, 501)
 
 
+def alarm_input_index(event: dict) -> int:
+    """Which alarm input terminal an `AlarmLocal` event is about.
+
+    Measured on a DHI-NVR5464-16P-EI by flipping unwired inputs to `NC`, which
+    makes an open circuit the alarm state: `Alarm[3]`, whose own name is
+    `"Alarm-in Port4"`, produced `index=3`, and `Alarm[14]` produced `index=14`.
+    So this is the position in the `Alarm[]` table, zero based, and the number
+    printed on the chassis is one more.
+
+    Both casings, for the reason `door_index` gives: DHIP sends `Index` and the
+    CGI wire format parses to `index`.
+
+    Anything missing or unreadable is terminal 0. There is nothing better to
+    do with it -- the payload carries only `RealUTC` besides the index, so
+    there is no second field to fall back on.
+    """
+    try:
+        index = int(event.get("Index", event.get("index")))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, index)
+
+
+def alarm_input_event_code(index: int) -> str:
+    """The synthetic event code one alarm input terminal's sensor listens on.
+
+    A recorder's `AlarmLocal` events all share one code and are told apart only
+    by their index, so each terminal needs a key of its own to hold a timestamp
+    under. Same device as `IVSRule_<id>`, which gives one rule its own sensor
+    out of a code several rules share.
+
+    The index here is the one the device sends, which is the position in
+    `Alarm[]` and is zero based. The number a user sees is one higher; that
+    belongs in the entity's name, not in its identity, so the id never has to
+    be migrated if a firmware renumbers its labels.
+    """
+    return "AlarmInput_%d" % index
+
+
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     # Tests also build coordinators with object.__new__. These defaults are
@@ -789,6 +845,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _storage_disks: list = []
     _storage_last_refresh: float = 0.0
 
+    # The recorder's own alarm input terminals (#1090), on the class for the
+    # same reason and with the same rule: reassigned, never mutated. Only the
+    # one coordinator that probed them has a non-empty list, so these also
+    # answer "is this the channel that carries the host's alarm entities".
+    _alarm_inputs: list = []
+    _alarm_input_slots: int = 0
+
+    # What the device calls each relay output, keyed by index. On the class
+    # for the same reason as everything above it: the switches read it and
+    # the many object.__new__ tests do not set it. Reassigned, never mutated.
+    _alarm_output_names: dict = {}
+
+    # How many times the poll has read Lighting_V2 and got a real answer. It is
+    # a count rather than a flag because the question callers ask is "did a
+    # fresh sample arrive across this refresh", and only a value that moves can
+    # answer that: `_async_fetch_lighting_v2` carries the previous table on a
+    # read failure, and a refresh that fails outright leaves `data` untouched
+    # without calling it at all. Both look identical in the data itself.
+    #
+    # On the class as well as in __init__ because a great many tests build a
+    # coordinator with object.__new__ and set only what they are about.
+    _lighting_v2_samples: int = 0
+
     # Whether this device answered magicBox.getCPUUsage and getMemoryInfo at
     # setup. Both are RPC2 only with no CGI form, so a device with RPC2 off has
     # neither sensor -- which is why this is a probe rather than an assumption.
@@ -804,6 +883,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # like the disks. A diagnostic read is a login the device logs, and the slots
     # change rarely, so it is not polled. Empty on anything that is not a recorder.
     _remote_devices: dict = {}
+
+    # How the recorder reaches the camera on this channel, lowercased, or None
+    # where it did not say. Read from the same RemoteDevice table as
+    # _channel_model, in the same place, so it costs no extra request.
+    _channel_protocol: str | None = None
 
     # Which subentry of the entry this channel is, or None for a single camera.
     # Declared on the class for the same reason as the line above: a great many
@@ -852,6 +936,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _supports_intelli_tour: bool = False
 
     """Class to manage fetching data from the API."""
+
+    # The illumination modes this channel reports, or None where it reports
+    # none and for every coordinator the suite builds with object.__new__ and
+    # only some attributes set. A class default covers every reader at once;
+    # scattering getattr over the call sites is how #1006 happened.
+    _lighting_schemes: list[str] | None = None
+
+    # Read bare by the lighting scheme probe below. It is assigned in
+    # __init__, but the probe suites build coordinators with object.__new__
+    # and set only the attributes their own case needs, so a bare read of it
+    # raises AttributeError there. One class default serves every reader;
+    # the scattered getattr the neighbouring code uses for the same flag is
+    # the pattern #1006 came out of.
+    _supports_channel_scoped_illuminator: bool = False
 
     def __init__(
         self,
@@ -970,6 +1068,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_lighting_v2 = False
         self._supports_lighting_scheme_illuminator = False
         self._supports_channel_scoped_illuminator = False
+        self._lighting_schemes = None
         self._encode_audio_keys: tuple[str, ...] = ()
         self._encode_audio_last_values: dict[str, str] = {}
 
@@ -1427,10 +1526,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Ask how many alarm outputs this device has, and remember the answer.
 
         One judgment for setup and for the later retry. The capability is not
-        "the read worked", it is "the device reports exactly one output":
-        `supports_alarm_output` wants one because the multi-output getOutState
-        encoding has never been verified here, and a switch built on a guess
-        would report an output as off while it is on.
+        "the read worked", it is "the device reports at least one output".
+
+        It used to insist on exactly one, because the multi-output
+        `getOutState` encoding was unverified. It is a bitmask: forcing
+        `AlarmOut[5].Mode = 1` on a six-relay DHI-NVR5464-16P-EI makes the
+        answer 32 and returning it to 0 makes it 0 again. So a recorder's
+        relays are readable now rather than withheld.
 
         A body that does not parse as a number is the device answering with
         something this cannot use, which is a settled fact about the firmware
@@ -1449,12 +1551,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         except (ValueError, TypeError):
             self._alarm_output_slots = 0
         _LOGGER.debug("Device alarm output slots=%s", self._alarm_output_slots)
-        if self._alarm_output_slots > 1:
-            _LOGGER.debug(
-                "Device reports %s alarm outputs; entities are not created because "
-                "the multi-output getOutState encoding is not yet verified",
-                self._alarm_output_slots,
-            )
+        if self._alarm_output_slots:
+            # Only for the names, and only when there is something to name.
+            # Entirely optional: a relay with no name still gets a switch,
+            # numbered the way the device numbers it.
+            try:
+                self._alarm_output_names = (
+                    await self.client.async_get_alarm_output_names()
+                )
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug(
+                    "No alarm output names on %s", self._address, exc_info=True
+                )
         return self.supports_alarm_output()
 
     async def _async_retry_alarm_output(self) -> bool:
@@ -1986,6 +2094,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if self.is_recorder_host():
                     await self._async_refresh_storage()
                     await self._async_refresh_remote_devices()
+                    await self._async_probe_alarm_inputs()
 
                 # The processor and memory describe the box, not the
                 # channel. Every channel probes and polls for them, and the
@@ -2159,6 +2268,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     remote = await self.client.async_get_config("RemoteDevice")
                     self._channel_model = remote_device_model(remote, self._channel)
+                    self._channel_protocol = remote_device_protocol(
+                        remote, self._channel
+                    )
                     if is_onvif_channel(remote, self._channel):
                         # Say it once, plainly, instead of leaving a camera
                         # entity that answers 400 for the life of the entry.
@@ -2279,6 +2391,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._supports_channel_scoped_illuminator,
                     )
 
+                # Which illumination modes the camera offers, asked ONLY where
+                # the channel-scoped lighting path is already known to work.
+                # That keeps it to the channels that can act on the answer: on
+                # a twelve channel recorder here, one. Asking every channel
+                # would spend three RPC2 calls apiece at setup to be told no
+                # eleven times.
+                #
+                # Measured on a DHI-NVR5464-16P-EI: the capability is reported
+                # per camera rather than host-wide, and it agreed with whether
+                # LightingScheme could actually be read channel-scoped on all
+                # eight channels tried. Capability and transport are separate
+                # questions in general (#942), so this is gated on both rather
+                # than on the capability alone.
+                if self._supports_channel_scoped_illuminator:
+                    self._lighting_schemes = (
+                        await self.client.async_get_lighting_schemes(self._channel)
+                    )
+                    _LOGGER.debug(
+                        "Channel %s lighting schemes: %s",
+                        self._channel,
+                        self._lighting_schemes,
+                    )
+
                 # Checking privacy mode (LeLensMask) support. This is RPC2 only and many models lack it.
                 # Deliberately broader than PROBE_FAILED: a camera without LeLensMask answers with an
                 # RPC2 result=false, which surfaces as ConnectionError, and a malformed table raises
@@ -2392,6 +2527,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if self._storage_disks and time.time() - self._storage_last_refresh >= 3600:
                 await self._async_refresh_storage()
 
+            # Whether this device detects motion it never pushes (#728). Rate
+            # limited and bounded inside the stream, and in the ordinary case
+            # it makes no request at all: one pushed VideoMotion settles the
+            # question for the life of the host.
+            await self._async_check_video_motion_is_pushed()
+
             # We need the profile mode (0=day, 1=night, 2=scene)
             if self._supports_profile_mode and not self.is_doorbell():
                 try:
@@ -2425,6 +2566,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Motion detection state is read by the camera entity as well as
             # the switch, so it survives either one being enabled.
             coros = []
+            if self.supports_lighting_schemes() and self._wanted_by(SELECT):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_channel_lighting_scheme())
+                )
             # Only poll Encode where the initialization probe found audio fields.
             if self._encode_audio_keys and self._wanted_by(SWITCH, SELECT):
                 coros.append(asyncio.ensure_future(self._async_get_encode_config()))
@@ -2466,7 +2611,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(asyncio.ensure_future(self._async_fetch_intelli_tour()))
             if self.supports_alarm_output() and self._wanted_by(SWITCH):
                 coros.append(
-                    asyncio.ensure_future(self.client.async_get_alarm_output_state())
+                    asyncio.ensure_future(
+                        self.client.async_get_alarm_output_state(
+                            self._alarm_output_slots
+                        )
+                    )
                 )
             # The siren switch and the security light both read this one, over
             # RPC2 on a direct camera and over CGI otherwise. Both go through
@@ -2804,6 +2953,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         codes = self.translate_event_code(event)
         raw_code = event.get("Code")
         data = event_payload(event)
+
+        # One sensor per alarm input terminal, out of the one code they share
+        # (#1090). `AlarmLocal`'s index is the terminal, not a video channel --
+        # measured on a DHI-NVR5464-16P-EI by making unwired inputs read active
+        # -- so host.py hands every one of them to this coordinator and the
+        # index chooses which sensor moves here. Only the coordinator that
+        # probed the terminals does this; on a camera `_alarm_inputs` is empty
+        # and nothing changes.
+        if raw_code == "AlarmLocal" and self._alarm_inputs:
+            alarm_code = alarm_input_event_code(alarm_input_index(event))
+            if alarm_code not in codes:
+                codes.append(alarm_code)
         if data.get("Class") == "Normal":
             rule_id = data.get("RuleID")
             if rule_id is None:
@@ -3283,12 +3444,44 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._supports_event_notifications
 
     def supports_alarm_output(self) -> bool:
-        """Whether a safely decodable single alarm output is available."""
-        return self._alarm_output_slots == 1
+        """Whether this device reports any relay output we can read back.
 
-    def is_alarm_output_on(self) -> bool:
+        This used to insist on exactly one, because `getOutState`'s encoding
+        for several was unverified and a switch built on a guess would report
+        a relay as open while it is closed. It is a bitmask, measured on a
+        DHI-NVR5464-16P-EI by forcing one relay of six and watching the answer
+        go to 32 and back, so the restriction is lifted.
+        """
+        return self._alarm_output_slots >= 1
+
+    def get_alarm_output_slots(self) -> int:
+        """How many relay outputs the device reported."""
+        return self._alarm_output_slots
+
+    def get_alarm_output_name(self, output: int = 0) -> str:
+        """What to call one relay: the device's name, or a number.
+
+        **The device's name is used only when it distinguishes this relay
+        from the others.** Every one of the six on the recorder measured is
+        called `"Beep"` out of the factory -- the default for all of them
+        rather than a description of any one -- and six entities all named
+        "Beep" is worse than six numbered ones.
+
+        So a name shared with another relay is discarded and the relay is
+        numbered, counting from one the way the device's own interface does.
+        An owner who renames one to "Gate" gets "Gate", and its five
+        still-default neighbours stay numbered.
+        """
+        names = self._alarm_output_names or {}
+        name = names.get(output)
+        if name and sum(1 for other in names.values() if other == name) == 1:
+            return name
+        return "Alarm output %d" % (output + 1)
+
+    def is_alarm_output_on(self, output: int = 0) -> bool | None:
         """Return the physical state reported by getOutState."""
-        return self.data.get("status.AlarmOut[0]") == "1"
+        value = self.data.get("status.AlarmOut[%d]" % output)
+        return {"0": False, "1": True}.get(value)
 
     def supports_profile_mode(self) -> bool:
         """Whether this device has selectable day/night/general profiles.
@@ -3553,9 +3746,100 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 disk.update(detail)
         self._storage_last_refresh = time.time()
 
+    async def _async_check_video_motion_is_pushed(self) -> None:
+        """Hand the question to the host stream, which owns the evidence.
+
+        Wrapped, because the poll's fan-out has no `return_exceptions` and
+        this is the least important thing in it: a suggestion about a setting
+        must never be what takes an entry down.
+        """
+        try:
+            await _host_stream(
+                self.hass, self._address
+            ).async_check_video_motion_is_pushed()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "The motion push check failed on %s", self._address, exc_info=True
+            )
+
     def get_storage_disks(self) -> list:
         """The recorder's disks, for the diagnostic disk sensors to read (#745)."""
         return list(self._storage_disks)
+
+    async def _async_probe_alarm_inputs(self) -> None:
+        """Ask once whether this box has alarm input terminals of its own (#1090).
+
+        Host level, like the disks: `Alarm` and `alarm.cgi` take no channel, so
+        this runs on whichever coordinator reaches it first and the rest of the
+        host leaves it alone. binary_sensor.py picks the lowest channel that
+        answered, the same arrangement the disk sensors use.
+
+        Judged on what came back, not on whether it raised: `async_get_config`
+        swallows a `ClientResponseError` and returns `{}`, and a device answers
+        200 with an empty body for a table it does not have. A box with no
+        terminals is left with an empty list and gets no entities.
+
+        The current state is read here too. Without it a restart while a door
+        is held open shows the sensor off until the next edge, and an edge may
+        be hours away.
+        """
+        try:
+            slots = await self.client.async_get_alarm_input_slots()
+            raw = await self.client.async_get_alarm_input_config()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Alarm input probe failed on %s", self._address, exc_info=True
+            )
+            return
+
+        inputs = parse_alarm_inputs(raw)
+        if not inputs:
+            return
+
+        # `getInSlots` and the table disagreeing is not fatal: the table is the
+        # thing entities are built from, so it decides, and the slot count only
+        # bounds the state bitmask.
+        self._alarm_input_slots = slots or (max(entry["index"] for entry in inputs) + 1)
+        self._alarm_inputs = inputs
+        await self._async_refresh_alarm_input_state()
+
+    async def _async_refresh_alarm_input_state(self) -> None:
+        """Seed the alarm input sensors from the device's current state.
+
+        One request for every terminal on the box. Called at setup and again
+        whenever the event stream reattaches, because a Stop that arrived while
+        the stream was down would otherwise leave a sensor on for ever. Never
+        on the poll: nothing changes between edges, and the edges are pushed.
+        """
+        if not self._alarm_inputs:
+            return
+        try:
+            active = await self.client.async_get_alarm_input_state(
+                self._alarm_input_slots
+            )
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Alarm input state read failed on %s", self._address, exc_info=True
+            )
+            return
+        now = int(time.time())
+        for entry in self._alarm_inputs:
+            key = self.get_event_key(alarm_input_event_code(entry["index"]))
+            was = self._dahua_event_timestamp.get(key, 0)
+            if entry["index"] in active:
+                # Keep the original start time if it is already on, so a
+                # reattach does not restate an alarm that never stopped.
+                self._dahua_event_timestamp[key] = was or now
+            else:
+                self._dahua_event_timestamp[key] = 0
+
+    def supports_alarm_inputs(self) -> bool:
+        """Whether this coordinator carries the host's alarm input terminals."""
+        return bool(self._alarm_inputs)
+
+    def get_alarm_inputs(self) -> list:
+        """The host's alarm input terminals, for binary_sensor.py to enumerate."""
+        return list(self._alarm_inputs)
 
     async def _async_probe_system_load(self) -> None:
         """Ask once whether this device reports its processor and memory.
@@ -3832,6 +4116,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         firmware = self._slot().get("firmware") or ""
         version = firmware.split(",")[0].strip()
         return version or None
+
+    def get_channel_protocol(self):
+        """How the recorder reaches the camera on this channel, or None.
+
+        Lowercased, as remote_device_protocol returns it: "private" for the
+        recorder's own protocol, "onvif" or "general" for a camera attached over
+        something else. None where the table did not say, which is a standalone
+        camera, a recorder that would not serve the table, or a read that failed.
+
+        Read once at setup beside _channel_model, and settled before the
+        platforms are forwarded, so a platform can ask this while building its
+        entities.
+        """
+        return self._channel_protocol
 
     def get_configured_channel_count(self):
         """How many channels the recorder reports a camera configured on, or None.
@@ -4192,6 +4490,57 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if not named:
             return True
         return WHITE_LIGHT in named
+
+    async def _async_fetch_channel_lighting_scheme(self) -> dict:
+        """Keep only this channel's previous scene modes if its read fails."""
+        try:
+            return await self.client.async_get_channel_lighting_scheme(self._channel)
+        except Exception:
+            _LOGGER.debug("Could not read channel illumination modes", exc_info=True)
+            prefix = "table.LightingScheme[%d][" % self._channel
+            return {
+                key: value
+                for key, value in (self.data or {}).items()
+                if key.startswith(prefix)
+            }
+
+    def supports_lighting_schemes(self) -> bool:
+        """Whether this channel named any illumination modes it can be put in.
+
+        Split from the getter so the platform gate keeps the `supports_`
+        prefix every other capability question here uses. That is not
+        cosmetic: `test_setup_doubles_answer_every_capability` finds setup
+        doubles by that prefix, and a capability named outside it is added
+        without any of them being told.
+        """
+        return bool(self._lighting_schemes)
+
+    def get_lighting_schemes(self) -> list[str] | None:
+        """The illumination modes this channel offers, or None where it has none.
+
+        The device's own spellings, so callers write back exactly what was
+        read. `AIMode` is what the web interface calls Smart Dual Light.
+        """
+        return self._lighting_schemes
+
+    def get_lighting_scheme(self) -> str | None:
+        """The mode every scene agrees on, or None where they disagree.
+
+        A camera holds nine scenes and each carries its own mode. Reporting
+        the "active" one would mean resolving which scene is live, and that
+        resolution is exactly what #959 kept getting wrong -- VideoInMode has
+        three shapes on one recorder. Unanimity needs no such resolution, and
+        a split set genuinely is not one mode, so None is the honest answer.
+        """
+        prefix = "table.LightingScheme[{0}][".format(self._channel)
+        modes = {
+            value
+            for key, value in (self.data or {}).items()
+            if key.startswith(prefix) and key.endswith("].LightingMode")
+        }
+        if len(modes) != 1:
+            return None
+        return next(iter(modes))
 
     def uses_lighting_scheme_illuminator(self) -> bool:
         """Whether this device needs the two-table white-light contract."""
@@ -4640,14 +4989,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         rather than flattened, because a caller checking whether a write landed
         has to be able to see that it did not.
 
-        Read from Lighting_V2 when this channel has a row there, because that is
-        the table the write goes to and the two can disagree -- a channel can
-        report `ZoomPrio` in v2 and something else in v1. Reading one and writing
-        the other is how a control reports a state it is not setting.
+        Read from Lighting_V2 whenever this channel has a row there, whichever
+        table the write went to. The two tables can disagree, and on firmware
+        that does not link them the v1 table is the one that lies: measured on an
+        EmpireTech IPC-T5442TM-AS-6mm (#647), a `Lighting[0][0].Mode=Manual`
+        write answers `OK` and reads back `Manual` while
+        `Lighting_V2[0][0][0].Mode` stays `Off` and the emitter stays dark.
+
+        Reading whichever table was written is what made that invisible: the
+        check after a write compared the v1 value against the v1 value it had
+        just stored and agreed with itself. The emitter follows v2 wherever v2
+        exists, so that is the honest thing to report, even on a channel still
+        being written through v1.
 
         Empty when this channel reports no lighting at all.
         """
-        if self.infrared_uses_lighting_v2():
+        if self.infrared_reads_lighting_v2():
             profile, index, _bank = self.get_infrared_v2_row()
             return self.data.get(
                 "table.Lighting_V2[{0}][{1}][{2}].Mode".format(
@@ -4674,6 +5031,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self.data, self._channel, self.get_infrared_profile()
         )
 
+    def lighting_v2_samples(self) -> int:
+        """How many real Lighting_V2 readings this channel's poll has taken.
+
+        Compare before and after a successful `async_refresh`. Equal means no
+        new reading arrived: the read failed and carried the previous table,
+        or the poll did not ask for the table at all.
+        An increased count alone does not guarantee publication: another read
+        can fail the overall refresh after the lighting branch has succeeded.
+        """
+        return self._lighting_v2_samples
+
     def get_infrared_v2_row(self):
         """(profile, index, bank) for infrared in Lighting_V2, or None.
 
@@ -4683,8 +5051,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return infrared_v2_row(self.data, self._channel, self.get_profile_mode())
 
+    def infrared_reads_lighting_v2(self) -> bool:
+        """Whether this channel's infrared state should be *read* from Lighting_V2.
+
+        Wherever the device serves a row, which is a weaker test than the one the
+        *write* uses. The two are deliberately different: a write has to go to a
+        table the device will accept, while a read has to come from the table the
+        emitter follows, and on firmware that does not link them those are not
+        the same table (#647). Reading v2 while still writing v1 is what lets the
+        write check in infrared.py notice that an accepted write changed nothing.
+        """
+        return self.get_infrared_v2_row() is not None
+
     def infrared_uses_lighting_v2(self) -> bool:
-        """Whether this channel's infrared is driven through Lighting_V2.
+        """Whether this channel's infrared is *written* through Lighting_V2.
 
         Only once the v1 table has been refused for this channel, and only when the
         device serves a v2 row to fall back to. See `infrared_transport` for why it
@@ -4718,7 +5098,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         None rather than a number when the channel reports none, so the attribute
         says "not known" instead of claiming the emitter is at zero.
         """
-        if self.infrared_uses_lighting_v2():
+        if self.infrared_reads_lighting_v2():
             profile, index, bank = self.get_infrared_v2_row()
             level = self.data.get(
                 "table.Lighting_V2[{0}][{1}][{2}].{3}[0].Light".format(
@@ -5419,7 +5799,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         there is nothing to carry, which the gather already skips.
         """
         try:
-            return await self.client.async_get_lighting_v2()
+            table = await self.client.async_get_lighting_v2()
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.debug(
                 "Could not read Lighting_V2 for channel %s",
@@ -5433,6 +5813,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if key.startswith("table.Lighting_V2[")
             }
             return carried or None
+        # Counted only here, on the path that really spoke to the device. A
+        # caller comparing the count across a refresh can then tell a fresh
+        # reading from the carried one above, which is otherwise invisible: see
+        # `async_write_infrared_mode`, which must not learn a permanent refusal
+        # from a sample that may predate the write it is checking.
+        self._lighting_v2_samples += 1
+        return table
 
     def get_vto_client(self) -> DahuaVTOClient | None:
         """The doorbell's client, or None when there is not a live one.

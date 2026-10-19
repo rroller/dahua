@@ -6,6 +6,7 @@ from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 from custom_components.dahua.binary_sensor import (
     DEFAULT_PULSE_HOLD_SECONDS,
     MOMENTARY_EVENT_HOLD_SECONDS,
+    DahuaAlarmInputBinarySensor,
     DahuaEventSensor,
     DahuaAuthorizedVehicleBinarySensor,
     DahuaDiskProblemBinarySensor,
@@ -865,3 +866,122 @@ def test_a_disk_problem_sensor_is_diagnostic_and_off_by_default():
 
     assert s.entity_registry_enabled_default is False
     assert s.entity_category is not None
+
+
+# --- a recorder's own alarm input terminals (#1090) --------------------------
+
+# Index 3 is the fourth terminal, and the device calls it Port4. Measured on a
+# DHI-NVR5464-16P-EI; the off-by-one between the wire and the label is the
+# whole reason these tests name both numbers.
+PORT4 = {"index": 3, "name": "Alarm-in Port4", "enabled": True}
+
+
+def _terminal(monkeypatch, alarm_input=None, coordinator=None):
+    monkeypatch.setattr(bs.DahuaBaseEntity, "__init__", lambda self, c, e: None)
+    monkeypatch.setattr(bs.BinarySensorEntity, "__init__", lambda self: None)
+    coordinator = coordinator or _Coordinator()
+    sensor = DahuaAlarmInputBinarySensor(
+        coordinator, object(), alarm_input or dict(PORT4)
+    )
+    # What the real DahuaBaseEntity.__init__ sets and the fixture skips. The
+    # base's extra_state_attributes reads `coordinator.data`.
+    sensor.coordinator = coordinator
+    return sensor
+
+
+def test_a_terminal_is_named_by_the_device(monkeypatch):
+    """`Alarm[3].Name` is "Alarm-in Port4" and that is the label on the chassis.
+
+    Deriving a name here instead would have to choose between the wire's 3 and
+    the label's 4, and would lose a terminal somebody renamed to "Garage".
+    """
+    assert _terminal(monkeypatch).name == "Alarm-in Port4"
+
+
+def test_a_terminal_the_device_did_not_name_still_gets_a_name(monkeypatch):
+    """An entity with no name of its own takes the device's, so every unnamed
+    terminal on a recorder would be called the same thing."""
+    sensor = _terminal(monkeypatch, {"index": 3, "name": "", "enabled": True})
+
+    assert sensor.name == "Alarm input 4", "the fallback must count from one too"
+
+
+def test_the_unique_id_keeps_the_zero_based_index(monkeypatch):
+    """Identity, not description. A firmware that renumbers its labels, or an
+    owner who renames a terminal, must not rename the entity's id with it."""
+    assert _terminal(monkeypatch).unique_id == "SERIAL1_alarm_input_3"
+
+
+def test_the_unique_id_uses_the_box_serial_not_the_channel(monkeypatch):
+    """A terminal belongs to the box. Keying it on the carrying channel's
+    serial would rename every one of them if channel 0 were removed."""
+    coordinator = _Coordinator()
+    coordinator.get_serial_number = lambda: "SERIAL1_5"
+
+    assert _terminal(monkeypatch, coordinator=coordinator).unique_id.startswith(
+        "SERIAL1_alarm_input"
+    )
+
+
+def test_two_terminals_do_not_share_an_id(monkeypatch):
+    a = _terminal(monkeypatch, {"index": 0, "name": "Alarm-in Port1"})
+    b = _terminal(monkeypatch, {"index": 1, "name": "Alarm-in Port2"})
+
+    assert a.unique_id != b.unique_id
+
+
+def test_a_terminal_is_a_safety_sensor(monkeypatch):
+    """What the per-channel AlarmLocal sensor it replaces always was."""
+    assert _terminal(monkeypatch).device_class == SAFETY_DEVICE_CLASS
+
+
+def test_a_terminal_publishes_both_numbers(monkeypatch):
+    """They differ by one and which one a reader means depends on whether they
+    are looking at the chassis or at the event. Publishing one of them
+    guarantees half of them are wrong."""
+    attributes = _terminal(monkeypatch).extra_state_attributes
+
+    assert attributes["alarm_input_index"] == 3
+    assert attributes["alarm_input_number"] == 4
+
+
+def test_a_disabled_terminal_says_so(monkeypatch):
+    """`Alarm[n].Enable` false means the device will not act on it, so the
+    sensor can never move. Better stated than left looking broken."""
+    sensor = _terminal(
+        monkeypatch, {"index": 1, "name": "Alarm-in Port2", "enabled": False}
+    )
+
+    assert sensor.extra_state_attributes["enabled_on_device"] is False
+
+
+def test_a_terminal_listens_on_its_own_event_code(monkeypatch):
+    """All sixteen arrive as AlarmLocal and are told apart only by index, so
+    each needs a key of its own to hold a timestamp under."""
+    coordinator = _Coordinator()
+    sensor = _terminal(monkeypatch, coordinator=coordinator)
+
+    assert sensor.is_on is False
+    coordinator.timestamps["AlarmInput_3"] = int(time.time())
+    assert sensor.is_on is True
+
+
+def test_one_terminal_does_not_move_another(monkeypatch):
+    coordinator = _Coordinator()
+    four = _terminal(monkeypatch, dict(PORT4), coordinator)
+    one = _terminal(monkeypatch, {"index": 0, "name": "Port1"}, coordinator)
+
+    coordinator.timestamps["AlarmInput_3"] = int(time.time())
+
+    assert four.is_on is True
+    assert one.is_on is False
+
+
+def test_a_terminal_waits_for_a_stop_rather_than_timing_out(monkeypatch):
+    """A contact stays closed for as long as the door is open. Clearing it on a
+    hold would report the door shut while it stands open."""
+    coordinator = _Coordinator()
+    sensor = _terminal(monkeypatch, coordinator=coordinator)
+    coordinator.timestamps["AlarmInput_3"] = int(time.time()) - 3600
+
+    assert sensor.is_on is True

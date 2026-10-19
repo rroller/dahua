@@ -119,6 +119,15 @@ class _Coordinator:
         self.client = _Client()
 
     get_serial_number = DahuaDataUpdateCoordinator.get_serial_number
+    # The box's serial, with no channel on it. What an entity belonging to
+    # the chassis rather than to a camera keys on.
+    get_device_serial_number = DahuaDataUpdateCoordinator.get_device_serial_number
+
+    def get_alarm_output_slots(self):
+        return 1
+
+    def get_alarm_output_name(self, output=0):
+        return "Alarm output %d" % (output + 1)
 
     # Borrowed the same way, because entity code now asks the coordinator for its
     # channel's settings rather than reading the entry's options directly. A fake
@@ -223,7 +232,6 @@ GOLDEN_SUFFIXES = [
     ),
     ("_siren", lambda c: _bare(DahuaSirenBinarySwitch, c)),
     ("_privacy_mode", lambda c: _bare(DahuaPrivacyModeBinarySwitch, c)),
-    ("_alarm_output_0", lambda c: DahuaAlarmOutputSwitch(c, _Entry(), output=0)),
     # One per audio field the channel reports under Encode. A channel can hold
     # MainFormat[0..3] and ExtraFormat[0..2] at once, so these are the entities
     # that collide with each other when an id is not read.
@@ -302,6 +310,37 @@ GOLDEN_SUFFIXES = [
 ]
 
 
+# Entities that belong to the box rather than to a channel. Their ids carry
+# the bare serial on every channel, because the thing they describe is the
+# chassis: a relay screwed to the back panel is not channel 7's relay, and
+# keying it on the carrying channel would rename it if that channel were
+# removed. Listed separately from the table above precisely because the rule
+# is the opposite one.
+BOX_SUFFIXES = [
+    ("_alarm_output_0", lambda c: DahuaAlarmOutputSwitch(c, _Entry(), output=0)),
+    ("_alarm_output_3", lambda c: DahuaAlarmOutputSwitch(c, _Entry(), output=3)),
+]
+
+
+@pytest.mark.parametrize("channel", CHANNELS)
+@pytest.mark.parametrize("suffix,build", BOX_SUFFIXES, ids=[s for s, _ in BOX_SUFFIXES])
+def test_a_box_level_id_does_not_move_with_the_channel(channel, suffix, build):
+    """On channel 0 this is the same string the per-channel rule would give,
+    which is what makes the existing ids survive. On every other channel it
+    differs, and that difference is the point."""
+    entity = build(_Coordinator(channel))
+
+    assert entity.unique_id == SERIAL + suffix
+
+
+def test_the_box_level_ids_are_not_the_per_channel_ones():
+    """Stated on its own so the test above cannot pass by both rules agreeing."""
+    on_channel_7 = DahuaAlarmOutputSwitch(_Coordinator(7), _Entry(), output=0)
+
+    assert on_channel_7.unique_id == SERIAL + "_alarm_output_0"
+    assert "_7_" not in on_channel_7.unique_id
+
+
 @pytest.mark.parametrize("channel", CHANNELS)
 @pytest.mark.parametrize(
     "suffix,build", GOLDEN_SUFFIXES, ids=[s or "bare" for s, _ in GOLDEN_SUFFIXES]
@@ -314,6 +353,9 @@ def test_the_unique_id_of_every_entity(channel, suffix, build):
 
 def test_the_whole_set_for_one_nvr_channel_spelled_out():
     """Channel 2, in full, with nothing composed.
+
+    The alarm output switch is deliberately absent: it belongs to the box and
+    is spelled out in BOX_SUFFIXES above, where the rule is the opposite one.
 
     If the table above is ever regenerated from the code it is meant to be
     checking, this is what still says what the strings are.
@@ -336,7 +378,6 @@ def test_the_whole_set_for_one_nvr_channel_spelled_out():
         "4L03CB4PAZC9E8F_2_smart_motion_detection",
         "4L03CB4PAZC9E8F_2_siren",
         "4L03CB4PAZC9E8F_2_privacy_mode",
-        "4L03CB4PAZC9E8F_2_alarm_output_0",
         "4L03CB4PAZC9E8F_2_audio_mainformat_0",
         "4L03CB4PAZC9E8F_2_audio_extraformat_0",
         "4L03CB4PAZC9E8F_2_audio_extraformat_1",

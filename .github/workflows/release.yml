@@ -1,0 +1,111 @@
+name: Release actions
+
+# Attach dahua.zip to every published release.
+#
+# Two separate reasons, and the second one makes this load bearing rather
+# than cosmetic.
+#
+#   * HACS shows a download count only where it can read `download_count` off
+#     a release ASSET. With no asset there is nothing to count, which is why
+#     this repository has never shown a figure: GitHub does not count the
+#     auto-generated source tarballs, only uploaded assets.
+#   * With `zip_release` set in hacs.json, HACS installs by extracting that
+#     asset instead of fetching the files one at a time. It does NOT fall
+#     back if the asset is missing. `async_download_zip_file` records
+#     "Failed to download <url>", restores the backup and raises, so a
+#     release published without this asset cannot be installed at all.
+#
+# So: every release from here on has to carry dahua.zip. If this job ever
+# fails, re-run it with workflow_dispatch against the tag before telling
+# anyone the release is out.
+#
+# The files must sit at the ROOT of the zip. HACS calls
+# `zip_file.extractall(<the integration directory>)` with no stripping of
+# leading directories, so a zip nesting them under custom_components/dahua/
+# installs one level too deep and the integration silently does not load.
+# The step below refuses to upload a zip of the wrong shape.
+#
+# Releases cut before hacs.json gained `zip_release` are unaffected. HACS
+# reads hacs.json from the ref it is installing, and those older refs do not
+# set it, so they keep installing file by file.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing release tag to attach dahua.zip to
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    runs-on: "ubuntu-latest"
+    name: Attach dahua.zip to the release
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Work out which tag this is for
+        id: which
+        run: |
+          git check-ref-format "refs/tags/$RELEASE_TAG"
+          printf 'tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out that tag
+        uses: "actions/checkout@v7"
+        with:
+          ref: ${{ steps.which.outputs.tag }}
+
+      - name: Build dahua.zip from the integration directory
+        run: |
+          cd custom_components/dahua
+          zip -r -q "$GITHUB_WORKSPACE/dahua.zip" . \
+            -x '*.pyc' '__pycache__/*' '*/__pycache__/*'
+
+      - name: Refuse to upload a zip HACS would unpack wrongly
+        run: |
+          python3 - <<'PY'
+          import sys
+          import zipfile
+
+          names = zipfile.ZipFile("dahua.zip").namelist()
+          problems = []
+
+          for required in ("manifest.json", "__init__.py", "const.py"):
+              if required not in names:
+                  problems.append(
+                      "%s is not at the root of the zip. HACS extracts the archive "
+                      "as-is into custom_components/dahua, so the files have to be "
+                      "at the top level." % required
+                  )
+
+          if any(name.startswith("custom_components/") for name in names):
+              problems.append(
+                  "the zip nests files under custom_components/, which would install "
+                  "them one level too deep"
+              )
+
+          compiled = [n for n in names if n.endswith(".pyc") or "__pycache__" in n]
+          if compiled:
+              problems.append("%d compiled files leaked into the zip" % len(compiled))
+
+          if not any(name.startswith("translations/") for name in names):
+              problems.append("no translations/ in the zip, so every string would be a raw key")
+
+          if problems:
+              for problem in problems:
+                  print("::error::%s" % problem)
+              sys.exit(1)
+
+          print("%d files, laid out the way HACS expects" % len(names))
+          PY
+
+      - name: Upload it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload --clobber --repo "$GITHUB_REPOSITORY" \
+            -- "$RELEASE_TAG" dahua.zip

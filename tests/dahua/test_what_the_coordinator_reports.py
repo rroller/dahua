@@ -101,7 +101,9 @@ def test_a_neighbouring_key_is_not_mistaken_for_it(getter, yes, wrong_key):
     error, it is a reader that answers no for ever."""
     coordinator = _coordinator(wrong_key)
 
-    assert getattr(coordinator, getter)() is False
+    # An unobserved physical relay is unknown, rather than known open.
+    expected = None if getter == "is_alarm_output_on" else False
+    assert getattr(coordinator, getter)() is expected
 
 
 @pytest.mark.parametrize("getter, yes, wrong_key", READERS)
@@ -110,7 +112,9 @@ def test_nothing_polled_yet_is_not_yes(getter, yes, wrong_key):
     the entity is being built."""
     coordinator = _coordinator({})
 
-    assert getattr(coordinator, getter)() is False
+    # An unobserved physical relay is unknown, rather than known open.
+    expected = None if getter == "is_alarm_output_on" else False
+    assert getattr(coordinator, getter)() is expected
 
 
 # --- the inverted one -------------------------------------------------------

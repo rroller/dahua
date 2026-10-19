@@ -254,12 +254,43 @@ async def test_the_alarm_output_state_is_reshaped_into_the_key_that_is_read():
     assert result == {"status.AlarmOut[0]": "1"}
 
 
-async def test_an_alarm_output_reply_with_no_result_is_still_shaped():
-    """The value is deliberately passed through unmodified, so a device that answers
-    something unexpected yields None rather than an error here."""
+async def test_an_alarm_output_reply_with_no_result_yields_no_keys():
+    """A device that answers something unparseable is reported as unknown.
+
+    This used to pass the value through as None, which reached the switch as
+    "off" by way of `None != "1"`. Returning no keys at all reaches it the
+    same way, but it now matches the refusal branch immediately above, which
+    returns {} for exactly this reason: an unreadable answer must not be
+    turned into a confident claim that every relay is open.
+    """
     _call_args, result = await _call("async_get_alarm_output_state", (), answer={})
 
-    assert result == {"status.AlarmOut[0]": None}
+    assert result == {}
+
+
+async def test_the_output_state_is_read_as_a_bitmask():
+    """Measured on a six-relay DHI-NVR5464-16P-EI: forcing AlarmOut[5] on
+    makes getOutState answer result=32, which is 1<<5.
+
+    The restriction to a single output existed because this was unverified.
+    """
+    _call_args, result = await _call(
+        "async_get_alarm_output_state", (6,), answer={"result": "32"}
+    )
+
+    assert result["status.AlarmOut[5]"] == "1"
+    assert result["status.AlarmOut[0]"] == "0"
+    assert len(result) == 6
+
+
+async def test_one_output_reads_exactly_as_it_always_did():
+    """A one-relay device can only answer 0 or 1, and 1<<0 is 1, so the key
+    this produces is byte for byte what it produced before the bitmask."""
+    _call_args, result = await _call(
+        "async_get_alarm_output_state", (1,), answer={"result": "1"}
+    )
+
+    assert result == {"status.AlarmOut[0]": "1"}
 
 
 async def test_the_snapshot_goes_through_both_jpeg_repairs(monkeypatch):

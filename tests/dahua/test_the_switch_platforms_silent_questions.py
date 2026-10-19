@@ -18,9 +18,12 @@ What each one costs when it is lost:
   switch that could only ever read off.
 
 The distinction the fix rests on is kept: a device that *answers* is not asked
-twice. For the alarm output that includes answering "two outputs", which is a
-fact about the hardware and a definite no to the switch, and answering with a
-body that is not a number at all.
+twice. For the alarm output that includes answering with a body that is not a
+number at all.
+
+"Two outputs" used to belong in that list as a definite *no*, because the
+multi-output `getOutState` encoding was unverified. It is a bitmask, measured
+since, so two outputs is now a yes and the tests below say so.
 
 The judgment these two reads make changed with the measurement that was
 missing. `async_get_disarming_linkage` goes through `async_get_config`, which
@@ -42,6 +45,8 @@ that actually failed:
 | a good read not recorded as an answer | `gates_`, `not_announced_again` |
 | the retry reading the flag its own probe just wrote | `not_announced_again` |
 | two outputs treated as still pending | `two_outputs_is_an_answer` |
+| the gate back at `== 1` | `two_outputs_is_an_answer` |
+| the gate loosened to "the read worked" | `no_outputs_is_still_a_no` |
 """
 
 import pytest
@@ -55,10 +60,11 @@ ADDRESS = "10.0.0.88"
 CHANNEL = 3
 SERIAL = "AMR044032F4F06B33E_3"
 
-# One physical output, which is the only shape `supports_alarm_output` accepts.
+# One physical output, which used to be the only shape `supports_alarm_output`
+# accepted.
 ONE_OUTPUT = {"result": "1"}
-# A device saying it has two. An answer, and a no: the multi-output getOutState
-# encoding has never been verified here.
+# A device saying it has two. An answer, and now a yes: `getOutState` is a
+# bitmask, measured on a six-relay recorder.
 TWO_OUTPUTS = {"result": "2"}
 
 LINKAGE = {"table.DisableLinkage.Enable": "false"}
@@ -150,10 +156,18 @@ async def test_a_timed_out_alarm_output_probe_leaves_the_question_open():
     assert coordinator.probes_that_did_not_answer() == {"alarm_output"}
 
 
-async def test_two_outputs_is_an_answer():
-    """A definite no to the switch, because the multi-output encoding is not
-    verified, and a settled fact about the hardware. Asking again would be
-    asking the device to repeat itself.
+async def test_two_outputs_is_an_answer(discoveries):
+    """Two outputs is now a yes, and still a settled answer either way.
+
+    This used to assert False: the multi-output `getOutState` encoding was
+    unverified, so a device with more than one relay was refused a switch
+    rather than given one that might lie. It is a bitmask -- measured by
+    forcing one relay of six on a DHI-NVR5464-16P-EI and watching the answer
+    go to 32 and back -- so the restriction is gone.
+
+    What this still pins is the half that has not changed: whichever way the
+    probe decides, it has decided, and the capability is no longer listed as
+    unanswered.
 
     Driven from silence rather than straight to the answer. Starting here with
     a device that has never been asked proves nothing: `probes_that_did_not_
@@ -167,6 +181,17 @@ async def test_two_outputs_is_an_answer():
     assert coordinator.probes_that_did_not_answer() == {"alarm_output"}
 
     await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator.supports_alarm_output() is True
+    assert coordinator.probes_that_did_not_answer() == set()
+
+
+async def test_no_outputs_is_still_a_no():
+    """The gate did not become "the read worked". A device reporting zero
+    relays gets no switch, which is most cameras."""
+    coordinator = _coordinator(alarm=({"result": "0"},))
+
+    await coordinator._async_probe_alarm_output()
 
     assert coordinator.supports_alarm_output() is False
     assert coordinator.probes_that_did_not_answer() == set(), (

@@ -28,6 +28,9 @@
             },
             "day_night_mode": {
                 "default": "mdi:theme-light-dark"
+            },
+            "lighting_scheme": {
+                "default": "mdi:lightbulb-auto"
             }
         },
         "sensor": {

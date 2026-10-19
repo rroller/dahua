@@ -78,6 +78,7 @@ from .host import (  # noqa: F401  pylint: disable=unused-import
     HOST_UPTIME_DEDUPE_SECONDS,
     HTTPS_PROBE_MIN_INTERVAL,
     ISSUE_HTTP_DEAD_HTTPS_AVAILABLE,
+    ISSUE_MOTION_NOT_PUSHED,
     ISSUE_UNREACHABLE,
     MAX_AUTH_REFUSALS,
     MAX_BACKOFF_DOUBLINGS,
@@ -140,6 +141,8 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     SMART_MOTION_ROW,
     VIDEO_COLOR_FIELDS,
     WHITE_LIGHT,
+    alarm_input_event_code,
+    alarm_input_index,
     day_night_color_name,
     describe_update_failure,
     door_index,
@@ -765,6 +768,7 @@ def _async_forget_host(hass: HomeAssistant, address: str) -> None:
         _CAPABILITY_REFUSALS_REPORTED.discard(target)
     ir.async_delete_issue(hass, DOMAIN, ISSUE_UNREACHABLE.format(address))
     ir.async_delete_issue(hass, DOMAIN, ISSUE_HTTP_DEAD_HTTPS_AVAILABLE.format(address))
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_MOTION_NOT_PUSHED.format(address))
 
 
 @callback

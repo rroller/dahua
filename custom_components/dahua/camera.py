@@ -9,14 +9,27 @@ import re
 import voluptuous as vol
 from aiohttp import ClientError
 
-from homeassistant.core import HomeAssistant, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
-from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.helpers import config_validation as cv
+from homeassistant.components.camera import (
+    Camera,
+    CameraEntityFeature,
+    async_get_still_stream,
+)
 from homeassistant.util import dt as dt_util
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 from custom_components.dahua import dahua_utils
+from custom_components.dahua.audio import (
+    AUDIO_FORMATS,
+    DEFAULT_AUDIO_FORMAT,
+    async_resolve_media,
+    async_transcode,
+    resolve_format,
+)
+from custom_components.dahua.client import DahuaWriteDeclined
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.infrared import MODE_BY_OPTION, async_write_infrared_mode
 from custom_components.dahua.model_profiles import is_sdt4e425
@@ -50,6 +63,7 @@ SERVICE_ENABLE_TEXT_OVERLAY = "enable_text_overlay"
 SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
 SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
+SERVICE_PLAY_AUDIO = "play_audio"
 SERVICE_VTO_OPEN_DOOR = "vto_open_door"
 SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_VTO_CALL = "vto_call"
@@ -194,6 +208,95 @@ def _write_backup(filename: str, backup: dict) -> None:
 PARALLEL_UPDATES = 1
 
 
+# The last `vto_open_door` call each doorbell was asked to act on, keyed by the
+# device rather than by the address, so one press opens the door once.
+#
+# `client.device_key` and not `get_address()`: two Dahua boxes can sit behind one
+# IP on different ports, which `_device_key` in client.py exists for, and keying
+# on the address alone would open whichever of them answered first and silently
+# skip the other.
+#
+# **Why this is needed.** A camera entity is created per stream, and an entity
+# service runs on every entity the call resolves to. Aiming `vto_open_door` at
+# the *device*, which is what Developer tools offers first, therefore sends one
+# `openDoor` per enabled stream. Measured on a DHI-VTO2201F-P (#154): the first
+# request opened the gate and the second, 365ms later, was answered
+# `400 Bad Request`, so the error the user saw belonged to a door that had just
+# opened. Two back-to-back `openDoor` requests by curl reproduce the 400 with no
+# Home Assistant involved, so the device is entitled to refuse the second one.
+#
+# **Why the call itself is the key.** Home Assistant hands *the same*
+# `ServiceCall` object to every entity one call fans out to, and builds a new
+# one per call even inside a script, where the `Context` is shared between
+# steps. So identity separates "this press reaching a second camera" from "a
+# second press", which neither a timer nor the context id can do.
+#
+# Only the door. `vto_call`, `vto_cancel_call`, `reboot` and the rest fan out
+# the same way; none of them is a device that refuses to be told twice.
+_OPEN_DOOR_CALLS: dict[str, ServiceCall] = {}
+
+
+async def _async_open_door_once(entity, call: ServiceCall) -> None:
+    """Open the door for the first camera entity this call reaches on a device.
+
+    Registered as a callable rather than by method name, which is what makes
+    Home Assistant hand over the `ServiceCall` instead of its data.
+
+    The entity method is left alone and still does the work, so a call aimed at
+    one entity behaves exactly as it always has, including when that entity is a
+    sub stream nobody else targeted.
+    """
+    device = entity._coordinator.client.device_key  # pylint: disable=protected-access
+    if _OPEN_DOOR_CALLS.get(device) is call:
+        # A sibling stream of this doorbell already opened it for this press.
+        _LOGGER.debug(
+            "%s: door already opened for this call, %s is not asking again",
+            device,
+            entity.entity_id,
+        )
+        return
+    # Recorded before the await, so two entities of one fan-out cannot both get
+    # past this while the first request is in flight.
+    _OPEN_DOOR_CALLS[device] = call
+    await entity.async_vto_open_door(call.data["door_id"])
+
+
+def _stills_come_from_the_stream(coordinator) -> bool:
+    """Whether this channel's stills have to be rendered from its stream.
+
+    A recorder serves no `snapshot.cgi` for a channel it does not reach over its
+    own Dahua protocol. `is_onvif_channel` records that for ONVIF, measured on a
+    DHI-NVR5464-16P-EI: snapshot.cgi answers 400 there while every
+    Dahua-protocol channel on the same recorder returns an image. A channel
+    attached as generic RTSP answers the same way -- measured on a
+    DHI-NVR5232-16P-EI, `ProtocolType=General` stalls 10-15s and then answers
+    500, never an image.
+
+    Being slow is not the whole cost. MAX_CONCURRENT_REQUESTS_PER_HOST is 2, so
+    one channel that cannot produce an image holds half the host's request budget
+    for those seconds and starves the channels that do: all 14 stills of that
+    recorder requested together returned 10/14, and 14/14 once those two entities
+    stopped asking.
+
+    What a `General` channel does serve is RTSP -- `hevc 2592x1944` on the main
+    substream and `hevc 800x600` on the sub, straight off the recorder -- so the
+    still is rendered from the stream instead. For those cameras it is the
+    difference between no image in Home Assistant and an image.
+
+    `general` positively, rather than everything that is not `private`, because
+    ONVIF is measured the other way: `is_onvif_channel` records that its RTSP
+    path times out as well, so sending an ONVIF channel down here would trade a
+    snapshot that fails fast for a stream worker that never produces a frame. A
+    negative rule would also be deciding for every spelling of this field that
+    nobody has measured yet.
+
+    The protocol is read off the coordinator, which already holds it from the
+    RemoteDevice read it does at setup for _channel_model, settled before the
+    platforms are forwarded. So this costs no request of its own.
+    """
+    return coordinator.get_channel_protocol() == "general"
+
+
 async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entities):
     """Add a Dahua IP camera from a config entry."""
 
@@ -234,6 +337,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
                             media_channel=media_channel,
                             display_name=display_name,
                             unique_suffix=f"{unique_prefix}{stream_name}",
+                            stream_stills=_stills_come_from_the_stream(coordinator),
                         )
                     )
             async_add_entities(entities, config_subentry_id=coordinator.subentry_id)
@@ -247,6 +351,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
                             coordinator,
                             stream_index,
                             config_entry,
+                            stream_stills=_stills_come_from_the_stream(coordinator),
                         )
                     ],
                     config_subentry_id=coordinator.subentry_id,
@@ -356,7 +461,21 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         {
             vol.Required("door_id", default=1): int,
         },
-        "async_vto_open_door",
+        _async_open_door_once,
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_PLAY_AUDIO,
+        {
+            vol.Required("media_content_id"): cv.string,
+            # Validated here as well as in `resolve_format`, so a typo is
+            # refused by the service dialog rather than after a file has been
+            # fetched and converted.
+            vol.Optional("audio_format", default=DEFAULT_AUDIO_FORMAT): vol.In(
+                sorted(AUDIO_FORMATS)
+            ),
+        },
+        "async_play_audio",
     )
 
     platform.async_register_entity_service(
@@ -387,6 +506,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             vol.Optional("text2", default=""): str,
             vol.Optional("text3", default=""): str,
             vol.Optional("text4", default=""): str,
+            vol.Optional("lines"): vol.All(cv.ensure_list, [cv.string]),
         },
         "async_set_service_set_text_overlay",
     )
@@ -597,6 +717,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         media_channel: int | None = None,
         display_name: str | None = None,
         unique_suffix: str | None = None,
+        stream_stills: bool = False,
     ):
         """Initialize the Dahua camera."""
         DahuaBaseEntity.__init__(self, coordinator, config_entry)
@@ -609,6 +730,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             coordinator.get_channel_number() if media_channel is None else media_channel
         )
         self._coordinator = coordinator
+        self._stream_stills = stream_stills
         self._name = display_name if display_name else stream_name
         suffix = unique_suffix or stream_name
         self._unique_id = coordinator.get_serial_number() + "_" + suffix
@@ -673,6 +795,56 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         except (ClientError, TimeoutError, asyncio.TimeoutError) as error:
             _LOGGER.debug("%s: could not fetch a snapshot: %s", self._name, error)
             return None
+
+    @property
+    def use_stream_for_stills(self) -> bool:
+        """Whether this channel's still is rendered from its stream.
+
+        Decided once at setup -- see _stills_come_from_the_stream.
+        """
+        return self._stream_stills
+
+    async def _async_stream_image(self) -> bytes | None:
+        """This channel's still, rendered from its stream.
+
+        What Home Assistant does for a camera with use_stream_for_stills, in the
+        order it does it: the WebRTC provider where there is one, the decode
+        worker otherwise. Written out rather than imported, because the function
+        Home Assistant does it with is private to its camera component.
+        `wait_for_next_keyframe` is False because this answers every frame of an
+        MJPEG response, not a one-off snapshot.
+        """
+        if (provider := self.webrtc_provider) and (
+            image := await provider.async_get_image(self)
+        ) is not None:
+            return image
+        if not self.stream and CameraEntityFeature.STREAM in self.supported_features:
+            self.stream = await self.async_create_stream()
+        if self.stream:
+            return await self.stream.async_get_image(wait_for_next_keyframe=False)
+        return None
+
+    async def handle_async_still_stream(self, request, interval):
+        """Serve the MJPEG stream from wherever this channel's stills come from.
+
+        Home Assistant consults `use_stream_for_stills` in `async_get_image` and
+        in the snapshot service, but not here: this handler hands
+        `async_camera_image` to `async_get_still_stream` directly, and
+        `handle_async_mjpeg_stream` is built on this one. So a channel the
+        recorder serves no snapshot for produced a blank
+        `/api/camera_proxy_stream/` response however the flag was set -- and
+        spent a recorder request on every frame of it, which is the starvation
+        the flag exists to stop.
+
+        Reported by rroller on #1072, who reproduced the first-frame callback
+        against Home Assistant 2026.8: one snapshot call, no stream-image call,
+        and no image despite an available stream.
+        """
+        if not self.use_stream_for_stills:
+            return await super().handle_async_still_stream(request, interval)
+        return await async_get_still_stream(
+            request, self._async_stream_image, self.content_type, interval
+        )
 
     @property
     def supported_features(self):
@@ -799,6 +971,59 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             channel, config_type, mode
         )
         await self._coordinator.async_refresh()
+
+    async def async_play_audio(self, media_content_id: str, audio_format: str = None):
+        """Play a clip through this channel's own speaker (#177).
+
+        Three steps, each of which can fail for its own reason and says so:
+        work out what was pointed at, convert it to the format asked for, and
+        push it. The conversion uses Home Assistant's configured ffmpeg
+        binary for every clip.
+
+        `audio_format` is the caller's, with a default rather than a probe,
+        because nothing measured so far says what a given speaker accepts.
+        `audio.py` has the reasoning and the table.
+        """
+        clip_format = resolve_format(audio_format)
+        url = await async_resolve_media(self.hass, media_content_id)
+        audio = await async_transcode(self.hass, url, clip_format)
+        try:
+            await self._coordinator.client.async_play_audio(
+                audio,
+                clip_format.content_type,
+                clip_format.byte_rate,
+                self._channel_number,
+            )
+        except DahuaWriteDeclined as declined:
+            # The device said no, which for this CGI can arrive as a 200.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="audio_declined",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(declined),
+                },
+            ) from declined
+        except (TimeoutError, asyncio.TimeoutError) as timeout:
+            # Carries its own account of which limit ran out and why, and
+            # that is the useful half of this message.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="audio_stopped",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(timeout) or "it stopped taking audio",
+                },
+            ) from timeout
+        except ClientError as error:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="audio_could_not_be_sent",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(error),
+                },
+            ) from error
 
     async def async_reboot(self):
         """Handles the service call from SERVICE_REBOOT to reboot the device"""
@@ -1184,12 +1409,36 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         return backup
 
     async def async_set_service_set_text_overlay(
-        self, group: int, text1: str, text2: str, text3: str, text4: str
+        self,
+        group: int,
+        text1: str = "",
+        text2: str = "",
+        text3: str = "",
+        text4: str = "",
+        lines: list | None = None,
     ):
-        """Handles the service call from SERVICE_SET_TEXT_OVERLAY to set profile mode to day/night"""
+        """Handles the service call from SERVICE_SET_TEXT_OVERLAY.
+
+        `lines` is the way to write more than four (#312): the four numbered
+        fields were the whole service until now, and a camera in that issue
+        takes fourteen. They are kept so every existing automation calls this
+        exactly as before.
+
+        Giving both is refused rather than resolved. Either answer throws away
+        text somebody typed, and a service that quietly drops half its input
+        is the failure this issue is already about.
+        """
+        numbered = [text1, text2, text3, text4]
+
+        if lines is not None and any(numbered):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="overlay_lines_and_numbered_text",
+            )
+
         channel = self._logical_channel
         await self._coordinator.client.async_set_service_set_text_overlay(
-            channel, group, text1, text2, text3, text4
+            channel, group, *(numbered if lines is None else lines)
         )
 
     async def async_set_service_set_custom_overlay(

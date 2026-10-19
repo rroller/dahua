@@ -486,6 +486,61 @@ class DahuaRpc2Client:
             for key in ("SupportControlSpeaker", "SupportControlLight")
         }
 
+    async def get_lighting_schemes(self, channel: int) -> list[str] | None:
+        """Which illumination modes this channel's camera says it has.
+
+        Returns the device's own spellings, for example
+        `["WhiteMode", "InfraredMode", "AIMode"]`, or None where the channel
+        does not offer the dual-light solution at all. `AIMode` is what the
+        web interface calls Smart Dual Light.
+
+        Asked rather than inferred from a model name, which is the recurring
+        bug in this integration (#570, #676, #690). Measured across eight
+        channels of a DHI-NVR5464-16P-EI: the answer is per camera, not
+        host-wide, and it agreed with whether `LightingScheme` could actually
+        be read channel-scoped on every one of them.
+
+        **Two negative shapes, not one.** `LightingMixSolution` is absent on
+        five of those channels and present with `Support: false` on two more,
+        so this tests the flag's truthiness rather than the key's presence --
+        the latter would arm the two cameras that say outright they cannot.
+
+        `devVideoInput` is an object-oriented service: it hands out an
+        instance, answers against it, and leaks one per call without the
+        `destroy`, so that runs whatever happens.
+        """
+        instance = await self.request(
+            method="devVideoInput.factory.instance",
+            params={"channel": channel},
+            verify_result=False,
+        )
+        object_id = instance.get("result")
+        if not isinstance(object_id, int):
+            return None
+        try:
+            response = await self.request(
+                method="devVideoInput.getCapsEx",
+                params={"channel": channel},
+                object_id=object_id,
+                verify_result=False,
+            )
+        finally:
+            await self.request(
+                method="devVideoInput.destroy",
+                object_id=object_id,
+                verify_result=False,
+            )
+
+        params = response.get("params")
+        caps = params.get("caps") if isinstance(params, dict) else None
+        solution = caps.get("LightingMixSolution") if isinstance(caps, dict) else None
+        if not isinstance(solution, dict) or not solution.get("Support"):
+            return None
+        schemes = solution.get("LightingScheme")
+        if not isinstance(schemes, list):
+            return None
+        return [scheme for scheme in schemes if isinstance(scheme, str)] or None
+
     async def set_coaxial_control_state(
         self, channel: int, dahua_type: int, enabled: bool, off_io: int = 2
     ) -> dict:
