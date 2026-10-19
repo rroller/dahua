@@ -37,6 +37,7 @@ class _Coordinator:
         disks=(),
         serial="SERIAL1",
         host_device=False,
+        alarm_inputs=(),
     ):
         self._events = list(events)
         self._doorbell = doorbell
@@ -45,6 +46,7 @@ class _Coordinator:
         self._disks = [{"name": name} for name in disks]
         self._serial = serial
         self._host_device = host_device
+        self._alarm_inputs = list(alarm_inputs)
 
     def get_event_list(self):
         return self._events
@@ -54,6 +56,12 @@ class _Coordinator:
 
     def get_storage_disks(self):
         return list(self._disks)
+
+    def supports_alarm_inputs(self):
+        return bool(self._alarm_inputs)
+
+    def get_alarm_inputs(self):
+        return list(self._alarm_inputs)
 
     def get_device_serial_number(self):
         """The serial without the channel suffix. What a disk is keyed on."""
@@ -101,9 +109,14 @@ def setup(monkeypatch):
         def __init__(self, coordinator, entry, disk_name):
             built.append(("disk", disk_name, coordinator))
 
+    class _AlarmInput:
+        def __init__(self, coordinator, entry, alarm_input):
+            built.append(("alarm_input", alarm_input["index"], coordinator))
+
     monkeypatch.setattr(bs, "DahuaEventSensor", _Event)
     monkeypatch.setattr(bs, "DahuaAuthorizedVehicleBinarySensor", _Vehicle)
     monkeypatch.setattr(bs, "DahuaDiskProblemBinarySensor", _Disk)
+    monkeypatch.setattr(bs, "DahuaAlarmInputBinarySensor", _AlarmInput)
 
     async def run(*coordinators):
         added = []
@@ -358,3 +371,95 @@ async def test_a_camera_next_to_it_still_gets_one(setup):
     await setup(_Coordinator(no_video=True), camera)
 
     assert [c for k, _, c in setup.built if k == "vehicle"] == [camera]
+
+
+# --- the alarm terminals, which are the box's and not the channel's -----------
+
+TERMINALS = (
+    {"index": 0, "name": "Alarm-in Port1", "enabled": True},
+    {"index": 3, "name": "Alarm-in Port4", "enabled": True},
+)
+
+
+async def test_a_recorders_alarm_terminals_are_created_once(setup):
+    """`Alarm` and `alarm.cgi` take no channel, so every coordinator of a
+    recorder that probed them answers with the same terminals. One set each
+    would give a twelve channel recorder with sixteen terminals a hundred and
+    ninety two entities for sixteen screw terminals (#1090)."""
+    await setup(*[_Coordinator(channel=i, alarm_inputs=TERMINALS) for i in range(12)])
+
+    created = [index for k, index, _c in setup.built if k == "alarm_input"]
+
+    assert created == [0, 3], created
+
+
+async def test_the_lowest_channel_carries_the_terminals(setup):
+    """The same rule host.py routes with. The two have to agree: an AlarmLocal
+    handed to a coordinator with no sensors on it updates nothing."""
+    await setup(*[_Coordinator(channel=i, alarm_inputs=TERMINALS) for i in (5, 1, 9)])
+
+    carriers = {c.get_channel() for k, _i, c in setup.built if k == "alarm_input"}
+
+    assert carriers == {1}
+
+
+async def test_a_camera_gets_no_alarm_terminals(setup):
+    """Nothing but a recorder that answered the table gets these."""
+    await setup(_Coordinator())
+
+    assert [k for k, _i, _c in setup.built if k == "alarm_input"] == []
+
+
+class _TerminalMarker:
+    def __init__(self, coordinator, entry, alarm_input):
+        self.index = alarm_input["index"]
+
+
+async def _terminals_filed_under(coordinator):
+    """Which subentry the alarm terminal sensors were handed to.
+
+    Setup makes more than one add call, so this answers only for the one
+    carrying terminals, the same reason `_disks_filed_under` exists.
+    """
+    seen = []
+
+    def add(new_entities, update_before_add=False, *, config_subentry_id=None):
+        if any(isinstance(entity, _TerminalMarker) for entity in new_entities):
+            seen.append(config_subentry_id)
+
+    await bs.async_setup_entry(None, _Entry([coordinator]), add)
+    return seen
+
+
+def _stub_for_terminals(monkeypatch):
+    monkeypatch.setattr(bs, "DahuaAlarmInputBinarySensor", _TerminalMarker)
+    for name in (
+        "DahuaAuthorizedVehicleBinarySensor",
+        "DahuaEventSensor",
+        "DahuaDiskProblemBinarySensor",
+    ):
+        monkeypatch.setattr(bs, name, lambda *a, **k: object())
+
+
+async def test_the_terminals_are_filed_under_the_entry_not_a_camera(monkeypatch):
+    """A screw terminal on the back panel is not channel 0's screw terminal.
+
+    Filing it under a channel's subentry would mean removing that camera took
+    the recorder's alarm inputs with it, and the recorder still has them.
+    """
+    _stub_for_terminals(monkeypatch)
+
+    recorder = _Coordinator(alarm_inputs=TERMINALS, host_device=True)
+    recorder.subentry_id = "channel-0"
+
+    assert await _terminals_filed_under(recorder) == [None]
+
+
+async def test_a_recorder_with_no_host_device_keeps_them_on_its_channel(monkeypatch):
+    """A recorder whose class was never answered has nowhere else to put them."""
+    _stub_for_terminals(monkeypatch)
+
+    recorder = _Coordinator(alarm_inputs=TERMINALS, host_device=False)
+    recorder.subentry_id = "channel-0"
+
+    assert await _terminals_filed_under(recorder) == ["channel-0"]

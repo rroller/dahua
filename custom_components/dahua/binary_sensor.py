@@ -8,7 +8,11 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.event import async_call_later
-from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
+from custom_components.dahua import (
+    DahuaDataUpdateCoordinator,
+    alarm_input_event_code,
+    entry_coordinators,
+)
 
 from .const import (
     ALL_EVENTS,
@@ -151,6 +155,33 @@ def _disk_reporter(coordinators: list):
     return min(answering, key=lambda c: c.get_channel())
 
 
+def _alarm_input_reporter(coordinators: list):
+    """The one coordinator that carries the recorder's alarm input sensors.
+
+    `Alarm` and `alarm.cgi` take no channel: the terminals are screwed to the
+    back of the box. Only the coordinator that probed them has a list, and the
+    lowest channel wins if more than one did, which is the same rule
+    `_disk_reporter` uses and the same one `host.py` picks the routing target
+    with. The two have to agree: an AlarmLocal handed to a coordinator with no
+    sensors on it updates nothing.
+
+    Returns None for everything that reports no terminals, which is every
+    camera.
+    """
+    # Tolerated rather than demanded: the suite builds coordinators with
+    # object.__new__ and sets only the attributes a test is about, so asking
+    # every double for a method it has never needed turns one new capability
+    # into twenty unrelated failures.
+    answering = [
+        c
+        for c in coordinators
+        if getattr(c, "supports_alarm_inputs", None) and c.supports_alarm_inputs()
+    ]
+    if not answering:
+        return None
+    return min(answering, key=lambda c: c.get_channel())
+
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
     # Once for the device, before the per-channel loop. Disabled by default:
@@ -169,6 +200,25 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             # sensors stay where they are, on its own channel.
             config_subentry_id=(
                 None if reporter.uses_separate_host_device() else reporter.subentry_id
+            ),
+        )
+
+    # The recorder's own alarm input terminals, once for the box (#1090).
+    # These used to arrive as a per-channel AlarmLocal sensor, which put
+    # terminal 4 on whichever camera was channel 4.
+    alarm_reporter = _alarm_input_reporter(list(entry_coordinators(entry).values()))
+    if alarm_reporter is not None:
+        async_add_devices(
+            [
+                DahuaAlarmInputBinarySensor(alarm_reporter, entry, alarm_input)
+                for alarm_input in alarm_reporter.get_alarm_inputs()
+            ],
+            # The terminals belong to the entry, not to one channel's
+            # subentry, for the reason the disks above give.
+            config_subentry_id=(
+                None
+                if alarm_reporter.uses_separate_host_device()
+                else alarm_reporter.subentry_id
             ),
         )
 
@@ -368,6 +418,73 @@ class DahuaIVSRuleBinarySensor(DahuaEventSensor):
             **(super().extra_state_attributes or {}),
             "rule_id": self._rule_id,
             "rule_type": self._rule_type,
+        }
+
+
+class DahuaAlarmInputBinarySensor(DahuaHostEntity, DahuaEventSensor):
+    """One of a recorder's own alarm input terminals (#1090).
+
+    A recorder has screw terminals on its back panel -- sixteen on the
+    DHI-NVR5464-16P-EI measured here -- and they are nothing to do with its
+    cameras. Every one of them arrives as `AlarmLocal` with an `index`, and
+    that index is the position in the box's `Alarm[]` table, not a video
+    channel. Dispatching it as a channel put a garage door contact on a camera
+    pointed at a rear lane.
+
+    So these are host entities: created once for the box, filed against the
+    recorder's own device rather than a camera's.
+
+    **Named by the device, not by this integration.** `Alarm[n].Name` reads
+    `"Alarm-in Port4"` for index 3, which is the label the owner sees in the
+    recorder's web interface and on the chassis. The wire counts from zero and
+    the label counts from one, and the device's own string is the only thing
+    that reconciles them -- so it is used as given, including after somebody
+    renames a terminal to "Garage". The unique id keeps the zero-based index,
+    which is identity rather than description and must not move when a label
+    does.
+    """
+
+    def __init__(self, coordinator, entry, alarm_input: dict):
+        index = alarm_input["index"]
+        DahuaEventSensor.__init__(
+            self, coordinator, entry, alarm_input_event_code(index)
+        )
+        # Assigned, not declared as `_attr_device_class`: DahuaEventSensor has
+        # a `device_class` property reading `_device_class`, which wins over
+        # the attribute and had these reporting `motion`. A contact closing on
+        # a screw terminal is not motion -- it is what the per-channel
+        # AlarmLocal sensor these replace always was.
+        self._device_class = SAFETY_DEVICE_CLASS
+        self._alarm_index = index
+        self._alarm_enabled = alarm_input.get("enabled", True)
+        # The device's serial rather than get_serial_number(), which appends
+        # the channel. A terminal belongs to the box, so its identity must not
+        # depend on which channel's coordinator happens to be carrying it --
+        # otherwise removing channel 0 from a recorder would rename every one.
+        self._unique_id = "%s_alarm_input_%d" % (
+            coordinator.get_device_serial_number(),
+            index,
+        )
+        # Set last: DahuaEventSensor's __init__ assigns a translation key for
+        # any code in TRANSLATED_EVENTS and a name for anything else, and
+        # neither applies to a name the device supplied.
+        self._attr_translation_key = None
+        self._name = alarm_input.get("name") or "Alarm input %d" % (index + 1)
+        self._attr_name = self._name
+
+    @property
+    def extra_state_attributes(self):
+        return {
+            **(super().extra_state_attributes or {}),
+            # Both numbers, because they differ by one and which one a user
+            # means depends on whether they are reading the chassis or the
+            # event. Publishing only one guarantees half of them are confused.
+            "alarm_input_index": self._alarm_index,
+            "alarm_input_number": self._alarm_index + 1,
+            # Whether the device will act on this terminal at all. A disabled
+            # input never sends an event, so a sensor that never moves has an
+            # explanation here rather than looking broken.
+            "enabled_on_device": self._alarm_enabled,
         }
 
 
