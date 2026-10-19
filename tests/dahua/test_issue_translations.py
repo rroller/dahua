@@ -27,6 +27,7 @@ ISSUE_PLACEHOLDERS = {
     "removal_broke_things": {"removed", "dependents", "names"},
     "channel_not_added": {"address", "channel", "reason"},
     "webrtc_cannot_play": {"address", "channels", "count"},
+    "motion_not_pushed": {"address", "channels"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
 

@@ -530,6 +530,10 @@
         }
     },
     "issues": {
+        "motion_not_pushed": {
+            "title": "Dahua device at {address} detects motion but does not report it",
+            "description": "The Dahua device at {address} says motion is being detected on channel {channels} right now, but it has never sent Home Assistant a single VideoMotion event. Its motion binary sensors cannot turn on while that is true.\n\n**There is a setting for this.** Some recorders and some XVRs keep sending smart detection events normally while never pushing ordinary motion. For those, the integration can read the motion state from the device instead of waiting to be told.\n\nOpen **Settings > Devices & Services > Dahua**, choose **Configure** on this device, and tick **Poll ordinary motion state when the recorder does not push VideoMotion events**.\n\nIt is off by default because it costs one extra request per device every two seconds, which buys nothing on a device that does push these events. This message is not shown unless the device is detecting motion it is not reporting, and it clears itself once motion arrives or you enable the setting."
+        },
         "channel_not_added": {
             "title": "Channel {channel} on {address} was not added",
             "description": "You ticked channel {channel} while adding this recorder, and it could not be added, so it has been skipped. The rest were added normally.\n\nThe reason given was `{reason}`. The usual causes are that the camera on that channel has stopped answering since the recorder last saw it, that the slot is enabled on the recorder with no camera actually in it, or that the recorder serves that channel over ONVIF, which this integration cannot drive.\n\nCheck the channel in the recorder's own interface, then add it from Add Integration once it is working. The Home Assistant log has the full reason."

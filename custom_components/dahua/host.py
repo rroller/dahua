@@ -267,6 +267,15 @@ UNREACHABLE_AFTER_FAILURES = 5
 # A TCP probe is cheap but not free, and a wedged host fails every single poll.
 HTTPS_PROBE_MIN_INTERVAL = 600
 
+ISSUE_MOTION_NOT_PUSHED = "motion_not_pushed_{0}"
+
+# How often this host may be asked whether the device is detecting motion it is
+# not pushing, and how many times in all. One request an hour for a day, then
+# never again: a camera watching a quiet corridor genuinely sees no motion, and
+# asking it for ever would be load bought with nothing.
+MOTION_PUSH_CHECK_INTERVAL_SECONDS = 3600
+MOTION_PUSH_CHECK_LIMIT = 24
+
 ISSUE_UNREACHABLE = "unreachable_{0}"
 
 ISSUE_HTTP_DEAD_HTTPS_AVAILABLE = "http_dead_https_available_{0}"
@@ -686,6 +695,23 @@ class DahuaHostEventStream:
     # `on_receive` read this, and on a bare instance the AttributeError from
     # `_async_run` landed inside its retry loop and hung the test rather than
     # failing it. A default here is one line and cannot be half-applied.
+    # Whether a VideoMotion event has ever arrived on this host's stream.
+    #
+    # On the class, not only in __init__, for the reason given above: several
+    # test files build a stream with object.__new__ and set three attributes.
+    # False on a bare instance means "no evidence", which is the safe reading
+    # -- the card below is raised only on positive evidence, never on absence.
+    #
+    # Never reset. A host that pushed VideoMotion once is not a host that
+    # cannot, so a reconnect must not make it look newly broken (#728).
+    _seen_pushed_video_motion = False
+
+    # How many times this host has been asked whether the device is detecting
+    # motion it is not pushing, and when it was last asked. Bounded, because a
+    # camera that genuinely never sees motion would otherwise be asked for ever.
+    _motion_push_checks = 0
+    _motion_push_last_check = 0.0
+
     _using_all_events = False
     # Bare instances in focused tests predate this optional sidecar. Keeping a
     # class default makes their old construction contract remain valid.
@@ -870,6 +896,133 @@ class DahuaHostEventStream:
         if not answering:
             return None
         return min(answering, key=lambda c: c.get_channel())
+
+    def _wants_the_motion_push_check(self) -> bool:
+        """Whether asking this host about missing VideoMotion is worth a request.
+
+        Every one of these has to hold, and each rules out a reason the
+        question would be noise:
+
+        * nothing has ever been pushed -- one pushed event proves the device
+          can, and no amount of quiet afterwards unproves it;
+        * nobody has already turned the poller on, because then the user has
+          the fix and a card telling them about it is an insult;
+        * somebody selected VideoMotion, so an empty selection stays silent
+          rather than being told about a feature they switched off;
+        * the device says motion detection is enabled on at least one channel,
+          so a camera with motion turned off on the device is not accused of
+          failing to report it.
+        """
+        if self._seen_pushed_video_motion:
+            return False
+        if self._motion_push_checks >= MOTION_PUSH_CHECK_LIMIT:
+            return False
+        coordinators = list(self.coordinators)
+        if any(getattr(c, "poll_video_motion", False) for c in coordinators):
+            return False
+        if not any(set(c.events or []) & {"VideoMotion", "All"} for c in coordinators):
+            return False
+        return any(
+            getattr(c, "is_motion_detection_enabled", None)
+            and c.is_motion_detection_enabled()
+            for c in coordinators
+        )
+
+    async def async_check_video_motion_is_pushed(self) -> None:
+        """Raise a card when the device detects motion it is not pushing (#728).
+
+        **The evidence has to be positive, because the read is ambiguous.**
+        Measured on a DHI-NVR5464-16P-EI, `getEventIndexes` answers identically
+        for a real code with nothing active and for a code it has never heard
+        of:
+
+            code=VideoMotion          200  channels[0]=14
+            code=CrossLineDetection   200  Error: No Events
+            code=NotARealCodeAtAll    200  Error: No Events
+
+        So an empty answer means nothing and is discarded. A **non-empty** one
+        is unambiguous: the device is reporting motion on a channel right now,
+        and our stream has never once delivered a VideoMotion event. Those two
+        facts together are the whole fault, and nothing else produces them.
+
+        That is why this is not a timeout. "No motion for six hours" is what a
+        camera pointed at a locked gate reports when it is working perfectly.
+
+        Two reporters have hit this -- @mediarath, who wrote the poller in
+        #996 from their own XVR, and a second recorder on #728 -- and neither
+        could have found the option, because nothing in the interface connects
+        "motion does not work" to a checkbox in the entry's settings.
+
+        Nothing is enabled here. The card names the setting and the user
+        decides, because the poller is one request per recorder every two
+        seconds and that is not a cost to impose on a guess.
+        """
+        if self._seen_pushed_video_motion or any(
+            getattr(c, "poll_video_motion", False) for c in self.coordinators
+        ):
+            # Either the device started pushing or the user turned the poller
+            # on. Deleted rather than left standing, so somebody who ticks the
+            # box sees the card go rather than wondering whether it worked.
+            ir.async_delete_issue(
+                self._hass, DOMAIN, ISSUE_MOTION_NOT_PUSHED.format(self._address)
+            )
+            return
+        if not self._wants_the_motion_push_check():
+            return
+        now = time.monotonic()
+        if (
+            self._motion_push_checks
+            and now - self._motion_push_last_check < MOTION_PUSH_CHECK_INTERVAL_SECONDS
+        ):
+            return
+        self._motion_push_last_check = now
+        self._motion_push_checks += 1
+
+        owner = self._owner
+        if owner is None:
+            return
+        try:
+            active = await owner.client.async_get_event_indexes_cgi("VideoMotion")
+        except Exception:  # pylint: disable=broad-except
+            # A device that will not answer this is not a device accused of
+            # anything. Debug only: this runs on the poll, and a warning per
+            # hour per host for a question nobody asked for is noise.
+            _LOGGER.debug(
+                "Could not ask %s whether it is detecting motion",
+                self._address,
+                exc_info=True,
+            )
+            return
+        # A stream event or an options change may have settled the question
+        # while the network read was in flight. Do not raise a stale card.
+        if self._seen_pushed_video_motion or any(
+            getattr(c, "poll_video_motion", False) for c in self.coordinators
+        ):
+            ir.async_delete_issue(
+                self._hass, DOMAIN, ISSUE_MOTION_NOT_PUSHED.format(self._address)
+            )
+            return
+        if not active:
+            return
+
+        _LOGGER.info(
+            "%s reports motion on channel(s) %s but has never pushed a "
+            "VideoMotion event; suggesting the fallback poller",
+            self._address,
+            ", ".join(str(index) for index in sorted(active)),
+        )
+        ir.async_create_issue(
+            self._hass,
+            DOMAIN,
+            ISSUE_MOTION_NOT_PUSHED.format(self._address),
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="motion_not_pushed",
+            translation_placeholders={
+                "address": self._address,
+                "channels": ", ".join(str(index) for index in sorted(active)),
+            },
+        )
 
     def _should_poll_video_motion(self) -> bool:
         return bool(self._events & {"All", "VideoMotion"}) and any(
@@ -1223,6 +1376,13 @@ class DahuaHostEventStream:
                 derives = set(DERIVES_INTO.get(code, ())) & self._events
                 if code not in self._events and not derives:
                     continue
+
+            # Recorded before any filtering, deliberately. The question this
+            # answers is "does this device push VideoMotion at all", not "did
+            # anyone want that one", so a channel nobody configured still
+            # counts as evidence that the device is capable of it (#728).
+            if video_motion_source == "stream" and event.get("Code") == "VideoMotion":
+                self._seen_pushed_video_motion = True
 
             index = 0
             if "index" in event:
