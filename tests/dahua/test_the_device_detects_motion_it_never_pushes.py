@@ -143,6 +143,35 @@ async def test_a_device_detecting_motion_it_never_pushed_gets_a_card(hass):
     assert ISSUE_ID in _issues(hass)
 
 
+async def test_a_pushed_event_during_the_read_prevents_a_false_card(hass):
+    client = _Client(active={0})
+    stream = await _stream_with(hass, _Coordinator(client=client))
+
+    async def read(code):
+        stream.on_receive(motion(), 0)
+        return {0}
+
+    client.async_get_event_indexes_cgi = read
+    await stream.async_check_video_motion_is_pushed()
+    assert ISSUE_ID not in _issues(hass)
+
+
+async def test_removing_the_last_device_entry_withdraws_its_card(hass):
+    stream = await _stream_with(hass, _Coordinator(client=_Client(active={0})))
+    await stream.async_check_video_motion_is_pushed()
+    assert ISSUE_ID in _issues(hass)
+    dahua_module._async_forget_host(hass, ADDRESS)
+    assert ISSUE_ID not in _issues(hass)
+
+
+async def test_selecting_all_events_includes_the_motion_push_check(hass):
+    stream = await _stream_with(
+        hass, _Coordinator(events=["All"], client=_Client(active={0}))
+    )
+    await stream.async_check_video_motion_is_pushed()
+    assert ISSUE_ID in _issues(hass)
+
+
 async def test_silence_is_not_evidence(hass):
     """An empty answer means "nothing active" and "no such code" alike, so it
     cannot be the trigger. This is the test that stops the card appearing on

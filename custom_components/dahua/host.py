@@ -890,7 +890,7 @@ class DahuaHostEventStream:
         coordinators = list(self.coordinators)
         if any(getattr(c, "poll_video_motion", False) for c in coordinators):
             return False
-        if not any("VideoMotion" in (c.events or []) for c in coordinators):
+        if not any(set(c.events or []) & {"VideoMotion", "All"} for c in coordinators):
             return False
         return any(
             getattr(c, "is_motion_detection_enabled", None)
@@ -961,6 +961,15 @@ class DahuaHostEventStream:
                 "Could not ask %s whether it is detecting motion",
                 self._address,
                 exc_info=True,
+            )
+            return
+        # A stream event or an options change may have settled the question
+        # while the network read was in flight. Do not raise a stale card.
+        if self._seen_pushed_video_motion or any(
+            getattr(c, "poll_video_motion", False) for c in self.coordinators
+        ):
+            ir.async_delete_issue(
+                self._hass, DOMAIN, ISSUE_MOTION_NOT_PUSHED.format(self._address)
             )
             return
         if not active:
