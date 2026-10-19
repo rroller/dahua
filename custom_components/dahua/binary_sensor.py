@@ -225,6 +225,17 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     for coordinator in entry_coordinators(entry).values():
         sensors: list[BinarySensorEntity] = []
         for event_name in coordinator.get_event_list():
+            # A recorder's alarm terminals have their own sensors above, so
+            # this channel's AlarmLocal sensor has nothing left to show. What
+            # used to feed it was the misdelivery: the terminal number was
+            # read as a channel, and terminal 4 lit whichever camera was
+            # channel 4 (#1090). Not created rather than left to sit at off
+            # for ever -- Home Assistant marks an entity a platform has
+            # stopped providing as unavailable and offers to remove it, which
+            # is visible, where a stale "off" is indistinguishable from a
+            # quiet alarm and will be believed.
+            if event_name == "AlarmLocal" and alarm_reporter is not None:
+                continue
             sensors.append(DahuaEventSensor(coordinator, entry, event_name))
 
         # For doorbells we'll just add these since most people will want them
