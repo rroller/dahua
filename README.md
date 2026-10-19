@@ -914,7 +914,7 @@ Siren | If the camera has a siren, will turn on the siren. Note, it seems sirens
 Event Notifications | Enables or disables the device's event notifications
 Smart Motion Detection | If the device supports it, enables or disables smart motion detection (human and vehicle filtering rather than plain pixel motion). Only created on channels the device reports as supporting it
 IVS Rule | One switch per IVS rule the camera reports (tripwire, intrusion and so on), each keyed on the rule's own stable Dahua ID, so it is named after the rule as the device names it. Configuration entities
-Alarm Output | A physical alarm or relay output on the device, switched directly
+Alarm Output | A physical alarm or relay output on the device, switched directly. A recorder with several relays gets one switch per relay, on the recorder's own device rather than on a camera, named by the recorder where it names them distinctly and numbered where it does not. The state is read back from the device rather than assumed from the last write
 Privacy Mode | Covers the lens on cameras with a motorised cover. See `dahua.set_privacy_mode`
 Disarming Linkage | Newer firmwares introduce a "disarming" feature, accessible from the camera web UI under Event → One-click disarm / Disarming. When enabled, the disarm toggle suppresses the linkage actions configured in the Disarming section specifically, while leaving all other alarm linkage actions untouched. Detection remains fully active throughout. This allows one to turn it on/off.
 
