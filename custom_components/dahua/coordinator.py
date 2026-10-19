@@ -34,6 +34,7 @@ from . import refusals
 from .client import (
     DahuaClient,
     _describe_client_error,
+    parse_alarm_inputs,
     parse_storage_disks,
     rpc2_refusal_is_a_stale_login,
 )
@@ -784,6 +785,45 @@ def get_configured_scan_interval(entry: ConfigEntry) -> timedelta:
 CAPABILITY_REFUSED = (400, 404, 501)
 
 
+def alarm_input_index(event: dict) -> int:
+    """Which alarm input terminal an `AlarmLocal` event is about.
+
+    Measured on a DHI-NVR5464-16P-EI by flipping unwired inputs to `NC`, which
+    makes an open circuit the alarm state: `Alarm[3]`, whose own name is
+    `"Alarm-in Port4"`, produced `index=3`, and `Alarm[14]` produced `index=14`.
+    So this is the position in the `Alarm[]` table, zero based, and the number
+    printed on the chassis is one more.
+
+    Both casings, for the reason `door_index` gives: DHIP sends `Index` and the
+    CGI wire format parses to `index`.
+
+    Anything missing or unreadable is terminal 0. There is nothing better to
+    do with it -- the payload carries only `RealUTC` besides the index, so
+    there is no second field to fall back on.
+    """
+    try:
+        index = int(event.get("Index", event.get("index")))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, index)
+
+
+def alarm_input_event_code(index: int) -> str:
+    """The synthetic event code one alarm input terminal's sensor listens on.
+
+    A recorder's `AlarmLocal` events all share one code and are told apart only
+    by their index, so each terminal needs a key of its own to hold a timestamp
+    under. Same device as `IVSRule_<id>`, which gives one rule its own sensor
+    out of a code several rules share.
+
+    The index here is the one the device sends, which is the position in
+    `Alarm[]` and is zero based. The number a user sees is one higher; that
+    belongs in the entity's name, not in its identity, so the id never has to
+    be migrated if a firmware renumbers its labels.
+    """
+    return "AlarmInput_%d" % index
+
+
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     # Declared on the class, not only assigned in __init__, because a great many
@@ -799,6 +839,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # is safe, like _channel_config above.
     _storage_disks: list = []
     _storage_last_refresh: float = 0.0
+
+    # The recorder's own alarm input terminals (#1090), on the class for the
+    # same reason and with the same rule: reassigned, never mutated. Only the
+    # one coordinator that probed them has a non-empty list, so these also
+    # answer "is this the channel that carries the host's alarm entities".
+    _alarm_inputs: list = []
+    _alarm_input_slots: int = 0
 
     # How many times the poll has read Lighting_V2 and got a real answer. It is
     # a count rather than a flag because the question callers ask is "did a
@@ -2011,6 +2058,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if self.is_recorder_host():
                     await self._async_refresh_storage()
                     await self._async_refresh_remote_devices()
+                    await self._async_probe_alarm_inputs()
 
                 # The processor and memory describe the box, not the
                 # channel. Every channel probes and polls for them, and the
@@ -2805,6 +2853,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         codes = self.translate_event_code(event)
         raw_code = event.get("Code")
         data = event_payload(event)
+
+        # One sensor per alarm input terminal, out of the one code they share
+        # (#1090). `AlarmLocal`'s index is the terminal, not a video channel --
+        # measured on a DHI-NVR5464-16P-EI by making unwired inputs read active
+        # -- so host.py hands every one of them to this coordinator and the
+        # index chooses which sensor moves here. Only the coordinator that
+        # probed the terminals does this; on a camera `_alarm_inputs` is empty
+        # and nothing changes.
+        if raw_code == "AlarmLocal" and self._alarm_inputs:
+            alarm_code = alarm_input_event_code(alarm_input_index(event))
+            if alarm_code not in codes:
+                codes.append(alarm_code)
         if data.get("Class") == "Normal":
             rule_id = data.get("RuleID")
             if rule_id is None:
@@ -3557,6 +3617,81 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_storage_disks(self) -> list:
         """The recorder's disks, for the diagnostic disk sensors to read (#745)."""
         return list(self._storage_disks)
+
+    async def _async_probe_alarm_inputs(self) -> None:
+        """Ask once whether this box has alarm input terminals of its own (#1090).
+
+        Host level, like the disks: `Alarm` and `alarm.cgi` take no channel, so
+        this runs on whichever coordinator reaches it first and the rest of the
+        host leaves it alone. binary_sensor.py picks the lowest channel that
+        answered, the same arrangement the disk sensors use.
+
+        Judged on what came back, not on whether it raised: `async_get_config`
+        swallows a `ClientResponseError` and returns `{}`, and a device answers
+        200 with an empty body for a table it does not have. A box with no
+        terminals is left with an empty list and gets no entities.
+
+        The current state is read here too. Without it a restart while a door
+        is held open shows the sensor off until the next edge, and an edge may
+        be hours away.
+        """
+        try:
+            slots = await self.client.async_get_alarm_input_slots()
+            raw = await self.client.async_get_alarm_input_config()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Alarm input probe failed on %s", self._address, exc_info=True
+            )
+            return
+
+        inputs = parse_alarm_inputs(raw)
+        if not inputs:
+            return
+
+        # `getInSlots` and the table disagreeing is not fatal: the table is the
+        # thing entities are built from, so it decides, and the slot count only
+        # bounds the state bitmask.
+        self._alarm_input_slots = slots or (max(entry["index"] for entry in inputs) + 1)
+        self._alarm_inputs = inputs
+        await self._async_refresh_alarm_input_state()
+
+    async def _async_refresh_alarm_input_state(self) -> None:
+        """Seed the alarm input sensors from the device's current state.
+
+        One request for every terminal on the box. Called at setup and again
+        whenever the event stream reattaches, because a Stop that arrived while
+        the stream was down would otherwise leave a sensor on for ever. Never
+        on the poll: nothing changes between edges, and the edges are pushed.
+        """
+        if not self._alarm_inputs:
+            return
+        try:
+            active = await self.client.async_get_alarm_input_state(
+                self._alarm_input_slots
+            )
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Alarm input state read failed on %s", self._address, exc_info=True
+            )
+            return
+        now = int(time.time())
+        for entry in self._alarm_inputs:
+            key = self.get_event_key(alarm_input_event_code(entry["index"]))
+            was = self._dahua_event_timestamp.get(key, 0)
+            if entry["index"] in active:
+                # Keep the original start time if it is already on, so a
+                # reattach does not restate an alarm that never stopped.
+                self._dahua_event_timestamp[key] = was or now
+            else:
+                self._dahua_event_timestamp[key] = 0
+
+    def supports_alarm_inputs(self) -> bool:
+        """Whether this coordinator carries the host's alarm input terminals."""
+        return bool(self._alarm_inputs)
+
+    def get_alarm_inputs(self) -> list:
+        """The host's alarm input terminals, for binary_sensor.py to enumerate."""
+        return list(self._alarm_inputs)
 
     async def _async_probe_system_load(self) -> None:
         """Ask once whether this device reports its processor and memory.

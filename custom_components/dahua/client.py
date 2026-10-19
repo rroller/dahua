@@ -1022,6 +1022,80 @@ def parse_storage_disks(data: dict) -> list:
     return result
 
 
+def parse_alarm_inputs(data: dict) -> list:
+    """A recorder's own alarm input terminals, from the `Alarm` config table.
+
+    The device answers with the flat keys the CGI parser preserves verbatim:
+
+        table.Alarm[0].Enable=true
+        table.Alarm[0].Name=Alarm-in Port1
+        table.Alarm[0].SensorType=NO
+
+    Returns one dict per input -- index, name, enabled -- ordered by index.
+
+    **The index is the array position and the device's own name is one more
+    than it.** Measured on a DHI-NVR5464-16P-EI by making unwired inputs read
+    active (`SensorType` NO -> NC, which makes an open circuit the alarm
+    state): flipping `Alarm[3]`, whose Name is `"Alarm-in Port4"`, produced
+    `Code=AlarmLocal;action=Start;index=3`, and `Alarm[14]` produced
+    `index=14`. So the wire counts from zero while the web interface counts
+    from one, and the name the device supplies is the only thing that says so.
+    That is why the name is carried here rather than regenerated: a recorder
+    whose ports are numbered differently, or renamed by its owner, still
+    describes itself correctly.
+
+    An empty dict in gives an empty list out, which is what a device without
+    the table answers -- `getConfig` for a table a device does not have
+    returns 200 with nothing rather than erroring.
+    """
+    inputs: dict = {}
+    for key, value in data.items():
+        if not key.startswith("table.Alarm[") or "]" not in key:
+            continue
+        index_text, _, rest = key[len("table.Alarm[") :].partition("]")
+        if not index_text.isdigit():
+            continue
+        rest = rest.lstrip(".")
+        # EventHandler.* is the linkage tree -- what the device itself does
+        # when the input trips. None of it describes the terminal, so it is
+        # skipped rather than carried into an entity.
+        if rest not in ("Enable", "Name"):
+            continue
+        index = int(index_text)
+        entry = inputs.setdefault(index, {"index": index, "name": "", "enabled": True})
+        if rest == "Name":
+            entry["name"] = str(value)
+        else:
+            entry["enabled"] = str(value).lower() == "true"
+    return [inputs[index] for index in sorted(inputs)]
+
+
+def parse_alarm_state_bitmask(data: dict, slots: int) -> set:
+    """Which alarm inputs are active now, from `alarm.cgi?action=getInState`.
+
+    The device answers one line, `result=8`, and the number is a bitmask over
+    the input indexes: 8 is 1<<3, 16384 is 1<<14. Measured against the two
+    inputs flipped above, so the bit position is the same 0-based index the
+    event carries.
+
+    `slots` bounds the scan, from `getInSlots`. Returns a set of indexes.
+    An unreadable or negative mask raises ValueError: silence is not proof
+    that every physical contact is inactive.
+
+    This matters more than it looks: without it, a restart while a door is
+    held open shows the sensor off until the next edge, and an edge may be
+    hours away.
+    """
+    raw = data.get("result")
+    try:
+        mask = int(str(raw).strip())
+    except (TypeError, ValueError) as error:
+        raise ValueError("Dahua did not return a readable alarm state") from error
+    if mask < 0:
+        raise ValueError("Dahua returned a negative alarm state")
+    return {index for index in range(max(slots, 0)) if mask & (1 << index)}
+
+
 SECURITY_LIGHT_TYPE = 1
 
 # VideoInOptions[channel].DayNightColor, the portable spelling of the Day/Night
@@ -2145,6 +2219,38 @@ class DahuaClient:
         """
         url = "/cgi-bin/storageDevice.cgi?action=getDeviceAllInfo"
         return await self.get(url)
+
+    async def async_get_alarm_input_config(self) -> dict:
+        """The recorder's alarm input terminals (#1090).
+
+        Host level, not per channel: `Alarm` is the box's own table of physical
+        terminals and takes no channel. Parsed by parse_alarm_inputs.
+        """
+        return await self.async_get_config("Alarm")
+
+    async def async_get_alarm_input_slots(self) -> int:
+        """How many alarm input terminals the device has, or 0.
+
+        `alarm.cgi?action=getInSlots` answers `result=16` on a
+        DHI-NVR5464-16P-EI. Judged on what came back: a device without the
+        action answers something this cannot read as a number, and 0 is then
+        the honest answer rather than a guess.
+        """
+        data = await self.get("/cgi-bin/alarm.cgi?action=getInSlots")
+        try:
+            return max(int(str(data.get("result")).strip()), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    async def async_get_alarm_input_state(self, slots: int) -> set:
+        """Which alarm inputs are active right now, as a set of indexes.
+
+        One request for every terminal on the box, which is why this is read on
+        one coordinator rather than per channel. Parsed by
+        parse_alarm_state_bitmask.
+        """
+        data = await self.get("/cgi-bin/alarm.cgi?action=getInState")
+        return parse_alarm_state_bitmask(data, slots)
 
     async def async_get_storage_device_details(self) -> dict:
         """What each disk is, by name. RPC2 only; {} when it cannot be read.

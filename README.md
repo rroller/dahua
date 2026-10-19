@@ -931,6 +931,7 @@ Sensor |  Description |
 Motion | A sensor that turns on when the camera detects motion
 Button Pressed | A sensor that turns on when a doorbell button is pressed
 Authorized Vehicle | Turns on when the camera's ANPR recognises a plate you have listed as authorized, and stays on for the hold time you set. Attributes carry the plate that matched and what the camera reported about the vehicle. Created on every camera and every channel of a recorder, so it existing does not mean that camera can read plates: it stays off unless the camera reports one and it is on your list
+Alarm-in Port&lt;n&gt; | One per physical alarm input terminal on a recorder's back panel, on the recorder's own device rather than on a camera. Named by the recorder, so a terminal you renamed keeps that name. The attributes carry both numbers: `alarm_input_number` is the one printed on the chassis and `alarm_input_index` is the zero-based one the device sends, which is one lower. Only created on a recorder that reports the terminals
 Others | A binary senor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
 
 ## Sensors
