@@ -977,8 +977,8 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
         Three steps, each of which can fail for its own reason and says so:
         work out what was pointed at, convert it to the format asked for, and
-        push it. The conversion is the only part that needs anything outside
-        this integration, and a clip already in the device's format skips it.
+        push it. The conversion uses Home Assistant's configured ffmpeg
+        binary for every clip.
 
         `audio_format` is the caller's, with a default rather than a probe,
         because nothing measured so far says what a given speaker accepts.

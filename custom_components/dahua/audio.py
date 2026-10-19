@@ -7,26 +7,16 @@ behind a URL, a doorbell chime is a file on disk. This module is the gap
 between the two, and it is deliberately not in `client.py`, which talks to
 devices and should not know what a media source is.
 
-**The format is chosen, not detected.** Which one a device wants has not been
-measured. Every published recipe for this CGI converts to A-law at 8 kHz, and
-the one push measured against a VTO2000A settled at about 21,000 bytes a
-second, which is nearer A-law's 8,000 than the 32,000 of the 16 kHz PCM its
-microphone produces. So A-law is the default, as the better supported guess
-rather than as a finding, and the rest are offered because this integration
-covers doorbells, cameras, recorders and four rebrands, and one of them will
-want something else.
+**The format is chosen, not detected.** A VTO2000A's speaker has been
+verified by listening to chimes: G.711 A-law at 8 kHz plays at the correct
+pitch and tempo, and PCM at 8 kHz requires little-endian samples. G.711
+A-law is the default. Formats above 8 kHz are not offered because a
+32,000-byte-per-second push was present in device hangs during testing.
 
-The default also errs in the safe direction. Declaring a rate higher than the
-device plays at makes the push outlast its welcome, and a push abandoned part
-way through is the shape that preceded a VTO2000A hanging outright, while
-declaring one too low only makes the audio arrive faster than it plays. A-law
-at 8 kHz is the lowest rate on the table.
+Every clip is converted with Home Assistant's configured ffmpeg binary.
+The ffmpeg integration is imported when this service runs, so its absence
+produces a service error rather than preventing Dahua from setting up.
 
-**ffmpeg is not required to be present.** It is only reached for when the clip
-needs converting, and a clip already in the device's format is sent straight
-through. Home Assistant ships the `ffmpeg` integration and nearly every
-install has it, but "nearly" is why this asks rather than assumes, and says so
-plainly when it is missing.
 """
 
 import asyncio
