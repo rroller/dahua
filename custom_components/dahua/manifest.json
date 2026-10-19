@@ -2,6 +2,8 @@
   "domain": "dahua",
   "name": "Dahua",
   "after_dependencies": [
+    "ffmpeg",
+    "media_source",
     "search",
     "tag"
   ],

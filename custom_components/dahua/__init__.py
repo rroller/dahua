@@ -141,6 +141,8 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     SMART_MOTION_ROW,
     VIDEO_COLOR_FIELDS,
     WHITE_LIGHT,
+    alarm_input_event_code,
+    alarm_input_index,
     day_night_color_name,
     describe_update_failure,
     door_index,

@@ -771,6 +771,15 @@ class DahuaHostEventStream:
         union = set()
         for coordinator in self.coordinators:
             union.update(coordinator.events or [])
+
+        # A recorder's alarm input sensors are host level: they belong to the
+        # box, not to a channel, so no channel's selection speaks for them
+        # (#1090). Deselecting AlarmLocal everywhere would otherwise stop the
+        # subscription and leave those sensors permanently stuck at whatever
+        # the setup state read found. Same reasoning as DERIVES_INTO below,
+        # which keeps a raw code subscribed for the sake of a derived one.
+        if self._alarm_input_coordinator() is not None:
+            union.add("AlarmLocal")
         return frozenset(union)
 
     def register(self, coordinator) -> None:
@@ -866,6 +875,27 @@ class DahuaHostEventStream:
         if wanted and self._owner is not None:
             self._task = asyncio.create_task(self._async_run())
         self._sync_video_motion_poller()
+
+    def _alarm_input_coordinator(self):
+        """The coordinator carrying this host's alarm terminals, or None (#1090).
+
+        The lowest channel that found terminals, which is the same rule
+        binary_sensor.py uses to decide who owns the entities. Picking the same
+        one in both places is what makes routing and entity creation agree: an
+        event handed to a coordinator with no sensors on it updates nothing.
+
+        None for every camera and for any recorder that answered no terminals,
+        and the caller then keeps the old per-channel behaviour untouched.
+        """
+        answering = [
+            coordinator
+            for coordinator in self.coordinators
+            if getattr(coordinator, "supports_alarm_inputs", None)
+            and coordinator.supports_alarm_inputs()
+        ]
+        if not answering:
+            return None
+        return min(answering, key=lambda c: c.get_channel())
 
     def _wants_the_motion_push_check(self) -> bool:
         """Whether asking this host about missing VideoMotion is worth a request.
@@ -1013,6 +1043,28 @@ class DahuaHostEventStream:
         elif not wanted and running:
             self._video_motion_poll_task.cancel()
             self._video_motion_poll_task = None
+
+    async def _async_reconcile_alarm_inputs(self) -> None:
+        """Re-read the alarm terminals when the stream re-attaches (#1090).
+
+        The same problem `_async_reconcile_latched_events` solves, with a
+        better answer available. These terminals have a real state read --
+        `alarm.cgi?action=getInState` returns a bitmask of every active input
+        in one request -- so there is no need to infer anything from
+        `getEventIndexes`, whose empty answer is ambiguous.
+
+        One request, and only on a host that found terminals, so a camera and
+        a recorder without them pay nothing.
+        """
+        coordinator = self._alarm_input_coordinator()
+        if coordinator is None:
+            return
+        try:
+            await coordinator._async_refresh_alarm_input_state()
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not re-read the alarm inputs on %s", self._address, exc_info=True
+            )
 
     async def _async_reconcile_latched_events(self) -> None:
         """Ask the device about events still showing as on, and close the dead ones.
@@ -1267,6 +1319,7 @@ class DahuaHostEventStream:
             # Before going back round. A Stop that arrived while the socket was
             # down is gone, and the sensor it belonged to is still on.
             await self._async_reconcile_latched_events()
+            await self._async_reconcile_alarm_inputs()
 
             retry_in = event_stream_retry_delay(
                 stream_lifetime(time.monotonic() - start_time, self._received_data),
@@ -1352,6 +1405,36 @@ class DahuaHostEventStream:
             # with more than one channel configured, keeps the existing
             # per-index filtering below untouched: a channel nobody
             # configured must stay silent.
+            # A recorder's alarm terminals are not its cameras (#1090).
+            # `AlarmLocal`'s index is the position in the box's own `Alarm[]`
+            # table -- measured, by making unwired inputs read active -- so
+            # dispatching it through `_by_channel` below delivers terminal 4 to
+            # whichever camera happens to be channel 4. On the recorder here
+            # that lit a safety sensor belonging to a camera pointed at a rear
+            # lane, which has no alarm terminal at all.
+            #
+            # Gated on a coordinator having found terminals at setup, not on
+            # `is_recorder_host()` being true now. The device class can be
+            # answered on a later poll and flip that flag, but the entity set
+            # is decided at setup, so routing on the live flag would send
+            # events to host sensors that do not exist.
+            alarm_host = self._alarm_input_coordinator()
+            if event.get("Code") == "AlarmLocal" and alarm_host is not None:
+                try:
+                    alarm_host.handle_event(dict(event))
+                except Exception:  # pylint: disable=broad-except
+                    # Same reach as every other handler in this loop (#706):
+                    # an unguarded raise here leaves the read loop and takes
+                    # every camera's events down until the retry reconnects.
+                    _LOGGER.warning(
+                        "Unhandled error while handling a %s event from %s; "
+                        "the event is dropped and the stream continues",
+                        event.get("Code", "?"),
+                        self._address,
+                        exc_info=True,
+                    )
+                continue
+
             if event.get("Code") == "AlarmLocal" and len(self._by_channel) == 1:
                 for coordinator in next(iter(self._by_channel.values())):
                     try:
