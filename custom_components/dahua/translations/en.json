@@ -363,6 +363,14 @@
                     "manual": "Manual",
                     "off": "Off"
                 }
+            },
+            "lighting_scheme": {
+                "name": "Illumination mode",
+                "state": {
+                    "infrared": "Infrared",
+                    "white": "White light",
+                    "smart_dual": "Smart Dual Light"
+                }
             }
         },
         "sensor": {
@@ -427,6 +435,15 @@
         }
     },
     "exceptions": {
+        "lighting_scheme_held_by_illuminator": {
+            "message": "The illumination mode cannot be changed while the Illuminator is holding this channel. Turn the Illuminator off first, which puts the camera back to the mode it was in, then choose the mode you want."
+        },
+        "lighting_scheme_not_accepted": {
+            "message": "The camera did not take {mode} as its illumination mode and still reports {got}. Some Dahua devices answer OK to a setting they do not apply, so this is the camera refusing rather than a connection problem."
+        },
+        "lighting_scheme_unknown": {
+            "message": "{mode} is not an illumination mode this camera offers. It reports: {known}."
+        },
         "video_profile_not_switchable": {
             "message": "The day/night video profile on {device} cannot be switched from Home Assistant: its VideoInMode is the {shape} shape, where the profile is not selected by the field this writes. See issue #458."
         },
