@@ -3700,7 +3700,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # `getInSlots` and the table disagreeing is not fatal: the table is the
         # thing entities are built from, so it decides, and the slot count only
         # bounds the state bitmask.
-        self._alarm_input_slots = slots or len(inputs)
+        self._alarm_input_slots = slots or (max(entry["index"] for entry in inputs) + 1)
         self._alarm_inputs = inputs
         await self._async_refresh_alarm_input_state()
 

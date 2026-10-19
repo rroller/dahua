@@ -176,9 +176,10 @@ def test_the_bitmask_is_bounded_by_the_slot_count():
     assert parse_alarm_state_bitmask({"result": str(1 << 20)}, 16) == set()
 
 
-def test_an_unreadable_state_answer_is_no_terminals_rather_than_a_guess():
+def test_an_unreadable_state_answer_is_not_a_known_inactive_state():
     for answer in ({}, {"result": "Error"}, {"result": None}, {"result": "-1"}):
-        assert parse_alarm_state_bitmask(answer, 16) == set()
+        with pytest.raises(ValueError):
+            parse_alarm_state_bitmask(answer, 16)
 
 
 # --- the index, which is the whole bug --------------------------------------
@@ -528,6 +529,16 @@ async def test_a_failed_state_read_leaves_the_sensors_where_they_were():
     assert coordinator._dahua_event_timestamp["AlarmInput_3-0"] == first
 
 
+@pytest.mark.parametrize("answer", ["Error", None, "-1"])
+async def test_an_unreadable_success_response_does_not_clear_active_inputs(answer):
+    coordinator = _coordinator(_ProbeClient(state="8"))
+    await coordinator._async_probe_alarm_inputs()
+    first = coordinator._dahua_event_timestamp["AlarmInput_3-0"]
+    coordinator.client._state = answer
+    await coordinator._async_refresh_alarm_input_state()
+    assert coordinator._dahua_event_timestamp["AlarmInput_3-0"] == first
+
+
 async def test_nothing_is_read_for_a_device_with_no_terminals():
     coordinator = _coordinator(_ProbeClient(table={}))
     await coordinator._async_probe_alarm_inputs()
@@ -541,8 +552,9 @@ async def test_nothing_is_read_for_a_device_with_no_terminals():
 async def test_the_table_decides_when_the_slot_count_disagrees():
     """The entities are built from the table, so it wins. getInSlots only
     bounds the bitmask scan."""
-    coordinator = _coordinator(_ProbeClient(slots=0))
+    coordinator = _coordinator(_ProbeClient(slots=0, state="8"))
     await coordinator._async_probe_alarm_inputs()
 
     assert len(coordinator.get_alarm_inputs()) == 3
-    assert coordinator._alarm_input_slots == 3
+    assert coordinator._alarm_input_slots == 4
+    assert coordinator._dahua_event_timestamp["AlarmInput_3-0"] > 0

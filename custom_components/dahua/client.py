@@ -1079,6 +1079,8 @@ def parse_alarm_state_bitmask(data: dict, slots: int) -> set:
     event carries.
 
     `slots` bounds the scan, from `getInSlots`. Returns a set of indexes.
+    An unreadable or negative mask raises ValueError: silence is not proof
+    that every physical contact is inactive.
 
     This matters more than it looks: without it, a restart while a door is
     held open shows the sensor off until the next edge, and an edge may be
@@ -1087,10 +1089,10 @@ def parse_alarm_state_bitmask(data: dict, slots: int) -> set:
     raw = data.get("result")
     try:
         mask = int(str(raw).strip())
-    except (TypeError, ValueError):
-        return set()
+    except (TypeError, ValueError) as error:
+        raise ValueError("Dahua did not return a readable alarm state") from error
     if mask < 0:
-        return set()
+        raise ValueError("Dahua returned a negative alarm state")
     return {index for index in range(max(slots, 0)) if mask & (1 << index)}
 
 
