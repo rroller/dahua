@@ -481,7 +481,9 @@ async def test_a_media_source_id_is_resolved_to_its_url(hass, monkeypatch):
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
 @pytest.mark.parametrize("name", sorted(AUDIO_FORMATS))
-async def test_a_second_of_audio_really_is_byte_rate_bytes(hass, name, tmp_path):
+async def test_a_second_of_audio_really_is_byte_rate_bytes(
+    hass, name, tmp_path, monkeypatch
+):
     """The format table, checked against ffmpeg rather than against itself.
 
     Everything else here asserts that the right arguments were assembled.
@@ -490,10 +492,18 @@ async def test_a_second_of_audio_really_is_byte_rate_bytes(hass, name, tmp_path)
     second of audio must be exactly `byte_rate` bytes, or the clip plays at
     the wrong speed on every device.
 
-    Skipped where ffmpeg is missing, which includes some CI images. It does
-    not run on the machine this was written on either, and that is recorded
-    rather than papered over.
+    Skipped where ffmpeg is missing, which includes some CI images.
+
+    The binary is pointed at directly rather than through
+    `get_ffmpeg_manager`, which needs the ffmpeg integration loaded and so
+    needs `haffmpeg` installed. That is a dependency of Home Assistant's
+    component, not of this one, and requiring it would make this test fail
+    rather than skip on any image that ships the binary without it. What is
+    being checked here is the arguments, not how the path is looked up.
     """
+    monkeypatch.setattr(
+        audio_module, "_ffmpeg_binary", lambda hass: shutil.which("ffmpeg")
+    )
     audio_format = AUDIO_FORMATS[name]
     source = tmp_path / "tone.wav"
     generate = await asyncio.create_subprocess_exec(
