@@ -2756,6 +2756,29 @@ class DahuaClient:
             )
             return None
 
+    async def async_get_channel_lighting_scheme(self, channel: int) -> dict:
+        """Read this channel's scene modes for the illumination selector."""
+        async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
+            response = await self._rpc2_shared_call(
+                lambda client: client.get_config(
+                    {"name": "LightingScheme", "onlyLocal": False, "channel": channel}
+                )
+            )
+        table = response.get("table")
+        if (
+            not isinstance(table, list)
+            or not table
+            or not all(
+                isinstance(profile, dict)
+                and isinstance(profile.get("LightingMode"), str)
+                for profile in table
+            )
+        ):
+            raise ValueError("The channel did not return its LightingScheme scenes")
+        return flatten_rpc2_config(
+            "LightingScheme", table, "table.LightingScheme[%d]" % channel
+        )
+
     async def async_set_channel_scoped_lighting_scheme(
         self, channel: int, mode: str
     ) -> None:
@@ -2778,12 +2801,6 @@ class DahuaClient:
         of `InfraredMode`, `WhiteMode` and `AIMode` write and read back, and
         the original restores cleanly.
         """
-        store = self._channel_snapshot_store
-        if store is not None and await store.async_get(channel) is not None:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN,
-                translation_key="lighting_scheme_held_by_illuminator",
-            )
 
         def read():
             return self._rpc2_shared_call(
@@ -2795,6 +2812,12 @@ class DahuaClient:
         async with self._lighting_scheme_lock, self._request_slot(), asyncio.timeout(
             TIMEOUT_SECONDS
         ):
+            store = self._channel_snapshot_store
+            if store is not None and await store.async_get(channel) is not None:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="lighting_scheme_held_by_illuminator",
+                )
             scheme = (await read()).get("table")
             if not isinstance(scheme, list) or not scheme:
                 raise ValueError(
@@ -2817,7 +2840,14 @@ class DahuaClient:
                 for profile in back
                 if isinstance(profile, dict)
             }
-            if got != {mode}:
+            if (
+                len(back) != len(wanted)
+                or not all(
+                    isinstance(profile, dict) and profile.get("LightingMode") == mode
+                    for profile in back
+                )
+                or got != {mode}
+            ):
                 # Accepted and ignored is a refusal here. These devices answer
                 # OK to writes they do not act on, so the read-back is the
                 # only thing that distinguishes the two.

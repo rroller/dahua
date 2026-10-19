@@ -2467,6 +2467,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Motion detection state is read by the camera entity as well as
             # the switch, so it survives either one being enabled.
             coros = []
+            if self.supports_lighting_schemes() and self._wanted_by(SELECT):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_channel_lighting_scheme())
+                )
             if self._wanted_by(CAMERA, SWITCH):
                 coros.append(
                     asyncio.ensure_future(
@@ -4245,6 +4249,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if not named:
             return True
         return WHITE_LIGHT in named
+
+    async def _async_fetch_channel_lighting_scheme(self) -> dict:
+        """Keep only this channel's previous scene modes if its read fails."""
+        try:
+            return await self.client.async_get_channel_lighting_scheme(self._channel)
+        except Exception:
+            _LOGGER.debug("Could not read channel illumination modes", exc_info=True)
+            prefix = "table.LightingScheme[%d][" % self._channel
+            return {
+                key: value
+                for key, value in (self.data or {}).items()
+                if key.startswith(prefix)
+            }
 
     def supports_lighting_schemes(self) -> bool:
         """Whether this channel named any illumination modes it can be put in.
