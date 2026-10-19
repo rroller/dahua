@@ -351,7 +351,17 @@ set_channel_title:
 
 set_text_overlay:
   name: Set text overlay
-  description: Sets a text overlay on the video
+  # Which on-screen text this moves is worth stating, because the camera's own
+  # web interface does not call it the same thing on every model. This writes
+  # VideoWidget[channel].CustomTitle, and a DH-IPC-HDW3849H-AS-PV labels that
+  # array "Location title" while labelling a different two-line field "Custom
+  # title" (#312). Someone watching the wrong field concludes the service does
+  # nothing.
+  description: >-
+    Sets the custom text overlay on the video. Some cameras label this
+    overlay "Location title" in their own web interface rather than "Custom
+    title", so check both if the text does not appear where expected. How
+    many lines a camera accepts is the camera's own limit.
   target:
     entity:
       integration: dahua
@@ -536,6 +546,36 @@ vto_open_door:
           mode: box
           min: 0
           max: 100
+
+play_audio:
+  name: Play audio on the speaker
+  description: Plays a clip through the device's own speaker, for a doorbell announcement or a camera deterrent message. Needs the ffmpeg integration to convert the clip
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    media_content_id:
+      name: Media
+      description: "The clip to play. A media source, a text-to-speech result, a URL or a file path; anything ffmpeg can open"
+      example: "media-source://tts/tts.google_en_com?message=Someone+is+at+the+door"
+      required: true
+      selector:
+        text:
+    audio_format:
+      name: Audio format
+      description: "What the speaker is sent. The default suits every device this has been tried against; change it only if the audio plays at the wrong speed or not at all"
+      required: false
+      default: g711a_8000
+      selector:
+        select:
+          options:
+            - label: "G.711 A-law, 8 kHz (default)"
+              value: g711a_8000
+            - label: "G.711 mu-law, 8 kHz"
+              value: g711u_8000
+            - label: "16-bit PCM, 8 kHz"
+              value: pcm_8000
 
 vto_cancel_call:
   name: Cancel VTO call

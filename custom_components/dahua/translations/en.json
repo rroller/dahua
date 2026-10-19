@@ -427,6 +427,33 @@
         }
     },
     "exceptions": {
+        "audio_path_not_allowed": {
+            "message": "Home Assistant is not allowed to read {path}. Use a media source, a URL, or a file inside the config directory or one listed in allowlist_external_dirs."
+        },
+        "audio_format_unknown": {
+            "message": "Unknown audio format {format}. Known formats: {known}"
+        },
+        "audio_conversion_timed_out": {
+            "message": "Converting {url} for the speaker took longer than {seconds} seconds"
+        },
+        "audio_conversion_failed": {
+            "message": "Could not convert {url} for the speaker: {reason}"
+        },
+        "audio_has_no_sound": {
+            "message": "{url} has no audio in it, so there is nothing to play"
+        },
+        "audio_needs_ffmpeg": {
+            "message": "Playing audio needs the ffmpeg integration, which is not set up. Add `ffmpeg:` to configuration.yaml and restart Home Assistant"
+        },
+        "audio_declined": {
+            "message": "{device} refused the clip: {reason}"
+        },
+        "audio_stopped": {
+            "message": "{device} did not play the whole clip: {reason}. If this keeps happening, try another audio format: the speaker's own format has not been measured on any device yet"
+        },
+        "audio_could_not_be_sent": {
+            "message": "Could not play audio on {device}: {reason}"
+        },
         "video_profile_not_switchable": {
             "message": "The day/night video profile on {device} cannot be switched from Home Assistant: its VideoInMode is the {shape} shape, where the profile is not selected by the field this writes. See issue #458."
         },
