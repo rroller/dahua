@@ -27,7 +27,6 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 from . import dahua_utils, entry_coordinators
 from .client import _device_key
-from .host import normalize_address
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
@@ -311,6 +310,37 @@ def _client_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
     }
 
 
+def _coordinator_device_key(coordinator) -> str | None:
+    """Which device this coordinator speaks to, spelled the one way.
+
+    The shared event stream and the RPC2 poll state are keyed per device
+    rather than per address, because two boxes can sit behind one IP on
+    different ports. The client already holds that key and already built it
+    from the same address and port the registration used, so this asks it
+    rather than recomputing.
+
+    Recomputing was the alternative and it had two ways to be quietly wrong:
+    a `getattr(coordinator, "_port", 80)` that silently reads 80 if the
+    attribute is ever renamed, and a second spelling of the address
+    normalisation. Both fail by reporting `used: false` and `transport:
+    null` for a device that is using the thing, which is the opposite of
+    what a dump is for.
+    """
+    client = getattr(coordinator, "client", None)
+    from_client = getattr(client, "device_key", None)
+    if from_client:
+        return from_client
+    # No client to ask, which is a coordinator built by a test double and a
+    # couple of internal paths. Rebuilt rather than guessed: `_device_key`
+    # normalises the address itself now, so this spelling and the client's
+    # agree by construction, and a missing port returns None instead of
+    # quietly becoming 80 and pointing at whatever else is on that address.
+    port = getattr(coordinator, "_port", None)
+    if port is None:
+        return None
+    return _device_key(getattr(coordinator, "_address", None), port)
+
+
 def _stream_block(coordinator) -> dict[str, Any]:
     """The state of the event stream that actually exists.
 
@@ -336,9 +366,7 @@ def _stream_block(coordinator) -> dict[str, Any]:
     from . import _HOST_STREAMS
 
     address = getattr(coordinator, "_address", None)
-    stream = _HOST_STREAMS.get(
-        _device_key(normalize_address(address), getattr(coordinator, "_port", 80))
-    )
+    stream = _HOST_STREAMS.get(_coordinator_device_key(coordinator))
     if stream is None:
         # Not an error. No configured events means no stream is started.
         return {"registered": False}
@@ -390,11 +418,7 @@ def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
         return "rpc2_poll"
     from . import _HOST_STREAMS
 
-    key = _device_key(
-        normalize_address(getattr(coordinator, "_address", None)),
-        getattr(coordinator, "_port", 80),
-    )
-    if _HOST_STREAMS.get(key) is not None:
+    if _HOST_STREAMS.get(_coordinator_device_key(coordinator)) is not None:
         return "cgi_stream"
     # No events were configured, so nothing was started. Not a fault.
     return None
@@ -417,7 +441,7 @@ def _rpc2_poll_block(coordinator) -> dict[str, Any]:
     from .client import _HOST_RPC2_EVENT_POLL, _HOST_RPC2_EVENT_STATE
 
     address = getattr(coordinator, "_address", None)
-    key = _device_key(normalize_address(address), getattr(coordinator, "_port", 80))
+    key = _coordinator_device_key(coordinator)
     described = _HOST_RPC2_EVENT_POLL.get(key)
     if described is None:
         return {"used": False}

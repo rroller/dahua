@@ -60,6 +60,8 @@ def _reader(address=ADDRESS, **kwargs):
     """The shape _stream_block and _events_block read, and nothing more."""
     defaults = {
         "_address": address,
+        # A coordinator has a port, and the stream is keyed on it.
+        "_port": 80,
         "_event_task": None,
         "_vto_task": None,
         "_vto_client": None,

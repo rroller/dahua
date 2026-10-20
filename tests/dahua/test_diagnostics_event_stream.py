@@ -61,6 +61,8 @@ def _stream(**kwargs):
 def _coordinator(address=ADDRESS, **kwargs):
     defaults = {
         "_address": address,
+        # A coordinator has a port, and the stream is keyed on it.
+        "_port": 80,
         # The attribute the old field read. Never assigned in the real coordinator,
         # which is the whole bug, so it stays None in every test here.
         "_event_task": None,

@@ -302,7 +302,19 @@ def _device_key(address: str, port) -> str:
     The port is normalised because a config entry stores it as a string while
     callers pass an int, and "192.168.0.175:80" must not be a different device
     from "192.168.0.175:80".
+
+    **The address is normalised here too, and must stay that way.** This is
+    called from two sides: the client passes `self._address`, which is only
+    `rstrip("/")`ed, while `host.py` and `diagnostics.py` pass an address
+    already through `normalize_address`, which also strips whitespace. Those
+    are two spellings of one key, and a device whose address carries a stray
+    space keyed its shared state under one and had it looked up under the
+    other -- so the dump reported `used: False` for a poller that was
+    running. Doing it here makes the two agree by construction rather than by
+    both remembering. Kept in step with `host.normalize_address`, which cannot
+    be imported from here without a cycle.
     """
+    address = (address or "").strip().rstrip("/")
     try:
         port = int(port)
     except (TypeError, ValueError):

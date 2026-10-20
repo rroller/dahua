@@ -300,3 +300,55 @@ async def test_rpc2_motion_state_is_not_inherited_from_another_port(monkeypatch)
         assert _rpc2_poll_block(SimpleNamespace(_address="cam", _port=8081)) == {
             "used": False
         }
+
+
+async def test_every_host_stream_caller_names_the_port(hass):
+    """The port cannot be optional, because an optional one was already wrong.
+
+    This PR gave `_host_stream` a port so two boxes behind one address stop
+    sharing events. It updated the one caller that existed when it was
+    written. #1095 landed a second caller on `main` in the meantime, and the
+    two merged cleanly into a function with a `port=80` default and a caller
+    that did not pass it:
+
+        registered under : ['10.0.0.175:81']
+        after the check  : ['10.0.0.175:80', '10.0.0.175:81']
+        after release    : ['10.0.0.175:80']
+
+        two boxes, one IP. check from the :81 entry got the :80 box: True
+
+    An orphan stream leaked per unload, the #728 motion card silently stopped
+    working off port 80, and on a real two-box setup the check read the other
+    device's stream. Nothing raised and nothing logged.
+
+    So the argument is required, and this is the guard on it: a default here
+    is not a convenience, it is the bug.
+    """
+    import inspect
+
+    from custom_components.dahua.host import _host_stream
+
+    port = inspect.signature(_host_stream).parameters["port"]
+
+    assert port.default is inspect.Parameter.empty
+
+
+async def test_the_motion_push_check_and_the_registration_agree_on_the_key(hass):
+    """The two call sites have to key the same stream, which is the thing the
+    merge above got wrong. Asserted on the registry rather than on the call,
+    so it fails if either side drifts."""
+    from custom_components.dahua import host as host_mod
+
+    host_mod._HOST_STREAMS.clear()
+    try:
+        registered = host_mod._host_stream(hass, "10.0.0.175", 81)
+        checked = host_mod._host_stream(hass, "10.0.0.175", 81)
+
+        assert checked is registered
+        assert sorted(host_mod._HOST_STREAMS) == ["10.0.0.175:81"]
+
+        # And a second box really on :80 is a different stream, not this one.
+        other = host_mod._host_stream(hass, "10.0.0.175", 80)
+        assert other is not registered
+    finally:
+        host_mod._HOST_STREAMS.clear()

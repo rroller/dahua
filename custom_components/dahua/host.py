@@ -1501,7 +1501,22 @@ class DahuaHostEventStream:
 _HOST_STREAMS: Dict[str, DahuaHostEventStream] = {}
 
 
-def _host_stream(hass: HomeAssistant, address: str, port=80) -> DahuaHostEventStream:
+def _host_stream(hass: HomeAssistant, address: str, port) -> DahuaHostEventStream:
+    """The one event stream for this device, created on first ask.
+
+    **`port` has no default, deliberately.** It used to, and the default was
+    the whole bug this function was changed to fix. Two boxes can sit behind
+    one address on different ports, so the key has to say which one; a caller
+    that forgets the argument and silently gets `80` registers an orphan
+    stream under the wrong key, never releases it, and on a real two-box
+    setup is handed the *other* device's stream. Nothing raises and nothing
+    logs.
+
+    That is not hypothetical. This function gained the parameter while
+    #1095 was adding a second caller on main, so the two merged cleanly into
+    exactly that state. A required argument makes the next one a TypeError
+    at the call rather than a wrong answer a year later.
+    """
     address = normalize_address(address)
     key = _device_key(address, port)
     stream = _HOST_STREAMS.get(key)
@@ -1512,7 +1527,12 @@ def _host_stream(hass: HomeAssistant, address: str, port=80) -> DahuaHostEventSt
 
 async def _release_host_stream(coordinator) -> None:
     address = normalize_address(coordinator.get_address())
-    key = _device_key(address, getattr(coordinator, "_port", 80))
+    # The coordinator's own client built this key from the same address and
+    # port the registration used, so asking it cannot drift from what
+    # `_host_stream` stored. A recomputed `getattr(..., "_port", 80)` would
+    # leak the stream rather than release it, and say nothing.
+    client = getattr(coordinator, "client", None)
+    key = getattr(client, "device_key", None) or _device_key(address, coordinator._port)
     stream = _HOST_STREAMS.get(key)
     if stream is None:
         return

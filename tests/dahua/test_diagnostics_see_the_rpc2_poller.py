@@ -48,6 +48,7 @@ class _Task:
 def _coordinator(address=ADDRESS, vto_task=None):
     return SimpleNamespace(
         _address=address,
+        _port=80,
         _vto_task=vto_task,
         _vto_client=None,
         _dahua_event_listeners={},
