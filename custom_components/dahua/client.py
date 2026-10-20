@@ -138,6 +138,10 @@ _HOST_LIGHTING_SCHEME_LOCKS: dict[str, asyncio.Lock] = {}
 # One clip at a time per speaker, keyed by device and channel.
 _HOST_SPEAKER_LOCKS: dict[tuple, asyncio.Lock] = {}
 
+# Whole-table call-setting writes must preserve other in-flight changes,
+# including writes from another client or user on the same monitor.
+_HOST_VTH_PHONE_LOCKS: dict[str, asyncio.Lock] = {}
+
 # Pushing audio to a device's speaker. `singlepart` is a stream rather than an
 # upload: the device plays what arrives as it arrives, sends no status line of
 # any kind, and leaves the socket open. Measured on a VTO2000A, where an
@@ -1966,14 +1970,12 @@ class DahuaClient:
                 params={"name": VTH_PHONE_TABLE, "table": wanted},
             )
 
-        await self._rpc2_shared_call(write)
-        # The read of this table is shared and cached for five minutes, and
-        # this write does not go through `get`, which is where a write clears
-        # it. Without this the entity wrote the device, refreshed, was served
-        # the cached answer and snapped back to the old value for up to five
-        # minutes. Measured on the monitor: the write took and the read-back
-        # reported nothing had changed.
-        clear_host_cache(self._device)
+        lock = _HOST_VTH_PHONE_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+            await self._rpc2_shared_call(write)
+            # This RPC2 write bypasses get(), which normally clears the shared
+            # five-minute config cache. Refresh must see the new settings.
+            clear_host_cache(self._device)
 
     def vth_own_video(self) -> bool | None:
         """For a VTH identified over RPC2: whether it has a camera. None otherwise.

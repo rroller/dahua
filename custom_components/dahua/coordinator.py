@@ -4207,7 +4207,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         raw = self.data.get("table.{0}.{1}".format(VTH_PHONE_TABLE, field))
         if raw is None:
             return None
-        return str(raw).strip().lower() == "true"
+        return {"true": True, "false": False}.get(str(raw).strip().lower())
 
     def get_video_color(self, field: str):
         """A picture adjustment for this channel's general profile, or None.

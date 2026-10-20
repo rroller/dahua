@@ -22,6 +22,7 @@ restored the table byte for byte.
 from __future__ import annotations
 
 import ast
+import asyncio
 import io
 from pathlib import Path
 from types import SimpleNamespace
@@ -345,3 +346,39 @@ async def test_a_neighbouring_table_does_not_count():
     _found, fields = await _probe({"table.SomethingElse.SilenceEnable": "false"})
 
     assert fields == frozenset()
+
+
+async def test_concurrent_settings_writes_preserve_both_changes():
+    state = dict(MEASURED)
+    first, _ = _client(state)
+    second, _ = _client(state)
+
+    async def get_config(params):
+        assert params == {"name": VTH_PHONE_TABLE}
+        snapshot = dict(state)
+        await asyncio.sleep(0)
+        return {"table": snapshot}
+
+    async def request(method, params):
+        assert method == "configManager.setConfig"
+        assert params["name"] == VTH_PHONE_TABLE
+        state.clear()
+        state.update(params["table"])
+        return {"result": True}
+
+    async def shared(action):
+        return await action(SimpleNamespace(get_config=get_config, request=request))
+
+    first._rpc2_shared_call = shared
+    second._rpc2_shared_call = shared
+    await asyncio.gather(
+        first.async_set_video_talk_phone_field(VTH_SILENCE_FIELD, True),
+        second.async_set_video_talk_phone_field("RingVolume", 40),
+    )
+    assert state == dict(MEASURED, SilenceEnable=True, RingVolume=40)
+
+
+@pytest.mark.parametrize("raw", ["invalid", "", "2"])
+def test_a_malformed_silence_flag_is_unknown(raw):
+    coordinator = _coordinator({"table.VideoTalkPhoneGeneral.SilenceEnable": raw})
+    assert coordinator.get_vth_phone_flag(VTH_SILENCE_FIELD) is None
