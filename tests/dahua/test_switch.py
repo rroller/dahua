@@ -93,6 +93,15 @@ class _Coordinator:
         """
         return self.states.get("has_cloud_connection", False)
 
+    def supports_vth_phone_setting(self, field):
+        """Whether this device reported an indoor monitor's call setting (#949).
+
+        Driven from `states` like the rest, so a case can turn the monitor's
+        do-not-disturb switch on without the double growing a second shape.
+        Off by default: these are cameras and recorders.
+        """
+        return field in self.states.get("vth_phone_fields", ())
+
     def supports_intelli_tour(self):
         """Whether this channel reports IntelliTour, which the tour switch writes.
 

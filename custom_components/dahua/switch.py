@@ -13,6 +13,7 @@ from custom_components.dahua import entry_coordinators
 from . import dahua_utils, refusals
 from .const import DOMAIN
 from .entity import DahuaBaseEntity, DahuaHostEntity
+from .const import VTH_SILENCE_FIELD
 from .late import async_add_and_keep_watching
 from .client import SIREN_TYPE
 
@@ -186,6 +187,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             DahuaIVSRuleSwitch(coordinator, entry, rule)
             for rule in coordinator.get_ivs_rules()
         )
+        # An indoor monitor's do not disturb, where the monitor reported it
+        # (#998). Gated on the field rather than on the device class: the key
+        # is present on a VTH5221D's 3.000 firmware and on @kmich's 4.800, but
+        # nothing says every monitor has it.
+        if coordinator.supports_vth_phone_setting(VTH_SILENCE_FIELD):
+            devices.append(DahuaMonitorSilenceSwitch(coordinator, entry))
         return devices
 
     await async_add_and_keep_watching(
@@ -735,3 +742,53 @@ class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
         Value is fetched from client.async_get_privacy_mode
         """
         return self._coordinator.is_privacy_mode_enabled()
+
+
+class DahuaMonitorSilenceSwitch(DahuaBaseEntity, SwitchEntity):
+    """Do not disturb on an indoor monitor (#998).
+
+    `VideoTalkPhoneGeneral.SilenceEnable`, measured as a real boolean on a
+    VTH5221D (3.000.0012000.0.R), where it read False.
+
+    The monitor also has `DisableRingStartTime` and `DisableRingEndTime`, a
+    scheduled quiet period. That is a different thing from this switch, it is
+    set on the device itself, and this does not touch it.
+    """
+
+    _attr_translation_key = "vth_silence"
+
+    # Configuration rather than a control: it changes how the monitor behaves
+    # from now on rather than doing something once.
+    _attr_entity_category = EntityCategory.CONFIG
+
+    async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
+        """Silence this monitor."""
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
+        """Let this monitor ring again."""
+        await self._set(False)
+
+    async def _set(self, silent: bool) -> None:
+        await self._coordinator.client.async_set_video_talk_phone_field(
+            VTH_SILENCE_FIELD, silent
+        )
+        await self._coordinator.async_refresh()
+
+    @property
+    def unique_id(self):
+        """Unique within the platform. The serial already carries the channel."""
+        return self._coordinator.get_serial_number() + "_vth_silence"
+
+    @property
+    def available(self) -> bool:
+        """Off until the poll has the flag, so it never shows a guessed state."""
+        return (
+            super().available
+            and self._coordinator.get_vth_phone_flag(VTH_SILENCE_FIELD) is not None
+        )
+
+    @property
+    def is_on(self):
+        """Whether the monitor says it is silenced."""
+        return self._coordinator.get_vth_phone_flag(VTH_SILENCE_FIELD)

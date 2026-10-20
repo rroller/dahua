@@ -335,6 +335,18 @@
             },
             "image_hue": {
                 "name": "Hue"
+            },
+            "vth_ring_volume": {
+                "name": "Door station ring volume"
+            },
+            "vth_indoor_ring_volume": {
+                "name": "Indoor ring volume"
+            },
+            "vth_talk_volume": {
+                "name": "Talk volume"
+            },
+            "vth_alarm_volume": {
+                "name": "Alarm volume"
             }
         },
         "select": {
@@ -426,6 +438,9 @@
             },
             "alarm": {
                 "name": "Alarm"
+            },
+            "vth_silence": {
+                "name": "Do not disturb"
             }
         },
         "update": {
