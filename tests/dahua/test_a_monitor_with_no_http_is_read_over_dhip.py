@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 from hashlib import md5
+from types import SimpleNamespace
 
 import aiohttp
 import pytest
@@ -514,15 +515,37 @@ async def test_a_monitor_is_named_by_its_model_rather_than_a_hash():
     assert await client.get_machine_name() == {"name": "VTH5221D"}
 
 
-async def test_a_monitor_that_will_not_give_a_serial_still_gets_one():
-    """The fallback has to stay reachable. An identity without a serial is
-    still a better model and firmware than `Generic RTSP`, but the entry needs
-    some unique id, so the hash is still what answers."""
+async def test_a_monitor_that_will_not_give_a_serial_is_retried_not_hashed():
+    """An answer that did not arrive is not an answer (#1057's shape).
+
+    The hash was the obvious fallback and it is the wrong one here. Every
+    entity `unique_id` is built from this read, so one boot where
+    getSerialNo times out would give the whole entry a different identity and
+    Home Assistant would build a second set of entities on `_2` names, which
+    nothing later undoes. Raising instead reaches the coordinator as
+    UpdateFailed, which on a first refresh is setup_retry, and the next poll
+    can get it right.
+    """
     client = _cgi_absent_client(dict(_VTH, serial=None))
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+
+    assert client.identity_derived_from_credentials is False
+
+
+async def test_a_serving_monitor_with_no_serial_is_still_hashed():
+    """The complement, and the reason the branch above is safe to add.
+
+    A VTH that serves HTTP never reaches it: the gate holds it at the md5 it
+    already has, serial or no serial, so nothing that works today starts
+    refusing to set up.
+    """
+    client = _cgi_absent_client(dict(_VTH, serial=None), over_dhip=False)
 
     info = await client.async_get_system_info()
 
-    assert info["serialNumber"] != "3E0164EPAN00095"
+    assert info == {"serialNumber": md5(b"10.0.0.230_554_admin_secret").hexdigest()}
     assert client.identity_derived_from_credentials is True
 
 
@@ -562,7 +585,7 @@ async def test_anything_that_is_not_a_monitor_keeps_the_old_fallback():
     """The negative control. A camera with its CGI off must not start reporting
     a VTH's identity, and `_vth_identity_over_rpc2` returning None is how it
     says the device is not one."""
-    client = _cgi_absent_client(None)
+    client = _cgi_absent_client(None, over_dhip=False)
 
     info = await client.async_get_system_info()
 
@@ -815,3 +838,40 @@ async def test_a_dhip_login_refusal_uses_the_coordinators_auth_error(connections
         assert "401" in str(refused.value)
     finally:
         await client.close()
+
+
+async def test_missing_dhip_model_or_firmware_never_changes_the_serial_to_a_hash():
+    client = _cgi_absent_client(None)
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+    assert client.identity_derived_from_credentials is False
+
+
+async def test_a_missing_serial_is_asked_again_on_the_same_client():
+    client = _cgi_absent_client(None)
+    client._vth_identity_over_rpc2 = DahuaClient._vth_identity_over_rpc2.__get__(client)
+    serial_reads = 0
+
+    async def request(method, **kwargs):
+        nonlocal serial_reads
+        if method == "magicBox.getSerialNo":
+            serial_reads += 1
+            if serial_reads == 1:
+                raise TimeoutError("not ready")
+            return {"params": {"sn": "stable-serial"}}
+        if method == "magicBox.getDeviceClass":
+            return {"params": {"type": "VTH"}}
+        if method == "magicBox.getDeviceType":
+            return {"params": {"type": "VTH5221D"}}
+        if method == "magicBox.getSoftwareVersion":
+            return {"params": {"version": {"Version": "3.000.0012000.0.R"}}}
+        return {"params": {"table": {}}}
+
+    async def shared(action):
+        return await action(SimpleNamespace(request=request))
+
+    client._rpc2_shared_call = shared
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+    assert await client.async_get_system_info() == {"serialNumber": "stable-serial"}
+    assert serial_reads == 2

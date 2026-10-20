@@ -1688,6 +1688,13 @@ class DahuaClient:
                 vth = await self._vth_identity_over_rpc2()
                 if vth and vth.get("serial"):
                     return {"serialNumber": vth["serial"]}
+                # This entry was identified as a DHIP monitor when added. A
+                # missing model, firmware or serial now is no reason to assign
+                # a different device identity. Retry the actual reads too:
+                # _vth_identity_over_rpc2 memoises incomplete answers.
+                self._vth_identity_asked = False
+                self._vth_identity = None
+                raise
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(
                 self._address, self._rtsp_port, self._username, self._password
