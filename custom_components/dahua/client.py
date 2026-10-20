@@ -1512,6 +1512,7 @@ class DahuaClient:
     # took 44 of them down with an AttributeError the moment the session was
     # acquired.
     _rpc2_over_dhip = False
+    _require_reported_serial = False
 
     def __init__(
         self,
@@ -1526,6 +1527,7 @@ class DahuaClient:
         illuminator_restore_store=None,
         channel_snapshot_store=None,
         rpc2_over_dhip: bool = False,
+        require_reported_serial: bool = False,
     ) -> None:
         self._username = username
         self._password = password
@@ -1570,6 +1572,7 @@ class DahuaClient:
         # difference, by logging in over DHIP and asking what the device is, so
         # the answer is recorded there and read here.
         self._rpc2_over_dhip = rpc2_over_dhip
+        self._require_reported_serial = require_reported_serial
         # Preserve the camera's policy while the illuminator temporarily owns
         # a channel/profile. Camera config survives HA restarts, so this must.
         self._illuminator_restore_store = illuminator_restore_store
@@ -1718,6 +1721,12 @@ class DahuaClient:
                     self._vth_identity_asked = False
                     self._vth_identity = None
                     raise
+            if self._require_reported_serial:
+                # A previously migrated HTTP monitor must retry an unavailable
+                # identity read instead of returning to credential-derived IDs.
+                self._vth_identity_asked = False
+                self._vth_identity = None
+                raise
             self.identity_derived_from_credentials = True
             return {"serialNumber": self.credential_hash()}
 

@@ -70,6 +70,8 @@ CONF_USE_RPC2 = "use_rpc2"
 # by the add flow, which is the only place that can tell "no web server" apart
 # from "camera is switched off", since both answer connection-refused.
 CONF_RPC2_OVER_DHIP = "rpc2_over_dhip"
+# Internal identity policy, persisted after a monitor adopts its real serial.
+CONF_REQUIRE_REPORTED_SERIAL = "require_reported_serial"
 # An indoor monitor's call settings (#949, #998), as the device names them.
 # Measured on a VTH5221D (3.000.0012000.0.R), where all five are present.
 # One list, shared by the probe that decides which exist and by the two

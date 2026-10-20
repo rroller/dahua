@@ -49,6 +49,7 @@ nothing has modified them yet.
 import logging
 import os
 import shutil
+import tempfile
 import time
 
 from homeassistant.config_entries import ConfigSubentry
@@ -59,7 +60,7 @@ from homeassistant.helpers import issue_registry as ir
 
 from . import ISSUE_SIBLINGS_REMAIN
 from .const import CHANNEL_OPTION_KEYS, CONF_ADDRESS, CONF_CHANNEL, CONF_PORT, DOMAIN
-from .host import normalize_address
+from .host import is_synthesised_identity, normalize_address
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
@@ -185,7 +186,14 @@ def _backup(hass: HomeAssistant, label: str = "pre-merge") -> str | None:
     )
     copied = []
     try:
-        os.makedirs(target, exist_ok=True)
+        if label == "pre-serial":
+            # Config entries contain credentials. Use a private, unique
+            # directory, including when two entries migrate in the same second.
+            target = tempfile.mkdtemp(
+                prefix="dahua-pre-serial-backup-", dir=hass.config.path()
+            )
+        else:
+            os.makedirs(target, exist_ok=True)
         for name in BACKED_UP:
             source = os.path.join(storage, name)
             if os.path.exists(source):
@@ -197,7 +205,7 @@ def _backup(hass: HomeAssistant, label: str = "pre-merge") -> str | None:
             "Dahua entries. The merge has NOT been attempted"
         )
         return None
-    if not copied:
+    if not copied or (label == "pre-serial" and set(copied) != set(BACKED_UP)):
         return None
     return target
 
@@ -522,43 +530,17 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
 
 
 async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) -> int:
-    """Move an entry off the identity it derived from its credentials (#1103).
+    """Adopt a reported serial while preserving entity IDs and device metadata.
 
-    A device that will not state a serial gets `md5(address_rtspport_user_pass)`
-    instead, and every entity `unique_id`, every device identifier and the
-    entry's own unique id is built from it. That is #805: change the password
-    and the same hardware comes back as a new device, with every entity rebuilt
-    under a new id and the old ones left behind as `_2` names.
+    Recognise legacy hashes in this entry's registries even if credentials
+    have since changed. Check every target for collisions before changing any
+    registry, copy all three persisted registries, then check again after the
+    backup yields. Conflicts and backup failures propagate so setup cannot
+    create duplicate entities under a partially migrated identity.
 
-    An indoor monitor was the worst case, because it answers 404 to
-    `magicBox.cgi` for everything and so always hashed, while answering
-    `magicBox.getSerialNo` over RPC2 perfectly well. #1103 taught the client to
-    ask, but held the answer to monitors on the DHIP transport precisely
-    because of this: a VTH that serves HTTP has entities in the registry today.
-    @kmich reported that, with three VTH2421F-P whose ids had already moved
-    once when he changed their password. This is the other half.
-
-    **Driven by what is in the registry, not by what the client thinks.** The
-    only evidence that an entry used to hash is that its rows are filed under
-    the hash, and reading it that way makes this idempotent, self-limiting and
-    silent for the overwhelming majority of devices, which never hashed. A
-    device that has started answering since is migrated too, and that is also
-    correct: it is the same hardware with a better name for itself.
-
-    **Entities before devices**, the one ordering lesson from the #827 merge.
-    A device belongs to exactly one config entry, and moving a device first
-    leaves its entities pointing at an identity nothing owns, which Home
-    Assistant resolves by deleting them. That merge sent 232 entities to
-    `deleted_entities` in testing before the order was right.
-
-    Nothing is renamed: `async_update_entity` changes the unique id and leaves
-    `entity_id` alone, so dashboards, automations, scripts, areas and recorder
-    history all survive. That is the whole point of doing this rather than
-    letting Home Assistant rebuild.
-
-    Returns how many entity rows moved, for the caller's log line.
+    Entity unique IDs move before device identifiers and the config entry ID;
+    entity IDs and device IDs remain intact. Return the entity count.
     """
-    serial = None
     old = None
     for coordinator in coordinators:
         client = getattr(coordinator, "client", None)
@@ -566,96 +548,128 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
         if candidate is None:
             continue
         old = candidate()
-        serial = coordinator.get_device_serial_number()
+        source = coordinator
         break
-    if not old or not serial or serial == old:
+    if not old:
         return 0
 
     entities = er.async_get(hass)
-    # Only this entry's rows, and only ones actually filed under the hash. A
-    # prefix, not an equality: every unique id here is `get_serial_number()`
-    # plus a suffix, and `get_serial_number` is the bare serial on channel 0
-    # and `serial_N` above it, so one prefix covers every channel and the
-    # host device's `_host` row too.
-    rows = [
-        row
-        for row in er.async_entries_for_config_entry(entities, entry.entry_id)
-        if (row.unique_id or "").startswith(old)
-    ]
     devices = dr.async_get(hass)
+    entry_rows = er.async_entries_for_config_entry(entities, entry.entry_id)
+    entry_devices = dr.async_entries_for_config_entry(devices, entry.entry_id)
+    # The stored identity may predate a password change. The registries, not
+    # today's credentials, are authoritative about which legacy IDs need moving.
+    roots = {old}
+    for value in [
+        entry.unique_id,
+        *[v for d in entry_devices for domain, v in d.identifiers if domain == DOMAIN],
+        *[row.unique_id for row in entry_rows if row.platform == DOMAIN],
+    ]:
+        root = (value or "").split("_", 1)[0]
+        if is_synthesised_identity(root):
+            roots.add(root)
+
+    def is_legacy(value):
+        return any(
+            value == root or (value or "").startswith(root + "_") for root in roots
+        )
+
+    if not (
+        is_legacy(entry.unique_id)
+        or any(is_legacy(row.unique_id) for row in entry_rows)
+        or any(
+            domain == DOMAIN and is_legacy(value)
+            for device in entry_devices
+            for domain, value in device.identifiers
+        )
+    ):
+        return 0
+    serial = source.get_device_serial_number()
+    if not serial or serial in roots:
+        return 0
+
+    def replacement(value):
+        for root in roots:
+            if value == root or (value or "").startswith(root + "_"):
+                return serial + value[len(root) :]
+        return value
+
+    rows = [
+        (row, replacement(row.unique_id))
+        for row in entry_rows
+        if replacement(row.unique_id) != row.unique_id
+    ]
     stale_devices = [
-        device
-        for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
+        (
+            device,
+            {
+                (domain, replacement(value) if domain == DOMAIN else value)
+                for domain, value in device.identifiers
+            },
+        )
+        for device in entry_devices
         if any(
-            domain == DOMAIN and (value or "").startswith(old)
+            domain == DOMAIN and replacement(value) != value
             for domain, value in device.identifiers
         )
     ]
-    entry_id_is_stale = (entry.unique_id or "").startswith(old)
-    if not rows and not stale_devices and not entry_id_is_stale:
+    new_entry_id = replacement(entry.unique_id)
+    if not rows and not stale_devices and new_entry_id == entry.unique_id:
         return 0
 
-    # Before the first mutation, and the location at warning level so it is in
-    # the log the user will be reading if this went wrong. The registries are
-    # Home Assistant's own state, not ours to reconstruct.
+    def preflight():
+        targets = set()
+        for row, target in rows:
+            key = (row.domain, row.platform, target)
+            held = entities.async_get_entity_id(*key)
+            if key in targets or (held is not None and held != row.entity_id):
+                raise ValueError("Serial migration entity conflict: " + row.entity_id)
+            targets.add(key)
+            current = entities.async_get(row.entity_id)
+            if current is None or current.unique_id != row.unique_id:
+                raise ValueError("Serial migration registry changed; retry setup")
+        device_targets = set()
+        for device, identifiers in stale_devices:
+            for identifier in identifiers:
+                if identifier[0] != DOMAIN:
+                    continue
+                held = devices.async_get_device(identifiers={identifier})
+                if identifier in device_targets or (
+                    held is not None and held.id != device.id
+                ):
+                    raise ValueError("Serial migration device conflict: " + device.id)
+                device_targets.add(identifier)
+            current = devices.async_get(device.id)
+            if current is None or current.identifiers != device.identifiers:
+                raise ValueError("Serial migration registry changed; retry setup")
+        if new_entry_id != entry.unique_id and any(
+            other.entry_id != entry.entry_id and other.unique_id == new_entry_id
+            for other in hass.config_entries.async_entries(DOMAIN)
+        ):
+            raise ValueError("Serial migration config entry conflict")
+
+    preflight()
     backup = await hass.async_add_executor_job(_backup, hass, "pre-serial")
     if backup is None:
-        _LOGGER.error(
-            "Could not back up the registries before giving %s its real serial "
-            "number. Nothing has been changed; the device keeps the identity it "
-            "derived from its credentials",
-            entry.data.get(CONF_ADDRESS),
+        raise ValueError(
+            "Could not back up all three registries before serial migration"
         )
-        return 0
+    # Backup yields to other entry setups. Recheck every target afterwards;
+    # no await separates the checks from the registry mutations below.
+    preflight()
     _LOGGER.warning(
-        "%s reports serial %s, replacing the identity generated from its "
-        "address and login. Moving %d entities and %d devices. The registries "
-        "were copied to %s first",
+        "%s reports serial %s. Moving %d entities and %d devices; persisted "
+        "registry files were copied to %s first",
         entry.data.get(CONF_ADDRESS),
         serial,
         len(rows),
         len(stale_devices),
         backup,
     )
-
-    moved = 0
-    for row in rows:
-        new_unique_id = serial + row.unique_id[len(old) :]
-        try:
-            entities.async_update_entity(row.entity_id, new_unique_id=new_unique_id)
-        except ValueError:
-            # Another row already holds the target id, which means a previous
-            # run was interrupted part way or Home Assistant rebuilt one of
-            # these under the serial already. Logged and stepped over rather
-            # than raised: the entry still has to finish setting up, and the
-            # rows that can move should.
-            _LOGGER.warning(
-                "Could not move %s to %s; something already holds that id",
-                row.entity_id,
-                new_unique_id,
-            )
-            continue
-        moved += 1
-
-    for device in stale_devices:
-        # Rewritten in place. Letting the platforms create a device under the
-        # new identifiers instead would leave this one behind as an empty
-        # ghost, with the area, the name the user chose and the labels on it.
-        identifiers = {
-            (
-                (domain, serial + value[len(old) :])
-                if domain == DOMAIN and (value or "").startswith(old)
-                else (domain, value)
-            )
-            for domain, value in device.identifiers
-        }
+    for row, target in rows:
+        entities.async_update_entity(row.entity_id, new_unique_id=target)
+    for device, identifiers in stale_devices:
         devices.async_update_device(device.id, new_identifiers=identifiers)
-
-    if entry_id_is_stale:
-        # Or DHCP discovery and a re-add stop recognising this entry and offer
-        # to add the same device a second time.
-        hass.config_entries.async_update_entry(
-            entry, unique_id=serial + entry.unique_id[len(old) :]
-        )
-
-    return moved
+    if new_entry_id != entry.unique_id:
+        hass.config_entries.async_update_entry(entry, unique_id=new_entry_id)
+    return len(rows)

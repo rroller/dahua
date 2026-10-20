@@ -20,6 +20,7 @@ before the ordering was right. So these build real entity and device registry
 rows and assert on what is left afterwards.
 """
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -68,6 +69,9 @@ async def _entry_with_rows(hass, unique_id=HASH, rows=("silence", "ring_volume")
         for suffix in rows
     ]
     return entry, device, created
+
+
+REAL_BACKUP = migrate._backup
 
 
 @pytest.fixture(autouse=True)
@@ -254,38 +258,129 @@ async def test_another_entrys_rows_are_not_touched(hass):
     )
 
 
-async def test_nothing_moves_when_the_registries_could_not_be_backed_up(
-    hass, monkeypatch
-):
-    """The registries are Home Assistant's own state and this is not
-    reversible, so a copy that could not be made stops the whole thing."""
+async def test_backup_failure_stops_before_registry_changes(hass, monkeypatch):
     entry, _, created = await _entry_with_rows(hass)
     monkeypatch.setattr(migrate, "_backup", lambda hass, label="x": None)
-
-    moved = await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
-
-    assert moved == 0
+    with pytest.raises(ValueError, match="back"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
     assert er.async_get(hass).async_get(created[0].entity_id).unique_id.startswith(HASH)
     assert entry.unique_id == HASH
 
 
-async def test_a_row_that_cannot_move_does_not_stop_the_others(hass):
-    """An interrupted earlier run, or a row Home Assistant has already built
-    under the serial. The entry still has to finish setting up."""
+async def test_entity_target_conflict_stops_the_entire_migration(hass):
     entry, device, created = await _entry_with_rows(hass)
     entities = er.async_get(hass)
-    blocker = entities.async_get_or_create(
-        "switch",
-        "dahua",
-        "{0}_silence".format(SERIAL),
-        config_entry=entry,
-        device_id=device.id,
+    entities.async_get_or_create(
+        "switch", "dahua", SERIAL + "_silence", config_entry=entry, device_id=device.id
     )
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+    assert [entities.async_get(r.entity_id).unique_id for r in created] == [
+        HASH + "_silence",
+        HASH + "_ring_volume",
+    ]
+    assert dr.async_get(hass).async_get(device.id).identifiers == {("dahua", HASH)}
+    assert entry.unique_id == HASH
 
+
+async def test_device_target_conflict_stops_before_any_entity_moves(hass):
+    entry, _, created = await _entry_with_rows(hass)
+    other = MockConfigEntry(domain="dahua", data={"address": "10.0.0.231"})
+    other.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=other.entry_id, identifiers={("dahua", SERIAL)}
+    )
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+    assert (
+        er.async_get(hass).async_get(created[0].entity_id).unique_id
+        == HASH + "_silence"
+    )
+    assert entry.unique_id == HASH
+
+
+async def test_config_entry_target_conflict_stops_before_any_entity_moves(hass):
+    entry, _, created = await _entry_with_rows(hass)
+    other = MockConfigEntry(domain="dahua", unique_id=SERIAL)
+    other.add_to_hass(hass)
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+    assert (
+        er.async_get(hass).async_get(created[0].entity_id).unique_id
+        == HASH + "_silence"
+    )
+    assert entry.unique_id == HASH
+
+
+async def test_password_change_does_not_hide_the_registrys_old_hash(hass):
+    entry, _, created = await _entry_with_rows(hass)
+    moved = await migrate.async_adopt_the_real_serial(
+        hass, entry, [_coordinator(hash_value="a" * 32)]
+    )
+    assert moved == 2
+    assert (
+        er.async_get(hass).async_get(created[0].entity_id).unique_id
+        == SERIAL + "_silence"
+    )
+    assert entry.unique_id == SERIAL
+
+
+async def test_hash_prefix_requires_a_boundary(hass, backups):
+    entry = MockConfigEntry(domain="dahua", unique_id=HASH + "a")
+    entry.add_to_hass(hass)
+    entities = er.async_get(hass)
+    row = entities.async_get_or_create(
+        "switch", "dahua", HASH + "a_silence", config_entry=entry
+    )
     moved = await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+    assert moved == 0
+    assert backups == []
+    assert entities.async_get(row.entity_id).unique_id == HASH + "a_silence"
 
-    assert moved == 1
-    assert entities.async_get(blocker.entity_id) is not None
-    assert entities.async_get(
-        created[1].entity_id
-    ).unique_id == "{0}_ring_volume".format(SERIAL)
+
+def test_serial_backup_requires_all_three_files(tmp_path):
+    (tmp_path / ".storage").mkdir()
+    (tmp_path / ".storage" / "core.config_entries").write_text("credentials")
+    hass = SimpleNamespace(
+        config=SimpleNamespace(path=lambda *p: str(tmp_path.joinpath(*p)))
+    )
+    assert REAL_BACKUP(hass, "pre-serial") is None
+
+
+def test_serial_backups_are_private_and_cannot_overwrite_each_other(tmp_path):
+    import os
+
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    for name in migrate.BACKED_UP:
+        (storage / name).write_text("before")
+    hass = SimpleNamespace(
+        config=SimpleNamespace(path=lambda *p: str(tmp_path.joinpath(*p)))
+    )
+    first = REAL_BACKUP(hass, "pre-serial")
+    (storage / "core.config_entries").write_text("after")
+    second = REAL_BACKUP(hass, "pre-serial")
+    assert first != second
+    assert (Path(first) / "core.config_entries").read_text() == "before"
+    assert os.stat(first).st_mode & 0o077 == 0
+
+
+async def test_a_target_claimed_during_backup_stops_before_changes(hass, monkeypatch):
+    entry, device, created = await _entry_with_rows(hass)
+    entities = er.async_get(hass)
+
+    async def backup_job(*args):
+        entities.async_get_or_create(
+            "switch",
+            "dahua",
+            SERIAL + "_silence",
+            config_entry=entry,
+            device_id=device.id,
+        )
+        return "backup"
+
+    monkeypatch.setattr(hass, "async_add_executor_job", backup_job)
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+    assert entities.async_get(created[0].entity_id).unique_id == HASH + "_silence"
+    assert entry.unique_id == HASH

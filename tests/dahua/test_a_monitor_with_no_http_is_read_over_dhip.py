@@ -874,3 +874,17 @@ async def test_a_missing_serial_is_asked_again_on_the_same_client():
         await client.async_get_system_info()
     assert await client.async_get_system_info() == {"serialNumber": "stable-serial"}
     assert serial_reads == 2
+
+
+@pytest.mark.parametrize("status", [404, 503, 401])
+async def test_a_monitor_already_using_its_serial_cannot_revert_to_a_hash(status):
+    client = _cgi_absent_client(None, over_dhip=False)
+    client._require_reported_serial = True
+
+    async def failed(url, verify_ok=False):
+        raise aiohttp.ClientResponseError(None, (), status=status)
+
+    client.get = failed
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+    assert client.identity_derived_from_credentials is False
