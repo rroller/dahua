@@ -4095,8 +4095,45 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         `ff:ff:ff:ff:ff:ff`, and claiming that as a connection told Home
         Assistant every such channel was the same hardware (#1078). See
         `dahua_utils.usable_mac`.
+
+        **And None for a real address that more than one slot reports (#1104).**
+        A coax channel has no camera with a MAC of its own, so an XVR fills the
+        slot in with the recorder's, which is a perfectly valid address and so
+        passed the check above. `connections` is how Home Assistant decides two
+        devices are the same hardware, and it allows one device per MAC inside a
+        config entry, so every channel after the first was refused:
+
+            Invalid device info ... connections: {('mac', '...')} ...
+            are already registered for device ... of the same config entry
+
+        Reported by benloy-debug on a recorder with several coax channels plus
+        IP channels: the coax ones shared one MAC and were refused, the IP
+        channel had its own and was fine. About 130 errors per startup, and the
+        channel devices simply missing.
+
+        Both sides of a collision are dropped, not just the second. Which slot
+        was asked first is not evidence about whose camera the address belongs
+        to, and a wrong MAC in `connections` is worse than none: it is the field
+        that merges devices together. The identifiers are already unique per
+        channel, so the device page loses nothing but the MAC row.
+
+        Compared as digits, because the device's own spelling is kept in what
+        `usable_mac` returns while Home Assistant normalises before storing, so
+        two spellings of one address collide there and not here.
         """
-        return dahua_utils.usable_mac(self._slot().get("mac"))
+        mac = dahua_utils.usable_mac(self._slot().get("mac"))
+        if mac is None:
+            return None
+        digits = dahua_utils.mac_digits(mac)
+        shared = sum(
+            1
+            for slot in self._remote_devices.values()
+            if dahua_utils.mac_digits(dahua_utils.usable_mac((slot or {}).get("mac")))
+            == digits
+        )
+        if shared > 1:
+            return None
+        return mac
 
     def get_channel_firmware_version(self):
         """The camera's firmware, or None if the recorder did not say.
