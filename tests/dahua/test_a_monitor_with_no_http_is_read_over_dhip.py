@@ -618,3 +618,92 @@ async def test_a_read_pinned_to_cgi_is_refused_rather_than_rerouted():
 
     assert refused.value.status == 404
     assert asked == []
+
+
+# --- a refused table has to sound like an absent one ------------------------
+
+
+def _refusing_client(refusal):
+    """A DHIP-routed client whose RPC2 config read refuses."""
+    client = DahuaClient.__new__(DahuaClient)
+    client._address = "10.0.0.230"  # noqa: SLF001
+    client._base = "http://10.0.0.230:80"  # noqa: SLF001
+    client._rpc2_over_dhip = True  # noqa: SLF001
+
+    async def rpc2_get_config(table):
+        raise refusal
+
+    class _Slot:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *exc):
+            return False
+
+    client._rpc2_get_config = rpc2_get_config  # noqa: SLF001
+    client._request_slot = _Slot  # noqa: SLF001
+    return client
+
+
+MOTION = "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"
+
+
+async def test_a_declined_table_arrives_as_the_404_every_caller_expects():
+    """The bug that stopped a monitor ever finishing its first refresh.
+
+    Over HTTP an absent table is a CGI 404, and the whole integration is built
+    on hearing that: `async_get_config` swallows a ClientResponseError and
+    returns {}, the probes judge on CAPABILITY_REFUSED, and the poll's fan-out
+    has no `return_exceptions`. Over DHIP the device answers `result: false`,
+    which arrived as `Rpc2MethodRefused` and escaped the gather.
+
+    Measured on a VTH5221D: MotionDetect, DisableLinkage and DisableEventNotify
+    are all declined with code 268959743.
+    """
+    client = _refusing_client(
+        Rpc2MethodRefused("declined", code=268959743, message="Unknown error!")
+    )
+
+    with pytest.raises(aiohttp.ClientResponseError) as refused:
+        await client._request(MOTION)  # noqa: SLF001
+
+    assert refused.value.status == 404
+
+
+async def test_that_404_can_actually_be_printed():
+    """aiohttp's own __str__ reads `request_info.real_url`, so a None there
+    turns every attempt to log this into an AttributeError raised from the
+    logging call, nowhere near the read. The first probe to print one died on
+    exactly that rather than on the refusal it was reporting."""
+    client = _refusing_client(
+        Rpc2MethodRefused("declined", code=268959743, message="Unknown error!")
+    )
+
+    with pytest.raises(aiohttp.ClientResponseError) as refused:
+        await client._request(MOTION)  # noqa: SLF001
+
+    rendered = str(refused.value)
+    assert "404" in rendered
+    assert "MotionDetect" in rendered
+
+
+async def test_a_read_with_no_equivalent_can_be_printed_too():
+    client, _asked = _dhip_routed_client()
+
+    with pytest.raises(aiohttp.ClientResponseError) as refused:
+        await client._request("/cgi-bin/snapshot.cgi?channel=1")  # noqa: SLF001
+
+    assert "404" in str(refused.value)
+
+
+async def test_a_stale_login_is_not_recorded_as_a_missing_table():
+    """An expired session is not the device's verdict on the table. Converting
+    it would teach the probes that a capability is absent because a session
+    timed out, and that verdict outlives the session."""
+    stale = Rpc2MethodRefused(
+        "invalid session", code=287637505, message="Invalid session in request data!"
+    )
+    client = _refusing_client(stale)
+
+    with pytest.raises(Rpc2MethodRefused):
+        await client._request(MOTION)  # noqa: SLF001

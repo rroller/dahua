@@ -2544,7 +2544,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_channel_lighting_scheme())
                 )
-            if self._wanted_by(CAMERA, SWITCH):
+            # Not asked of a monitor with no camera. This is the one member of
+            # the fan-out gated on a platform alone rather than on a capability,
+            # and a VTH5221D refuses `MotionDetect` outright, so it was a round
+            # trip per poll that could only ever come back empty.
+            #
+            # Not the crash fix. What made a refusal here fatal was that it
+            # arrived as `Rpc2MethodRefused` rather than as the 404 an absent
+            # CGI table gives, so it escaped the gather, which has no
+            # `return_exceptions`; that is fixed in `_request_over_dhip` where
+            # every caller benefits. This is only about not asking a device
+            # with no camera whether its motion detection is on.
+            # `is_indoor_monitor_without_video` is the same answer #958 used to
+            # take the camera entities away from such a device.
+            if self._wanted_by(CAMERA, SWITCH) and not (
+                self.is_indoor_monitor_without_video()
+            ):
                 coros.append(
                     asyncio.ensure_future(
                         self.client.async_get_config_motion_detection()

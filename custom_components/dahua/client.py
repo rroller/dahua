@@ -8,6 +8,8 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 import asyncio
 import time
 import aiohttp
+from multidict import CIMultiDict
+from yarl import URL
 
 from homeassistant.exceptions import HomeAssistantError
 
@@ -5565,6 +5567,28 @@ class DahuaClient:
 
         return dict(result)
 
+    def _no_dhip_equivalent(self, url: str, why: str) -> aiohttp.ClientResponseError:
+        """A 404 that can be printed, for a read this transport cannot serve.
+
+        `request_info` is built rather than left as None. aiohttp's own
+        `__str__` reads `self.request_info.real_url`, so a None there turns
+        every attempt to log or format this error into
+
+            AttributeError: 'NoneType' object has no attribute 'real_url'
+
+        which is raised from the logging call, nowhere near the read, and hides
+        the status the caller was being told about. Measured against the
+        monitor: the first probe to print one of these died on it rather than
+        on the refusal it was reporting.
+        """
+        full = URL("{0}{1}".format(getattr(self, "_base", ""), url))
+        return aiohttp.ClientResponseError(
+            aiohttp.RequestInfo(full, "GET", CIMultiDict(), full),
+            (),
+            status=404,
+            message=why,
+        )
+
     async def _request_over_dhip(self, url: str, allow_rpc2: bool) -> dict:
         """Serve a read for a device whose only transport is DHIP (#949).
 
@@ -5589,26 +5613,51 @@ class DahuaClient:
             # The one caller that pins itself to CGI is the per-rule IVS read,
             # which needs the array indexes only that table has. On this
             # device there is no such table to pin to.
-            raise aiohttp.ClientResponseError(
-                None,
-                (),
-                status=404,
-                message="{0} has no CGI; this read cannot be served over DHIP".format(
+            raise self._no_dhip_equivalent(
+                url,
+                "{0} has no CGI; this read cannot be served over DHIP".format(
                     self._address
                 ),
             )
         match = _CONFIG_READ.search(url)
         if match is None:
-            raise aiohttp.ClientResponseError(
-                None,
-                (),
-                status=404,
-                message="{0} serves no HTTP, and {1} has no DHIP equivalent".format(
+            raise self._no_dhip_equivalent(
+                url,
+                "{0} serves no HTTP, and {1} has no DHIP equivalent".format(
                     self._address, url
                 ),
             )
-        async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
-            return await self._rpc2_get_config(match.group(1))
+        table = match.group(1)
+        try:
+            async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
+                return await self._rpc2_get_config(table)
+        except Rpc2MethodRefused as refused:
+            if rpc2_refusal_is_a_stale_login(refused):
+                # Not this table's verdict. `_rpc2_get_config` has already
+                # logged in again once; letting this through keeps the
+                # existing retry rather than recording a capability that is
+                # really a session.
+                raise
+            # The device answered and declined the table, which over HTTP would
+            # be a CGI 404 and is handled everywhere as one. Over DHIP it
+            # arrives as Rpc2MethodRefused, which no caller of `get` expects:
+            # `async_get_config` swallows a ClientResponseError and returns {},
+            # the capability probes judge on CAPABILITY_REFUSED, and the poll's
+            # fan-out has no `return_exceptions`. Measured on a VTH5221D, where
+            # MotionDetect, DisableLinkage and DisableEventNotify are all
+            # refused this way: left as it was, the first refresh raised out of
+            # the gather and the entry never finished setting up (#949, and
+            # #1006 for the shape).
+            _LOGGER.debug(
+                "%s does not serve %s, reporting it the way an absent CGI table is",
+                self._address,
+                table,
+                exc_info=True,
+            )
+            raise self._no_dhip_equivalent(
+                url,
+                "{0} does not serve the {1} table".format(self._address, table),
+            ) from refused
 
     async def _request(
         self, url: str, verify_ok=False, allow_rpc2=True, reject_declined=False
