@@ -840,6 +840,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _storage_disks: list = []
     _storage_last_refresh: float = 0.0
 
+    # Which transport this channel's coaxial status is read over, and whether
+    # the other one has been tried (#555). On the class for the reason above,
+    # and per channel rather than per device on purpose: one recorder answers
+    # over CGI on some channels and only over RPC2 on others.
+    _coaxial_status_over_rpc2: bool = False
+    _coaxial_status_rpc2_asked: bool = False
+
     # The recorder's own alarm input terminals (#1090), on the class for the
     # same reason and with the same rule: reassigned, never mutated. Only the
     # one coordinator that probed them has a non-empty list, so these also
@@ -5474,6 +5481,69 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """True if the lens privacy mask is currently enabled"""
         return self.data.get("privacy_mode_enabled", False)
 
+    async def _async_coaxial_status_second_opinion(self, channel: int):
+        """Ask RPC2 for the state CGI just refused, because they disagree.
+
+        Measured on a DHI-NVR5464-16P-EI (#555): channel 7 answers
+        `coaxialControlIO.cgi?action=getStatus` with HTTP 400 twice in the same
+        minute, while `CoaxialControlIO.getStatus` over RPC2 returns a reading
+        for that same channel at that same moment. A 400 is **that transport**
+        refusing, not the capability being absent, so treating it as the end of
+        the question hid a state the device was perfectly willing to report.
+
+        `uses_rpc2_deterrence()` cannot cover this. It is False for every
+        recorder channel by construction, and a recorder is where the split
+        transports were measured.
+
+        **Asked once per channel, and the asymmetry is deliberate.** The CGI
+        refusals here recovered on their own, so that transport keeps being
+        asked every poll. An RPC2 refusal is a different kind of answer: "no
+        such method" and "Authority:check failure" are both measured to mean
+        the firmware does not serve the call, which does not change while the
+        process runs. Retrying it would add a request per refusing channel per
+        poll for an answer already given, and seven channels here refuse.
+
+        Returns the reading when RPC2 answers, and None when it does not, which
+        leaves the caller's existing hold-the-last-value path untouched.
+        """
+        if getattr(self, "_coaxial_status_rpc2_asked", False):
+            return None
+        self._coaxial_status_rpc2_asked = True
+        try:
+            status = await self.client.async_get_coaxial_control_io_status_rpc2(channel)
+        except Rpc2MethodRefused as refused:
+            if rpc2_refusal_is_a_stale_login(refused):
+                # The session, not the capability. Let it out so the shared
+                # login is rebuilt, and do not record this as an answer.
+                self._coaxial_status_rpc2_asked = False
+                raise
+            _LOGGER.debug(
+                "%s channel %s: RPC2 refuses the coaxial status too (%s)",
+                self._address,
+                channel,
+                refused,
+            )
+            return None
+        except Exception as exception:  # pylint: disable=broad-except
+            # A fallback must never be the thing that fails the poll: the
+            # caller is already handling a refusal when it gets here.
+            _LOGGER.debug(
+                "%s channel %s: the RPC2 coaxial status could not be read",
+                self._address,
+                channel,
+                exc_info=exception,
+            )
+            return None
+        self._coaxial_status_over_rpc2 = True
+        _LOGGER.info(
+            "%s channel %s refuses the siren and white light state over CGI but "
+            "answers it over RPC2, so this channel now reads it there. The "
+            "capability was present all along; only the transport was wrong",
+            self._address,
+            channel,
+        )
+        return status
+
     async def _async_coaxial_status(self, channel: int):
         """Read the siren and white light state, or give up on this poll only.
 
@@ -5506,7 +5576,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         silently drop a capability the device does have.
         """
         try:
-            if self.uses_rpc2_deterrence():
+            if self.uses_rpc2_deterrence() or getattr(
+                self, "_coaxial_status_over_rpc2", False
+            ):
                 return await self.client.async_get_coaxial_control_io_status_rpc2(
                     channel
                 )
@@ -5537,6 +5609,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         except ClientResponseError as error:
             if error.status not in CAPABILITY_REFUSED:
                 raise
+            recovered = await self._async_coaxial_status_second_opinion(channel)
+            if recovered is not None:
+                return recovered
             target = (self.client.device_key, channel)
             if target not in _CAPABILITY_REFUSALS_REPORTED:
                 _CAPABILITY_REFUSALS_REPORTED.add(target)
