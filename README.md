@@ -489,6 +489,9 @@ What it gets:
   when that VTO calls. `none` is the VTO's own picture; the other options are the cameras in
   the monitor's own camera list (Monitor > IPC on its screen). The monitor's screen has no
   control for this on the measured firmware, though its manual describes it.
+- **Do not disturb** and sliders for door station ring, indoor ring, talk and alarm
+  volume (0–100), for each setting the monitor reports in `VideoTalkPhoneGeneral`.
+  Do not disturb is separate from the quiet-period schedule configured on the monitor.
 - Reboot, firmware version and serial number.
 
 A monitor that reports it has no camera of its own (`SupportVideo` false in its

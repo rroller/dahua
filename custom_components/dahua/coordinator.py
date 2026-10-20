@@ -32,6 +32,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from . import dahua_utils
 from . import refusals
 from .client import (
+    VTH_PHONE_TABLE,
     DahuaClient,
     _describe_client_error,
     parse_alarm_inputs,
@@ -51,6 +52,7 @@ from .const import (
     CONF_NVR_ACTIVE_DETERRENCE,
     CONF_SCAN_INTERVAL,
     CONF_RPC2_OVER_DHIP,
+    VTH_PHONE_SETTINGS,
     CONF_USE_RPC2,
     CONF_POLL_VIDEO_MOTION,
     DEFAULT_AUTHORIZED_HOLD_TIME,
@@ -928,6 +930,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # so every coordinator the platform is handed has to be able to answer it,
     # including the ones the suite builds with object.__new__.
     _supports_event_notifications: bool = False
+
+    # Which of an indoor monitor's call settings it actually reported (#949,
+    # #998). On the class, like the rest here, because the suite builds
+    # coordinators with `object.__new__` and the platforms ask every one of
+    # them what it supports.
+    _vth_phone_fields: frozenset = frozenset()
 
     # Whether this device reports the key the cloud connection switch reads.
     # On the class for the same reason as the line above.
@@ -2433,6 +2441,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     "Device supports privacy mode=%s", self._supports_privacy_mode
                 )
 
+                # An indoor monitor's call settings (#949, #998). Only asked
+                # of a device that says it is a monitor, so nothing else pays
+                # a request for it, and judged on the keys that came back
+                # rather than on whether the read raised: a device without the
+                # table answers empty.
+                if self.is_indoor_monitor():
+                    await self._async_probe_vth_phone_settings()
+
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
                     await self.async_start_event_listener()
@@ -2692,6 +2708,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Only the privacy mode switch reads this one.
             if self._supports_privacy_mode and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self._async_fetch_privacy_mode()))
+            # The do-not-disturb switch and the volume numbers of a monitor.
+            # Gated on the probe as well as the platforms, so a monitor that
+            # does not serve the table is never asked for it again.
+            if getattr(self, "_vth_phone_fields", frozenset()) and self._wanted_by(
+                SWITCH, NUMBER
+            ):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_vth_phone_settings())
+                )
             # Only the camera-link selects of an indoor monitor read this one.
             if self.is_indoor_monitor() and self._wanted_by(SELECT):
                 coros.append(
@@ -4182,6 +4207,44 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         fetched.
         """
         return field in getattr(self, "_video_color_fields", frozenset())
+
+    def supports_vth_phone_setting(self, field: str) -> bool:
+        """Whether this monitor reported this call setting at setup (#949).
+
+        What the do-not-disturb switch and the volume numbers are created
+        from. One source of truth, because the poll reads the same answer to
+        decide whether to fetch the table: two copies of the rule drifting
+        apart would either spend a request per poll on nothing, or leave an
+        entity reading a value nobody fetched.
+        """
+        return field in getattr(self, "_vth_phone_fields", frozenset())
+
+    def get_vth_phone_number(self, field: str):
+        """One of a monitor's volumes, or None if the poll has not got it.
+
+        Separate from the flag below because the device answers these as
+        plain integers and the flag as a boolean, and the flat shape makes
+        every value a string, so each needs its own conversion.
+        """
+        raw = self.data.get("table.{0}.{1}".format(VTH_PHONE_TABLE, field))
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def get_vth_phone_flag(self, field: str):
+        """One of a monitor's boolean call settings, or None.
+
+        `"true"` compared as a string, because a CGI response is flat text and
+        `flatten_rpc2_config` reshapes RPC2's JSON into the identical flat
+        keys, so a real boolean arrives here as the word.
+        """
+        raw = self.data.get("table.{0}.{1}".format(VTH_PHONE_TABLE, field))
+        if raw is None:
+            return None
+        return {"true": True, "false": False}.get(str(raw).strip().lower())
 
     def get_video_color(self, field: str):
         """A picture adjustment for this channel's general profile, or None.
@@ -5733,6 +5796,66 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_vth_camera_links(self) -> dict | None:
         """The links and cameras vth_camera_links describes, or None before a read."""
         return (getattr(self, "data", None) or {}).get(VTH_CAMERA_LINKS)
+
+    async def _async_probe_vth_phone_settings(self) -> bool:
+        """Ask an indoor monitor once which call settings it has (#949, #998).
+
+        Judged on the keys the device returned, not on whether the read
+        raised. `async_get_config` answers `{}` for a table a device does not
+        serve, so a probe that only caught an exception would report every
+        monitor as having all of them.
+
+        Measured on a VTH5221D (3.000.0012000.0.R): all five below are
+        present. Stored per field rather than as one flag, because a monitor
+        reporting four of them should get four entities rather than a fifth
+        that can only ever read unknown.
+        """
+        try:
+            table = await self.client.async_get_video_talk_phone_general()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "No call settings from the monitor at %s",
+                self._address,
+                exc_info=exception,
+            )
+            self._vth_phone_fields = frozenset()
+            return False
+        prefix = "table.{0}.".format(VTH_PHONE_TABLE)
+        self._vth_phone_fields = frozenset(
+            field
+            for field in VTH_PHONE_SETTINGS
+            if table.get(prefix + field) is not None
+        )
+        _LOGGER.debug(
+            "The monitor at %s reports call settings %s",
+            self._address,
+            sorted(self._vth_phone_fields) or "none",
+        )
+        return bool(self._vth_phone_fields)
+
+    async def _async_fetch_vth_phone_settings(self) -> dict | None:
+        """Poll a monitor's call settings, keeping the last answer on a refusal.
+
+        Wrapped for the reason every optional read in the fan-out is: the
+        gather has no `return_exceptions`, so a device that stops answering
+        would take the whole refresh and every entity with it (#1006).
+        Carries only this table's own keys, never the whole of the last poll.
+        """
+        try:
+            return await self.client.async_get_video_talk_phone_general()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the call settings of the monitor at %s",
+                self._address,
+                exc_info=exception,
+            )
+            prefix = "table.{0}.".format(VTH_PHONE_TABLE)
+            previous = {
+                key: value
+                for key, value in (getattr(self, "data", None) or {}).items()
+                if key.startswith(prefix)
+            }
+            return previous or None
 
     async def _async_fetch_video_color(self) -> dict | None:
         """Poll the picture adjustments, keeping the last answer on a refusal.

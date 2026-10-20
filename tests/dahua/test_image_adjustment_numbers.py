@@ -61,6 +61,10 @@ class _Coordinator:
     def get_video_color(self, field):
         return self._values.get(field)
 
+    def supports_vth_phone_setting(self, field):
+        """Not an indoor monitor, so it has no call settings (#949)."""
+        return False
+
     def supports_video_color(self, field):
         return field in self._fields
 

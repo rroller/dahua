@@ -18,6 +18,9 @@ from .dhip import DhipLoginRefused, DhipTransport
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
 from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
+
+# An indoor monitor's call settings: do not disturb, and the volumes (#949, #998).
+VTH_PHONE_TABLE = "VideoTalkPhoneGeneral"
 from . import white_light_override as wlo
 from hashlib import md5
 from urllib.parse import quote
@@ -134,6 +137,10 @@ _HOST_LIGHTING_SCHEME_LOCKS: dict[str, asyncio.Lock] = {}
 
 # One clip at a time per speaker, keyed by device and channel.
 _HOST_SPEAKER_LOCKS: dict[tuple, asyncio.Lock] = {}
+
+# Whole-table call-setting writes must preserve other in-flight changes,
+# including writes from another client or user on the same monitor.
+_HOST_VTH_PHONE_LOCKS: dict[str, asyncio.Lock] = {}
 
 # Pushing audio to a device's speaker. `singlepart` is a stream rather than an
 # upload: the device plays what arrives as it arrives, sends no status line of
@@ -1913,6 +1920,69 @@ class DahuaClient:
             return isinstance(slot, dict) and slot.get("LinkIPC", "") == camera
 
         return await self._rpc2_shared_call(write)
+
+    async def async_get_video_talk_phone_general(self) -> dict:
+        """An indoor monitor's call settings, flat, or {} if it has none.
+
+        `VideoTalkPhoneGeneral` carries the do-not-disturb flag and the four
+        volumes. Measured on a VTH5221D (3.000.0012000.0.R): sixteen keys,
+        with `SilenceEnable` a real boolean and the volumes plain integers.
+        A device without the table answers empty rather than erroring, which
+        is why every caller gates on the key it reads rather than on this
+        returning something.
+        """
+        return await self.async_get_config(VTH_PHONE_TABLE)
+
+    async def async_set_video_talk_phone_field(self, field: str, value) -> None:
+        """Change one field of a monitor's call settings, writing the whole table.
+
+        **The whole table, deliberately, and this is the opposite of the rule
+        everywhere else here.** AGENTS.md says a write addresses one field,
+        because a recorder refuses a whole-table `setConfig` for size
+        (`errCode 287638033, "Request length error!"`). On a VTH that rule is
+        destructive: measured on a VTH5221D, `setConfig` with a single key
+        answered `result: true` and **replaced the table**, leaving one key of
+        sixteen and dropping the other fifteen, including the ring file and
+        every volume. The monitor had to be rebuilt from a copy read
+        beforehand. These tables are small, so the size limit that forces the
+        one-field rule elsewhere never applies.
+
+        So: read, change one key, write it all back. Proved both ways on the
+        hardware -- `SilenceEnable` and `RingVolume` each took, nothing else
+        moved, and writing the original back restored the table byte for byte.
+
+        The read is inside the action so a retried call re-reads rather than
+        writing a table captured before an expired session, and so two writes
+        racing cannot put back a copy made before the other.
+        """
+
+        async def write(rpc2):
+            params = await rpc2.get_config({"name": VTH_PHONE_TABLE})
+            table = (params or {}).get("table")
+            if not isinstance(table, dict):
+                raise ValueError(
+                    "{0} does not serve {1}".format(self._address, VTH_PHONE_TABLE)
+                )
+            if field not in table:
+                # Writing a key the table does not have is how a `setConfig`
+                # answers OK and changes nothing, so it is refused here
+                # instead of being reported as a success.
+                raise ValueError(
+                    "{0} has no {1}.{2}".format(self._address, VTH_PHONE_TABLE, field)
+                )
+            wanted = dict(table)
+            wanted[field] = value
+            await rpc2.request(
+                "configManager.setConfig",
+                params={"name": VTH_PHONE_TABLE, "table": wanted},
+            )
+
+        lock = _HOST_VTH_PHONE_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+            await self._rpc2_shared_call(write)
+            # This RPC2 write bypasses get(), which normally clears the shared
+            # five-minute config cache. Refresh must see the new settings.
+            clear_host_cache(self._device)
 
     def vth_own_video(self) -> bool | None:
         """For a VTH identified over RPC2: whether it has a camera. None otherwise.

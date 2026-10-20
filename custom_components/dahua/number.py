@@ -1,4 +1,4 @@
-"""Number entity platform for Dahua: picture adjustments.
+"""Number entity platform for Dahua: picture adjustments, and a monitor's volumes.
 
 Brightness, contrast, saturation and hue, the controls Reolink and Tapo expose
 as sliders and this integration did not. Backed by the VideoColor config table
@@ -35,6 +35,20 @@ IMAGE_ADJUSTMENTS = (
 )
 
 
+# (translation key, VideoTalkPhoneGeneral field) for an indoor monitor's
+# volumes (#949). Same shape and the same reason as IMAGE_ADJUSTMENTS above:
+# one class with four instances cannot declare a class attribute per name, and
+# the two name scanners read the keys out of this literal. The device-side
+# names are also in const.VTH_VOLUME_FIELD_NAMES, which the coordinator's probe
+# reads; a test derives one from the other rather than trusting them to match.
+MONITOR_VOLUMES = (
+    ("vth_ring_volume", "RingVolume"),
+    ("vth_indoor_ring_volume", "VthRingVolume"),
+    ("vth_talk_volume", "TalkVolume"),
+    ("vth_alarm_volume", "AlarmVolume"),
+)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Set up the number platform."""
 
@@ -63,8 +77,26 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             if coordinator.supports_video_color(field)
         ]
 
+    async def build_monitor_volumes(coordinator):
+        """The volumes an indoor monitor actually reported (#949).
+
+        Separate from the picture sliders because the gate above returns early
+        for a monitor with no camera, which is exactly the device these belong
+        to. One entity per field the device answered, so a monitor reporting
+        four of the five call settings gets four rather than a fifth stuck on
+        unknown.
+        """
+        return [
+            DahuaMonitorVolumeNumber(coordinator, entry, key, field)
+            for key, field in MONITOR_VOLUMES
+            if coordinator.supports_vth_phone_setting(field)
+        ]
+
     await async_add_and_keep_watching(
         hass, entry, build, async_add_devices, entry_coordinators
+    )
+    await async_add_and_keep_watching(
+        hass, entry, build_monitor_volumes, async_add_devices, entry_coordinators
     )
 
 
@@ -113,5 +145,52 @@ class DahuaImageAdjustmentNumber(DahuaBaseEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         await self._coordinator.client.async_set_video_color(
             self._coordinator.get_channel(), self._field, int(value)
+        )
+        await self._coordinator.async_refresh()
+
+
+class DahuaMonitorVolumeNumber(DahuaBaseEntity, NumberEntity):
+    """One of an indoor monitor's volumes, 0-100 (#949).
+
+    Backed by `VideoTalkPhoneGeneral`, measured on a VTH5221D
+    (3.000.0012000.0.R) where RingVolume, VthRingVolume, TalkVolume and
+    AlarmVolume all read 70.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = 0
+    _attr_native_max_value = 100
+    _attr_native_step = 1
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(self, coordinator, entry, key, field):
+        DahuaBaseEntity.__init__(self, coordinator, entry)
+        NumberEntity.__init__(self)
+        self._coordinator = coordinator
+        self._key = key
+        self._field = field
+        self._attr_translation_key = key
+        self._attr_unique_id = "%s_%s" % (coordinator.get_serial_number(), key)
+
+    @property
+    def unique_id(self):
+        return self._attr_unique_id
+
+    @property
+    def available(self) -> bool:
+        """Off until the poll has a value, so a slider never shows an invented
+        default for a monitor that stopped answering."""
+        return (
+            super().available
+            and self._coordinator.get_vth_phone_number(self._field) is not None
+        )
+
+    @property
+    def native_value(self):
+        return self._coordinator.get_vth_phone_number(self._field)
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._coordinator.client.async_set_video_talk_phone_field(
+            self._field, int(value)
         )
         await self._coordinator.async_refresh()

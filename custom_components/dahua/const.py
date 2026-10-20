@@ -70,6 +70,22 @@ CONF_USE_RPC2 = "use_rpc2"
 # by the add flow, which is the only place that can tell "no web server" apart
 # from "camera is switched off", since both answer connection-refused.
 CONF_RPC2_OVER_DHIP = "rpc2_over_dhip"
+# An indoor monitor's call settings (#949, #998), as the device names them.
+# Measured on a VTH5221D (3.000.0012000.0.R), where all five are present.
+# One list, shared by the probe that decides which exist and by the two
+# platforms that create entities from the answer, so the three cannot drift.
+VTH_SILENCE_FIELD = "SilenceEnable"
+# The volumes, as the device names them. The translation keys live beside the
+# entities in number.py, where the two name scanners can read them out of a
+# literal table; `test_monitor_call_settings.py` checks the two agree, so a
+# field added in one place cannot go missing from the other.
+VTH_VOLUME_FIELD_NAMES = (
+    "RingVolume",
+    "VthRingVolume",
+    "TalkVolume",
+    "AlarmVolume",
+)
+VTH_PHONE_SETTINGS = (VTH_SILENCE_FIELD,) + VTH_VOLUME_FIELD_NAMES
 # Some recorders push IVS/SMD events over the CGI stream but expose ordinary
 # VideoMotion only through eventManager's current-state endpoint.
 CONF_POLL_VIDEO_MOTION = "poll_video_motion"

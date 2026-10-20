@@ -373,6 +373,10 @@ class _PlatformCoordinator:
     def supports_event_notifications(self):
         return False
 
+    def supports_vth_phone_setting(self, field):
+        """Not an indoor monitor, so it has no call settings (#949)."""
+        return False
+
     def get_ivs_rules(self):
         return []
 

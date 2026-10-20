@@ -47,6 +47,11 @@ PLATFORMS = (
 WAS = {
     ("binary_sensor", "authorized_vehicle"): "Authorized Vehicle",
     ("event", "doorbell"): "Doorbell",
+    ("switch", "vth_silence"): "Do not disturb",
+    ("number", "vth_ring_volume"): "Door station ring volume",
+    ("number", "vth_indoor_ring_volume"): "Indoor ring volume",
+    ("number", "vth_talk_volume"): "Talk volume",
+    ("number", "vth_alarm_volume"): "Alarm volume",
     ("button", "reboot"): "Reboot",
     ("button", "open_door"): "Open Door",
     ("button", "cancel_call"): "Cancel Call",
@@ -202,7 +207,11 @@ def _keys_in_a_table(platform, table):
 
 
 # Platform modules that name their keys in a table instead of per class.
-KEY_TABLES = (("number", "IMAGE_ADJUSTMENTS"),)
+KEY_TABLES = (
+    ("number", "IMAGE_ADJUSTMENTS"),
+    # An indoor monitor's volumes (#949), same shape and same reason.
+    ("number", "MONITOR_VOLUMES"),
+)
 
 
 def _keys_in_code():
