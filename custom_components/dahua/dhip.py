@@ -336,10 +336,9 @@ class DhipTransport:
     async def exchange(self, message: dict) -> dict:
         """Send one RPC2 envelope and return the device's reply.
 
-        Connects and logs in first if needed. A socket that has died since the
-        last call is reconnected once and the request sent again, because the
-        first read after an idle period is exactly where a dropped connection
-        shows up and one lost poll per drop would be a fault nobody could see.
+        Connects and logs in first if needed. A failed config or identity read
+        is retried on a fresh socket once. Actions are never replayed after a
+        lost reply, because the device may already have performed them.
         """
         async with self._lock:
             session = await self._ensure_session()
@@ -355,6 +354,11 @@ class DhipTransport:
                     exc_info=True,
                 )
                 await self._drop()
+                # A lost reply does not prove an action failed. Only replay
+                # known reads; an unlock, call or config write may have run.
+                method = message.get("method", "")
+                if not method.startswith(("magicBox.get", "configManager.get")):
+                    raise _transient(first_failure) from first_failure
                 session = await self._ensure_session()
                 try:
                     return await session.exchange(message)

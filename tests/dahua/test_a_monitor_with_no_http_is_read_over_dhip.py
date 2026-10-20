@@ -747,3 +747,71 @@ async def test_a_stale_login_is_not_recorded_as_a_missing_table():
 
     with pytest.raises(Rpc2MethodRefused):
         await client._request(MOTION)  # noqa: SLF001
+
+
+async def test_unloading_the_entry_closes_its_shared_dhip_socket(connections):
+    session = _FakeSession()
+    connections.append(session)
+    client = DahuaClient("u", "p", "10.0.0.230", 80, 554, None, rpc2_over_dhip=True)
+    try:
+        await client._rpc2_shared_call(lambda rpc: rpc.request("magicBox.getSerialNo"))
+    finally:
+        await client.close()
+    assert session.closed == 1
+
+
+async def test_shared_session_expiry_reconnects_the_dhip_socket(connections):
+    def expired(message):
+        if message["method"] == "magicBox.getSerialNo":
+            return {
+                "result": False,
+                "error": {"code": 287637504, "message": "session is out of date!"},
+            }
+        return {"result": True}
+
+    old = _FakeSession(session_id=41, answer=expired)
+    new = _FakeSession(
+        session_id=42, answer={"result": True, "params": {"sn": "stable"}}
+    )
+    connections.extend([old, new])
+    client = DahuaClient("u", "p", "10.0.0.230", 80, 554, None, rpc2_over_dhip=True)
+    try:
+        result = await client._rpc2_shared_call(
+            lambda rpc: rpc.request("magicBox.getSerialNo")
+        )
+        assert result["params"]["sn"] == "stable"
+        assert old.closed == 1
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["accessControl.openDoor", "VideoTalkPhone.beginCall", "configManager.setConfig"],
+)
+async def test_a_lost_write_reply_does_not_replay_the_action(connections, method):
+    first = _FakeSession(fail_with=ConnectionResetError("reply lost after write"))
+    second = _FakeSession()
+    transport = _transport_over(connections, [first, second])
+    try:
+        with pytest.raises(aiohttp.ClientConnectionError):
+            await transport.exchange({"id": 1, "method": method})
+        assert len(first.sent) == 1
+        assert second.sent == []
+        assert not transport.connected
+    finally:
+        await transport.close()
+
+
+async def test_a_dhip_login_refusal_uses_the_coordinators_auth_error(connections):
+    connections.append(DhipLoginRefused("wrong password"))
+    client = DahuaClient("u", "p", "10.0.0.230", 80, 554, None, rpc2_over_dhip=True)
+    try:
+        with pytest.raises(aiohttp.ClientResponseError) as refused:
+            await client._rpc2_shared_call(
+                lambda rpc: rpc.request("magicBox.getSerialNo")
+            )
+        assert refused.value.status == 401
+        assert "401" in str(refused.value)
+    finally:
+        await client.close()

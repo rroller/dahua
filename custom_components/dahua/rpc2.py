@@ -260,6 +260,9 @@ class DahuaRpc2Client:
         decide the keepalive, and DHIP's own login answers in exactly that
         shape.
         """
+        # A fresh shared login must replace the socket's session too. Clearing
+        # only _session_id leaves exchange stamping the expired DHIP session.
+        await self.close()
         self._ptz_objects.clear()
         self._id = 0
         # `exchange` fills the session in from the connection, so asking the
@@ -286,9 +289,8 @@ class DahuaRpc2Client:
         """Release anything this client owns that the session does not.
 
         Only the DHIP connection: over HTTP the aiohttp session is the caller's
-        and is closed there. Separate from `logout`, which ends the device-side
-        session but leaves the socket, because over DHIP the two are the same
-        socket and closing it is what ends the session.
+        and is closed there. Over DHIP, logout delegates here so both the
+        device-side session and the socket end together.
         """
         if self._dhip is not None:
             await self._dhip.close()
@@ -297,6 +299,9 @@ class DahuaRpc2Client:
 
     async def logout(self) -> bool:
         """Logs out of the current session. Returns true if the logout was successful"""
+        if self._dhip is not None:
+            await self.close()
+            return True
         if not self._session_id:
             self._ptz_objects.clear()
             return True

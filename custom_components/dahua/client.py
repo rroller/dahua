@@ -14,7 +14,7 @@ from yarl import URL
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import ALL_EVENTS, DOMAIN
-from .dhip import DhipTransport
+from .dhip import DhipLoginRefused, DhipTransport
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
 from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
@@ -466,8 +466,13 @@ async def _release_rpc2(key) -> None:
         # A device that will not take the logout will time the session out on
         # its own. Losing the socket matters more than losing the courtesy.
         _LOGGER.debug("RPC2 logout failed for %s", key[0], exc_info=True)
-    if not holder.session.closed:
-        await holder.session.close()
+    try:
+        close = getattr(holder.client, "close", None)
+        if close is not None:
+            await close()
+    finally:
+        if not holder.session.closed:
+            await holder.session.close()
 
 
 def _digest_state(device: str, username: str) -> dict:
@@ -2523,6 +2528,18 @@ class DahuaClient:
             holder.task = asyncio.ensure_future(holder.client.login())
         try:
             response = await asyncio.shield(holder.task)
+        except DhipLoginRefused as refused:
+            if holder.task is not None and holder.task.done():
+                holder.task = None
+            # Use the same auth path as CGI so the coordinator can request
+            # corrected credentials once the host's refusal budget is spent.
+            url = URL(self._base + "/RPC2_Login")
+            raise aiohttp.ClientResponseError(
+                aiohttp.RequestInfo(url, "POST", CIMultiDict(), url),
+                (),
+                status=401,
+                message="DHIP login refused",
+            ) from refused
         except Exception:
             # Clear the login, not the holder: the entries still hold
             # references to it, and the next read should try again.
