@@ -12,6 +12,7 @@ import aiohttp
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import ALL_EVENTS, DOMAIN
+from .dhip import DhipTransport
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
 from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
@@ -1491,6 +1492,13 @@ class DahuaClient:
     # client does not reopen. See `_refuse_if_closing`.
     _closing = False
 
+    # Whether this device is read over DHIP because it serves no HTTP at all
+    # (#949). Here for the reason above: the shared RPC2 session's tests build
+    # clients with `object.__new__`, and the first version of this attribute
+    # took 44 of them down with an AttributeError the moment the session was
+    # acquired.
+    _rpc2_over_dhip = False
+
     def __init__(
         self,
         username: str,
@@ -1503,6 +1511,7 @@ class DahuaClient:
         use_rpc2: bool = False,
         illuminator_restore_store=None,
         channel_snapshot_store=None,
+        rpc2_over_dhip: bool = False,
     ) -> None:
         self._username = username
         self._password = password
@@ -1534,6 +1543,19 @@ class DahuaClient:
         # from under the other entries.
         self._rpc2_acquired = False
         self._rpc2_released = False
+        # An indoor monitor with no web server at all (#949). Every read has to
+        # go over DHIP on 5000, because there is nothing listening on the HTTP
+        # port to refuse them.
+        #
+        # Carried as a flag from the config entry rather than discovered here.
+        # The existing "this device serves no CGI" learning reads an HTTP
+        # status: configManager.cgi answers 404 and _HOST_CGI_CONFIG_ABSENT
+        # remembers it. A device with no HTTP answers connection-refused, which
+        # is what a camera that is switched off also answers, so there is
+        # nothing in it to learn from. The add flow already establishes the
+        # difference, by logging in over DHIP and asking what the device is, so
+        # the answer is recorded there and read here.
+        self._rpc2_over_dhip = rpc2_over_dhip
         # Preserve the camera's policy while the illuminator temporarily owns
         # a channel/profile. Camera config survives HA restarts, so this must.
         self._illuminator_restore_store = illuminator_restore_store
@@ -2443,6 +2465,7 @@ class DahuaClient:
                 self._rtsp_port,
                 session,
                 self._use_https,
+                dhip_transport=self._new_dhip_transport(),
             )
             holder = _SharedRpc2Session(session, client, None)
             _HOST_RPC2[key] = holder
@@ -3098,6 +3121,39 @@ class DahuaClient:
             )
             return False
         return wlo.lighting_shape(scheme, lighting) is not None
+
+    def _new_dhip_transport(self):
+        """The socket a no-HTTP monitor is read over, or None for everything else.
+
+        Built here rather than in the transport, so the auth budget it spends
+        is this host's: `async_record_host_auth_refusal` is the same counter
+        the polls, the CGI event stream and the doorbell listener share, and
+        a VTH enforces `LockLoginEnable` with `LockLoginTimes: 5` and
+        `LoginFailLockTime: 300` (measured on 3.000.0012000.0.R). A transport
+        that reconnects and re-logs in on its own schedule is exactly how #729
+        happened on the other transports, and locking this device out locks its
+        owner out of correcting it.
+        """
+        if not self._rpc2_over_dhip:
+            return None
+
+        # Imported here, not at the top: host.py imports this module, so the
+        # other direction is a cycle. The counter is host state rather than
+        # client state, which is why it lives there.
+        from .host import MAX_AUTH_REFUSALS, async_record_host_auth_refusal
+
+        def refused(reason) -> bool:
+            return (
+                async_record_host_auth_refusal(self._address, "dhip transport")
+                >= MAX_AUTH_REFUSALS
+            )
+
+        return DhipTransport(
+            self._address,
+            self._username,
+            self._password,
+            on_login_refused=refused,
+        )
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
