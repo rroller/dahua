@@ -514,15 +514,37 @@ async def test_a_monitor_is_named_by_its_model_rather_than_a_hash():
     assert await client.get_machine_name() == {"name": "VTH5221D"}
 
 
-async def test_a_monitor_that_will_not_give_a_serial_still_gets_one():
-    """The fallback has to stay reachable. An identity without a serial is
-    still a better model and firmware than `Generic RTSP`, but the entry needs
-    some unique id, so the hash is still what answers."""
+async def test_a_monitor_that_will_not_give_a_serial_is_retried_not_hashed():
+    """An answer that did not arrive is not an answer (#1057's shape).
+
+    The hash was the obvious fallback and it is the wrong one here. Every
+    entity `unique_id` is built from this read, so one boot where
+    getSerialNo times out would give the whole entry a different identity and
+    Home Assistant would build a second set of entities on `_2` names, which
+    nothing later undoes. Raising instead reaches the coordinator as
+    UpdateFailed, which on a first refresh is setup_retry, and the next poll
+    can get it right.
+    """
     client = _cgi_absent_client(dict(_VTH, serial=None))
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+
+    assert client.identity_derived_from_credentials is False
+
+
+async def test_a_serving_monitor_with_no_serial_is_still_hashed():
+    """The complement, and the reason the branch above is safe to add.
+
+    A VTH that serves HTTP never reaches it: the gate holds it at the md5 it
+    already has, serial or no serial, so nothing that works today starts
+    refusing to set up.
+    """
+    client = _cgi_absent_client(dict(_VTH, serial=None), over_dhip=False)
 
     info = await client.async_get_system_info()
 
-    assert info["serialNumber"] != "3E0164EPAN00095"
+    assert info == {"serialNumber": md5(b"10.0.0.230_554_admin_secret").hexdigest()}
     assert client.identity_derived_from_credentials is True
 
 
