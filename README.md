@@ -473,10 +473,15 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 Model | Firmware
 :------------ | :------------
 VTH2421F-P | 4.800.0000000.1.R
+VTH5221D | 3.000.0012000.0.R
 
 Add an indoor monitor like any other device, by its address and an account on the
 monitor itself (usually the same as the VTO's). A VTH serves no CGI at all, so the
 integration identifies it over RPC2 and shows its real model and firmware.
+
+Monitors without a web server can use the same add flow. The integration identifies
+them over DHIP on local TCP port 5000 and saves that transport for later reads.
+This was measured on a VTH5221D; HTTP does not need to be enabled on that monitor.
 
 What it gets:
 
@@ -491,9 +496,9 @@ A monitor that reports it has no camera of its own (`SupportVideo` false in its
 sensors, no event stream, no motion detection switch, no Day/Night select, no Preset
 Position, and no License Plate or Authorized Vehicle entities.
 
-The serial number shown is generated from the address and login, as for every device
-whose CGI does not answer, so that it stays stable; it is not the serial printed on the
-monitor.
+For monitors added over DHIP, the serial number is read from the monitor itself.
+Existing monitors that serve HTTP keep their current identity, generated from the
+address and login. That generated identity can change when the credentials change.
 
 To ring a monitor, use [`dahua.vto_call`](#services) on the VTO, not on the monitor.
 

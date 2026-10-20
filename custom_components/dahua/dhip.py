@@ -1,4 +1,4 @@
-"""One-shot DHIP: log in, ask, log out.
+"""DHIP as a transport: one-shot for the add flow, and held open for an entry.
 
 DHIP is Dahua's own protocol on port 5000, the one vto.py keeps open to a doorbell for
 its events. vto.py is a long-lived connection: once logged in it attaches the event
@@ -15,12 +15,19 @@ The wire format is vto.py's, reused rather than copied, because it is what has b
 talking to real doorbells: the same 32-byte header from convert_message, the same
 login challenge and password hash, and the same reply parsing, which splits on newlines
 and pulls the JSON objects out of each packet. Nothing here imports Home Assistant.
+
+`DhipTransport` at the bottom is the other half: a connection that stays open and
+carries RPC2 envelopes, so an entry for a monitor with no web server can be read by
+`rpc2.py`'s existing client rather than by a second one. Its docstring has what the
+hardware made necessary.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+
+import aiohttp
 
 from .vto import DahuaVTOClient, DAHUA_GLOBAL_LOGIN
 
@@ -72,6 +79,35 @@ class DhipSession:
         self._writer.write(DahuaVTOClient.convert_message(message))
         await self._writer.drain()
         return self._id
+
+    async def exchange(self, message: dict) -> dict:
+        """Send an envelope somebody else built, and return its reply.
+
+        `call` is for this module's own questions and numbers them itself.
+        This is for an RPC envelope that already carries its `id`, `method`,
+        `params` and `session`, so `rpc2.py` can put its request on this
+        transport without either side renumbering the other's.
+
+        The device's session lives with the socket rather than with the caller,
+        so it is filled in here from whatever this connection actually holds. A
+        caller that built its envelope before a reconnect would otherwise quote
+        a session the device has already forgotten.
+        """
+        message = dict(message)
+        message.setdefault("magic", "0x1234")
+        if message.get("method") != DAHUA_GLOBAL_LOGIN:
+            message["session"] = self.session_id
+        request_id = message.get("id")
+        if request_id is None:
+            self._id += 1
+            request_id = message["id"] = self._id
+        else:
+            # Keep this session's counter ahead of anything the caller has used,
+            # so a later `call` of our own cannot collide with it.
+            self._id = max(self._id, request_id)
+        self._writer.write(DahuaVTOClient.convert_message(message))
+        await self._writer.drain()
+        return await self._reply(request_id)
 
     async def _reply(self, request_id: int) -> dict:
         """The reply carrying this request's id.
@@ -221,3 +257,188 @@ class async_dhip_session:  # pylint: disable=invalid-name
     async def __aexit__(self, *exc_info) -> None:
         if self._session is not None:
             await self._session.close()
+
+
+class DhipTransport:
+    """A DHIP connection that stays open, carries RPC2 envelopes, and relogs in.
+
+    `async_dhip_session` above is for asking a device one question. This is for
+    a device that has no other way to be talked to at all: a VTH5221D serves no
+    HTTP, so there is no `/RPC2` to POST to, and every read an entry makes has
+    to go down this socket for as long as the entry is loaded (#949).
+
+    Three things it adds over a bare session, each measured rather than assumed.
+
+    **One request at a time.** Two calls through `asyncio.gather` on one session
+    do not interleave, they raise::
+
+        RuntimeError: read() called while another coroutine is already waiting
+        for incoming data
+
+    straight out of the StreamReader, measured on a VTH5221D. The coordinator
+    fans its reads out with `gather`, so without the lock below the second read
+    of every poll would fail. A lock rather than a reply-routing reader task
+    because these boxes are small and already limited to
+    MAX_CONCURRENT_REQUESTS_PER_HOST elsewhere: serialising costs a little
+    latency, and a reader task would add a second failure mode to a transport
+    that has no other.
+
+    **The session belongs to the socket.** Reconnecting means logging in again,
+    which is why the login lives here and not in the caller.
+
+    **A refused login must be able to stop this.** `General` on that firmware
+    reads `LockLoginEnable: true, LockLoginTimes: 5, LoginFailLockTime: 300`, so
+    five refusals lock the account for five minutes, including for the person
+    trying to correct it. That is #729 on a third transport. `on_login_refused`
+    is called with the reason and, when it returns True, no further login is
+    attempted until `clear_refusals` is called. Nothing here reaches into Home
+    Assistant to find that budget; the owner passes it in.
+    """
+
+    def __init__(
+        self,
+        address: str,
+        username: str,
+        password: str,
+        port: int = DHIP_PORT,
+        connect_timeout: float = DHIP_REPLY_TIMEOUT_SECONDS,
+        on_login_refused=None,
+    ) -> None:
+        self._address = address
+        self._username = username
+        self._password = password
+        self._port = port
+        self._connect_timeout = connect_timeout
+        self._on_login_refused = on_login_refused
+        self._session: DhipSession | None = None
+        self._lock = asyncio.Lock()
+        self._give_up = False
+        # Bumped on every new socket, so a caller can tell that the session it
+        # was quoting has been replaced underneath it.
+        self.generation = 0
+        # What the device asked for when it granted the session. Read by the
+        # RPC2 client to set its keepalive, the same way the HTTP login's reply
+        # is read. None until a login has succeeded.
+        self.keep_alive_interval = None
+
+    @property
+    def session_id(self):
+        return self._session.session_id if self._session is not None else 0
+
+    @property
+    def connected(self) -> bool:
+        return self._session is not None
+
+    def clear_refusals(self) -> None:
+        """Allow logins again, after the credentials have been changed."""
+        self._give_up = False
+
+    async def exchange(self, message: dict) -> dict:
+        """Send one RPC2 envelope and return the device's reply.
+
+        Connects and logs in first if needed. A failed config or identity read
+        is retried on a fresh socket once. Actions are never replayed after a
+        lost reply, because the device may already have performed them.
+        """
+        async with self._lock:
+            session = await self._ensure_session()
+            try:
+                return await session.exchange(message)
+            except (DhipLoginRefused, asyncio.CancelledError):
+                raise
+            except Exception as first_failure:
+                _LOGGER.debug(
+                    "DHIP exchange with %s failed (%s); reconnecting once",
+                    self._address,
+                    type(first_failure).__name__,
+                    exc_info=True,
+                )
+                await self._drop()
+                # A lost reply does not prove an action failed. Only replay
+                # known reads; an unlock, call or config write may have run.
+                method = message.get("method", "")
+                if not method.startswith(("magicBox.get", "configManager.get")):
+                    raise _transient(first_failure) from first_failure
+                session = await self._ensure_session()
+                try:
+                    return await session.exchange(message)
+                except DhipLoginRefused:
+                    raise
+                except Exception as second_failure:
+                    await self._drop()
+                    raise _transient(second_failure) from second_failure
+
+    async def _ensure_session(self) -> DhipSession:
+        if self._session is not None:
+            return self._session
+        if self._give_up:
+            # Stated as a refusal rather than a transport failure, because that
+            # is what it is: the credentials were rejected and nothing has said
+            # they changed. Retrying here is what locks the device.
+            raise DhipLoginRefused(
+                "Not logging in to {0} again: these credentials were "
+                "refused".format(self._address)
+            )
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self._address, self._port),
+                self._connect_timeout,
+            )
+        except Exception as error:
+            raise _transient(error) from error
+        session = DhipSession(reader, writer)
+        try:
+            verdict = await session.login(self._username, self._password)
+            self.keep_alive_interval = (verdict.get("params") or {}).get(
+                "keepAliveInterval"
+            )
+        except DhipLoginRefused as refused:
+            await session.close()
+            if self._on_login_refused is not None and self._on_login_refused(refused):
+                self._give_up = True
+            raise
+        except BaseException as error:
+            await session.close()
+            if isinstance(error, Exception):
+                raise _transient(error) from error
+            raise
+        self._session = session
+        self.generation += 1
+        _LOGGER.debug(
+            "DHIP session %d established with %s", self.generation, self._address
+        )
+        return session
+
+    async def _drop(self) -> None:
+        session, self._session = self._session, None
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.debug("DHIP close failed", exc_info=True)
+
+    async def close(self) -> None:
+        """Log out and close. Safe to call more than once."""
+        async with self._lock:
+            await self._drop()
+
+
+def _transient(error: Exception) -> Exception:
+    """Re-shape a socket failure as one the RPC2 callers already read as transient.
+
+    `rpc2_failure_is_permanent` in client.py treats anything that is not a
+    TimeoutError or an `aiohttp.ClientConnectionError` as proof the device does
+    not speak RPC2, and writes the transport off for the whole process. For a
+    device whose only transport this is, that would take the entry down until
+    Home Assistant restarted, on one dropped socket.
+
+    A `ConnectionRefusedError` is an OSError and would be judged permanent,
+    which is exactly backwards: the device being unreachable for a moment says
+    nothing about whether it speaks DHIP. So the socket failures are reported in
+    the vocabulary that layer already understands.
+    """
+    if isinstance(error, (TimeoutError, aiohttp.ClientConnectionError)):
+        return error
+    return aiohttp.ClientConnectionError(
+        "DHIP transport failed: {0}: {1}".format(type(error).__name__, error)
+    )
