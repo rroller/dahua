@@ -38,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import json
 from hashlib import md5
+from types import SimpleNamespace
 
 import aiohttp
 import pytest
@@ -584,7 +585,7 @@ async def test_anything_that_is_not_a_monitor_keeps_the_old_fallback():
     """The negative control. A camera with its CGI off must not start reporting
     a VTH's identity, and `_vth_identity_over_rpc2` returning None is how it
     says the device is not one."""
-    client = _cgi_absent_client(None)
+    client = _cgi_absent_client(None, over_dhip=False)
 
     info = await client.async_get_system_info()
 
@@ -837,3 +838,40 @@ async def test_a_dhip_login_refusal_uses_the_coordinators_auth_error(connections
         assert "401" in str(refused.value)
     finally:
         await client.close()
+
+
+async def test_missing_dhip_model_or_firmware_never_changes_the_serial_to_a_hash():
+    client = _cgi_absent_client(None)
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+    assert client.identity_derived_from_credentials is False
+
+
+async def test_a_missing_serial_is_asked_again_on_the_same_client():
+    client = _cgi_absent_client(None)
+    client._vth_identity_over_rpc2 = DahuaClient._vth_identity_over_rpc2.__get__(client)
+    serial_reads = 0
+
+    async def request(method, **kwargs):
+        nonlocal serial_reads
+        if method == "magicBox.getSerialNo":
+            serial_reads += 1
+            if serial_reads == 1:
+                raise TimeoutError("not ready")
+            return {"params": {"sn": "stable-serial"}}
+        if method == "magicBox.getDeviceClass":
+            return {"params": {"type": "VTH"}}
+        if method == "magicBox.getDeviceType":
+            return {"params": {"type": "VTH5221D"}}
+        if method == "magicBox.getSoftwareVersion":
+            return {"params": {"version": {"Version": "3.000.0012000.0.R"}}}
+        return {"params": {"table": {}}}
+
+    async def shared(action):
+        return await action(SimpleNamespace(request=request))
+
+    client._rpc2_shared_call = shared
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+    assert await client.async_get_system_info() == {"serialNumber": "stable-serial"}
+    assert serial_reads == 2

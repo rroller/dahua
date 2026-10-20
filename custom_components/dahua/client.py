@@ -1686,20 +1686,15 @@ class DahuaClient:
                 # The serial is the right end state for them too, but it needs
                 # an entity registry migration, and that is its own change.
                 vth = await self._vth_identity_over_rpc2()
-                if vth:
-                    if vth.get("serial"):
-                        return {"serialNumber": vth["serial"]}
-                    # A monitor that says it is a VTH and will not say what its
-                    # serial is must not be hashed instead. Every entity
-                    # `unique_id` is built from this answer, so one boot where
-                    # getSerialNo times out would hand the whole entry a
-                    # different identity and Home Assistant would create a
-                    # second set of entities on `_2` names, permanently. The
-                    # caller turns this into UpdateFailed, which on a first
-                    # refresh is setup_retry, and a retry is recoverable where
-                    # a duplicate registry is not. #1057's shape, applied to
-                    # identity: an answer that did not arrive is not an answer.
-                    raise
+                if vth and vth.get("serial"):
+                    return {"serialNumber": vth["serial"]}
+                # This entry was identified as a DHIP monitor when added. A
+                # missing model, firmware or serial now is no reason to assign
+                # a different device identity. Retry the actual reads too:
+                # _vth_identity_over_rpc2 memoises incomplete answers.
+                self._vth_identity_asked = False
+                self._vth_identity = None
+                raise
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(
                 self._address, self._rtsp_port, self._username, self._password
