@@ -473,10 +473,15 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 Model | Firmware
 :------------ | :------------
 VTH2421F-P | 4.800.0000000.1.R
+VTH5221D | 3.000.0012000.0.R
 
 Add an indoor monitor like any other device, by its address and an account on the
 monitor itself (usually the same as the VTO's). A VTH serves no CGI at all, so the
 integration identifies it over RPC2 and shows its real model and firmware.
+
+Monitors without a web server can use the same add flow. The integration identifies
+them over DHIP on local TCP port 5000 and saves that transport for later reads.
+This was measured on a VTH5221D; HTTP does not need to be enabled on that monitor.
 
 What it gets:
 
@@ -484,6 +489,9 @@ What it gets:
   when that VTO calls. `none` is the VTO's own picture; the other options are the cameras in
   the monitor's own camera list (Monitor > IPC on its screen). The monitor's screen has no
   control for this on the measured firmware, though its manual describes it.
+- **Do not disturb** and sliders for door station ring, indoor ring, talk and alarm
+  volume (0–100), for each setting the monitor reports in `VideoTalkPhoneGeneral`.
+  Do not disturb is separate from the quiet-period schedule configured on the monitor.
 - Reboot, firmware version and serial number.
 
 A monitor that reports it has no camera of its own (`SupportVideo` false in its
@@ -491,9 +499,9 @@ A monitor that reports it has no camera of its own (`SupportVideo` false in its
 sensors, no event stream, no motion detection switch, no Day/Night select, no Preset
 Position, and no License Plate or Authorized Vehicle entities.
 
-The serial number shown is generated from the address and login, as for every device
-whose CGI does not answer, so that it stays stable; it is not the serial printed on the
-monitor.
+For monitors added over DHIP, the serial number is read from the monitor itself.
+Existing monitors that serve HTTP keep their current identity, generated from the
+address and login. That generated identity can change when the credentials change.
 
 To ring a monitor, use [`dahua.vto_call`](#services) on the VTO, not on the monitor.
 
@@ -862,7 +870,7 @@ Service | Parameters | Description
 `dahua.set_video_profile_mode` | `target`: camera.cam13_main <br /> `mode`: Day, Night| Sets the video profile mode to day or night
 `dahua.set_focus_zoom` | `target`: camera.cam13_main <br /> `focus`: The focus level, e.g.: 0.81 0 - 1 inclusive <br /> `zoom`: The zoom level, e.g.: 0.72 0 - 1 inclusive | Sets the focus and zoom level
 `dahua.set_channel_title` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `text1`: The text 1<br /> `text2`: The text 2| Sets the channel title
-`dahua.set_text_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `group`: The group, used to apply multiple of text as an overly, e.g.: 1 <br /> `text1`: The text 1<br /> `text3`: The text 3 <br /> `text4`: The text 4 <br /> `text2`: The text 2 | Sets the text overlay on the video
+`dahua.set_text_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `group`: The group, used to apply multiple of text as an overly, e.g.: 1 <br /> `text1`: The text 1<br /> `text3`: The text 3 <br /> `text4`: The text 4 <br /> `text2`: The text 2 | Sets the custom text overlay on the video. Pass as many lines as the camera accepts; the old four-line limit is gone. Some cameras label this overlay "Location title" rather than "Custom title" in their own web interface
 `dahua.set_custom_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `group`: The group, used to apply multiple of text as an overly, e.g.: 0 <br /> `text1`: The text 1<br /> `text2`: The text 2 | Sets the custom overlay on the video
 `dahua.enable_channel_title` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `enabled`: True to enable, False to disable | Enables or disables the channel title overlay on the video
 `dahua.enable_time_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `enabled`: True to enable, False to disable | Enables or disables the time overlay on the video
@@ -874,6 +882,7 @@ Service | Parameters | Description
 `dahua.enable_ivs_rule` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `index`: The rule index <br /> enabled`: True to enable the IVS rule, False to disable the IVS rule | Enable or disable an IVS rule
 `dahua.vto_open_door` | `target`: camera.cam13_main <br /> `door_id`: The door ID to open, e.g.: 1 <br /> Opens a door via a VTO
 `dahua.vto_cancel_call` | `target`: camera.cam13_main <br />Cancels a call on a VTO device (Doorbell)
+`dahua.play_audio` | `target`: camera.front_door_main <br /> `media_content_id`: the clip, as a media source, a TTS result, a URL or a file path <br /> `audio_format`: `g711a_8000` (default), `g711u_8000`, `pcm_8000` | Plays a clip through the device's own speaker, for a doorbell announcement or a camera deterrent message. The clip is converted with ffmpeg, so anything it can open works. A VTO2000A has been verified with G.711 A-law and little-endian PCM at 8 kHz. Other devices may need a different supported format; please report results on [#177](https://github.com/rroller/dahua/issues/177)
 `dahua.vto_call` | `target`: camera.cam13_main <br /> `room`: The room to ring, e.g.: 9901 | Rings an indoor monitor (VTH) from a VTO, as its call button does. `9901#0` is dialled as `9901`, which rings the main monitor and its extensions. Measured on a DHI-VTO2211G-WP-S2
 `dahua.set_video_in_day_night_mode` | `target`: camera.cam13_main <br /> `config_type`: The config type: general, day, night <br /> `mode`: The mode: Auto, Color, BlackWhite. Note Auto is also known as Brightness by Dahua|Set the camera's Day/Night Mode. For example, Color, BlackWhite, or Auto
 `dahua.reboot` | `target`: camera.cam13_main <br />Reboots the device
@@ -914,7 +923,7 @@ Siren | If the camera has a siren, will turn on the siren. Note, it seems sirens
 Event Notifications | Enables or disables the device's event notifications
 Smart Motion Detection | If the device supports it, enables or disables smart motion detection (human and vehicle filtering rather than plain pixel motion). Only created on channels the device reports as supporting it
 IVS Rule | One switch per IVS rule the camera reports (tripwire, intrusion and so on), each keyed on the rule's own stable Dahua ID, so it is named after the rule as the device names it. Configuration entities
-Alarm Output | A physical alarm or relay output on the device, switched directly
+Alarm Output | A physical alarm or relay output on the device, switched directly. A recorder with several relays gets one switch per relay, on the recorder's own device rather than on a camera, named by the recorder where it names them distinctly and numbered where it does not. The state is read back from the device rather than assumed from the last write
 Privacy Mode | Covers the lens on cameras with a motorised cover. See `dahua.set_privacy_mode`
 Disarming Linkage | Newer firmwares introduce a "disarming" feature, accessible from the camera web UI under Event → One-click disarm / Disarming. When enabled, the disarm toggle suppresses the linkage actions configured in the Disarming section specifically, while leaving all other alarm linkage actions untouched. Detection remains fully active throughout. This allows one to turn it on/off.
 
@@ -931,6 +940,7 @@ Sensor |  Description |
 Motion | A sensor that turns on when the camera detects motion
 Button Pressed | A sensor that turns on when a doorbell button is pressed
 Authorized Vehicle | Turns on when the camera's ANPR recognises a plate you have listed as authorized, and stays on for the hold time you set. Attributes carry the plate that matched and what the camera reported about the vehicle. Created on every camera and every channel of a recorder, so it existing does not mean that camera can read plates: it stays off unless the camera reports one and it is on your list
+Alarm-in Port&lt;n&gt; | One per physical alarm input terminal on a recorder's back panel, on the recorder's own device rather than on a camera. Named by the recorder, so a terminal you renamed keeps that name. The attributes carry both numbers: `alarm_input_number` is the one printed on the chassis and `alarm_input_index` is the zero-based one the device sends, which is one lower. Only created on a recorder that reports the terminals. On such a recorder the per-channel Alarm Local sensors are not created, because the only thing that ever fed them was the terminal number being read as a camera channel
 Others | A binary senor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
 
 ## Sensors
@@ -1159,6 +1169,7 @@ Name | the channel's name | What this channel is called
 Area | unset | Moves this channel into an area. A channel does not inherit the recorder's area, so channels can be filed by room
 Events to subscribe to | motion and the common smart-detection events | Which of the device's events become binary sensors. Most of the rest do nothing on most cameras, and each one selected adds an entity. An empty selection is honoured, which turns the event connection off for this channel. If you want an event that is not listed, open an issue
 Auto-detect channel index | on | Some firmwares number channels from 0 and others from 1. Turn this off if the detection gets it wrong on your camera
+Poll ordinary motion state | off | Some recorders and XVRs keep sending smart-detection events normally while never pushing ordinary `VideoMotion`, so the motion sensors never turn on. This reads the motion state from the device instead of waiting to be told. Off by default because it is one extra request per device every two seconds, which buys nothing on a device that does push them. The integration raises a repair card suggesting this when it catches a device detecting motion it is not reporting
 Enable NVR active deterrence controls | off | Adds Warning Light and Alarm entities for a camera behind an NVR. Off by default because whether the NVR relays these commands varies by model: on some it accepts them and does nothing
 Manually enable Siren entity | off | Turn this on if the camera has a working siren and the integration did not create the Siren entity
 Manually enable Security Light entity | off | Turn this on if the camera has a working security light and the integration did not create the Security Light entity

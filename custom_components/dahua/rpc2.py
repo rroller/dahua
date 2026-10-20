@@ -62,6 +62,14 @@ def refusal_reason(response: dict) -> tuple:
 
 
 class DahuaRpc2Client:
+    # The DHIP socket this client is read over, for a device that serves no
+    # HTTP at all (#949), or None for the HTTP transport every other device
+    # uses. A class default because the tests here build clients with
+    # `object.__new__` and set only what the case needs: as an instance
+    # attribute alone it took 28 of them down with an AttributeError on the
+    # first line of `request`.
+    _dhip = None
+
     def __init__(
         self,
         username: str,
@@ -71,6 +79,7 @@ class DahuaRpc2Client:
         rtsp_port: int,
         session: aiohttp.ClientSession,
         use_https: bool = None,
+        dhip_transport=None,
     ) -> None:
         self._username = username
         self._password = password
@@ -79,6 +88,13 @@ class DahuaRpc2Client:
         self._session_id = None
         self._ptz_objects: dict[int, int] = {}
         self._id = 0
+        # An indoor monitor serves no HTTP at all, so there is no `/RPC2` to
+        # POST to. The envelope is the same either way -- `_send` in dhip.py
+        # builds the dict `request` builds, plus the frame -- so the whole of
+        # this client works over that socket once the transport is swapped,
+        # rather than needing a second client with its own copy of every
+        # method (#949).
+        self._dhip = dhip_transport
         if use_https is None:
             use_https = int(port) == 443
         self._use_https = use_https
@@ -125,20 +141,32 @@ class DahuaRpc2Client:
             data.update(extra)
         if self._session_id:
             data["session"] = self._session_id
-        if not url:
-            url = "{0}/RPC2".format(self._base)
+        if self._dhip is not None:
+            # There is no second URL over DHIP: `/RPC2_Login` is an HTTP route,
+            # and the login goes down the same socket as everything else. Said
+            # out loud rather than ignored, so a caller that depends on a
+            # separate endpoint fails here instead of somewhere further away.
+            if url is not None and not url.endswith("/RPC2_Login"):
+                raise ValueError(
+                    "RPC2 over DHIP has no separate URL, so {0} cannot be "
+                    "requested".format(url)
+                )
+            resp_json = await self._dhip.exchange(data)
+        else:
+            if not url:
+                url = "{0}/RPC2".format(self._base)
 
-        resp = await self._post(url, data)
-        try:
-            resp_json = json.loads(await resp.text())
-        except ValueError as error:
-            # An HTML error page, a 503 body or a truncated answer is this read
-            # not coming back, not "this device does not speak RPC2". Raised as
-            # a connection error so rpc2_failure_is_permanent does not write the
-            # transport off for the host after two of them.
-            raise aiohttp.ClientConnectionError(
-                "Dahua RPC2 answered with a body that is not JSON"
-            ) from error
+            resp = await self._post(url, data)
+            try:
+                resp_json = json.loads(await resp.text())
+            except ValueError as error:
+                # An HTML error page, a 503 body or a truncated answer is this
+                # read not coming back, not "this device does not speak RPC2".
+                # Raised as a connection error so rpc2_failure_is_permanent does
+                # not write the transport off for the host after two of them.
+                raise aiohttp.ClientConnectionError(
+                    "Dahua RPC2 answered with a body that is not JSON"
+                ) from error
 
         if verify_result and resp_json["result"] is False:
             code, message = refusal_reason(resp_json)
@@ -163,6 +191,14 @@ class DahuaRpc2Client:
         Also referenced:
         https://gist.github.com/avelardi/1338d9d7be0344ab7f4280618930cd0d
         """
+
+        if self._dhip is not None:
+            # The DHIP client already does this handshake, against real
+            # hardware, with the challenge text and the two-stage hash that
+            # these monitors answer. Repeating it here with HTTP's parameter
+            # names would be a second implementation of the one thing in this
+            # file that cannot be tested without a device.
+            return await self._login_over_dhip()
 
         # login1: get session, realm & random for real login
         self._session_id = None
@@ -210,8 +246,62 @@ class DahuaRpc2Client:
         _LOGGER.debug("RPC2 login succeeded")
         return response
 
+    async def _login_over_dhip(self):
+        """Open the DHIP connection, which logs in as part of connecting.
+
+        The session is the socket's rather than this object's, so there is
+        nothing to hash here: `DhipTransport` holds the connection and the
+        login, and reconnects by logging in again. All this does is make sure
+        one exists and adopt its session id, so the rest of this client sees
+        the same `_session_id` it would over HTTP.
+
+        The reply is shaped like the HTTP login's for the caller's sake:
+        `async_get_rpc2_client` reads `params.keepAliveInterval` off it to
+        decide the keepalive, and DHIP's own login answers in exactly that
+        shape.
+        """
+        # A fresh shared login must replace the socket's session too. Clearing
+        # only _session_id leaves exchange stamping the expired DHIP session.
+        await self.close()
+        self._ptz_objects.clear()
+        self._id = 0
+        # `exchange` fills the session in from the connection, so asking the
+        # device something harmless is enough to establish one. getDeviceType
+        # is the read every VTH answered in the #949 measurements, and it is
+        # free of side effects.
+        reply = await self._dhip.exchange(
+            {"id": 1, "method": "magicBox.getDeviceType", "params": {}}
+        )
+        self._session_id = self._dhip.session_id
+        if not self._session_id:
+            raise ConnectionError("DHIP login granted no session")
+        _LOGGER.debug("RPC2 login over DHIP succeeded")
+        # Not the device type reply: a login's caller wants the login's shape.
+        # The interval is the device's own, taken from the session that the
+        # exchange above established.
+        return {
+            "result": reply.get("result", True),
+            "session": self._session_id,
+            "params": {"keepAliveInterval": self._dhip.keep_alive_interval},
+        }
+
+    async def close(self) -> None:
+        """Release anything this client owns that the session does not.
+
+        Only the DHIP connection: over HTTP the aiohttp session is the caller's
+        and is closed there. Over DHIP, logout delegates here so both the
+        device-side session and the socket end together.
+        """
+        if self._dhip is not None:
+            await self._dhip.close()
+            self._session_id = None
+            self._ptz_objects.clear()
+
     async def logout(self) -> bool:
         """Logs out of the current session. Returns true if the logout was successful"""
+        if self._dhip is not None:
+            await self.close()
+            return True
         if not self._session_id:
             self._ptz_objects.clear()
             return True
@@ -485,6 +575,61 @@ class DahuaRpc2Client:
             key: caps.get(key) in (1, "1")
             for key in ("SupportControlSpeaker", "SupportControlLight")
         }
+
+    async def get_lighting_schemes(self, channel: int) -> list[str] | None:
+        """Which illumination modes this channel's camera says it has.
+
+        Returns the device's own spellings, for example
+        `["WhiteMode", "InfraredMode", "AIMode"]`, or None where the channel
+        does not offer the dual-light solution at all. `AIMode` is what the
+        web interface calls Smart Dual Light.
+
+        Asked rather than inferred from a model name, which is the recurring
+        bug in this integration (#570, #676, #690). Measured across eight
+        channels of a DHI-NVR5464-16P-EI: the answer is per camera, not
+        host-wide, and it agreed with whether `LightingScheme` could actually
+        be read channel-scoped on every one of them.
+
+        **Two negative shapes, not one.** `LightingMixSolution` is absent on
+        five of those channels and present with `Support: false` on two more,
+        so this tests the flag's truthiness rather than the key's presence --
+        the latter would arm the two cameras that say outright they cannot.
+
+        `devVideoInput` is an object-oriented service: it hands out an
+        instance, answers against it, and leaks one per call without the
+        `destroy`, so that runs whatever happens.
+        """
+        instance = await self.request(
+            method="devVideoInput.factory.instance",
+            params={"channel": channel},
+            verify_result=False,
+        )
+        object_id = instance.get("result")
+        if not isinstance(object_id, int):
+            return None
+        try:
+            response = await self.request(
+                method="devVideoInput.getCapsEx",
+                params={"channel": channel},
+                object_id=object_id,
+                verify_result=False,
+            )
+        finally:
+            await self.request(
+                method="devVideoInput.destroy",
+                object_id=object_id,
+                verify_result=False,
+            )
+
+        params = response.get("params")
+        caps = params.get("caps") if isinstance(params, dict) else None
+        solution = caps.get("LightingMixSolution") if isinstance(caps, dict) else None
+        if not isinstance(solution, dict) or not solution.get("Support"):
+            return None
+        schemes = solution.get("LightingScheme")
+        if not isinstance(schemes, list):
+            return None
+        return [scheme for scheme in schemes if isinstance(scheme, str)] or None
 
     async def set_coaxial_control_state(
         self, channel: int, dahua_type: int, enabled: bool, off_io: int = 2

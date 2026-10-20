@@ -47,6 +47,11 @@ PLATFORMS = (
 WAS = {
     ("binary_sensor", "authorized_vehicle"): "Authorized Vehicle",
     ("event", "doorbell"): "Doorbell",
+    ("switch", "vth_silence"): "Do not disturb",
+    ("number", "vth_ring_volume"): "Door station ring volume",
+    ("number", "vth_indoor_ring_volume"): "Indoor ring volume",
+    ("number", "vth_talk_volume"): "Talk volume",
+    ("number", "vth_alarm_volume"): "Alarm volume",
     ("button", "reboot"): "Reboot",
     ("button", "open_door"): "Open Door",
     ("button", "cancel_call"): "Cancel Call",
@@ -57,6 +62,10 @@ WAS = {
     # to match. Listed because this table is asserted as equal to the file, which
     # is what makes a rename fail rather than pass quietly.
     ("select", "infrared_mode"): "Infrared Mode",
+    # New with the illumination mode control. Named "Illumination mode"
+    # rather than "Lighting scheme" because the latter is Dahua's word for
+    # it, not one a user would recognise from the camera's own interface.
+    ("select", "lighting_scheme"): "Illumination mode",
     ("select", "smart_motion_sensitivity"): "Smart Motion Sensitivity",
     ("select", "vth_camera_link"): "Camera for {vto} calls",
     # New in this change, so there is nothing they "was": the table is what
@@ -198,7 +207,11 @@ def _keys_in_a_table(platform, table):
 
 
 # Platform modules that name their keys in a table instead of per class.
-KEY_TABLES = (("number", "IMAGE_ADJUSTMENTS"),)
+KEY_TABLES = (
+    ("number", "IMAGE_ADJUSTMENTS"),
+    # An indoor monitor's volumes (#949), same shape and same reason.
+    ("number", "MONITOR_VOLUMES"),
+)
 
 
 def _keys_in_code():

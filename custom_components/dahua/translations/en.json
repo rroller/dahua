@@ -335,6 +335,18 @@
             },
             "image_hue": {
                 "name": "Hue"
+            },
+            "vth_ring_volume": {
+                "name": "Door station ring volume"
+            },
+            "vth_indoor_ring_volume": {
+                "name": "Indoor ring volume"
+            },
+            "vth_talk_volume": {
+                "name": "Talk volume"
+            },
+            "vth_alarm_volume": {
+                "name": "Alarm volume"
             }
         },
         "select": {
@@ -362,6 +374,14 @@
                     "auto": "Auto",
                     "manual": "Manual",
                     "off": "Off"
+                }
+            },
+            "lighting_scheme": {
+                "name": "Illumination mode",
+                "state": {
+                    "infrared": "Infrared",
+                    "white": "White light",
+                    "smart_dual": "Smart Dual Light"
                 }
             }
         },
@@ -418,6 +438,9 @@
             },
             "alarm": {
                 "name": "Alarm"
+            },
+            "vth_silence": {
+                "name": "Do not disturb"
             }
         },
         "update": {
@@ -427,6 +450,42 @@
         }
     },
     "exceptions": {
+        "lighting_scheme_held_by_illuminator": {
+            "message": "The illumination mode cannot be changed while the Illuminator is holding this channel. Turn the Illuminator off first, which puts the camera back to the mode it was in, then choose the mode you want."
+        },
+        "lighting_scheme_not_accepted": {
+            "message": "The camera did not take {mode} as its illumination mode and still reports {got}. Some Dahua devices answer OK to a setting they do not apply, so this is the camera refusing rather than a connection problem."
+        },
+        "lighting_scheme_unknown": {
+            "message": "{mode} is not an illumination mode this camera offers. It reports: {known}."
+        },
+        "audio_path_not_allowed": {
+            "message": "Home Assistant is not allowed to read {path}. Use a media source, a URL, or a file inside the config directory or one listed in allowlist_external_dirs."
+        },
+        "audio_format_unknown": {
+            "message": "Unknown audio format {format}. Known formats: {known}"
+        },
+        "audio_conversion_timed_out": {
+            "message": "Converting {url} for the speaker took longer than {seconds} seconds"
+        },
+        "audio_conversion_failed": {
+            "message": "Could not convert {url} for the speaker: {reason}"
+        },
+        "audio_has_no_sound": {
+            "message": "{url} has no audio in it, so there is nothing to play"
+        },
+        "audio_needs_ffmpeg": {
+            "message": "Playing audio needs the ffmpeg integration, which is not set up. Add `ffmpeg:` to configuration.yaml and restart Home Assistant"
+        },
+        "audio_declined": {
+            "message": "{device} refused the clip: {reason}"
+        },
+        "audio_stopped": {
+            "message": "{device} did not play the whole clip: {reason}. If this keeps happening, try another audio format: the speaker's own format has not been measured on any device yet"
+        },
+        "audio_could_not_be_sent": {
+            "message": "Could not play audio on {device}: {reason}"
+        },
         "video_profile_not_switchable": {
             "message": "The day/night video profile on {device} cannot be switched from Home Assistant: its VideoInMode is the {shape} shape, where the profile is not selected by the field this writes. See issue #458."
         },
@@ -486,6 +545,10 @@
         }
     },
     "issues": {
+        "motion_not_pushed": {
+            "title": "Dahua device at {address} detects motion but does not report it",
+            "description": "The Dahua device at {address} says motion is being detected on channel {channels} right now, but it has never sent Home Assistant a single VideoMotion event. Its motion binary sensors cannot turn on while that is true.\n\n**There is a setting for this.** Some recorders and some XVRs keep sending smart detection events normally while never pushing ordinary motion. For those, the integration can read the motion state from the device instead of waiting to be told.\n\nOpen **Settings > Devices & Services > Dahua**, choose **Configure** on this device, and tick **Poll ordinary motion state when the recorder does not push VideoMotion events**.\n\nIt is off by default because it costs one extra request per device every two seconds, which buys nothing on a device that does push these events. This message is not shown unless the device is detecting motion it is not reporting, and it clears itself once motion arrives or you enable the setting."
+        },
         "channel_not_added": {
             "title": "Channel {channel} on {address} was not added",
             "description": "You ticked channel {channel} while adding this recorder, and it could not be added, so it has been skipped. The rest were added normally.\n\nThe reason given was `{reason}`. The usual causes are that the camera on that channel has stopped answering since the recorder last saw it, that the slot is enabled on the recorder with no camera actually in it, or that the recorder serves that channel over ONVIF, which this integration cannot drive.\n\nCheck the channel in the recorder's own interface, then add it from Add Integration once it is working. The Home Assistant log has the full reason."
@@ -511,7 +574,7 @@
         },
         "webrtc_cannot_play": {
             "title": "Dahua device at {address} sends video Home Assistant cannot play",
-            "description": "On the Dahua device at {address}, {count} channel(s) send their main stream as H.265 with no audio track: channel {channels}. A browser cannot be given that combination, so the live view for those channels fails rather than showing a still image.\n\nNeither half is a fault on its own, which is why this is not raised for H.265 alone. A browser cannot decode H.265 over WebRTC, so Home Assistant falls back to converting the stream, and the converter asks the camera for an audio track it does not have.\n\nIf you only ever view the sub stream of those channels you may never meet this.\n\n**The fix is on the device, not here.** In the camera or recorder's own web interface, under Video > Encode for each channel listed, set the main stream's compression to H.264. Measured on a DHI-NVR5464-16P-EI: that alone turned a failing live view into a working one, with nothing else changed and no loss of resolution or frame rate. Enabling audio instead clears the missing track and leaves the browser still unable to decode the video.\n\nH.264 at a bitrate chosen for H.265 is a slightly softer picture, so raising the bitrate for that stream is worth considering.\n\nThis message disappears on its own once the device reports streams Home Assistant can play."
+            "description": "{count} channel(s) on the Dahua device at {address} send their main stream as H.265 with no audio track: channel {channels}. Home Assistant cannot play that combination in a browser, so live view for those channels fails.\n\n**The fix is on the device.** In its web interface, open Video > Encode for each channel listed and set the main stream's compression to H.264. Enabling audio instead does not help, because a browser still cannot decode H.265.\n\nH.264 at a bitrate chosen for H.265 looks a little softer, so consider raising it. This message clears itself once the device reports a stream Home Assistant can play."
         },
         "device_unreachable": {
             "title": "Dahua device at {address} is not responding",

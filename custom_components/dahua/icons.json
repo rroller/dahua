@@ -25,6 +25,9 @@
         "select": {
             "day_night_mode": {
                 "default": "mdi:theme-light-dark"
+            },
+            "lighting_scheme": {
+                "default": "mdi:lightbulb-auto"
             }
         },
         "sensor": {
@@ -71,6 +74,9 @@
             },
             "smart_motion_detection": {
                 "default": "mdi:motion-sensor"
+            },
+            "vth_silence": {
+                "default": "mdi:bell-off"
             }
         }
     }

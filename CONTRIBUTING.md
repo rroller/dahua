@@ -100,3 +100,26 @@ of this integration's history is capabilities gated on a model name that then fa
 device which had the hardware, so evidence from a real device is worth much more than a
 plausible-looking condition. If you cannot test something, saying so is genuinely more
 useful than a guess that reads as confident.
+
+## Versioning
+
+`manifest.json` carries a semver version and `tag.yml` fails a tag that does not match
+it. The number is something a user reads before deciding to upgrade, so it is chosen by
+what the release does to their setup rather than by how large the diff was.
+
+- **Patch**, `1.3.0` to `1.3.1`. Fixes and internal work. Nothing a user already has
+  behaves differently afterwards.
+- **Minor**, `1.3.1` to `1.4.0`. New entities, new services, new options. Everything
+  that worked before still works.
+- **Major**, `1.4.0` to `2.0.0`. Anything an existing setup has to be changed for: an
+  entity removed or renamed, a service argument dropped, a default reversed.
+
+**An entity that disappears is a breaking change even when that entity was wrong.** It
+is in somebody's automation or on their dashboard, and both stop working. Replacing it
+with something better is a good reason to do it, and not a reason to file it as a
+feature. The same goes for a `unique_id` that changes, because Home Assistant treats
+that as a different entity and strands the old one.
+
+Say in the PR body which of the three the change implies, and give a removal or a
+rename its own heading there. A release is usually several PRs tagged together, and the
+person cutting it is reading the bodies rather than the diffs.

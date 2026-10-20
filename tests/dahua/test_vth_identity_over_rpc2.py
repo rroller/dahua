@@ -39,6 +39,9 @@ VTH_ANSWERS = {
             }
         },
     },
+    # The monitor's own serial. Without it `async_get_system_info` falls back
+    # to an md5 of the credentials, which changes with the password (#805).
+    "magicBox.getSerialNo": {"result": True, "params": {"sn": "7K03C91PAZ00042"}},
 }
 
 
@@ -110,19 +113,24 @@ async def test_nothing_is_recorded_as_invented():
     assert getattr(client, "_identity_fallbacks", {}) == {}
 
 
-async def test_the_exact_questions_are_asked_once_for_all_three():
-    """Setup asks for the version, the model and the class separately. One login's
-    worth of questions, not three rounds of them."""
+async def test_the_exact_questions_are_asked_once_for_all_of_them():
+    """Setup asks for the version, the model, the class, the serial and the name
+    separately. One login's worth of questions, not five rounds of them."""
     client, rpc2 = _client()
 
     await client.get_software_version()
     await client.get_device_type()
     await client.async_get_device_class()
+    await client.async_get_system_info()
+    await client.get_machine_name()
 
     assert rpc2.asked == [
         ("magicBox.getDeviceClass", None),
         ("magicBox.getDeviceType", None),
         ("magicBox.getSoftwareVersion", None),
+        # The device's own serial, so the entry's id is not an md5 of the
+        # credentials that changes with the password (#805, #949).
+        ("magicBox.getSerialNo", None),
         # Whether it has a camera of its own, see test_vth_without_video.py.
         ("configManager.getConfig", {"name": "RemoteDevice"}),
     ]

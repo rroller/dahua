@@ -49,7 +49,9 @@ class FakeRpc2:
     failures = []
     calls = []
 
-    def __init__(self, *args):
+    # **kwargs, not just *args: the real client gained `dhip_transport` for
+    # #949 and it is passed by keyword.
+    def __init__(self, *args, **kwargs):
         self._session_id = None
         self._ptz_objects = {}
 
