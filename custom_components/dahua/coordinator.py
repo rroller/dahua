@@ -32,6 +32,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from . import dahua_utils
 from . import refusals
 from .client import (
+    VTH_PHONE_TABLE,
     DahuaClient,
     _describe_client_error,
     parse_alarm_inputs,
@@ -50,6 +51,8 @@ from .const import (
     CONF_MANUAL_SIREN,
     CONF_NVR_ACTIVE_DETERRENCE,
     CONF_SCAN_INTERVAL,
+    CONF_RPC2_OVER_DHIP,
+    VTH_PHONE_SETTINGS,
     CONF_USE_RPC2,
     CONF_POLL_VIDEO_MOTION,
     DEFAULT_AUTHORIZED_HOLD_TIME,
@@ -845,6 +848,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _storage_disks: list = []
     _storage_last_refresh: float = 0.0
 
+    # Which transport this channel's coaxial status is read over, and whether
+    # the other one has been tried (#555). On the class for the reason above,
+    # and per channel rather than per device on purpose: one recorder answers
+    # over CGI on some channels and only over RPC2 on others.
+    _coaxial_status_over_rpc2: bool = False
+    _coaxial_status_rpc2_asked: bool = False
+
     # The recorder's own alarm input terminals (#1090), on the class for the
     # same reason and with the same rule: reassigned, never mutated. Only the
     # one coordinator that probed them has a non-empty list, so these also
@@ -926,6 +936,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # including the ones the suite builds with object.__new__.
     _supports_event_notifications: bool = False
 
+    # Which of an indoor monitor's call settings it actually reported (#949,
+    # #998). On the class, like the rest here, because the suite builds
+    # coordinators with `object.__new__` and the platforms ask every one of
+    # them what it supports.
+    _vth_phone_fields: frozenset = frozenset()
+
     # Whether this device reports the key the cloud connection switch reads.
     # On the class for the same reason as the line above.
     _supports_cloud_connection: bool = False
@@ -994,6 +1010,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._session,
             use_https,
             use_rpc2=entry.options.get(CONF_USE_RPC2, False),
+            # From entry.data, not options: it is what the device is, settled
+            # by the add flow, and not something to be toggled afterwards. A
+            # monitor with no web server cannot be read any other way (#949).
+            rpc2_over_dhip=entry.data.get(CONF_RPC2_OVER_DHIP, False),
             illuminator_restore_store=IlluminatorRestoreStore(hass, entry.entry_id),
             channel_snapshot_store=ChannelLightingSnapshotStore(hass, entry.entry_id),
         )
@@ -2428,6 +2448,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     "Device supports privacy mode=%s", self._supports_privacy_mode
                 )
 
+                # An indoor monitor's call settings (#949, #998). Only asked
+                # of a device that says it is a monitor, so nothing else pays
+                # a request for it, and judged on the keys that came back
+                # rather than on whether the read raised: a device without the
+                # table answers empty.
+                if self.is_indoor_monitor():
+                    await self._async_probe_vth_phone_settings()
+
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
                     await self.async_start_event_listener()
@@ -2573,7 +2601,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Only poll Encode where the initialization probe found audio fields.
             if self._encode_audio_keys and self._wanted_by(SWITCH, SELECT):
                 coros.append(asyncio.ensure_future(self._async_get_encode_config()))
-            if self._wanted_by(CAMERA, SWITCH):
+            # Not asked of a monitor with no camera. This is the one member of
+            # the fan-out gated on a platform alone rather than on a capability,
+            # and a VTH5221D refuses `MotionDetect` outright, so it was a round
+            # trip per poll that could only ever come back empty.
+            #
+            # Not the crash fix. What made a refusal here fatal was that it
+            # arrived as `Rpc2MethodRefused` rather than as the 404 an absent
+            # CGI table gives, so it escaped the gather, which has no
+            # `return_exceptions`; that is fixed in `_request_over_dhip` where
+            # every caller benefits. This is only about not asking a device
+            # with no camera whether its motion detection is on.
+            # `is_indoor_monitor_without_video` is the same answer #958 used to
+            # take the camera entities away from such a device.
+            if self._wanted_by(CAMERA, SWITCH) and not (
+                self.is_indoor_monitor_without_video()
+            ):
                 coros.append(
                     asyncio.ensure_future(
                         self.client.async_get_config_motion_detection()
@@ -2699,6 +2742,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # Only the privacy mode switch reads this one.
             if self._supports_privacy_mode and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self._async_fetch_privacy_mode()))
+            # The do-not-disturb switch and the volume numbers of a monitor.
+            # Gated on the probe as well as the platforms, so a monitor that
+            # does not serve the table is never asked for it again.
+            if getattr(self, "_vth_phone_fields", frozenset()) and self._wanted_by(
+                SWITCH, NUMBER
+            ):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_vth_phone_settings())
+                )
             # Only the camera-link selects of an indoor monitor read this one.
             if self.is_indoor_monitor() and self._wanted_by(SELECT):
                 coros.append(
@@ -4102,8 +4154,45 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         `ff:ff:ff:ff:ff:ff`, and claiming that as a connection told Home
         Assistant every such channel was the same hardware (#1078). See
         `dahua_utils.usable_mac`.
+
+        **And None for a real address that more than one slot reports (#1104).**
+        A coax channel has no camera with a MAC of its own, so an XVR fills the
+        slot in with the recorder's, which is a perfectly valid address and so
+        passed the check above. `connections` is how Home Assistant decides two
+        devices are the same hardware, and it allows one device per MAC inside a
+        config entry, so every channel after the first was refused:
+
+            Invalid device info ... connections: {('mac', '...')} ...
+            are already registered for device ... of the same config entry
+
+        Reported by benloy-debug on a recorder with several coax channels plus
+        IP channels: the coax ones shared one MAC and were refused, the IP
+        channel had its own and was fine. About 130 errors per startup, and the
+        channel devices simply missing.
+
+        Both sides of a collision are dropped, not just the second. Which slot
+        was asked first is not evidence about whose camera the address belongs
+        to, and a wrong MAC in `connections` is worse than none: it is the field
+        that merges devices together. The identifiers are already unique per
+        channel, so the device page loses nothing but the MAC row.
+
+        Compared as digits, because the device's own spelling is kept in what
+        `usable_mac` returns while Home Assistant normalises before storing, so
+        two spellings of one address collide there and not here.
         """
-        return dahua_utils.usable_mac(self._slot().get("mac"))
+        mac = dahua_utils.usable_mac(self._slot().get("mac"))
+        if mac is None:
+            return None
+        digits = dahua_utils.mac_digits(mac)
+        shared = sum(
+            1
+            for slot in self._remote_devices.values()
+            if dahua_utils.mac_digits(dahua_utils.usable_mac((slot or {}).get("mac")))
+            == digits
+        )
+        if shared > 1:
+            return None
+        return mac
 
     def get_channel_firmware_version(self):
         """The camera's firmware, or None if the recorder did not say.
@@ -4152,6 +4241,44 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         fetched.
         """
         return field in getattr(self, "_video_color_fields", frozenset())
+
+    def supports_vth_phone_setting(self, field: str) -> bool:
+        """Whether this monitor reported this call setting at setup (#949).
+
+        What the do-not-disturb switch and the volume numbers are created
+        from. One source of truth, because the poll reads the same answer to
+        decide whether to fetch the table: two copies of the rule drifting
+        apart would either spend a request per poll on nothing, or leave an
+        entity reading a value nobody fetched.
+        """
+        return field in getattr(self, "_vth_phone_fields", frozenset())
+
+    def get_vth_phone_number(self, field: str):
+        """One of a monitor's volumes, or None if the poll has not got it.
+
+        Separate from the flag below because the device answers these as
+        plain integers and the flag as a boolean, and the flat shape makes
+        every value a string, so each needs its own conversion.
+        """
+        raw = self.data.get("table.{0}.{1}".format(VTH_PHONE_TABLE, field))
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def get_vth_phone_flag(self, field: str):
+        """One of a monitor's boolean call settings, or None.
+
+        `"true"` compared as a string, because a CGI response is flat text and
+        `flatten_rpc2_config` reshapes RPC2's JSON into the identical flat
+        keys, so a real boolean arrives here as the word.
+        """
+        raw = self.data.get("table.{0}.{1}".format(VTH_PHONE_TABLE, field))
+        if raw is None:
+            return None
+        return {"true": True, "false": False}.get(str(raw).strip().lower())
 
     def get_video_color(self, field: str):
         """A picture adjustment for this channel's general profile, or None.
@@ -5562,6 +5689,75 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """True if the lens privacy mask is currently enabled"""
         return self.data.get("privacy_mode_enabled", False)
 
+    async def _async_coaxial_status_second_opinion(self, channel: int):
+        """Ask RPC2 for the state CGI just refused, because they disagree.
+
+        Measured on a DHI-NVR5464-16P-EI (#555): channel 7 answers
+        `coaxialControlIO.cgi?action=getStatus` with HTTP 400 twice in the same
+        minute, while `CoaxialControlIO.getStatus` over RPC2 returns a reading
+        for that same channel at that same moment. A 400 is **that transport**
+        refusing, not the capability being absent, so treating it as the end of
+        the question hid a state the device was perfectly willing to report.
+
+        `uses_rpc2_deterrence()` cannot cover this. It is False for every
+        recorder channel by construction, and a recorder is where the split
+        transports were measured.
+
+        **Asked once per channel, and the asymmetry is deliberate.** The CGI
+        refusals here recovered on their own, so that transport keeps being
+        asked every poll. An RPC2 refusal is a different kind of answer: "no
+        such method" and "Authority:check failure" are both measured to mean
+        the firmware does not serve the call, which does not change while the
+        process runs. Retrying it would add a request per refusing channel per
+        poll for an answer already given, and seven channels here refuse.
+
+        Returns the reading when RPC2 answers, and None when it does not, which
+        leaves the caller's existing hold-the-last-value path untouched.
+        """
+        if getattr(self, "_coaxial_status_rpc2_asked", False):
+            return None
+        self._coaxial_status_rpc2_asked = True
+        try:
+            status = await self.client.async_get_coaxial_control_io_status_rpc2(channel)
+        except Rpc2MethodRefused as refused:
+            if rpc2_refusal_is_a_stale_login(refused):
+                # The session, not the capability. Let it out so the shared
+                # login is rebuilt, and do not record this as an answer.
+                self._coaxial_status_rpc2_asked = False
+                raise
+            _LOGGER.debug(
+                "%s channel %s: RPC2 refuses the coaxial status too (%s)",
+                self._address,
+                channel,
+                refused,
+            )
+            return None
+        except Exception as exception:  # pylint: disable=broad-except
+            # A fallback must never be the thing that fails the poll: the
+            # caller is already handling a refusal when it gets here.
+            # A transport failure is not a verdict on this capability. Let a
+            # later poll try again, just as it does after an expired login.
+            self._coaxial_status_rpc2_asked = False
+            _LOGGER.debug(
+                "%s channel %s: the RPC2 coaxial status could not be read",
+                self._address,
+                channel,
+                exc_info=exception,
+            )
+            return None
+        except asyncio.CancelledError:
+            self._coaxial_status_rpc2_asked = False
+            raise
+        self._coaxial_status_over_rpc2 = True
+        _LOGGER.info(
+            "%s channel %s refuses the siren and white light state over CGI but "
+            "answers it over RPC2, so this channel now reads it there. The "
+            "capability was present all along; only the transport was wrong",
+            self._address,
+            channel,
+        )
+        return status
+
     async def _async_coaxial_status(self, channel: int):
         """Read the siren and white light state, or give up on this poll only.
 
@@ -5594,7 +5790,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         silently drop a capability the device does have.
         """
         try:
-            if self.uses_rpc2_deterrence():
+            if self.uses_rpc2_deterrence() or getattr(
+                self, "_coaxial_status_over_rpc2", False
+            ):
                 return await self.client.async_get_coaxial_control_io_status_rpc2(
                     channel
                 )
@@ -5625,6 +5823,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         except ClientResponseError as error:
             if error.status not in CAPABILITY_REFUSED:
                 raise
+            recovered = await self._async_coaxial_status_second_opinion(channel)
+            if recovered is not None:
+                return recovered
             target = (self.client.device_key, channel)
             if target not in _CAPABILITY_REFUSALS_REPORTED:
                 _CAPABILITY_REFUSALS_REPORTED.add(target)
@@ -5683,6 +5884,66 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_vth_camera_links(self) -> dict | None:
         """The links and cameras vth_camera_links describes, or None before a read."""
         return (getattr(self, "data", None) or {}).get(VTH_CAMERA_LINKS)
+
+    async def _async_probe_vth_phone_settings(self) -> bool:
+        """Ask an indoor monitor once which call settings it has (#949, #998).
+
+        Judged on the keys the device returned, not on whether the read
+        raised. `async_get_config` answers `{}` for a table a device does not
+        serve, so a probe that only caught an exception would report every
+        monitor as having all of them.
+
+        Measured on a VTH5221D (3.000.0012000.0.R): all five below are
+        present. Stored per field rather than as one flag, because a monitor
+        reporting four of them should get four entities rather than a fifth
+        that can only ever read unknown.
+        """
+        try:
+            table = await self.client.async_get_video_talk_phone_general()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "No call settings from the monitor at %s",
+                self._address,
+                exc_info=exception,
+            )
+            self._vth_phone_fields = frozenset()
+            return False
+        prefix = "table.{0}.".format(VTH_PHONE_TABLE)
+        self._vth_phone_fields = frozenset(
+            field
+            for field in VTH_PHONE_SETTINGS
+            if table.get(prefix + field) is not None
+        )
+        _LOGGER.debug(
+            "The monitor at %s reports call settings %s",
+            self._address,
+            sorted(self._vth_phone_fields) or "none",
+        )
+        return bool(self._vth_phone_fields)
+
+    async def _async_fetch_vth_phone_settings(self) -> dict | None:
+        """Poll a monitor's call settings, keeping the last answer on a refusal.
+
+        Wrapped for the reason every optional read in the fan-out is: the
+        gather has no `return_exceptions`, so a device that stops answering
+        would take the whole refresh and every entity with it (#1006).
+        Carries only this table's own keys, never the whole of the last poll.
+        """
+        try:
+            return await self.client.async_get_video_talk_phone_general()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the call settings of the monitor at %s",
+                self._address,
+                exc_info=exception,
+            )
+            prefix = "table.{0}.".format(VTH_PHONE_TABLE)
+            previous = {
+                key: value
+                for key, value in (getattr(self, "data", None) or {}).items()
+                if key.startswith(prefix)
+            }
+            return previous or None
 
     async def _async_fetch_video_color(self) -> dict | None:
         """Poll the picture adjustments, keeping the last answer on a refusal.

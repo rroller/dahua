@@ -8,13 +8,19 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 import asyncio
 import time
 import aiohttp
+from multidict import CIMultiDict
+from yarl import URL
 
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import ALL_EVENTS, DOMAIN
+from .dhip import DhipLoginRefused, DhipTransport
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
 from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
+
+# An indoor monitor's call settings: do not disturb, and the volumes (#949, #998).
+VTH_PHONE_TABLE = "VideoTalkPhoneGeneral"
 from . import white_light_override as wlo
 from hashlib import md5
 from urllib.parse import quote
@@ -131,6 +137,10 @@ _HOST_LIGHTING_SCHEME_LOCKS: dict[str, asyncio.Lock] = {}
 
 # One clip at a time per speaker, keyed by device and channel.
 _HOST_SPEAKER_LOCKS: dict[tuple, asyncio.Lock] = {}
+
+# Whole-table call-setting writes must preserve other in-flight changes,
+# including writes from another client or user on the same monitor.
+_HOST_VTH_PHONE_LOCKS: dict[str, asyncio.Lock] = {}
 
 # Pushing audio to a device's speaker. `singlepart` is a stream rather than an
 # upload: the device plays what arrives as it arrives, sends no status line of
@@ -463,8 +473,13 @@ async def _release_rpc2(key) -> None:
         # A device that will not take the logout will time the session out on
         # its own. Losing the socket matters more than losing the courtesy.
         _LOGGER.debug("RPC2 logout failed for %s", key[0], exc_info=True)
-    if not holder.session.closed:
-        await holder.session.close()
+    try:
+        close = getattr(holder.client, "close", None)
+        if close is not None:
+            await close()
+    finally:
+        if not holder.session.closed:
+            await holder.session.close()
 
 
 def _digest_state(device: str, username: str) -> dict:
@@ -1491,6 +1506,13 @@ class DahuaClient:
     # client does not reopen. See `_refuse_if_closing`.
     _closing = False
 
+    # Whether this device is read over DHIP because it serves no HTTP at all
+    # (#949). Here for the reason above: the shared RPC2 session's tests build
+    # clients with `object.__new__`, and the first version of this attribute
+    # took 44 of them down with an AttributeError the moment the session was
+    # acquired.
+    _rpc2_over_dhip = False
+
     def __init__(
         self,
         username: str,
@@ -1503,6 +1525,7 @@ class DahuaClient:
         use_rpc2: bool = False,
         illuminator_restore_store=None,
         channel_snapshot_store=None,
+        rpc2_over_dhip: bool = False,
     ) -> None:
         self._username = username
         self._password = password
@@ -1534,6 +1557,19 @@ class DahuaClient:
         # from under the other entries.
         self._rpc2_acquired = False
         self._rpc2_released = False
+        # An indoor monitor with no web server at all (#949). Every read has to
+        # go over DHIP on 5000, because there is nothing listening on the HTTP
+        # port to refuse them.
+        #
+        # Carried as a flag from the config entry rather than discovered here.
+        # The existing "this device serves no CGI" learning reads an HTTP
+        # status: configManager.cgi answers 404 and _HOST_CGI_CONFIG_ABSENT
+        # remembers it. A device with no HTTP answers connection-refused, which
+        # is what a camera that is switched off also answers, so there is
+        # nothing in it to learn from. The add flow already establishes the
+        # difference, by logging in over DHIP and asking what the device is, so
+        # the answer is recorded there and read here.
+        self._rpc2_over_dhip = rpc2_over_dhip
         # Preserve the camera's policy while the illuminator temporarily owns
         # a channel/profile. Camera config survives HA restarts, so this must.
         self._illuminator_restore_store = illuminator_restore_store
@@ -1642,6 +1678,30 @@ class DahuaClient:
             # identity simply fell back and the entry carried on.
             if strict_auth and _is_login_refused(e):
                 raise
+            if e.status in self.CONFIG_CGI_ABSENT and self._rpc2_over_dhip:
+                # A monitor with no magicBox CGI still knows its own serial, and
+                # the hash below would change with the password (#805).
+                #
+                # Only a monitor reached over DHIP, which is to say one that
+                # could not be added at all before this, is allowed to use it.
+                # A VTH that serves HTTP answers 404 to magicBox.cgi as well,
+                # and those have entries today: every entity `unique_id` is
+                # built from this answer, so handing them the real serial
+                # renames all of them on upgrade and leaves the user's
+                # automations pointing at `_2` names. Reported by kmich on
+                # #1103, who measured it against his own three VTH2421F-P.
+                # The serial is the right end state for them too, but it needs
+                # an entity registry migration, and that is its own change.
+                vth = await self._vth_identity_over_rpc2()
+                if vth and vth.get("serial"):
+                    return {"serialNumber": vth["serial"]}
+                # This entry was identified as a DHIP monitor when added. A
+                # missing model, firmware or serial now is no reason to assign
+                # a different device identity. Retry the actual reads too:
+                # _vth_identity_over_rpc2 memoises incomplete answers.
+                self._vth_identity_asked = False
+                self._vth_identity = None
+                raise
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(
                 self._address, self._rtsp_port, self._username, self._password
@@ -1746,6 +1806,23 @@ class DahuaClient:
         firmware = rpc2_software_version(version.get("params"))
         if not model or not firmware:
             return None
+        # The serial matters more than it looks. Without it `async_get_system_info`
+        # falls back to an md5 of the address, port, username and password, which
+        # is #805: the identity changes when the password does and the same
+        # monitor comes back as a new device. A VTH answers magicBox.getSerialNo
+        # (measured on 3.000.0012000.0.R: "3E0164EPAN00095"), so there is no need
+        # to derive one. Wrapped separately, because an identity without a serial
+        # is still better than no identity.
+        serial = None
+        try:
+            answer = await self._rpc2_shared_call(
+                lambda client: client.request("magicBox.getSerialNo", params=None)
+            )
+            serial = ((answer.get("params") or {}).get("sn") or "").strip() or None
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "No serial over RPC2 from the VTH at %s", self._address, exc_info=True
+            )
         _LOGGER.info(
             "%s has no magicBox CGI and is a VTH; read its identity over RPC2: %s, %s",
             self._address,
@@ -1756,6 +1833,7 @@ class DahuaClient:
             "type": model,
             "version": firmware,
             "class": "VTH",
+            "serial": serial,
             "own_video": await self._vth_own_video(),
         }
         return self._vth_identity
@@ -1843,6 +1921,69 @@ class DahuaClient:
 
         return await self._rpc2_shared_call(write)
 
+    async def async_get_video_talk_phone_general(self) -> dict:
+        """An indoor monitor's call settings, flat, or {} if it has none.
+
+        `VideoTalkPhoneGeneral` carries the do-not-disturb flag and the four
+        volumes. Measured on a VTH5221D (3.000.0012000.0.R): sixteen keys,
+        with `SilenceEnable` a real boolean and the volumes plain integers.
+        A device without the table answers empty rather than erroring, which
+        is why every caller gates on the key it reads rather than on this
+        returning something.
+        """
+        return await self.async_get_config(VTH_PHONE_TABLE)
+
+    async def async_set_video_talk_phone_field(self, field: str, value) -> None:
+        """Change one field of a monitor's call settings, writing the whole table.
+
+        **The whole table, deliberately, and this is the opposite of the rule
+        everywhere else here.** AGENTS.md says a write addresses one field,
+        because a recorder refuses a whole-table `setConfig` for size
+        (`errCode 287638033, "Request length error!"`). On a VTH that rule is
+        destructive: measured on a VTH5221D, `setConfig` with a single key
+        answered `result: true` and **replaced the table**, leaving one key of
+        sixteen and dropping the other fifteen, including the ring file and
+        every volume. The monitor had to be rebuilt from a copy read
+        beforehand. These tables are small, so the size limit that forces the
+        one-field rule elsewhere never applies.
+
+        So: read, change one key, write it all back. Proved both ways on the
+        hardware -- `SilenceEnable` and `RingVolume` each took, nothing else
+        moved, and writing the original back restored the table byte for byte.
+
+        The read is inside the action so a retried call re-reads rather than
+        writing a table captured before an expired session, and so two writes
+        racing cannot put back a copy made before the other.
+        """
+
+        async def write(rpc2):
+            params = await rpc2.get_config({"name": VTH_PHONE_TABLE})
+            table = (params or {}).get("table")
+            if not isinstance(table, dict):
+                raise ValueError(
+                    "{0} does not serve {1}".format(self._address, VTH_PHONE_TABLE)
+                )
+            if field not in table:
+                # Writing a key the table does not have is how a `setConfig`
+                # answers OK and changes nothing, so it is refused here
+                # instead of being reported as a success.
+                raise ValueError(
+                    "{0} has no {1}.{2}".format(self._address, VTH_PHONE_TABLE, field)
+                )
+            wanted = dict(table)
+            wanted[field] = value
+            await rpc2.request(
+                "configManager.setConfig",
+                params={"name": VTH_PHONE_TABLE, "table": wanted},
+            )
+
+        lock = _HOST_VTH_PHONE_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+            await self._rpc2_shared_call(write)
+            # This RPC2 write bypasses get(), which normally clears the shared
+            # five-minute config cache. Refresh must see the new settings.
+            clear_host_cache(self._device)
+
     def vth_own_video(self) -> bool | None:
         """For a VTH identified over RPC2: whether it has a camera. None otherwise.
 
@@ -1923,6 +2064,15 @@ class DahuaClient:
         except aiohttp.ClientResponseError as e:
             if _is_login_refused(e):
                 raise
+            if e.status in self.CONFIG_CGI_ABSENT and self._rpc2_over_dhip:
+                # The model is a better name than a hash of the credentials,
+                # and it is what the add form showed when the monitor was added.
+                # Gated with the serial above, and for the same reason: an HTTP
+                # VTH's device page is named today, and renaming it is part of
+                # the same move, not a free improvement to slip in here.
+                vth = await self._vth_identity_over_rpc2()
+                if vth:
+                    return {"name": vth["type"]}
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(
                 self._address, self._rtsp_port, self._username, self._password
@@ -2509,6 +2659,7 @@ class DahuaClient:
                 self._rtsp_port,
                 session,
                 self._use_https,
+                dhip_transport=self._new_dhip_transport(),
             )
             holder = _SharedRpc2Session(session, client, None)
             _HOST_RPC2[key] = holder
@@ -2520,6 +2671,18 @@ class DahuaClient:
             holder.task = asyncio.ensure_future(holder.client.login())
         try:
             response = await asyncio.shield(holder.task)
+        except DhipLoginRefused as refused:
+            if holder.task is not None and holder.task.done():
+                holder.task = None
+            # Use the same auth path as CGI so the coordinator can request
+            # corrected credentials once the host's refusal budget is spent.
+            url = URL(self._base + "/RPC2_Login")
+            raise aiohttp.ClientResponseError(
+                aiohttp.RequestInfo(url, "POST", CIMultiDict(), url),
+                (),
+                status=401,
+                message="DHIP login refused",
+            ) from refused
         except Exception:
             # Clear the login, not the holder: the entries still hold
             # references to it, and the next read should try again.
@@ -3164,6 +3327,39 @@ class DahuaClient:
             )
             return False
         return wlo.lighting_shape(scheme, lighting) is not None
+
+    def _new_dhip_transport(self):
+        """The socket a no-HTTP monitor is read over, or None for everything else.
+
+        Built here rather than in the transport, so the auth budget it spends
+        is this host's: `async_record_host_auth_refusal` is the same counter
+        the polls, the CGI event stream and the doorbell listener share, and
+        a VTH enforces `LockLoginEnable` with `LockLoginTimes: 5` and
+        `LoginFailLockTime: 300` (measured on 3.000.0012000.0.R). A transport
+        that reconnects and re-logs in on its own schedule is exactly how #729
+        happened on the other transports, and locking this device out locks its
+        owner out of correcting it.
+        """
+        if not self._rpc2_over_dhip:
+            return None
+
+        # Imported here, not at the top: host.py imports this module, so the
+        # other direction is a cycle. The counter is host state rather than
+        # client state, which is why it lives there.
+        from .host import MAX_AUTH_REFUSALS, async_record_host_auth_refusal
+
+        def refused(reason) -> bool:
+            return (
+                async_record_host_auth_refusal(self._address, "dhip transport")
+                >= MAX_AUTH_REFUSALS
+            )
+
+        return DhipTransport(
+            self._address,
+            self._username,
+            self._password,
+            on_login_refused=refused,
+        )
 
     @staticmethod
     def _new_rpc2_session() -> aiohttp.ClientSession:
@@ -5545,6 +5741,98 @@ class DahuaClient:
 
         return dict(result)
 
+    def _no_dhip_equivalent(self, url: str, why: str) -> aiohttp.ClientResponseError:
+        """A 404 that can be printed, for a read this transport cannot serve.
+
+        `request_info` is built rather than left as None. aiohttp's own
+        `__str__` reads `self.request_info.real_url`, so a None there turns
+        every attempt to log or format this error into
+
+            AttributeError: 'NoneType' object has no attribute 'real_url'
+
+        which is raised from the logging call, nowhere near the read, and hides
+        the status the caller was being told about. Measured against the
+        monitor: the first probe to print one of these died on it rather than
+        on the refusal it was reporting.
+        """
+        full = URL("{0}{1}".format(getattr(self, "_base", ""), url))
+        return aiohttp.ClientResponseError(
+            aiohttp.RequestInfo(full, "GET", CIMultiDict(), full),
+            (),
+            status=404,
+            message=why,
+        )
+
+    async def _request_over_dhip(self, url: str, allow_rpc2: bool) -> dict:
+        """Serve a read for a device whose only transport is DHIP (#949).
+
+        Two outcomes, and nothing in between, because there is no second
+        transport to fall back to:
+
+        * a `configManager.cgi?action=getConfig&name=X` read is the same
+          question as `configManager.getConfig {"name": "X"}`, so it goes over
+          the socket and comes back in the same flat shape every caller
+          already expects;
+        * anything else -- a snapshot, an event attach, a capability probe --
+          has no DHIP equivalent that has been measured, and the device has no
+          web server to ask. Reported as a 404.
+
+        The 404 is the point. `CAPABILITY_REFUSED` is `(400, 404, 501)` and
+        `refusals.py` and the coordinator's probes are already built to hear it
+        and gate the entity off. Raising something new here would mean teaching
+        every one of those callers about a transport, to say a thing they can
+        already be told.
+        """
+        if not allow_rpc2:
+            # The one caller that pins itself to CGI is the per-rule IVS read,
+            # which needs the array indexes only that table has. On this
+            # device there is no such table to pin to.
+            raise self._no_dhip_equivalent(
+                url,
+                "{0} has no CGI; this read cannot be served over DHIP".format(
+                    self._address
+                ),
+            )
+        match = _CONFIG_READ.search(url)
+        if match is None:
+            raise self._no_dhip_equivalent(
+                url,
+                "{0} serves no HTTP, and {1} has no DHIP equivalent".format(
+                    self._address, url
+                ),
+            )
+        table = match.group(1)
+        try:
+            async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
+                return await self._rpc2_get_config(table)
+        except Rpc2MethodRefused as refused:
+            if rpc2_refusal_is_a_stale_login(refused):
+                # Not this table's verdict. `_rpc2_get_config` has already
+                # logged in again once; letting this through keeps the
+                # existing retry rather than recording a capability that is
+                # really a session.
+                raise
+            # The device answered and declined the table, which over HTTP would
+            # be a CGI 404 and is handled everywhere as one. Over DHIP it
+            # arrives as Rpc2MethodRefused, which no caller of `get` expects:
+            # `async_get_config` swallows a ClientResponseError and returns {},
+            # the capability probes judge on CAPABILITY_REFUSED, and the poll's
+            # fan-out has no `return_exceptions`. Measured on a VTH5221D, where
+            # MotionDetect, DisableLinkage and DisableEventNotify are all
+            # refused this way: left as it was, the first refresh raised out of
+            # the gather and the entry never finished setting up (#949, and
+            # #1006 for the shape).
+            _LOGGER.debug(
+                "%s does not serve %s, reporting it the way an absent CGI table is",
+                self._address,
+                table,
+                exc_info=True,
+            )
+            raise self._no_dhip_equivalent(
+                url,
+                "{0} does not serve the {1} table".format(self._address, table),
+            ) from refused
+
     async def _request(
         self, url: str, verify_ok=False, allow_rpc2=True, reject_declined=False
     ) -> dict:
@@ -5560,6 +5848,15 @@ class DahuaClient:
         # same CGI table even when other config reads prefer RPC2.
         if url == "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule":
             allow_rpc2 = False
+        # A monitor with no web server (#949). There is no CGI to try first and
+        # none to fall back to, so this is a route rather than a preference:
+        # a config read goes over DHIP, and anything else is answered the way
+        # the rest of the integration already hears "this device does not have
+        # that", so capability gating and refusal learning work unchanged
+        # instead of each caller growing a special case.
+        if self._rpc2_over_dhip:
+            return await self._request_over_dhip(url, allow_rpc2)
+
         # Not after close(): this client has given its share back, and taking
         # a new one would build a session nobody is left to release.
         if (

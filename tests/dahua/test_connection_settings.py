@@ -60,7 +60,18 @@ async def test_internally_built_rpc2_client_inherits_the_flag(monkeypatch):
 
     class _CapturingRpc2:
         def __init__(
-            self, username, password, address, port, rtsp_port, session, use_https=None
+            self,
+            username,
+            password,
+            address,
+            port,
+            rtsp_port,
+            session,
+            use_https=None,
+            # Tolerated rather than listed. The real client gained
+            # `dhip_transport` for #949, and a double that demands the old
+            # signature fails on a keyword it does not care about.
+            **kwargs,
         ):
             captured["use_https"] = use_https
 

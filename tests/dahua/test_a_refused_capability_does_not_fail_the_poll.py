@@ -58,6 +58,7 @@ def _coordinator(raises=None, returns=None, over_rpc2=False):
     nothing here could reach the branch that was taking entries offline in #848.
     """
     calls = []
+    rpc2_calls = []
 
     async def async_get_coaxial_control_io_status(channel):
         calls.append(channel)
@@ -66,7 +67,10 @@ def _coordinator(raises=None, returns=None, over_rpc2=False):
         return returns
 
     async def async_get_coaxial_control_io_status_rpc2(channel=0):
-        calls.append("rpc2")
+        # Recorded separately from the CGI calls. While both transports shared
+        # one list, no test could tell "it kept asking over CGI" apart from
+        # "it asked the other transport once", which is the whole of #555.
+        rpc2_calls.append(channel)
         if raises is not None:
             raise raises
         return returns
@@ -82,6 +86,12 @@ def _coordinator(raises=None, returns=None, over_rpc2=False):
             ),
         ),
         _calls=calls,
+        _rpc2_calls=rpc2_calls,
+    )
+    coordinator._async_coaxial_status_second_opinion = (
+        dahua.DahuaDataUpdateCoordinator._async_coaxial_status_second_opinion.__get__(
+            coordinator
+        )
     )
     coordinator._async_coaxial_status = (
         dahua.DahuaDataUpdateCoordinator._async_coaxial_status.__get__(coordinator)
@@ -324,7 +334,8 @@ async def test_the_rpc2_transport_is_the_one_asked():
     coordinator = _coordinator(over_rpc2=True, returns={"a": "b"})
 
     assert await coordinator._async_coaxial_status(1) == {"a": "b"}
-    assert coordinator._calls == ["rpc2"]
+    assert coordinator._rpc2_calls == [1]
+    assert coordinator._calls == [], "the CGI endpoint was read on an RPC2 device"
 
 
 async def test_a_stale_login_still_raises():
@@ -368,7 +379,7 @@ async def test_an_rpc2_refusal_does_not_stop_it_asking():
     await coordinator._async_coaxial_status(1)
     await coordinator._async_coaxial_status(1)
 
-    assert coordinator._calls == ["rpc2", "rpc2", "rpc2"]
+    assert coordinator._rpc2_calls == [1, 1, 1]
 
 
 # --- and the reported-once state is forgotten with the host -----------------

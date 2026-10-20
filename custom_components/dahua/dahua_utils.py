@@ -87,6 +87,26 @@ _CAMERA_FIELDS = {
 _PLACEHOLDER_MACS = frozenset({"ffffffffffff", "000000000000"})
 
 
+def mac_digits(value) -> str | None:
+    """The twelve hex digits of a MAC, lowercased and unseparated, or None.
+
+    This is how two MACs are compared. A device reports one in whatever
+    spelling it likes, and Home Assistant normalises a connection before it
+    stores it, so `9C:14:63:AA:BB:CC` and `9c-14-63-aa-bb-cc` are one address
+    in the registry and two unequal strings in Python. Comparing what
+    `usable_mac` returns, which keeps the device's own spelling, would miss a
+    collision that Home Assistant then refuses the device over.
+    """
+    if not value:
+        return None
+    digits = str(value).strip().lower()
+    for separator in (":", "-", "."):
+        digits = digits.replace(separator, "")
+    if len(digits) != 12 or any(c not in "0123456789abcdef" for c in digits):
+        return None
+    return digits
+
+
 def usable_mac(value) -> str | None:
     """The MAC as the device reported it, or None when it is not an address.
 
@@ -103,18 +123,17 @@ def usable_mac(value) -> str | None:
     value rather than on how many channels share it, because one channel with
     a broadcast MAC is already wrong and the second is what makes it visible.
 
+    A real address that several slots report is the other half of the same
+    problem and is not decided here, because this function sees one value.
+    `DahuaDataUpdateCoordinator.get_channel_mac` drops those, over the whole
+    slot table (#1104).
+
     Anything that is not twelve hex digits is also refused. A malformed MAC in
     `connections` is worse than no MAC at all: it is the field that merges
     devices together.
     """
-    if not value:
-        return None
-    digits = str(value).strip().lower()
-    for separator in (":", "-", "."):
-        digits = digits.replace(separator, "")
-    if len(digits) != 12 or any(c not in "0123456789abcdef" for c in digits):
-        return None
-    if digits in _PLACEHOLDER_MACS:
+    digits = mac_digits(value)
+    if digits is None or digits in _PLACEHOLDER_MACS:
         return None
     return str(value).strip()
 

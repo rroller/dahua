@@ -80,6 +80,9 @@
             },
             "smart_motion_detection": {
                 "default": "mdi:motion-sensor"
+            },
+            "vth_silence": {
+                "default": "mdi:bell-off"
             }
         }
     }

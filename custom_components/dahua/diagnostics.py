@@ -437,6 +437,52 @@ def _rpc2_poll_block(coordinator) -> dict[str, Any]:
     }
 
 
+def _listener_counts(coordinator) -> dict[str, Any]:
+    """Each event key and how many listeners it holds.
+
+    Keys are "<EventName>-<channel>". Two things are read off this, and until
+    #944 it could only answer the first:
+
+    * which channel the subscriptions are on, because listeners on `...-3` while
+      the device's events arrive with index 0 is the channel-offset bug;
+    * whether a key has *gained* listeners, which is this codebase's own
+      recurring bug shape and the leading explanation for a doorbell that fires
+      twice per press only after Home Assistant has been up a while.
+
+    It used to be `sorted(self._dahua_event_listeners)`, the key names alone, so
+    a key with two listeners printed exactly like a key with one. The reporter on
+    #944 was sent to this field on the understanding that a duplicate would show
+    up in it. It could not.
+
+    **No count here is wrong on its own.** More than one entity may legitimately
+    want the same event, and on a doorbell more than one does: the "Button
+    Pressed" binary sensor and the "Doorbell" event entity both subscribe to
+    `DoorbellPressed`, so a healthy VTO reports 2 for it. The number is evidence
+    only when it is compared against the same entry's dump taken shortly after a
+    restart. A key that read 2 then and reads 3 now is the accumulation; a key
+    that reads 2 in both is the entity set.
+
+    Sorted, because a dump is read by eye and diffed against another dump, and
+    the field it replaces was sorted.
+
+    Never raises. A count that cannot be taken is reported as None rather than
+    as a number nobody measured, because this is the dump somebody is asked for
+    once everything else has already gone wrong.
+    """
+    listeners_by_key = getattr(coordinator, "_dahua_event_listeners", None) or {}
+    counts: dict[str, Any] = {}
+    try:
+        items = sorted(listeners_by_key.items())
+    except Exception:  # pylint: disable=broad-except
+        return counts
+    for key, listeners in items:
+        try:
+            counts[key] = len(listeners)
+        except TypeError:
+            counts[key] = None
+    return counts
+
+
 def _events_block(coordinator) -> dict[str, Any]:
     now = int(time.time())
     timestamps = getattr(coordinator, "_dahua_event_timestamp", {}) or {}
@@ -456,9 +502,10 @@ def _events_block(coordinator) -> dict[str, Any]:
         "rpc2_poll": rpc2_poll,
         "vto_task_running": bool(vto_task) and not vto_task.done(),
         "vto_client_connected": getattr(coordinator, "_vto_client", None) is not None,
-        # Listener keys are "<EventName>-<channel>". On an NVR, listeners for
-        # channel 3 while events arrive with index 0 is the channel-offset bug.
-        "listener_keys": sorted(getattr(coordinator, "_dahua_event_listeners", {})),
+        # Each "<EventName>-<channel>" and how many listeners it holds. See
+        # _listener_counts for why the count is there and the names alone are
+        # not enough.
+        "listener_keys": _listener_counts(coordinator),
         # The same keys, for events that arrived and found no listener there.
         # Counted rather than logged because the failure is a non-event: the
         # dispatch continues, the event still reaches the HA bus, and only the
