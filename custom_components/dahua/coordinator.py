@@ -5527,6 +5527,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         except Exception as exception:  # pylint: disable=broad-except
             # A fallback must never be the thing that fails the poll: the
             # caller is already handling a refusal when it gets here.
+            # A transport failure is not a verdict on this capability. Let a
+            # later poll try again, just as it does after an expired login.
+            self._coaxial_status_rpc2_asked = False
             _LOGGER.debug(
                 "%s channel %s: the RPC2 coaxial status could not be read",
                 self._address,
@@ -5534,6 +5537,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 exc_info=exception,
             )
             return None
+        except asyncio.CancelledError:
+            self._coaxial_status_rpc2_asked = False
+            raise
         self._coaxial_status_over_rpc2 = True
         _LOGGER.info(
             "%s channel %s refuses the siren and white light state over CGI but "

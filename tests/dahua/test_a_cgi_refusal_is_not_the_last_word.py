@@ -34,6 +34,7 @@ Reintroduced against the real source, with the tests that failed:
 | the fallback raising on an unrelated error | `a_broken_fallback_does_not_fail_the_poll` |
 """
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -237,3 +238,25 @@ async def test_a_real_failure_is_not_given_a_second_opinion(status):
         await coordinator._async_coaxial_status(CHANNEL)
 
     assert coordinator.rpc2_calls == []
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("offline"), asyncio.CancelledError()])
+async def test_a_transient_or_cancelled_fallback_can_recover_next_poll(failure):
+    coordinator = _coordinator()
+    calls = []
+
+    async def read(channel):
+        calls.append(channel)
+        if len(calls) == 1:
+            raise failure
+        return RPC2_READING
+
+    coordinator.client.async_get_coaxial_control_io_status_rpc2 = read
+    if isinstance(failure, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await coordinator._async_coaxial_status(CHANNEL)
+    else:
+        assert await coordinator._async_coaxial_status(CHANNEL) is None
+
+    assert await coordinator._async_coaxial_status(CHANNEL) == RPC2_READING
+    assert calls == [CHANNEL, CHANNEL]
