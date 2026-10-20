@@ -317,3 +317,38 @@ async def test_a_platform_switched_off_is_not_forwarded(hass):
     assert "select" not in forwarded_platforms
     assert "light" not in forwarded_platforms
     assert "camera" in forwarded_platforms, "the others must still load"
+
+
+async def test_serial_migration_failure_stops_platforms_and_releases_sessions(hass):
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+    with _working(), starts, forward as forward_mock, unload, patch(
+        "custom_components.dahua.migrate.async_adopt_the_real_serial",
+        side_effect=ValueError("registry migration failed"),
+    ):
+        _setting_up(hass, entry)
+        with pytest.raises(ConfigEntryNotReady):
+            await dahua_module.async_setup_entry(hass, entry)
+        forward_mock.assert_not_called()
+    assert _refcount() == 0
+    assert not hasattr(entry, "runtime_data")
+
+
+async def test_reported_serial_policy_survives_monitor_reload(hass):
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    async def refresh(coordinator):
+        coordinator._serial_number = "MONITOR-SERIAL"
+        coordinator.client._vth_identity = {"class": "VTH", "serial": "MONITOR-SERIAL"}
+        return {"serialNumber": "MONITOR-SERIAL"}
+
+    with patch.object(
+        dahua_module.DahuaDataUpdateCoordinator, "_async_update_data", refresh
+    ), starts, forward, unload:
+        assert await _try_setup(hass, entry)
+        assert entry.data["require_reported_serial"] is True
+        await dahua_module.async_unload_entry(hass, entry)
+        assert await _try_setup(hass, entry)
+        assert entry.runtime_data[0].client._require_reported_serial is True
+        await dahua_module.async_unload_entry(hass, entry)

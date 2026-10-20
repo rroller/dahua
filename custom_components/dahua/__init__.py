@@ -10,6 +10,7 @@ import logging
 # on this module.
 import time  # noqa: F401  pylint: disable=unused-import
 
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -42,6 +43,7 @@ from .const import (
     CONF_PASSWORD,
     CONF_PORT,
     CONF_RTSP_PORT,
+    CONF_REQUIRE_REPORTED_SERIAL,
     CONF_USERNAME,
     CONF_USE_HTTPS,
     DEFAULT_EVENTS,
@@ -518,8 +520,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             ", ".join(str(channel) for channel, _ in failures),
         )
 
-    # Home Assistant's own place for per entry runtime state, and it clears the
-    # attribute itself when the entry unloads, so there is nothing to pop.
+    # A new serial must not reach the platforms unless its registry migration
+    # completed. Otherwise an error or unavailable backup creates duplicate
+    # entities and strands automations on the old IDs.
+    try:
+        from .migrate import async_adopt_the_real_serial
+
+        moved = await async_adopt_the_real_serial(hass, entry, coordinators)
+        if any(
+            (getattr(c.client, "_vth_identity", None) or {}).get("class") == "VTH"
+            for c in coordinators
+        ) and not entry.data.get(CONF_REQUIRE_REPORTED_SERIAL):
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_REQUIRE_REPORTED_SERIAL: True}
+            )
+        if moved:
+            _LOGGER.warning(
+                "%s: %d entities adopted the reported serial; entity IDs are unchanged",
+                entry.data.get(CONF_ADDRESS),
+                moved,
+            )
+    except BaseException as error:
+        await asyncio.gather(
+            *[c.async_stop() for c in coordinators], return_exceptions=True
+        )
+        if isinstance(error, Exception):
+            raise ConfigEntryNotReady(
+                "Serial registry migration could not complete: " + str(error)
+            ) from error
+        raise
+
     entry.runtime_data = {c.get_channel(): c for c in coordinators}
 
     # https://developers.home-assistant.io/docs/config_entries_index/

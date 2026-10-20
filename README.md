@@ -499,9 +499,16 @@ A monitor that reports it has no camera of its own (`SupportVideo` false in its
 sensors, no event stream, no motion detection switch, no Day/Night select, no Preset
 Position, and no License Plate or Authorized Vehicle entities.
 
-For monitors added over DHIP, the serial number is read from the monitor itself.
-Existing monitors that serve HTTP keep their current identity, generated from the
-address and login. That generated identity can change when the credentials change.
+The serial number is read from the monitor itself on both HTTP and DHIP.
+Existing HTTP monitors move from the ID generated from their credentials to their real
+serial. **Take a Home Assistant backup before upgrading.** Entity and device registry
+rows are updated in place: entity IDs, dashboards and automations keep their references.
+Copies of all three persisted registries are also made in a private directory named
+`dahua-pre-serial-backup-…` under the Home Assistant configuration directory; the log
+records its location. If a backup cannot be made or an identity conflicts with another
+registry row, setup retries without loading platforms. Resolve the logged conflict or
+backup error rather than removing the existing entities. Once adopted, an unavailable
+serial read causes a retry rather than another generated identity.
 
 To ring a monitor, use [`dahua.vto_call`](#services) on the VTO, not on the monitor.
 

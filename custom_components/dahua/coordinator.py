@@ -52,6 +52,7 @@ from .const import (
     CONF_NVR_ACTIVE_DETERRENCE,
     CONF_SCAN_INTERVAL,
     CONF_RPC2_OVER_DHIP,
+    CONF_REQUIRE_REPORTED_SERIAL,
     VTH_PHONE_SETTINGS,
     CONF_USE_RPC2,
     CONF_POLL_VIDEO_MOTION,
@@ -1009,6 +1010,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # by the add flow, and not something to be toggled afterwards. A
             # monitor with no web server cannot be read any other way (#949).
             rpc2_over_dhip=entry.data.get(CONF_RPC2_OVER_DHIP, False),
+            require_reported_serial=entry.data.get(CONF_REQUIRE_REPORTED_SERIAL, False),
             illuminator_restore_store=IlluminatorRestoreStore(hass, entry.entry_id),
             channel_snapshot_store=ChannelLightingSnapshotStore(hass, entry.entry_id),
         )
