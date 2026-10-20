@@ -1666,9 +1666,20 @@ class DahuaClient:
             # identity simply fell back and the entry carried on.
             if strict_auth and _is_login_refused(e):
                 raise
-            if e.status in self.CONFIG_CGI_ABSENT:
+            if e.status in self.CONFIG_CGI_ABSENT and self._rpc2_over_dhip:
                 # A monitor with no magicBox CGI still knows its own serial, and
                 # the hash below would change with the password (#805).
+                #
+                # Only a monitor reached over DHIP, which is to say one that
+                # could not be added at all before this, is allowed to use it.
+                # A VTH that serves HTTP answers 404 to magicBox.cgi as well,
+                # and those have entries today: every entity `unique_id` is
+                # built from this answer, so handing them the real serial
+                # renames all of them on upgrade and leaves the user's
+                # automations pointing at `_2` names. Reported by kmich on
+                # #1103, who measured it against his own three VTH2421F-P.
+                # The serial is the right end state for them too, but it needs
+                # an entity registry migration, and that is its own change.
                 vth = await self._vth_identity_over_rpc2()
                 if vth and vth.get("serial"):
                     return {"serialNumber": vth["serial"]}
@@ -1971,9 +1982,12 @@ class DahuaClient:
         except aiohttp.ClientResponseError as e:
             if _is_login_refused(e):
                 raise
-            if e.status in self.CONFIG_CGI_ABSENT:
+            if e.status in self.CONFIG_CGI_ABSENT and self._rpc2_over_dhip:
                 # The model is a better name than a hash of the credentials,
                 # and it is what the add form showed when the monitor was added.
+                # Gated with the serial above, and for the same reason: an HTTP
+                # VTH's device page is named today, and renaming it is part of
+                # the same move, not a free improvement to slip in here.
                 vth = await self._vth_identity_over_rpc2()
                 if vth:
                     return {"name": vth["type"]}

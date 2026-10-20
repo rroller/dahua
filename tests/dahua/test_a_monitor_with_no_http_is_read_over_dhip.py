@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from hashlib import md5
 
 import aiohttp
 import pytest
@@ -458,13 +459,20 @@ async def test_closing_the_client_closes_the_socket(connections):
 # --- what the entry shows for a device with no magicBox CGI ------------------
 
 
-def _cgi_absent_client(vth_identity, **extra):
-    """A DahuaClient whose CGI reads 404, with a VTH identity behind them."""
+def _cgi_absent_client(vth_identity, over_dhip=True, **extra):
+    """A DahuaClient whose CGI reads 404, with a VTH identity behind them.
+
+    `over_dhip` is how the device was added. True is the monitor this PR is
+    about, which serves no HTTP at all. False is a VTH that does serve HTTP
+    and answers 404 to magicBox.cgi only, which is kmich's VTH2421F-P: it has
+    an entry today, and its identity must not move.
+    """
     client = DahuaClient.__new__(DahuaClient)
     client._address = "10.0.0.230"  # noqa: SLF001
     client._rtsp_port = 554  # noqa: SLF001
     client._username = "admin"  # noqa: SLF001
     client._password = "secret"  # noqa: SLF001
+    client._rpc2_over_dhip = over_dhip  # noqa: SLF001
     client.identity_derived_from_credentials = False
 
     async def get(url, verify_ok=False):
@@ -516,6 +524,38 @@ async def test_a_monitor_that_will_not_give_a_serial_still_gets_one():
 
     assert info["serialNumber"] != "3E0164EPAN00095"
     assert client.identity_derived_from_credentials is True
+
+
+async def test_a_monitor_that_serves_http_keeps_the_identity_it_has_today():
+    """The upgrade safety case, reported by kmich on #1103.
+
+    A VTH2421F-P serves HTTP on 80 and still answers 404 to magicBox.cgi, so
+    it reaches the same branch as the monitor above. But it could already be
+    added, and every entity `unique_id` on his three is the md5 of the
+    address, port, username and password. Handing it the real serial renames
+    all of them on upgrade, which is a migration, not a side effect of adding
+    a new transport. The name is held for the same reason.
+    """
+    client = _cgi_absent_client(_VTH, over_dhip=False)
+
+    info = await client.async_get_system_info()
+    name = await client.get_machine_name()
+
+    expected = md5(b"10.0.0.230_554_admin_secret").hexdigest()
+    assert info == {"serialNumber": expected}
+    assert name == {"name": expected}
+    assert client.identity_derived_from_credentials is True
+
+
+async def test_a_monitor_that_serves_http_still_gets_its_model_and_firmware():
+    """The negative control on the gate: it holds the two answers that build
+    ids and names, and nothing else. Model, firmware and class shipped before
+    this PR and an HTTP VTH already reads them over RPC2, so gating those
+    would be a regression rather than a hold."""
+    client = _cgi_absent_client(_VTH, over_dhip=False)
+
+    assert await client.get_device_type() == {"type": "VTH5221D"}
+    assert await client.async_get_device_class() == "VTH"
 
 
 async def test_anything_that_is_not_a_monitor_keeps_the_old_fallback():
