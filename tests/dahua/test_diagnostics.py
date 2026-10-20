@@ -104,7 +104,11 @@ class _Coordinator:
         self._supports_disarming_linkage = False
         self._supports_lighting_v2 = True
         self._dahua_event_timestamp = {"VideoMotion-0": 0}
-        self._dahua_event_listeners = {"VideoMotion-0": object()}
+        # A list of callbacks, which is what the coordinator really holds. It was
+        # an opaque `object()` while the dump read only the key names, and the
+        # field now reports how many listeners each key has (#944), so a fake
+        # that does not model the list cannot answer what the dump asks it.
+        self._dahua_event_listeners = {"VideoMotion-0": [lambda event: None]}
         self._vto_task = None
         self._vto_client = None
 
