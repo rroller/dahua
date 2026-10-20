@@ -1678,36 +1678,66 @@ class DahuaClient:
             # identity simply fell back and the entry carried on.
             if strict_auth and _is_login_refused(e):
                 raise
-            if e.status in self.CONFIG_CGI_ABSENT and self._rpc2_over_dhip:
+            if e.status in self.CONFIG_CGI_ABSENT:
                 # A monitor with no magicBox CGI still knows its own serial, and
-                # the hash below would change with the password (#805).
+                # the hash below changes when the password does (#805).
                 #
-                # Only a monitor reached over DHIP, which is to say one that
-                # could not be added at all before this, is allowed to use it.
-                # A VTH that serves HTTP answers 404 to magicBox.cgi as well,
-                # and those have entries today: every entity `unique_id` is
-                # built from this answer, so handing them the real serial
-                # renames all of them on upgrade and leaves the user's
-                # automations pointing at `_2` names. Reported by kmich on
-                # #1103, who measured it against his own three VTH2421F-P.
-                # The serial is the right end state for them too, but it needs
-                # an entity registry migration, and that is its own change.
+                # #1103 held this to monitors reached over DHIP, because a VTH
+                # that serves HTTP answers 404 to magicBox.cgi as well and
+                # those have entries today: every entity `unique_id` is built
+                # from this answer, so handing them the real serial renames all
+                # of them and leaves the user's automations on `_2` names.
+                # @kmich reported that against his own three VTH2421F-P, and
+                # also made the case for doing it properly: the generated id
+                # already moved on him once, when he changed the password.
+                # `migrate.py` now moves the registry with it, so the gate is
+                # gone and every monitor gets the serial printed on it.
                 vth = await self._vth_identity_over_rpc2()
                 if vth and vth.get("serial"):
                     return {"serialNumber": vth["serial"]}
-                # This entry was identified as a DHIP monitor when added. A
-                # missing model, firmware or serial now is no reason to assign
-                # a different device identity. Retry the actual reads too:
-                # _vth_identity_over_rpc2 memoises incomplete answers.
-                self._vth_identity_asked = False
-                self._vth_identity = None
-                raise
+                if vth or self._rpc2_over_dhip:
+                    # A monitor that would not name itself this time. Either
+                    # it still says it is a VTH, or it was identified as a
+                    # DHIP monitor when it was added and has no other
+                    # transport to be anything else on. A missing model,
+                    # firmware or serial now is no reason to assign it a
+                    # different device identity, so this retries rather than
+                    # hashing: the hash would give the entry a second set of
+                    # entities on `_2` names and nothing would undo it.
+                    #
+                    # The condition carries the whole fallback for everything
+                    # else. A camera whose CGI is simply absent is not a
+                    # monitor, has never had an identity but the hash, and
+                    # must still get one here or it stops setting up at all
+                    # (an SL300, and every `Generic RTSP` device in #583 and
+                    # #728). `vth` being None is how a device says it is not
+                    # one of these.
+                    #
+                    # Retry the actual reads too: _vth_identity_over_rpc2
+                    # memoises incomplete answers.
+                    self._vth_identity_asked = False
+                    self._vth_identity = None
+                    raise
             self.identity_derived_from_credentials = True
-            not_hashed_id = "{0}_{1}_{2}_{3}".format(
-                self._address, self._rtsp_port, self._username, self._password
-            )
-            unique_cam_id = md5(not_hashed_id.encode("UTF-8")).hexdigest()
-            return {"serialNumber": unique_cam_id}
+            return {"serialNumber": self.credential_hash()}
+
+    def credential_hash(self) -> str:
+        """The identity this device gets when it will not state its own.
+
+        An md5 of the address, RTSP port, username and password. Three
+        fallbacks return it and the migration in `migrate.py` has to recognise
+        it in the registry, so it is defined once. It was written out four
+        times, and a copy that normalised the address differently would match
+        nothing and silently migrate nobody.
+
+        It is a poor identity and #805 is why: it changes when the password
+        does, so the same device comes back as a new one and every entity is
+        rebuilt under a new id. Anything that can state a real serial should.
+        """
+        not_hashed_id = "{0}_{1}_{2}_{3}".format(
+            self._address, self._rtsp_port, self._username, self._password
+        )
+        return md5(not_hashed_id.encode("UTF-8")).hexdigest()
 
     def _note_identity_fallback(self, what: str, exception) -> None:
         """Say why this device's identity had to be invented.
@@ -2064,21 +2094,18 @@ class DahuaClient:
         except aiohttp.ClientResponseError as e:
             if _is_login_refused(e):
                 raise
-            if e.status in self.CONFIG_CGI_ABSENT and self._rpc2_over_dhip:
+            if e.status in self.CONFIG_CGI_ABSENT:
                 # The model is a better name than a hash of the credentials,
                 # and it is what the add form showed when the monitor was added.
-                # Gated with the serial above, and for the same reason: an HTTP
-                # VTH's device page is named today, and renaming it is part of
-                # the same move, not a free improvement to slip in here.
+                # Ungated with the serial above: a device name is cosmetic and
+                # does not rename an entity_id that already exists, but holding
+                # the two apart would have left a monitor called after its
+                # serial and named after its credentials.
                 vth = await self._vth_identity_over_rpc2()
                 if vth:
                     return {"name": vth["type"]}
             self.identity_derived_from_credentials = True
-            not_hashed_id = "{0}_{1}_{2}_{3}".format(
-                self._address, self._rtsp_port, self._username, self._password
-            )
-            unique_cam_id = md5(not_hashed_id.encode("UTF-8")).hexdigest()
-            return {"name": unique_cam_id}
+            return {"name": self.credential_hash()}
 
     async def get_vendor(self) -> dict:
         """get_vendor returns the vendor. Example response: vendor=Dahua"""
@@ -2230,11 +2257,7 @@ class DahuaClient:
             return await self.get(url)
         except aiohttp.ClientResponseError:
             self.identity_derived_from_credentials = True
-            not_hashed_id = "{0}_{1}_{2}_{3}".format(
-                self._address, self._rtsp_port, self._username, self._password
-            )
-            unique_cam_id = md5(not_hashed_id.encode("UTF-8")).hexdigest()
-            return {"table.General.MachineName": unique_cam_id}
+            return {"table.General.MachineName": self.credential_hash()}
 
     async def async_get_config(self, name) -> dict:
         """async_get_config gets a config by name"""

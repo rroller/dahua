@@ -522,6 +522,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # attribute itself when the entry unloads, so there is nothing to pop.
     entry.runtime_data = {c.get_channel(): c for c in coordinators}
 
+    # Before any platform loads, and after the first refresh, which is the one
+    # window where both halves of the question are answerable: the device has
+    # said what its serial is, and no entity has been created under the old
+    # one yet. `async_update_entity` refuses an entity that is already loaded,
+    # which is why the merge in migrate.py has to run from `async_setup`; this
+    # one is per entry and needs the device's answer, so it runs here.
+    #
+    # Wrapped like the other two registry jobs here, and for the same reason:
+    # a device keeping a worse identity is a papercut, an entry that will not
+    # set up is not. It also backs the registries up and declines to touch
+    # anything if that copy could not be made.
+    try:
+        from .migrate import async_adopt_the_real_serial
+
+        moved = await async_adopt_the_real_serial(hass, entry, coordinators)
+        if moved:
+            _LOGGER.warning(
+                "%s: %d entities now use the serial the device reports. Their "
+                "entity ids, and so dashboards and automations, are unchanged",
+                entry.data.get(CONF_ADDRESS),
+                moved,
+            )
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not give %s the serial number it reports. The device keeps "
+            "the identity generated from its address and login, which is the "
+            "behaviour it has had until now",
+            entry.data.get(CONF_ADDRESS),
+        )
+
     # https://developers.home-assistant.io/docs/config_entries_index/
     # Forward every platform in one call. Home Assistant gathers them into
     # concurrent tasks, so one call sets all of them up at once; calling it once

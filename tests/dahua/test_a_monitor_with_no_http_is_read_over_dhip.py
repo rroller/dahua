@@ -534,47 +534,46 @@ async def test_a_monitor_that_will_not_give_a_serial_is_retried_not_hashed():
     assert client.identity_derived_from_credentials is False
 
 
-async def test_a_serving_monitor_with_no_serial_is_still_hashed():
+async def test_a_serving_monitor_with_no_serial_is_retried_too():
     """The complement, and the reason the branch above is safe to add.
 
-    A VTH that serves HTTP never reaches it: the gate holds it at the md5 it
-    already has, serial or no serial, so nothing that works today starts
-    refusing to set up.
+    A VTH that serves HTTP is in the same position since the gate came off
+    (#1103 held it at the md5; migrate.py now moves the registry instead).
+    It is still a monitor and still must not be hashed, because the hash is
+    what builds a second set of entities on `_2` names.
     """
     client = _cgi_absent_client(dict(_VTH, serial=None), over_dhip=False)
 
-    info = await client.async_get_system_info()
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
 
-    assert info == {"serialNumber": md5(b"10.0.0.230_554_admin_secret").hexdigest()}
-    assert client.identity_derived_from_credentials is True
+    assert client.identity_derived_from_credentials is False
 
 
-async def test_a_monitor_that_serves_http_keeps_the_identity_it_has_today():
-    """The upgrade safety case, reported by kmich on #1103.
+async def test_a_monitor_that_serves_http_gets_its_real_serial_too():
+    """The other half of what kmich reported on #1103.
 
     A VTH2421F-P serves HTTP on 80 and still answers 404 to magicBox.cgi, so
-    it reaches the same branch as the monitor above. But it could already be
-    added, and every entity `unique_id` on his three is the md5 of the
-    address, port, username and password. Handing it the real serial renames
-    all of them on upgrade, which is a migration, not a side effect of adding
-    a new transport. The name is held for the same reason.
+    it reaches the same branch as a monitor with no web server. #1103 held it
+    at the md5 because its entities exist today and handing it the serial
+    renames all of them. kmich also made the case for doing it properly: that
+    generated id had already moved on him once, when he changed the password,
+    which is #805. So the gate is gone and `migrate.py` moves the registry
+    with it, under a backup, keeping every entity_id.
     """
     client = _cgi_absent_client(_VTH, over_dhip=False)
 
-    info = await client.async_get_system_info()
-    name = await client.get_machine_name()
-
-    expected = md5(b"10.0.0.230_554_admin_secret").hexdigest()
-    assert info == {"serialNumber": expected}
-    assert name == {"name": expected}
-    assert client.identity_derived_from_credentials is True
+    assert await client.async_get_system_info() == {"serialNumber": "3E0164EPAN00095"}
+    assert await client.get_machine_name() == {"name": "VTH5221D"}
+    assert client.identity_derived_from_credentials is False
+    # And it is not what it used to be, which is the thing the migration has
+    # to recognise in the registry.
+    assert client.credential_hash() == md5(b"10.0.0.230_554_admin_secret").hexdigest()
 
 
 async def test_a_monitor_that_serves_http_still_gets_its_model_and_firmware():
-    """The negative control on the gate: it holds the two answers that build
-    ids and names, and nothing else. Model, firmware and class shipped before
-    this PR and an HTTP VTH already reads them over RPC2, so gating those
-    would be a regression rather than a hold."""
+    """Model, firmware and class shipped before #1103 and an HTTP VTH already
+    read them over RPC2, so they were never gated and are not now."""
     client = _cgi_absent_client(_VTH, over_dhip=False)
 
     assert await client.get_device_type() == {"type": "VTH5221D"}
