@@ -165,7 +165,9 @@ def no_probes(monkeypatch):
     monkeypatch.setattr(config_flow, "async_refine_connection_failure", refine)
 
     async def explain(address, username, password, reason):
-        return reason
+        # `(reason, data)` since #949: data is a monitor the flow can add, and
+        # None for everything this file is about.
+        return reason, None
 
     monkeypatch.setattr(config_flow, "async_explain_http_service_off", explain)
     return calls
@@ -292,7 +294,9 @@ async def test_an_identical_attempt_is_not_made_twice(monkeypatch):
     monkeypatch.setattr(config_flow, "async_refine_connection_failure", refine)
 
     async def explain(address, username, password, reason):
-        return reason
+        # `(reason, data)` since #949: data is a monitor the flow can add, and
+        # None for everything this file is about.
+        return reason, None
 
     monkeypatch.setattr(config_flow, "async_explain_http_service_off", explain)
 

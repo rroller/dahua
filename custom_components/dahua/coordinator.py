@@ -50,6 +50,7 @@ from .const import (
     CONF_MANUAL_SIREN,
     CONF_NVR_ACTIVE_DETERRENCE,
     CONF_SCAN_INTERVAL,
+    CONF_RPC2_OVER_DHIP,
     CONF_USE_RPC2,
     CONF_POLL_VIDEO_MOTION,
     DEFAULT_AUTHORIZED_HOLD_TIME,
@@ -989,6 +990,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._session,
             use_https,
             use_rpc2=entry.options.get(CONF_USE_RPC2, False),
+            # From entry.data, not options: it is what the device is, settled
+            # by the add flow, and not something to be toggled afterwards. A
+            # monitor with no web server cannot be read any other way (#949).
+            rpc2_over_dhip=entry.data.get(CONF_RPC2_OVER_DHIP, False),
             illuminator_restore_store=IlluminatorRestoreStore(hass, entry.entry_id),
             channel_snapshot_store=ChannelLightingSnapshotStore(hass, entry.entry_id),
         )

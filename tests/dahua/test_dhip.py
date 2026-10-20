@@ -18,6 +18,7 @@ import struct
 import pytest
 
 from custom_components.dahua import config_flow, dhip
+from custom_components.dahua.const import CONF_RPC2_OVER_DHIP
 from custom_components.dahua.dhip import DhipLoginRefused, async_dhip_session
 from custom_components.dahua.vto import DahuaVTOClient
 
@@ -58,8 +59,18 @@ class _FakeDevice:
     ):
         self.username = username
         self.password = password
+        # The default device is the one #949 was measured on, answer for
+        # answer: a VTH5221D on 3.000.0012000.0.R. The flow now reads a name
+        # and a serial to create the entry with, so a fake that knows only its
+        # class can no longer stand in for a monitor.
         self.answers = (
-            {"magicBox.getDeviceClass": {"type": "VTH"}} if answers is None else answers
+            {
+                "magicBox.getDeviceClass": {"type": "VTH"},
+                "magicBox.getDeviceType": {"type": "VTH5221D"},
+                "magicBox.getSerialNo": {"sn": "3E0164EPAN00095"},
+            }
+            if answers is None
+            else answers
         )
         self.refuse_before_challenge = refuse_before_challenge
         self.silent = silent
@@ -425,18 +436,40 @@ def _at(d):
     return session
 
 
-async def test_a_vth_with_no_http_is_named_instead_of_told_to_switch_http_on(
-    device, monkeypatch
-):
+async def test_a_vth_with_no_http_can_now_be_added(device, monkeypatch):
+    """It used to be identified and then refused, because everything an entry
+    does was HTTP. It is read over DHIP now (#949), so the flow is handed what
+    it needs to create one: no reason, a name, a serial, and the transport."""
     d = await device()
     monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
 
-    assert (
-        await config_flow.async_explain_http_service_off(
-            "127.0.0.1", "admin", "right", "http_service_off"
-        )
-        == "vth_without_http"
+    reason, data = await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "right", "http_service_off"
     )
+
+    assert reason is None
+    assert data["name"] == "VTH5221D"
+    assert data["serialNumber"] == "3E0164EPAN00095"
+    assert data[config_flow.TRANSPORT_FIX] == {CONF_RPC2_OVER_DHIP: True}
+
+
+async def test_a_monitor_that_will_not_give_a_serial_is_still_refused(
+    device, monkeypatch
+):
+    """The entry's unique id is built from the serial. Without one, two monitors
+    would collide, so the old message is better than the entry."""
+    d = await device(
+        answers={
+            "magicBox.getDeviceClass": {"type": "VTH"},
+            "magicBox.getDeviceType": {"type": "VTH5221D"},
+            "magicBox.getSerialNo": {},
+        }
+    )
+    monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
+
+    assert await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "right", "http_service_off"
+    ) == ("vth_without_http", None)
 
 
 async def test_wrong_credentials_are_said_to_be_wrong(device, monkeypatch):
@@ -444,12 +477,9 @@ async def test_wrong_credentials_are_said_to_be_wrong(device, monkeypatch):
     d = await device()
     monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
 
-    assert (
-        await config_flow.async_explain_http_service_off(
-            "127.0.0.1", "admin", "wrong", "http_service_off"
-        )
-        == "auth"
-    )
+    assert await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "wrong", "http_service_off"
+    ) == ("auth", None)
 
 
 @pytest.mark.parametrize("device_class", ["IPC", "VTO", "NVR", "VTHX", ""])
@@ -460,25 +490,31 @@ async def test_any_other_device_keeps_the_switch_http_on_message(
     d = await device(answers={"magicBox.getDeviceClass": {"type": device_class}})
     monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
 
-    assert (
-        await config_flow.async_explain_http_service_off(
-            "127.0.0.1", "admin", "right", "http_service_off"
-        )
-        == "http_service_off"
-    )
+    assert await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "right", "http_service_off"
+    ) == ("http_service_off", None)
 
 
 async def test_a_vth_that_only_says_its_model_is_still_named(device, monkeypatch):
     """Measured in #949 on a VTH5221D (3.000.0012000.0.R): magicBox.getDeviceType answers
     "VTH5221D" over DHIP. getDeviceClass has not been measured there."""
-    d = await device(answers={"magicBox.getDeviceType": {"type": "VTH5221D"}})
+    d = await device(
+        answers={
+            "magicBox.getDeviceType": {"type": "VTH5221D"},
+            "magicBox.getSerialNo": {"sn": "3E0164EPAN00095"},
+        }
+    )
     monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
 
-    assert (
-        await config_flow.async_explain_http_service_off(
-            "127.0.0.1", "admin", "right", "http_service_off"
-        )
-        == "vth_without_http"
+    assert await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "right", "http_service_off"
+    ) == (
+        None,
+        {
+            "name": "VTH5221D",
+            "serialNumber": "3E0164EPAN00095",
+            config_flow.TRANSPORT_FIX: {CONF_RPC2_OVER_DHIP: True},
+        },
     )
 
 
@@ -492,12 +528,9 @@ async def test_the_model_is_not_asked_when_the_class_answered(device, monkeypatc
     )
     monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
 
-    assert (
-        await config_flow.async_explain_http_service_off(
-            "127.0.0.1", "admin", "right", "http_service_off"
-        )
-        == "http_service_off"
-    )
+    assert await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "right", "http_service_off"
+    ) == ("http_service_off", None)
     assert "magicBox.getDeviceType" not in _methods(d)
 
 
@@ -506,12 +539,9 @@ async def test_a_model_that_is_not_a_vth_keeps_the_message(device, monkeypatch, 
     d = await device(answers={"magicBox.getDeviceType": {"type": model}})
     monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
 
-    assert (
-        await config_flow.async_explain_http_service_off(
-            "127.0.0.1", "admin", "right", "http_service_off"
-        )
-        == "http_service_off"
-    )
+    assert await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "right", "http_service_off"
+    ) == ("http_service_off", None)
 
 
 async def test_a_device_that_will_not_say_its_class_keeps_the_message(
@@ -520,24 +550,18 @@ async def test_a_device_that_will_not_say_its_class_keeps_the_message(
     d = await device(answers={})
     monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
 
-    assert (
-        await config_flow.async_explain_http_service_off(
-            "127.0.0.1", "admin", "right", "http_service_off"
-        )
-        == "http_service_off"
-    )
+    assert await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "right", "http_service_off"
+    ) == ("http_service_off", None)
 
 
 async def test_no_dhip_login_at_all_keeps_the_message(device, monkeypatch):
     d = await device(silent=True)
     monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
 
-    assert (
-        await config_flow.async_explain_http_service_off(
-            "127.0.0.1", "admin", "right", "http_service_off"
-        )
-        == "http_service_off"
-    )
+    assert await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "right", "http_service_off"
+    ) == ("http_service_off", None)
 
 
 @pytest.mark.parametrize(
@@ -561,12 +585,9 @@ async def test_only_that_one_message_ever_leads_to_a_dhip_login(
     d = await device()
     monkeypatch.setattr(config_flow, "async_dhip_session", _at(d))
 
-    assert (
-        await config_flow.async_explain_http_service_off(
-            "127.0.0.1", "admin", "right", reason
-        )
-        == reason
-    )
+    assert await config_flow.async_explain_http_service_off(
+        "127.0.0.1", "admin", "right", reason
+    ) == (reason, None)
     assert d.received == []
 
 
@@ -600,7 +621,7 @@ async def test_the_credential_test_asks_after_refining(monkeypatch):
 
     async def explain(address, username, password, reason):
         asked.append((address, username, password, reason))
-        return "vth_without_http"
+        return "vth_without_http", None
 
     monkeypatch.setattr(DahuaClient, "get_machine_name", refused)
     monkeypatch.setattr(config_flow, "async_refine_connection_failure", refine)
@@ -613,3 +634,36 @@ async def test_the_credential_test_asks_after_refining(monkeypatch):
 
     assert (data, error) == (None, "vth_without_http")
     assert asked == [("10.0.0.30", "admin", "right", "http_service_off")]
+
+
+async def test_an_identified_monitor_comes_back_as_a_success(monkeypatch):
+    """The other half of the same wiring. When the DHIP check identifies a
+    monitor, the flow must see a device it can add rather than a reason it
+    cannot, with the transport among the data it stores in the entry."""
+    from custom_components.dahua.client import DahuaClient
+
+    async def refused(self):
+        raise ConnectionRefusedError(111, "Connect call failed")
+
+    async def refine(address, reason):
+        return "http_service_off"
+
+    async def explain(address, username, password, reason):
+        return None, {
+            "name": "VTH5221D",
+            "serialNumber": "3E0164EPAN00095",
+            config_flow.TRANSPORT_FIX: {CONF_RPC2_OVER_DHIP: True},
+        }
+
+    monkeypatch.setattr(DahuaClient, "get_machine_name", refused)
+    monkeypatch.setattr(config_flow, "async_refine_connection_failure", refine)
+    monkeypatch.setattr(config_flow, "async_explain_http_service_off", explain)
+
+    flow = object.__new__(config_flow.DahuaFlowHandler)
+    data, error = await flow._test_credentials(
+        "admin", "right", "10.0.0.30", 80, 554, 0
+    )
+
+    assert error is None
+    assert data["serialNumber"] == "3E0164EPAN00095"
+    assert data[config_flow.TRANSPORT_FIX] == {CONF_RPC2_OVER_DHIP: True}

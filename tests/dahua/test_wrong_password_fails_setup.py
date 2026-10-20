@@ -41,7 +41,14 @@ def _client(exception):
     async def get(url, verify_ok=False):
         raise exception
 
+    async def no_rpc2(call):
+        # This device speaks no RPC2 either, so the VTH identity path finds
+        # nothing and the fallback under test is what answers. Without it the
+        # 404 and 501 cases reach for a real socket, which the suite blocks.
+        raise ConnectionError("no RPC2 here")
+
     client.get = get
+    client._rpc2_shared_call = no_rpc2
     return client
 
 

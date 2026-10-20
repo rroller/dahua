@@ -65,6 +65,11 @@ CONF_SCAN_INTERVAL = "scan_interval"
 # Prototype: route config reads over RPC2's session instead of a fresh digest
 # handshake per call. Off by default -- see #636.
 CONF_USE_RPC2 = "use_rpc2"
+# This device serves no HTTP at all, so every read goes over DHIP on 5000
+# (#949). An indoor monitor: a VTH5221D has only 5000 and 37777 open. Written
+# by the add flow, which is the only place that can tell "no web server" apart
+# from "camera is switched off", since both answer connection-refused.
+CONF_RPC2_OVER_DHIP = "rpc2_over_dhip"
 # Some recorders push IVS/SMD events over the CGI stream but expose ordinary
 # VideoMotion only through eventManager's current-state endpoint.
 CONF_POLL_VIDEO_MOTION = "poll_video_motion"

@@ -1664,6 +1664,12 @@ class DahuaClient:
             # identity simply fell back and the entry carried on.
             if strict_auth and _is_login_refused(e):
                 raise
+            if e.status in self.CONFIG_CGI_ABSENT:
+                # A monitor with no magicBox CGI still knows its own serial, and
+                # the hash below would change with the password (#805).
+                vth = await self._vth_identity_over_rpc2()
+                if vth and vth.get("serial"):
+                    return {"serialNumber": vth["serial"]}
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(
                 self._address, self._rtsp_port, self._username, self._password
@@ -1768,6 +1774,23 @@ class DahuaClient:
         firmware = rpc2_software_version(version.get("params"))
         if not model or not firmware:
             return None
+        # The serial matters more than it looks. Without it `async_get_system_info`
+        # falls back to an md5 of the address, port, username and password, which
+        # is #805: the identity changes when the password does and the same
+        # monitor comes back as a new device. A VTH answers magicBox.getSerialNo
+        # (measured on 3.000.0012000.0.R: "3E0164EPAN00095"), so there is no need
+        # to derive one. Wrapped separately, because an identity without a serial
+        # is still better than no identity.
+        serial = None
+        try:
+            answer = await self._rpc2_shared_call(
+                lambda client: client.request("magicBox.getSerialNo", params=None)
+            )
+            serial = ((answer.get("params") or {}).get("sn") or "").strip() or None
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "No serial over RPC2 from the VTH at %s", self._address, exc_info=True
+            )
         _LOGGER.info(
             "%s has no magicBox CGI and is a VTH; read its identity over RPC2: %s, %s",
             self._address,
@@ -1778,6 +1801,7 @@ class DahuaClient:
             "type": model,
             "version": firmware,
             "class": "VTH",
+            "serial": serial,
             "own_video": await self._vth_own_video(),
         }
         return self._vth_identity
@@ -1945,6 +1969,12 @@ class DahuaClient:
         except aiohttp.ClientResponseError as e:
             if _is_login_refused(e):
                 raise
+            if e.status in self.CONFIG_CGI_ABSENT:
+                # The model is a better name than a hash of the credentials,
+                # and it is what the add form showed when the monitor was added.
+                vth = await self._vth_identity_over_rpc2()
+                if vth:
+                    return {"name": vth["type"]}
             self.identity_derived_from_credentials = True
             not_hashed_id = "{0}_{1}_{2}_{3}".format(
                 self._address, self._rtsp_port, self._username, self._password
@@ -5535,6 +5565,51 @@ class DahuaClient:
 
         return dict(result)
 
+    async def _request_over_dhip(self, url: str, allow_rpc2: bool) -> dict:
+        """Serve a read for a device whose only transport is DHIP (#949).
+
+        Two outcomes, and nothing in between, because there is no second
+        transport to fall back to:
+
+        * a `configManager.cgi?action=getConfig&name=X` read is the same
+          question as `configManager.getConfig {"name": "X"}`, so it goes over
+          the socket and comes back in the same flat shape every caller
+          already expects;
+        * anything else -- a snapshot, an event attach, a capability probe --
+          has no DHIP equivalent that has been measured, and the device has no
+          web server to ask. Reported as a 404.
+
+        The 404 is the point. `CAPABILITY_REFUSED` is `(400, 404, 501)` and
+        `refusals.py` and the coordinator's probes are already built to hear it
+        and gate the entity off. Raising something new here would mean teaching
+        every one of those callers about a transport, to say a thing they can
+        already be told.
+        """
+        if not allow_rpc2:
+            # The one caller that pins itself to CGI is the per-rule IVS read,
+            # which needs the array indexes only that table has. On this
+            # device there is no such table to pin to.
+            raise aiohttp.ClientResponseError(
+                None,
+                (),
+                status=404,
+                message="{0} has no CGI; this read cannot be served over DHIP".format(
+                    self._address
+                ),
+            )
+        match = _CONFIG_READ.search(url)
+        if match is None:
+            raise aiohttp.ClientResponseError(
+                None,
+                (),
+                status=404,
+                message="{0} serves no HTTP, and {1} has no DHIP equivalent".format(
+                    self._address, url
+                ),
+            )
+        async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
+            return await self._rpc2_get_config(match.group(1))
+
     async def _request(
         self, url: str, verify_ok=False, allow_rpc2=True, reject_declined=False
     ) -> dict:
@@ -5550,6 +5625,15 @@ class DahuaClient:
         # same CGI table even when other config reads prefer RPC2.
         if url == "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule":
             allow_rpc2 = False
+        # A monitor with no web server (#949). There is no CGI to try first and
+        # none to fall back to, so this is a route rather than a preference:
+        # a config read goes over DHIP, and anything else is answered the way
+        # the rest of the integration already hears "this device does not have
+        # that", so capability gating and refusal learning work unchanged
+        # instead of each caller growing a special case.
+        if self._rpc2_over_dhip:
+            return await self._request_over_dhip(url, allow_rpc2)
+
         # Not after close(): this client has given its share back, and taking
         # a new one would build a session nobody is left to release.
         if (

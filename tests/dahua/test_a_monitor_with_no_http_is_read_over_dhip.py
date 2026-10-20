@@ -47,6 +47,7 @@ from custom_components.dahua.dhip import (
     DhipSession,
     DhipTransport,
 )
+from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.rpc2 import DahuaRpc2Client, Rpc2MethodRefused
 
 
@@ -452,3 +453,168 @@ async def test_closing_the_client_closes_the_socket(connections):
 
     assert session.closed == 1
     assert client._session_id is None  # noqa: SLF001
+
+
+# --- what the entry shows for a device with no magicBox CGI ------------------
+
+
+def _cgi_absent_client(vth_identity, **extra):
+    """A DahuaClient whose CGI reads 404, with a VTH identity behind them."""
+    client = DahuaClient.__new__(DahuaClient)
+    client._address = "10.0.0.230"  # noqa: SLF001
+    client._rtsp_port = 554  # noqa: SLF001
+    client._username = "admin"  # noqa: SLF001
+    client._password = "secret"  # noqa: SLF001
+    client.identity_derived_from_credentials = False
+
+    async def get(url, verify_ok=False):
+        raise aiohttp.ClientResponseError(None, (), status=404, message=url)
+
+    async def identity():
+        return vth_identity
+
+    client.get = get
+    client._vth_identity_over_rpc2 = identity  # noqa: SLF001
+    for name, value in extra.items():
+        setattr(client, name, value)
+    return client
+
+
+_VTH = {
+    "type": "VTH5221D",
+    "version": "3.000.0012000.0.R",
+    "class": "VTH",
+    "serial": "3E0164EPAN00095",
+    "own_video": False,
+}
+
+
+async def test_a_monitor_reports_its_own_serial_rather_than_a_hash():
+    """The #805 shape. Without this the serial is an md5 of the address, port,
+    username and password, so changing the password makes the same monitor
+    arrive as a new device. Measured: magicBox.getSerialNo answers
+    3E0164EPAN00095 on 3.000.0012000.0.R."""
+    client = _cgi_absent_client(_VTH)
+
+    assert await client.async_get_system_info() == {"serialNumber": "3E0164EPAN00095"}
+    assert client.identity_derived_from_credentials is False
+
+
+async def test_a_monitor_is_named_by_its_model_rather_than_a_hash():
+    client = _cgi_absent_client(_VTH)
+
+    assert await client.get_machine_name() == {"name": "VTH5221D"}
+
+
+async def test_a_monitor_that_will_not_give_a_serial_still_gets_one():
+    """The fallback has to stay reachable. An identity without a serial is
+    still a better model and firmware than `Generic RTSP`, but the entry needs
+    some unique id, so the hash is still what answers."""
+    client = _cgi_absent_client(dict(_VTH, serial=None))
+
+    info = await client.async_get_system_info()
+
+    assert info["serialNumber"] != "3E0164EPAN00095"
+    assert client.identity_derived_from_credentials is True
+
+
+async def test_anything_that_is_not_a_monitor_keeps_the_old_fallback():
+    """The negative control. A camera with its CGI off must not start reporting
+    a VTH's identity, and `_vth_identity_over_rpc2` returning None is how it
+    says the device is not one."""
+    client = _cgi_absent_client(None)
+
+    info = await client.async_get_system_info()
+
+    assert client.identity_derived_from_credentials is True
+    assert len(info["serialNumber"]) == 32
+
+
+async def test_a_refused_login_is_still_raised_rather_than_hashed():
+    """strict_auth is the config flow deciding whether a password is right, and
+    the VTH branch must not swallow a 401 on the way past."""
+    client = _cgi_absent_client(_VTH)
+
+    async def unauthorised(url, verify_ok=False):
+        raise aiohttp.ClientResponseError(None, (), status=401, message="no")
+
+    client.get = unauthorised
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info(strict_auth=True)
+
+
+# --- the read routing in client.py ------------------------------------------
+
+
+def _dhip_routed_client(config_reply=None):
+    """A DahuaClient pinned to DHIP, with the RPC2 config read stubbed."""
+    client = DahuaClient.__new__(DahuaClient)
+    client._address = "10.0.0.230"  # noqa: SLF001
+    client._rpc2_over_dhip = True  # noqa: SLF001
+    asked = []
+
+    async def rpc2_get_config(table):
+        asked.append(table)
+        return config_reply or {"table.General.LocalNo": "8"}
+
+    class _Slot:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *exc):
+            return False
+
+    client._rpc2_get_config = rpc2_get_config  # noqa: SLF001
+    client._request_slot = _Slot  # noqa: SLF001
+    return client, asked
+
+
+async def test_a_config_read_goes_over_the_socket():
+    client, asked = _dhip_routed_client()
+
+    result = await client._request(  # noqa: SLF001
+        "/cgi-bin/configManager.cgi?action=getConfig&name=General"
+    )
+
+    assert asked == ["General"]
+    assert result == {"table.General.LocalNo": "8"}
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/cgi-bin/snapshot.cgi?channel=1",
+        "/cgi-bin/eventManager.cgi?action=attach&codes=[All]",
+        "/cgi-bin/magicBox.cgi?action=getProductDefinition",
+        "/cgi-bin/magicBox.cgi?action=getSystemInfo",
+    ],
+)
+async def test_a_read_with_no_dhip_equivalent_is_a_404(url):
+    """404 rather than something new, because `CAPABILITY_REFUSED` is
+    `(400, 404, 501)` and the probes and refusals.py are already built to hear
+    it and gate the entity off. Verified on the monitor: a snapshot, an event
+    attach and a capability probe all come back 404."""
+    client, asked = _dhip_routed_client()
+
+    with pytest.raises(aiohttp.ClientResponseError) as refused:
+        await client._request(url)  # noqa: SLF001
+
+    assert refused.value.status == 404
+    assert asked == []
+
+
+async def test_a_read_pinned_to_cgi_is_refused_rather_than_rerouted():
+    """The per-rule IVS read pins itself to CGI because it needs the array
+    indexes only that table has. There is no such table here, and answering it
+    from somewhere else would be worse than saying so."""
+    client, asked = _dhip_routed_client()
+
+    with pytest.raises(aiohttp.ClientResponseError) as refused:
+        await client._request(  # noqa: SLF001
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule",
+            allow_rpc2=False,
+        )
+
+    assert refused.value.status == 404
+    assert asked == []

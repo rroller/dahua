@@ -38,35 +38,36 @@ from .migrate import CHANNEL_SUBENTRY
 from .flow_preview import async_drop_preview, async_store_preview, preview_url
 from .const import (
     ALL_EVENTS,
-    CONF_PASSWORD,
-    CONF_USERNAME,
     CONF_ADDRESS,
-    CONF_RTSP_PORT,
-    CONF_PORT,
-    CONF_EVENTS,
-    CONF_NAME,
-    DOMAIN,
-    PLATFORMS,
-    CONF_CHANNEL,
-    CONF_AUTO_DETECT_CHANNEL,
     CONF_ALL_CHANNELS,
     CONF_AREA,
-    CONF_LABELS,
-    DEFAULT_EVENTS,
-    CONF_EXTRA_CHANNELS,
-    CONF_USE_RPC2,
-    CONF_POLL_VIDEO_MOTION,
-    CONF_USE_HTTPS,
-    CONF_SCAN_INTERVAL,
-    CONF_NVR_ACTIVE_DETERRENCE,
-    CONF_MANUAL_SIREN,
-    CONF_MANUAL_SECURITY_LIGHT,
-    CONF_DISABLE_BACKCHANNEL,
-    CONF_AUTHORIZED_PLATES,
     CONF_AUTHORIZED_HOLD_TIME,
-    DEFAULT_SCAN_INTERVAL,
+    CONF_AUTHORIZED_PLATES,
+    CONF_AUTO_DETECT_CHANNEL,
+    CONF_CHANNEL,
+    CONF_DISABLE_BACKCHANNEL,
+    CONF_EVENTS,
+    CONF_EXTRA_CHANNELS,
+    CONF_LABELS,
+    CONF_MANUAL_SECURITY_LIGHT,
+    CONF_MANUAL_SIREN,
+    CONF_NAME,
+    CONF_NVR_ACTIVE_DETERRENCE,
+    CONF_PASSWORD,
+    CONF_POLL_VIDEO_MOTION,
+    CONF_PORT,
+    CONF_RPC2_OVER_DHIP,
+    CONF_RTSP_PORT,
+    CONF_SCAN_INTERVAL,
+    CONF_USE_HTTPS,
+    CONF_USE_RPC2,
+    CONF_USERNAME,
     DEFAULT_AUTHORIZED_HOLD_TIME,
+    DEFAULT_EVENTS,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
     MIN_SCAN_INTERVAL,
+    PLATFORMS,
 )
 
 """
@@ -363,7 +364,7 @@ async def async_refine_connection_failure(address: str, reason: str) -> str:
 
 async def async_explain_http_service_off(
     address: str, username: str, password: str, reason: str
-) -> str:
+) -> tuple:
     """Say which of two very different devices answered only on Dahua's own ports.
 
     `http_service_off` tells the user to switch HTTP and CGI on. For a camera
@@ -376,46 +377,78 @@ async def async_explain_http_service_off(
     this device can be given:
 
     - refused: the credentials are wrong, which the HTTP failure could not show.
-    - accepted, and the device says it is a VTH: say what it is, and that the
-      integration cannot add one yet, instead of creating an entry whose setup and
-      polling are all HTTP and would never load.
+    - accepted, and the device says it is a VTH: read its identity over the same
+      connection and let it be added, with the transport recorded in the entry.
     - anything else: the original reason, unchanged.
 
     One attempt only, and only on this path, where HTTP never got as far as a
     login, so it is the first login these credentials have been offered and adds
     nothing towards the device's lockout.
+
+    Returns `(reason, data)`. `data` is None unless a monitor was identified, in
+    which case `reason` is None and the caller has everything it needs to create
+    the entry: the name and serial the device page shows, and `TRANSPORT_FIX`
+    saying to read this device over DHIP.
+
+    The transport goes in the entry rather than being rediscovered at setup,
+    because it cannot be rediscovered. The existing "this device serves no CGI"
+    learning reads an HTTP status: `configManager.cgi` answers 404 and
+    `_HOST_CGI_CONFIG_ABSENT` remembers it. A device with no HTTP at all answers
+    connection-refused, which is also what a camera that is switched off answers.
+    This function is the one place that establishes the difference, by logging in
+    over DHIP and asking.
     """
     if reason != "http_service_off":
-        return reason
+        return reason, None
+    identity = {}
     try:
         async with async_dhip_session(address, username, password) as session:
             reply = await session.call("magicBox.getDeviceClass")
             device_class = (
                 str((reply.get("params") or {}).get("type") or "").strip().upper()
             )
-            if not device_class:
-                # getDeviceClass is what a VTH2421F-P answers over RPC2; on the
-                # VTH5221D's 3.000 firmware only getDeviceType has been measured
-                # over DHIP ("VTH5221D"). Asked only when the class did not come
-                # back, so a device that says what it is is never second-guessed.
+            model = ""
+            # Asked when the class did not answer, as the fallback it has
+            # always been, and when the class said VTH, because then the model
+            # is the name the device page will show. Never asked of a device
+            # that has already said it is something else: a camera is a camera
+            # whatever its model string spells.
+            if not device_class or device_class == "VTH":
                 kind = await session.call("magicBox.getDeviceType")
-                model = (
-                    str((kind.get("params") or {}).get("type") or "").strip().upper()
-                )
-                if model.startswith("VTH"):
+                model = str((kind.get("params") or {}).get("type") or "").strip()
+                if not device_class and model.upper().startswith("VTH"):
                     device_class = "VTH"
+            if device_class == "VTH":
+                # Read on the connection that is already open and already paid
+                # for, rather than in a second login at setup.
+                serial = await session.call("magicBox.getSerialNo")
+                identity = {
+                    "name": model or address,
+                    "serialNumber": (serial.get("params") or {}).get("sn"),
+                }
     except DhipLoginRefused:
-        return "auth"
+        return "auth", None
     except Exception:  # pylint: disable=broad-except
         _LOGGER.debug(
             "No DHIP login at %s to explain the missing HTTP service",
             address,
             exc_info=True,
         )
-        return reason
+        return reason, None
+    if device_class == "VTH" and identity.get("serialNumber"):
+        _LOGGER.info(
+            "%s is a %s with no web interface, so it will be read over DHIP",
+            address,
+            identity["name"],
+        )
+        identity[TRANSPORT_FIX] = {CONF_RPC2_OVER_DHIP: True}
+        return None, identity
     if device_class == "VTH":
-        return "vth_without_http"
-    return reason
+        # Identified, but it would not give a serial, and the entry's unique id
+        # is built from one. Better the old message than an entry that collides
+        # with the next monitor added.
+        return "vth_without_http", None
+    return reason, None
 
 
 # camera.py already records that these devices refuse a snapshot under load, and a
@@ -1686,13 +1719,16 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 reason,
                 exc_info=exception,
             )
-            return (
-                None,
-                await async_explain_http_service_off(
-                    address, username, password, reason
-                ),
-                None,
+            explained, monitor = await async_explain_http_service_off(
+                address, username, password, reason
             )
+            if monitor is not None:
+                # A monitor with no web server, identified over DHIP. Returned
+                # as a success so the ordinary add path creates the entry; what
+                # makes it different is the transport in TRANSPORT_FIX, which
+                # the caller stores in entry data like any other correction.
+                return monitor, None, None
+            return None, explained, None
         finally:
             await session.close()
 
