@@ -6,6 +6,7 @@ import logging
 import voluptuous as vol
 from homeassistant.components.repairs import ConfirmRepairFlow, RepairsFlow
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
 from .const import CONF_PORT, CONF_USE_HTTPS, DOMAIN
@@ -28,6 +29,8 @@ async def async_create_fix_flow(
         return SwitchToHttpsRepairFlow(data or {})
     if issue_id.startswith("siblings_remain_"):
         return RemoveSiblingsRepairFlow(data or {})
+    if issue_id.startswith("leftover_rows_"):
+        return RemoveLeftoverRowsRepairFlow(data or {})
     return ConfirmRepairFlow()
 
 
@@ -201,5 +204,82 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
                     if protected
                     else ""
                 ),
+            },
+        )
+
+
+class RemoveLeftoverRowsRepairFlow(RepairsFlow):
+    """Remove the registry rows of one entry that no entity is behind.
+
+    Home Assistant already offers this one entity at a time, on each one's own
+    settings page. @kmich hit a monitor's worth at once, left behind when
+    switches an earlier release created on a VTH were gated off, and doing
+    that by hand twenty times is the thing this saves.
+
+    **Written to prefer doing nothing.** Missing a leftover costs a user one
+    entity to delete themselves; offering a live one is a bulk delete of
+    entities somebody is using, which is what the #827 merge card did when it
+    deleted 232 of them. So the list is never carried in the card's `data`,
+    which is how that card outlived its evidence: it is recomputed here, at
+    the moment the button is pressed, from the same function that raised the
+    card. Anything that has come back since is simply not in it any more.
+    """
+
+    def __init__(self, data: dict) -> None:
+        self._entry_id = data.get("entry_id")
+
+    async def async_step_init(self, user_input: dict | None = None):
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(self, user_input: dict | None = None):
+        # Imported here rather than at module scope to avoid a circular import.
+        from . import ISSUE_LEFTOVER_ROWS
+        from .migrate import leftover_rows
+
+        entry = self.hass.config_entries.async_get_entry(self._entry_id or "")
+        if entry is None:
+            ir.async_delete_issue(
+                self.hass, DOMAIN, ISSUE_LEFTOVER_ROWS.format(self._entry_id)
+            )
+            return self.async_abort(reason="not_configured")
+
+        rows = leftover_rows(self.hass, entry)
+        if not rows:
+            # Everything came back, or somebody deleted them by hand. Saying so
+            # beats reporting success for having removed nothing, which is how
+            # a user ends up believing a tidy-up happened.
+            ir.async_delete_issue(
+                self.hass, DOMAIN, ISSUE_LEFTOVER_ROWS.format(entry.entry_id)
+            )
+            return self.async_abort(reason="nothing_to_remove")
+
+        if user_input is not None:
+            registry = er.async_get(self.hass)
+            for entity_id in rows:
+                # Re-read each one. The list was taken moments ago, but this is
+                # the irreversible step and a row that has gone in between must
+                # not raise out of a repair flow.
+                if registry.async_get(entity_id) is None:
+                    continue
+                registry.async_remove(entity_id)
+            _LOGGER.warning(
+                "Removed %d Dahua registry entries nothing was behind any more: %s",
+                len(rows),
+                ", ".join(rows),
+            )
+            ir.async_delete_issue(
+                self.hass, DOMAIN, ISSUE_LEFTOVER_ROWS.format(entry.entry_id)
+            )
+            return self.async_create_entry(data={})
+
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "name": entry.title or "untitled",
+                "count": str(len(rows)),
+                # Named in full. This is the one irreversible action here, and
+                # a count alone asks somebody to trust a number.
+                "entities": "\n".join("- `%s`" % entity_id for entity_id in rows),
             },
         )

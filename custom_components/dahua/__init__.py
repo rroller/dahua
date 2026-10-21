@@ -569,6 +569,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     if wanted:
         await hass.config_entries.async_forward_entry_setups(entry, wanted)
 
+    # Registry rows nothing is behind any more, offered together rather than
+    # one at a time (@kmich on #1103). After the platforms, because what they
+    # create is the whole evidence, and wrapped like the other registry jobs:
+    # a tidy-up card must never be what stops a camera working.
+    try:
+        from .migrate import async_offer_leftover_rows
+
+        left = await async_offer_leftover_rows(hass, entry, coordinators)
+        if left:
+            _LOGGER.debug(
+                "%s has %d registry rows with no entity behind them",
+                entry.data.get(CONF_ADDRESS),
+                left,
+            )
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not check %s for leftover registry rows. Nothing is wrong "
+            "with the device and the entry is set up normally",
+            entry.data.get(CONF_ADDRESS),
+        )
+
     # Labels the user chose for this entry's devices. Home Assistant has no
     # DeviceInfo field for labels, unlike suggested_area, so they can only be
     # put on through the registry -- and only once the devices exist, which is
@@ -611,6 +632,11 @@ ISSUE_SIBLINGS_REMAIN = "siblings_remain_{0}"
 # Raised when the removed entry was referenced by automations or scripts. Those
 # break silently -- the entities simply stop existing and nothing fires.
 ISSUE_REMOVAL_BROKE_THINGS = "removal_broke_things_{0}"
+# Raised when this entry has registry rows no entity is behind any more, so
+# they can be removed together instead of one at a time. Never persistent: it
+# is recomputed from the registry on every start, and the flow recomputes it
+# again before removing anything.
+ISSUE_LEFTOVER_ROWS = "leftover_rows_{0}"
 
 
 async def async_migrate_synthesised_unique_id(hass, entry) -> None:

@@ -593,6 +593,21 @@
                     "not_configured": "No Dahua configuration entries use {address} any more."
                 }
             }
+        },
+        "leftover_rows": {
+            "title": "{count} Dahua entities for {name} are no longer provided",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Remove {count} leftover entities for {name}?",
+                        "description": "**{name}** has {count} entities in Home Assistant's registry that the Dahua integration no longer creates. They show as unavailable and will stay that way: a device that stops reporting a feature, or a release that stops offering one for your model, leaves the entity behind.\n\nThese are the ones that would be removed:\n\n{entities}\n\n**This cannot be undone.** Their history goes with them, and anything pointing at them in an automation or a dashboard stops resolving. Home Assistant can also remove them one at a time, from each entity's own settings page, if you would rather look at them first.\n\nThis card is only raised when every channel of the device is set up and polling normally, so a camera that is merely offline does not appear here. The list is rebuilt when you press the button, so anything that has come back in the meantime is left alone."
+                    }
+                },
+                "abort": {
+                    "not_configured": "That Dahua configuration entry has been removed, so there is nothing left to tidy up.",
+                    "nothing_to_remove": "Every one of those entities is being provided again, so there is nothing to remove. Nothing was changed."
+                }
+            }
         }
     },
     "config_subentries": {
