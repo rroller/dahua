@@ -497,7 +497,11 @@ What it gets:
 A monitor that reports it has no camera of its own (`SupportVideo` false in its
 `RemoteDevice` table, as on the VTH2421F-P) gets no camera entities, no camera event
 sensors, no event stream, no motion detection switch, no Day/Night select, no Preset
-Position, and no License Plate or Authorized Vehicle entities.
+Position, and no License Plate or Authorized Vehicle entities. If the monitor has no
+local row in `RemoteDevice`, an explicit refusal of `VideoInput` also identifies it as
+having no camera. This removes the same nonworking camera-related entities on affected
+monitors; existing registry rows can remain unavailable. Session failures leave the
+capability undecided rather than removing entities.
 
 The serial number is read from the monitor itself on both HTTP and DHIP.
 Existing HTTP monitors move from the ID generated from their credentials to their real

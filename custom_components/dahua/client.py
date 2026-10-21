@@ -1957,7 +1957,9 @@ class DahuaClient:
                     "configManager.getConfig", params={"name": "VideoInput"}
                 )
             )
-        except Rpc2MethodRefused:
+        except Rpc2MethodRefused as refused:
+            if rpc2_refusal_is_a_stale_login(refused):
+                return None
             _LOGGER.debug(
                 "%s refuses the VideoInput table, so it has no camera of its own",
                 self._address,

@@ -179,3 +179,15 @@ async def test_no_remote_device_table_asks_nothing_further():
 
     assert await c._vth_own_video() is None
     assert c.asked == [REMOTE_DEVICE]
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        Rpc2MethodRefused("expired", 287637504, "session is out of date"),
+        Rpc2MethodRefused("expired", 287637505, "Invalid session in request data!"),
+    ],
+)
+async def test_an_expired_session_is_not_evidence_of_an_absent_camera(refusal):
+    c = _client({REMOTE_DEVICE: _rows(Vto00={}), VIDEO_INPUT: refusal})
+    assert await c._vth_own_video() is None
