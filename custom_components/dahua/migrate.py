@@ -57,10 +57,18 @@ from homeassistant.config_entries import ConfigSubentry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import entity_platform as ep
 from homeassistant.helpers import issue_registry as ir
 
 from . import ISSUE_LEFTOVER_ROWS, ISSUE_SIBLINGS_REMAIN, devices_with_identifier
-from .const import CHANNEL_OPTION_KEYS, CONF_ADDRESS, CONF_CHANNEL, CONF_PORT, DOMAIN
+from .const import (
+    CHANNEL_OPTION_KEYS,
+    CONF_ADDRESS,
+    CONF_CHANNEL,
+    CONF_PORT,
+    DOMAIN,
+    PLATFORMS,
+)
 from .host import is_synthesised_identity, normalize_address
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
@@ -335,6 +343,17 @@ def _entry_is_wholly_healthy(hass: HomeAssistant, entry, coordinators) -> bool:
     # Setup retains successful coordinators only. Checking that list alone
     # cannot establish that a failed configured channel has recovered.
     if not expected.issubset(present):
+        return False
+    ready = {
+        platform.domain
+        for platform in ep.async_get_platforms(hass, DOMAIN)
+        if platform.config_entry is entry
+        and getattr(platform, "_setup_complete", False)
+    }
+    wanted = {domain for domain in PLATFORMS if entry.options.get(domain, True)}
+    if not wanted.issubset(ready):
+        # EntityPlatform handles setup failures internally; a successful
+        # coordinator refresh does not prove the entities were loaded.
         return False
     for coordinator in coordinators:
         if not getattr(coordinator, "initialized", False):

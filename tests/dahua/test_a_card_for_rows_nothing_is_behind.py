@@ -28,6 +28,9 @@ and after it has a restored one.
 """
 
 import pytest
+from types import SimpleNamespace
+from homeassistant.helpers.entity_platform import DATA_ENTITY_PLATFORM
+from custom_components.dahua.const import PLATFORMS
 from homeassistant.config_entries import ConfigEntryState, ConfigSubentry
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -64,6 +67,12 @@ def _load(hass, entry, coordinators=None):
     """
     entry.mock_state(hass, ConfigEntryState.LOADED)
     entry.runtime_data = {0: (coordinators or _Coordinator())}
+    platforms = hass.data.setdefault(DATA_ENTITY_PLATFORM, {}).setdefault(DOMAIN, [])
+    platforms[:] = [p for p in platforms if p.config_entry is not entry]
+    platforms.extend(
+        SimpleNamespace(config_entry=entry, domain=domain, _setup_complete=True)
+        for domain in PLATFORMS
+    )
 
 
 def _unload(hass, entry):
@@ -485,4 +494,19 @@ async def test_confirmation_without_a_displayed_list_removes_nothing(hass):
     entry, made = await _entry_with_rows(hass)
     result = await _flow(hass, entry).async_step_confirm({})
     assert result["type"] == "form"
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+
+@pytest.mark.parametrize("missing", [False, True])
+async def test_a_failed_or_missing_platform_does_not_offer_its_entities(hass, missing):
+    entry, made = await _entry_with_rows(hass)
+    platforms = hass.data[DATA_ENTITY_PLATFORM][DOMAIN]
+    if missing:
+        platforms[:] = [p for p in platforms if p.domain != "switch"]
+    else:
+        next(p for p in platforms if p.domain == "switch")._setup_complete = False
+    assert await migrate.async_offer_leftover_rows(hass, entry, [_Coordinator()]) == 0
+    assert _issue(hass, entry) is None
+    result = await _flow(hass, entry).async_step_confirm({})
+    assert result["type"] == "abort"
     assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
