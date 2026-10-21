@@ -28,6 +28,9 @@ ISSUE_PLACEHOLDERS = {
     "channel_not_added": {"address", "channel", "reason"},
     "webrtc_cannot_play": {"address", "channels", "count"},
     "motion_not_pushed": {"address", "channels"},
+    # Title only, as siblings_remain above: the flow fills its own form, and it
+    # recomputes the list rather than reading it out of the issue's data.
+    "leftover_rows": {"name", "count"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
 
@@ -68,6 +71,7 @@ def _form_placeholders(class_name: str) -> set:
 
 
 SIBLINGS_FLOW_PLACEHOLDERS = _form_placeholders("RemoveSiblingsRepairFlow")
+LEFTOVER_FLOW_PLACEHOLDERS = _form_placeholders("RemoveLeftoverRowsRepairFlow")
 
 
 def _placeholders(text: str) -> set:
@@ -209,6 +213,31 @@ def test_the_siblings_flow_only_uses_its_own_placeholders():
     assert (
         used <= SIBLINGS_FLOW_PLACEHOLDERS
     ), f"unsupplied: {used - SIBLINGS_FLOW_PLACEHOLDERS}"
+
+
+def test_the_leftover_placeholders_were_really_read_from_the_code():
+    assert {"name", "count", "entities"} <= LEFTOVER_FLOW_PLACEHOLDERS
+
+
+def test_the_leftover_flow_only_uses_its_own_placeholders():
+    """Same trap as the siblings flow, and it matters more here: this card
+    names the entities it is about to delete, so a placeholder that renders
+    literally would ask somebody to confirm a list they cannot see."""
+    step = EN["issues"]["leftover_rows"]["fix_flow"]["step"]["confirm"]
+    used = _placeholders(step["title"]) | _placeholders(step["description"])
+    assert (
+        used <= LEFTOVER_FLOW_PLACEHOLDERS
+    ), f"unsupplied: {used - LEFTOVER_FLOW_PLACEHOLDERS}"
+
+
+def test_the_leftover_card_lists_what_it_will_remove():
+    """Not decoration. The one irreversible action a repair card can take is
+    deleting registry rows, and the #827 merge card did exactly that while
+    describing something else. The entity list has to be on the screen."""
+    step = EN["issues"]["leftover_rows"]["fix_flow"]["step"]["confirm"]
+
+    assert "{entities}" in step["description"]
+    assert "cannot be undone" in step["description"]
 
 
 def test_the_siblings_issue_is_fixable_and_the_notice_is_not():

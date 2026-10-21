@@ -57,10 +57,18 @@ from homeassistant.config_entries import ConfigSubentry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import entity_platform as ep
 from homeassistant.helpers import issue_registry as ir
 
-from . import ISSUE_SIBLINGS_REMAIN, devices_with_identifier
-from .const import CHANNEL_OPTION_KEYS, CONF_ADDRESS, CONF_CHANNEL, CONF_PORT, DOMAIN
+from . import ISSUE_LEFTOVER_ROWS, ISSUE_SIBLINGS_REMAIN, devices_with_identifier
+from .const import (
+    CHANNEL_OPTION_KEYS,
+    CONF_ADDRESS,
+    CONF_CHANNEL,
+    CONF_PORT,
+    DOMAIN,
+    PLATFORMS,
+)
 from .host import is_synthesised_identity, normalize_address
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
@@ -271,6 +279,141 @@ async def _async_backup_once(hass: HomeAssistant) -> str | None:
             held["fingerprint"] = fingerprint
             held["where"] = where
         return where
+
+
+def leftover_rows(hass: HomeAssistant, entry) -> list:
+    """This entry's registry rows that no entity is behind, newest state first.
+
+    A row whose entity the integration no longer creates stays in the registry
+    for ever, unavailable, and Home Assistant offers to delete it one at a
+    time. @kmich hit a monitor's worth of them at once: the `disarming` and
+    `event_notifications` switches an earlier release created on a VTH are
+    gated off now, so they moved through the serial migration and then sat
+    there with no way to be rid of them but by hand.
+
+    **A row with no live entity is one with no state object, or one whose state
+    Home Assistant marked `restored`.** Both, because which of the two it is
+    depends on timing rather than on anything meaningful: `_write_unavailable_states`
+    runs on EVENT_HOMEASSISTANT_START and only when Home Assistant was not
+    already running, so before it a leftover has no state at all and after it
+    has a restored one. Reading only `restored` would have made the answer
+    depend on listener order.
+
+    A disabled row is never a leftover. There is no entity behind it because
+    the user said so.
+    """
+    registry = er.async_get(hass)
+    rows = []
+    for row in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if row.disabled_by is not None:
+            continue
+        if not entry.options.get(row.domain, True):
+            continue
+        state = hass.states.get(row.entity_id)
+        if state is None or state.attributes.get("restored"):
+            rows.append(row.entity_id)
+    return sorted(rows)
+
+
+def _entry_is_wholly_healthy(hass: HomeAssistant, entry, coordinators) -> bool:
+    """Whether this entry is in a state where a missing entity means anything.
+
+    The hazard this exists for is #1085's channel recovery. A channel that
+    failed its first refresh has every one of its rows unavailable until it
+    comes back, and a card offering to delete all of them is how the #827
+    merge card destroyed 232 entities. The same goes for a capability that has
+    not answered yet (#1057): its entity is built when the retry succeeds, and
+    until then the row looks exactly like a leftover.
+
+    So this says yes only when every channel is initialized and polling
+    cleanly. Anything else and nothing is offered, which costs a user who
+    really does have leftovers one more restart and costs a user whose camera
+    is merely offline nothing at all.
+    """
+    if not coordinators:
+        return False
+    from . import channel_configs
+
+    expected = {config.get(CONF_CHANNEL, 0) for _, config in channel_configs(entry)}
+    present = {
+        coordinator.get_channel()
+        for coordinator in coordinators
+        if callable(getattr(coordinator, "get_channel", None))
+    }
+    # Setup retains successful coordinators only. Checking that list alone
+    # cannot establish that a failed configured channel has recovered.
+    if not expected.issubset(present):
+        return False
+    ready = {
+        platform.domain
+        for platform in ep.async_get_platforms(hass, DOMAIN)
+        if platform.config_entry is entry
+        and getattr(platform, "_setup_complete", False)
+    }
+    wanted = {domain for domain in PLATFORMS if entry.options.get(domain, True)}
+    if not wanted.issubset(ready):
+        # EntityPlatform handles setup failures internally; a successful
+        # coordinator refresh does not prove the entities were loaded.
+        return False
+    for coordinator in coordinators:
+        if not getattr(coordinator, "initialized", False):
+            return False
+        if not getattr(coordinator, "last_update_success", False):
+            return False
+        unanswered = getattr(coordinator, "probes_that_did_not_answer", None)
+        if unanswered is not None and unanswered():
+            # A probe that has not answered either way is one whose entity is
+            # still to come: the retry builds it when the device finally
+            # replies, and until then its row is indistinguishable from a
+            # leftover.
+            return False
+    return True
+
+
+async def async_offer_leftover_rows(hass: HomeAssistant, entry, coordinators) -> int:
+    """Raise a card listing this entry's leftover rows, or clear one that is stale.
+
+    Returns how many were found, for the caller's log and for the tests.
+
+    **Recomputed on every start and never persisted.** The merge card that
+    deleted a recorder was persistent, so it outlived the evidence it was
+    raised on and then described a situation that no longer existed. This one
+    is rebuilt from the registry each time, and the flow rebuilds it again
+    before it deletes anything.
+
+    A reload is fine, and this used to claim otherwise. Unloading writes every
+    row as unavailable with `restored: True` (`Entity.async_remove`, the
+    `write_unavailable_state` branch), so after a reload a row that really has
+    stopped being created is correctly found. What that also means is that
+    every row of an entry which has not finished coming back reads as a
+    leftover, which is what the health gate above is for, and what the repair
+    flow re-checks before it removes anything. The earlier wording here said a
+    reload writes no restored states, which is wrong, and it was the reasoning
+    the safety rested on (@kmich on #1114).
+    """
+    issue_id = ISSUE_LEFTOVER_ROWS.format(entry.entry_id)
+    if not _entry_is_wholly_healthy(hass, entry, coordinators):
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return 0
+    rows = leftover_rows(hass, entry)
+    if not rows:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
+        return 0
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=True,
+        is_persistent=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="leftover_rows",
+        translation_placeholders={
+            "name": entry.title or "untitled",
+            "count": str(len(rows)),
+        },
+        data={"entry_id": entry.entry_id},
+    )
+    return len(rows)
 
 
 async def async_drop_duplicate_disk_sensors(hass: HomeAssistant, entry) -> None:
