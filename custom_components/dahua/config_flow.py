@@ -28,6 +28,7 @@ from . import (
     ISSUE_CHANNEL_NOT_ADDED,
     _async_probe_tcp,
     _async_probe_tls,
+    device_by_identifier,
     entry_coordinators,
     is_synthesised_identity,
 )
@@ -1914,8 +1915,10 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             # device is next created.
             return
         registry = dr.async_get(self.hass)
-        device = registry.async_get_device(
-            identifiers={(DOMAIN, coordinator.get_serial_number())}
+        device = device_by_identifier(
+            registry,
+            (DOMAIN, coordinator.get_serial_number()),
+            self.config_entry.entry_id,
         )
         if device is not None:
             registry.async_update_device(device.id, area_id=area_id)
@@ -1946,8 +1949,10 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
 
         registry = dr.async_get(self.hass)
         for coordinator in entry_coordinators(self.config_entry).values():
-            device = registry.async_get_device(
-                identifiers={(DOMAIN, coordinator.get_serial_number())}
+            device = device_by_identifier(
+                registry,
+                (DOMAIN, coordinator.get_serial_number()),
+                self.config_entry.entry_id,
             )
             if device is None:
                 continue
