@@ -1893,6 +1893,36 @@ class DahuaClient:
         Only a real boolean counts; anything else is None, which changes nothing.
         The table also lists the other devices with their credentials, so nothing
         but that one flag is kept or logged.
+
+        **Not every monitor describes itself in that table.** Measured on a
+        VTH5221D on 3.000.0012000.0.R, which has no camera either:
+
+            configManager.getConfig {"name": "RemoteDevice"}
+              rows: Vto00 .. Vto19, and no Local0 at all
+
+        So the read above answers None for it, the monitor is taken for one
+        with a camera, and it gets camera entities, a Motion Detection switch
+        and a `MotionDetect` read every poll. On the live device the camera
+        answers 500 through Home Assistant's own proxy and the switch reads
+        `off` out of a key that is not in the coordinator's data, because the
+        device refuses the table it comes from.
+
+        Where the monitor does not say, the video input table is asked
+        instead. Measured on the same device:
+
+            configManager.getConfig {"name": "MotionDetect"}  refused 268959743
+            configManager.getConfig {"name": "VideoInput"}    refused 268959743
+            devVideoInput.getCaps                             Method not found
+            magicBox.getProductDefinition  VideoInputChannels 1
+
+        A device that refuses the table naming its video input has no video
+        input, and that is a measurement rather than an inference from the
+        model name. The product definition is no help, for the same reason
+        VideoInputChannels is ignored above: it claims one either way.
+
+        Deliberately only asked when the monitor did not answer for itself. A
+        VTH that carries a Local0 row has already said yes or no, and anything
+        that is not a VTH never reaches here.
         """
         try:
             response = await self._rpc2_shared_call(
@@ -1905,9 +1935,44 @@ class DahuaClient:
             return None
         local = ((response.get("params") or {}).get("table") or {}).get("Local0")
         if not isinstance(local, dict) or local.get("DeviceClass") != "VTH":
-            return None
+            return await self._vth_refuses_video_input()
         support_video = local.get("SupportVideo")
         return support_video if isinstance(support_video, bool) else None
+
+    async def _vth_refuses_video_input(self) -> bool | None:
+        """False when this monitor refuses the VideoInput table, else None.
+
+        The second half of `_vth_own_video`, for a monitor that does not
+        describe itself in RemoteDevice. False means "it has no camera"; None
+        means "it did not say", which leaves the camera entities exactly where
+        they were.
+
+        A refusal is the only answer acted on. A read that fails for any other
+        reason -- the session dropped, the device was busy -- must not take a
+        working camera away, so everything except an explicit refusal is None.
+        """
+        try:
+            await self._rpc2_shared_call(
+                lambda client: client.request(
+                    "configManager.getConfig", params={"name": "VideoInput"}
+                )
+            )
+        except Rpc2MethodRefused as refused:
+            if rpc2_refusal_is_a_stale_login(refused):
+                return None
+            _LOGGER.debug(
+                "%s refuses the VideoInput table, so it has no camera of its own",
+                self._address,
+            )
+            return False
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not ask %s for its VideoInput table",
+                self._address,
+                exc_info=True,
+            )
+            return None
+        return None
 
     async def async_get_vth_camera_links(self) -> dict:
         """This VTH's camera links, see vth_camera_links. Raises when it cannot read them."""
