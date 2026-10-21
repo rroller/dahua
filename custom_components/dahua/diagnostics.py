@@ -371,6 +371,19 @@ def _stream_block(coordinator) -> dict[str, Any]:
     }
 
 
+def _stream_is_carrying_anything(stream) -> bool:
+    """Whether this host stream is a transport or just an object that exists.
+
+    A channel that joined, or a task that is running. Either is enough: the
+    task is what attaches, and a channel registering is what starts it, so a
+    stream between those two states is still this entry's transport.
+    """
+    task = getattr(stream, "_task", None)
+    if task is not None and not task.done():
+        return True
+    return bool(getattr(stream, "_by_channel", None) or {})
+
+
 def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
     """Which transport is carrying this entry's events.
 
@@ -378,17 +391,33 @@ def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
     in: a doorbell takes the VTO listener and never registers a CGI stream, a device
     whose `eventManager.cgi` is absent falls through to the RPC2 poll inside the stream's
     own task, and everything else uses the CGI stream.
+
+    The same listener now also carries a monitor that serves no HTTP (#949), which is
+    not a doorbell and would be misreported as one. Named apart, because the question a
+    dump is asked here is which socket is carrying events and why, and "vto_listener" on
+    a device with no doorbell reads as a bug in the dump rather than as the answer.
     """
     vto_task = getattr(coordinator, "_vto_task", None)
     if vto_task is not None:
+        if getattr(coordinator, "_rpc2_over_dhip", False):
+            return "dhip_listener"
         return "vto_listener"
     if rpc2_poll.get("used"):
         return "rpc2_poll"
     from . import _HOST_STREAMS
 
-    if _HOST_STREAMS.get(getattr(coordinator, "_address", None)) is not None:
+    stream = _HOST_STREAMS.get(getattr(coordinator, "_address", None))
+    if stream is not None and _stream_is_carrying_anything(stream):
         return "cgi_stream"
-    # No events were configured, so nothing was started. Not a fault.
+    # Nothing is carrying events. Not a fault: no codes were selected, or the
+    # device has none to send.
+    #
+    # Judged on whether a channel actually joined rather than on the entry in
+    # `_HOST_STREAMS` existing, because the poll builds that object every time
+    # it asks `async_check_video_motion_is_pushed` a question. An indoor monitor
+    # with no camera subscribes to nothing and starts no task, and reporting it
+    # as `cgi_stream` named a transport that had never attached -- which is the
+    # thing #813 added this field to stop doing.
     return None
 
 
@@ -531,6 +560,13 @@ def _events_block(coordinator) -> dict[str, Any]:
         # almost always the question; a number plate, a card number or a person's
         # name does not.
         "recent": _recent_events_block(coordinator, now),
+        # And the newest of each code, which is the one that survives a flood.
+        # `recent` is chronological, so on a device sending MDResult eight
+        # times a second it holds eight seconds of that and nothing else: a
+        # reporter asked for a dump after pressing a doorbell had no press in
+        # it. Measured on a VTO2000A, where one press was gone within thirty
+        # seconds.
+        "latest_by_code": _latest_by_code_block(coordinator, now),
     }
 
 
@@ -548,6 +584,25 @@ def _recent_events_block(coordinator, now: int) -> list[dict[str, Any]]:
                 ),
             }
         )
+    return out
+
+
+def _latest_by_code_block(coordinator, now: int) -> dict[str, Any]:
+    """The most recent event of each code, redacted and aged like `recent`.
+
+    Same rows and the same redaction, so nothing is published here that
+    `recent` would not publish. The difference is only which events survive:
+    this one keeps the rare code a reporter was asked about instead of the
+    common one that arrived most recently.
+    """
+    latest = getattr(coordinator, "_latest_event_by_code", None) or {}
+    out = {}
+    for code, row in sorted(latest.items()):
+        captured = row.get("seconds_ago_at_capture") or now
+        out[code] = {
+            "seconds_ago": max(0, now - captured),
+            "event": _safe(lambda: dahua_utils.summarise_event(row.get("event")), {}),
+        }
     return out
 
 

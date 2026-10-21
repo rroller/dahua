@@ -52,6 +52,8 @@ WAS = {
     ("number", "vth_indoor_ring_volume"): "Indoor ring volume",
     ("number", "vth_talk_volume"): "Talk volume",
     ("number", "vth_alarm_volume"): "Alarm volume",
+    ("number", "motion_region1_sensitivity"): "Motion region 1 sensitivity",
+    ("number", "motion_region1_threshold"): "Motion region 1 threshold",
     ("button", "reboot"): "Reboot",
     ("button", "open_door"): "Open Door",
     ("button", "cancel_call"): "Cancel Call",
@@ -211,6 +213,8 @@ KEY_TABLES = (
     ("number", "IMAGE_ADJUSTMENTS"),
     # An indoor monitor's volumes (#949), same shape and same reason.
     ("number", "MONITOR_VOLUMES"),
+    # Motion region 1's sensitivity and threshold (#1115), likewise.
+    ("number", "MOTION_REGION_FIELDS"),
 )
 
 

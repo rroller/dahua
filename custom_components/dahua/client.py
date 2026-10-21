@@ -1893,6 +1893,36 @@ class DahuaClient:
         Only a real boolean counts; anything else is None, which changes nothing.
         The table also lists the other devices with their credentials, so nothing
         but that one flag is kept or logged.
+
+        **Not every monitor describes itself in that table.** Measured on a
+        VTH5221D on 3.000.0012000.0.R, which has no camera either:
+
+            configManager.getConfig {"name": "RemoteDevice"}
+              rows: Vto00 .. Vto19, and no Local0 at all
+
+        So the read above answers None for it, the monitor is taken for one
+        with a camera, and it gets camera entities, a Motion Detection switch
+        and a `MotionDetect` read every poll. On the live device the camera
+        answers 500 through Home Assistant's own proxy and the switch reads
+        `off` out of a key that is not in the coordinator's data, because the
+        device refuses the table it comes from.
+
+        Where the monitor does not say, the video input table is asked
+        instead. Measured on the same device:
+
+            configManager.getConfig {"name": "MotionDetect"}  refused 268959743
+            configManager.getConfig {"name": "VideoInput"}    refused 268959743
+            devVideoInput.getCaps                             Method not found
+            magicBox.getProductDefinition  VideoInputChannels 1
+
+        A device that refuses the table naming its video input has no video
+        input, and that is a measurement rather than an inference from the
+        model name. The product definition is no help, for the same reason
+        VideoInputChannels is ignored above: it claims one either way.
+
+        Deliberately only asked when the monitor did not answer for itself. A
+        VTH that carries a Local0 row has already said yes or no, and anything
+        that is not a VTH never reaches here.
         """
         try:
             response = await self._rpc2_shared_call(
@@ -1905,9 +1935,44 @@ class DahuaClient:
             return None
         local = ((response.get("params") or {}).get("table") or {}).get("Local0")
         if not isinstance(local, dict) or local.get("DeviceClass") != "VTH":
-            return None
+            return await self._vth_refuses_video_input()
         support_video = local.get("SupportVideo")
         return support_video if isinstance(support_video, bool) else None
+
+    async def _vth_refuses_video_input(self) -> bool | None:
+        """False when this monitor refuses the VideoInput table, else None.
+
+        The second half of `_vth_own_video`, for a monitor that does not
+        describe itself in RemoteDevice. False means "it has no camera"; None
+        means "it did not say", which leaves the camera entities exactly where
+        they were.
+
+        A refusal is the only answer acted on. A read that fails for any other
+        reason -- the session dropped, the device was busy -- must not take a
+        working camera away, so everything except an explicit refusal is None.
+        """
+        try:
+            await self._rpc2_shared_call(
+                lambda client: client.request(
+                    "configManager.getConfig", params={"name": "VideoInput"}
+                )
+            )
+        except Rpc2MethodRefused as refused:
+            if rpc2_refusal_is_a_stale_login(refused):
+                return None
+            _LOGGER.debug(
+                "%s refuses the VideoInput table, so it has no camera of its own",
+                self._address,
+            )
+            return False
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not ask %s for its VideoInput table",
+                self._address,
+                exc_info=True,
+            )
+            return None
+        return None
 
     async def async_get_vth_camera_links(self) -> dict:
         """This VTH's camera links, see vth_camera_links. Raises when it cannot read them."""
@@ -2486,6 +2551,25 @@ class DahuaClient:
         """Set one picture adjustment on a channel's general profile (0-100)."""
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoColor[{0}][0].{1}={2}".format(
             channel, field, int(value)
+        )
+        return await self.get(url)
+
+    async def async_set_motion_region(
+        self, channel: int, region: int, field: str, value: int
+    ):
+        """Set one motion region's `Sensitive` or `Threshold` (0-100).
+
+        One field per write, which is not merely tidy here. The recorder
+        refuses a whole `setConfig` as soon as any named key is one it does not
+        carry, so a write that sent both fields would fail entirely on a device
+        that has only one of them -- which is how #1115's doorbell could not
+        turn motion detection off at all.
+
+        Measured on a DHI-NVR5464-16P-EI: the recorder's own web UI writes the
+        number it displays straight into this field, on a 0 to 100 scale.
+        """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].MotionDetectWindow[{1}].{2}={3}".format(
+            channel, int(region), field, int(value)
         )
         return await self.get(url)
 
@@ -3312,7 +3396,11 @@ class DahuaClient:
         # Imported here, not at the top: host.py imports this module, so the
         # other direction is a cycle. The counter is host state rather than
         # client state, which is why it lives there.
-        from .host import MAX_AUTH_REFUSALS, async_record_host_auth_refusal
+        from .host import (
+            MAX_AUTH_REFUSALS,
+            async_record_host_auth_refusal,
+            host_auth_budget_exhausted,
+        )
 
         def refused(reason) -> bool:
             return (
@@ -3325,6 +3413,7 @@ class DahuaClient:
             self._username,
             self._password,
             on_login_refused=refused,
+            login_allowed=lambda: not host_auth_budget_exhausted(self._address),
         )
 
     @staticmethod
@@ -4309,7 +4398,12 @@ class DahuaClient:
             value = await self.get(url)
             if "OK" in value or "ok" in value:
                 return
-        except aiohttp.ClientResponseError:
+        except (aiohttp.ClientResponseError, DahuaWriteDeclined):
+            # The same two shapes as the motion fallback above: a device may
+            # refuse this table with a status, or answer 200 with `Error`,
+            # which `get` raises as a declined write. Only the first was
+            # caught, so the second left this method before the VideoInOptions
+            # form below could be tried.
             pass
 
         # Plenty of devices do not have VideoInDayNight at all. Measured:
@@ -5087,14 +5181,46 @@ class DahuaClient:
             )
 
     async def _enable_motion_detection_cgi(self, channel: int, enabled: bool) -> dict:
-        """The CGI route, tried first and kept exactly as it was."""
+        """The CGI route: the two-key form first, then `Enable` on its own.
+
+        **A refusal arrives two ways, and for a while this only heard one.**
+        The fallback below was written when a declined write came back as a
+        body that was simply not `OK`. Writes now go through `get()` with
+        `reject_declined`, so a 200 carrying `Error` raises `DahuaWriteDeclined`
+        instead, and the first `await` left the function before the second form
+        could be tried. The fallback was dead for exactly the devices it was
+        added for.
+
+        Reported on #1115 against a VTO4202F-P-S2 on 4.600, with the two calls
+        made by hand:
+
+            setConfig&MotionDetect[0].Enable=false&MotionDetect[0].DetectVersion=V3.0
+              -> Error
+            setConfig&MotionDetect[0].Enable=false
+              -> OK, and getConfig shows it took
+
+        and `getConfig&name=MotionDetect` on that firmware carries no
+        `DetectVersion` key at all. So every toggle of the Motion Detection
+        switch raised, and the switch could not be turned off.
+
+        Both shapes fall through now. The second form is still the one that
+        answers for the caller, so a device that declines both reports the
+        second refusal rather than swallowing either.
+        """
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{channel}].Enable={enabled}&MotionDetect[{channel}].DetectVersion=V3.0".format(
             channel=channel, enabled=str(enabled).lower()
         )
-        response = await self.get(url)
-
-        if "OK" in response:
-            return response
+        try:
+            response = await self.get(url)
+        except DahuaWriteDeclined:
+            _LOGGER.debug(
+                "%s declined MotionDetect with DetectVersion; asking with Enable "
+                "alone",
+                self._address,
+            )
+        else:
+            if "OK" in response:
+                return response
 
         # Some older cameras do not support the above API, so try this one
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].Enable={1}".format(

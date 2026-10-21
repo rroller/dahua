@@ -46,6 +46,7 @@ The timing makes the copies accurate rather than approximate: this runs during
 nothing has modified them yet.
 """
 
+import asyncio
 import logging
 import os
 import shutil
@@ -58,7 +59,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
-from . import ISSUE_LEFTOVER_ROWS, ISSUE_SIBLINGS_REMAIN
+from . import ISSUE_LEFTOVER_ROWS, ISSUE_SIBLINGS_REMAIN, devices_with_identifier
 from .const import CHANNEL_OPTION_KEYS, CONF_ADDRESS, CONF_CHANNEL, CONF_PORT, DOMAIN
 from .host import is_synthesised_identity, normalize_address
 
@@ -208,6 +209,68 @@ def _backup(hass: HomeAssistant, label: str = "pre-merge") -> str | None:
     if not copied or (label == "pre-serial" and set(copied) != set(BACKED_UP)):
         return None
     return target
+
+
+DATA_SERIAL_BACKUP = "dahua_pre_serial_backup"
+
+
+def _registry_fingerprint(hass: HomeAssistant, directory: str | None = None) -> tuple:
+    """What the files a backup would copy look like right now. Blocking."""
+    storage = directory if directory is not None else hass.config.path(".storage")
+    marks = []
+    for name in sorted(BACKED_UP):
+        try:
+            stat = os.stat(os.path.join(storage, name))
+        except OSError:
+            marks.append((name, None, None))
+        else:
+            marks.append((name, stat.st_size, stat.st_mtime_ns))
+    return tuple(marks)
+
+
+async def _async_backup_once(hass: HomeAssistant) -> str | None:
+    """One copy of the registries, shared by every entry it still describes.
+
+    Reported by @kmich on three monitors migrating in one startup: three backup
+    directories written within 0.1 s of each other and byte identical. A backup
+    copies the *persisted* files, and Home Assistant saves those on a delay, so
+    nothing any of the three migrations did had reached disk yet.
+
+    Reused on the evidence rather than on a timer. The files are stat'd, and the
+    copy already taken is handed back only while their sizes and modification
+    times are what they were when it was taken. That is the whole safety
+    property a backup has -- it is the state immediately before the change --
+    and a window in seconds would have traded it for a round number. An entry
+    reloaded an hour later, after Home Assistant has persisted anything at all,
+    gets its own copy.
+
+    Behind a lock, because the case being fixed is entries setting up
+    concurrently: without it all three would stat before any of them copied,
+    see nothing, and write the three directories again.
+
+    A failed backup is not remembered, so the next entry tries rather than
+    inheriting a full disk that may since have been emptied. The caller still
+    refuses to migrate on None.
+    """
+    held = hass.data.setdefault(
+        DATA_SERIAL_BACKUP, {"lock": asyncio.Lock(), "fingerprint": None, "where": None}
+    )
+    async with held["lock"]:
+        fingerprint = await hass.async_add_executor_job(_registry_fingerprint, hass)
+        if held["where"] is not None and held["fingerprint"] == fingerprint:
+            copied = await hass.async_add_executor_job(
+                _registry_fingerprint, hass, held["where"]
+            )
+            if copied == fingerprint and all(size is not None for _, size, _ in copied):
+                _LOGGER.debug(
+                    "Reusing the complete registry backup at %s", held["where"]
+                )
+                return held["where"]
+        where = await hass.async_add_executor_job(_backup, hass, "pre-serial")
+        if where is not None:
+            held["fingerprint"] = fingerprint
+            held["where"] = where
+        return where
 
 
 def leftover_rows(hass: HomeAssistant, entry) -> list:
@@ -757,9 +820,9 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
             for identifier in identifiers:
                 if identifier[0] != DOMAIN:
                     continue
-                held = devices.async_get_device(identifiers={identifier})
-                if identifier in device_targets or (
-                    held is not None and held.id != device.id
+                held = devices_with_identifier(devices, identifier)
+                if identifier in device_targets or any(
+                    other.id != device.id for other in held
                 ):
                     raise ValueError("Serial migration device conflict: " + device.id)
                 device_targets.add(identifier)
@@ -773,7 +836,7 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
             raise ValueError("Serial migration config entry conflict")
 
     preflight()
-    backup = await hass.async_add_executor_job(_backup, hass, "pre-serial")
+    backup = await _async_backup_once(hass)
     if backup is None:
         raise ValueError(
             "Could not back up all three registries before serial migration"

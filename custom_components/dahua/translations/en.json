@@ -347,6 +347,12 @@
             },
             "vth_alarm_volume": {
                 "name": "Alarm volume"
+            },
+            "motion_region1_sensitivity": {
+                "name": "Motion region 1 sensitivity"
+            },
+            "motion_region1_threshold": {
+                "name": "Motion region 1 threshold"
             }
         },
         "select": {
