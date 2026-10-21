@@ -4309,7 +4309,12 @@ class DahuaClient:
             value = await self.get(url)
             if "OK" in value or "ok" in value:
                 return
-        except aiohttp.ClientResponseError:
+        except (aiohttp.ClientResponseError, DahuaWriteDeclined):
+            # The same two shapes as the motion fallback above: a device may
+            # refuse this table with a status, or answer 200 with `Error`,
+            # which `get` raises as a declined write. Only the first was
+            # caught, so the second left this method before the VideoInOptions
+            # form below could be tried.
             pass
 
         # Plenty of devices do not have VideoInDayNight at all. Measured:
@@ -5087,14 +5092,46 @@ class DahuaClient:
             )
 
     async def _enable_motion_detection_cgi(self, channel: int, enabled: bool) -> dict:
-        """The CGI route, tried first and kept exactly as it was."""
+        """The CGI route: the two-key form first, then `Enable` on its own.
+
+        **A refusal arrives two ways, and for a while this only heard one.**
+        The fallback below was written when a declined write came back as a
+        body that was simply not `OK`. Writes now go through `get()` with
+        `reject_declined`, so a 200 carrying `Error` raises `DahuaWriteDeclined`
+        instead, and the first `await` left the function before the second form
+        could be tried. The fallback was dead for exactly the devices it was
+        added for.
+
+        Reported on #1115 against a VTO4202F-P-S2 on 4.600, with the two calls
+        made by hand:
+
+            setConfig&MotionDetect[0].Enable=false&MotionDetect[0].DetectVersion=V3.0
+              -> Error
+            setConfig&MotionDetect[0].Enable=false
+              -> OK, and getConfig shows it took
+
+        and `getConfig&name=MotionDetect` on that firmware carries no
+        `DetectVersion` key at all. So every toggle of the Motion Detection
+        switch raised, and the switch could not be turned off.
+
+        Both shapes fall through now. The second form is still the one that
+        answers for the caller, so a device that declines both reports the
+        second refusal rather than swallowing either.
+        """
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{channel}].Enable={enabled}&MotionDetect[{channel}].DetectVersion=V3.0".format(
             channel=channel, enabled=str(enabled).lower()
         )
-        response = await self.get(url)
-
-        if "OK" in response:
-            return response
+        try:
+            response = await self.get(url)
+        except DahuaWriteDeclined:
+            _LOGGER.debug(
+                "%s declined MotionDetect with DetectVersion; asking with Enable "
+                "alone",
+                self._address,
+            )
+        else:
+            if "OK" in response:
+                return response
 
         # Some older cameras do not support the above API, so try this one
         url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].Enable={1}".format(
