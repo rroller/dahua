@@ -58,7 +58,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
-from . import ISSUE_SIBLINGS_REMAIN
+from . import ISSUE_SIBLINGS_REMAIN, devices_with_identifier
 from .const import CHANNEL_OPTION_KEYS, CONF_ADDRESS, CONF_CHANNEL, CONF_PORT, DOMAIN
 from .host import is_synthesised_identity, normalize_address
 
@@ -633,9 +633,9 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
             for identifier in identifiers:
                 if identifier[0] != DOMAIN:
                     continue
-                held = devices.async_get_device(identifiers={identifier})
-                if identifier in device_targets or (
-                    held is not None and held.id != device.id
+                held = devices_with_identifier(devices, identifier)
+                if identifier in device_targets or any(
+                    other.id != device.id for other in held
                 ):
                     raise ValueError("Serial migration device conflict: " + device.id)
                 device_targets.add(identifier)
