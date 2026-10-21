@@ -579,6 +579,15 @@ async def async_device_is_zero_indexed(client, device: str):
 
 
 @callback
+def host_auth_budget_exhausted(address: str) -> bool:
+    """Whether a transport on this host must stop offering credentials."""
+    return (
+        _HOST_FAILURES.get(normalize_address(address), {}).get("auth_refusals", 0)
+        >= MAX_AUTH_REFUSALS
+    )
+
+
+@callback
 def async_record_host_auth_refusal(address: str, source: str = "") -> int:
     """Note that this host refused the credentials, and say how often it has.
 

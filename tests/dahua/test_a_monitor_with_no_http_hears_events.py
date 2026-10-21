@@ -263,3 +263,43 @@ def test_a_stream_a_channel_did_join_still_reports_itself(monkeypatch):
     )
 
     assert _transport(coordinator, {}) == "cgi_stream"
+
+
+@pytest.mark.parametrize("events", [None, []])
+async def test_a_dhip_monitor_with_no_selected_events_starts_no_listener(
+    registered, events
+):
+    assert await _start(_coordinator(over_dhip=True, events=events)) == []
+    assert registered == []
+
+
+async def test_the_listener_checks_a_budget_already_spent_by_the_transport(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    for _ in range(3):
+        host_module.async_record_host_auth_refusal(ADDRESS, "dhip transport")
+    connect = AsyncMock(side_effect=asyncio.CancelledError())
+    monkeypatch.setattr(asyncio.get_running_loop(), "create_connection", connect)
+    monitor = _coordinator(over_dhip=True)
+    await monitor._async_stream_vto_events()
+    connect.assert_not_called()
+
+
+async def test_the_transport_checks_a_budget_already_spent_by_the_listener(monkeypatch):
+    from unittest.mock import AsyncMock
+    from custom_components.dahua import dhip
+    from custom_components.dahua.client import DahuaClient
+    from custom_components.dahua.dhip import DhipLoginRefused
+
+    client = DahuaClient.__new__(DahuaClient)
+    client._rpc2_over_dhip = True
+    client._address, client._username, client._password = ADDRESS, "u", "p"
+    transport = client._new_dhip_transport()
+    for _ in range(3):
+        _coordinator(over_dhip=True)._note_vto_login_refusal("refused")
+    connect = AsyncMock(side_effect=AssertionError("must not connect"))
+    monkeypatch.setattr(dhip.asyncio, "open_connection", connect)
+    with pytest.raises(DhipLoginRefused):
+        await transport.exchange({"method": "magicBox.getSerialNo"})
+    connect.assert_not_called()

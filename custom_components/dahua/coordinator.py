@@ -79,6 +79,7 @@ from .deterrence import (
 )
 from .host import (
     MAX_AUTH_REFUSALS,
+    host_auth_budget_exhausted,
     MAX_BACKOFF_DOUBLINGS,
     _CAPABILITY_REFUSALS_REPORTED,
     _acquire_connector,
@@ -1174,6 +1175,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # model a flag it is not about is the wrong direction. `diagnostics.py`
         # reads the same attribute the same way.
         if getattr(self, "_rpc2_over_dhip", False):
+            if not self.events:
+                return
             # There is no web server to attach to, so the CGI stream cannot be
             # the answer and neither can the RPC2 poll that stands in for it.
             # Measured on a VTH5221D on 3.000.0012000.0.R:
@@ -1280,6 +1283,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
         consecutive_failures = 0
         while True:
+            if getattr(self, "_rpc2_over_dhip", False) and host_auth_budget_exhausted(
+                self._address
+            ):
+                return
             protocol = None
             started = time.monotonic()
             try:

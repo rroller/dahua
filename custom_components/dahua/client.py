@@ -3312,7 +3312,11 @@ class DahuaClient:
         # Imported here, not at the top: host.py imports this module, so the
         # other direction is a cycle. The counter is host state rather than
         # client state, which is why it lives there.
-        from .host import MAX_AUTH_REFUSALS, async_record_host_auth_refusal
+        from .host import (
+            MAX_AUTH_REFUSALS,
+            async_record_host_auth_refusal,
+            host_auth_budget_exhausted,
+        )
 
         def refused(reason) -> bool:
             return (
@@ -3325,6 +3329,7 @@ class DahuaClient:
             self._username,
             self._password,
             on_login_refused=refused,
+            login_allowed=lambda: not host_auth_budget_exhausted(self._address),
         )
 
     @staticmethod
