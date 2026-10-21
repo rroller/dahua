@@ -371,6 +371,19 @@ def _stream_block(coordinator) -> dict[str, Any]:
     }
 
 
+def _stream_is_carrying_anything(stream) -> bool:
+    """Whether this host stream is a transport or just an object that exists.
+
+    A channel that joined, or a task that is running. Either is enough: the
+    task is what attaches, and a channel registering is what starts it, so a
+    stream between those two states is still this entry's transport.
+    """
+    task = getattr(stream, "_task", None)
+    if task is not None and not task.done():
+        return True
+    return bool(getattr(stream, "_by_channel", None) or {})
+
+
 def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
     """Which transport is carrying this entry's events.
 
@@ -393,9 +406,18 @@ def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
         return "rpc2_poll"
     from . import _HOST_STREAMS
 
-    if _HOST_STREAMS.get(getattr(coordinator, "_address", None)) is not None:
+    stream = _HOST_STREAMS.get(getattr(coordinator, "_address", None))
+    if stream is not None and _stream_is_carrying_anything(stream):
         return "cgi_stream"
-    # No events were configured, so nothing was started. Not a fault.
+    # Nothing is carrying events. Not a fault: no codes were selected, or the
+    # device has none to send.
+    #
+    # Judged on whether a channel actually joined rather than on the entry in
+    # `_HOST_STREAMS` existing, because the poll builds that object every time
+    # it asks `async_check_video_motion_is_pushed` a question. An indoor monitor
+    # with no camera subscribes to nothing and starts no task, and reporting it
+    # as `cgi_stream` named a transport that had never attached -- which is the
+    # thing #813 added this field to stop doing.
     return None
 
 

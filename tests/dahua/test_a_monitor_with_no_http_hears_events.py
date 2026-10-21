@@ -214,3 +214,34 @@ def test_a_doorbell_is_still_a_vto_listener():
     doorbell._vto_task = object()
 
     assert _transport(doorbell, {}) == "vto_listener"
+
+
+def test_a_stream_object_nobody_joined_is_not_a_transport():
+    """The poll builds the host stream object every time it asks it whether
+    motion is pushed, so the entry in `_HOST_STREAMS` exists on a device that
+    never registered and never attached. Reporting that as `cgi_stream` names a
+    transport that has done nothing, which is what #813 added this field to
+    stop doing."""
+    from custom_components.dahua import _HOST_STREAMS
+
+    coordinator = _coordinator()
+    _HOST_STREAMS[ADDRESS] = type("S", (), {"_by_channel": {}, "_task": None})()
+    try:
+        assert _transport(coordinator, {}) is None
+    finally:
+        _HOST_STREAMS.pop(ADDRESS, None)
+
+
+def test_a_stream_a_channel_did_join_still_reports_itself():
+    """The negative control: almost every device is here, and losing the name
+    would be worse than the wrong name."""
+    from custom_components.dahua import _HOST_STREAMS
+
+    coordinator = _coordinator()
+    _HOST_STREAMS[ADDRESS] = type(
+        "S", (), {"_by_channel": {0: [coordinator]}, "_task": None}
+    )()
+    try:
+        assert _transport(coordinator, {}) == "cgi_stream"
+    finally:
+        _HOST_STREAMS.pop(ADDRESS, None)
