@@ -851,13 +851,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _coaxial_status_over_rpc2: bool = False
     _coaxial_status_rpc2_asked: bool = False
 
-    # Whether this device serves no HTTP at all and is read over DHIP (#949).
-    # The client is told the same thing, and this is the coordinator's copy
-    # because the event transport is chosen here. On the class for the reason
-    # above: the many object.__new__ tests do not set it, and the thing that
-    # reads it runs during setup.
-    _rpc2_over_dhip: bool = False
-
     # The recorder's own alarm input terminals (#1090), on the class for the
     # same reason and with the same rule: reassigned, never mutated. Only the
     # one coordinator that probed them has a non-empty list, so these also
@@ -1171,7 +1164,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self._address,
             )
             return
-        if self._rpc2_over_dhip:
+        # `getattr` rather than an attribute or a helper method, because the
+        # suite calls this unbound on doubles that are not this class:
+        #
+        #     await DahuaDataUpdateCoordinator.async_start_event_listener(first)
+        #
+        # Neither a class attribute nor a method on the real coordinator is
+        # reached that way, and requiring every double that borrows a method to
+        # model a flag it is not about is the wrong direction. `diagnostics.py`
+        # reads the same attribute the same way.
+        if getattr(self, "_rpc2_over_dhip", False):
             # There is no web server to attach to, so the CGI stream cannot be
             # the answer and neither can the RPC2 poll that stands in for it.
             # Measured on a VTH5221D on 3.000.0012000.0.R:
@@ -1268,7 +1270,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         So on such a device the listener spends the transport's budget rather
         than one of its own, and three refusals stop both.
         """
-        return "dhip transport" if self._rpc2_over_dhip else "vto listener"
+        return (
+            "dhip transport"
+            if getattr(self, "_rpc2_over_dhip", False)
+            else "vto listener"
+        )
 
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""

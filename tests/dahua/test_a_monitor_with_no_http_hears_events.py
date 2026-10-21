@@ -59,10 +59,13 @@ def _clean_host_state():
 def registered(monkeypatch):
     """Who joined the shared CGI stream, which is what this must stop doing."""
     joined = []
+    # *args, because what `_host_stream` is called with is not this test's
+    # subject and has changed: #1085 adds the port, so a fixed signature here
+    # would turn that merge into a TypeError in a test about something else.
     monkeypatch.setattr(
         coordinator_module,
         "_host_stream",
-        lambda hass, address: type(
+        lambda *args, **kwargs: type(
             "S", (), {"register": staticmethod(joined.append)}
         )(),
     )
@@ -216,32 +219,47 @@ def test_a_doorbell_is_still_a_vto_listener():
     assert _transport(doorbell, {}) == "vto_listener"
 
 
-def test_a_stream_object_nobody_joined_is_not_a_transport():
+class _WhateverKey(dict):
+    """A `_HOST_STREAMS` that answers with one stream for any key.
+
+    What the streams are keyed by is not this test's subject and is being
+    changed underneath it: #1085 moves it from the address to `address:port`.
+    Keying a fixture dict by hand would make these two cases fail on that
+    merge while saying nothing about the field they are about.
+    """
+
+    def __init__(self, stream):
+        super().__init__()
+        self._stream = stream
+
+    def get(self, key, default=None):
+        return self._stream
+
+
+def _with_stream(monkeypatch, stream):
+    import custom_components.dahua as dahua
+
+    monkeypatch.setattr(dahua, "_HOST_STREAMS", _WhateverKey(stream))
+
+
+def test_a_stream_object_nobody_joined_is_not_a_transport(monkeypatch):
     """The poll builds the host stream object every time it asks it whether
     motion is pushed, so the entry in `_HOST_STREAMS` exists on a device that
     never registered and never attached. Reporting that as `cgi_stream` names a
     transport that has done nothing, which is what #813 added this field to
     stop doing."""
-    from custom_components.dahua import _HOST_STREAMS
+    _with_stream(monkeypatch, type("S", (), {"_by_channel": {}, "_task": None})())
 
-    coordinator = _coordinator()
-    _HOST_STREAMS[ADDRESS] = type("S", (), {"_by_channel": {}, "_task": None})()
-    try:
-        assert _transport(coordinator, {}) is None
-    finally:
-        _HOST_STREAMS.pop(ADDRESS, None)
+    assert _transport(_coordinator(), {}) is None
 
 
-def test_a_stream_a_channel_did_join_still_reports_itself():
+def test_a_stream_a_channel_did_join_still_reports_itself(monkeypatch):
     """The negative control: almost every device is here, and losing the name
     would be worse than the wrong name."""
-    from custom_components.dahua import _HOST_STREAMS
-
     coordinator = _coordinator()
-    _HOST_STREAMS[ADDRESS] = type(
-        "S", (), {"_by_channel": {0: [coordinator]}, "_task": None}
-    )()
-    try:
-        assert _transport(coordinator, {}) == "cgi_stream"
-    finally:
-        _HOST_STREAMS.pop(ADDRESS, None)
+    _with_stream(
+        monkeypatch,
+        type("S", (), {"_by_channel": {0: [coordinator]}, "_task": None})(),
+    )
+
+    assert _transport(coordinator, {}) == "cgi_stream"
