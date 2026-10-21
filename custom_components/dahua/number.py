@@ -49,6 +49,20 @@ MONITOR_VOLUMES = (
 )
 
 
+# (translation key, MotionDetect region field) for the motion detection region
+# the device's own UI calls Region 1 (#1115). Same shape and the same reason as
+# the two tables above.
+#
+# Both are 0 to 100, which is measured rather than assumed: the recorder's own
+# web UI offers that range for each, and setting Channel 1's sensitivity to 100
+# there put 100 into `MotionDetect[0].MotionDetectWindow[0].Sensitive`. The
+# displayed scale and the stored field are the same number.
+MOTION_REGION_FIELDS = (
+    ("motion_region1_sensitivity", "Sensitive"),
+    ("motion_region1_threshold", "Threshold"),
+)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Set up the number platform."""
 
@@ -92,11 +106,28 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             if coordinator.supports_vth_phone_setting(field)
         ]
 
+    async def build_motion_region(coordinator):
+        """The motion region sliders, where the device carries a region at all.
+
+        Not every device does. A recorder channel has
+        `MotionDetectWindow[0..3]`; a VTO2000A has none and only the
+        whole-channel `Level` (#1115). Per field, like the two above, so a
+        device reporting one of the two gets one.
+        """
+        return [
+            DahuaMotionRegionNumber(coordinator, entry, key, field)
+            for key, field in MOTION_REGION_FIELDS
+            if coordinator.supports_motion_region(field)
+        ]
+
     await async_add_and_keep_watching(
         hass, entry, build, async_add_devices, entry_coordinators
     )
     await async_add_and_keep_watching(
         hass, entry, build_monitor_volumes, async_add_devices, entry_coordinators
+    )
+    await async_add_and_keep_watching(
+        hass, entry, build_motion_region, async_add_devices, entry_coordinators
     )
 
 
@@ -192,5 +223,61 @@ class DahuaMonitorVolumeNumber(DahuaBaseEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         await self._coordinator.client.async_set_video_talk_phone_field(
             self._field, int(value)
+        )
+        await self._coordinator.async_refresh()
+
+
+class DahuaMotionRegionNumber(DahuaBaseEntity, NumberEntity):
+    """Motion region 1's sensitivity or threshold, 0-100 (#1115).
+
+    Asked for by @clore-hub, whose doorbell's web UI offers no motion settings
+    at all, so Home Assistant would be the only interface it has. His device
+    turns out to need a different field from this one -- it has no regions and
+    only the whole-channel `Level`, whose range nothing will state -- but the
+    measurement that came out of chasing it is this one: a recorder's own UI
+    offers both of these as 0 to 100 and writes the displayed number straight
+    into the field.
+
+    Region 1 of four, for the reason on `DahuaDataUpdateCoordinator.MOTION_REGION`.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = 0
+    _attr_native_max_value = 100
+    _attr_native_step = 1
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(self, coordinator, entry, key, field):
+        DahuaBaseEntity.__init__(self, coordinator, entry)
+        NumberEntity.__init__(self)
+        self._coordinator = coordinator
+        self._key = key
+        self._field = field
+        self._attr_translation_key = key
+        self._attr_unique_id = "%s_%s" % (coordinator.get_serial_number(), key)
+
+    @property
+    def unique_id(self):
+        return self._attr_unique_id
+
+    @property
+    def available(self) -> bool:
+        """Off until the poll has a value, so a slider never shows an invented
+        default for a channel whose MotionDetect read failed."""
+        return (
+            super().available
+            and self._coordinator.get_motion_region_value(self._field) is not None
+        )
+
+    @property
+    def native_value(self):
+        return self._coordinator.get_motion_region_value(self._field)
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._coordinator.client.async_set_motion_region(
+            self._coordinator.get_channel(),
+            self._coordinator.MOTION_REGION,
+            self._field,
+            int(value),
         )
         await self._coordinator.async_refresh()

@@ -166,11 +166,14 @@ async def test_coaxial_status_survives_either_reader():
     assert COAXIAL not in await _poll(light=False, switch=False)
 
 
-async def test_motion_detection_survives_either_reader():
-    """The camera entity reads this as well as the switch."""
-    assert MOTION in await _poll(switch=False), "the camera entity still needs it"
-    assert MOTION in await _poll(camera=False), "the motion switch still needs it"
-    assert MOTION not in await _poll(camera=False, switch=False)
+async def test_motion_detection_survives_any_of_its_three_readers():
+    """The camera entity and the motion switch read this, and since #1115 so do
+    the motion region sliders on `number`. Three readers, so losing any two of
+    the platforms must not stop the table being fetched for the third."""
+    assert MOTION in await _poll(switch=False, number=False), "the camera needs it"
+    assert MOTION in await _poll(camera=False, number=False), "the switch needs it"
+    assert MOTION in await _poll(camera=False, switch=False), "the sliders need it"
+    assert MOTION not in await _poll(camera=False, switch=False, number=False)
 
 
 async def test_lighting_v2_survives_losing_the_light_platform_on_a_doorbell():

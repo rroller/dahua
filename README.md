@@ -973,6 +973,14 @@ Preset Position | Moves a PTZ camera to one of its stored preset positions, and 
 Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dahua also calls Brightness). Readable as well as settable, which is what makes it possible to notice a camera that changed mode by itself, such as one reverting to Auto after a power cut and then rendering black and white at night
 Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
 
+## Motion region sliders
+
+**Motion region 1 sensitivity** and **Motion region 1 threshold** appear on channels
+that report the corresponding `MotionDetectWindow[0]` fields. Each is a 0–100 slider
+for Region 1, as shown in the recorder's interface, and writes only that channel's
+selected field. Devices with only the whole-channel `Level` setting do not get these
+sliders; its valid range has not been established.
+
 ## Event entities
 
 Entity |  Description |
