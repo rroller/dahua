@@ -194,7 +194,8 @@ def device_by_identifier(registry, identifier: tuple, entry_id: str):
     """
     by_identifier = getattr(registry, "async_get_device_by_identifier", None)
     if by_identifier is None:
-        return registry.async_get_device(identifiers={identifier})
+        held = registry.async_get_device(identifiers={identifier})
+        return held if held is not None and entry_id in held.config_entries else None
     return by_identifier(identifier, entry_id)
 
 

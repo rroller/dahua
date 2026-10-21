@@ -28,6 +28,7 @@ would have quietly dropped a safety check rather than modernised it.
 """
 
 import pathlib
+from types import SimpleNamespace
 
 import pytest
 from homeassistant.helpers import device_registry as dr
@@ -125,9 +126,10 @@ class _OldRegistry:
 
 
 def test_the_old_api_is_used_when_the_new_one_is_absent():
-    old = _OldRegistry(answer="a device")
+    answer = SimpleNamespace(config_entries={"entry"})
+    old = _OldRegistry(answer=answer)
 
-    assert device_by_identifier(old, (DOMAIN, SERIAL), "entry") == "a device"
+    assert device_by_identifier(old, (DOMAIN, SERIAL), "entry") is answer
     assert old.asked == [{(DOMAIN, SERIAL)}]
 
 
@@ -179,3 +181,8 @@ def test_both_helpers_are_importable_from_the_package(name):
     import custom_components.dahua as dahua
 
     assert callable(getattr(dahua, name))
+
+
+def test_old_registry_lookup_never_returns_another_entrys_device():
+    answer = SimpleNamespace(config_entries={"other-entry"})
+    assert device_by_identifier(_OldRegistry(answer), (DOMAIN, SERIAL), "entry") is None
