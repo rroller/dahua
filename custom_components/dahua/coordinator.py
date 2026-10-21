@@ -623,6 +623,25 @@ DOORBELL_RINGING_STATES = frozenset({1, 2})
 # rather than by a history.
 RECENT_EVENT_COUNT = 10
 
+# How many distinct codes keep their most recent event alongside the list above.
+#
+# Measured on a live VTO2000A: one doorbell press, and thirty seconds later the
+# press had already gone. `MDResult` arrived 40 times in that window, plus
+# motion and video-blind edges, so the ten slots held nothing but the flood and
+# the thing the reporter had just been asked for was not in the dump. The field
+# exists so a reporter can be asked for diagnostics after pressing a button;
+# on a busy device it could not answer that.
+#
+# One per code rather than a bigger list, because a bigger list loses the same
+# race a little later: a code arriving eight times a second will fill whatever
+# it is given. Keeping the newest of each code bounds the cost by how many
+# different things a device says, which is small, instead of by how often it
+# says them.
+#
+# Capped anyway. The bound is a defence against a device inventing codes, not
+# an expectation: the busiest device here says about a dozen different things.
+RECENT_EVENT_CODES = 25
+
 # BackKeyLight State values that are not about ringing at all, and the event
 # each one deserves. Measured on a VTO2000A: opening the door through the
 # integration produces State 8 within a second, and no AccessControl event.
@@ -3176,12 +3195,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Stored before the event is enriched with the device name, because what
         matters for diagnosis is what the device sent.
         """
+        row = {"seconds_ago_at_capture": int(time.time()), "event": dict(event)}
         buffer = getattr(self, "_recent_events", None)
         if buffer is None:
             buffer = self._recent_events = deque(maxlen=RECENT_EVENT_COUNT)
-        buffer.append(
-            {"seconds_ago_at_capture": int(time.time()), "event": dict(event)}
-        )
+        buffer.append(row)
+
+        # And the newest of each code, which is what survives a flood. Same
+        # row object: it is never mutated after this, and two references cost
+        # nothing next to a second copy of an ANPR payload.
+        latest = getattr(self, "_latest_event_by_code", None)
+        if latest is None:
+            latest = self._latest_event_by_code = {}
+        code = event.get("Code")
+        if isinstance(code, str) and code:
+            if code in latest or len(latest) < RECENT_EVENT_CODES:
+                latest[code] = row
 
     def handle_event(self, event: dict):
         """Handle one event the host stream has decided belongs to this channel."""

@@ -531,6 +531,13 @@ def _events_block(coordinator) -> dict[str, Any]:
         # almost always the question; a number plate, a card number or a person's
         # name does not.
         "recent": _recent_events_block(coordinator, now),
+        # And the newest of each code, which is the one that survives a flood.
+        # `recent` is chronological, so on a device sending MDResult eight
+        # times a second it holds eight seconds of that and nothing else: a
+        # reporter asked for a dump after pressing a doorbell had no press in
+        # it. Measured on a VTO2000A, where one press was gone within thirty
+        # seconds.
+        "latest_by_code": _latest_by_code_block(coordinator, now),
     }
 
 
@@ -548,6 +555,25 @@ def _recent_events_block(coordinator, now: int) -> list[dict[str, Any]]:
                 ),
             }
         )
+    return out
+
+
+def _latest_by_code_block(coordinator, now: int) -> dict[str, Any]:
+    """The most recent event of each code, redacted and aged like `recent`.
+
+    Same rows and the same redaction, so nothing is published here that
+    `recent` would not publish. The difference is only which events survive:
+    this one keeps the rare code a reporter was asked about instead of the
+    common one that arrived most recently.
+    """
+    latest = getattr(coordinator, "_latest_event_by_code", None) or {}
+    out = {}
+    for code, row in sorted(latest.items()):
+        captured = row.get("seconds_ago_at_capture") or now
+        out[code] = {
+            "seconds_ago": max(0, now - captured),
+            "event": _safe(lambda: dahua_utils.summarise_event(row.get("event")), {}),
+        }
     return out
 
 
