@@ -2582,7 +2582,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # with no camera whether its motion detection is on.
             # `is_indoor_monitor_without_video` is the same answer #958 used to
             # take the camera entities away from such a device.
-            if self._wanted_by(CAMERA, SWITCH) and not (
+            if self._wanted_by(CAMERA, SWITCH, NUMBER) and not (
                 self.is_indoor_monitor_without_video()
             ):
                 coros.append(
@@ -4209,6 +4209,47 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         fetched.
         """
         return field in getattr(self, "_video_color_fields", frozenset())
+
+    # Which region's sensitivity and threshold are exposed, of the four the
+    # recorder's own UI offers.
+    #
+    # One, deliberately. Four regions times two fields times twelve channels is
+    # ninety-six entities on one recorder, for a feature whose evidence is that
+    # five channels have region 1 tuned and none has ever used regions 2 to 4.
+    # Region 1 is also the one every channel has and the one the UI opens on.
+    MOTION_REGION = 0
+
+    def motion_region_key(self, field: str) -> str:
+        """Where this channel's region 1 sensitivity or threshold lives."""
+        return "table.MotionDetect[{0}].MotionDetectWindow[{1}].{2}".format(
+            self._channel, self.MOTION_REGION, field
+        )
+
+    def get_motion_region_value(self, field: str):
+        """This channel's region 1 `Sensitive` or `Threshold`, or None.
+
+        Measured on a DHI-NVR5464-16P-EI, whose own web UI offers both as 0 to
+        100 and writes them straight into these fields: setting Channel 1's
+        sensitivity to 100 in the UI put 100 into
+        `MotionDetect[0].MotionDetectWindow[0].Sensitive`, so the displayed
+        scale and the stored field are the same number.
+        """
+        value = (getattr(self, "data", None) or {}).get(self.motion_region_key(field))
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def supports_motion_region(self, field: str) -> bool:
+        """Whether this device reports region 1 at all.
+
+        Judged on the key rather than on the device class, because the two
+        kinds really differ: a recorder channel carries
+        `MotionDetectWindow[0..3]`, and a VTO2000A carries none at all and has
+        only the whole-channel `Level` (#1115). A slider for a field the device
+        does not have would read unknown for ever.
+        """
+        return self.motion_region_key(field) in (getattr(self, "data", None) or {})
 
     def supports_vth_phone_setting(self, field: str) -> bool:
         """Whether this monitor reported this call setting at setup (#949).

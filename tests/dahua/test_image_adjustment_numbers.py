@@ -65,6 +65,12 @@ class _Coordinator:
         """Not an indoor monitor, so it has no call settings (#949)."""
         return False
 
+    def supports_motion_region(self, field):
+        """This file is about the picture sliders. The motion region sliders
+        (#1115) are built by their own pass over the same coordinators, so the
+        double has to answer the question even though it is not the subject."""
+        return False
+
     def supports_video_color(self, field):
         return field in self._fields
 

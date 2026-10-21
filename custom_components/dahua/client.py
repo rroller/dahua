@@ -2489,6 +2489,25 @@ class DahuaClient:
         )
         return await self.get(url)
 
+    async def async_set_motion_region(
+        self, channel: int, region: int, field: str, value: int
+    ):
+        """Set one motion region's `Sensitive` or `Threshold` (0-100).
+
+        One field per write, which is not merely tidy here. The recorder
+        refuses a whole `setConfig` as soon as any named key is one it does not
+        carry, so a write that sent both fields would fail entirely on a device
+        that has only one of them -- which is how #1115's doorbell could not
+        turn motion detection off at all.
+
+        Measured on a DHI-NVR5464-16P-EI: the recorder's own web UI writes the
+        number it displays straight into this field, on a 0 to 100 scale.
+        """
+        url = "/cgi-bin/configManager.cgi?action=setConfig&MotionDetect[{0}].MotionDetectWindow[{1}].{2}={3}".format(
+            channel, int(region), field, int(value)
+        )
+        return await self.get(url)
+
     async def async_get_storage_device_info(self) -> dict:
         """The recorder's disks: state, capacity and error flags (#745).
 
