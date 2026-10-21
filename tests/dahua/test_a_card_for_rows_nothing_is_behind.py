@@ -28,7 +28,7 @@ and after it has a restored one.
 """
 
 import pytest
-from homeassistant.config_entries import ConfigEntryState
+from homeassistant.config_entries import ConfigEntryState, ConfigSubentry
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -46,6 +46,9 @@ class _Coordinator:
         self.initialized = initialized
         self.last_update_success = success
         self._unanswered = set(unanswered)
+
+    def get_channel(self):
+        return 0
 
     def probes_that_did_not_answer(self):
         return self._unanswered
@@ -430,3 +433,56 @@ async def test_one_row_deleted_by_hand_does_not_stop_the_rest(hass):
     assert result["type"] == "create_entry"
     assert registry.async_get(made["switch.also_gone"].entity_id) is None
     assert registry.async_get(made["switch.live"].entity_id) is not None
+
+
+async def test_a_failed_channel_missing_from_runtime_prevents_cleanup(hass):
+    entry, made = await _entry_with_rows(hass)
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            subentry_type="channel", title="ch0", unique_id="ch0", data={"channel": 0}
+        ),
+    )
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            subentry_type="channel", title="ch1", unique_id="ch1", data={"channel": 1}
+        ),
+    )
+    found = await migrate.async_offer_leftover_rows(hass, entry, [_Coordinator()])
+    assert found == 0
+    assert _issue(hass, entry) is None
+    result = await _flow(hass, entry).async_step_init()
+    assert result["type"] == "abort"
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+
+async def test_disabling_a_platform_does_not_offer_its_rows(hass):
+    entry, made = await _entry_with_rows(hass)
+    hass.config_entries.async_update_entry(entry, options={"switch": False})
+    assert migrate.leftover_rows(hass, entry) == []
+    assert await migrate.async_offer_leftover_rows(hass, entry, [_Coordinator()]) == 0
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+
+async def test_new_candidates_need_to_be_shown_before_they_can_be_deleted(hass):
+    entry, made = await _entry_with_rows(hass)
+    flow = _flow(hass, entry)
+    await flow.async_step_init()
+    hass.states.async_set(
+        made["switch.live"].entity_id, "unavailable", {"restored": True}
+    )
+    result = await flow.async_step_confirm({})
+    assert result["type"] == "form"
+    assert (
+        made["switch.live"].entity_id in result["description_placeholders"]["entities"]
+    )
+    assert er.async_get(hass).async_get(made["switch.live"].entity_id) is not None
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+
+async def test_confirmation_without_a_displayed_list_removes_nothing(hass):
+    entry, made = await _entry_with_rows(hass)
+    result = await _flow(hass, entry).async_step_confirm({})
+    assert result["type"] == "form"
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None

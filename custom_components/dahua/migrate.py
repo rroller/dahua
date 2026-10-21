@@ -236,6 +236,8 @@ def leftover_rows(hass: HomeAssistant, entry) -> list:
     for row in er.async_entries_for_config_entry(registry, entry.entry_id):
         if row.disabled_by is not None:
             continue
+        if not entry.options.get(row.domain, True):
+            continue
         state = hass.states.get(row.entity_id)
         if state is None or state.attributes.get("restored"):
             rows.append(row.entity_id)
@@ -258,6 +260,18 @@ def _entry_is_wholly_healthy(hass: HomeAssistant, entry, coordinators) -> bool:
     is merely offline nothing at all.
     """
     if not coordinators:
+        return False
+    from . import channel_configs
+
+    expected = {config.get(CONF_CHANNEL, 0) for _, config in channel_configs(entry)}
+    present = {
+        coordinator.get_channel()
+        for coordinator in coordinators
+        if callable(getattr(coordinator, "get_channel", None))
+    }
+    # Setup retains successful coordinators only. Checking that list alone
+    # cannot establish that a failed configured channel has recovered.
+    if not expected.issubset(present):
         return False
     for coordinator in coordinators:
         if not getattr(coordinator, "initialized", False):

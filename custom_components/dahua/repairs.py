@@ -228,6 +228,7 @@ class RemoveLeftoverRowsRepairFlow(RepairsFlow):
 
     def __init__(self, data: dict) -> None:
         self._entry_id = data.get("entry_id")
+        self._shown_rows = None
 
     async def async_step_init(self, user_input: dict | None = None):
         return await self.async_step_confirm()
@@ -284,7 +285,11 @@ class RemoveLeftoverRowsRepairFlow(RepairsFlow):
             )
             return self.async_abort(reason="nothing_to_remove")
 
-        if user_input is not None:
+        if (
+            user_input is not None
+            and self._shown_rows is not None
+            and set(rows).issubset(self._shown_rows)
+        ):
             registry = er.async_get(self.hass)
             for entity_id in rows:
                 # Re-read each one. The list was taken moments ago, but this is
@@ -303,6 +308,9 @@ class RemoveLeftoverRowsRepairFlow(RepairsFlow):
             )
             return self.async_create_entry(data={})
 
+        # A newly missing row must be shown before any confirmation can act
+        # on it. Retain this only within the current flow, never in the issue.
+        self._shown_rows = set(rows)
         return self.async_show_form(
             step_id="confirm",
             data_schema=vol.Schema({}),
