@@ -167,6 +167,58 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
 WHITE_LIGHT_SCHEME = "WhiteMode"
 
 
+def device_by_identifier(registry, identifier: tuple, entry_id: str):
+    """This config entry's device holding `identifier`, or None.
+
+    `device_registry.async_get_device` is deprecated. Home Assistant reports
+    every call and says it will stop working in 2027.8:
+
+        calls `device_registry.async_get_device`, which is deprecated because
+        device identifiers and connections are no longer unique across config
+        entries; use `async_get_device_by_identifier` ... instead
+
+    Every place this integration asked that question meant "the device of this
+    entry", so the replacement is also the more accurate answer: the old call
+    resolves a shared identifier by preferring a matching domain and then falls
+    back to the first match, which on two entries for one recorder could be the
+    other entry's device.
+
+    One caller does not mean that: `migrate.py` asks whether anybody at all
+    already holds an identifier it is about to write, which is
+    `devices_with_identifier` below. Narrowing that one to this entry would
+    have dropped a check, so it is kept as it was.
+
+    The fallback keeps the 2026.8.0 minimum in `hacs.json` working, and is the
+    behaviour every caller has today. Delete it, and this helper with it, once
+    the minimum is past the release that added the replacement.
+    """
+    by_identifier = getattr(registry, "async_get_device_by_identifier", None)
+    if by_identifier is None:
+        held = registry.async_get_device(identifiers={identifier})
+        return held if held is not None and entry_id in held.config_entries else None
+    return by_identifier(identifier, entry_id)
+
+
+def devices_with_identifier(registry, identifier: tuple) -> list:
+    """Every device holding `identifier`, whichever config entry owns it.
+
+    The other half of the deprecation above, for the one question that really
+    is about every entry: `migrate.py` checks that a serial it is about to
+    write onto a device is not already somebody else's, and an entry scoped
+    answer would say no when the answer is yes.
+
+    A list rather than one device, because that is also what the question
+    needs. `async_get_device` resolved several matches down to one by
+    preferring a matching domain and then taking the first, so a conflict could
+    be hidden behind the device being moved; every match is now seen.
+    """
+    get_devices = getattr(registry, "async_get_devices", None)
+    if get_devices is None:
+        held = registry.async_get_device(identifiers={identifier})
+        return [held] if held is not None else []
+    return list(get_devices(identifiers={identifier}))
+
+
 def scheme_blocking_white_light(data: dict, channel: int, profile_mode):
     """The LightingScheme mode stopping the white light, or None if nothing is.
 
@@ -692,8 +744,8 @@ def _async_label_devices(hass: HomeAssistant, entry, coordinators) -> None:
     try:
         registry = dr.async_get(hass)
         for coordinator in coordinators:
-            device = registry.async_get_device(
-                identifiers={(DOMAIN, coordinator.get_serial_number())}
+            device = device_by_identifier(
+                registry, (DOMAIN, coordinator.get_serial_number()), entry.entry_id
             )
             if device is None:
                 continue

@@ -228,7 +228,9 @@ def _options_handler(monkeypatch, stored=None, options=None, loaded=True, device
 
 
 async def test_choosing_an_area_moves_the_device(monkeypatch):
-    handler, registry = _options_handler(monkeypatch, device=SimpleNamespace(id="dev1"))
+    handler, registry = _options_handler(
+        monkeypatch, device=SimpleNamespace(id="dev1", config_entries={"e"})
+    )
 
     await handler._async_move_device("kitchen")
 
@@ -263,7 +265,9 @@ async def test_the_stored_option_wins_over_the_entry_data(monkeypatch):
 
 
 async def test_choosing_no_area_moves_nothing(monkeypatch):
-    handler, registry = _options_handler(monkeypatch, device=SimpleNamespace(id="dev1"))
+    handler, registry = _options_handler(
+        monkeypatch, device=SimpleNamespace(id="dev1", config_entries={"e"})
+    )
 
     await handler._async_move_device("")
     await handler._async_move_device(None)
