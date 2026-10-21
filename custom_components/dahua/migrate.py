@@ -285,10 +285,15 @@ async def async_offer_leftover_rows(hass: HomeAssistant, entry, coordinators) ->
     is rebuilt from the registry each time, and the flow rebuilds it again
     before it deletes anything.
 
-    Only on a cold start. During a reload Home Assistant writes no restored
-    states at all, so a row whose entity has just stopped being created has a
-    stale state object and reads as healthy. Waiting for the next restart is
-    the honest answer rather than a wrong one now.
+    A reload is fine, and this used to claim otherwise. Unloading writes every
+    row as unavailable with `restored: True` (`Entity.async_remove`, the
+    `write_unavailable_state` branch), so after a reload a row that really has
+    stopped being created is correctly found. What that also means is that
+    every row of an entry which has not finished coming back reads as a
+    leftover, which is what the health gate above is for, and what the repair
+    flow re-checks before it removes anything. The earlier wording here said a
+    reload writes no restored states, which is wrong, and it was the reasoning
+    the safety rested on (@kmich on #1114).
     """
     issue_id = ISSUE_LEFTOVER_ROWS.format(entry.entry_id)
     if not _entry_is_wholly_healthy(hass, entry, coordinators):

@@ -28,6 +28,7 @@ and after it has a restored one.
 """
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -48,6 +49,24 @@ class _Coordinator:
 
     def probes_that_did_not_answer(self):
         return self._unanswered
+
+
+def _load(hass, entry, coordinators=None):
+    """Make the entry look the way a working one does to the repair flow.
+
+    The flow asks two things the detection cannot: whether the entry is
+    loaded, and whether its channels are healthy. Both come from Home
+    Assistant rather than from the registry, so a test about the registry has
+    to supply them or it is testing the gate instead of the subject.
+    """
+    entry.mock_state(hass, ConfigEntryState.LOADED)
+    entry.runtime_data = {0: (coordinators or _Coordinator())}
+
+
+def _unload(hass, entry):
+    """And what an unload leaves behind."""
+    entry.mock_state(hass, ConfigEntryState.NOT_LOADED)
+    entry.runtime_data = {}
 
 
 async def _entry_with_rows(hass, live=("switch.live",), leftover=("switch.gone",)):
@@ -74,6 +93,7 @@ async def _entry_with_rows(hass, live=("switch.live",), leftover=("switch.gone",
         hass.states.async_set(
             made[entity_id].entity_id, "unavailable", {"restored": True}
         )
+    _load(hass, entry)
     return entry, made
 
 
@@ -290,6 +310,78 @@ async def test_a_row_that_came_back_before_the_button_is_not_removed(hass):
     assert result["type"] == "abort"
     assert result["reason"] == "nothing_to_remove"
     assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+
+# --- the reload window, which is the one that could have deleted everything ---
+
+
+async def test_an_unloaded_entry_removes_nothing(hass):
+    """@kmich's repro, which found this branch unsafe.
+
+    Unloading an entry writes every one of its rows as unavailable with
+    `restored: True` (`Entity.async_remove`), and `leftover_rows` cannot tell
+    that from a real leftover. So between an unload and the end of the next
+    setup, every live entity of the entry reads as one, and a card raised
+    earlier while everything was healthy was still there to be pressed.
+
+    Recomputing at the button was not enough on its own: it recomputed from a
+    registry that was lying. The flow asks the question the registry cannot
+    answer, which is whether the integration is currently up.
+    """
+    entry, made = await _entry_with_rows(hass)
+    await migrate.async_offer_leftover_rows(hass, entry, [_Coordinator()])
+    # Exactly what an unload does: every live row written restored, and the
+    # entry no longer loaded.
+    hass.states.async_set(
+        made["switch.live"].entity_id, "unavailable", {"restored": True}
+    )
+    _unload(hass, entry)
+    flow = _flow(hass, entry)
+
+    await flow.async_step_init()
+    result = await flow.async_step_confirm({})
+
+    registry = er.async_get(hass)
+    assert result["type"] == "abort"
+    assert result["reason"] == "not_loaded"
+    assert registry.async_get(made["switch.live"].entity_id) is not None
+    assert registry.async_get(made["switch.gone"].entity_id) is not None
+
+
+async def test_an_unloaded_entry_shows_no_form_either(hass):
+    """The form is where somebody reads the list and decides, so offering one
+    that names live entities is the same mistake one step earlier."""
+    entry, _ = await _entry_with_rows(hass)
+    await migrate.async_offer_leftover_rows(hass, entry, [_Coordinator()])
+    _unload(hass, entry)
+
+    result = await _flow(hass, entry).async_step_init()
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "not_loaded"
+
+
+async def test_the_card_goes_when_the_entry_does(hass):
+    """The other half of the fix. A card that survives the unload is one that
+    can be pressed during the window above, so it is deleted there rather than
+    only being refused afterwards.
+
+    Unloaded with no coordinators on purpose: that is the path where setup
+    failed before registering any, which is the second and longer of the two
+    windows @kmich named, and `async_unload_entry` returns early on it. The
+    card has to go before that return, so this fails if the deletion is put
+    anywhere further down.
+    """
+    from custom_components.dahua import async_unload_entry
+
+    entry, _ = await _entry_with_rows(hass)
+    await migrate.async_offer_leftover_rows(hass, entry, [_Coordinator()])
+    assert _issue(hass, entry) is not None
+    entry.runtime_data = {}
+
+    assert await async_unload_entry(hass, entry) is True
+
+    assert _issue(hass, entry) is None
 
 
 async def test_a_removed_config_entry_aborts_rather_than_raising(hass):

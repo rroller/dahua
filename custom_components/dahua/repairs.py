@@ -5,6 +5,7 @@ import logging
 
 import voluptuous as vol
 from homeassistant.components.repairs import ConfirmRepairFlow, RepairsFlow
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
@@ -233,8 +234,8 @@ class RemoveLeftoverRowsRepairFlow(RepairsFlow):
 
     async def async_step_confirm(self, user_input: dict | None = None):
         # Imported here rather than at module scope to avoid a circular import.
-        from . import ISSUE_LEFTOVER_ROWS
-        from .migrate import leftover_rows
+        from . import ISSUE_LEFTOVER_ROWS, entry_coordinators
+        from .migrate import _entry_is_wholly_healthy, leftover_rows
 
         entry = self.hass.config_entries.async_get_entry(self._entry_id or "")
         if entry is None:
@@ -242,6 +243,36 @@ class RemoveLeftoverRowsRepairFlow(RepairsFlow):
                 self.hass, DOMAIN, ISSUE_LEFTOVER_ROWS.format(self._entry_id)
             )
             return self.async_abort(reason="not_configured")
+
+        # Health is re-checked here, not only where the card was raised.
+        #
+        # Found by @kmich reviewing this, with a repro. Unloading an entry
+        # writes every one of its rows as unavailable with `restored: True`
+        # (`Entity.async_remove`, the `write_unavailable_state` branch), which
+        # `leftover_rows` cannot tell from a real leftover. So between an
+        # unload and the end of the next setup -- a window that is tens of
+        # seconds on a slow monitor, and unbounded if that setup raises
+        # `ConfigEntryNotReady` -- every live entity of the entry reads as a
+        # leftover, and a card raised earlier while everything was healthy was
+        # still there to be pressed. It removed the lot.
+        #
+        # The card being recomputed at the button was not enough on its own:
+        # it recomputed from a registry that was lying. This asks the question
+        # the detection cannot answer, which is whether the integration is
+        # currently the reason those rows have no entity.
+        if entry.state is not ConfigEntryState.LOADED or not _entry_is_wholly_healthy(
+            self.hass, entry, list(entry_coordinators(entry).values())
+        ):
+            _LOGGER.debug(
+                "Not offering leftover rows for %s: the entry is %s and every row "
+                "of an entry that is not fully up reads as a leftover",
+                entry.title,
+                entry.state,
+            )
+            ir.async_delete_issue(
+                self.hass, DOMAIN, ISSUE_LEFTOVER_ROWS.format(entry.entry_id)
+            )
+            return self.async_abort(reason="not_loaded")
 
         rows = leftover_rows(self.hass, entry)
         if not rows:

@@ -732,6 +732,15 @@ def _async_label_devices(hass: HomeAssistant, entry, coordinators) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bool:
     """Handle removal of an entry."""
+    # Before anything else, and before the early return below, because the
+    # card must not outlive the setup that raised it. Unloading writes every
+    # row of this entry as unavailable with `restored: True`, which is
+    # indistinguishable from a leftover, so a card still on screen through a
+    # reload would offer to delete the entry's whole entity set (@kmich on
+    # #1114). The next successful setup raises it again if the leftovers are
+    # still there.
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_LEFTOVER_ROWS.format(entry.entry_id))
+
     channels = entry_coordinators(entry)
     if not channels:
         # Setup may have failed before the coordinator was registered, or a

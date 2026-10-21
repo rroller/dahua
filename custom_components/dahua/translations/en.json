@@ -605,7 +605,8 @@
                 },
                 "abort": {
                     "not_configured": "That Dahua configuration entry has been removed, so there is nothing left to tidy up.",
-                    "nothing_to_remove": "Every one of those entities is being provided again, so there is nothing to remove. Nothing was changed."
+                    "nothing_to_remove": "Every one of those entities is being provided again, so there is nothing to remove. Nothing was changed.",
+                    "not_loaded": "This Dahua device is not fully set up at the moment, and while it is not, every one of its entities looks like a leftover. Nothing was removed. The card will come back after the device has started up normally if there is still anything to tidy."
                 }
             }
         }
