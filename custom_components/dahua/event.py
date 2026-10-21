@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 
 from custom_components.dahua import entry_coordinators
 
+from .binary_sensor import MOMENTARY_EVENT_HOLD_SECONDS
 from .entity import DahuaEventDrivenEntity
 
 _LOGGER = logging.getLogger(__package__)
@@ -27,6 +28,24 @@ DOORBELL_PRESSED = "DoorbellPressed"
 # (2026.8.0, per hacs.json). It is a StrEnum
 # with "ring" as its only member, so the literal is the same value.
 EVENT_RING = "ring"
+
+# How long after a ring another ringing state is still the same press.
+#
+# One press is not one event. A DHI-VTO2202F-P-S2 reports a single button press
+# as two BackKeyLight pulses 96 ms apart, State 1 and then State 2 (#944), and
+# both are in DOORBELL_RINGING_STATES because some devices send only the one and
+# some only the other. So the listener runs twice for one caller, and an entity
+# that fires on each run reports two rings.
+#
+# The Button Pressed binary sensor never showed this, which is why the report
+# came in as "the event entity disagrees with the binary sensor". That sensor is
+# level shaped: the second state re-stamps a sensor that is already on and
+# nothing changes. This one is edge shaped, so the edge has to be found here.
+#
+# Borrowed from the binary sensor rather than written as another 5, so that "the
+# same press" means one thing in the integration. While that sensor still shows
+# the press, this entity treats a further ringing state as the same press.
+SAME_PRESS_SECONDS = MOMENTARY_EVENT_HOLD_SECONDS["DoorbellPressed"]
 
 
 # A coordinator centralises the inbound reads, and nothing here sends a command,
@@ -64,22 +83,45 @@ class DahuaDoorbellEvent(DahuaEventDrivenEntity, EventEntity):
     _attr_event_types = [EVENT_RING]
     _attr_translation_key = "doorbell"
 
+    # The coordinator timestamp this entity last rang on, or None if it is not
+    # currently in a ring. A class attribute because much of the suite builds
+    # entities with `object.__new__` and never runs `__init__`.
+    _rang_at = None
+
     @property
     def unique_id(self):
         return self._coordinator.get_serial_number() + "_doorbell_event"
 
     @callback
     def _async_doorbell_pressed(self) -> None:
-        """Fire, but only on the press rather than on the release.
+        """Fire once per press, on the press rather than on the release.
 
-        The listener is called for the start and the end of the event, and the
-        timestamp is what tells them apart -- it is set to now when the button
-        goes down and zeroed when it comes up. An event entity has no concept
-        of an ending, so firing on both would report two presses for one.
+        The listener is called for every call state the doorbell reports, and
+        the timestamp is what tells a press from a release -- it is set to now
+        while the button is down and zeroed when the call stops ringing. An
+        event entity has no concept of an ending, so firing on both would
+        report two presses for one.
+
+        A ring also has to be told from the same ring reported again, which the
+        timestamp alone does not do: a device that sends State 1 and State 2 for
+        one press stamps it twice, and both are presses by that test. So the
+        timestamp rung on is kept, and another ring within SAME_PRESS_SECONDS of
+        it is the same caller.
+
+        Re-armed by the release, and by the window expiring. Either alone would
+        be a bug: a device that never reports a non-ringing state would never
+        ring again on the first, and the second alone would let the two states
+        of one press through whenever they straddled the window.
         """
-        if self._coordinator.get_event_timestamp(DOORBELL_PRESSED) > 0:
-            self._trigger_event(EVENT_RING)
-            self.async_write_ha_state()
+        timestamp = self._coordinator.get_event_timestamp(DOORBELL_PRESSED)
+        if timestamp <= 0:
+            self._rang_at = None
+            return
+        if self._rang_at is not None and timestamp - self._rang_at < SAME_PRESS_SECONDS:
+            return
+        self._rang_at = timestamp
+        self._trigger_event(EVENT_RING)
+        self.async_write_ha_state()
 
     async def async_added_to_hass(self):
         """Listen for the press, and stop listening when removed."""
