@@ -303,6 +303,7 @@ class DhipTransport:
         port: int = DHIP_PORT,
         connect_timeout: float = DHIP_REPLY_TIMEOUT_SECONDS,
         on_login_refused=None,
+        login_allowed=None,
     ) -> None:
         self._address = address
         self._username = username
@@ -310,6 +311,7 @@ class DhipTransport:
         self._port = port
         self._connect_timeout = connect_timeout
         self._on_login_refused = on_login_refused
+        self._login_allowed = login_allowed
         self._session: DhipSession | None = None
         self._lock = asyncio.Lock()
         self._give_up = False
@@ -371,7 +373,9 @@ class DhipTransport:
     async def _ensure_session(self) -> DhipSession:
         if self._session is not None:
             return self._session
-        if self._give_up:
+        if self._give_up or (
+            self._login_allowed is not None and not self._login_allowed()
+        ):
             # Stated as a refusal rather than a transport failure, because that
             # is what it is: the credentials were rejected and nothing has said
             # they changed. Retrying here is what locks the device.

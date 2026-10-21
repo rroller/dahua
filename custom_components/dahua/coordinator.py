@@ -79,6 +79,7 @@ from .deterrence import (
 )
 from .host import (
     MAX_AUTH_REFUSALS,
+    host_auth_budget_exhausted,
     MAX_BACKOFF_DOUBLINGS,
     _CAPABILITY_REFUSALS_REPORTED,
     _acquire_connector,
@@ -996,6 +997,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             connector=_acquire_connector(address), connector_owner=False
         )
 
+        # From entry.data, not options: it is what the device is, settled by
+        # the add flow, and not something to be toggled afterwards. Read before
+        # the client is built because both it and the event transport need it.
+        self._rpc2_over_dhip = entry.data.get(CONF_RPC2_OVER_DHIP, False)
+
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(
             username,
@@ -1006,10 +1012,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._session,
             use_https,
             use_rpc2=entry.options.get(CONF_USE_RPC2, False),
-            # From entry.data, not options: it is what the device is, settled
-            # by the add flow, and not something to be toggled afterwards. A
-            # monitor with no web server cannot be read any other way (#949).
-            rpc2_over_dhip=entry.data.get(CONF_RPC2_OVER_DHIP, False),
+            rpc2_over_dhip=self._rpc2_over_dhip,
             require_reported_serial=entry.data.get(CONF_REQUIRE_REPORTED_SERIAL, False),
             illuminator_restore_store=IlluminatorRestoreStore(hass, entry.entry_id),
             channel_snapshot_store=ChannelLightingSnapshotStore(hass, entry.entry_id),
@@ -1162,6 +1165,38 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self._address,
             )
             return
+        # `getattr` rather than an attribute or a helper method, because the
+        # suite calls this unbound on doubles that are not this class:
+        #
+        #     await DahuaDataUpdateCoordinator.async_start_event_listener(first)
+        #
+        # Neither a class attribute nor a method on the real coordinator is
+        # reached that way, and requiring every double that borrows a method to
+        # model a flag it is not about is the wrong direction. `diagnostics.py`
+        # reads the same attribute the same way.
+        if getattr(self, "_rpc2_over_dhip", False):
+            if not self.events:
+                return
+            # There is no web server to attach to, so the CGI stream cannot be
+            # the answer and neither can the RPC2 poll that stands in for it.
+            # Measured on a VTH5221D on 3.000.0012000.0.R:
+            #
+            #   eventManager.attach {"codes":["All"]}   -> result true, SID 513
+            #   eventManager.getEventIndexes {"code":X} -> refused, 268959743,
+            #                                              for all nine codes
+            #
+            # and the device then pushed `client.notifyEventStream` down the
+            # same socket unprompted, which is the shape vto.py already reads.
+            # So this device takes the DHIP listener. Without this it joined
+            # the host's CGI stream and spent its life failing to connect to a
+            # port nothing is listening on.
+            _LOGGER.debug(
+                "%s serves no HTTP, so its events are taken over DHIP rather "
+                "than from the CGI stream",
+                self._address,
+            )
+            await self.async_start_vto_event_listener()
+            return
         if self.events is not None:
             # Join this host's stream rather than opening another one. The
             # device sends every channel's events down any stream, so one is
@@ -1194,7 +1229,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         and raises ConfigEntryAuthFailed from `_auth_refused`; this is the
         same division of labour DahuaHostEventStream already follows.
         """
-        refusals = async_record_host_auth_refusal(self._address, "vto listener")
+        refusals = async_record_host_auth_refusal(
+            self._address, self._dhip_listener_auth_source()
+        )
         if refusals < MAX_AUTH_REFUSALS:
             _LOGGER.warning(
                 "The doorbell at %s refused these credentials (%d of %d), so the "
@@ -1216,10 +1253,40 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return True
 
+    def _dhip_listener_auth_source(self) -> str:
+        """Whose budget this listener's refused logins come out of.
+
+        `async_record_host_auth_refusal` returns the worst any one source has
+        reached, and `MAX_AUTH_REFUSALS` is 3, so two sources on one device are
+        six attempts before anything stops. A doorbell can afford that: its
+        other transports are CGI, which is counted elsewhere and is not a DHIP
+        login.
+
+        A monitor with no web server cannot. Every read it serves is a DHIP
+        login under "dhip transport", this listener is a second one on the same
+        socket, and the device enforces `LockLoginTimes: 5` within
+        `LoginFailLockTime: 300` (measured on a VTH5221D). Two independent
+        budgets of three would reach six inside that window and lock Home
+        Assistant's address out of the device, which is #729's shape and takes
+        the owner's own correction with it.
+
+        So on such a device the listener spends the transport's budget rather
+        than one of its own, and three refusals stop both.
+        """
+        return (
+            "dhip transport"
+            if getattr(self, "_rpc2_over_dhip", False)
+            else "vto listener"
+        )
+
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
         consecutive_failures = 0
         while True:
+            if getattr(self, "_rpc2_over_dhip", False) and host_auth_budget_exhausted(
+                self._address
+            ):
+                return
             protocol = None
             started = time.monotonic()
             try:
