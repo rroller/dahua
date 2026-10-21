@@ -378,9 +378,16 @@ def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
     in: a doorbell takes the VTO listener and never registers a CGI stream, a device
     whose `eventManager.cgi` is absent falls through to the RPC2 poll inside the stream's
     own task, and everything else uses the CGI stream.
+
+    The same listener now also carries a monitor that serves no HTTP (#949), which is
+    not a doorbell and would be misreported as one. Named apart, because the question a
+    dump is asked here is which socket is carrying events and why, and "vto_listener" on
+    a device with no doorbell reads as a bug in the dump rather than as the answer.
     """
     vto_task = getattr(coordinator, "_vto_task", None)
     if vto_task is not None:
+        if getattr(coordinator, "_rpc2_over_dhip", False):
+            return "dhip_listener"
         return "vto_listener"
     if rpc2_poll.get("used"):
         return "rpc2_poll"
