@@ -214,9 +214,9 @@ def _backup(hass: HomeAssistant, label: str = "pre-merge") -> str | None:
 DATA_SERIAL_BACKUP = "dahua_pre_serial_backup"
 
 
-def _registry_fingerprint(hass: HomeAssistant) -> tuple:
+def _registry_fingerprint(hass: HomeAssistant, directory: str | None = None) -> tuple:
     """What the files a backup would copy look like right now. Blocking."""
-    storage = hass.config.path(".storage")
+    storage = directory if directory is not None else hass.config.path(".storage")
     marks = []
     for name in sorted(BACKED_UP):
         try:
@@ -258,11 +258,14 @@ async def _async_backup_once(hass: HomeAssistant) -> str | None:
     async with held["lock"]:
         fingerprint = await hass.async_add_executor_job(_registry_fingerprint, hass)
         if held["where"] is not None and held["fingerprint"] == fingerprint:
-            _LOGGER.debug(
-                "Reusing the registry backup at %s; nothing has been persisted since",
-                held["where"],
+            copied = await hass.async_add_executor_job(
+                _registry_fingerprint, hass, held["where"]
             )
-            return held["where"]
+            if copied == fingerprint and all(size is not None for _, size, _ in copied):
+                _LOGGER.debug(
+                    "Reusing the complete registry backup at %s", held["where"]
+                )
+                return held["where"]
         where = await hass.async_add_executor_job(_backup, hass, "pre-serial")
         if where is not None:
             held["fingerprint"] = fingerprint

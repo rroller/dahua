@@ -29,6 +29,12 @@ from custom_components.dahua import migrate
 from custom_components.dahua.migrate import BACKED_UP, _async_backup_once
 
 
+@pytest.fixture(autouse=True)
+def isolated_config(hass, tmp_path):
+    # Each worker needs its own files; the default testing_config is shared.
+    hass.config.config_dir = str(tmp_path)
+
+
 def _write_registries(hass, body=b"{}"):
     storage = hass.config.path(".storage")
     os.makedirs(storage, exist_ok=True)
@@ -212,3 +218,22 @@ def test_every_backed_up_file_is_in_the_fingerprint(hass, name):
     _write_registries(hass)
 
     assert name in {entry[0] for entry in migrate._registry_fingerprint(hass)}
+
+
+@pytest.mark.parametrize("damage", ["directory", "file", "contents"])
+async def test_a_deleted_or_changed_backup_is_not_reused(hass, damage):
+    _write_registries(hass, b"original")
+    first = await _async_backup_once(hass)
+    target = os.path.join(first, BACKED_UP[0])
+    if damage == "directory":
+        shutil.rmtree(first)
+    elif damage == "file":
+        os.unlink(target)
+    else:
+        with open(target, "wb") as handle:
+            handle.write(b"damaged")
+    second = await _async_backup_once(hass)
+    assert second != first
+    for name in BACKED_UP:
+        with open(os.path.join(second, name), "rb") as handle:
+            assert handle.read() == b"original"
