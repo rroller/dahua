@@ -200,6 +200,9 @@ def _coordinator(hass, refusing=None, model="IPC-HFW1234"):
     # passes because nothing happened. The coaxial one is gated this way and was
     # doing exactly that until a test asserted it had been asked.
     c._wanted_by = lambda *a, **k: True
+    # The coaxial probe is gated on this too, and the model above has no siren,
+    # security light or flood light that would make it True on its own.
+    c.reads_coaxial_status = lambda: True
     c.channel_option = lambda key, default=None: default
     c.get_coaxial_status_channel = lambda: 0
     c.get_rpc2_coaxial_status_channel = lambda: 1
@@ -381,3 +384,19 @@ async def test_a_refused_probe_leaves_the_others_alone(hass, method, flag, model
 
     got = {name: getattr(refusing, name) for name in FLAGS if name != flag}
     assert got == expected, "refusing %s also changed another capability" % method
+
+
+async def test_a_coaxial_status_nothing_reads_is_not_asked_at_setup(hass):
+    """A recorder without the deterrence opt-in has no entity that reads this
+    status, and the poll never fetches it. Asking anyway cost a full timeout per
+    setup on an NVR whose channels never answer `coaxialControlIO.cgi`.
+    `test_every_probe_is_actually_asked` is the other half: with the rule True,
+    the same fake is asked."""
+    coordinator = _coordinator(hass)
+    coordinator.reads_coaxial_status = lambda: False
+
+    await coordinator._async_update_data()
+
+    assert coordinator.initialized is True
+    assert "async_get_coaxial_control_io_status" not in coordinator.client.asked
+    assert coordinator._supports_coaxial_control is False
