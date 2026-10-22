@@ -158,7 +158,7 @@ class DahuaRpc2Client:
 
             resp = await self._post(url, data)
             try:
-                resp_json = json.loads(await resp.text())
+                resp_json = json.loads((await resp.text()).lstrip("\ufeff"))
             except ValueError as error:
                 # An HTML error page, a 503 body or a truncated answer is this
                 # read not coming back, not "this device does not speak RPC2".
@@ -238,7 +238,8 @@ class DahuaRpc2Client:
         }
         response = await self.request(method=method, params=params, url=url)
         authenticated_session = response.get("session")
-        if not isinstance(authenticated_session, str) or not authenticated_session:
+        # Some firmware returns a JSON number; preserve its type in later requests.
+        if type(authenticated_session) not in (str, int) or not authenticated_session:
             raise ConnectionError(
                 "Dahua RPC2 authenticated login response is missing session"
             )
