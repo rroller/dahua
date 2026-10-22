@@ -158,7 +158,7 @@ class DahuaRpc2Client:
 
             resp = await self._post(url, data)
             try:
-                resp_json = json.loads(await resp.text())
+                resp_json = json.loads((await resp.text()).lstrip("\ufeff"))
             except ValueError as error:
                 # An HTML error page, a 503 body or a truncated answer is this
                 # read not coming back, not "this device does not speak RPC2".

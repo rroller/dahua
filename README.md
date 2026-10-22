@@ -914,7 +914,8 @@ from **Media** in the sidebar, under **Dahua**. Pick a camera, then a day, then 
 and it plays in the dashboard the same way a live view does.
 
 RPC2 login accepts both numeric and string session IDs returned by the device;
-neither requires a different account or authentication setting.
+neither requires a different account or authentication setting. Responses with a
+leading UTF-8 byte-order marker are also accepted.
 
 Playback uses the device's RTSP `cam/playback` stream, which Home Assistant's `stream`
 integration turns into HLS, so nothing is downloaded to the Home Assistant host.

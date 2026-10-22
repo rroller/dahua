@@ -1,22 +1,26 @@
-"""RPC2 session IDs retain the JSON type supplied by the device."""
+"""RPC2 accepts device JSON framing and preserves session ID types."""
 
 import json
+from unittest.mock import AsyncMock
 
+import aiohttp
 import pytest
 
 from custom_components.dahua.rpc2 import DahuaRpc2Client
 
 
 class _Response:
-    def __init__(self, payload):
+    def __init__(self, payload, prefix=""):
         self.payload = payload
+        self.prefix = prefix
 
     async def text(self):
-        return json.dumps(self.payload)
+        return self.prefix + json.dumps(self.payload)
 
 
 class _Session:
-    def __init__(self, authenticated_response):
+    def __init__(self, authenticated_response, prefix=""):
+        self.prefix = prefix
         self.responses = iter(
             [
                 {
@@ -32,13 +36,16 @@ class _Session:
 
     async def post(self, url, json):
         self.calls.append((url, json))
-        return _Response(next(self.responses))
+        return _Response(next(self.responses), self.prefix)
 
 
 @pytest.mark.parametrize("session_id", [12345, "session-12345"])
-async def test_login_accepts_numeric_and_string_sessions_without_coercion(session_id):
+@pytest.mark.parametrize("prefix", ["", "\ufeff"])
+async def test_login_accepts_numeric_and_string_sessions_without_coercion(
+    session_id, prefix
+):
     response = {"result": True, "session": session_id}
-    session = _Session(response)
+    session = _Session(response, prefix)
     client = DahuaRpc2Client("user", "password", "camera.invalid", 80, 554, session)
 
     assert await client.login() == response
@@ -75,3 +82,13 @@ async def test_login_rejects_a_response_without_a_session():
         await client.login()
 
     assert len(session.calls) == 2
+
+
+@pytest.mark.parametrize("body", ["not JSON", "\ufeffnot JSON", "\ufeff{"])
+async def test_request_still_rejects_malformed_json(body):
+    session = AsyncMock()
+    session.post.return_value.text.return_value = body
+    client = DahuaRpc2Client("user", "password", "camera.invalid", 80, 554, session)
+
+    with pytest.raises(aiohttp.ClientConnectionError, match="not JSON"):
+        await client.request("global.keepAlive")
