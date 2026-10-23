@@ -60,6 +60,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import entity_platform as ep
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.event import async_call_later
 
 from . import ISSUE_LEFTOVER_ROWS, ISSUE_SIBLINGS_REMAIN, devices_with_identifier
 from .const import (
@@ -73,6 +74,12 @@ from .const import (
 from .host import is_synthesised_identity, normalize_address
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
+
+# How long after the last thing the leftover gate was waiting on before the
+# registry is scanned again. See the docstring on the recheck below: an
+# entity whose add has been scheduled does not exist yet, and the scan does
+# not await, so it would otherwise read the row as a leftover.
+LEFTOVER_RECHECK_SETTLE_SECONDS = 5
 
 # The registry files worth keeping a copy of. Nothing else is touched.
 BACKED_UP = (
@@ -411,12 +418,32 @@ def async_recheck_leftover_rows_when_late_work_settles(
     the retry loop when its last question is settled, and `late.py` when a
     rebuild it started has finished creating entities.
 
+    ⚠ **Delayed, and that is not a style choice.** `async_add_entities` only
+    SCHEDULES the add, and after setup is complete the EntityPlatform tracks
+    that task nowhere this code can await. Home Assistant starts it eagerly,
+    so it runs as far as its first await and hands control straight back,
+    which means a rebuild can finish, this fire, and the scan read the rows of
+    entities that are a few awaits away from existing. The scan itself does
+    not await, so it would run to the end before they arrived. A few seconds
+    is far longer than an add takes and costs nothing for a tidy-up card.
+    Collapsed too, so a recorder settling nineteen channels scans once.
+
     Wrapped like the setup call site. This runs on the event loop beside a
     poll, and a tidy-up card must never be what stops a camera working.
     """
+    due: list = []
 
     @callback
     def _settled() -> None:
+        while due:
+            due.pop()()
+        due.append(
+            async_call_later(hass, LEFTOVER_RECHECK_SETTLE_SECONDS, _recheck_now)
+        )
+
+    @callback
+    def _recheck_now(_now) -> None:
+        due.clear()
         hass.async_create_task(_async_recheck_leftover_rows(hass, entry, coordinators))
 
     from .late import late_work_settled_signal
@@ -427,10 +454,24 @@ def async_recheck_leftover_rows_when_late_work_settles(
         )
     )
 
+    @callback
+    def _cancel_any_pending_scan() -> None:
+        while due:
+            due.pop()()
+
+    entry.async_on_unload(_cancel_any_pending_scan)
+
 
 async def _async_recheck_leftover_rows(
     hass: HomeAssistant, entry, coordinators
 ) -> None:
+    # ⚠ Read now, not closed over from setup. A channel that failed its first
+    # refresh and recovered later (#1085) is in `runtime_data` and was not in
+    # the list setup built, and the gate requires every configured channel to
+    # be present before it offers anything.
+    live = getattr(entry, "runtime_data", None)
+    if isinstance(live, dict) and live:
+        coordinators = list(live.values())
     try:
         await async_offer_leftover_rows(hass, entry, coordinators)
     except Exception:  # pylint: disable=broad-except

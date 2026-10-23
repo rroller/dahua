@@ -224,12 +224,29 @@ def test_the_cloud_upgrade_probe_no_longer_reports_silence(monkeypatch):
 # was where the hole was: the two halves each passed their own unit test.
 
 import asyncio
+from datetime import timedelta
 
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+)
 
 from custom_components.dahua import coordinator as coordinator_module
 from custom_components.dahua import late, migrate
+
+
+async def _let_the_delayed_scan_run(hass):
+    """The recheck waits out the scheduled entity adds before it scans."""
+    await hass.async_block_till_done()
+    async_fire_time_changed(
+        hass,
+        dt_util.utcnow()
+        + timedelta(seconds=migrate.LEFTOVER_RECHECK_SETTLE_SECONDS + 1),
+    )
+    await hass.async_block_till_done()
+
 
 from .test_a_card_for_rows_nothing_is_behind import _entry_with_rows, _flow, _issue
 
@@ -401,13 +418,19 @@ async def test_the_repair_flow_will_not_confirm_while_the_last_probe_is_in_the_a
     entry.runtime_data = {0: settled}
     assert await migrate.async_offer_leftover_rows(hass, entry, [settled]) == 1
 
+    flow = _flow(hass, entry)
+    assert (await flow.async_step_init())["type"] == "form", (
+        "the form is opened while the entry is healthy, which is the case "
+        "rroller described: the card outlives the state it was raised in"
+    )
+
     held, reached, result = asyncio.Event(), asyncio.Event(), {}
 
     async def probe(_coordinator):
         if _coordinator.asked < MAX_CAPABILITY_RETRIES:
             return False
-        flow = _flow(hass, entry)
-        result["init"] = await flow.async_step_init()
+        # ⭐ The button, pressed during the paused final attempt.
+        result["confirm"] = await flow.async_step_confirm({})
         reached.set()
         await held.wait()
         return False
@@ -422,7 +445,7 @@ async def test_the_repair_flow_will_not_confirm_while_the_last_probe_is_in_the_a
     # wrong reads as a nine second timeout rather than a failed assertion.
     await asyncio.wait_for(reached.wait(), 5)
 
-    assert result["init"]["type"] != "form", "it must not offer to delete anything"
+    assert result["confirm"]["type"] == "abort", "it must delete nothing"
     assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
     held.set()
     await last
@@ -453,7 +476,7 @@ async def test_the_card_appears_when_the_budget_runs_out_with_no_second_offer(
 
     for _ in range(MAX_CAPABILITY_RETRIES + 2):
         await coordinator._async_retry_unanswered_capabilities()
-    await hass.async_block_till_done()
+    await _let_the_delayed_scan_run(hass)
 
     assert coordinator.asked == MAX_CAPABILITY_RETRIES
     assert _issue(hass, entry) is not None
@@ -468,19 +491,19 @@ async def test_the_recheck_covers_every_channel_of_the_entry(
     entry, _made = await _entry_with_rows(hass)
     first = _Probing(hass, entry)
     second = _Probing(hass, entry)
-    entry.runtime_data = {0: first}
-    migrate.async_recheck_leftover_rows_when_late_work_settles(
-        hass, entry, [first, second]
-    )
+    # ⚠ Both in `runtime_data`, because the recheck reads the entry's live
+    # coordinators when it fires rather than the list setup handed it.
+    entry.runtime_data = {0: first, 1: second}
+    migrate.async_recheck_leftover_rows_when_late_work_settles(hass, entry, [first])
 
     for _ in range(MAX_CAPABILITY_RETRIES):
         await first._async_retry_unanswered_capabilities()
-    await hass.async_block_till_done()
+    await _let_the_delayed_scan_run(hass)
     assert _issue(hass, entry) is None, "the other channel is still being asked"
 
     for _ in range(MAX_CAPABILITY_RETRIES):
         await second._async_retry_unanswered_capabilities()
-    await hass.async_block_till_done()
+    await _let_the_delayed_scan_run(hass)
     assert _issue(hass, entry) is not None
 
 
@@ -521,10 +544,16 @@ async def test_a_rebuild_that_is_still_running_holds_the_card_back(hass):
 
     building.set()
     await hass.async_block_till_done()
-
-    # ⭐ And the rebuild finishing is itself what offers the card. Nothing
-    # polls for this.
     assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
+    assert _issue(hass, entry) is None, (
+        "⚠ not yet. The entities this rebuild added have had their add "
+        "SCHEDULED, and the scan does not await, so a scan here would read "
+        "their rows as leftovers"
+    )
+
+    await _let_the_delayed_scan_run(hass)
+
+    # ⭐ And the rebuild finishing is what offers the card. Nothing polls.
     assert _issue(hass, entry) is not None
 
 
@@ -581,7 +610,7 @@ async def test_setting_an_entry_up_is_what_registers_the_recheck(hass, monkeypat
     assert len(asked) == 1, "setup offers once, which is the pre-existing call"
 
     late.async_notify_late_work_settled(hass, entry.entry_id)
-    await hass.async_block_till_done()
+    await _let_the_delayed_scan_run(hass)
 
     assert len(asked) == 2, "nothing re-offers when a probe finally settles"
     assert asked[1] == asked[0], "the recheck must see every channel of the entry"
