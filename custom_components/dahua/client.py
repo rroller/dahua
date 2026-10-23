@@ -142,6 +142,15 @@ _HOST_SPEAKER_LOCKS: dict[tuple, asyncio.Lock] = {}
 # including writes from another client or user on the same monitor.
 _HOST_VTH_PHONE_LOCKS: dict[str, asyncio.Lock] = {}
 
+# The same, for VTOInfo. Keyed by device rather than by client, because the two
+# entities that write this table belong to different HA platforms: a platform's
+# PARALLEL_UPDATES serialises its own entities and says nothing about anyone
+# else's, and the select and the number here are one of each. Read-modify-write
+# is the only safe shape on a VTH (see _async_set_vto_slot_field), so without
+# this both callers copy the same table and the later write puts back the
+# other's old value, having answered True for its own.
+_HOST_VTO_INFO_LOCKS: dict[str, asyncio.Lock] = {}
+
 # Pushing audio to a device's speaker. `singlepart` is a stream rather than an
 # upload: the device plays what arrives as it arrives, sends no status line of
 # any kind, and leaves the socket open. Measured on a VTO2000A, where an
@@ -2038,8 +2047,14 @@ class DahuaClient:
         as `_rpc2_shared_call` requires: it sets a value rather than toggling one.
 
         ⚠ The read is INSIDE the action, so a retry re-reads rather than writing
-        a table captured before an expired session, and two writes racing cannot
-        put back a copy made before the other.
+        a table captured before an expired session. That alone is not enough to
+        make two concurrent writes safe, and this docstring used to claim it
+        was: rroller paused both initial reads on #1124 after each had copied
+        the same table, and the second write put the first's old `LinkIPC`
+        back while answering True for its own `RingVolume`. Reading inside the
+        action prevents a stale SESSION, not a lost UPDATE. The device-scoped
+        lock below is what prevents that, and it is shared by every caller and
+        every client for the device.
 
         ⚠ `absent_reads_as` is what a MISSING key means on the readback, and it
         differs per field rather than being a convenience: an absent `LinkIPC`
@@ -2066,7 +2081,13 @@ class DahuaClient:
             slot = ((check.get("params") or {}).get("table") or {}).get(vto)
             return isinstance(slot, dict) and slot.get(field, absent_reads_as) == value
 
-        return await self._rpc2_shared_call(write)
+        # ⚠ Outside `_rpc2_shared_call`, so the lock covers the retry too: a
+        # second attempt re-reads, and releasing between attempts would let the
+        # other writer in between this one's read and its write. Same placement
+        # as the VideoTalkPhoneGeneral writer below.
+        lock = _HOST_VTO_INFO_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+            return await self._rpc2_shared_call(write)
 
     async def async_set_vth_camera_link(self, vto: str, camera: str) -> bool:
         """Make calls from VTOInfo slot `vto` open on camera slot `camera`; "" for none.

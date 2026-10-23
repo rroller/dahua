@@ -25,6 +25,7 @@ than gaining a sibling. `test_vth_camera_link.py` asserts that whole shape and i
 what fails if this field is dropped.
 """
 
+import asyncio
 import json
 import pathlib
 import re
@@ -34,7 +35,8 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
-from custom_components.dahua.client import vth_camera_links
+from custom_components.dahua import client as client_module
+from custom_components.dahua.client import DahuaClient, vth_camera_links
 from custom_components.dahua.const import NUMBER, SELECT
 from custom_components.dahua.number import (
     DahuaVtoRingVolumeNumber,
@@ -526,3 +528,121 @@ def test_the_entity_reads_the_key_the_client_writes():
     entity = _entity(vtos=links["vtos"])
 
     assert entity.native_value == 70
+
+
+# --- two platforms writing one table ----------------------------------------
+#
+# ⭐ @rroller on #1124. The volume lives in the same VTOInfo table as the camera
+# link, and the two entities are a NUMBER and a SELECT: different HA platforms,
+# so each platform's PARALLEL_UPDATES serialises its own entities and neither
+# knows about the other's. He paused both initial `getConfig` calls after each
+# had copied the table, resumed them, and both setters answered True while the
+# second write put the first's `LinkIPC` back.
+#
+# Reading inside the action, which is what the docstring used to rest on,
+# prevents reuse of a STALE SESSION. It does nothing about a LOST UPDATE.
+
+
+class _SlowDevice(_Device):
+    """The same VTH, with every read suspended after it has copied the table.
+
+    ⚠ The yields come AFTER the snapshot, which is the whole point: a read that
+    yields before copying sees the other writer's result and nothing is lost.
+    """
+
+    yields = 3
+
+    async def request(self, method, params=None, **kwargs):
+        if method != "configManager.getConfig":
+            return await _Device.request(self, method, params, **kwargs)
+        self.asked.append((method, params))
+        answer = {
+            "result": True,
+            "params": {
+                "table": _copy(
+                    {"VTOInfo": self.vto_table, "VTHRemoteIPCInfo": self.camera_table}[
+                        params["name"]
+                    ]
+                )
+            },
+        }
+        for _ in range(self.yields):
+            await asyncio.sleep(0)
+        return answer
+
+
+async def test_a_volume_write_and_a_link_write_at_once_both_stick():
+    """⭐ Two clients, because the lock must be scoped to the DEVICE.
+
+    One client instance would be serialised by anything, including a lock held
+    on `self`, and would not prove the thing rroller asked for: "shared by both
+    setters and all clients for that device".
+    """
+    device = _SlowDevice(_vto_table())
+    volume_client, link_client = _client(device), _client(device)
+    assert volume_client is not link_client
+    assert volume_client._device == link_client._device
+
+    both = await asyncio.gather(
+        volume_client.async_set_vth_vto_ring_volume("Vto00", 10),
+        link_client.async_set_vth_camera_link("Vto00", "Ipc32"),
+    )
+
+    assert both == [True, True]
+    # ⚠ What each call RETURNED is not the claim. Without the lock both of
+    # these are True as well, because each reads its own field back before the
+    # other overwrites it. The device is the only witness.
+    assert device.vto_table["Vto00"]["RingVolume"] == 10
+    assert device.vto_table["Vto00"]["LinkIPC"] == "Ipc32"
+
+
+async def test_the_second_writer_reads_the_first_one_s_result():
+    """Not just "both values survive": the later write must be built on a table
+    read after the earlier one landed, or it only survives by luck of field."""
+    device = _SlowDevice(_vto_table())
+
+    await asyncio.gather(
+        _client(device).async_set_vth_vto_ring_volume("Vto00", 10),
+        _client(device).async_set_vth_camera_link("Vto00", "Ipc32"),
+    )
+
+    written = [
+        params["table"]["Vto00"]
+        for method, params in device.asked
+        if method == "configManager.setConfig"
+    ]
+    assert len(written) == 2
+    # Whichever went second carried both changes.
+    assert {
+        "RingVolume": written[-1]["RingVolume"],
+        "LinkIPC": written[-1]["LinkIPC"],
+    } == {
+        "RingVolume": 10,
+        "LinkIPC": "Ipc32",
+    }
+
+
+async def test_two_devices_do_not_wait_for_each_other():
+    """The lock is per device, so one slow monitor must not serialise another.
+
+    Without this, the fix for a lost update becomes a global write queue across
+    every VTH on the install.
+    """
+    first, second = _SlowDevice(_vto_table()), _SlowDevice(_vto_table())
+    one = DahuaClient("u", "p", "10.0.0.5", 80, 554, None)
+    two = DahuaClient("u", "p", "10.0.0.6", 80, 554, None)
+    assert one._device != two._device
+    for client, device in ((one, first), (two, second)):
+
+        async def shared_call(action, device=device):
+            return await action(device)
+
+        client._rpc2_shared_call = shared_call
+
+    assert await asyncio.gather(
+        one.async_set_vth_vto_ring_volume("Vto00", 10),
+        two.async_set_vth_vto_ring_volume("Vto00", 20),
+    ) == [True, True]
+    assert first.vto_table["Vto00"]["RingVolume"] == 10
+    assert second.vto_table["Vto00"]["RingVolume"] == 20
+    assert client_module._HOST_VTO_INFO_LOCKS.keys() == {one._device, two._device}
