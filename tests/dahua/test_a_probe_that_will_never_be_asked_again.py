@@ -230,6 +230,8 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
+    MockEntity,
+    MockEntityPlatform,
     async_fire_time_changed,
 )
 
@@ -237,18 +239,38 @@ from custom_components.dahua import coordinator as coordinator_module
 from custom_components.dahua import late, migrate
 
 
-async def _let_the_delayed_scan_run(hass):
-    """The recheck waits out the scheduled entity adds before it scans."""
-    await hass.async_block_till_done()
+async def _let_the_delayed_scan_run(hass, drain=True):
+    """Advance past the recheck's coalescing delay and let it scan.
+
+    ⚠ `drain=False` where a registration is deliberately held open.
+    `async_block_till_done` waits for that add task, so draining would be a
+    deadlock dressed up as a nine second timeout. Yielding instead is enough:
+    the scan itself awaits nothing, so it runs to the end the moment the
+    timer fires it.
+    """
+    for _ in range(5):
+        if drain:
+            await hass.async_block_till_done()
+        else:
+            await asyncio.sleep(0)
     async_fire_time_changed(
         hass,
         dt_util.utcnow()
         + timedelta(seconds=migrate.LEFTOVER_RECHECK_SETTLE_SECONDS + 1),
     )
-    await hass.async_block_till_done()
+    for _ in range(5):
+        if drain:
+            await hass.async_block_till_done()
+        else:
+            await asyncio.sleep(0)
 
 
-from .test_a_card_for_rows_nothing_is_behind import _entry_with_rows, _flow, _issue
+from .test_a_card_for_rows_nothing_is_behind import (
+    DOMAIN,
+    _entry_with_rows,
+    _flow,
+    _issue,
+)
 
 PROBE = "a_capability_under_test"
 
@@ -557,10 +579,28 @@ async def test_a_rebuild_that_is_still_running_holds_the_card_back(hass):
     assert _issue(hass, entry) is not None
 
 
-async def test_a_rebuild_that_raises_does_not_hold_the_card_shut(hass):
-    """The count comes down in `finally`, for the same reason the in-flight
-    set is discarded there, and the failure is reported rather than left as an
-    "exception was never retrieved" line naming neither entry nor channel."""
+async def _watching(hass, entry, build, add=None):
+    """Wire the late rebuild the way a platform does."""
+    await late.async_add_and_keep_watching(
+        hass,
+        entry,
+        build,
+        add if add is not None else (lambda *a, **k: None),
+        lambda e: e.runtime_data,
+    )
+
+
+async def test_a_failed_late_build_keeps_the_rows_it_did_not_create(hass):
+    """⭐⭐ @rroller on #1125, and the previous version of this test asserted
+    the opposite. A build that raised did not create its entities, so their
+    rows are empty because of a fault HERE. That is the same
+    misclassification the platform-setup guard exists to refuse, and offering
+    them for deletion is how a tidy-up card deletes something real.
+
+    The failure is still reported rather than left as an "exception was never
+    retrieved" line naming neither entry nor channel; what changed is that it
+    is also remembered.
+    """
     entry, _made = await _entry_with_rows(hass)
     coordinator = _Probing(hass, entry, refusals={})
     entry.runtime_data = {0: coordinator}
@@ -572,16 +612,230 @@ async def test_a_rebuild_that_raises_does_not_hold_the_card_shut(hass):
             raise RuntimeError("a platform build that blew up")
         return []
 
-    await late.async_add_and_keep_watching(
-        hass, entry, build, lambda *a, **k: None, lambda e: e.runtime_data
+    await _watching(hass, entry, build)
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
     )
     late.async_notify_capability_discovered(
         hass, entry.entry_id, coordinator.get_serial_number()
     )
-    await hass.async_block_till_done()
+    await _let_the_delayed_scan_run(hass)
+
+    assert (
+        late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
+    ), "the count still comes down, so one failure cannot wedge the counter"
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is True
+    assert _issue(hass, entry) is None, "nothing may be offered for deletion"
+    assert await migrate.async_offer_leftover_rows(hass, entry, [coordinator]) == 0
+
+
+async def test_a_channel_that_rebuilds_cleanly_afterwards_is_eligible_again(hass):
+    """⚠ Otherwise one transient build error shuts the card for the life of
+    the entry, which is the fault this whole branch is about, arrived at from
+    the other direction."""
+    entry, _made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+    calls = []
+
+    async def build(_coordinator):
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("a platform build that blew up")
+        return []
+
+    await _watching(hass, entry, build)
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    key = coordinator.get_serial_number()
+    late.async_notify_capability_discovered(hass, entry.entry_id, key)
+    await _let_the_delayed_scan_run(hass)
+    assert _issue(hass, entry) is None
+
+    late.async_notify_capability_discovered(hass, entry.entry_id, key)
+    await _let_the_delayed_scan_run(hass)
+
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is False
+    assert _issue(hass, entry) is not None
+
+
+async def test_unloading_forgets_a_failed_rebuild(hass):
+    """It is evidence about a run that has ended. Carrying it across a reload
+    would keep the card shut for ever on a channel that is now fine."""
+    entry, _made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+
+    async def build(_coordinator):
+        raise RuntimeError("a platform build that blew up")
+
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    with pytest.raises(RuntimeError):
+        await _watching(hass, entry, build)
+    late._note_failed(hass, entry.entry_id, "SER_0", True)
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is True
+
+    for unload in list(entry._on_unload or []):
+        unload()
+
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is False
+
+
+# --- and the add itself is not over when async_add_entities returns ----------
+
+
+class _Registering:
+    """An entity as far as the counting is concerned: the two hooks Home
+    Assistant calls, and nothing else.
+
+    ⚠ The production code wraps exactly these, because `async_add_entities`
+    returns once the add has been SCHEDULED and the task it schedules is
+    tracked nowhere reachable after setup. `add_to_platform_start` always
+    runs first and then exactly one of them, which is what makes one release
+    per entity correct.
+    """
+
+    def __init__(self, unique_id):
+        self.unique_id = unique_id
+        self.finished = self.aborted = False
+
+    async def add_to_platform_finish(self):
+        self.finished = True
+
+    def add_to_platform_abort(self):
+        self.aborted = True
+
+
+async def test_the_rebuild_is_not_settled_until_the_entities_are_registered(hass):
+    """⭐⭐ @rroller on #1125, after the first two attempts: "a registration
+    coroutine paused beyond five seconds leaves its row eligible for
+    deletion". He is right that no number closes this.
+    `DahuaIlluminator.async_added_to_hass` awaits startup restoration with
+    device reads in it, so an add is not bounded by anything anyone picks.
+    """
+    entry, _made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+    entity, calls = _Registering("SER_gone"), []
+
+    async def build(_coordinator):
+        calls.append(1)
+        return [entity] if len(calls) > 1 else []
+
+    added = []
+    await _watching(hass, entry, build, lambda e, **k: added.extend(e))
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    # The rebuild task is over and the add has only been scheduled: Home
+    # Assistant has not called either hook yet, which is the whole window.
+    await _let_the_delayed_scan_run(hass)
+
+    assert added == [entity]
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 1
+    assert (
+        _issue(hass, entry) is None
+    ), "the row belongs to an entity that is still being registered"
+    assert await migrate.async_offer_leftover_rows(hass, entry, [coordinator]) == 0
+
+    # Home Assistant finishes the registration, and only now is it settled.
+    await entity.add_to_platform_finish()
+    assert entity.finished is True, "the real hook still runs"
+    await _let_the_delayed_scan_run(hass)
 
     assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
-    assert await migrate.async_offer_leftover_rows(hass, entry, [coordinator]) == 1
+    assert _issue(hass, entry) is not None
+
+
+async def test_the_real_platform_callback_is_what_releases_it(hass):
+    """⭐⭐ The same claim as the test above, but against Home Assistant's own
+    `_async_schedule_add_entities_for_entry` and a real entity, which is how
+    @rroller reproduced it. The double above proves the wrapper; this proves
+    the wrapper is on the path Home Assistant actually takes, and that a
+    registration held open past any timer keeps the row safe.
+    """
+    entry, made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+
+    registering = asyncio.Event()
+
+    class _Slow(MockEntity):
+        async def async_added_to_hass(self):
+            # Where DahuaIlluminator awaits startup restoration, device reads
+            # included. There is no number that bounds this.
+            await registering.wait()
+
+    platform = MockEntityPlatform(hass, domain="switch", platform_name=DOMAIN)
+    platform.config_entry = entry
+    platform._setup_complete = True
+
+    entity, calls = _Slow(unique_id="SER_late", name="late"), []
+
+    async def build(_coordinator):
+        calls.append(1)
+        return [entity] if len(calls) > 1 else []
+
+    await _watching(
+        hass,
+        entry,
+        build,
+        lambda entities, **kwargs: platform._async_schedule_add_entities_for_entry(
+            entities
+        ),
+    )
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await _let_the_delayed_scan_run(hass, drain=False)
+
+    assert (
+        late.async_rebuilds_outstanding(hass, entry.entry_id) == 1
+    ), "the add is scheduled and `async_added_to_hass` has not returned"
+    assert _issue(hass, entry) is None
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+    registering.set()
+    await _let_the_delayed_scan_run(hass)
+
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
+    assert entity.entity_id and hass.states.get(entity.entity_id) is not None
+    assert _issue(hass, entry) is not None
+
+
+async def test_an_aborted_registration_releases_it_too(hass):
+    """Home Assistant aborts an add for a duplicate entity id or a disabled
+    row, and calls `add_to_platform_abort` instead. Counting only the finish
+    would hold the gate shut for ever on an entity that is never coming."""
+    entry, _made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+    entity, calls = _Registering("SER_gone"), []
+
+    async def build(_coordinator):
+        calls.append(1)
+        return [entity] if len(calls) > 1 else []
+
+    await _watching(hass, entry, build)
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await hass.async_block_till_done()
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 1
+
+    entity.add_to_platform_abort()
+
+    assert entity.aborted is True
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
 
 
 async def test_setting_an_entry_up_is_what_registers_the_recheck(hass, monkeypatch):

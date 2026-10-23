@@ -392,9 +392,15 @@ def _entry_is_wholly_healthy(hass: HomeAssistant, entry, coordinators) -> bool:
     # the length of that task the question reads as resolved while the rows
     # are still empty. @rroller on #1125 named the repair flow specifically:
     # it confirms a removal through this same gate.
-    from .late import async_rebuilds_outstanding
+    from .late import async_rebuilds_failed, async_rebuilds_outstanding
 
     if async_rebuilds_outstanding(hass, entry.entry_id):
+        return False
+    # ⚠ And a rebuild that FAILED is not the same as one that found nothing.
+    # Its entities were never created, so their rows are empty because of a
+    # fault here, which is the one reading this gate exists to refuse. It
+    # stays refused until that channel rebuilds cleanly or the entry reloads.
+    if async_rebuilds_failed(hass, entry.entry_id):
         return False
     return True
 
@@ -446,7 +452,7 @@ def async_recheck_leftover_rows_when_late_work_settles(
         due.clear()
         hass.async_create_task(_async_recheck_leftover_rows(hass, entry, coordinators))
 
-    from .late import late_work_settled_signal
+    from .late import async_forget_entry, late_work_settled_signal
 
     entry.async_on_unload(
         async_dispatcher_connect(
@@ -455,11 +461,23 @@ def async_recheck_leftover_rows_when_late_work_settles(
     )
 
     @callback
-    def _cancel_any_pending_scan() -> None:
+    def _forget_what_was_outstanding() -> None:
+        """Unload clears both the pending scan and the late-work record.
+
+        ⚠ Registered here rather than in `late.py`, which runs once per
+        PLATFORM: an unload hook added there would be added ten times, and
+        two tests count an entry's hooks to check that every platform is
+        listening for a late answer.
+
+        The record matters as much as the timer. A channel whose rebuild
+        failed before a reload would otherwise keep the card shut after it,
+        on evidence from a run that no longer exists.
+        """
         while due:
             due.pop()()
+        async_forget_entry(hass, entry.entry_id)
 
-    entry.async_on_unload(_cancel_any_pending_scan)
+    entry.async_on_unload(_forget_what_was_outstanding)
 
 
 async def _async_recheck_leftover_rows(
