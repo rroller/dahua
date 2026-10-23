@@ -20,6 +20,8 @@ device that lists its emitters and names no white one loses the entity, which is
 the only case where we know it was wrong.
 """
 
+import pytest
+
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
 
@@ -32,14 +34,25 @@ def _coordinator(data, model="IPC-HDW2831T-AS-S2", channel=0):
     return c
 
 
-def _lighting(*types, channel=0, mode="Off"):
-    """A Lighting_V2 row, optionally naming each emitter."""
+def _lighting(*types, channel=0, mode="Off", bank="NearLight"):
+    """A Lighting_V2 row, optionally naming each emitter.
+
+    Each named emitter also gets a brightness bank, because a real one has
+    one: that is what #1094 measured, and what `supports_illuminator` now
+    requires of a white row. `bank=None` builds the bankless shape a camera
+    reports for an emitter it does not have.
+    """
     data = {"table.Lighting_V2[{0}][0][0].Mode".format(channel): mode}
     for index, light in enumerate(types):
-        if light is not None:
-            data["table.Lighting_V2[{0}][0][{1}].LightType".format(channel, index)] = (
-                light
-            )
+        if light is None:
+            continue
+        data["table.Lighting_V2[{0}][0][{1}].LightType".format(channel, index)] = light
+        if bank is not None:
+            data[
+                "table.Lighting_V2[{0}][0][{1}].{2}[0].Light".format(
+                    channel, index, bank
+                )
+            ] = "50"
     return data
 
 
@@ -89,6 +102,56 @@ def test_no_lighting_row_at_all_is_still_no_illuminator():
     coordinator = _coordinator({})
 
     assert coordinator.supports_illuminator() is False
+
+
+# --- #1094: a white row that names no brightness bank -----------------------
+
+
+def test_a_white_row_with_no_brightness_bank_gets_no_illuminator():
+    """Measured on a DHI-NVR5464-16P-EI whose owner could say which channels
+    physically have a white light. The one that does not reports a three field
+    row, and turning the entity on makes the recorder refuse the write,
+    because `illuminator_brightness_bank` composes a `MiddleLight` key the row
+    has never had."""
+    coordinator = _coordinator(_lighting("WhiteLight", bank=None))
+
+    assert coordinator.supports_illuminator() is False
+
+
+def test_the_bank_is_what_counts_not_any_brightness_field():
+    """The phantom row carries `PercentOfMaxBrightness` as well, so reading a
+    brightness-shaped field as evidence of an emitter is the same mistake one
+    layer down."""
+    data = _lighting("WhiteLight", bank=None)
+    data["table.Lighting_V2[0][0][0].PercentOfMaxBrightness"] = "100"
+
+    assert _coordinator(data).supports_illuminator() is False
+
+
+@pytest.mark.parametrize("bank", ["MiddleLight", "NearLight", "FarLight"])
+def test_any_of_the_three_banks_is_enough(bank):
+    """The same three `illuminator_brightness_bank` chooses between, so the
+    question asked here is the one the write will ask."""
+    coordinator = _coordinator(_lighting("WhiteLight", bank=bank))
+
+    assert coordinator.supports_illuminator() is True
+
+
+def test_a_banked_infrared_row_does_not_lend_its_bank_to_a_bankless_white_one():
+    """Channel 1 of the measured recorder exactly: a banked InfraredLight row
+    beside a bankless WhiteLight one. The bank has to be on the white row."""
+    data = _lighting("InfraredLight", bank="MiddleLight")
+    data["table.Lighting_V2[0][0][1].LightType"] = "WhiteLight"
+
+    assert _coordinator(data).supports_illuminator() is False
+
+
+def test_the_measured_working_channel_keeps_its_illuminator():
+    """Channel 11 of the same recorder, which does have a white light: a
+    banked infrared row and a banked white one."""
+    data = _lighting("InfraredLight", "WhiteLight", bank="NearLight")
+
+    assert _coordinator(data).supports_illuminator() is True
 
 
 # --- the existing exclusions are untouched ----------------------------------
