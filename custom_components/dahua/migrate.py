@@ -54,11 +54,12 @@ import tempfile
 import time
 
 from homeassistant.config_entries import ConfigSubentry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import entity_platform as ep
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from . import ISSUE_LEFTOVER_ROWS, ISSUE_SIBLINGS_REMAIN, devices_with_identifier
 from .const import (
@@ -379,7 +380,65 @@ def _entry_is_wholly_healthy(hass: HomeAssistant, entry, coordinators) -> bool:
             # come: the retry builds it when the device finally replies, and
             # until then its row is indistinguishable from a leftover.
             return False
+    # ⚠ And a probe that HAS answered is not the end of it. The entities it
+    # gates are built by `late.py` in a task started after the poll, so for
+    # the length of that task the question reads as resolved while the rows
+    # are still empty. @rroller on #1125 named the repair flow specifically:
+    # it confirms a removal through this same gate.
+    from .late import async_rebuilds_outstanding
+
+    if async_rebuilds_outstanding(hass, entry.entry_id):
+        return False
     return True
+
+
+@callback
+def async_recheck_leftover_rows_when_late_work_settles(
+    hass: HomeAssistant, entry, coordinators
+) -> None:
+    """Offer the card again whenever something the gate was waiting on resolves.
+
+    ⭐ @rroller on #1125. `async_offer_leftover_rows` is called once, from
+    `async_setup_entry` after the platforms are forwarded. At that moment a
+    retryable probe that has not answered still has its whole budget, so the
+    gate rightly refuses and no card appears. The budget is then spent over
+    the next few polls, `probes_that_may_still_answer` empties -- and nothing
+    asks again. The card stays absent for ever, which is @kmich's #1114
+    reached by a second road, and the first fix on this branch did not close
+    it: the test that proved it called the offer a second time by hand.
+
+    So the two places where that waiting ends now say so, and this listens:
+    the retry loop when its last question is settled, and `late.py` when a
+    rebuild it started has finished creating entities.
+
+    Wrapped like the setup call site. This runs on the event loop beside a
+    poll, and a tidy-up card must never be what stops a camera working.
+    """
+
+    @callback
+    def _settled() -> None:
+        hass.async_create_task(_async_recheck_leftover_rows(hass, entry, coordinators))
+
+    from .late import late_work_settled_signal
+
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass, late_work_settled_signal(entry.entry_id), _settled
+        )
+    )
+
+
+async def _async_recheck_leftover_rows(
+    hass: HomeAssistant, entry, coordinators
+) -> None:
+    try:
+        await async_offer_leftover_rows(hass, entry, coordinators)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not re-check %s for leftover registry rows. Nothing is wrong "
+            "with the device and the entry is set up normally",
+            entry.data.get(CONF_ADDRESS),
+        )
 
 
 async def async_offer_leftover_rows(hass: HomeAssistant, entry, coordinators) -> int:

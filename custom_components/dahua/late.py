@@ -30,6 +30,8 @@ up late. It must be safe to call repeatedly: entities whose `unique_id` already
 exists are dropped rather than added twice.
 """
 
+import logging
+
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
@@ -37,6 +39,12 @@ from homeassistant.helpers.dispatcher import (
 )
 
 from .const import DOMAIN
+
+# Late rebuilds in flight, per entry id. In `hass.data` rather than a module
+# global so a reload cannot inherit a count from the run before it.
+DATA_LATE_REBUILDS = "{0}_late_rebuilds".format(DOMAIN)
+
+_LOGGER = logging.getLogger(__package__)
 
 
 def capability_discovered_signal(entry_id: str) -> str:
@@ -48,6 +56,67 @@ def capability_discovered_signal(entry_id: str) -> str:
     finally answered.
     """
     return "{0}_capability_discovered_{1}".format(DOMAIN, entry_id)
+
+
+def late_work_settled_signal(entry_id: str) -> str:
+    """The signal for "nothing this entry was waiting on is outstanding now".
+
+    Separate from the discovery signal above, which says a capability turned
+    up and starts work. This one says the work finished, and it is what the
+    leftover-rows card listens for: that card may only be offered once every
+    entity that is still coming has arrived, and a late rebuild is exactly
+    the case where one is (@rroller on #1125).
+    """
+    return "{0}_late_work_settled_{1}".format(DOMAIN, entry_id)
+
+
+def async_notify_late_work_settled(hass, entry_id: str) -> None:
+    """Tell whoever was waiting that the late work for this entry is done."""
+    async_dispatcher_send(hass, late_work_settled_signal(entry_id))
+
+
+def async_rebuilds_outstanding(hass, entry_id: str) -> int:
+    """How many late rebuilds for this entry have started and not finished.
+
+    ⚠ Read by the leftover-rows health gate. A capability that answers late
+    leaves `probes_that_did_not_answer` the instant the probe returns, but the
+    entities it gates are created by a task deliberately started after the
+    poll, so there is a window in which the probe looks resolved and the rows
+    are still empty. Anything that deletes a row for being empty has to wait
+    this out.
+    """
+    counts = _counts(hass)
+    return 0 if counts is None else counts.get(entry_id, 0)
+
+
+def _counts(hass):
+    """This run's rebuild counts, or None where there is nowhere to keep them.
+
+    ⚠ None rather than a raise. Plenty of tests here hand the platforms a
+    stand-in for `hass` carrying only what the behaviour under test touches,
+    and several of those drive a late rebuild. Counting is bookkeeping for a
+    tidy-up card, so a double that cannot hold it simply does not, and the
+    card's gate reads zero outstanding rather than erroring.
+    """
+    data = getattr(hass, "data", None)
+    if data is None:
+        return None
+    counts = data.get(DATA_LATE_REBUILDS)
+    if counts is None:
+        counts = data[DATA_LATE_REBUILDS] = {}
+    return counts
+
+
+def _change_outstanding(hass, entry_id: str, delta: int):
+    counts = _counts(hass)
+    if counts is None:
+        return None
+    left = max(counts.get(entry_id, 0) + delta, 0)
+    if left:
+        counts[entry_id] = left
+    else:
+        counts.pop(entry_id, None)
+    return left
 
 
 def async_notify_capability_discovered(hass, entry_id: str, channel_key: str) -> None:
@@ -150,8 +219,36 @@ async def async_add_and_keep_watching(
 
         A task rather than awaiting here, because the retry runs at the top of
         a poll: the rebuild must look at `data` after the poll has written it.
+
+        Counted, because that task is the window in which a capability reads
+        as resolved and its entities do not exist yet. Incremented here, in
+        the callback, rather than inside the task: the count has to be up
+        before this function returns, or the coordinator's own "the waiting is
+        over" signal, sent moments later on the same tick, finds nothing
+        outstanding and offers the card too early.
         """
-        hass.async_create_task(_add_whatever_is_missing(channel_key))
+        _change_outstanding(hass, entry.entry_id, 1)
+        hass.async_create_task(_rebuild_then_settle(channel_key))
+
+    async def _rebuild_then_settle(channel_key: str) -> None:
+        try:
+            await _add_whatever_is_missing(channel_key)
+        except Exception:  # pylint: disable=broad-except
+            # Reported here rather than left to escape. This is a background
+            # task, so an escaping error was only ever an "exception was never
+            # retrieved" line with no indication of which entry or channel it
+            # belonged to, and it would now also be the thing that left the
+            # count up and the leftover card shut for good.
+            _LOGGER.exception(
+                "Could not build the entities %s answered for late", channel_key
+            )
+        finally:
+            # `finally`, so a build that raises cannot leave the count up and
+            # the card shut for the life of the entry.
+            # `== 0`, not falsy: None means this `hass` keeps no counts, so
+            # nothing was ever waiting on them and there is nobody to tell.
+            if _change_outstanding(hass, entry.entry_id, -1) == 0:
+                async_notify_late_work_settled(hass, entry.entry_id)
 
     entry.async_on_unload(
         async_dispatcher_connect(

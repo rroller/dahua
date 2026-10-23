@@ -626,8 +626,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # create is the whole evidence, and wrapped like the other registry jobs:
     # a tidy-up card must never be what stops a camera working.
     try:
-        from .migrate import async_offer_leftover_rows
+        from .migrate import (
+            async_offer_leftover_rows,
+            async_recheck_leftover_rows_when_late_work_settles,
+        )
 
+        # Before the offer, not after. A capability that answers on the very
+        # first poll can settle while this coroutine is still awaiting the
+        # scan below, and a listener registered afterwards would miss the one
+        # signal it exists for.
+        async_recheck_leftover_rows_when_late_work_settles(hass, entry, coordinators)
         left = await async_offer_leftover_rows(hass, entry, coordinators)
         if left:
             _LOGGER.debug(

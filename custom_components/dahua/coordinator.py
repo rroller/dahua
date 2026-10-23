@@ -39,7 +39,7 @@ from .client import (
     parse_storage_disks,
     rpc2_refusal_is_a_stale_login,
 )
-from .late import async_notify_capability_discovered
+from .late import async_notify_capability_discovered, async_notify_late_work_settled
 from .rpc2 import Rpc2MethodRefused
 from .const import (
     CAMERA,
@@ -1520,7 +1520,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         - it must be in `RETRYABLE_CAPABILITIES`, because nothing else is
           ever re-asked, and
         - it must have retries left, because `_async_retry_capabilities`
-          skips a name once `spent >= MAX_CAPABILITY_RETRIES`.
+          skips a name once `spent >= MAX_CAPABILITY_RETRIES`,
+        - unless the request is in the air right now, which counts however
+          much of the budget it has already taken.
+
+        ⚠ That last clause is @rroller on #1125, and without it the fix had a
+        hole exactly where it mattered. `_async_retry_unanswered_capabilities`
+        charges the attempt BEFORE awaiting the probe, so on the final attempt
+        this method stopped reporting the name while the request was still
+        running and could still build an entity. He paused that probe, called
+        `async_offer_leftover_rows` against the real registry, and it offered
+        a row that had been withheld a moment earlier. The repair flow
+        confirms removal through the same gate, so it would have accepted
+        deleting a row whose entity was on its way.
 
         Raised by @kmich on #1114: *"Decide whether a probe that has spent its
         retry budget should still hold the gate shut. As written, one silent
@@ -1535,11 +1547,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         does the retrying.
         """
         attempts = getattr(self, "_capability_retries", None) or {}
+        in_flight = getattr(self, "_capability_probes_in_flight", None) or set()
+        unanswered = self.probes_that_did_not_answer()
         return {
             name
-            for name in self.probes_that_did_not_answer()
-            if name in RETRYABLE_CAPABILITIES
-            and attempts.get(name, 0) < MAX_CAPABILITY_RETRIES
+            for name in unanswered
+            if name in in_flight
+            or (
+                name in RETRYABLE_CAPABILITIES
+                and attempts.get(name, 0) < MAX_CAPABILITY_RETRIES
+            )
         }
 
     def probes_that_did_not_answer(self) -> set:
@@ -2040,6 +2057,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         attempts = getattr(self, "_capability_retries", None)
         if attempts is None:
             attempts = self._capability_retries = {}
+        in_flight = getattr(self, "_capability_probes_in_flight", None)
+        if in_flight is None:
+            in_flight = self._capability_probes_in_flight = set()
+
+        # Whether anything was worth waiting for when this pass began, read
+        # before the first attempt is charged. The comparison with the same
+        # question afterwards is what tells the leftover-rows card that the
+        # waiting is over; see the notify at the end.
+        was_waiting = bool(self.probes_that_may_still_answer())
 
         discovered = False
         # Named here rather than counted afterwards, so the line below reports
@@ -2051,12 +2077,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if spent >= MAX_CAPABILITY_RETRIES:
                 continue
             spent = attempts[name] = spent + 1
+            # ⚠ The attempt is charged before the await, so on the last one
+            # the budget reads as spent while the request is still in the air.
+            # `probes_that_may_still_answer` consults this set so that the
+            # name keeps holding the gate until the reply lands (@rroller on
+            # #1125). `finally`, not the success path: a probe raising
+            # something outside PROBE_FAILED must not leave its name pending
+            # for the life of the entry, which is the very fault this change
+            # exists to remove.
+            in_flight.add(name)
             try:
                 answered = await RETRYABLE_CAPABILITIES[name](self)
             except PROBE_FAILED:
                 # Still silent. The attempt is spent and the refusal it
                 # recorded stands; nothing here may fail the poll.
                 answered = False
+            finally:
+                in_flight.discard(name)
 
             _LOGGER.debug(
                 "Channel %s asked %s again about %s (attempt %s of %s): %s",
@@ -2102,6 +2139,55 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             async_notify_capability_discovered(
                 self.hass, self.config_entry.entry_id, self.get_serial_number()
+            )
+
+        if was_waiting and not self.probes_that_may_still_answer():
+            # ⭐ @rroller on #1125: nothing was watching for this. The
+            # leftover-rows card is offered once, in `async_setup_entry`,
+            # when a retryable probe still has its whole budget and so
+            # rightly suppresses it. By the time the budget is spent there is
+            # no second call and no listener, so the card stays absent for
+            # ever -- which is #1114 again, reached by a different road.
+            #
+            # Fired on the transition only, not every poll: a registry scan
+            # per channel per poll is not free on a nineteen channel recorder.
+            # If a probe ANSWERED just now, the entities it gates are being
+            # built by a task this signal does not wait for, so the offer that
+            # follows finds the rebuild outstanding and declines; `late.py`
+            # fires the same signal again when the rebuild is done.
+            self._notify_late_work_settled()
+
+    def _notify_late_work_settled(self) -> None:
+        """Say the waiting is over, unless there is nobody to say it to.
+
+        ⚠ Tolerated rather than demanded, which is the rule every new
+        requirement on a coordinator has had to learn here. A dozen tests
+        build one with `object.__new__` and give it only the attributes the
+        behaviour under test reads, and several drive the whole retry loop
+        with `hass` left as None. A hint for a tidy-up card must not be the
+        thing that turns those into errors.
+        """
+        hass = getattr(self, "hass", None)
+        entry = getattr(self, "config_entry", None)
+        if hass is None or entry is None:
+            return
+        try:
+            async_notify_late_work_settled(hass, entry.entry_id)
+        except Exception:  # pylint: disable=broad-except
+            # Same reasoning as the wrapped offer in `async_setup_entry`, and
+            # the same words: a tidy-up card must never be what stops a camera
+            # working. This runs inside the poll, where a raise is an
+            # UpdateFailed and every entity on the channel goes unavailable,
+            # to deliver a hint that the leftover-rows scan might find
+            # something. Debug, not exception: the real path is covered by a
+            # test against a real `hass` and a real issue registry, so what
+            # reaches here is a stand-in that cannot take a dispatcher send.
+            _LOGGER.debug(
+                "Channel %s of %s could not announce that its capability "
+                "questions had settled",
+                self._channel,
+                self._address,
+                exc_info=True,
             )
 
     def _auth_refused(self, exception) -> Exception:

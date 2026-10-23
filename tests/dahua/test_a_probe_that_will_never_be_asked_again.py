@@ -213,3 +213,380 @@ def test_the_cloud_upgrade_probe_no_longer_reports_silence(monkeypatch):
     assert c._probe_refusals["cloud_upgrade"]["answered"] is True
     assert c.probes_that_did_not_answer() == set()
     assert c.probes_that_may_still_answer() == set()
+
+
+# --- the final attempt is not over until the reply lands ----------------------
+#
+# ⭐⭐ @rroller on #1125, both findings below. The first fix above left a hole
+# at the exact moment it was built for, and the second had no production
+# trigger at all. Driven here through the real retry loop, the real probe
+# bookkeeping, a real `hass` and a real registry, because every one of those
+# was where the hole was: the two halves each passed their own unit test.
+
+import asyncio
+
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.dahua import coordinator as coordinator_module
+from custom_components.dahua import late, migrate
+
+from .test_a_card_for_rows_nothing_is_behind import _entry_with_rows, _flow, _issue
+
+PROBE = "a_capability_under_test"
+
+
+def _silent_refusal():
+    return {PROBE: {"answered": False, "status": None, "error": "TimeoutError"}}
+
+
+class _Probing:
+    """A coordinator with the real retry machinery and the real probe records.
+
+    Borrowed rather than reimplemented: a double that models the retry loop
+    cannot prove anything about the retry loop. What is supplied here is only
+    what the loop and the leftover gate read off a coordinator.
+    """
+
+    probes_that_did_not_answer = DahuaDataUpdateCoordinator.probes_that_did_not_answer
+    probes_that_may_still_answer = (
+        DahuaDataUpdateCoordinator.probes_that_may_still_answer
+    )
+    _note_probe_answered = DahuaDataUpdateCoordinator._note_probe_answered
+    _notify_late_work_settled = DahuaDataUpdateCoordinator._notify_late_work_settled
+    _async_retry_unanswered_capabilities = (
+        DahuaDataUpdateCoordinator._async_retry_unanswered_capabilities
+    )
+
+    def __init__(self, hass, entry, channel=0, probe=None, refusals=None):
+        self.hass = hass
+        self.config_entry = entry
+        self._probe_refusals = _silent_refusal() if refusals is None else dict(refusals)
+        self._capability_retries = {}
+        self._channel = channel
+        self._address = "10.0.0.230"
+        self.initialized = True
+        self.last_update_success = True
+        self.subentry_id = None
+        self.asked = 0
+        self._probe = probe
+
+    def get_channel(self):
+        return self._channel
+
+    def get_serial_number(self):
+        return "SER_{0}".format(self._channel)
+
+    async def _async_probe(self):
+        self.asked += 1
+        if self._probe is None:
+            return False
+        return await self._probe(self)
+
+
+@pytest.fixture
+def _only_the_probe_under_test(monkeypatch):
+    monkeypatch.setattr(
+        coordinator_module,
+        "RETRYABLE_CAPABILITIES",
+        {PROBE: _Probing._async_probe},
+    )
+
+
+async def test_the_last_attempt_is_still_pending_while_it_is_in_the_air(
+    hass, _only_the_probe_under_test
+):
+    """⭐ The attempt is charged BEFORE the await, so without the in-flight set
+    the budget reads as spent while the request is still running."""
+    entry = MockConfigEntry(domain="dahua", data={"address": "10.0.0.230"})
+    entry.add_to_hass(hass)
+    held, reached, seen = asyncio.Event(), asyncio.Event(), {}
+
+    async def probe(coordinator):
+        if coordinator.asked < MAX_CAPABILITY_RETRIES:
+            return False
+        seen["retries"] = dict(coordinator._capability_retries)
+        seen["pending"] = coordinator.probes_that_may_still_answer()
+        reached.set()
+        await held.wait()
+        return False
+
+    coordinator = _Probing(hass, entry, probe=probe)
+    for _ in range(MAX_CAPABILITY_RETRIES - 1):
+        await coordinator._async_retry_unanswered_capabilities()
+    last = asyncio.ensure_future(coordinator._async_retry_unanswered_capabilities())
+    # ⚠ Waited for, not slept past. A fixed number of yields is a guess about
+    # how many awaits the loop takes to reach the probe, and the guess being
+    # wrong reads as a nine second timeout rather than a failed assertion.
+    await asyncio.wait_for(reached.wait(), 5)
+
+    # The budget reads as spent and the probe has not answered yet. Both true.
+    assert seen["retries"][PROBE] == MAX_CAPABILITY_RETRIES
+    assert seen["pending"] == {PROBE}
+
+    held.set()
+    await last
+    # And once it is back with nothing to show for it, the name is gone.
+    assert coordinator.probes_that_may_still_answer() == set()
+
+
+async def test_a_probe_that_raises_does_not_stay_pending_for_ever(
+    hass, _only_the_probe_under_test
+):
+    """⚠ The in-flight set is discarded in `finally`, not after the await. A
+    name left in it would hold the gate shut for the life of the entry, which
+    is precisely the fault this whole change exists to remove."""
+    entry = MockConfigEntry(domain="dahua", data={"address": "10.0.0.230"})
+    entry.add_to_hass(hass)
+
+    async def probe(_coordinator):
+        raise RuntimeError("not one of PROBE_FAILED")
+
+    coordinator = _Probing(hass, entry, probe=probe)
+
+    with pytest.raises(RuntimeError):
+        await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator.probes_that_may_still_answer() == {
+        PROBE
+    }, "two attempts left, so it is pending for the ordinary reason"
+    coordinator._capability_retries[PROBE] = MAX_CAPABILITY_RETRIES
+    assert coordinator.probes_that_may_still_answer() == set()
+
+
+async def test_the_card_is_not_offered_while_the_last_probe_is_in_the_air(
+    hass, _only_the_probe_under_test
+):
+    """⭐ rroller's reproduction, against the real registry: he paused the
+    final probe and the offer handed over a row it had withheld a moment
+    earlier."""
+    entry, _made = await _entry_with_rows(hass)
+    held, reached, offered = asyncio.Event(), asyncio.Event(), {}
+
+    async def probe(coordinator):
+        if coordinator.asked < MAX_CAPABILITY_RETRIES:
+            return False
+        offered["found"] = await migrate.async_offer_leftover_rows(
+            hass, entry, [coordinator]
+        )
+        offered["issue"] = _issue(hass, entry)
+        reached.set()
+        await held.wait()
+        return False
+
+    coordinator = _Probing(hass, entry, probe=probe)
+    entry.runtime_data = {0: coordinator}
+    for _ in range(MAX_CAPABILITY_RETRIES - 1):
+        await coordinator._async_retry_unanswered_capabilities()
+    last = asyncio.ensure_future(coordinator._async_retry_unanswered_capabilities())
+    # ⚠ Waited for, not slept past. A fixed number of yields is a guess about
+    # how many awaits the loop takes to reach the probe, and the guess being
+    # wrong reads as a nine second timeout rather than a failed assertion.
+    await asyncio.wait_for(reached.wait(), 5)
+
+    assert offered["found"] == 0
+    assert offered["issue"] is None
+    held.set()
+    await last
+
+
+async def test_the_repair_flow_will_not_confirm_while_the_last_probe_is_in_the_air(
+    hass, _only_the_probe_under_test
+):
+    """⭐ Named by rroller: "Repair confirmation uses this same health gate, so
+    it can accept removal while the capability is unresolved." A card raised
+    before the retries began must not be actionable during one."""
+    entry, made = await _entry_with_rows(hass)
+    settled = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: settled}
+    assert await migrate.async_offer_leftover_rows(hass, entry, [settled]) == 1
+
+    held, reached, result = asyncio.Event(), asyncio.Event(), {}
+
+    async def probe(_coordinator):
+        if _coordinator.asked < MAX_CAPABILITY_RETRIES:
+            return False
+        flow = _flow(hass, entry)
+        result["init"] = await flow.async_step_init()
+        reached.set()
+        await held.wait()
+        return False
+
+    coordinator = _Probing(hass, entry, probe=probe)
+    entry.runtime_data = {0: coordinator}
+    for _ in range(MAX_CAPABILITY_RETRIES - 1):
+        await coordinator._async_retry_unanswered_capabilities()
+    last = asyncio.ensure_future(coordinator._async_retry_unanswered_capabilities())
+    # ⚠ Waited for, not slept past. A fixed number of yields is a guess about
+    # how many awaits the loop takes to reach the probe, and the guess being
+    # wrong reads as a nine second timeout rather than a failed assertion.
+    await asyncio.wait_for(reached.wait(), 5)
+
+    assert result["init"]["type"] != "form", "it must not offer to delete anything"
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+    held.set()
+    await last
+
+
+# --- and something has to ask again once the waiting ends ---------------------
+
+
+async def test_the_card_appears_when_the_budget_runs_out_with_no_second_offer(
+    hass, _only_the_probe_under_test
+):
+    """⭐ rroller's second finding. The offer happens once, in
+    `async_setup_entry`, when a retryable probe still has its whole budget and
+    so rightly suppresses the card. Nothing re-asked afterwards, so the card
+    stayed absent for ever, which is #1114 again by another road. The first
+    fix's test hid this by calling the offer a second time by hand; there is
+    no second call here.
+    """
+    entry, _made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry)
+    entry.runtime_data = {0: coordinator}
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+
+    assert await migrate.async_offer_leftover_rows(hass, entry, [coordinator]) == 0
+    assert _issue(hass, entry) is None, "the probe still has its whole budget"
+
+    for _ in range(MAX_CAPABILITY_RETRIES + 2):
+        await coordinator._async_retry_unanswered_capabilities()
+    await hass.async_block_till_done()
+
+    assert coordinator.asked == MAX_CAPABILITY_RETRIES
+    assert _issue(hass, entry) is not None
+
+
+async def test_the_recheck_covers_every_channel_of_the_entry(
+    hass, _only_the_probe_under_test
+):
+    """⚠ A recorder. The gate requires every channel to be healthy, so a
+    recheck handed only the coordinator that happened to settle would pass a
+    single camera and be wrong on a recorder."""
+    entry, _made = await _entry_with_rows(hass)
+    first = _Probing(hass, entry)
+    second = _Probing(hass, entry)
+    entry.runtime_data = {0: first}
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [first, second]
+    )
+
+    for _ in range(MAX_CAPABILITY_RETRIES):
+        await first._async_retry_unanswered_capabilities()
+    await hass.async_block_till_done()
+    assert _issue(hass, entry) is None, "the other channel is still being asked"
+
+    for _ in range(MAX_CAPABILITY_RETRIES):
+        await second._async_retry_unanswered_capabilities()
+    await hass.async_block_till_done()
+    assert _issue(hass, entry) is not None
+
+
+async def test_a_rebuild_that_is_still_running_holds_the_card_back(hass):
+    """⭐ The other half of "settled". A probe that ANSWERS leaves
+    `probes_that_did_not_answer` the instant it returns, but the entities it
+    gates are built by a task `late.py` starts after the poll. Between the two
+    the question reads as resolved and the rows are still empty, which is the
+    one state in which deleting them is wrong.
+    """
+    entry, _made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+
+    building = asyncio.Event()
+    calls = []
+
+    async def build(_coordinator):
+        calls.append(1)
+        if len(calls) > 1:
+            await building.wait()
+        return []
+
+    await late.async_add_and_keep_watching(
+        hass, entry, build, lambda *a, **k: None, lambda e: e.runtime_data
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await asyncio.sleep(0)
+
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 1
+    assert await migrate.async_offer_leftover_rows(hass, entry, [coordinator]) == 0
+    assert _issue(hass, entry) is None
+
+    building.set()
+    await hass.async_block_till_done()
+
+    # ⭐ And the rebuild finishing is itself what offers the card. Nothing
+    # polls for this.
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
+    assert _issue(hass, entry) is not None
+
+
+async def test_a_rebuild_that_raises_does_not_hold_the_card_shut(hass):
+    """The count comes down in `finally`, for the same reason the in-flight
+    set is discarded there, and the failure is reported rather than left as an
+    "exception was never retrieved" line naming neither entry nor channel."""
+    entry, _made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+    calls = []
+
+    async def build(_coordinator):
+        calls.append(1)
+        if len(calls) > 1:
+            raise RuntimeError("a platform build that blew up")
+        return []
+
+    await late.async_add_and_keep_watching(
+        hass, entry, build, lambda *a, **k: None, lambda e: e.runtime_data
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await hass.async_block_till_done()
+
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
+    assert await migrate.async_offer_leftover_rows(hass, entry, [coordinator]) == 1
+
+
+async def test_setting_an_entry_up_is_what_registers_the_recheck(hass, monkeypatch):
+    """⚠⚠ Every test above registers the listener itself, so every one of them
+    passes with the production wiring deleted. That is the shape of rroller's
+    P2 in the first place: a method nothing called.
+
+    Driven through the real `async_setup_entry`, and asserted on the effect
+    rather than on the dispatcher's internals: the signal has to reach the
+    offer, with the whole entry's coordinators rather than the one that
+    happened to settle.
+    """
+    from .test_setup_lifecycle import _entry, _no_platforms, _try_setup, _working
+
+    asked = []
+
+    async def record(_hass, _entry, coordinators):
+        asked.append(list(coordinators))
+        return 0
+
+    monkeypatch.setattr(migrate, "async_offer_leftover_rows", record)
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+    with _working(), starts, forward, unload:
+        assert await _try_setup(hass, entry) is True
+    assert len(asked) == 1, "setup offers once, which is the pre-existing call"
+
+    late.async_notify_late_work_settled(hass, entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert len(asked) == 2, "nothing re-offers when a probe finally settles"
+    assert asked[1] == asked[0], "the recheck must see every channel of the entry"
+    assert asked[1] == list(entry.runtime_data.values())
+    # ⚠ Not asserted here: that unloading removes it. It is registered with
+    # `entry.async_on_unload`, and those run from the config entry manager
+    # rather than from `async_unload_entry`, so a test calling that function
+    # directly would be making a claim about Home Assistant.
