@@ -10,7 +10,7 @@ import logging
 # on this module.
 import time  # noqa: F401  pylint: disable=unused-import
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, SETUP_RETRY_MAX_WAIT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
@@ -583,7 +583,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
 
 
 async def _async_retry_startup_channels(hass, entry, pending, build_coordinator):
-    """Reload once a missing channel recovers, keeping healthy channels online meanwhile."""
+    """Reload once a missing channel recovers, keeping healthy channels online meanwhile.
+
+    **Backed off, because a channel that never comes back is the normal case.**
+    This used to wait exactly one scan interval every time, and each round
+    builds a fresh coordinator and runs its whole initialization: every
+    capability probe, every identity read. A camera that has been unplugged for
+    a month therefore paid the full setup cost against the recorder every two
+    minutes, for ever. The temporary coordinator cannot moderate that, because
+    it is thrown away at the end of each round, so its own `update_interval`
+    and failure handling never see a second attempt.
+
+    The state that has to persist therefore lives here, in the loop, which is
+    the only thing that outlives a round.
+
+    The delay doubles and is capped, mirroring what Home Assistant itself does
+    for an entry that raises `ConfigEntryNotReady`:
+
+        wait_time = min(2**self._tries * 5, SETUP_RETRY_MAX_WAIT)
+
+    The ceiling is imported rather than copied, so this tracks that decision
+    instead of drifting from it. The first wait is still exactly one scan
+    interval, so a transient failure recovers as quickly as it did before and
+    only a repeatedly failing channel is slowed down.
+
+    `max(SETUP_RETRY_MAX_WAIT, base)` because the cap must never make this
+    retry *faster* than the user asked the device to be polled. On an entry
+    whose interval is already longer than the ceiling the delay simply stays
+    at the interval, which is as slow as this needs to be anyway.
+    """
 
     async def retry(subentry_id, config):
         coordinator = build_coordinator(subentry_id, config)
@@ -595,8 +623,11 @@ async def _async_retry_startup_channels(hass, entry, pending, build_coordinator)
         finally:
             await coordinator.async_stop()
 
+    base = get_configured_scan_interval(entry).total_seconds()
+    ceiling = max(SETUP_RETRY_MAX_WAIT, base)
+    delay = base
     while True:
-        await asyncio.sleep(get_configured_scan_interval(entry).total_seconds())
+        await asyncio.sleep(delay)
         results = await asyncio.gather(
             *(retry(subentry_id, config) for subentry_id, config in pending),
             return_exceptions=True,
@@ -606,6 +637,9 @@ async def _async_retry_startup_channels(hass, entry, pending, build_coordinator)
             # entity discovery. Do it only after recovery, not on each failed poll.
             hass.config_entries.async_schedule_reload(entry.entry_id)
             return
+        # Doubled here rather than counted, so the exponent cannot run away on
+        # an entry that has been failing for weeks.
+        delay = min(delay * 2, ceiling)
 
 
 # Raised when an entry is removed and other entries for the same recorder are
