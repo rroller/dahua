@@ -52,6 +52,7 @@ WAS = {
     ("number", "vth_indoor_ring_volume"): "Indoor ring volume",
     ("number", "vth_talk_volume"): "Talk volume",
     ("number", "vth_alarm_volume"): "Alarm volume",
+    ("number", "vth_vto_ring_volume"): "Ring volume for {vto} calls",
     ("number", "motion_region1_sensitivity"): "Motion region 1 sensitivity",
     ("number", "motion_region1_threshold"): "Motion region 1 threshold",
     ("button", "reboot"): "Reboot",

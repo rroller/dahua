@@ -348,6 +348,9 @@
             "vth_alarm_volume": {
                 "name": "Alarm volume"
             },
+            "vth_vto_ring_volume": {
+                "name": "Ring volume for {vto} calls"
+            },
             "motion_region1_sensitivity": {
                 "name": "Motion region 1 sensitivity"
             },
@@ -548,6 +551,9 @@
         },
         "vto_call_refused": {
             "message": "The doorbell would not call room {room}: {reason}"
+        },
+        "vth_vto_ring_volume_ignored": {
+            "message": "{device} accepted the ring volume for {vto} and did not store it. Some firmware answers a VTOInfo write with OK and ignores it."
         }
     },
     "issues": {

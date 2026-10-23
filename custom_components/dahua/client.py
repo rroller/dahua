@@ -142,6 +142,15 @@ _HOST_SPEAKER_LOCKS: dict[tuple, asyncio.Lock] = {}
 # including writes from another client or user on the same monitor.
 _HOST_VTH_PHONE_LOCKS: dict[str, asyncio.Lock] = {}
 
+# The same, for VTOInfo. Keyed by device rather than by client, because the two
+# entities that write this table belong to different HA platforms: a platform's
+# PARALLEL_UPDATES serialises its own entities and says nothing about anyone
+# else's, and the select and the number here are one of each. Read-modify-write
+# is the only safe shape on a VTH (see _async_set_vto_slot_field), so without
+# this both callers copy the same table and the later write puts back the
+# other's old value, having answered True for its own.
+_HOST_VTO_INFO_LOCKS: dict[str, asyncio.Lock] = {}
+
 # Pushing audio to a device's speaker. `singlepart` is a stream rather than an
 # upload: the device plays what arrives as it arrives, sends no status line of
 # any kind, and leaves the socket open. Measured on a VTO2000A, where an
@@ -546,8 +555,21 @@ def vth_camera_links(vto_table, camera_table) -> dict:
     On one extension LinkIPC was absent rather than empty, which reads as no
     camera.
 
-    Only names and keys are kept. VTHRemoteIPCInfo also holds each camera's
-    login, and none of that leaves here.
+    ⭐ RingVolume comes out of the same slot, and that is why this reads more
+    than its name says: the table is already in hand and a second read of it to
+    carry one integer would be a second login on a device that logs every one.
+    Measured on two VTH5221D (3.000.0012000.0.R) with the owner listening: both
+    monitors turned down to 10 rang audibly quieter than at 70, while
+    `VideoTalkPhoneGeneral.RingVolume` stayed at 70 throughout. So the per-VTO
+    volume is live, and it is a SEPARATE setting from the monitor-wide one that
+    `DahuaMonitorVolumeNumber` already exposes, not a second view of it.
+
+    ⚠ `LinkIPC` is absent from every slot on that 3.000 firmware while
+    RingVolume is present on all twenty, so a slot can carry one and not the
+    other and neither may stand in for the other's absence.
+
+    Only names, keys and the volume are kept. VTHRemoteIPCInfo also holds each
+    camera's login, and none of that leaves here.
     """
     if not isinstance(vto_table, dict) or not isinstance(camera_table, dict):
         raise ValueError(
@@ -558,9 +580,22 @@ def vth_camera_links(vto_table, camera_table) -> dict:
         if not _configured(entry):
             continue
         link = entry.get("LinkIPC")
+        volume = entry.get("RingVolume")
         vtos[key] = {
             "name": str(entry.get("MachineAddress") or "").strip() or key,
             "link": link if isinstance(link, str) else "",
+            # None rather than a default, so the entity can be withheld from a
+            # slot that does not carry one. A slider reading an invented 0 is
+            # worse than no slider (#641), and it would be a slider that looks
+            # like the monitor is already silent.
+            #
+            # ⚠ `bool` is an `int` in Python, and a device that answered `true`
+            # here would otherwise arrive as the volume 1.
+            "ring_volume": (
+                volume
+                if isinstance(volume, int) and not isinstance(volume, bool)
+                else None
+            ),
         }
     cameras = {
         key: str(entry.get("MachineAddress") or "").strip() or key
@@ -1992,17 +2027,40 @@ class DahuaClient:
         )
         return vth_camera_links(table(vto_info), table(cameras))
 
-    async def async_set_vth_camera_link(self, vto: str, camera: str) -> bool:
-        """Make calls from VTOInfo slot `vto` open on camera slot `camera`; "" for none.
+    async def _async_set_vto_slot_field(
+        self, vto: str, field: str, value, absent_reads_as=None
+    ) -> bool:
+        """Change one field of one VTOInfo slot, writing the whole table back.
 
-        The whole VTOInfo table is read and written back with only that slot's
-        LinkIPC changed, which is the write measured on a VTH2421F-P: answered
-        `result: true`, read back, and the next call opened on the camera.
-        Writing the original value back restored the table byte for byte.
+        **The whole table, deliberately.** A single-field `setConfig` on a VTH
+        REPLACES the table and answers `result: true` while doing it -- measured
+        on a VTH5221D, where a one-key write to `VideoTalkPhoneGeneral` left one
+        field of sixteen and the monitor had to be rebuilt from a copy. That is
+        the opposite of the recorder convention in AGENTS.md, where a whole-table
+        write is refused for size; these tables are small enough that the limit
+        never applies. Measured both ways here: a VTOInfo write and the original
+        written back restored the table byte for byte, twenty slots before and
+        twenty after.
 
         Returns whether the value reads back, because a device answering OK to a
-        setConfig it ignored is a known shape here (#946). Safe to run twice, as
-        _rpc2_shared_call requires: it sets a value rather than toggling one.
+        `setConfig` it ignored is a known shape here (#946). Safe to run twice,
+        as `_rpc2_shared_call` requires: it sets a value rather than toggling one.
+
+        ⚠ The read is INSIDE the action, so a retry re-reads rather than writing
+        a table captured before an expired session. That alone is not enough to
+        make two concurrent writes safe, and this docstring used to claim it
+        was: rroller paused both initial reads on #1124 after each had copied
+        the same table, and the second write put the first's old `LinkIPC`
+        back while answering True for its own `RingVolume`. Reading inside the
+        action prevents a stale SESSION, not a lost UPDATE. The device-scoped
+        lock below is what prevents that, and it is shared by every caller and
+        every client for the device.
+
+        ⚠ `absent_reads_as` is what a MISSING key means on the readback, and it
+        differs per field rather than being a convenience: an absent `LinkIPC`
+        means no camera, so writing "" to a slot that answers without the key at
+        all has landed. An absent `RingVolume` means nothing of the sort, so it
+        is left as None and never matches.
         """
 
         async def write(client):
@@ -2012,7 +2070,7 @@ class DahuaClient:
             table = (current.get("params") or {}).get("table")
             if not isinstance(table, dict) or not isinstance(table.get(vto), dict):
                 raise ValueError("VTOInfo has no slot {0}".format(vto))
-            table[vto]["LinkIPC"] = camera
+            table[vto][field] = value
             await client.request(
                 "configManager.setConfig",
                 params={"name": "VTOInfo", "table": table, "options": []},
@@ -2021,9 +2079,37 @@ class DahuaClient:
                 "configManager.getConfig", params={"name": "VTOInfo"}
             )
             slot = ((check.get("params") or {}).get("table") or {}).get(vto)
-            return isinstance(slot, dict) and slot.get("LinkIPC", "") == camera
+            return isinstance(slot, dict) and slot.get(field, absent_reads_as) == value
 
-        return await self._rpc2_shared_call(write)
+        # ⚠ Outside `_rpc2_shared_call`, so the lock covers the retry too: a
+        # second attempt re-reads, and releasing between attempts would let the
+        # other writer in between this one's read and its write. Same placement
+        # as the VideoTalkPhoneGeneral writer below.
+        lock = _HOST_VTO_INFO_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+            return await self._rpc2_shared_call(write)
+
+    async def async_set_vth_camera_link(self, vto: str, camera: str) -> bool:
+        """Make calls from VTOInfo slot `vto` open on camera slot `camera`; "" for none.
+
+        Measured on a VTH2421F-P: answered `result: true`, read back, and the
+        next call opened on the camera, on the main monitor and both extensions.
+        Writing the original value back restored the table byte for byte.
+        """
+        return await self._async_set_vto_slot_field(
+            vto, "LinkIPC", camera, absent_reads_as=""
+        )
+
+    async def async_set_vth_vto_ring_volume(self, vto: str, volume: int) -> bool:
+        """Set the ring volume a monitor uses for calls from VTOInfo slot `vto`.
+
+        Asked for in #949 and measured on two VTH5221D (3.000.0012000.0.R) with
+        the owner listening: 70 down to 10 on both and the doorbell rang audibly
+        quieter, while `VideoTalkPhoneGeneral.RingVolume` stayed at 70. So this
+        is a different setting from the monitor-wide volume beside it, not a
+        second name for it.
+        """
+        return await self._async_set_vto_slot_field(vto, "RingVolume", int(volume))
 
     async def async_get_video_talk_phone_general(self) -> dict:
         """An indoor monitor's call settings, flat, or {} if it has none.

@@ -250,6 +250,10 @@ class _PlatformCoordinator:
     def supports_vth_phone_setting(self, field):
         return False
 
+    def is_indoor_monitor(self):
+        """Not one, so no per-door-station ring volume (#949)."""
+        return False
+
     def supports_motion_region(self, field):
         return self._regions
 

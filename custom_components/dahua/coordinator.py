@@ -2808,8 +2808,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_vth_phone_settings())
                 )
-            # Only the camera-link selects of an indoor monitor read this one.
-            if self.is_indoor_monitor() and self._wanted_by(SELECT):
+            # Only an indoor monitor's own controls read this one.
+            if self.reads_vth_camera_links():
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_vth_camera_links())
                 )
@@ -5985,6 +5985,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_vth_camera_links(self) -> dict | None:
         """The links and cameras vth_camera_links describes, or None before a read."""
         return (getattr(self, "data", None) or {}).get(VTH_CAMERA_LINKS)
+
+    def reads_vth_camera_links(self) -> bool:
+        """Whether anything on this device reads the VTOInfo table.
+
+        ⚠⚠ NAMED, and on the coordinator, because the poll's condition and the
+        entities that need it must not drift apart. This read served one
+        platform until #949: it was gated on `SELECT` alone, for the
+        camera-link select. The per-door-station ring volume is a **number**,
+        and it reads the same table, so with the gate left at `SELECT` a user
+        who turns the select platform off in the entry's options gets sliders
+        that are permanently unavailable, for a read nothing performs. Nothing
+        would log, and the entity would simply never change.
+
+        Found by mutation rather than by review: deleting the platform's own
+        `is_indoor_monitor()` guard killed no test, and asking why led here.
+        That guard is a readability echo of this one -- the data is None for
+        anything that is not a monitor, because of this very method -- so the
+        test that matters is this method's, not the platform's.
+        """
+        return self.is_indoor_monitor() and self._wanted_by(SELECT, NUMBER)
 
     async def _async_probe_vth_phone_settings(self) -> bool:
         """Ask an indoor monitor once which call settings it has (#949, #998).
