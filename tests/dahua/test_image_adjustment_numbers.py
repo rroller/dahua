@@ -65,6 +65,13 @@ class _Coordinator:
         """Not an indoor monitor, so it has no call settings (#949)."""
         return False
 
+    def is_indoor_monitor(self):
+        """Nor a per-door-station ring volume (#949). The number platform runs
+        four passes over the same coordinators and each asks its own question,
+        so a double that answers only this file's gate fails in somebody
+        else's pass."""
+        return False
+
     def supports_motion_region(self, field):
         """This file is about the picture sliders. The motion region sliders
         (#1115) are built by their own pass over the same coordinators, so the

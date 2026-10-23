@@ -73,8 +73,12 @@ def _camera_table():
 
 
 def test_the_measured_tables_read_as_one_vto_and_one_camera():
+    # ⚠ The whole dict on purpose, so a field added to a slot has to be declared
+    # here. `ring_volume` arrived that way at #949: this assertion is what said
+    # the reader's shape had changed. See test_a_ring_volume_per_door_station.py
+    # for what that field is and why it is read here rather than separately.
     assert vth_camera_links(_vto_table(), _camera_table()) == {
-        "vtos": {"Vto00": {"name": "Main VTO", "link": ""}},
+        "vtos": {"Vto00": {"name": "Main VTO", "link": "", "ring_volume": 70}},
         "cameras": {"Ipc32": "Front"},
     }
 
@@ -559,8 +563,20 @@ async def test_an_indoor_monitor_reads_its_links_every_poll():
     assert LINKS in await _poll_calls("VTH")
 
 
-async def test_not_with_the_select_platform_switched_off():
-    assert LINKS not in await _poll_calls("VTH", select=False)
+async def test_the_select_platform_off_is_no_longer_enough_to_stop_the_read():
+    """⚠ This asserted that switching `select` off stopped the fetch, and it was
+    right until #949 gave the same table a second reader on the **number**
+    platform (the per-door-station ring volume). Narrowed to what it can still
+    claim, rather than deleted: the select alone no longer decides.
+
+    The gate that does decide is `reads_vth_camera_links`, and the case this
+    used to cover is the one below, where neither platform is on.
+    """
+    assert LINKS in await _poll_calls("VTH", select=False)
+
+
+async def test_not_when_neither_platform_that_reads_it_is_on():
+    assert LINKS not in await _poll_calls("VTH", select=False, number=False)
 
 
 @pytest.mark.parametrize("device_class", ["VTO", "IPC", ""])

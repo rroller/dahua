@@ -11,9 +11,11 @@ import logging
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.dahua import entry_coordinators
 
+from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .late import async_add_and_keep_watching
 
@@ -106,6 +108,29 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             if coordinator.supports_vth_phone_setting(field)
         ]
 
+    async def build_vto_ring_volumes(coordinator):
+        """One ring volume per door station the monitor knows (#949).
+
+        Separate from the monitor-wide volumes above because it IS separate on
+        the device: measured on two VTH5221D with the owner listening, turning
+        `VTOInfo.Vto00.RingVolume` down to 10 made the doorbell ring quieter
+        while `VideoTalkPhoneGeneral.RingVolume` stayed at 70. Two settings,
+        two sliders.
+
+        ⚠ Built from the same read the camera-link select uses, so a monitor
+        that would not answer `VTOInfo` gets none of these rather than a slider
+        with nothing behind it, and a slot whose row carries no `RingVolume`
+        is skipped rather than given one reading zero.
+        """
+        if not coordinator.is_indoor_monitor():
+            return []
+        vtos = (coordinator.get_vth_camera_links() or {}).get("vtos") or {}
+        return [
+            DahuaVtoRingVolumeNumber(coordinator, entry, vto)
+            for vto, slot in vtos.items()
+            if slot.get("ring_volume") is not None
+        ]
+
     async def build_motion_region(coordinator):
         """The motion region sliders, where the device carries a region at all.
 
@@ -125,6 +150,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     )
     await async_add_and_keep_watching(
         hass, entry, build_monitor_volumes, async_add_devices, entry_coordinators
+    )
+    await async_add_and_keep_watching(
+        hass, entry, build_vto_ring_volumes, async_add_devices, entry_coordinators
     )
     await async_add_and_keep_watching(
         hass, entry, build_motion_region, async_add_devices, entry_coordinators
@@ -225,6 +253,78 @@ class DahuaMonitorVolumeNumber(DahuaBaseEntity, NumberEntity):
             self._field, int(value)
         )
         await self._coordinator.async_refresh()
+
+
+class DahuaVtoRingVolumeNumber(DahuaBaseEntity, NumberEntity):
+    """How loudly a monitor rings for calls from ONE door station, 0-100 (#949).
+
+    Asked for by @kmich as a Number backed by `VTOInfo.VtoNN.RingVolume`, and
+    held back until it was clear it is not the monitor-wide
+    `VideoTalkPhoneGeneral.RingVolume` under a second name. It is not.
+    Measured on two VTH5221D (3.000.0012000.0.R) with the owner at the door:
+    both slots turned down to 10 and the bell rang audibly quieter on both
+    monitors, while the monitor-wide field still read 70 throughout. Writing
+    the captured tables back restored each byte for byte.
+
+    ⚠ Whether the monitor-wide one drives anything on this firmware is NOT
+    settled -- the converse test was not run. So this adds a control rather
+    than replacing one, and nothing here says the other slider is wrong.
+
+    One per populated slot, named by the door station, because a villa with a
+    gate and a front door wants them at different volumes and that is the whole
+    point of the field being per slot.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = 0
+    _attr_native_max_value = 100
+    _attr_native_step = 1
+    _attr_mode = NumberMode.SLIDER
+    _attr_translation_key = "vth_vto_ring_volume"
+
+    def __init__(self, coordinator, entry, vto: str):
+        DahuaBaseEntity.__init__(self, coordinator, entry)
+        NumberEntity.__init__(self)
+        self._coordinator = coordinator
+        self._vto = vto
+        self._attr_translation_placeholders = {
+            "vto": self._slot().get("name") or vto,
+        }
+
+    @property
+    def unique_id(self):
+        return "{0}_vto_ring_volume_{1}".format(
+            self._coordinator.get_serial_number(), self._vto.lower()
+        )
+
+    def _slot(self) -> dict:
+        links = self._coordinator.get_vth_camera_links() or {}
+        return (links.get("vtos") or {}).get(self._vto) or {}
+
+    @property
+    def available(self) -> bool:
+        """Off until the poll has a value, so the slider never shows an invented
+        zero for a door station the monitor has stopped reporting."""
+        return super().available and self._slot().get("ring_volume") is not None
+
+    @property
+    def native_value(self):
+        return self._slot().get("ring_volume")
+
+    async def async_set_native_value(self, value: float) -> None:
+        landed = await self._coordinator.client.async_set_vth_vto_ring_volume(
+            self._vto, int(value)
+        )
+        await self._coordinator.async_refresh()
+        if not landed:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="vth_vto_ring_volume_ignored",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "vto": self._slot().get("name") or self._vto,
+                },
+            )
 
 
 class DahuaMotionRegionNumber(DahuaBaseEntity, NumberEntity):
