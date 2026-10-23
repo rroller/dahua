@@ -261,7 +261,7 @@ async def test_a_flood_light_still_gets_the_coaxial_status():
     c.supports_siren = lambda: False
     c.supports_security_light = lambda: False
     c.is_flood_light = lambda: True
-    c._supports_floodlightmode = True
+    c.supports_floodlightmode = lambda: True
 
     await c._async_update_data()
 
@@ -274,7 +274,7 @@ async def test_a_flood_light_without_floodlightmode_is_not_asked():
     c.supports_siren = lambda: False
     c.supports_security_light = lambda: False
     c.is_flood_light = lambda: True
-    c._supports_floodlightmode = False
+    c.supports_floodlightmode = lambda: False
 
     await c._async_update_data()
 

@@ -1864,9 +1864,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_retry_coaxial_control(self) -> bool:
         """Whether the coaxial status turned up after going unanswered.
 
-        Not asked again where setup never asked: a channel whose light and
-        switch platforms are both switched off, or one that drives deterrence
-        over RPC2, records no refusal, and only a recorded refusal is retried.
+        Not asked again where setup never asked: a channel with no entity that
+        reads the status, or one that drives deterrence over RPC2, records no
+        refusal, and only a recorded refusal is retried.
 
         What the gate said is read first, because the probe is the thing that
         writes it: asking afterwards would compare the answer with itself.
@@ -2235,8 +2235,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 await self._async_probe_direct_deterrence()
                 # The same probe a later poll re-asks when this one goes
                 # unanswered, so setup and the retry cannot come to disagree
-                # about what the device said (#1057).
-                if self._wanted_by(LIGHT, SWITCH) and not self.uses_rpc2_deterrence():
+                # about what the device said (#1057). Gated on the rule the poll
+                # uses, because the poll is the only reader of the answer: a
+                # recorder without the deterrence opt-in has nothing that reads
+                # it, and one that never answers costs a full timeout per setup.
+                if self.reads_coaxial_status() and not self.uses_rpc2_deterrence():
                     await self._async_probe_coaxial_control()
                 _LOGGER.debug(
                     "Device supports Coaxial Control=%s", self._supports_coaxial_control
@@ -4935,8 +4938,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 return True
             # The flood light only reads the coaxial status on firmware that reports
             # floodlightmode. Without it the same entity reads Lighting_V2 instead, and
-            # fetching this would be pointless for it too.
-            if self.is_flood_light() and self._supports_floodlightmode:
+            # fetching this would be pointless for it too. The method rather than
+            # `_supports_floodlightmode`, which setup only assigns after the
+            # coaxial probe has asked this.
+            if self.is_flood_light() and self.supports_floodlightmode():
                 return True
         return False
 

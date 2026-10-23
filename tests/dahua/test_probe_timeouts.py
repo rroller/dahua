@@ -93,6 +93,10 @@ def _coordinator(client):
     # which channel to probe. object.__new__ skips __init__, so it has to be
     # named here or the probe raises AttributeError instead of running.
     c._nvr_active_deterrence = False
+    # The coaxial probe only runs where something reads the status, and the
+    # empty model below gives it no reader. Without this the coaxial cases in
+    # this file pass because the probe was never asked.
+    c.reads_coaxial_status = lambda: True
     c.initialized = False
     c.model = ""
     c.machine_name = None
