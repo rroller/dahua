@@ -5537,7 +5537,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         if not encode:
             return
-        self._stream_codecs = dahua_utils.parse_stream_codecs(encode, self._channel)
+        codecs = dahua_utils.parse_stream_codecs(encode, self._channel)
+        if not codecs:
+            # The answer said nothing about *this* channel. A nonempty table is
+            # not the same thing: a recorder can answer with one channel's rows
+            # and none of another's, and `parse_stream_codecs` returns {} for a
+            # channel it did not find, which is indistinguishable from knowing
+            # nothing (#997 review).
+            #
+            # Assigning it anyway erased the codecs this channel really has and
+            # then let `_async_report_unplayable_stream` re-decide on that
+            # emptiness, clearing the `webrtc_cannot_play` card while having
+            # learned nothing about the stream it is about. Keeping what is
+            # held is the same rule the empty-answer branch above follows, and
+            # the one the audio values already follow, so the two views of the
+            # same read stop disagreeing.
+            return
+        self._stream_codecs = codecs
         try:
             self._async_report_unplayable_stream()
         except Exception as exception:  # pylint: disable=broad-except

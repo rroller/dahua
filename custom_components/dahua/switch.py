@@ -253,9 +253,29 @@ class DahuaEncodeAudioSwitch(DahuaBaseEntity, SwitchEntity):
 
     @property
     def is_on(self):
-        """Return the audio setting last read from Encode."""
+        """Return the audio setting last read from Encode, or None if unreadable.
+
+        Three states, not two. Every value other than the literal `true` used
+        to read as off, so an empty or malformed `AudioEnable` reported the
+        audio as disabled rather than as unknown (#997 review). A switch is
+        what automations act on, and inventing "off" for a field nobody could
+        read is the one answer that makes them act wrongly: the device may have
+        audio on throughout.
+
+        CGI answers `key=value` text, so every value arrives as a string and
+        the comparison is on the text. Only the two words the device really
+        writes are believed; anything else is unknown, which Home Assistant
+        shows as such rather than as a position the switch is not in.
+        """
         value = (self._coordinator.data or {}).get(self._key)
-        return None if value is None else str(value).lower() == "true"
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if text == "true":
+            return True
+        if text == "false":
+            return False
+        return None
 
     async def async_turn_on(self, **kwargs):
         """Enable audio for this encoder format."""
