@@ -215,7 +215,7 @@ def test_each_terminal_gets_its_own_event_code():
 
 async def test_a_terminal_does_not_reach_the_camera_on_that_channel(hass):
     """The bug, named. Terminal 3 must not touch channel 3's camera."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     host = _Coordinator(0, alarm_inputs=[{"index": 3, "name": "Alarm-in Port4"}])
     camera3 = _Coordinator(3)
     for coordinator in (host, camera3):
@@ -235,7 +235,7 @@ async def test_a_terminal_does_not_reach_the_camera_on_that_channel(hass):
 
 async def test_a_terminal_above_the_channel_count_still_arrives(hass):
     """Nothing bounds a terminal number by how many cameras are configured."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     host = _Coordinator(0, alarm_inputs=[{"index": 14, "name": "Alarm-in Port15"}])
     stream.register(host)
     stream.register(_Coordinator(1))
@@ -248,7 +248,7 @@ async def test_a_terminal_above_the_channel_count_still_arrives(hass):
 
 async def test_other_codes_still_go_to_their_own_channel(hass):
     """Only AlarmLocal is re-routed. Everything else keeps its channel."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     host = _Coordinator(0, alarm_inputs=[{"index": 0, "name": "Alarm-in Port1"}])
     camera2 = _Coordinator(2)
     for coordinator in (host, camera2):
@@ -271,7 +271,7 @@ async def test_a_host_with_no_terminals_keeps_the_old_behaviour(hass):
     #231's single-channel branch depends on this: a doorbell sends AlarmLocal
     with a nonzero index and there is no channel to disambiguate.
     """
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     only = _Coordinator(0, events=["AlarmLocal"])
     stream.register(only)
     await _settle()
@@ -300,7 +300,7 @@ async def test_a_double_without_the_method_does_not_break_the_stream(hass):
         def handle_event(self, event):
             self.handled.append(event)
 
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     stream.register(_Old())
     await _settle()
     assert stream._alarm_input_coordinator() is None
@@ -316,7 +316,7 @@ async def test_alarm_local_stays_subscribed_for_the_host_sensors(hass):
     carrying it, and the host sensors would hold whatever the setup state read
     found for ever.
     """
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     host = _Coordinator(
         0, events=["VideoMotion"], alarm_inputs=[{"index": 0, "name": "Port1"}]
     )
@@ -327,7 +327,7 @@ async def test_alarm_local_stays_subscribed_for_the_host_sensors(hass):
 
 
 async def test_a_host_without_terminals_does_not_gain_the_subscription(hass):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     stream.register(_Coordinator(0, events=["VideoMotion"]))
     await _settle()
 
@@ -342,7 +342,7 @@ async def test_the_terminals_are_re_read_when_the_stream_comes_back(hass):
 
     These have a real state read, so there is nothing to infer.
     """
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     host = _Coordinator(0, alarm_inputs=[{"index": 0, "name": "Port1"}])
     stream.register(host)
     await _settle()
@@ -354,7 +354,7 @@ async def test_the_terminals_are_re_read_when_the_stream_comes_back(hass):
 
 async def test_nothing_is_re_read_on_a_host_with_no_terminals(hass):
     """A failing stream retries often; this must not add load to a sick device."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     plain = _Coordinator(0)
     stream.register(plain)
     await _settle()
@@ -371,7 +371,7 @@ async def test_a_failing_state_read_does_not_escape_the_stream_loop(hass):
         async def _async_refresh_alarm_input_state(self):
             raise RuntimeError("the device hung up")
 
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     stream.register(_Angry(0, alarm_inputs=[{"index": 0, "name": "Port1"}]))
     await _settle()
 
@@ -385,7 +385,7 @@ async def test_a_raising_handler_does_not_take_the_stream_down(hass):
         def handle_event(self, event):
             raise RuntimeError("boom")
 
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     host = _Angry(0, alarm_inputs=[{"index": 3, "name": "Alarm-in Port4"}])
     stream.register(host)
     await _settle()

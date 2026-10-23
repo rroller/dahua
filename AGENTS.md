@@ -106,7 +106,8 @@ maps channel index to coordinator.
 **Three scopes, and mixing them up is the recurring bug.** Per channel lives on
 the coordinator. Per device (address and port) is keyed in `client.py`: the read
 cache, the digest state, the RPC2 session. Per address is `host.py`: the
-connector, the failure count, the event stream. Several tables a device serves
+connector and the failure count. Its event streams use address plus HTTP port,
+so independent devices behind one address never share events. Several tables a device serves
 are host-wide but indexed by channel, so "the request succeeded" never means
 "this channel is in the answer".
 
@@ -164,7 +165,7 @@ Three transports, chosen in this order:
 
 1. **Doorbells (VTO)** take the DHIP listener on port 5000 (`vto.py`), started by
    `async_start_vto_event_listener`.
-2. **Everything else** joins the one shared `DahuaHostEventStream` per address
+2. **Everything else** joins the one shared `DahuaHostEventStream` per device (address and HTTP port)
    (`host.py`), which long-polls `eventManager.cgi?action=attach`. One stream
    serves every channel on the host: the device sends every channel's events down
    any stream, so eleven channels used to hold eleven identical streams and throw

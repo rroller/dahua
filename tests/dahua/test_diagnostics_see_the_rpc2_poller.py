@@ -48,6 +48,7 @@ class _Task:
 def _coordinator(address=ADDRESS, vto_task=None):
     return SimpleNamespace(
         _address=address,
+        _port=80,
         _vto_task=vto_task,
         _vto_client=None,
         _dahua_event_listeners={},
@@ -68,7 +69,7 @@ def _described(address=ADDRESS, **kwargs):
         "eased_off": False,
     }
     state.update(kwargs)
-    client_module._HOST_RPC2_EVENT_POLL[address] = state
+    client_module._HOST_RPC2_EVENT_POLL[f"{address}:80"] = state
     return state
 
 
@@ -88,7 +89,7 @@ def test_a_device_with_no_cgi_event_path_is_named_as_the_poll():
 def test_an_ordinary_camera_is_named_as_the_cgi_stream():
     from custom_components import dahua
 
-    dahua._HOST_STREAMS[ADDRESS] = SimpleNamespace(_task=_Task())
+    dahua._HOST_STREAMS[f"{ADDRESS}:80"] = SimpleNamespace(_task=_Task())
     try:
         assert _transport(_coordinator(), {"used": False}) == "cgi_stream"
     finally:
@@ -184,7 +185,7 @@ def test_the_active_events_are_reported():
     """A code stuck in here is a sensor stuck on, which is the shape of #728's other
     half and was previously invisible."""
     _described()
-    client_module._HOST_RPC2_EVENT_STATE[ADDRESS] = {
+    client_module._HOST_RPC2_EVENT_STATE[f"{ADDRESS}:80"] = {
         ("SmartMotionHuman", 0),
         ("CrossRegionDetection", 0),
     }
@@ -203,7 +204,7 @@ def test_nothing_active_is_an_empty_list_not_a_missing_key():
 
 def test_the_active_set_is_read_for_this_host_only():
     _described()
-    client_module._HOST_RPC2_EVENT_STATE["10.0.0.2"] = {("VideoMotion", 0)}
+    client_module._HOST_RPC2_EVENT_STATE["10.0.0.2:80"] = {("VideoMotion", 0)}
 
     assert _rpc2_poll_block(_coordinator())["active"] == []
 
@@ -259,7 +260,7 @@ async def test_the_poller_publishes_what_it_is_doing(monkeypatch):
     with pytest.raises(_StopPoll):
         await client._stream_events_rpc2(lambda data, channel: None, ["VideoMotion"], 0)
 
-    published = client_module._HOST_RPC2_EVENT_POLL[ADDRESS]
+    published = client_module._HOST_RPC2_EVENT_POLL[f"{ADDRESS}:80"]
     assert published["code_count"] == 1
     assert published["last_cycle"] is not None
 
@@ -272,7 +273,7 @@ async def test_the_description_exists_before_the_first_cycle(monkeypatch):
     with pytest.raises(_StopPoll):
         await client._stream_events_rpc2(lambda data, channel: None, ["VideoMotion"], 0)
 
-    published = client_module._HOST_RPC2_EVENT_POLL[ADDRESS]
+    published = client_module._HOST_RPC2_EVENT_POLL[f"{ADDRESS}:80"]
     assert published["code_count"] == 1
     assert published.get("last_cycle") is None
 
@@ -303,7 +304,7 @@ async def test_an_expanded_all_is_counted_as_the_codes_it_became(monkeypatch):
     with pytest.raises(_StopPoll):
         await client._stream_events_rpc2(lambda data, channel: None, ["All"], 0)
 
-    published = client_module._HOST_RPC2_EVENT_POLL[ADDRESS]
+    published = client_module._HOST_RPC2_EVENT_POLL[f"{ADDRESS}:80"]
     assert published["code_count"] == len([c for c in ALL_EVENTS if c != "All"])
     assert published["code_count"] > 1
 
@@ -321,15 +322,21 @@ def test_the_poll_state_is_dropped_when_the_last_entry_for_a_host_goes(monkeypat
     from custom_components import dahua
 
     _described()
-    client_module._HOST_RPC2_EVENT_STATE[ADDRESS] = {("VideoMotion", 0)}
+    client_module._HOST_RPC2_EVENT_STATE[f"{ADDRESS}:80"] = {("VideoMotion", 0)}
+    client_module._HOST_RPC2_EVENT_STATE[f"{ADDRESS}:8080"] = {("VideoMotion", 1)}
+    client_module._HOST_RPC2_EVENT_POLL[f"{ADDRESS}:8080"] = {}
+    _described("10.0.0.2")
+    client_module._HOST_RPC2_EVENT_STATE["10.0.0.2:80"] = {("VideoMotion", 2)}
     monkeypatch.setattr(
         dahua, "ir", SimpleNamespace(async_delete_issue=lambda *args, **kwargs: None)
     )
 
     dahua._async_forget_host(SimpleNamespace(), ADDRESS)
 
-    assert ADDRESS not in client_module._HOST_RPC2_EVENT_POLL
-    assert ADDRESS not in client_module._HOST_RPC2_EVENT_STATE
+    assert f"{ADDRESS}:80" not in client_module._HOST_RPC2_EVENT_POLL
+    assert f"{ADDRESS}:80" not in client_module._HOST_RPC2_EVENT_STATE
+    assert set(client_module._HOST_RPC2_EVENT_POLL) == {"10.0.0.2:80"}
+    assert set(client_module._HOST_RPC2_EVENT_STATE) == {"10.0.0.2:80"}
 
 
 # --- nothing sensitive ------------------------------------------------------
@@ -338,7 +345,7 @@ def test_the_poll_state_is_dropped_when_the_last_entry_for_a_host_goes(monkeypat
 def test_only_names_and_counts_are_published():
     """The poller holds a client holding a password. None of it may appear."""
     _described()
-    client_module._HOST_RPC2_EVENT_STATE[ADDRESS] = {("VideoMotion", 0)}
+    client_module._HOST_RPC2_EVENT_STATE[f"{ADDRESS}:80"] = {("VideoMotion", 0)}
 
     for value in _rpc2_poll_block(_coordinator()).values():
         assert isinstance(value, (bool, int, float, str, list, type(None))), value

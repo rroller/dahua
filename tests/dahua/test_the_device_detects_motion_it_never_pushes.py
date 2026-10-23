@@ -124,7 +124,7 @@ def _issues(hass):
 
 
 async def _stream_with(hass, *coordinators):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     for coordinator in coordinators:
         stream.register(coordinator)
     await _settle()
