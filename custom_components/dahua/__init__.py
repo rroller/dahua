@@ -11,7 +11,7 @@ import logging
 import time  # noqa: F401  pylint: disable=unused-import
 
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, SETUP_RETRY_MAX_WAIT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
@@ -496,33 +496,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # One coordinator per channel. A single camera has one, a merged recorder has
     # one per subentry (#827), and channel_configs hands back the same shape for
     # both so there is a single path here.
+    configs = channel_configs(entry)
+
+    def build_coordinator(_subentry_id, config):
+        return DahuaDataUpdateCoordinator(
+            hass,
+            entry=entry,
+            events=events_for_channel(entry, config),
+            address=config.get(CONF_ADDRESS),
+            port=int(config.get(CONF_PORT)),
+            rtsp_port=int(config.get(CONF_RTSP_PORT)),
+            username=config.get(CONF_USERNAME),
+            password=config.get(CONF_PASSWORD),
+            name=config.get(CONF_NAME),
+            channel=config.get(CONF_CHANNEL, 0),
+            use_https=True if config.get(CONF_USE_HTTPS) else None,
+            # This channel's own settings. Empty for a single camera, which
+            # is what keeps channel_option identical to entry.options there.
+            channel_config=config if _subentry_id else None,
+            # Which subentry this channel is, so the platforms can file its
+            # entities under it. None for a single camera, which is also what
+            # async_add_entities wants when an entry has no subentries.
+            subentry_id=_subentry_id,
+        )
+
     built = []
     coordinators = []
     failures = []
     try:
-        for _subentry_id, config in channel_configs(entry):
-            built.append(
-                DahuaDataUpdateCoordinator(
-                    hass,
-                    entry=entry,
-                    events=events_for_channel(entry, config),
-                    address=config.get(CONF_ADDRESS),
-                    port=int(config.get(CONF_PORT)),
-                    rtsp_port=int(config.get(CONF_RTSP_PORT)),
-                    username=config.get(CONF_USERNAME),
-                    password=config.get(CONF_PASSWORD),
-                    name=config.get(CONF_NAME),
-                    channel=config.get(CONF_CHANNEL, 0),
-                    use_https=True if config.get(CONF_USE_HTTPS) else None,
-                    # This channel's own settings. Empty for a single camera, which
-                    # is what keeps channel_option identical to entry.options there.
-                    channel_config=config if _subentry_id else None,
-                    # Which subentry this channel is, so the platforms can file its
-                    # entities under it. None for a single camera, which is also what
-                    # async_add_entities wants when an entry has no subentries.
-                    subentry_id=_subentry_id,
-                )
-            )
+        for _subentry_id, config in configs:
+            built.append(build_coordinator(_subentry_id, config))
 
         # Concurrently, because a 64 channel recorder doing these one at a time
         # would add minutes to startup. Not a thundering herd: every request still
@@ -565,7 +568,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         # wondering why one camera is missing and finding nothing in the log.
         _LOGGER.warning(
             "%s set up %d of %d channels. These did not answer and will be "
-            "retried on the next poll: %s",
+            "retried in the background: %s",
             entry.data.get(CONF_ADDRESS),
             len(coordinators),
             len(built),
@@ -668,7 +671,78 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, coordinator.async_stop)
         )
 
+    if failures:
+        failed_channels = {channel for channel, _ in failures}
+        pending = [
+            item for item in configs if item[1].get(CONF_CHANNEL, 0) in failed_channels
+        ]
+        entry.async_create_background_task(
+            hass,
+            _async_retry_startup_channels(hass, entry, pending, build_coordinator),
+            "Retry Dahua startup channels",
+        )
+
     return True
+
+
+async def _async_retry_startup_channels(hass, entry, pending, build_coordinator):
+    """Reload once a missing channel recovers, keeping healthy channels online meanwhile.
+
+    **Backed off, because a channel that never comes back is the normal case.**
+    This used to wait exactly one scan interval every time, and each round
+    builds a fresh coordinator and runs its whole initialization: every
+    capability probe, every identity read. A camera that has been unplugged for
+    a month therefore paid the full setup cost against the recorder every two
+    minutes, for ever. The temporary coordinator cannot moderate that, because
+    it is thrown away at the end of each round, so its own `update_interval`
+    and failure handling never see a second attempt.
+
+    The state that has to persist therefore lives here, in the loop, which is
+    the only thing that outlives a round.
+
+    The delay doubles and is capped, mirroring what Home Assistant itself does
+    for an entry that raises `ConfigEntryNotReady`:
+
+        wait_time = min(2**self._tries * 5, SETUP_RETRY_MAX_WAIT)
+
+    The ceiling is imported rather than copied, so this tracks that decision
+    instead of drifting from it. The first wait is still exactly one scan
+    interval, so a transient failure recovers as quickly as it did before and
+    only a repeatedly failing channel is slowed down.
+
+    `max(SETUP_RETRY_MAX_WAIT, base)` because the cap must never make this
+    retry *faster* than the user asked the device to be polled. On an entry
+    whose interval is already longer than the ceiling the delay simply stays
+    at the interval, which is as slow as this needs to be anyway.
+    """
+
+    async def retry(subentry_id, config):
+        coordinator = build_coordinator(subentry_id, config)
+        try:
+            # first_refresh is restricted to SETUP_IN_PROGRESS. A normal refresh
+            # also initializes a fresh coordinator and records whether it worked.
+            await coordinator.async_refresh()
+            return coordinator.last_update_success
+        finally:
+            await coordinator.async_stop()
+
+    base = get_configured_scan_interval(entry).total_seconds()
+    ceiling = max(SETUP_RETRY_MAX_WAIT, base)
+    delay = base
+    while True:
+        await asyncio.sleep(delay)
+        results = await asyncio.gather(
+            *(retry(subentry_id, config) for subentry_id, config in pending),
+            return_exceptions=True,
+        )
+        if any(result is True for result in results):
+            # A reload runs every platform's setup, including those without late
+            # entity discovery. Do it only after recovery, not on each failed poll.
+            hass.config_entries.async_schedule_reload(entry.entry_id)
+            return
+        # Doubled here rather than counted, so the exponent cannot run away on
+        # an entry that has been failing for weeks.
+        delay = min(delay * 2, ceiling)
 
 
 # Raised when an entry is removed and other entries for the same recorder are
@@ -875,8 +949,10 @@ def _async_forget_host(hass: HomeAssistant, address: str) -> None:
     # a reload, because a Start whose Stop was lost is still owed one, and clearing it
     # while the host still had entries would leave those sensors stuck on. With the last
     # entry gone there is nobody left to owe.
-    _HOST_RPC2_EVENT_POLL.pop(address, None)
-    _HOST_RPC2_EVENT_STATE.pop(address, None)
+    for cache in (_HOST_RPC2_EVENT_POLL, _HOST_RPC2_EVENT_STATE):
+        for key in list(cache):
+            if key.rsplit(":", 1)[0] == address:
+                cache.pop(key, None)
     # Which channels have already been reported as refusing a capability. Keyed by
     # device_key, which is "address:port", so this matches on the address part.
     for target in [

@@ -149,8 +149,8 @@ async def test_smart_motion_is_read_for_the_switch_or_the_select():
     assert SMART_MOTION not in await _poll(switch=False, select=False)
 
 
-async def test_light_reads_are_skipped_without_the_light_platform():
-    calls = await _poll(light=False)
+async def test_lighting_reads_are_skipped_without_either_reader():
+    calls = await _poll(light=False, select=False)
 
     assert LIGHTING_V2 not in calls
     assert INFRARED not in calls
@@ -205,6 +205,7 @@ async def test_a_doorbell_with_no_security_light_does_not_start_fetching_it():
     nothing that never had the select begins paying for the read."""
     c = _coordinator(light=False)
     c.model = "DB600"  # an Amcrest doorbell, but no security light
+    c._supports_lighting = False  # no Infrared Mode select either
     # The shared fake grants this so the coaxial reads above have a reader. Here the
     # model's own answer is the point, so it goes back.
     c.supports_security_light = lambda: False

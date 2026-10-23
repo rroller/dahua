@@ -80,6 +80,9 @@ class _Client:
 class _Coordinator:
     def __init__(self, channel, events, client=None, poll_video_motion=False):
         self._channel = channel
+        # The stream is keyed per device rather than per address, so a
+        # coordinator that stands in for one has to carry a port.
+        self._port = 80
         self.events = events
         self.client = client or _Client()
         self.handled = []
@@ -105,7 +108,7 @@ async def _settle():
 
 
 async def test_eleven_channels_share_one_stream(hass):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     coordinators = [_Coordinator(i, ["VideoMotion"]) for i in range(11)]
     for coordinator in coordinators:
         stream.register(coordinator)
@@ -117,13 +120,13 @@ async def test_eleven_channels_share_one_stream(hass):
 
 
 async def test_two_hosts_keep_their_own_streams(hass):
-    a = _host_stream(hass, ADDRESS)
-    b = _host_stream(hass, "10.0.0.2")
+    a = _host_stream(hass, ADDRESS, 80)
+    b = _host_stream(hass, "10.0.0.2", 80)
     assert a is not b
 
 
 async def test_a_trailing_slash_is_the_same_host(hass):
-    assert _host_stream(hass, ADDRESS) is _host_stream(hass, ADDRESS + "/")
+    assert _host_stream(hass, ADDRESS, 80) is _host_stream(hass, ADDRESS + "/", 80)
 
 
 # --- the refcount case that would break an NVR -----------------------------
@@ -134,7 +137,7 @@ async def test_unloading_one_channel_leaves_the_others_streaming(hass):
 
     If that tore down the shared stream, the other ten channels would go deaf.
     """
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     kept = [_Coordinator(i, ["VideoMotion"]) for i in range(10)]
     leaving = _Coordinator(10, ["VideoMotion"])
     for coordinator in [*kept, leaving]:
@@ -151,7 +154,7 @@ async def test_unloading_one_channel_leaves_the_others_streaming(hass):
 
 
 async def test_the_last_channel_leaving_stops_the_stream(hass):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     only = _Coordinator(0, ["VideoMotion"])
     stream.register(only)
     await _settle()
@@ -161,12 +164,12 @@ async def test_the_last_channel_leaving_stops_the_stream(hass):
     await _settle()
 
     assert task.cancelled() or task.done()
-    assert ADDRESS not in dahua_module._HOST_STREAMS
+    assert f"{ADDRESS}:80" not in dahua_module._HOST_STREAMS
 
 
 async def test_the_stream_moves_off_a_departing_owner(hass):
     """The stream borrows a client, and unloading an entry closes its session."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     owner = _Coordinator(0, ["VideoMotion"])
     other = _Coordinator(1, ["VideoMotion"])
     stream.register(owner)
@@ -185,7 +188,7 @@ async def test_the_stream_moves_off_a_departing_owner(hass):
 
 
 async def test_an_event_reaches_only_its_own_channel(hass):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     channels = [_Coordinator(i, ["VideoMotion"]) for i in range(4)]
     for coordinator in channels:
         stream.register(coordinator)
@@ -203,7 +206,7 @@ async def test_an_event_reaches_only_its_own_channel(hass):
 
 async def test_an_unconfigured_channel_stays_silent(hass):
     """Every coordinator used to discard these, so nothing fired. Keep it that way."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     only = _Coordinator(0, ["VideoMotion"])
     stream.register(only)
     await _settle()
@@ -214,7 +217,7 @@ async def test_an_unconfigured_channel_stays_silent(hass):
 
 
 async def test_two_entries_on_one_channel_both_get_it(hass):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     a, b = _Coordinator(2, ["VideoMotion"]), _Coordinator(2, ["VideoMotion"])
     stream.register(a)
     stream.register(b)
@@ -230,7 +233,7 @@ async def test_one_video_motion_poll_covers_every_recorder_channel(hass, monkeyp
     monkeypatch.setattr("custom_components.dahua.host.VIDEO_MOTION_POLL_SECONDS", 0.01)
     client = _Client()
     client.motion_indexes = [{1, 6}, {6}, set()]
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     channels = [
         _Coordinator(i, ["VideoMotion"], client, poll_video_motion=True)
         for i in range(8)
@@ -257,7 +260,7 @@ async def test_one_video_motion_poll_covers_every_recorder_channel(hass, monkeyp
 
 
 async def test_video_motion_poller_is_opt_in(hass):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     stream.register(_Coordinator(0, ["VideoMotion"]))
     await _settle()
 
@@ -266,7 +269,7 @@ async def test_video_motion_poller_is_opt_in(hass):
 
 async def test_polled_video_motion_is_authoritative_for_opted_in_channels(hass):
     """A partial pushed event cannot leave a polling-backed sensor stuck on."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     polled = _Coordinator(0, ["VideoMotion"], poll_video_motion=True)
     streamed = _Coordinator(0, ["VideoMotion"])
     stream.register(polled)
@@ -306,7 +309,7 @@ ALARM_CH1 = (
 
 async def test_alarmlocal_reaches_the_lone_channel_regardless_of_index(hass):
     """The original #231 bug: an alarm on terminal 1 with only channel 0 set up."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     only = _Coordinator(0, ["AlarmLocal"])
     stream.register(only)
     await _settle()
@@ -321,7 +324,7 @@ async def test_alarmlocal_reaches_both_entries_sharing_the_lone_channel(hass):
     """Two entries on the same single channel must both still get it (see
     test_two_entries_on_one_channel_both_get_it) -- guarding on coordinator
     count instead of channel count would silently drop this case."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     a, b = _Coordinator(0, ["AlarmLocal"]), _Coordinator(0, ["AlarmLocal"])
     stream.register(a)
     stream.register(b)
@@ -348,7 +351,7 @@ async def test_a_failing_alarmlocal_handler_does_not_end_the_stream(hass):
     backoff reconnects. The dispatch below is guarded for that reason (#706);
     this branch reaches handle_event through its own guard instead.
     """
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     boom = _ExplodingCoordinator(0, ["AlarmLocal"])
     stream.register(boom)
     await _settle()
@@ -361,7 +364,7 @@ async def test_a_failing_alarmlocal_handler_does_not_end_the_stream(hass):
 async def test_a_non_alarmlocal_event_still_respects_the_lone_channel(hass):
     """The AlarmLocal early return must not widen what any other code does,
     even on a host with only one channel configured."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     only = _Coordinator(0, ["VideoMotion"])
     stream.register(only)
     await _settle()
@@ -375,7 +378,7 @@ async def test_alarmlocal_still_filtered_by_channel_on_a_multi_channel_host(hass
     """With more than one channel configured, AlarmLocal is not exempt: this
     is what pins the len(self._by_channel) == 1 guard against a later
     refactor loosening it."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     ch0 = _Coordinator(0, ["AlarmLocal"])
     ch1 = _Coordinator(1, ["AlarmLocal"])
     stream.register(ch0)
@@ -392,7 +395,7 @@ async def test_alarmlocal_still_filtered_by_channel_on_a_multi_channel_host(hass
 
 async def test_each_channel_gets_its_own_copy(hass):
     """handle_event mutates the event, so channels must not share one dict."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     a, b = _Coordinator(2, ["VideoMotion"]), _Coordinator(2, ["VideoMotion"])
     stream.register(a)
     stream.register(b)
@@ -404,7 +407,7 @@ async def test_each_channel_gets_its_own_copy(hass):
 
 
 async def test_junk_on_the_wire_is_ignored(hass):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     only = _Coordinator(0, ["VideoMotion"])
     stream.register(only)
     await _settle()
@@ -419,7 +422,7 @@ async def test_junk_on_the_wire_is_ignored(hass):
 
 async def test_expanded_shared_subscription_attaches_with_all_events(hass):
     """Use All only when sharing makes the event list broader than before #615."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     first = _Coordinator(0, ["VideoMotion"])
     second = _Coordinator(1, ["CrossLineDetection", "AlarmLocal"])
     stream.register(first)
@@ -431,7 +434,7 @@ async def test_expanded_shared_subscription_attaches_with_all_events(hass):
 
 async def test_shared_subscription_stays_explicit_when_union_does_not_grow(hass):
     """Two channels choosing the same event do not need the All fallback."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     first = _Coordinator(0, ["VideoMotion"])
     second = _Coordinator(1, ["VideoMotion"])
     stream.register(first)
@@ -447,7 +450,7 @@ async def test_shared_subscription_stays_explicit_when_union_does_not_grow(hass)
 
 async def test_single_channel_keeps_its_explicit_event_subscription(hass):
     """Single-camera behaviour is unchanged by the NVR compatibility path."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     only = _Coordinator(0, ["VideoMotion", "AlarmLocal"])
     stream.register(only)
     await _settle()
@@ -457,7 +460,7 @@ async def test_single_channel_keeps_its_explicit_event_subscription(hass):
 
 async def test_all_subscription_still_filters_unrequested_codes(hass):
     """codes=[All] on the wire must not broaden Home Assistant dispatch."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     first = _Coordinator(0, ["VideoMotion"])
     second = _Coordinator(1, ["AlarmLocal"])
     stream.register(first)
@@ -475,7 +478,7 @@ async def test_all_subscription_still_filters_unrequested_codes(hass):
 
 async def test_derived_smart_motion_allows_raw_ivs_event_through(hass):
     """SmartMotionHuman may be selected even though the wire code is CrossRegionDetection."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     first = _Coordinator(0, ["SmartMotionHuman"])
     second = _Coordinator(1, ["VideoMotion"])
     stream.register(first)
@@ -496,7 +499,7 @@ async def test_derived_smart_motion_allows_raw_ivs_event_through(hass):
 
 
 async def test_it_does_not_re_attach_when_nothing_new_is_wanted(hass):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     first = _Coordinator(0, ["VideoMotion"])
     stream.register(first)
     await _settle()
@@ -509,7 +512,7 @@ async def test_it_does_not_re_attach_when_nothing_new_is_wanted(hass):
 
 
 async def test_it_re_attaches_with_all_when_union_expands(hass):
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     first = _Coordinator(0, ["VideoMotion"])
     stream.register(first)
     await _settle()
@@ -540,7 +543,7 @@ async def test_each_channel_still_gets_its_own_codes_under_all(hass):
     was for: that after all that, each channel still receives what it asked for.
     Without this, a filter that dropped everything would pass the suite.
     """
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     first = _Coordinator(0, ["VideoMotion"])
     second = _Coordinator(1, ["AlarmLocal"])
     stream.register(first)
@@ -559,7 +562,7 @@ async def test_each_channel_still_gets_its_own_codes_under_all(hass):
 async def test_a_channels_own_code_is_not_dropped_because_a_sibling_wanted_it(hass):
     """The union is what the filter checks, so a code only one channel selected
     must still reach that channel and nobody else."""
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     first = _Coordinator(0, ["VideoMotion", "AlarmLocal"])
     second = _Coordinator(1, ["VideoMotion"])
     stream.register(first)
@@ -671,7 +674,7 @@ async def test_an_index_that_is_not_a_number_falls_back_to_channel_zero(hass):
     Zero rather than dropped, because an event with an index nobody can read is still an
     event, and channel 0 is the one every host has.
     """
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     on_zero = _Coordinator(0, ["VideoMotion"])
     stream.register(on_zero)
     await _settle()
@@ -698,7 +701,7 @@ async def test_a_malformed_index_does_not_cost_the_next_event_in_the_same_read(h
     The parse is shared across the whole host, so a per-read failure would be a
     host-wide outage triggered by whichever device sends the odd index.
     """
-    stream = _host_stream(hass, ADDRESS)
+    stream = _host_stream(hass, ADDRESS, 80)
     on_zero = _Coordinator(0, ["VideoMotion", "CrossLineDetection"])
     stream.register(on_zero)
     await _settle()

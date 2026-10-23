@@ -60,6 +60,8 @@ def _reader(address=ADDRESS, **kwargs):
     """The shape _stream_block and _events_block read, and nothing more."""
     defaults = {
         "_address": address,
+        # A coordinator has a port, and the stream is keyed on it.
+        "_port": 80,
         "_event_task": None,
         "_vto_task": None,
         "_vto_client": None,
@@ -85,7 +87,7 @@ def _clean_streams():
 
 def test_an_explicit_subscription_is_reported_as_itself():
     """The ordinary case, and the one every single camera takes."""
-    dahua._HOST_STREAMS[ADDRESS] = _stream(_using_all_events=False)
+    dahua._HOST_STREAMS[f"{ADDRESS}:80"] = _stream(_using_all_events=False)
 
     block = _stream_block(_reader())
 
@@ -102,7 +104,7 @@ def test_a_broadened_subscription_is_reported_as_All():
     and the dump said it received three named codes, so a reporter comparing the
     dump against a packet capture would have found the dump wrong and had no way
     to know which half to trust."""
-    dahua._HOST_STREAMS[ADDRESS] = _stream(_using_all_events=True)
+    dahua._HOST_STREAMS[f"{ADDRESS}:80"] = _stream(_using_all_events=True)
 
     block = _stream_block(_reader())
 
@@ -113,7 +115,7 @@ def test_the_selection_is_still_reported_when_All_was_sent():
     """Both, not one. `[All]` on the wire and a three code selection locally is the
     configuration where events arrive and are then filtered out again in
     `on_receive`, and only having both fields makes that legible."""
-    dahua._HOST_STREAMS[ADDRESS] = _stream(_using_all_events=True)
+    dahua._HOST_STREAMS[f"{ADDRESS}:80"] = _stream(_using_all_events=True)
 
     block = _stream_block(_reader())
 
@@ -132,7 +134,7 @@ def test_a_stream_that_never_set_the_flag_reads_as_explicit():
     behaviour is the right answer for a stream that never broadened anything."""
     bare = _stream()
     del bare._using_all_events
-    dahua._HOST_STREAMS[ADDRESS] = bare
+    dahua._HOST_STREAMS[f"{ADDRESS}:80"] = bare
 
     assert _stream_block(_reader())["subscribed_as"] == [
         "AlarmLocal",
@@ -226,7 +228,7 @@ def test_two_coordinators_do_not_pool_their_counts():
 
 
 def test_the_counts_reach_the_diagnostics_dump():
-    dahua._HOST_STREAMS[ADDRESS] = _stream()
+    dahua._HOST_STREAMS[f"{ADDRESS}:80"] = _stream()
 
     block = _events_block(_reader(_events_without_listener={"FaceDetection-0": 4}))
 
@@ -235,7 +237,7 @@ def test_the_counts_reach_the_diagnostics_dump():
 
 def test_a_coordinator_that_has_missed_nothing_reports_an_empty_map():
     """Empty rather than absent, so the field being there is not itself a signal."""
-    dahua._HOST_STREAMS[ADDRESS] = _stream()
+    dahua._HOST_STREAMS[f"{ADDRESS}:80"] = _stream()
 
     block = _events_block(_reader())
 
@@ -246,7 +248,7 @@ def test_the_dump_copies_the_counts_rather_than_publishing_the_live_dict():
     """Diagnostics runs while the stream keeps dispatching. Handing out the live
     dict would let it change under serialisation, which is how a dump ends up
     raising instead of downloading."""
-    dahua._HOST_STREAMS[ADDRESS] = _stream()
+    dahua._HOST_STREAMS[f"{ADDRESS}:80"] = _stream()
     live = {"FaceDetection-0": 1}
 
     block = _events_block(_reader(_events_without_listener=live))
