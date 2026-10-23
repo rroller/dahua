@@ -4712,16 +4712,61 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         entity on silence would take the light away from everyone who has one
         working. Only a device that lists its emitters and names no white one
         loses it, which is the only case where we know it was wrong.
+
+        **A named white row is not enough either, and that is #1094.** A row
+        can name `WhiteLight` for an emitter the camera does not have.
+        Measured on a DHI-NVR5464-16P-EI whose owner could say which channels
+        are physically fitted with one, and only two channels of twelve report
+        a white row at all:
+
+            ch 1   no white light fitted     3 fields, no brightness bank
+                     LightType, Mode, PercentOfMaxBrightness
+            ch 11  white light fitted        9 fields, NearLight and FarLight
+
+        The tell is the **brightness bank**, and specifically that rather than
+        any brightness-shaped field: the phantom row carries
+        `PercentOfMaxBrightness` too, so reading that as evidence of an emitter
+        is the same mistake one layer down.
+
+        On the phantom the entity is not merely decorative, it raises.
+        `illuminator_brightness_bank` falls back to `MiddleLight` when a device
+        names none, so turning it on composes a key the row has never had and
+        the recorder refuses the whole write:
+
+            setConfig&Lighting_V2[1][0][1].Mode=Manual
+                     &Lighting_V2[1][0][1].MiddleLight[0].Light=100
+              -> declined the write: Error
+
+        Only a row that names white **and** names a bank is believed. A device
+        that names no emitters at all is still left alone, as above.
         """
         key = "table.Lighting_V2[{0}][0][{1}].LightType"
         declared = [
-            self.data.get(key.format(self._channel, index))
+            (index, self.data.get(key.format(self._channel, index)))
             for index in range(MAX_LIGHTING_V2_LIGHTS)
         ]
-        named = [light for light in declared if light is not None]
+        named = [(index, light) for index, light in declared if light is not None]
         if not named:
             return True
-        return WHITE_LIGHT in named
+        return any(
+            light == WHITE_LIGHT and self._names_a_brightness_bank(index)
+            for index, light in named
+        )
+
+    def _names_a_brightness_bank(self, index: int) -> bool:
+        """Whether this Lighting_V2 row carries a brightness bank at all.
+
+        The same three banks `illuminator_brightness_bank` chooses between, so
+        the question asked here is exactly the one the write will ask: a row
+        with none of them is one whose write cannot be composed.
+        """
+        return any(
+            "table.Lighting_V2[{0}][0][{1}].{2}[0].Light".format(
+                self._channel, index, bank
+            )
+            in self.data
+            for bank in LIGHT_BRIGHTNESS_BANKS
+        )
 
     async def _async_fetch_channel_lighting_scheme(self) -> dict:
         """Keep only this channel's previous scene modes if its read fails."""
