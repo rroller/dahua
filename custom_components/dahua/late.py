@@ -155,14 +155,34 @@ def _for_entry(hass, entry_id: str):
     return held.setdefault(entry_id, {"work": 0, "failed": set()})
 
 
-def _note_failed(hass, entry_id: str, channel_key, failed: bool) -> None:
+def _note_failed(
+    hass, entry_id: str, builder, channel_key, failed: bool, kind="build"
+) -> None:
+    """Remember, or forget, that one builder could not finish one channel.
+
+    ⚠ Keyed by BUILDER as well as channel, @rroller on #1125. Every call to
+    `async_add_and_keep_watching` subscribes to the same discovery signal, so
+    ten platforms rebuild the same channel from ten different `build`
+    functions. Keyed by channel alone, the first of them to succeed cleared a
+    failure that belonged to another, and he reproduced the valid row being
+    offered for deletion straight afterwards. A builder may only speak for
+    its own work.
+
+    ⚠ And by KIND, for the same reason one step down. A build that returns an
+    entity has succeeded at building; whether Home Assistant then managed to
+    register that entity is a different question with a different answer, and
+    the two were clearing each other.
+    """
     record = _for_entry(hass, entry_id)
     if record is None:
         return
     if failed:
-        record["failed"].add(channel_key)
+        # The object itself, not its id: it lives as long as the entry
+        # holds the listener that closes over it, and an id could be
+        # reused by something else once it did not.
+        record["failed"].add((builder, channel_key, kind))
     else:
-        record["failed"].discard(channel_key)
+        record["failed"].discard((builder, channel_key, kind))
 
 
 def _change_outstanding(hass, entry_id: str, delta: int):
@@ -181,7 +201,41 @@ def _release(hass, entry_id: str) -> None:
         async_notify_late_work_settled(hass, entry_id)
 
 
-def _hold_until_registered(hass, entry_id: str, entities) -> None:
+def _registration_was_skipped_on_purpose(hass, entity) -> bool:
+    """Whether an aborted add was Home Assistant declining rather than failing.
+
+    ⚠ @rroller on #1125: "Registration aborts caused by errors need the same
+    distinction from intentional disabled/duplicate skips." `add_to_platform_abort`
+    is the same call either way, so the cause is not available; what is
+    available is the outcome, which is the thing the card actually cares
+    about.
+
+    Two intentional skips, and neither leaves a row that could be deleted by
+    mistake:
+
+    - the registry row is **disabled**, which `leftover_rows` excludes
+      outright, because there is no entity behind it and the user said so;
+    - the entity id **already exists** with a live state, so something else is
+      behind the row and it does not read as a leftover either.
+
+    Anything else that aborted left a registry row with nothing behind it for
+    a reason that belongs to this integration, which is the reading the gate
+    exists to refuse.
+    """
+    row = getattr(entity, "registry_entry", None)
+    if row is not None and getattr(row, "disabled", False):
+        return True
+    entity_id = getattr(entity, "entity_id", None)
+    states = getattr(hass, "states", None)
+    if not entity_id or states is None:
+        return False
+    state = states.get(entity_id)
+    # A `restored: True` state is the registry writing the row out as
+    # unavailable, which is exactly a leftover and not somebody else's entity.
+    return state is not None and not state.attributes.get("restored")
+
+
+def _hold_until_registered(hass, entry_id: str, builder, channel_key, entities) -> None:
     """Count each entity until Home Assistant finishes or aborts adding it.
 
     ⚠ Wrapping the entity's own two lifecycle hooks, because they are the only
@@ -193,6 +247,12 @@ def _hold_until_registered(hass, entry_id: str, entities) -> None:
     ⚠ No timeout, deliberately. If an add never reports, the entity does not
     exist, and withholding a card that offers to delete its row is the right
     answer rather than a failure mode. A reload clears the record.
+
+    ⚠ A registration that RAISES is recorded, not merely released. That error
+    happens inside the add task Home Assistant scheduled, so the build wrapper
+    never sees it: @rroller reproduced an entity whose `async_added_to_hass`
+    raises, and the row stayed restored while the count went to zero and the
+    scan offered it.
 
     Tolerated rather than demanded: a great many tests here stand in a marker
     object for an entity, and one without these hooks is simply not counted.
@@ -208,14 +268,28 @@ def _hold_until_registered(hass, entry_id: str, entities) -> None:
         async def _finished(_finish=finish) -> None:
             try:
                 await _finish()
+            except Exception:
+                # Raised inside Home Assistant's own add task. Re-raised so HA
+                # still reports it, and remembered so the row this entity was
+                # going to fill is not offered for deletion in the meantime.
+                _note_failed(hass, entry_id, builder, channel_key, True, "registration")
+                raise
+            else:
+                _note_failed(
+                    hass, entry_id, builder, channel_key, False, "registration"
+                )
             finally:
                 _release(hass, entry_id)
 
         @callback
-        def _aborted(_abort=abort) -> None:
+        def _aborted(_abort=abort, _entity=entity) -> None:
             try:
                 _abort()
             finally:
+                if not _registration_was_skipped_on_purpose(hass, _entity):
+                    _note_failed(
+                        hass, entry_id, builder, channel_key, True, "registration"
+                    )
                 _release(hass, entry_id)
 
         try:
@@ -284,6 +358,10 @@ async def async_add_and_keep_watching(
     the load sensors out of the rebuild and so out of #1057 entirely.
     """
     created: set = set()
+    # Who this call is. Every platform makes one of these and they all listen
+    # to the same signal, so a failure has to say which builder it belongs to
+    # or one platform's success speaks for another's failure (#1125).
+    builder = object()
 
     async def _add_whatever_is_missing(channel_key=None) -> None:
         for coordinator in coordinators(entry).values():
@@ -314,7 +392,14 @@ async def async_add_and_keep_watching(
                 # ⚠ Counted BEFORE the call. Home Assistant starts the add
                 # task eagerly, so by the time this returns the entity may
                 # already have been registered and released.
-                _hold_until_registered(hass, entry.entry_id, entities)
+                # ⚠ The rebuild's own `channel_key`, which is what the
+                # signal named, rather than asking the coordinator again.
+                # Several coordinator doubles here cannot answer that, and a
+                # real one built with `object.__new__` raises; the key only
+                # has to match the one the surrounding rebuild will clear.
+                _hold_until_registered(
+                    hass, entry.entry_id, builder, channel_key, entities
+                )
                 async_add_entities(entities, config_subentry_id=where)
 
     await _add_whatever_is_missing()
@@ -356,12 +441,12 @@ async def async_add_and_keep_watching(
             # on #1114 and @rroller on #1125 are the same point from two
             # sides: a row with nothing behind it is only a leftover when the
             # integration is not itself the reason.
-            _note_failed(hass, entry.entry_id, channel_key, True)
+            _note_failed(hass, entry.entry_id, builder, channel_key, True)
             _LOGGER.exception(
                 "Could not build the entities %s answered for late", channel_key
             )
         else:
-            _note_failed(hass, entry.entry_id, channel_key, False)
+            _note_failed(hass, entry.entry_id, builder, channel_key, False)
         finally:
             # `finally`, so a build that raises cannot leave the count up and
             # the card shut for the life of the entry.

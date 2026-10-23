@@ -225,6 +225,7 @@ def test_the_cloud_upgrade_probe_no_longer_reports_silence(monkeypatch):
 
 import asyncio
 from datetime import timedelta
+from types import SimpleNamespace
 
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
@@ -675,7 +676,7 @@ async def test_unloading_forgets_a_failed_rebuild(hass):
     )
     with pytest.raises(RuntimeError):
         await _watching(hass, entry, build)
-    late._note_failed(hass, entry.entry_id, "SER_0", True)
+    late._note_failed(hass, entry.entry_id, object(), "SER_0", True)
     assert late.async_rebuilds_failed(hass, entry.entry_id) is True
 
     for unload in list(entry._on_unload or []):
@@ -701,6 +702,10 @@ class _Registering:
     def __init__(self, unique_id):
         self.unique_id = unique_id
         self.finished = self.aborted = False
+        # What Home Assistant leaves on an entity it is adding, and what the
+        # "was this skip intentional" question reads.
+        self.entity_id = None
+        self.registry_entry = None
 
     async def add_to_platform_finish(self):
         self.finished = True
@@ -810,6 +815,182 @@ async def test_the_real_platform_callback_is_what_releases_it(hass):
     assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
     assert entity.entity_id and hass.states.get(entity.entity_id) is not None
     assert _issue(hass, entry) is not None
+
+
+async def test_one_platform_succeeding_does_not_clear_another_s_failure(hass):
+    """⭐⭐ @rroller on #1125. Ten platforms each call
+    `async_add_and_keep_watching` and all ten listen to the same discovery
+    signal, so one channel is rebuilt by ten different `build` functions.
+    Keyed by channel alone, the first to succeed cleared a failure belonging
+    to another, and the row it never created was offered for deletion.
+    """
+    entry, made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+    broken, working = [], []
+
+    async def breaks(_coordinator):
+        broken.append(1)
+        if len(broken) > 1:
+            raise RuntimeError("this platform's build blew up")
+        return []
+
+    async def works(_coordinator):
+        working.append(1)
+        return []
+
+    await _watching(hass, entry, breaks)
+    await _watching(hass, entry, works)
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await _let_the_delayed_scan_run(hass)
+
+    assert len(broken) == 2 and len(working) == 2, "both watchers rebuilt"
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is True
+    assert _issue(hass, entry) is None
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+
+async def test_a_registration_that_raises_is_remembered_not_just_released(hass):
+    """⭐⭐ @rroller on #1125, with a real `MockEntityPlatform` and an entity
+    whose `async_added_to_hass` raises. The error happens inside the add task
+    Home Assistant scheduled, so the build wrapper never sees it: the count
+    came down, nothing was recorded, and the row that entity was going to
+    fill was offered for deletion.
+    """
+    entry, made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+
+    class _Breaks(MockEntity):
+        async def async_added_to_hass(self):
+            raise RuntimeError("registration blew up")
+
+    platform = MockEntityPlatform(hass, domain="switch", platform_name=DOMAIN)
+    platform.config_entry = entry
+    platform._setup_complete = True
+
+    entity, calls = _Breaks(unique_id="SER_broken", name="broken"), []
+
+    async def build(_coordinator):
+        calls.append(1)
+        return [entity] if len(calls) > 1 else []
+
+    await _watching(
+        hass,
+        entry,
+        build,
+        lambda entities, **kwargs: platform._async_schedule_add_entities_for_entry(
+            entities
+        ),
+    )
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await _let_the_delayed_scan_run(hass)
+
+    assert (
+        late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
+    ), "the count still comes down, or one bad add wedges the counter"
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is True
+    assert _issue(hass, entry) is None
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+
+async def test_a_disabled_row_aborting_is_not_a_failure(hass):
+    """⚠ The other half of rroller's note. Home Assistant aborts an add for a
+    disabled registry row on purpose, and `leftover_rows` excludes disabled
+    rows anyway. Recording that as a failure would let one entity the user
+    switched off suppress the card for the life of the entry, which is the
+    over-correction this whole branch exists to undo.
+    """
+    entry, _made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+    entity, calls = _Registering("SER_disabled"), []
+    entity.registry_entry = SimpleNamespace(disabled=True)
+
+    async def build(_coordinator):
+        calls.append(1)
+        return [entity] if len(calls) > 1 else []
+
+    await _watching(hass, entry, build)
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await hass.async_block_till_done()
+    entity.add_to_platform_abort()
+    await _let_the_delayed_scan_run(hass)
+
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is False
+    assert _issue(hass, entry) is not None
+
+
+async def test_an_id_someone_else_already_holds_is_not_a_failure_either(hass):
+    """The duplicate skip. Something live is behind the row, so it does not
+    read as a leftover and nothing here is at risk."""
+    entry, made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+    entity, calls = _Registering("SER_live"), []
+    entity.entity_id = made["switch.live"].entity_id
+
+    async def build(_coordinator):
+        calls.append(1)
+        return [entity] if len(calls) > 1 else []
+
+    await _watching(hass, entry, build)
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await hass.async_block_till_done()
+    entity.add_to_platform_abort()
+    await _let_the_delayed_scan_run(hass)
+
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is False
+    assert _issue(hass, entry) is not None
+
+
+async def test_an_abort_that_leaves_the_row_empty_is_a_failure(hass):
+    """And the error aborts, which are every other path in
+    `_async_add_entity`. The entity is not there and nothing says the user
+    meant that, so the row it was going to fill stays out of reach."""
+    entry, made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+    entity, calls = _Registering("SER_gone"), []
+    entity.entity_id = made["switch.gone"].entity_id
+
+    async def build(_coordinator):
+        calls.append(1)
+        return [entity] if len(calls) > 1 else []
+
+    await _watching(hass, entry, build)
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await hass.async_block_till_done()
+    entity.add_to_platform_abort()
+    await _let_the_delayed_scan_run(hass)
+
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is True
+    assert _issue(hass, entry) is None
 
 
 async def test_an_aborted_registration_releases_it_too(hass):
