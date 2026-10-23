@@ -1478,6 +1478,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # An RPC2 refusal carries a code rather than an HTTP status, and a
             # code is still the device answering -- see Rpc2MethodRefused.
             status = getattr(exception, "code", None)
+        # ⚠ And a third shape, which has neither: the call SUCCEEDED and the
+        # table was not in the reply. That is the device answering "I have no
+        # such table", and judging it by the absence of a status filed it as
+        # silence -- #1114, where it kept the leftover-rows card off every one
+        # of seventeen entries. `Rpc2TableAbsent` says so explicitly rather
+        # than being inferred from an exception type, so any future reader of
+        # a table can do the same without this method learning its name.
+        answered = status is not None or bool(getattr(exception, "answered", False))
         # Self-initialising, because a probe must never be the thing that
         # raises. Coordinators are built with object.__new__ in a dozen
         # tests, which skips __init__, and a capability probe is exactly
@@ -1486,7 +1494,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if refusals is None:
             refusals = self._probe_refusals = {}
         refusals[name] = {
-            "answered": status is not None,
+            "answered": answered,
             "status": status,
             "error": type(exception).__name__,
         }
@@ -1501,6 +1509,38 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         refusals = getattr(self, "_probe_refusals", None) or {}
         if not refusals.get(name, {}).get("answered", True):
             refusals.pop(name, None)
+
+    def probes_that_may_still_answer(self) -> set:
+        """Unanswered questions whose entity could still turn up.
+
+        ⭐ The distinction `probes_that_did_not_answer` cannot make, and what
+        a caller deciding whether to WAIT actually needs. A probe is worth
+        waiting on only while something will ask again:
+
+        - it must be in `RETRYABLE_CAPABILITIES`, because nothing else is
+          ever re-asked, and
+        - it must have retries left, because `_async_retry_capabilities`
+          skips a name once `spent >= MAX_CAPABILITY_RETRIES`.
+
+        Raised by @kmich on #1114: *"Decide whether a probe that has spent its
+        retry budget should still hold the gate shut. As written, one silent
+        probe blocks the card for good."* He is right, and the gate's own
+        comment is what gives it away -- it says the entity "is still to come:
+        the retry builds it when the device finally replies", which stops
+        being true the moment the last retry is spent. After that the row is
+        not pending, it is absent, and waiting for it is waiting for nothing.
+
+        Derived from the two pieces of state that already exist rather than
+        tracked beside them, so it cannot come to disagree with the loop that
+        does the retrying.
+        """
+        attempts = getattr(self, "_capability_retries", None) or {}
+        return {
+            name
+            for name in self.probes_that_did_not_answer()
+            if name in RETRYABLE_CAPABILITIES
+            and attempts.get(name, 0) < MAX_CAPABILITY_RETRIES
+        }
 
     def probes_that_did_not_answer(self) -> set:
         """Capability questions this device has not answered either way.

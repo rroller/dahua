@@ -360,12 +360,24 @@ def _entry_is_wholly_healthy(hass: HomeAssistant, entry, coordinators) -> bool:
             return False
         if not getattr(coordinator, "last_update_success", False):
             return False
-        unanswered = getattr(coordinator, "probes_that_did_not_answer", None)
-        if unanswered is not None and unanswered():
-            # A probe that has not answered either way is one whose entity is
-            # still to come: the retry builds it when the device finally
-            # replies, and until then its row is indistinguishable from a
-            # leftover.
+        # ⚠ `may_still_answer`, not `did_not_answer`. A probe is worth waiting
+        # on only while something will ask it again; one that has spent its
+        # retry budget, or that is not retried at all, will never build its
+        # entity, so holding the card back for it holds it back for ever.
+        # @kmich measured that on #1114: seventeen entries, every one of them
+        # reporting `cloud_upgrade` unanswered with its budget spent, and the
+        # card could not appear on any of them.
+        #
+        # The fallback is the older method, so a coordinator double that
+        # models only that one keeps the stricter behaviour rather than
+        # silently losing the gate.
+        pending = getattr(coordinator, "probes_that_may_still_answer", None)
+        if pending is None:
+            pending = getattr(coordinator, "probes_that_did_not_answer", None)
+        if pending is not None and pending():
+            # A probe that may still answer is one whose entity is still to
+            # come: the retry builds it when the device finally replies, and
+            # until then its row is indistinguishable from a leftover.
             return False
     return True
 

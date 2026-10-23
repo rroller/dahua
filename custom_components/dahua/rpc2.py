@@ -36,6 +36,31 @@ class Rpc2MethodRefused(ConnectionError):
         self.message = message
 
 
+class Rpc2TableAbsent(ValueError):
+    """The device answered, and the table it was asked for was not in the reply.
+
+    **A reply with no table is an answer**, and the distinction is not
+    cosmetic. `_note_probe_refusal` decides whether a device answered by
+    looking for an HTTP `status` or an RPC2 `code` on the exception; a bare
+    `ValueError` carries neither, so it is filed as silence. A probe filed as
+    silent is one that `probes_that_did_not_answer` keeps reporting for ever,
+    and `migrate._entry_is_wholly_healthy` refuses to offer the leftover-rows
+    card while any probe is in that set.
+
+    Measured by @kmich on #1114, across seventeen entries: every one of them,
+    VTH2421F-P, IPC and NVR alike, reported
+    `cloud_upgrade: {"answered": false, "status": null, "error": "ValueError"}`
+    with its retry budget spent, because no device there serves
+    `_DHCloudUpgrade_`. The card could not appear on any of them, and his three
+    monitors really did have leftover rows to offer.
+
+    A ValueError subclass so existing handlers keep working, with `answered`
+    saying what the bare exception could not.
+    """
+
+    answered = True
+
+
 def refusal_reason(response: dict) -> tuple:
     """Where a device put its reason for answering `result: false`.
 
@@ -402,13 +427,20 @@ class DahuaRpc2Client:
         ``_DHCloudUpgrade_`` config table, so reading it is local: nothing here
         contacts Dahua. A device whose firmware has no such table refuses the
         read, which is how its absence is established.
+
+        ⚠ Two different things end here and only one is a refusal. The read
+        raising is the device declining or not answering. The read SUCCEEDING
+        with no usable table is the device answering that it has none, which
+        is a fact about the model. That used to be a bare `ValueError`, which
+        the probe bookkeeping cannot tell from silence -- see `Rpc2TableAbsent`
+        for what that cost on #1114.
         """
         if not self._session_id:
             await self.login()
         params = await self.get_config({"name": "_DHCloudUpgrade_"})
         table = params.get("table")
         if not isinstance(table, list) or not table or not isinstance(table[0], dict):
-            raise ValueError(
+            raise Rpc2TableAbsent(
                 "Dahua RPC2 response is missing the _DHCloudUpgrade_ table"
             )
         return table[0]
