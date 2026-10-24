@@ -506,3 +506,66 @@ async def test_the_write_names_one_field():
     await client.async_set_stream_compression(3, 0, "H.264")
 
     assert client.get.await_args.args[0].count("=") == 2, "action, and the one field"
+
+
+# --- the card and its flow have to agree about the text ----------------------
+
+
+def _card_strings():
+    import io
+    import json
+    import pathlib
+
+    path = (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "custom_components"
+        / "dahua"
+        / "translations"
+        / "en.json"
+    )
+    return json.load(io.open(path, encoding="utf-8"))["issues"]["webrtc_cannot_play"]
+
+
+def test_a_fixable_card_carries_no_description_of_its_own():
+    """Home Assistant treats `description` and `fix_flow` as mutually exclusive
+    on an issue, and hassfest fails the whole integration when both are there:
+
+        [ERROR] [TRANSLATIONS] Invalid translations/en.json: two or more values
+        in the same group of exclusion 'fixable' at
+        'issues.webrtc_cannot_play.<fixable>'
+
+    That is a CI failure for every other PR too, so it is pinned here rather
+    than left to the next person to rediscover."""
+    card = _card_strings()
+
+    assert "fix_flow" in card
+    assert "description" not in card
+    assert card["title"], "the title is all the card itself shows"
+
+
+async def test_the_form_supplies_every_placeholder_its_text_uses(hass):
+    """Derived from the string, not a copy of it. A placeholder the step
+    description names and the flow does not supply renders as a literal
+    `{channels}` on the user's screen, which no other test would catch."""
+    import re
+
+    _setup(hass)
+    description = _card_strings()["fix_flow"]["step"]["confirm"]["description"]
+    needed = set(re.findall(r"\{(\w+)\}", description))
+
+    result = await _flow(hass).async_step_confirm()
+
+    assert needed, "the description should be using placeholders at all"
+    assert needed <= set(result["description_placeholders"])
+
+
+async def test_the_text_names_every_carded_channel_not_just_the_fixable_ones(hass):
+    """Channel 2 cannot take H.264, so it is not in the picker. It is still one
+    of the channels the condition is about, and leaving it out of the text
+    would describe the device wrongly."""
+    _setup(hass, carded=(0, 2, 3))
+
+    result = await _flow(hass).async_step_confirm()
+
+    assert result["description_placeholders"]["channels"] == "0, 2, 3"
+    assert sorted(result["data_schema"].schema["channels"].options) == ["0", "3"]
