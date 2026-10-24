@@ -270,6 +270,66 @@ def parse_stream_codecs(encode, channel: int) -> dict:
     return found
 
 
+# The same two shapes again, for `encode.cgi?action=getConfigCaps`. That answer
+# is keyed `caps[<channel>]` rather than `table.Encode[<channel>]`, and it is the
+# only place the device says what a stream may be set TO rather than what it is
+# set to now.
+_CAPS_MAIN_FORMAT = "caps[{0}].MainFormat[0]."
+_CAPS_EXTRA_FORMAT = re.compile(r"caps\[(\d+)\]\.ExtraFormat\[(\d+)\]\.")
+
+
+def parse_stream_compression_options(caps, channel: int) -> dict:
+    """Which codecs each of one channel's streams may be set to.
+
+        {0: ["H.264", "H.265"], 1: ["H.264", "MJPG", "H.265"]}
+
+    Keyed by the same stream index as `parse_stream_codecs`, so the two can be
+    read side by side without translating anything.
+
+    Measured on a DHI-NVR5464-16P-EI: one `getConfigCaps` call answers for every
+    channel at once, `caps[0]` through `caps[14]` on a recorder with twelve
+    configured, so this is a host-wide read and must not be made per channel.
+    The lists really do differ between streams on one device: a snapshot format
+    offered `MJPG` alone while the main stream offered `H.264,H.265`, so asking
+    is not a formality and a channel missing from the answer is not a channel
+    that can be moved.
+
+    Returns {} for anything that is not a table, which is the same contract
+    `parse_stream_codecs` keeps, so "the device refused" stays the caller's
+    question rather than being decided here.
+    """
+    if not isinstance(caps, dict):
+        return {}
+    found = {}
+    prefix = _CAPS_MAIN_FORMAT.format(channel)
+    for key, value in caps.items():
+        key = str(key)
+        index = None
+        if key.startswith(prefix):
+            index, field = 0, key[len(prefix) :]
+        else:
+            match = _CAPS_EXTRA_FORMAT.match(key)
+            if match and int(match.group(1)) == channel:
+                index, field = int(match.group(2)) + 1, key[match.end() :]
+        if index is None or field != "Video.CompressionTypes":
+            continue
+        options = [part.strip() for part in str(value).split(",") if part.strip()]
+        if options:
+            found[index] = options
+    return found
+
+
+def stream_can_be_set_to(options: dict, index: int, codec: str) -> bool:
+    """Whether the device offered `codec` for this stream.
+
+    Absence is not permission. A channel the caps answer did not mention, or a
+    stream it mentioned without naming the codec, both come back False: writing
+    a value the device never offered is how a `setConfig` answers 200 and the
+    body `Error`, or worse, stores it and drives nothing (#647).
+    """
+    return codec in (options or {}).get(index, [])
+
+
 def webrtc_cannot_play(streams: dict, index: int = 0) -> bool:
     """Whether this stream is the combination a browser cannot be given.
 
