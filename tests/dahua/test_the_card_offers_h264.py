@@ -1,0 +1,508 @@
+"""The unplayable-stream card says less than it used to, and now offers a fix.
+
+#1048 raised a card for H.265 with no audio track and asserted that Home
+Assistant "cannot play that combination in a browser". The detection is right
+and still is. The assertion was one step further than the integration can see.
+
+Re-measured on the same DHI-NVR5464-16P-EI on 2026-10-24, with the device in
+exactly the state the card describes:
+
+    dahua_<serial>_2_Main    (carded: H.265, AudioEnable false)
+      (plain)  -> codec_name:hevc
+      ?audio   -> DESCRIBE failed: 404 Not Found      <- still broken
+      ?video   -> codec_name:hevc
+    dahua_<serial>_1_Main    (control: H.265, AudioEnable true)
+      ?audio   -> codec_name:pcm_alaw                 <- works
+
+So the 404 #1048 measured is unchanged. What changed is that it is no longer
+reached. Each stream has two producers, the direct RTSP source and the
+`ffmpeg:...#audio=opus` fallback. A viewer that can decode H.265 is served by
+the first and never touches the second; a viewer that cannot falls through to
+the fallback, which asks for the audio-only view, and dies on that 404. The
+owner of the recorder above opened a carded channel and it played.
+
+Which kind of viewer is watching is the one thing the server cannot see. So the
+card now reports the condition and names what it depends on, and the fix it used
+to describe in prose is offered as a flow.
+
+**The write itself is NOT hardware-verified.** The round trip was blocked by
+this environment's sandbox before it could run, so `async_set_stream_compression`
+is proved here against the URL it builds and the refusal it reports, and is
+unproven against a real encoder. That is why the flow reads back rather than
+trusting a 200, and why the PR says so.
+"""
+
+from types import SimpleNamespace
+
+import pytest
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.helpers import issue_registry as ir
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.dahua.const import DOMAIN
+from custom_components.dahua.dahua_utils import (
+    parse_stream_compression_options,
+    stream_can_be_set_to,
+)
+from custom_components.dahua.repairs import (
+    SwitchStreamToH264RepairFlow,
+    async_create_fix_flow,
+)
+
+ADDRESS = "10.0.0.1"
+
+# Trimmed from a real `encode.cgi?action=getConfigCaps` reply. One call answers
+# for every channel, which is why the flow reads it once for the whole host.
+MEASURED_CAPS = {
+    "caps[0].MainFormat[0].Video.CompressionTypes": "H.264,H.265",
+    "caps[0].MainFormat[0].Video.BitRateOptions": "1024,8704",
+    "caps[0].ExtraFormat[0].Video.CompressionTypes": "H.264,MJPG,H.265",
+    "caps[0].ExtraFormat[0].Audio.CompressionTypes": "PCM,G.711A,G.711Mu,G.726,AAC",
+    # A second channel, whose main stream will not take H.264 at all.
+    "caps[2].MainFormat[0].Video.CompressionTypes": "H.265",
+    "caps[2].ExtraFormat[0].Video.CompressionTypes": "MJPG",
+    # A third, which is offerable.
+    "caps[3].MainFormat[0].Video.CompressionTypes": "H.264,H.265",
+}
+
+
+# --- reading what the device will accept -------------------------------------
+
+
+def test_the_options_are_read_per_stream():
+    options = parse_stream_compression_options(MEASURED_CAPS, 0)
+
+    assert options[0] == ["H.264", "H.265"]
+    assert options[1] == ["H.264", "MJPG", "H.265"]
+
+
+def test_the_indexes_match_the_ones_the_codecs_use():
+    """`parse_stream_codecs` and this must agree, or the flow would read one
+    stream's options and write another's codec. MainFormat[0] is 0 and
+    ExtraFormat[n] is n+1, which is what every camera entity already uses."""
+    assert sorted(parse_stream_compression_options(MEASURED_CAPS, 0)) == [0, 1]
+
+
+def test_another_channels_options_are_not_mixed_in():
+    """One reply carries every channel, so the per-channel read has to filter."""
+    options = parse_stream_compression_options(MEASURED_CAPS, 2)
+
+    assert options[0] == ["H.265"], "channel 2's own, not channel 0's"
+    assert options[1] == ["MJPG"]
+
+
+def test_only_the_video_option_list_is_read():
+    """The same block carries `Audio.CompressionTypes` and `BitRateOptions`.
+    Reading either as a codec list would offer H.264 on the strength of an
+    audio field."""
+    options = parse_stream_compression_options(MEASURED_CAPS, 0)
+
+    assert "PCM" not in options[1]
+    assert "1024" not in options[0]
+
+
+def test_a_channel_the_answer_did_not_mention_has_no_options():
+    assert parse_stream_compression_options(MEASURED_CAPS, 9) == {}
+
+
+def test_a_refused_read_is_not_a_table():
+    """`async_get_encode_caps` returns {} when the device has no such endpoint,
+    which must not read as "this stream supports nothing in particular"."""
+    assert parse_stream_compression_options({}, 0) == {}
+    assert parse_stream_compression_options(None, 0) == {}
+
+
+def test_absence_is_not_permission():
+    """The whole point of asking. A channel with no answer, and a stream whose
+    list does not name the codec, are both refusals: writing a codec the device
+    never offered is how a setConfig answers 200 with the body `Error`, or
+    stores it and drives nothing (#647)."""
+    options = parse_stream_compression_options(MEASURED_CAPS, 2)
+
+    assert stream_can_be_set_to(options, 0, "H.264") is False
+    assert stream_can_be_set_to(options, 0, "H.265") is True
+    assert stream_can_be_set_to({}, 0, "H.264") is False
+    assert stream_can_be_set_to(None, 0, "H.264") is False
+
+
+# --- the flow ----------------------------------------------------------------
+
+
+class _Client:
+    def __init__(self, caps=None, refuse=()):
+        self.caps = MEASURED_CAPS if caps is None else caps
+        self.refuse = set(refuse)
+        self.caps_reads = 0
+        self.writes = []
+
+    async def async_get_encode_caps(self):
+        self.caps_reads += 1
+        return self.caps
+
+    async def async_set_stream_compression(self, channel, stream_index, value):
+        self.writes.append((channel, stream_index, value))
+        if channel in self.refuse:
+            raise RuntimeError("declined")
+        return True
+
+
+class _Coordinator:
+    """A channel that is behind the card, with a codec that follows the write.
+
+    `stuck` models the device this flow exists to be careful about: it accepts
+    the write, answers 200, and goes on sending what it was sending.
+    """
+
+    def __init__(self, channel, carded, client, stuck=False):
+        self._channel = channel
+        self._carded = carded
+        self.client = client
+        self.stuck = stuck
+        self.codec = "H.265"
+        self.rechecks = 0
+
+    def channels_that_cannot_be_played(self):
+        return set(self._carded)
+
+    def get_stream_codec(self, index):
+        return self.codec if index == 0 else "H.264"
+
+    async def async_recheck_stream_codecs(self):
+        self.rechecks += 1
+        if not self.stuck and (self._channel, 0, "H.264") in self.client.writes:
+            self.codec = "H.264"
+
+
+def _entry(hass, coordinators, address=ADDRESS):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Recorder",
+        unique_id="SERIAL",
+        data={
+            "username": "u",
+            "password": "p",
+            "address": address,
+            "port": "80",
+            "rtsp_port": "554",
+            "channel": 0,
+            "name": "Recorder",
+        },
+    )
+    entry.add_to_hass(hass)
+    entry.mock_state(hass, ConfigEntryState.LOADED)
+    entry.runtime_data = coordinators
+    return entry
+
+
+def _setup(hass, carded=(0, 2, 3), refuse=(), stuck=()):
+    client = _Client(refuse=refuse)
+    coordinators = {
+        channel: _Coordinator(channel, carded, client, stuck=channel in stuck)
+        for channel in sorted(set(carded) | {0})
+    }
+    _entry(hass, coordinators)
+    return client, coordinators
+
+
+def _flow(hass):
+    flow = SwitchStreamToH264RepairFlow({"address": ADDRESS})
+    flow.hass = hass
+    return flow
+
+
+def _issue(hass):
+    return ir.async_get(hass).async_get_issue(
+        DOMAIN, "webrtc_cannot_play_{0}".format(ADDRESS)
+    )
+
+
+async def test_the_card_gets_this_flow(hass):
+    flow = await async_create_fix_flow(
+        hass, "webrtc_cannot_play_{0}".format(ADDRESS), {"address": ADDRESS}
+    )
+
+    assert isinstance(flow, SwitchStreamToH264RepairFlow)
+
+
+async def test_only_channels_that_offer_h264_are_listed(hass):
+    """Channel 2's main stream offers H.265 alone, so it cannot be moved and
+    must not be offered. Offering it would be a write the device declines."""
+    _setup(hass)
+
+    result = await _flow(hass).async_step_confirm()
+
+    assert result["type"] == "form"
+    listed = result["data_schema"].schema["channels"].options
+    assert sorted(listed) == ["0", "3"], "channel 2 cannot take H.264"
+
+
+async def test_the_form_comes_before_any_write(hass):
+    client, _ = _setup(hass)
+
+    await _flow(hass).async_step_confirm()
+
+    assert client.writes == []
+
+
+async def test_the_capability_table_is_read_once_for_the_host(hass):
+    """It is 44 KB and answers for every channel at once. Reading it per
+    channel would be the same reply twelve times on a recorder."""
+    client, _ = _setup(hass)
+
+    await _flow(hass).async_step_confirm()
+
+    assert client.caps_reads == 1
+
+
+async def test_only_the_ticked_channels_are_written(hass):
+    """The main stream is what the device records, so this is never all of
+    them just because the card named them all."""
+    client, _ = _setup(hass)
+
+    await _flow(hass).async_step_confirm({"channels": ["3"]})
+
+    assert client.writes == [(3, 0, "H.264")]
+
+
+async def test_the_main_stream_is_the_one_written(hass):
+    """The card judges stream 0 and this writes stream 0. A sub stream moving
+    instead would clear nothing and change a stream nobody complained about."""
+    client, _ = _setup(hass)
+
+    await _flow(hass).async_step_confirm({"channels": ["0", "3"]})
+
+    assert [(c, i) for c, i, _ in client.writes] == [(0, 0), (3, 0)]
+
+
+async def test_a_channel_that_was_not_offered_is_not_written(hass):
+    """Submitting a channel the form never listed, which is what a replayed or
+    hand-built submission looks like."""
+    client, _ = _setup(hass)
+
+    await _flow(hass).async_step_confirm({"channels": ["2", "3"]})
+
+    assert client.writes == [(3, 0, "H.264")]
+
+
+async def test_ticking_nothing_changes_nothing(hass):
+    client, _ = _setup(hass)
+
+    result = await _flow(hass).async_step_confirm({"channels": []})
+
+    assert client.writes == []
+    assert result["reason"] == "nothing_to_change"
+
+
+async def test_the_codecs_are_read_back_after_the_write(hass):
+    """A Dahua write answering 200 is not the stream having changed."""
+    _, coordinators = _setup(hass)
+
+    await _flow(hass).async_step_confirm({"channels": ["3"]})
+
+    assert coordinators[3].rechecks == 1
+
+
+async def test_a_device_that_accepts_and_ignores_is_reported(hass):
+    """⭐ The failure this flow is shaped around. The device answers OK and
+    keeps sending H.265, which this family really does (#647). Judging on the
+    200 would tell the user it worked and clear a card that should stand."""
+    _, coordinators = _setup(hass, stuck=(3,))
+
+    result = await _flow(hass).async_step_confirm({"channels": ["3"]})
+
+    assert result["reason"] == "write_refused"
+    assert coordinators[3].codec == "H.265"
+
+
+async def test_a_write_that_raises_is_reported_too(hass):
+    _, _ = _setup(hass, refuse=(3,))
+
+    result = await _flow(hass).async_step_confirm({"channels": ["3"]})
+
+    assert result["reason"] == "write_refused"
+
+
+async def test_one_refusal_does_not_stop_the_others(hass):
+    """Three ticked and one refusing is still two channels fixed."""
+    client, coordinators = _setup(hass, refuse=(0,))
+
+    result = await _flow(hass).async_step_confirm({"channels": ["0", "3"]})
+
+    assert (3, 0, "H.264") in client.writes
+    assert coordinators[3].codec == "H.264"
+    assert result["reason"] == "write_refused", "but it still says so"
+
+
+async def test_a_clean_run_finishes(hass):
+    _, coordinators = _setup(hass)
+
+    result = await _flow(hass).async_step_confirm({"channels": ["0", "3"]})
+
+    assert result["type"] == "create_entry"
+    assert coordinators[0].codec == "H.264"
+
+
+async def test_a_host_that_is_no_longer_set_up_aborts(hass):
+    result = await _flow(hass).async_step_confirm()
+
+    assert result["reason"] == "not_configured"
+
+
+async def test_an_unloaded_entry_is_not_reached_into(hass):
+    """`runtime_data` is gone once an entry unloads, and a flow that ran
+    against a half-torn-down entry would write to a client being closed."""
+    client, coordinators = _setup(hass)
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        entry.mock_state(hass, ConfigEntryState.NOT_LOADED)
+
+    result = await _flow(hass).async_step_confirm()
+
+    assert result["reason"] == "not_configured"
+    assert client.caps_reads == 0
+
+
+async def test_a_card_nothing_is_behind_is_removed(hass):
+    """Recomputed at the button, like the leftover-rows flow. Somebody who
+    fixed every channel on the device itself should not be left holding a card
+    whose button does nothing."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "webrtc_cannot_play_{0}".format(ADDRESS),
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="webrtc_cannot_play",
+        data={"address": ADDRESS},
+    )
+    _setup(hass, carded=())
+
+    result = await _flow(hass).async_step_confirm()
+
+    assert result["reason"] == "nothing_to_change"
+    assert _issue(hass) is None
+
+
+async def test_a_card_no_channel_can_act_on_is_removed(hass):
+    """Every carded channel offers H.265 only. The condition is real and the
+    device will not move, so holding a card with an inert button open is worse
+    than saying so."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "webrtc_cannot_play_{0}".format(ADDRESS),
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="webrtc_cannot_play",
+        data={"address": ADDRESS},
+    )
+    _setup(hass, carded=(2,))
+
+    result = await _flow(hass).async_step_confirm()
+
+    assert result["reason"] == "nothing_to_change"
+    assert _issue(hass) is None
+
+
+async def test_another_hosts_channels_are_left_alone(hass):
+    """The card is per address and so is the flow."""
+    client, _ = _setup(hass)
+    other_client = _Client()
+    _entry(
+        hass,
+        {0: _Coordinator(0, (0,), other_client)},
+        address="10.0.0.2",
+    )
+
+    await _flow(hass).async_step_confirm({"channels": ["0"]})
+
+    assert other_client.writes == []
+
+
+# --- the two client calls ----------------------------------------------------
+
+
+def _client():
+    from unittest.mock import AsyncMock
+
+    from custom_components.dahua.client import DahuaClient
+
+    client = object.__new__(DahuaClient)
+    client.get = AsyncMock(return_value={})
+    return client
+
+
+async def test_the_caps_read_asks_the_encoder_not_the_config_manager():
+    """`configManager.getConfig&name=Encode` says what a stream IS. Only
+    `encode.cgi?action=getConfigCaps` says what it may be set TO, and reading
+    the wrong one would make every channel look like it accepts anything."""
+    client = _client()
+
+    await client.async_get_encode_caps()
+
+    assert client.get.await_args.args[0] == "/cgi-bin/encode.cgi?action=getConfigCaps"
+
+
+async def test_the_caps_read_asks_for_no_channel():
+    """One reply covers the whole host. A channel argument here would be the
+    same 44 KB once per channel on a recorder."""
+    client = _client()
+
+    await client.async_get_encode_caps()
+
+    assert "channel" not in client.get.await_args.args[0]
+
+
+async def test_a_device_with_no_such_endpoint_has_nothing_to_offer():
+    import aiohttp
+    from unittest.mock import AsyncMock
+
+    client = _client()
+    client.get = AsyncMock(
+        side_effect=aiohttp.ClientResponseError(None, None, status=404)
+    )
+
+    assert await client.async_get_encode_caps() == {}
+
+
+async def test_the_main_stream_write_names_mainformat():
+    client = _client()
+
+    await client.async_set_stream_compression(3, 0, "H.264")
+
+    assert client.get.await_args.args[0] == (
+        "/cgi-bin/configManager.cgi?action=setConfig"
+        "&Encode[3].MainFormat[0].Video.Compression=H.264"
+    )
+
+
+async def test_a_sub_stream_write_shifts_the_index_back():
+    """Stream n is ExtraFormat[n-1], the same convention the codec parser uses.
+    Off by one here writes a different stream and reads back as a refusal."""
+    client = _client()
+
+    await client.async_set_stream_compression(3, 2, "H.264")
+
+    assert client.get.await_args.args[0] == (
+        "/cgi-bin/configManager.cgi?action=setConfig"
+        "&Encode[3].ExtraFormat[1].Video.Compression=H.264"
+    )
+
+
+async def test_the_write_is_verified():
+    """`verify_ok` is what turns a 200 carrying the body `Error` into a
+    failure. Without it a declined write is indistinguishable from a done one."""
+    client = _client()
+
+    await client.async_set_stream_compression(3, 0, "H.264")
+
+    assert client.get.await_args.args[1] is True
+
+
+async def test_the_write_names_one_field():
+    """A whole-table setConfig is refused for size on at least one recorder,
+    and naming any key the table lacks makes the device decline the lot."""
+    client = _client()
+
+    await client.async_set_stream_compression(3, 0, "H.264")
+
+    assert client.get.await_args.args[0].count("=") == 2, "action, and the one field"

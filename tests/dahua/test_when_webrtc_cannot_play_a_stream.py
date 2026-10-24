@@ -185,9 +185,27 @@ def test_one_card_names_the_channel(monkeypatch):
     issue_id, kwargs = raised[0]
     assert issue_id == "webrtc_cannot_play_10.0.0.5"
     assert kwargs["translation_key"] == "webrtc_cannot_play"
-    assert kwargs["is_fixable"] is False
     assert kwargs["translation_placeholders"]["channels"] == "11"
     assert kwargs["translation_placeholders"]["count"] == "1"
+
+
+def test_the_card_can_be_acted_on(monkeypatch):
+    """This was `is_fixable=False` while the card could only describe the fix
+    in prose. It now offers to write H.264 to the channels the user picks, so
+    the flag flips and the address has to travel with it: the flow is handed
+    nothing but `data`, and it needs to know which host it is about.
+
+    Only the address. The channel list is deliberately NOT carried, for the
+    reason the leftover-rows card learned the hard way: a list in `data`
+    outlives the evidence for it, and the flow recomputes at the button so a
+    channel somebody fixed on the device is simply not offered."""
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+
+    coordinator._async_report_unplayable_stream()
+
+    _issue_id, kwargs = raised[0]
+    assert kwargs["is_fixable"] is True
+    assert kwargs["data"] == {"address": "10.0.0.5"}
 
 
 def test_eight_affected_channels_are_one_card(monkeypatch):

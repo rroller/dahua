@@ -7,6 +7,7 @@ import voluptuous as vol
 from homeassistant.components.repairs import ConfirmRepairFlow, RepairsFlow
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 
@@ -32,6 +33,8 @@ async def async_create_fix_flow(
         return RemoveSiblingsRepairFlow(data or {})
     if issue_id.startswith("leftover_rows_"):
         return RemoveLeftoverRowsRepairFlow(data or {})
+    if issue_id.startswith("webrtc_cannot_play_"):
+        return SwitchStreamToH264RepairFlow(data or {})
     return ConfirmRepairFlow()
 
 
@@ -322,3 +325,166 @@ class RemoveLeftoverRowsRepairFlow(RepairsFlow):
                 "entities": "\n".join("- `%s`" % entity_id for entity_id in rows),
             },
         )
+
+
+class SwitchStreamToH264RepairFlow(RepairsFlow):
+    """Move the main stream of the carded channels to H.264.
+
+    **The card this fixes describes a conditional failure, and so does this.**
+    An H.265 stream with no audio track breaks only for a viewer whose browser
+    cannot decode H.265: Home Assistant's fallback for such a browser asks
+    go2rtc for the stream's audio-only view, there is no audio track, and the
+    offer dies. A browser that takes H.265 directly never touches that path.
+    The integration cannot see which kind of browser is watching, so this is
+    offered rather than done, and the card says to look first.
+
+    **The main stream is what the device records.** That is why this writes the
+    channels the user ticks instead of every channel in the card.
+
+    Like the leftover-rows flow, the list is recomputed at the button rather
+    than carried in the card's `data`: a channel somebody fixed on the device
+    in the meantime should simply not be offered.
+    """
+
+    def __init__(self, data: dict) -> None:
+        self._address = data.get("address")
+
+    async def async_step_init(self, user_input: dict | None = None):
+        return await self.async_step_confirm()
+
+    def _coordinators(self) -> dict:
+        """Every loaded coordinator on this address, by channel index."""
+        # Imported here rather than at module scope to avoid a circular import.
+        from . import _entries_for_address, entry_coordinators
+
+        found: dict = {}
+        for entry in _entries_for_address(self.hass, self._address):
+            if entry.state is not ConfigEntryState.LOADED:
+                continue
+            found.update(entry_coordinators(entry))
+        return found
+
+    async def _offerable(self, coordinators: dict) -> dict:
+        """The carded channels whose encoder actually offers H.264.
+
+        One `getConfigCaps` read for the whole host, taken from whichever
+        channel answers, because the reply covers every channel at once and
+        asking per channel would be the same 44 KB over and over.
+
+        A channel the caps answer does not mention is left out rather than
+        attempted. Absence is not permission: writing a codec the device never
+        offered is how a `setConfig` returns 200 with the body `Error`, or
+        stores the value and drives nothing.
+        """
+        from . import dahua_utils
+
+        carded: set = set()
+        for coordinator in coordinators.values():
+            carded |= coordinator.channels_that_cannot_be_played()
+        if not carded:
+            return {}
+
+        caps = {}
+        for channel in sorted(carded):
+            coordinator = coordinators.get(channel)
+            if coordinator is None:
+                continue
+            caps = await coordinator.client.async_get_encode_caps()
+            if caps:
+                break
+
+        offerable = {}
+        for channel in sorted(carded):
+            if channel not in coordinators:
+                continue
+            options = dahua_utils.parse_stream_compression_options(caps, channel)
+            if dahua_utils.stream_can_be_set_to(options, 0, "H.264"):
+                offerable[channel] = coordinators[channel]
+        return offerable
+
+    async def async_step_confirm(self, user_input: dict | None = None):
+        # Imported here rather than at module scope to avoid a circular import.
+        from .coordinator import ISSUE_WEBRTC_CANNOT_PLAY
+
+        issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(self._address)
+        coordinators = self._coordinators()
+        if not coordinators:
+            return self.async_abort(reason="not_configured")
+
+        offerable = await self._offerable(coordinators)
+        if not offerable:
+            # Either nothing is carded any more, or no carded channel's encoder
+            # will take H.264. Neither is something this flow can act on, and
+            # the second is not a fault to leave a card standing for.
+            _LOGGER.debug(
+                "No channel on %s can be offered H.264; not holding the card open",
+                self._address,
+            )
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return self.async_abort(reason="nothing_to_change")
+
+        if user_input is None:
+            return self.async_show_form(
+                step_id="confirm",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required("channels", default=[]): cv.multi_select(
+                            {
+                                str(channel): "Channel %d" % channel
+                                for channel in sorted(offerable)
+                            }
+                        )
+                    }
+                ),
+                description_placeholders={"address": str(self._address)},
+            )
+
+        chosen = [
+            int(channel)
+            for channel in user_input.get("channels") or []
+            if str(channel).isdigit() and int(channel) in offerable
+        ]
+        if not chosen:
+            # Submitting with nothing ticked is a decision to change nothing,
+            # not an error, and the card stays for next time.
+            return self.async_abort(reason="nothing_to_change")
+
+        failed = []
+        for channel in chosen:
+            coordinator = offerable[channel]
+            try:
+                await coordinator.client.async_set_stream_compression(
+                    channel, 0, "H.264"
+                )
+            except Exception as error:  # pylint: disable=broad-except
+                _LOGGER.warning(
+                    "Could not set channel %s on %s to H.264: %s",
+                    channel,
+                    self._address,
+                    error,
+                )
+                failed.append(channel)
+
+        # Read back before saying anything. A Dahua write answering 200 is not
+        # the same as the stream having changed: this device family has stored
+        # a value, answered OK and driven nothing (#647). The card is then
+        # re-judged from what came back, so a write that did not take leaves it
+        # standing rather than quietly clearing it.
+        for channel in chosen:
+            coordinator = offerable[channel]
+            try:
+                await coordinator.async_recheck_stream_codecs()
+            except Exception as error:  # pylint: disable=broad-except
+                _LOGGER.debug(
+                    "Could not re-read the codecs of channel %s on %s: %s",
+                    channel,
+                    self._address,
+                    error,
+                )
+                continue
+            if channel not in failed and coordinator.get_stream_codec(0) != "H.264":
+                failed.append(channel)
+
+        if failed:
+            return self.async_abort(reason="write_refused")
+        return self.async_create_entry(title="", data={})

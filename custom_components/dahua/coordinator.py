@@ -4192,15 +4192,38 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self.hass,
             DOMAIN,
             issue_id,
-            is_fixable=False,
+            is_fixable=True,
             severity=ir.IssueSeverity.WARNING,
             translation_key="webrtc_cannot_play",
+            data={"address": self._address},
             translation_placeholders={
                 "address": self._address,
                 "channels": ", ".join(str(channel) for channel in sorted(affected)),
                 "count": str(len(affected)),
             },
         )
+
+    async def async_recheck_stream_codecs(self) -> None:
+        """Read `Encode` again and re-judge the card.
+
+        The codecs are read once, in the one-time init block, because nothing
+        changes them while Home Assistant runs. Something now does: the repair
+        flow writes a codec and the card has to answer for the new state rather
+        than the state at setup. A reload would also do it and costs the user
+        every entity on the device, so this is the narrow version.
+        """
+        await self._async_read_stream_codecs()
+
+    @callback
+    def channels_that_cannot_be_played(self) -> set:
+        """Which channels on this host are behind the card, by index.
+
+        Host-wide on purpose, because the card is: one device raises one issue
+        naming every channel in the pair, and the repair that fixes it needs
+        the same list. Read from the shared table rather than recomputed, so
+        the flow and the card cannot disagree about who is affected.
+        """
+        return set(_HOST_UNPLAYABLE.get(self._address) or ())
 
     def get_stream_codec(self, stream_index: int):
         """The codec one stream carries, or None if the device did not say."""
