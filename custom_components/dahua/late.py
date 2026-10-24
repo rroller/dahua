@@ -30,6 +30,8 @@ up late. It must be safe to call repeatedly: entities whose `unique_id` already
 exists are dropped rather than added twice.
 """
 
+import logging
+
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
@@ -37,6 +39,19 @@ from homeassistant.helpers.dispatcher import (
 )
 
 from .const import DOMAIN
+
+# Late rebuilds in flight, per entry id. In `hass.data` rather than a module
+# global so a reload cannot inherit a count from the run before it.
+DATA_LATE_REBUILDS = "{0}_late_rebuilds".format(DOMAIN)
+
+# ⚠ Beside the record rather than inside it, and that is the point.
+# `_change_outstanding` pops the record the moment nothing is outstanding and
+# nothing has failed, so a token kept in there would be a new object every
+# time the count touched zero, and work that was merely idle would be mistaken
+# for work from a previous life. This changes only when the entry is forgotten.
+DATA_LATE_RUNS = "{0}_late_runs".format(DOMAIN)
+
+_LOGGER = logging.getLogger(__package__)
 
 
 def capability_discovered_signal(entry_id: str) -> str:
@@ -48,6 +63,372 @@ def capability_discovered_signal(entry_id: str) -> str:
     finally answered.
     """
     return "{0}_capability_discovered_{1}".format(DOMAIN, entry_id)
+
+
+def late_work_settled_signal(entry_id: str) -> str:
+    """The signal for "nothing this entry was waiting on is outstanding now".
+
+    Separate from the discovery signal above, which says a capability turned
+    up and starts work. This one says the work finished, and it is what the
+    leftover-rows card listens for: that card may only be offered once every
+    entity that is still coming has arrived, and a late rebuild is exactly
+    the case where one is (@rroller on #1125).
+    """
+    return "{0}_late_work_settled_{1}".format(DOMAIN, entry_id)
+
+
+def async_notify_late_work_settled(hass, entry_id: str) -> None:
+    """Tell whoever was waiting that the late work for this entry is done."""
+    async_dispatcher_send(hass, late_work_settled_signal(entry_id))
+
+
+def async_rebuilds_outstanding(hass, entry_id: str) -> int:
+    """How much late work for this entry has started and not finished.
+
+    ⚠ Read by the leftover-rows health gate, and it counts two things: the
+    rebuild tasks themselves, and every entity handed to `async_add_entities`
+    whose registration Home Assistant has neither finished nor aborted.
+
+    The second half is @rroller's on #1125, and the first attempt here had
+    only the first. A capability that answers late leaves
+    `probes_that_did_not_answer` the instant the probe returns, and the
+    callback a platform hands us is `_async_schedule_add_entities_for_entry`,
+    which SCHEDULES the add and returns. Once setup is complete the
+    EntityPlatform tracks that task nowhere this code can await, so counting
+    only the rebuild said "settled" while the rows were still empty. He
+    reproduced the card offering a row whose registration he had paused.
+
+    So the release is `add_to_platform_finish` or `add_to_platform_abort`,
+    which is Home Assistant telling us the answer rather than us guessing how
+    long it takes. His second point was that guessing cannot work:
+    `DahuaIlluminator.async_added_to_hass` awaits startup restoration, device
+    reads included, so an add is not bounded by any number anyone picks.
+    """
+    held = _held(hass)
+    return 0 if held is None else held.get(entry_id, {}).get("work", 0)
+
+
+def async_rebuilds_failed(hass, entry_id: str) -> bool:
+    """Whether a late rebuild for this entry failed and has not since worked.
+
+    ⭐ Also @rroller on #1125: "Track failed rebuilds and keep their rows
+    ineligible until a successful rebuild or reload." A build that raised did
+    not create its entities, so their rows have no entity behind them for a
+    reason that is a fault here and not evidence of anything. Offering them
+    for deletion is the same misclassification the platform-setup guard above
+    exists to prevent; the first version of this file did exactly that, and
+    had a test asserting it.
+
+    Cleared per channel when that channel rebuilds without raising, and with
+    the whole record when the entry unloads.
+    """
+    held = _held(hass)
+    return bool(held and held.get(entry_id, {}).get("failed"))
+
+
+def async_forget_entry(hass, entry_id: str) -> None:
+    """Drop everything held for an entry, which unload must do.
+
+    Without it a channel whose rebuild failed before a reload would keep the
+    card shut after it, on evidence from a run that no longer exists.
+    """
+    held = _held(hass)
+    if held is not None:
+        held.pop(entry_id, None)
+    # ⚠ And the run, so anything still in flight from before this cannot touch
+    # what comes after it. @rroller on #1125: the rebuild task is created on
+    # `hass`, so unloading the entry does not cancel it. He paused an old
+    # rebuild, ran the entry's unload callbacks, loaded a fresh watcher with
+    # one registration pending, and resumed the old rebuild; its release took
+    # the NEW record from 1 to 0 and the scan offered a valid row while the
+    # new entity had neither finished nor aborted.
+    runs = _runs(hass)
+    if runs is not None:
+        runs.pop(entry_id, None)
+
+
+def _runs(hass):
+    """Where the current run of each entry is stamped. None like `_held`."""
+    data = getattr(hass, "data", None)
+    if data is None:
+        return None
+    runs = data.get(DATA_LATE_RUNS)
+    if runs is None:
+        runs = data[DATA_LATE_RUNS] = {}
+    return runs
+
+
+def _current_run(hass, entry_id: str):
+    """The token every hold taken now will be answered against."""
+    runs = _runs(hass)
+    if runs is None:
+        return None
+    run = runs.get(entry_id)
+    if run is None:
+        run = runs[entry_id] = object()
+    return run
+
+
+def _is_stale(hass, entry_id: str, run) -> bool:
+    """Whether this callback belongs to a run that has since been forgotten.
+
+    `run is None` means the caller could not take a token, which is the
+    `hass`-double case `_held` already tolerates, and those are not stale.
+    """
+    if run is None:
+        return False
+    return _current_run(hass, entry_id) is not run
+
+
+def _held(hass):
+    """This run's late-work record, or None where there is nowhere to keep it.
+
+    ⚠ None rather than a raise. Plenty of tests here hand the platforms a
+    stand-in for `hass` carrying only what the behaviour under test touches,
+    and several of those drive a late rebuild. This is bookkeeping for a
+    tidy-up card, so a double that cannot hold it simply does not, and the
+    gate reads "nothing outstanding" rather than erroring.
+    """
+    data = getattr(hass, "data", None)
+    if data is None:
+        return None
+    held = data.get(DATA_LATE_REBUILDS)
+    if held is None:
+        held = data[DATA_LATE_REBUILDS] = {}
+    return held
+
+
+def _for_entry(hass, entry_id: str):
+    held = _held(hass)
+    if held is None:
+        return None
+    return held.setdefault(entry_id, {"work": 0, "failed": set()})
+
+
+def _note_failed(
+    hass,
+    entry_id: str,
+    builder,
+    channel_key,
+    failed: bool,
+    kind="build",
+    token=None,
+    run=None,
+) -> None:
+    """Remember, or forget, that one builder could not finish one channel.
+
+    ⚠ Keyed by BUILDER as well as channel, @rroller on #1125. Every call to
+    `async_add_and_keep_watching` subscribes to the same discovery signal, so
+    ten platforms rebuild the same channel from ten different `build`
+    functions. Keyed by channel alone, the first of them to succeed cleared a
+    failure that belonged to another, and he reproduced the valid row being
+    offered for deletion straight afterwards. A builder may only speak for
+    its own work.
+
+    ⚠ And by KIND, for the same reason one step down. A build that returns an
+    entity has succeeded at building; whether Home Assistant then managed to
+    register that entity is a different question with a different answer, and
+    the two were clearing each other.
+
+    ⚠ And by TOKEN, which is the same mistake a third time and the one that
+    survived two rounds. @rroller on #1125, reproduced through
+    `MockEntityPlatform` with two real entities from ONE late build: the first
+    one's `async_added_to_hass` raises, the second registers normally, and the
+    second's success discarded the first's failure because a builder and a
+    channel were all that identified it. `async_rebuilds_failed` went back to
+    False and the delayed scan offered the first entity's perfectly valid
+    restored row for deletion.
+
+    One entity may not certify another, so a registration carries a token of
+    its own and clears only that. Builds pass None, because a build's unit of
+    work really is the whole channel.
+    """
+    if _is_stale(hass, entry_id, run):
+        return
+    record = _for_entry(hass, entry_id)
+    if record is None:
+        return
+    if failed:
+        # The objects themselves, not their ids: they live as long as the entry
+        # holds the listener that closes over them, and an id could be
+        # reused by something else once it did not.
+        record["failed"].add((builder, channel_key, kind, token))
+    else:
+        record["failed"].discard((builder, channel_key, kind, token))
+
+
+def _change_outstanding(hass, entry_id: str, delta: int, run=None):
+    if _is_stale(hass, entry_id, run):
+        # Work from a run that has been forgotten. Counting it against the
+        # record that replaced it is how a stale release opened the gate on a
+        # registration that was still pending.
+        _LOGGER.debug(
+            "Ignoring late work from a previous run of %s",
+            entry_id,
+        )
+        return None
+    record = _for_entry(hass, entry_id)
+    if record is None:
+        return None
+    record["work"] = left = max(record["work"] + delta, 0)
+    if not left and not record["failed"]:
+        (_held(hass) or {}).pop(entry_id, None)
+    return left
+
+
+def _release(hass, entry_id: str, run=None) -> None:
+    """Give one unit of late work back, and say so if it was the last."""
+    if _change_outstanding(hass, entry_id, -1, run) == 0:
+        async_notify_late_work_settled(hass, entry_id)
+
+
+def _registration_was_skipped_on_purpose(hass, entity) -> bool:
+    """Whether an aborted add was Home Assistant declining rather than failing.
+
+    ⚠ @rroller on #1125: "Registration aborts caused by errors need the same
+    distinction from intentional disabled/duplicate skips." `add_to_platform_abort`
+    is the same call either way, so the cause is not available; what is
+    available is the outcome, which is the thing the card actually cares
+    about.
+
+    Two intentional skips, and neither leaves a row that could be deleted by
+    mistake:
+
+    - the registry row is **disabled**, which `leftover_rows` excludes
+      outright, because there is no entity behind it and the user said so;
+    - the entity id **already exists** with a live state, so something else is
+      behind the row and it does not read as a leftover either.
+
+    Anything else that aborted left a registry row with nothing behind it for
+    a reason that belongs to this integration, which is the reading the gate
+    exists to refuse.
+    """
+    row = getattr(entity, "registry_entry", None)
+    if row is not None and getattr(row, "disabled", False):
+        return True
+    entity_id = getattr(entity, "entity_id", None)
+    states = getattr(hass, "states", None)
+    if not entity_id or states is None:
+        return False
+    state = states.get(entity_id)
+    # A `restored: True` state is the registry writing the row out as
+    # unavailable, which is exactly a leftover and not somebody else's entity.
+    return state is not None and not state.attributes.get("restored")
+
+
+def _hold_until_registered(
+    hass, entry_id: str, builder, channel_key, entities, run=None
+) -> None:
+    """Count each entity until Home Assistant finishes or aborts adding it.
+
+    ⚠ Wrapping the entity's own two lifecycle hooks, because they are the only
+    honest signal available: `async_add_entities` returns once the add is
+    SCHEDULED, and after setup the task it schedules is tracked nowhere this
+    code can reach. `add_to_platform_start` always runs first and then exactly
+    one of these two, so one release per entity.
+
+    ⚠ No timeout, deliberately. If an add never reports, the entity does not
+    exist, and withholding a card that offers to delete its row is the right
+    answer rather than a failure mode. A reload clears the record.
+
+    ⚠ A registration that RAISES is recorded, not merely released. That error
+    happens inside the add task Home Assistant scheduled, so the build wrapper
+    never sees it: @rroller reproduced an entity whose `async_added_to_hass`
+    raises, and the row stayed restored while the count went to zero and the
+    scan offered it.
+
+    Tolerated rather than demanded: a great many tests here stand in a marker
+    object for an entity, and one without these hooks is simply not counted.
+    """
+    if run is None:
+        run = _current_run(hass, entry_id)
+    for entity in entities:
+        finish = getattr(entity, "add_to_platform_finish", None)
+        abort = getattr(entity, "add_to_platform_abort", None)
+        if finish is None or abort is None:
+            continue
+        if _change_outstanding(hass, entry_id, 1, run) is None:
+            return
+
+        # ⚠ One per ENTITY, and the whole point of it. Two entities from one
+        # build share a builder and a channel, so without this the one that
+        # registers cleanly discards the failure of the one that did not
+        # (@rroller, #1125).
+        #
+        # The `unique_id` rather than a fresh object, because it names the
+        # ENTITY and an opaque token would only name this ATTEMPT. No test
+        # separates the two today, and that is worth being straight about: the
+        # `created` set above means a builder never offers one unique_id
+        # twice, so a registration that raised is never retried and the clear
+        # below is not reached. The gate stays shut until a reload, which is
+        # this module's documented answer for an entity that never arrived.
+        # The unique_id is chosen as the honest identity, not because it
+        # currently buys a recovery.
+        #
+        # Falling back to an object for an entity with no unique_id: Home
+        # Assistant cannot give it a registry row at all, so it has no row to
+        # protect, and anything that cannot be identified must at least not be
+        # confused with something else.
+        token = getattr(entity, "unique_id", None) or object()
+
+        async def _finished(_finish=finish, _token=token, _run=run) -> None:
+            try:
+                await _finish()
+            except Exception:
+                # Raised inside Home Assistant's own add task. Re-raised so HA
+                # still reports it, and remembered so the row this entity was
+                # going to fill is not offered for deletion in the meantime.
+                _note_failed(
+                    hass,
+                    entry_id,
+                    builder,
+                    channel_key,
+                    True,
+                    "registration",
+                    _token,
+                    _run,
+                )
+                raise
+            else:
+                _note_failed(
+                    hass,
+                    entry_id,
+                    builder,
+                    channel_key,
+                    False,
+                    "registration",
+                    _token,
+                    _run,
+                )
+            finally:
+                _release(hass, entry_id, _run)
+
+        @callback
+        def _aborted(_abort=abort, _entity=entity, _token=token, _run=run) -> None:
+            try:
+                _abort()
+            finally:
+                if not _registration_was_skipped_on_purpose(hass, _entity):
+                    _note_failed(
+                        hass,
+                        entry_id,
+                        builder,
+                        channel_key,
+                        True,
+                        "registration",
+                        _token,
+                        _run,
+                    )
+                _release(hass, entry_id, _run)
+
+        try:
+            entity.add_to_platform_finish = _finished
+            entity.add_to_platform_abort = _aborted
+        except AttributeError:
+            # An entity that will not take an instance attribute, which none
+            # here is, but it is cheap to survive. Leaving it counted would
+            # hold the gate shut for ever: nothing would ever release it.
+            _release(hass, entry_id, run)
 
 
 def async_notify_capability_discovered(hass, entry_id: str, channel_key: str) -> None:
@@ -106,8 +487,17 @@ async def async_add_and_keep_watching(
     the load sensors out of the rebuild and so out of #1057 entirely.
     """
     created: set = set()
+    # Who this call is. Every platform makes one of these and they all listen
+    # to the same signal, so a failure has to say which builder it belongs to
+    # or one platform's success speaks for another's failure (#1125).
+    builder = object()
 
-    async def _add_whatever_is_missing(channel_key=None) -> None:
+    async def _add_whatever_is_missing(channel_key=None, run=None) -> None:
+        # ⚠ The run comes from the caller, not from `_current_run`. A rebuild
+        # task is not cancelled by unload, so one that resumes after a reload
+        # would otherwise take registration holds against the record that
+        # replaced it, using the new run, and those holds are never released
+        # because nothing is watching that entity any more.
         for coordinator in coordinators(entry).values():
             if (
                 channel_key is not None
@@ -133,9 +523,20 @@ async def async_add_and_keep_watching(
                 )
                 filed.setdefault(where, []).append(entity)
             for where, entities in filed.items():
+                # ⚠ Counted BEFORE the call. Home Assistant starts the add
+                # task eagerly, so by the time this returns the entity may
+                # already have been registered and released.
+                # ⚠ The rebuild's own `channel_key`, which is what the
+                # signal named, rather than asking the coordinator again.
+                # Several coordinator doubles here cannot answer that, and a
+                # real one built with `object.__new__` raises; the key only
+                # has to match the one the surrounding rebuild will clear.
+                _hold_until_registered(
+                    hass, entry.entry_id, builder, channel_key, entities, run
+                )
                 async_add_entities(entities, config_subentry_id=where)
 
-    await _add_whatever_is_missing()
+    await _add_whatever_is_missing(run=_current_run(hass, entry.entry_id))
 
     @callback
     def _on_discovery(channel_key: str) -> None:
@@ -150,8 +551,47 @@ async def async_add_and_keep_watching(
 
         A task rather than awaiting here, because the retry runs at the top of
         a poll: the rebuild must look at `data` after the poll has written it.
+
+        Counted, because that task is the window in which a capability reads
+        as resolved and its entities do not exist yet. Incremented here, in
+        the callback, rather than inside the task: the count has to be up
+        before this function returns, or the coordinator's own "the waiting is
+        over" signal, sent moments later on the same tick, finds nothing
+        outstanding and offers the card too early.
         """
-        hass.async_create_task(_add_whatever_is_missing(channel_key))
+        # ⚠ The run is captured HERE, with the increment, and carried into
+        # the task. The task is created on `hass`, so unloading the entry does
+        # not cancel it (@rroller, #1125): an old rebuild can resume after a
+        # reload and would otherwise release the new run's hold.
+        run = _current_run(hass, entry.entry_id)
+        _change_outstanding(hass, entry.entry_id, 1, run)
+        hass.async_create_task(_rebuild_then_settle(channel_key, run))
+
+    async def _rebuild_then_settle(channel_key: str, run=None) -> None:
+        try:
+            await _add_whatever_is_missing(channel_key, run)
+        except Exception:  # pylint: disable=broad-except
+            # Reported here rather than left to escape. This is a background
+            # task, so an escaping error was only ever an "exception was never
+            # retrieved" line naming neither entry nor channel.
+            #
+            # ⭐ And remembered. The entities this build owed were not
+            # created, so their rows are empty because of a fault here. @kmich
+            # on #1114 and @rroller on #1125 are the same point from two
+            # sides: a row with nothing behind it is only a leftover when the
+            # integration is not itself the reason.
+            _note_failed(hass, entry.entry_id, builder, channel_key, True, run=run)
+            _LOGGER.exception(
+                "Could not build the entities %s answered for late", channel_key
+            )
+        else:
+            _note_failed(hass, entry.entry_id, builder, channel_key, False, run=run)
+        finally:
+            # `finally`, so a build that raises cannot leave the count up and
+            # the card shut for the life of the entry.
+            # `== 0`, not falsy: None means this `hass` keeps no record, so
+            # nothing was ever waiting on it and there is nobody to tell.
+            _release(hass, entry.entry_id, run)
 
     entry.async_on_unload(
         async_dispatcher_connect(

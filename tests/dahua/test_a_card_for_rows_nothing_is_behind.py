@@ -45,16 +45,24 @@ DOMAIN = "dahua"
 class _Coordinator:
     """What the health gate reads, and nothing else."""
 
-    def __init__(self, initialized=True, success=True, unanswered=()):
+    def __init__(self, initialized=True, success=True, unanswered=(), pending=None):
         self.initialized = initialized
         self.last_update_success = success
         self._unanswered = set(unanswered)
+        # ⭐ The gate reads `may_still_answer`, not `did_not_answer` (#1114).
+        # Defaulting it to the unanswered set keeps every existing case
+        # meaning what it meant; the two are given separately only where the
+        # difference IS the test.
+        self._pending = set(unanswered) if pending is None else set(pending)
 
     def get_channel(self):
         return 0
 
     def probes_that_did_not_answer(self):
         return self._unanswered
+
+    def probes_that_may_still_answer(self):
+        return self._pending
 
 
 def _load(hass, entry, coordinators=None):
@@ -226,6 +234,32 @@ async def test_an_unanswered_capability_probe_holds_the_card_back(hass):
 
     assert found == 0
     assert _issue(hass, entry) is None
+
+
+async def test_a_probe_that_has_given_up_no_longer_holds_the_card_back(hass):
+    """⭐⭐ @kmich on #1114: *"one silent probe blocks the card for good"*.
+
+    Measured on his install, seventeen entries, every one reporting
+    `cloud_upgrade` unanswered with its retry budget spent, because no device
+    there serves `_DHCloudUpgrade_`. The card could not appear on any of them
+    while his three monitors really did have leftover rows.
+
+    The gate's own reasoning is what settles it: a row is withheld because the
+    entity "is still to come, the retry builds it when the device finally
+    replies". Once the last retry is spent nothing will ask again, so the row
+    is not pending, it is absent.
+    """
+    entry, _ = await _entry_with_rows(hass)
+
+    found = await migrate.async_offer_leftover_rows(
+        hass,
+        entry,
+        # Still unanswered, but nothing will ask it again.
+        [_Coordinator(unanswered={"cloud_upgrade"}, pending=set())],
+    )
+
+    assert found > 0
+    assert _issue(hass, entry) is not None
 
 
 async def test_no_coordinators_means_no_opinion(hass):

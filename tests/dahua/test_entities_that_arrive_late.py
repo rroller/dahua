@@ -97,6 +97,12 @@ class _Retrying:
         self.signalled = []
 
     probes_that_did_not_answer = DahuaDataUpdateCoordinator.probes_that_did_not_answer
+    # Borrowed too, because the retry loop now reads it: the gate it feeds has
+    # to keep holding while the last attempt is still in the air (#1125).
+    probes_that_may_still_answer = (
+        DahuaDataUpdateCoordinator.probes_that_may_still_answer
+    )
+    _notify_late_work_settled = DahuaDataUpdateCoordinator._notify_late_work_settled
     _note_probe_answered = DahuaDataUpdateCoordinator._note_probe_answered
     _async_retry_unanswered_capabilities = (
         DahuaDataUpdateCoordinator._async_retry_unanswered_capabilities

@@ -54,11 +54,13 @@ import tempfile
 import time
 
 from homeassistant.config_entries import ConfigSubentry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import entity_platform as ep
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.event import async_call_later
 
 from . import ISSUE_LEFTOVER_ROWS, ISSUE_SIBLINGS_REMAIN, devices_with_identifier
 from .const import (
@@ -72,6 +74,12 @@ from .const import (
 from .host import is_synthesised_identity, normalize_address
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
+
+# How long after the last thing the leftover gate was waiting on before the
+# registry is scanned again. See the docstring on the recheck below: an
+# entity whose add has been scheduled does not exist yet, and the scan does
+# not await, so it would otherwise read the row as a leftover.
+LEFTOVER_RECHECK_SETTLE_SECONDS = 5
 
 # The registry files worth keeping a copy of. Nothing else is touched.
 BACKED_UP = (
@@ -360,14 +368,136 @@ def _entry_is_wholly_healthy(hass: HomeAssistant, entry, coordinators) -> bool:
             return False
         if not getattr(coordinator, "last_update_success", False):
             return False
-        unanswered = getattr(coordinator, "probes_that_did_not_answer", None)
-        if unanswered is not None and unanswered():
-            # A probe that has not answered either way is one whose entity is
-            # still to come: the retry builds it when the device finally
-            # replies, and until then its row is indistinguishable from a
-            # leftover.
+        # ⚠ `may_still_answer`, not `did_not_answer`. A probe is worth waiting
+        # on only while something will ask it again; one that has spent its
+        # retry budget, or that is not retried at all, will never build its
+        # entity, so holding the card back for it holds it back for ever.
+        # @kmich measured that on #1114: seventeen entries, every one of them
+        # reporting `cloud_upgrade` unanswered with its budget spent, and the
+        # card could not appear on any of them.
+        #
+        # The fallback is the older method, so a coordinator double that
+        # models only that one keeps the stricter behaviour rather than
+        # silently losing the gate.
+        pending = getattr(coordinator, "probes_that_may_still_answer", None)
+        if pending is None:
+            pending = getattr(coordinator, "probes_that_did_not_answer", None)
+        if pending is not None and pending():
+            # A probe that may still answer is one whose entity is still to
+            # come: the retry builds it when the device finally replies, and
+            # until then its row is indistinguishable from a leftover.
             return False
+    # ⚠ And a probe that HAS answered is not the end of it. The entities it
+    # gates are built by `late.py` in a task started after the poll, so for
+    # the length of that task the question reads as resolved while the rows
+    # are still empty. @rroller on #1125 named the repair flow specifically:
+    # it confirms a removal through this same gate.
+    from .late import async_rebuilds_failed, async_rebuilds_outstanding
+
+    if async_rebuilds_outstanding(hass, entry.entry_id):
+        return False
+    # ⚠ And a rebuild that FAILED is not the same as one that found nothing.
+    # Its entities were never created, so their rows are empty because of a
+    # fault here, which is the one reading this gate exists to refuse. It
+    # stays refused until that channel rebuilds cleanly or the entry reloads.
+    if async_rebuilds_failed(hass, entry.entry_id):
+        return False
     return True
+
+
+@callback
+def async_recheck_leftover_rows_when_late_work_settles(
+    hass: HomeAssistant, entry, coordinators
+) -> None:
+    """Offer the card again whenever something the gate was waiting on resolves.
+
+    ⭐ @rroller on #1125. `async_offer_leftover_rows` is called once, from
+    `async_setup_entry` after the platforms are forwarded. At that moment a
+    retryable probe that has not answered still has its whole budget, so the
+    gate rightly refuses and no card appears. The budget is then spent over
+    the next few polls, `probes_that_may_still_answer` empties -- and nothing
+    asks again. The card stays absent for ever, which is @kmich's #1114
+    reached by a second road, and the first fix on this branch did not close
+    it: the test that proved it called the offer a second time by hand.
+
+    So the two places where that waiting ends now say so, and this listens:
+    the retry loop when its last question is settled, and `late.py` when a
+    rebuild it started has finished creating entities.
+
+    ⚠ **Delayed, and that is not a style choice.** `async_add_entities` only
+    SCHEDULES the add, and after setup is complete the EntityPlatform tracks
+    that task nowhere this code can await. Home Assistant starts it eagerly,
+    so it runs as far as its first await and hands control straight back,
+    which means a rebuild can finish, this fire, and the scan read the rows of
+    entities that are a few awaits away from existing. The scan itself does
+    not await, so it would run to the end before they arrived. A few seconds
+    is far longer than an add takes and costs nothing for a tidy-up card.
+    Collapsed too, so a recorder settling nineteen channels scans once.
+
+    Wrapped like the setup call site. This runs on the event loop beside a
+    poll, and a tidy-up card must never be what stops a camera working.
+    """
+    due: list = []
+
+    @callback
+    def _settled() -> None:
+        while due:
+            due.pop()()
+        due.append(
+            async_call_later(hass, LEFTOVER_RECHECK_SETTLE_SECONDS, _recheck_now)
+        )
+
+    @callback
+    def _recheck_now(_now) -> None:
+        due.clear()
+        hass.async_create_task(_async_recheck_leftover_rows(hass, entry, coordinators))
+
+    from .late import async_forget_entry, late_work_settled_signal
+
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass, late_work_settled_signal(entry.entry_id), _settled
+        )
+    )
+
+    @callback
+    def _forget_what_was_outstanding() -> None:
+        """Unload clears both the pending scan and the late-work record.
+
+        ⚠ Registered here rather than in `late.py`, which runs once per
+        PLATFORM: an unload hook added there would be added ten times, and
+        two tests count an entry's hooks to check that every platform is
+        listening for a late answer.
+
+        The record matters as much as the timer. A channel whose rebuild
+        failed before a reload would otherwise keep the card shut after it,
+        on evidence from a run that no longer exists.
+        """
+        while due:
+            due.pop()()
+        async_forget_entry(hass, entry.entry_id)
+
+    entry.async_on_unload(_forget_what_was_outstanding)
+
+
+async def _async_recheck_leftover_rows(
+    hass: HomeAssistant, entry, coordinators
+) -> None:
+    # ⚠ Read now, not closed over from setup. A channel that failed its first
+    # refresh and recovered later (#1085) is in `runtime_data` and was not in
+    # the list setup built, and the gate requires every configured channel to
+    # be present before it offers anything.
+    live = getattr(entry, "runtime_data", None)
+    if isinstance(live, dict) and live:
+        coordinators = list(live.values())
+    try:
+        await async_offer_leftover_rows(hass, entry, coordinators)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not re-check %s for leftover registry rows. Nothing is wrong "
+            "with the device and the entry is set up normally",
+            entry.data.get(CONF_ADDRESS),
+        )
 
 
 async def async_offer_leftover_rows(hass: HomeAssistant, entry, coordinators) -> int:
