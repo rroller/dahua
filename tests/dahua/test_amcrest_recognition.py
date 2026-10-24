@@ -162,3 +162,46 @@ def test_a_vendor_prefix_does_not_claim_the_smart_motion_path():
 
     assert c.is_amcrest_doorbell()
     assert not c.supports_smart_motion_detection_amcrest()
+
+
+# --- the device's own answer, for this family too (#1131) --------------------
+#
+# @phabibjr measured `getDeviceClass` on the DH-DB6I: HTTP 200, `class=DB`.
+# So it does name itself, and it names itself something the VTO check did not
+# recognise. That answer is better evidence than any model string, and it is
+# the thing that keeps working when the next rebadge arrives.
+
+
+def _classed(model, device_class):
+    c = _coordinator(model)
+    c._device_class = device_class
+    return c
+
+
+def test_a_device_that_says_db_is_a_doorbell():
+    """Measured on the DH-DB6I: class=DB over digest, HTTP 200."""
+    assert _classed("DH-DB6I", "DB").is_doorbell()
+
+
+def test_db_carries_a_model_the_list_would_miss():
+    """The point of asking the device: the name no longer has to be known."""
+    assert _classed("SOMETHING-NOBODY-HAS-SEEN", "DB").is_doorbell()
+
+
+def test_vto_still_answers_for_itself():
+    assert _classed("SOMETHING-NOBODY-HAS-SEEN", "VTO").is_doorbell()
+
+
+@pytest.mark.parametrize("device_class", ["NVR", "IPC", "VTH", ""])
+def test_another_class_does_not_make_a_camera_a_doorbell(device_class):
+    """Additive, not a verdict: a non-doorbell class falls through to the list."""
+    assert not _classed("IPC-HDW3849HP-AS-PV", device_class).is_doorbell()
+
+
+def test_a_class_that_is_not_a_doorbell_cannot_veto_the_model():
+    """A device answering IPC whose model is a doorbell is still a doorbell.
+
+    The class check only ever adds. If it started deciding, one wrong answer
+    from a rebadge would remove every doorbell entity that works today.
+    """
+    assert _classed("DH-DB6I", "IPC").is_doorbell()

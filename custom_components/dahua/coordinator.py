@@ -4742,11 +4742,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Deliberately additive. A device that answers `VTO` is one, whatever its
         model string says, which is what the list of prefixes below keeps
         failing to cover for rebadges (#690). But a device that answers
-        something else, or does not answer at all, still gets the list: no
-        Amcrest or Imou doorbell has been measured here, and a wrong negative
-        would take every doorbell entity away from people who have them today.
+        something else, or does not answer at all, still gets the list, and a
+        wrong negative would take every doorbell entity away from people who
+        have them today.
+
+        `DB` is the second answer that means doorbell, measured by @phabibjr
+        on a DH-DB6I in #1131: HTTP 200, `class=DB`, not `VTO`. So the Amcrest
+        and Imou family names itself too, and it names itself something the
+        VTO check alone does not recognise. Additive for the same reason as
+        above: it can only make a device a doorbell, never stop one being one.
         """
-        if getattr(self, "_device_class", "") == "VTO":
+        if getattr(self, "_device_class", "") in ("VTO", "DB"):
             return True
         m = self.model.upper()
         return (
