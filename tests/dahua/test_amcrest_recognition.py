@@ -94,3 +94,71 @@ def test_a_different_db_model_is_not_claimed():
 
     assert c.is_amcrest_doorbell()
     assert not c.supports_smart_motion_detection_amcrest()
+
+
+# --- a vendor prefix is the same doorbell (#1131) ----------------------------
+#
+# @phabibjr reported a DH-DB6I on firmware 1.000.020000000.9.R where none of
+# the four doorbell sensors existed and pressing the button did nothing
+# visible. The model is the DB6 family with a `DH-` vendor prefix on the
+# front, and a prefix-only test does not see it. `is_doorbell` already allows
+# for exactly this on VTO, with `-VTO` and `_VTO` accepted anywhere in the
+# string; this is the same rule for the same reason.
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "DH-DB6I",
+        "dh-db6i",
+        "DHI-DB6I",
+        "DH_DB6I",
+        "DH-DB61i",
+    ],
+)
+def test_a_vendor_prefixed_doorbell_is_still_a_doorbell(model):
+    c = _coordinator(model)
+
+    assert c.is_amcrest_doorbell(), "a vendor prefix hid the doorbell"
+    assert c.is_doorbell(), "not a doorbell, so it gets no doorbell sensors"
+
+
+def test_the_model_decides_it_when_the_device_names_no_class():
+    """The reported firmware is the case where the model list is all there is.
+
+    `is_doorbell` asks the device first, and a device answering `VTO` is one
+    whatever its model says. A coordinator that never got an answer has no
+    `_device_class` at all, which is the state #1131 was reported in, so the
+    model match has to carry it alone.
+    """
+    c = _coordinator("DH-DB6I")
+
+    assert not hasattr(c, "_device_class")
+    assert c.is_doorbell()
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "XDB6",
+        "IPC-HDW3849HP-AS-PV",
+        "DHI-NVR5464-16P-EI",
+        "",
+    ],
+)
+def test_db6_without_a_separator_is_not_a_doorbell(model):
+    """The infix needs a `-` or `_` in front of it, not DB6 anywhere at all."""
+    assert not _coordinator(model).is_amcrest_doorbell()
+
+
+def test_a_vendor_prefix_does_not_claim_the_smart_motion_path():
+    """The asymmetry above is deliberate and must survive this change.
+
+    DB6 is the family and DB61 is the one device whose Amcrest smart motion
+    path has been measured. A DH-DB6I is a doorbell without being claimed for
+    that path, exactly as a DB62X is.
+    """
+    c = _coordinator("DH-DB6I")
+
+    assert c.is_amcrest_doorbell()
+    assert not c.supports_smart_motion_detection_amcrest()

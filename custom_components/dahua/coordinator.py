@@ -4759,10 +4759,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     def is_amcrest_doorbell(self) -> bool:
-        """Returns true if this is an Amcrest doorbell - IMOU DB61i is identical"""
-        return self.model.upper().startswith("AD") or self.model.upper().startswith(
-            "DB6"
-        )
+        """Returns true if this is an Amcrest doorbell - IMOU DB61i is identical
+
+        The `DB6` family is matched as a prefix and also after a vendor prefix,
+        which is the same shape `is_doorbell` already allows for VTO: a rebadge
+        reports `DH-DB6I` rather than `DB6I`, and a prefix test alone takes
+        every doorbell entity away from it.
+
+        Reported and verified on hardware by @phabibjr in #1131: a DH-DB6I on
+        firmware 1.000.020000000.9.R, where the four doorbell sensors never
+        appeared and the button press was doing nothing, and where making this
+        match brought them back and lit `button_pressed` for about 5 seconds.
+
+        This gates more than those sensors. The illuminator light, the security
+        light select and one poll read are all behind it, so a device that
+        falls through here loses all of them silently. Deliberately not
+        extended to `AD`: two letters that short appear inside unrelated model
+        strings, and nothing has been measured for a vendor-prefixed one.
+        """
+        m = self.model.upper()
+        return m.startswith(("AD", "DB6")) or "-DB6" in m or "_DB6" in m
 
     def is_empiretech_doorbell(self) -> bool:
         """Returns true if this is an EmpireTech doorbell"""
