@@ -44,6 +44,13 @@ from .const import DOMAIN
 # global so a reload cannot inherit a count from the run before it.
 DATA_LATE_REBUILDS = "{0}_late_rebuilds".format(DOMAIN)
 
+# ⚠ Beside the record rather than inside it, and that is the point.
+# `_change_outstanding` pops the record the moment nothing is outstanding and
+# nothing has failed, so a token kept in there would be a new object every
+# time the count touched zero, and work that was merely idle would be mistaken
+# for work from a previous life. This changes only when the entry is forgotten.
+DATA_LATE_RUNS = "{0}_late_runs".format(DOMAIN)
+
 _LOGGER = logging.getLogger(__package__)
 
 
@@ -128,6 +135,49 @@ def async_forget_entry(hass, entry_id: str) -> None:
     held = _held(hass)
     if held is not None:
         held.pop(entry_id, None)
+    # ⚠ And the run, so anything still in flight from before this cannot touch
+    # what comes after it. @rroller on #1125: the rebuild task is created on
+    # `hass`, so unloading the entry does not cancel it. He paused an old
+    # rebuild, ran the entry's unload callbacks, loaded a fresh watcher with
+    # one registration pending, and resumed the old rebuild; its release took
+    # the NEW record from 1 to 0 and the scan offered a valid row while the
+    # new entity had neither finished nor aborted.
+    runs = _runs(hass)
+    if runs is not None:
+        runs.pop(entry_id, None)
+
+
+def _runs(hass):
+    """Where the current run of each entry is stamped. None like `_held`."""
+    data = getattr(hass, "data", None)
+    if data is None:
+        return None
+    runs = data.get(DATA_LATE_RUNS)
+    if runs is None:
+        runs = data[DATA_LATE_RUNS] = {}
+    return runs
+
+
+def _current_run(hass, entry_id: str):
+    """The token every hold taken now will be answered against."""
+    runs = _runs(hass)
+    if runs is None:
+        return None
+    run = runs.get(entry_id)
+    if run is None:
+        run = runs[entry_id] = object()
+    return run
+
+
+def _is_stale(hass, entry_id: str, run) -> bool:
+    """Whether this callback belongs to a run that has since been forgotten.
+
+    `run is None` means the caller could not take a token, which is the
+    `hass`-double case `_held` already tolerates, and those are not stale.
+    """
+    if run is None:
+        return False
+    return _current_run(hass, entry_id) is not run
 
 
 def _held(hass):
@@ -156,7 +206,14 @@ def _for_entry(hass, entry_id: str):
 
 
 def _note_failed(
-    hass, entry_id: str, builder, channel_key, failed: bool, kind="build", token=None
+    hass,
+    entry_id: str,
+    builder,
+    channel_key,
+    failed: bool,
+    kind="build",
+    token=None,
+    run=None,
 ) -> None:
     """Remember, or forget, that one builder could not finish one channel.
 
@@ -186,6 +243,8 @@ def _note_failed(
     its own and clears only that. Builds pass None, because a build's unit of
     work really is the whole channel.
     """
+    if _is_stale(hass, entry_id, run):
+        return
     record = _for_entry(hass, entry_id)
     if record is None:
         return
@@ -198,7 +257,16 @@ def _note_failed(
         record["failed"].discard((builder, channel_key, kind, token))
 
 
-def _change_outstanding(hass, entry_id: str, delta: int):
+def _change_outstanding(hass, entry_id: str, delta: int, run=None):
+    if _is_stale(hass, entry_id, run):
+        # Work from a run that has been forgotten. Counting it against the
+        # record that replaced it is how a stale release opened the gate on a
+        # registration that was still pending.
+        _LOGGER.debug(
+            "Ignoring late work from a previous run of %s",
+            entry_id,
+        )
+        return None
     record = _for_entry(hass, entry_id)
     if record is None:
         return None
@@ -208,9 +276,9 @@ def _change_outstanding(hass, entry_id: str, delta: int):
     return left
 
 
-def _release(hass, entry_id: str) -> None:
+def _release(hass, entry_id: str, run=None) -> None:
     """Give one unit of late work back, and say so if it was the last."""
-    if _change_outstanding(hass, entry_id, -1) == 0:
+    if _change_outstanding(hass, entry_id, -1, run) == 0:
         async_notify_late_work_settled(hass, entry_id)
 
 
@@ -248,7 +316,9 @@ def _registration_was_skipped_on_purpose(hass, entity) -> bool:
     return state is not None and not state.attributes.get("restored")
 
 
-def _hold_until_registered(hass, entry_id: str, builder, channel_key, entities) -> None:
+def _hold_until_registered(
+    hass, entry_id: str, builder, channel_key, entities, run=None
+) -> None:
     """Count each entity until Home Assistant finishes or aborts adding it.
 
     ⚠ Wrapping the entity's own two lifecycle hooks, because they are the only
@@ -270,12 +340,14 @@ def _hold_until_registered(hass, entry_id: str, builder, channel_key, entities) 
     Tolerated rather than demanded: a great many tests here stand in a marker
     object for an entity, and one without these hooks is simply not counted.
     """
+    if run is None:
+        run = _current_run(hass, entry_id)
     for entity in entities:
         finish = getattr(entity, "add_to_platform_finish", None)
         abort = getattr(entity, "add_to_platform_abort", None)
         if finish is None or abort is None:
             continue
-        if _change_outstanding(hass, entry_id, 1) is None:
+        if _change_outstanding(hass, entry_id, 1, run) is None:
             return
 
         # ⚠ One per ENTITY, and the whole point of it. Two entities from one
@@ -299,7 +371,7 @@ def _hold_until_registered(hass, entry_id: str, builder, channel_key, entities) 
         # confused with something else.
         token = getattr(entity, "unique_id", None) or object()
 
-        async def _finished(_finish=finish, _token=token) -> None:
+        async def _finished(_finish=finish, _token=token, _run=run) -> None:
             try:
                 await _finish()
             except Exception:
@@ -314,6 +386,7 @@ def _hold_until_registered(hass, entry_id: str, builder, channel_key, entities) 
                     True,
                     "registration",
                     _token,
+                    _run,
                 )
                 raise
             else:
@@ -325,12 +398,13 @@ def _hold_until_registered(hass, entry_id: str, builder, channel_key, entities) 
                     False,
                     "registration",
                     _token,
+                    _run,
                 )
             finally:
-                _release(hass, entry_id)
+                _release(hass, entry_id, _run)
 
         @callback
-        def _aborted(_abort=abort, _entity=entity, _token=token) -> None:
+        def _aborted(_abort=abort, _entity=entity, _token=token, _run=run) -> None:
             try:
                 _abort()
             finally:
@@ -343,8 +417,9 @@ def _hold_until_registered(hass, entry_id: str, builder, channel_key, entities) 
                         True,
                         "registration",
                         _token,
+                        _run,
                     )
-                _release(hass, entry_id)
+                _release(hass, entry_id, _run)
 
         try:
             entity.add_to_platform_finish = _finished
@@ -353,7 +428,7 @@ def _hold_until_registered(hass, entry_id: str, builder, channel_key, entities) 
             # An entity that will not take an instance attribute, which none
             # here is, but it is cheap to survive. Leaving it counted would
             # hold the gate shut for ever: nothing would ever release it.
-            _release(hass, entry_id)
+            _release(hass, entry_id, run)
 
 
 def async_notify_capability_discovered(hass, entry_id: str, channel_key: str) -> None:
@@ -417,7 +492,12 @@ async def async_add_and_keep_watching(
     # or one platform's success speaks for another's failure (#1125).
     builder = object()
 
-    async def _add_whatever_is_missing(channel_key=None) -> None:
+    async def _add_whatever_is_missing(channel_key=None, run=None) -> None:
+        # ⚠ The run comes from the caller, not from `_current_run`. A rebuild
+        # task is not cancelled by unload, so one that resumes after a reload
+        # would otherwise take registration holds against the record that
+        # replaced it, using the new run, and those holds are never released
+        # because nothing is watching that entity any more.
         for coordinator in coordinators(entry).values():
             if (
                 channel_key is not None
@@ -452,11 +532,11 @@ async def async_add_and_keep_watching(
                 # real one built with `object.__new__` raises; the key only
                 # has to match the one the surrounding rebuild will clear.
                 _hold_until_registered(
-                    hass, entry.entry_id, builder, channel_key, entities
+                    hass, entry.entry_id, builder, channel_key, entities, run
                 )
                 async_add_entities(entities, config_subentry_id=where)
 
-    await _add_whatever_is_missing()
+    await _add_whatever_is_missing(run=_current_run(hass, entry.entry_id))
 
     @callback
     def _on_discovery(channel_key: str) -> None:
@@ -479,12 +559,17 @@ async def async_add_and_keep_watching(
         over" signal, sent moments later on the same tick, finds nothing
         outstanding and offers the card too early.
         """
-        _change_outstanding(hass, entry.entry_id, 1)
-        hass.async_create_task(_rebuild_then_settle(channel_key))
+        # ⚠ The run is captured HERE, with the increment, and carried into
+        # the task. The task is created on `hass`, so unloading the entry does
+        # not cancel it (@rroller, #1125): an old rebuild can resume after a
+        # reload and would otherwise release the new run's hold.
+        run = _current_run(hass, entry.entry_id)
+        _change_outstanding(hass, entry.entry_id, 1, run)
+        hass.async_create_task(_rebuild_then_settle(channel_key, run))
 
-    async def _rebuild_then_settle(channel_key: str) -> None:
+    async def _rebuild_then_settle(channel_key: str, run=None) -> None:
         try:
-            await _add_whatever_is_missing(channel_key)
+            await _add_whatever_is_missing(channel_key, run)
         except Exception:  # pylint: disable=broad-except
             # Reported here rather than left to escape. This is a background
             # task, so an escaping error was only ever an "exception was never
@@ -495,18 +580,18 @@ async def async_add_and_keep_watching(
             # on #1114 and @rroller on #1125 are the same point from two
             # sides: a row with nothing behind it is only a leftover when the
             # integration is not itself the reason.
-            _note_failed(hass, entry.entry_id, builder, channel_key, True)
+            _note_failed(hass, entry.entry_id, builder, channel_key, True, run=run)
             _LOGGER.exception(
                 "Could not build the entities %s answered for late", channel_key
             )
         else:
-            _note_failed(hass, entry.entry_id, builder, channel_key, False)
+            _note_failed(hass, entry.entry_id, builder, channel_key, False, run=run)
         finally:
             # `finally`, so a build that raises cannot leave the count up and
             # the card shut for the life of the entry.
             # `== 0`, not falsy: None means this `hass` keeps no record, so
             # nothing was ever waiting on it and there is nobody to tell.
-            _release(hass, entry.entry_id)
+            _release(hass, entry.entry_id, run)
 
     entry.async_on_unload(
         async_dispatcher_connect(

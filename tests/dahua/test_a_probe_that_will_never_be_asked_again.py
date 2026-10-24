@@ -1228,3 +1228,172 @@ async def test_setting_an_entry_up_is_what_registers_the_recheck(hass, monkeypat
     # `entry.async_on_unload`, and those run from the config entry manager
     # rather than from `async_unload_entry`, so a test calling that function
     # directly would be making a claim about Home Assistant.
+
+
+async def test_work_from_before_a_reload_does_not_release_the_new_run(hass):
+    """⭐⭐⭐⭐ @rroller on #1125, fourth round, and the first one that is not
+    about who a failure belongs to but about WHEN.
+
+    The rebuild runs in a task created on `hass`, so the entry's unload
+    processing does not cancel it. His reproduction: pause an old rebuild, run
+    the entry's unload callbacks, load a fresh watcher with one registration
+    still pending, then let the old rebuild resume. Its release took the NEW
+    record from 1 to 0, and the delayed scan offered a valid restored row
+    while the new entity had neither finished nor aborted.
+
+    A token per run, kept beside the record rather than inside it, because
+    `_change_outstanding` pops the record whenever nothing is outstanding and
+    a token kept in there would change every time the count touched zero.
+    """
+    entry, made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+
+    let_the_old_build_finish = asyncio.Event()
+    old_calls = []
+    # ⚠ It returns an ENTITY, not an empty list. A stale rebuild that files
+    # entities takes registration holds as well as releasing its own, so
+    # without a run on the increment it would add a hold to the record that
+    # replaced it and wedge the gate shut for the life of the entry.
+    # Two of them, which is what a platform normally adds, and what stops a
+    # leaked hold being masked: one stale task releases once, so a single
+    # leaked hold nets to zero and the count looks right by accident.
+    stale_entities = [_Registering("SER_stale"), _Registering("SER_stale_two")]
+
+    async def slow_build(_coordinator):
+        old_calls.append(1)
+        if len(old_calls) == 1:
+            return []
+        await let_the_old_build_finish.wait()
+        return list(stale_entities)
+
+    await _watching(hass, entry, slow_build, lambda entities, **kwargs: None)
+    # The unload hook that forgets the entry lives here, so the old run has to
+    # be a real one with it registered, or nothing rotates the token.
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert (
+        late.async_rebuilds_outstanding(hass, entry.entry_id) == 1
+    ), "the old rebuild is in flight and holding the gate"
+
+    # The entry unloads. Its own callbacks run; the task above does not stop.
+    await entry._async_process_on_unload(hass)
+
+    # A fresh setup, with one registration deliberately left pending.
+    platform = MockEntityPlatform(hass, domain="switch", platform_name=DOMAIN)
+    platform.config_entry = entry
+    platform._setup_complete = True
+    pending = _Registering("SER_pending")
+    new_calls = []
+
+    async def new_build(_coordinator):
+        new_calls.append(1)
+        return [pending] if len(new_calls) > 1 else []
+
+    await _watching(hass, entry, new_build, lambda entities, **kwargs: None)
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    outstanding = late.async_rebuilds_outstanding(hass, entry.entry_id)
+    assert outstanding == 1, "the new run's registration is the thing holding it"
+
+    # Now the old one finishes, long after the run it belonged to ended.
+    let_the_old_build_finish.set()
+    await _let_the_delayed_scan_run(hass, drain=False)
+
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 1, (
+        "neither the stale release nor the stale entity's hold may touch the "
+        "run that replaced it: still just the new run's own pending one"
+    )
+    assert _issue(hass, entry) is None, "so the card is still withheld"
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+    # ⚠ And then the gate must actually OPEN. Counting alone is not enough
+    # here: without a run on the increment the stale entity adds a hold and
+    # the stale task takes one away, which nets to the same number for the
+    # wrong reason and then never comes down. The only assertion that tells
+    # those apart is that the new run, once its own entity registers, settles.
+    await pending.add_to_platform_finish()
+    await _let_the_delayed_scan_run(hass)
+
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
+    assert (
+        _issue(hass, entry) is not None
+    ), "the new run finished, so nothing stale may hold the card shut"
+
+
+async def test_a_registration_from_before_a_reload_does_not_release_either(hass):
+    """The same staleness one layer down, and the layer the rebuild test does
+    not reach.
+
+    `async_add_entities` only schedules the add, so an entity handed to a
+    platform before an unload can have its `add_to_platform_finish` run after
+    the reload. That callback releases too, and without a run of its own it
+    would come off the new record exactly as the stale rebuild did.
+    """
+    entry, made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+
+    old_entity, old_calls = _Registering("SER_old"), []
+
+    async def old_build(_coordinator):
+        old_calls.append(1)
+        return [old_entity] if len(old_calls) > 1 else []
+
+    await _watching(hass, entry, old_build, lambda entities, **kwargs: None)
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert (
+        late.async_rebuilds_outstanding(hass, entry.entry_id) == 1
+    ), "the old entity's registration is pending"
+
+    await entry._async_process_on_unload(hass)
+
+    new_entity, new_calls = _Registering("SER_new"), []
+
+    async def new_build(_coordinator):
+        new_calls.append(1)
+        return [new_entity] if len(new_calls) > 1 else []
+
+    await _watching(hass, entry, new_build, lambda entities, **kwargs: None)
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 1
+
+    # The old entity's add finally completes, one run too late.
+    await old_entity.add_to_platform_finish()
+    await _let_the_delayed_scan_run(hass, drain=False)
+
+    assert (
+        late.async_rebuilds_outstanding(hass, entry.entry_id) == 1
+    ), "the new entity is still pending, so the gate stays shut"
+    assert _issue(hass, entry) is None
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
