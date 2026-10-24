@@ -4241,6 +4241,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         So an answer with nothing about this channel changes nothing and
         returns False. The caller treats that as "not confirmed" rather than
         as success, and the card it was about stays up.
+
+        True means the answer stated this channel's MAIN stream codec, which
+        is the only thing the repair writes and the only thing the card
+        judges. An answer that moved the audio flag, or spoke only about a
+        sub stream, is applied where it was specific and still returns False.
         """
         try:
             encode = await self.client.async_get_config("Encode")
@@ -4260,7 +4265,34 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return False
 
-        self._stream_codecs = codecs
+        # ⚠ Merged per FIELD, and "nonempty" was one question short of this,
+        # @rroller on #1127. `parse_stream_codecs` seeds every field it did not
+        # see with None, so a reply carrying only this channel's `AudioEnable`,
+        # or only an `ExtraFormat` row, produces a nonempty map whose main
+        # stream has codec None. Assigning that erased the H.265 this channel
+        # really has and then let the card be re-judged on the erasure, so the
+        # warning went while the flow was reporting the write refused.
+        #
+        # None already means "the answer did not say" in the parser, so the
+        # rule falls out of a convention it already keeps: a field the answer
+        # stated wins, a field it did not keeps what is held, and a stream it
+        # did not mention is untouched.
+        merged = {
+            index: dict(held) for index, held in (self._stream_codecs or {}).items()
+        }
+        for index, stream in codecs.items():
+            into = merged.setdefault(index, {"codec": None, "audio": None})
+            into.update(
+                {field: value for field, value in stream.items() if value is not None}
+            )
+        self._stream_codecs = merged
+
+        # ⚠ And confirmation is about the MAIN stream's codec specifically,
+        # which is the only thing the repair wrote and the only thing the card
+        # judges. An answer that moved the audio flag, or another stream, has
+        # told us nothing about whether the write landed.
+        said_main_codec = (codecs.get(0) or {}).get("codec") is not None
+
         try:
             self._async_report_unplayable_stream()
         except Exception as exception:  # pylint: disable=broad-except
@@ -4269,7 +4301,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self._address,
                 exc_info=exception,
             )
-        return True
+        return said_main_codec
 
     @callback
     def _unplayable_key(self) -> str:
