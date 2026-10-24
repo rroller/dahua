@@ -2428,6 +2428,72 @@ class DahuaClient:
         except aiohttp.ClientResponseError:
             return {}
 
+    async def async_set_encode_audio_value(
+        self,
+        channel: int,
+        format_type: str,
+        format_index: int,
+        field: str,
+        value: bool | str,
+    ) -> dict:
+        """Set one Encode audio field without replacing the rest of the table."""
+        if format_type not in ("MainFormat", "ExtraFormat"):
+            raise ValueError("Unsupported encoder format")
+        # Whatever index the device reported, rather than a ceiling written
+        # here. Discovery keeps every `table.Encode[c].*.AudioEnable` key the
+        # device serves and the platform's regex matches any number, so a
+        # device reporting MainFormat[3] gets a switch, and a ceiling of 2
+        # meant that switch raised on every press while reading a real value
+        # (#997 review). The check that is left is the one that catches a
+        # caller passing something that is not an index at all.
+        if not isinstance(format_index, int) or format_index < 0:
+            raise ValueError("Unsupported encoder format index")
+        if field == "AudioEnable":
+            if not isinstance(value, bool):
+                raise ValueError("AudioEnable must be a boolean")
+            wire_value = str(value).lower()
+            field_path = field
+        elif field == "Audio.AudioSource":
+            if value not in ("Coaxial", "BNC"):
+                raise ValueError("Unsupported audio source")
+            wire_value = quote(value, safe="")
+            field_path = field
+        else:
+            raise ValueError("Unsupported encoder audio field")
+
+        address = f"Encode[{int(channel)}].{format_type}[{format_index}].{field_path}"
+        url = f"/cgi-bin/configManager.cgi?action=setConfig&{address}={wire_value}"
+        try:
+            return await self.get(url, verify_ok=True)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            # A device that serves no /cgi-bin/ config path at all, such as an
+            # SL300 answering 404 to every one of them. The read already falls
+            # back to RPC2, so discovery gives that device these controls and
+            # polls them; without this the controls exist, show a real value
+            # and fail on every press (#997 review).
+            #
+            # Field-addressed rather than the read-modify-write in
+            # `_rpc2_set_config_value`. Two reasons, and both rule that one
+            # out here: the field is nested two levels below the per-channel
+            # key it assigns, and `Encode` is of the size a recorder refuses
+            # with `errCode 287638033, "Request length error!"`, which is why
+            # the per-channel IVS rules are written one field at a time.
+            #
+            # Not measured on hardware: nobody in #997 has a device that
+            # serves Encode over RPC2 while refusing CGI. It is the same call
+            # the cloud switch and the IVS rules make, and a device that will
+            # not take it answers with a refusal the user sees, which is
+            # better than a control that silently cannot work.
+            _LOGGER.debug(
+                "configManager.cgi answered %s on %s; setting %s over RPC2",
+                cgi_error.status,
+                self._address,
+                address,
+            )
+            return await self._rpc2_set_config_field(address, value)
+
     async def async_get_config_lighting(self, channel: int, profile_mode) -> dict:
         """
         async_get_config_lighting will fetch the status of the IR light (InfraRed light)
