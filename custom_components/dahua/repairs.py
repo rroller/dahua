@@ -424,6 +424,20 @@ class SwitchStreamToH264RepairFlow(RepairsFlow):
             return self.async_abort(reason="nothing_to_change")
 
         if user_input is None:
+            # ⚠ A fixable issue has no `description` of its own: Home Assistant's
+            # translation schema treats `description` and `fix_flow` as mutually
+            # exclusive, and hassfest refuses the manifest if both are present.
+            # So everything the card used to say lives in this step, and the
+            # placeholders it needs have to be supplied here rather than by the
+            # `translation_placeholders` the issue was raised with.
+            #
+            # `channels` is every carded channel, not the offerable subset: the
+            # text explains the condition first and the picker second, and a
+            # channel that cannot take H.264 is still one the user should know
+            # about.
+            carded: set = set()
+            for coordinator in coordinators.values():
+                carded |= coordinator.channels_that_cannot_be_played()
             return self.async_show_form(
                 step_id="confirm",
                 data_schema=vol.Schema(
@@ -436,7 +450,10 @@ class SwitchStreamToH264RepairFlow(RepairsFlow):
                         )
                     }
                 ),
-                description_placeholders={"address": str(self._address)},
+                description_placeholders={
+                    "address": str(self._address),
+                    "channels": ", ".join(str(channel) for channel in sorted(carded)),
+                },
             )
 
         chosen = [
