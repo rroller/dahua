@@ -480,3 +480,81 @@ def test_the_affected_channels_are_read_per_device(monkeypatch):
 
     assert first.channels_that_cannot_be_played() == {0}
     assert second.channels_that_cannot_be_played() == {5}
+
+
+# --- a partial answer is not an answer about the codec -----------------------
+#
+# ⭐ @rroller on #1127, after the empty-answer guard went in. "Nonempty" is one
+# question short of "said something about this stream's codec".
+# `parse_stream_codecs` seeds every field it did not see with None, so both of
+# the replies below produce a nonempty map whose main stream has codec None.
+# Assigning it erased the H.265 and let the card be re-judged on the erasure,
+# so the warning went while the flow was reporting the write refused.
+#
+# This is the same shape as the partial-answer finding on #997, one level up:
+# there it was the poll, here it is the repair's read back.
+
+
+DEVICE_CARD = "webrtc_cannot_play_10.0.0.5:80"
+
+
+def _card_was_cleared(deleted):
+    """Only the device's own card counts.
+
+    `_async_report_unplayable_stream` also deletes the address-keyed id from
+    #1048 every time it runs, which is the migration cleanup rather than the
+    warning being withdrawn. Counting deletions conflated the two.
+    """
+    return DEVICE_CARD in deleted
+
+
+AUDIO_ONLY = {"table.Encode[11].MainFormat[0].AudioEnable": "false"}
+SUB_STREAM_ONLY = {"table.Encode[11].ExtraFormat[0].Video.Compression": "H.264"}
+
+
+async def test_an_audio_only_answer_does_not_erase_the_codec(monkeypatch):
+    coordinator, _raised, deleted = _rechecking(monkeypatch, AUDIO_ONLY)
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265", "not erased"
+    assert not _card_was_cleared(deleted), "and the warning stands"
+
+
+async def test_a_sub_stream_answer_does_not_erase_the_main_one(monkeypatch):
+    coordinator, _raised, deleted = _rechecking(monkeypatch, SUB_STREAM_ONLY)
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265"
+    assert not _card_was_cleared(deleted)
+
+
+async def test_a_partial_answer_still_applies_what_it_did_say(monkeypatch):
+    """The merge must not become "ignore partial answers". A sub stream that
+    really did move is how the rest of the integration notices."""
+    coordinator, _raised, _deleted = _rechecking(monkeypatch, SUB_STREAM_ONLY)
+
+    await coordinator.async_recheck_stream_codecs()
+
+    assert coordinator.get_stream_codec(1) == "H.264", "applied where specific"
+    assert coordinator.get_stream_codec(0) == "H.265", "untouched where silent"
+
+
+async def test_an_audio_flag_moving_is_applied_but_not_a_confirmation(monkeypatch):
+    """Both halves in one. The flag lands, because the answer stated it, and
+    the return is still False, because nothing was said about the codec."""
+    coordinator, _raised, _deleted = _rechecking(
+        monkeypatch, {"table.Encode[11].MainFormat[0].AudioEnable": "true"}
+    )
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_has_audio(0) is True
+    assert coordinator.get_stream_codec(0) == "H.265"
+
+
+async def test_a_full_answer_is_still_a_confirmation(monkeypatch):
+    """The converse, so none of the above degenerates into "never confirm"."""
+    coordinator, _raised, deleted = _rechecking(monkeypatch, ANSWERED_H264)
+
+    assert await coordinator.async_recheck_stream_codecs() is True
+    assert coordinator.get_stream_codec(0) == "H.264"
+    assert _card_was_cleared(deleted)
