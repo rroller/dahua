@@ -128,10 +128,14 @@ def test_absence_is_not_permission():
 # --- the flow ----------------------------------------------------------------
 
 
+DEVICE = "{0}:80".format(ADDRESS)
+
+
 class _Client:
-    def __init__(self, caps=None, refuse=()):
+    def __init__(self, caps=None, refuse=(), device=DEVICE):
         self.caps = MEASURED_CAPS if caps is None else caps
         self.refuse = set(refuse)
+        self.device_key = device
         self.caps_reads = 0
         self.writes = []
 
@@ -153,11 +157,12 @@ class _Coordinator:
     the write, answers 200, and goes on sending what it was sending.
     """
 
-    def __init__(self, channel, carded, client, stuck=False):
+    def __init__(self, channel, carded, client, stuck=False, silent=False):
         self._channel = channel
         self._carded = carded
         self.client = client
         self.stuck = stuck
+        self.silent = silent
         self.codec = "H.265"
         self.rechecks = 0
 
@@ -169,11 +174,16 @@ class _Coordinator:
 
     async def async_recheck_stream_codecs(self):
         self.rechecks += 1
+        if self.silent:
+            # The device answered, but with nothing about this channel. The
+            # real coordinator keeps what it holds and reports False.
+            return False
         if not self.stuck and (self._channel, 0, "H.264") in self.client.writes:
             self.codec = "H.264"
+        return True
 
 
-def _entry(hass, coordinators, address=ADDRESS):
+def _entry(hass, coordinators, address=ADDRESS, port="80"):
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Recorder",
@@ -182,7 +192,7 @@ def _entry(hass, coordinators, address=ADDRESS):
             "username": "u",
             "password": "p",
             "address": address,
-            "port": "80",
+            "port": port,
             "rtsp_port": "554",
             "channel": 0,
             "name": "Recorder",
@@ -194,31 +204,51 @@ def _entry(hass, coordinators, address=ADDRESS):
     return entry
 
 
-def _setup(hass, carded=(0, 2, 3), refuse=(), stuck=()):
+def _setup(hass, carded=(0, 2, 3), refuse=(), stuck=(), silent=()):
     client = _Client(refuse=refuse)
     coordinators = {
-        channel: _Coordinator(channel, carded, client, stuck=channel in stuck)
+        channel: _Coordinator(
+            channel,
+            carded,
+            client,
+            stuck=channel in stuck,
+            silent=channel in silent,
+        )
         for channel in sorted(set(carded) | {0})
     }
     _entry(hass, coordinators)
     return client, coordinators
 
 
-def _flow(hass):
-    flow = SwitchStreamToH264RepairFlow({"address": ADDRESS})
+def _flow(hass, device=DEVICE):
+    flow = SwitchStreamToH264RepairFlow({"address": ADDRESS, "device": device})
     flow.hass = hass
     return flow
 
 
-def _issue(hass):
+def _raise_card(hass, device=DEVICE):
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "webrtc_cannot_play_{0}".format(device),
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="webrtc_cannot_play",
+        data={"address": ADDRESS, "device": device},
+    )
+
+
+def _issue(hass, device=DEVICE):
     return ir.async_get(hass).async_get_issue(
-        DOMAIN, "webrtc_cannot_play_{0}".format(ADDRESS)
+        DOMAIN, "webrtc_cannot_play_{0}".format(device)
     )
 
 
 async def test_the_card_gets_this_flow(hass):
     flow = await async_create_fix_flow(
-        hass, "webrtc_cannot_play_{0}".format(ADDRESS), {"address": ADDRESS}
+        hass,
+        "webrtc_cannot_play_{0}".format(DEVICE),
+        {"address": ADDRESS, "device": DEVICE},
     )
 
     assert isinstance(flow, SwitchStreamToH264RepairFlow)
@@ -365,15 +395,7 @@ async def test_a_card_nothing_is_behind_is_removed(hass):
     """Recomputed at the button, like the leftover-rows flow. Somebody who
     fixed every channel on the device itself should not be left holding a card
     whose button does nothing."""
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        "webrtc_cannot_play_{0}".format(ADDRESS),
-        is_fixable=True,
-        severity=ir.IssueSeverity.WARNING,
-        translation_key="webrtc_cannot_play",
-        data={"address": ADDRESS},
-    )
+    _raise_card(hass)
     _setup(hass, carded=())
 
     result = await _flow(hass).async_step_confirm()
@@ -386,15 +408,7 @@ async def test_a_card_no_channel_can_act_on_is_removed(hass):
     """Every carded channel offers H.265 only. The condition is real and the
     device will not move, so holding a card with an inert button open is worse
     than saying so."""
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        "webrtc_cannot_play_{0}".format(ADDRESS),
-        is_fixable=True,
-        severity=ir.IssueSeverity.WARNING,
-        translation_key="webrtc_cannot_play",
-        data={"address": ADDRESS},
-    )
+    _raise_card(hass)
     _setup(hass, carded=(2,))
 
     result = await _flow(hass).async_step_confirm()
@@ -406,7 +420,7 @@ async def test_a_card_no_channel_can_act_on_is_removed(hass):
 async def test_another_hosts_channels_are_left_alone(hass):
     """The card is per address and so is the flow."""
     client, _ = _setup(hass)
-    other_client = _Client()
+    other_client = _Client(device="10.0.0.2:80")
     _entry(
         hass,
         {0: _Coordinator(0, (0,), other_client)},
@@ -569,3 +583,128 @@ async def test_the_text_names_every_carded_channel_not_just_the_fixable_ones(has
 
     assert result["description_placeholders"]["channels"] == "0, 2, 3"
     assert sorted(result["data_schema"].schema["channels"].options) == ["0", "3"]
+
+
+# --- the two cases @rroller reproduced on #1127 ------------------------------
+
+
+OTHER_DEVICE = "{0}:8080".format(ADDRESS)
+
+
+def _two_boxes_on_one_address(hass):
+    """One IP, two Dahua boxes, which a bridge forwarding 80 and 8080 gives you.
+
+    Port 80 has the carded H.265 channel 0. Port 8080 has a channel 0 that is
+    already fine. Both call it channel 0, which is the whole trap.
+    """
+    carded_client = _Client()
+    carded = {0: _Coordinator(0, (0,), carded_client)}
+    _entry(hass, carded)
+
+    innocent_client = _Client(device=OTHER_DEVICE)
+    innocent = {0: _Coordinator(0, (), innocent_client)}
+    innocent[0].codec = "H.264"
+    _entry(hass, innocent, port="8080")
+    return carded_client, carded, innocent_client, innocent
+
+
+async def test_two_boxes_on_one_address_are_not_confused(hass):
+    """⭐ @rroller on #1127. `_entries_for_address` is about the network path,
+    and merging its entries let one box's channel 0 overwrite the other's. He
+    confirmed the repair for the port 80 recorder writing H.264 to the port
+    8080 one, reporting success, and clearing the warning while the recorder
+    it was about was still sending H.265."""
+    carded_client, carded, innocent_client, _innocent = _two_boxes_on_one_address(hass)
+    _raise_card(hass)
+
+    await _flow(hass).async_step_confirm({"channels": ["0"]})
+
+    assert innocent_client.writes == [], "the other box is not written to"
+    assert carded_client.writes == [(0, 0, "H.264")]
+    assert carded[0].codec == "H.264"
+
+
+async def test_the_other_boxs_card_is_not_cleared(hass):
+    """The same mix-up seen from the registry. Acting on one device's card
+    must not delete the other device's."""
+    _two_boxes_on_one_address(hass)
+    _raise_card(hass)
+    _raise_card(hass, device=OTHER_DEVICE)
+
+    await _flow(hass).async_step_confirm({"channels": ["0"]})
+
+    assert _issue(hass, OTHER_DEVICE) is not None
+
+
+async def test_a_card_from_before_this_cannot_guess_between_two_boxes(hass):
+    """A card raised by the older code carries no `device`. With one device on
+    the address that is unambiguous and still works; with two there is nothing
+    to match on, and guessing is exactly what wrote to the wrong recorder."""
+    carded_client, _carded, innocent_client, _innocent = _two_boxes_on_one_address(hass)
+
+    result = await _flow(hass, device=None).async_step_confirm({"channels": ["0"]})
+
+    assert result["reason"] == "not_configured"
+    assert carded_client.writes == []
+    assert innocent_client.writes == []
+
+
+async def test_a_card_from_before_this_still_works_with_one_box(hass):
+    """The common case, and it must not regress: one address, one device, a
+    card with no `device` in its data."""
+    client, coordinators = _setup(hass)
+
+    await _flow(hass, device=None).async_step_confirm({"channels": ["3"]})
+
+    assert client.writes == [(3, 0, "H.264")]
+    assert coordinators[3].codec == "H.264"
+
+
+async def test_an_unconfirmed_read_back_keeps_the_warning(hass):
+    """⭐ @rroller on #1127. `async_get_config` answers {} for an HTTP refusal,
+    so the setup reader this used to call assigned an empty codec map and then
+    re-judged the card from it: the known H.265 state was erased and the
+    warning deleted, having learned nothing about the write at all. He
+    reproduced a write followed by {}, reported as `write_refused` and leaving
+    no issue in the registry.
+
+    Not confirmed is a failure, not a pass."""
+    _raise_card(hass)
+    _, coordinators = _setup(hass, silent=(3,))
+
+    result = await _flow(hass).async_step_confirm({"channels": ["3"]})
+
+    assert result["reason"] == "write_refused"
+    assert coordinators[3].codec == "H.265", "what is held is kept"
+    assert _issue(hass) is not None, "and the card it was about stays up"
+
+
+async def test_an_unconfirmed_read_back_does_not_sink_a_confirmed_sibling(hass):
+    """Per channel, like everything else here. One channel whose read-back
+    said nothing must not make a channel that really did move look refused,
+    nor the other way round."""
+    _, coordinators = _setup(hass, silent=(3,))
+
+    result = await _flow(hass).async_step_confirm({"channels": ["0", "3"]})
+
+    assert coordinators[0].codec == "H.264", "this one is confirmed"
+    assert coordinators[3].codec == "H.265"
+    assert result["reason"] == "write_refused", "but the run still says so"
+
+
+async def test_unconfirmed_is_a_failure_even_if_the_held_codec_looks_right(hass):
+    """The contract is "confirmed H.264", not "H.264 from somewhere".
+
+    Without this the `not confirmed` clause is redundant, because a read-back
+    that keeps what is held leaves the codec reading H.265 and the codec check
+    catches it anyway. That redundancy is the whole point: the flow must not
+    depend on the held value happening to disagree. Here the held value agrees
+    and the read-back still did not confirm it, which is what an optimistic
+    cache or a concurrent poll would look like.
+    """
+    _, coordinators = _setup(hass, silent=(3,))
+    coordinators[3].codec = "H.264"
+
+    result = await _flow(hass).async_step_confirm({"channels": ["3"]})
+
+    assert result["reason"] == "write_refused"

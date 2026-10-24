@@ -4176,8 +4176,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Deleted rather than left standing when the condition clears, so somebody
         who changes the codec and reloads sees it go.
         """
-        issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(self._address)
-        affected = _HOST_UNPLAYABLE.setdefault(self._address, set())
+        # ⚠ Per DEVICE, not per address, @rroller on #1127. Two Dahua boxes can
+        # sit behind one IP on different ports, and this is encoder state, which
+        # AGENTS.md puts squarely in the per-device scope. Keyed by address, the
+        # two shared one card and one affected-channel set, so one recorder's
+        # channel 0 stood in for the other's: he configured an H.265 channel 0
+        # on port 80 and an H.264 channel 0 on port 8080 and had the repair
+        # write to the wrong box and clear the warning of the right one.
+        #
+        # The address-keyed card from #1048 is deleted alongside, or an install
+        # that already carries one keeps it for ever: nothing raises that id
+        # again, so nothing ever deletes it either.
+        device = self._unplayable_key()
+        issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(device)
+        legacy_issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(self._address)
+        if legacy_issue_id != issue_id:
+            ir.async_delete_issue(self.hass, DOMAIN, legacy_issue_id)
+        affected = _HOST_UNPLAYABLE.setdefault(device, set())
 
         if dahua_utils.webrtc_cannot_play(self._stream_codecs):
             affected.add(self._channel)
@@ -4195,7 +4210,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             is_fixable=True,
             severity=ir.IssueSeverity.WARNING,
             translation_key="webrtc_cannot_play",
-            data={"address": self._address},
+            # The device, so the flow reaches exactly the box this is about.
+            # The address as well, because that is what the text shows and a
+            # port is noise to a reader with one recorder.
+            data={"address": self._address, "device": device},
             translation_placeholders={
                 "address": self._address,
                 "channels": ", ".join(str(channel) for channel in sorted(affected)),
@@ -4203,27 +4221,81 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             },
         )
 
-    async def async_recheck_stream_codecs(self) -> None:
-        """Read `Encode` again and re-judge the card.
+    async def async_recheck_stream_codecs(self) -> bool:
+        """Read `Encode` again and re-judge the card. True if it really said.
 
         The codecs are read once, in the one-time init block, because nothing
         changes them while Home Assistant runs. Something now does: the repair
         flow writes a codec and the card has to answer for the new state rather
         than the state at setup. A reload would also do it and costs the user
         every entity on the device, so this is the narrow version.
+
+        ⚠ Deliberately NOT `_async_read_stream_codecs`, @rroller on #1127.
+        That one assigns whatever came back and re-judges from it, and
+        `async_get_config` answers {} for a refusal, so a read-back that
+        failed erased the known H.265 state and then deleted the warning
+        having learned nothing at all. He reproduced exactly that: a write
+        followed by {}, reported as `write_refused` by the flow and leaving no
+        issue in the registry.
+
+        So an answer with nothing about this channel changes nothing and
+        returns False. The caller treats that as "not confirmed" rather than
+        as success, and the card it was about stays up.
         """
-        await self._async_read_stream_codecs()
+        try:
+            encode = await self.client.async_get_config("Encode")
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not re-read Encode on %s", self._address, exc_info=exception
+            )
+            return False
+
+        codecs = dahua_utils.parse_stream_codecs(encode, self._channel)
+        if not codecs:
+            _LOGGER.debug(
+                "Re-read of Encode on %s said nothing about channel %s; keeping "
+                "what is held",
+                self._address,
+                self._channel,
+            )
+            return False
+
+        self._stream_codecs = codecs
+        try:
+            self._async_report_unplayable_stream()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not re-report the unplayable stream on %s",
+                self._address,
+                exc_info=exception,
+            )
+        return True
+
+    @callback
+    def _unplayable_key(self) -> str:
+        """The device this card is about, falling back to the address.
+
+        Tolerated rather than demanded: a great many tests here build a
+        coordinator with `object.__new__` and set only the attributes their
+        own subject touches, so insisting on a client would break doubles that
+        have nothing to do with codecs (the pattern that cost a day in #1006).
+        A real coordinator always has one, so the fallback is not a path any
+        device takes.
+        """
+        client = getattr(self, "client", None)
+        return getattr(client, "device_key", None) or self._address
 
     @callback
     def channels_that_cannot_be_played(self) -> set:
-        """Which channels on this host are behind the card, by index.
+        """Which channels on this device are behind the card, by index.
 
-        Host-wide on purpose, because the card is: one device raises one issue
-        naming every channel in the pair, and the repair that fixes it needs
-        the same list. Read from the shared table rather than recomputed, so
-        the flow and the card cannot disagree about who is affected.
+        Per device rather than per channel, because the card is: one box
+        raises one issue naming every channel in the pair, and the repair that
+        fixes it needs the same list. Read from the shared table rather than
+        recomputed, so the flow and the card cannot disagree about who is
+        affected.
         """
-        return set(_HOST_UNPLAYABLE.get(self._address) or ())
+        return set(_HOST_UNPLAYABLE.get(self._unplayable_key()) or ())
 
     def get_stream_codec(self, stream_index: int):
         """The codec one stream carries, or None if the device did not say."""

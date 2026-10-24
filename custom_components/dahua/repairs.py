@@ -348,20 +348,51 @@ class SwitchStreamToH264RepairFlow(RepairsFlow):
 
     def __init__(self, data: dict) -> None:
         self._address = data.get("address")
+        self._device = data.get("device")
 
     async def async_step_init(self, user_input: dict | None = None):
         return await self.async_step_confirm()
 
     def _coordinators(self) -> dict:
-        """Every loaded coordinator on this address, by channel index."""
+        """Every loaded coordinator on this DEVICE, by channel index.
+
+        ⚠ Filtered by device key, not by address, @rroller on #1127.
+        `_entries_for_address` is about the network path, and two Dahua boxes
+        can sit behind one IP on different ports. Merging them meant one
+        recorder's channel 0 overwrote the other's in this mapping, and he
+        reproduced the repair writing H.264 to the box on port 8080, calling
+        it a success, and clearing the warning that belonged to the box on
+        port 80, which was still sending H.265.
+
+        A card raised before this carries no `device`, so there is nothing to
+        match on. One address with one device is the overwhelmingly common
+        case and behaves as before; the ambiguous case is refused rather than
+        guessed, because guessing is what wrote to the wrong recorder.
+        """
         # Imported here rather than at module scope to avoid a circular import.
         from . import _entries_for_address, entry_coordinators
 
         found: dict = {}
+        seen_devices = set()
         for entry in _entries_for_address(self.hass, self._address):
             if entry.state is not ConfigEntryState.LOADED:
                 continue
-            found.update(entry_coordinators(entry))
+            for channel, coordinator in entry_coordinators(entry).items():
+                device = getattr(coordinator.client, "device_key", None)
+                seen_devices.add(device)
+                if self._device is not None and device != self._device:
+                    continue
+                found[channel] = coordinator
+
+        if self._device is None and len(seen_devices) > 1:
+            _LOGGER.warning(
+                "Not acting on the unplayable-stream card for %s: %d devices "
+                "share that address and the card does not say which. Reload "
+                "the entry to raise a card that does",
+                self._address,
+                len(seen_devices),
+            )
+            return {}
         return found
 
     async def _offerable(self, coordinators: dict) -> dict:
@@ -406,7 +437,7 @@ class SwitchStreamToH264RepairFlow(RepairsFlow):
         # Imported here rather than at module scope to avoid a circular import.
         from .coordinator import ISSUE_WEBRTC_CANNOT_PLAY
 
-        issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(self._address)
+        issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(self._device or self._address)
         coordinators = self._coordinators()
         if not coordinators:
             return self.async_abort(reason="not_configured")
@@ -490,7 +521,7 @@ class SwitchStreamToH264RepairFlow(RepairsFlow):
         for channel in chosen:
             coordinator = offerable[channel]
             try:
-                await coordinator.async_recheck_stream_codecs()
+                confirmed = await coordinator.async_recheck_stream_codecs()
             except Exception as error:  # pylint: disable=broad-except
                 _LOGGER.debug(
                     "Could not re-read the codecs of channel %s on %s: %s",
@@ -498,8 +529,14 @@ class SwitchStreamToH264RepairFlow(RepairsFlow):
                     self._address,
                     error,
                 )
+                confirmed = False
+            # ⚠ Unconfirmed is a failure, not a pass, @rroller on #1127. A
+            # read-back that said nothing about this channel proves nothing
+            # about the write, and treating "no news" as success is how a
+            # refused write would be reported as done.
+            if channel in failed:
                 continue
-            if channel not in failed and coordinator.get_stream_codec(0) != "H.264":
+            if not confirmed or coordinator.get_stream_codec(0) != "H.264":
                 failed.append(channel)
 
         if failed:
