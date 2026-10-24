@@ -1762,6 +1762,15 @@ class DahuaClient:
                 self._vth_identity_asked = False
                 self._vth_identity = None
                 raise
+            # ⚠ Recorded, and this is the one that matters most. The three
+            # calls that record below are cosmetic: a wrong vendor or a wrong
+            # model is a label. THIS one decides the device's identity, and
+            # when it falls back every entity is rebuilt under a new id the
+            # next time a credential changes (#805). It recorded nothing, so
+            # a dump could say `serial_is_derived_from_credentials: true` and
+            # `identity_fallbacks: {}` in the same breath and leave nobody any
+            # way to find out why (#1128).
+            self._note_identity_fallback("getSystemInfo (serial)", e)
             self.identity_derived_from_credentials = True
             return {"serialNumber": self.credential_hash()}
 
@@ -1797,6 +1806,16 @@ class DahuaClient:
         serve that action, which is a fact about the firmware; a 401 is it
         refusing the credentials, which is a different problem wearing the same
         device page.
+
+        ⚠ Called by the identity-DERIVING calls as well as the cosmetic ones,
+        and they are the ones worth having. A wrong vendor or model is a label.
+        A serial that falls back becomes an md5 of address, RTSP port, username
+        and password, so the same camera returns as a new device the next time
+        any of those changes (#805) and the old record stays behind as a
+        duplicate. Those three recorded nothing, so @Masterz69's dump on #1128
+        could say `serial_is_derived_from_credentials: true` and
+        `identity_fallbacks: {}` three lines apart and leave no way to find out
+        why.
 
         Once per client per question, because these are asked on every setup
         and a warning per poll would be worse than the silence it replaces.
@@ -2264,6 +2283,7 @@ class DahuaClient:
                 vth = await self._vth_identity_over_rpc2()
                 if vth:
                     return {"name": vth["type"]}
+            self._note_identity_fallback("getMachineName", e)
             self.identity_derived_from_credentials = True
             return {"name": self.credential_hash()}
 
@@ -2415,7 +2435,11 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=General.MachineName"
         try:
             return await self.get(url)
-        except aiohttp.ClientResponseError:
+        except aiohttp.ClientResponseError as e:
+            # Named rather than bare, so the status survives. This one
+            # discarded the exception entirely, so not even the log said what
+            # the device had answered.
+            self._note_identity_fallback("General.MachineName", e)
             self.identity_derived_from_credentials = True
             return {"table.General.MachineName": self.credential_hash()}
 
