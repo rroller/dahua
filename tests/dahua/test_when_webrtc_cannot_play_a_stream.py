@@ -138,7 +138,7 @@ def test_a_stream_the_device_said_nothing_about_is_not_reported():
 # --- the card ----------------------------------------------------------------
 
 
-def _coordinator(streams, monkeypatch, channel=11, address="10.0.0.5"):
+def _coordinator(streams, monkeypatch, channel=11, address="10.0.0.5", port=None):
     from custom_components.dahua import coordinator as coordinator_module
 
     raised, deleted = [], []
@@ -159,6 +159,11 @@ def _coordinator(streams, monkeypatch, channel=11, address="10.0.0.5"):
     coordinator._channel = channel
     coordinator._stream_codecs = streams
     coordinator.get_device_name = lambda: "CCTV in Server Room"
+    if port is not None:
+        # A real coordinator always has a client, and the card is keyed by the
+        # device it names rather than by the address. `port=None` keeps the
+        # older doubles that predate that and exercises the fallback.
+        coordinator.client = SimpleNamespace(device_key="{0}:{1}".format(address, port))
     return coordinator, raised, deleted
 
 
@@ -205,7 +210,46 @@ def test_the_card_can_be_acted_on(monkeypatch):
 
     _issue_id, kwargs = raised[0]
     assert kwargs["is_fixable"] is True
-    assert kwargs["data"] == {"address": "10.0.0.5"}
+    assert kwargs["data"]["address"] == "10.0.0.5"
+
+
+def test_the_card_names_the_device_not_just_the_address(monkeypatch):
+    """⭐ @rroller on #1127. Two Dahua boxes can sit behind one IP on different
+    ports, and this is encoder state, which belongs to the device rather than
+    to the network path. Keyed by address, the two shared one card and one
+    affected-channel set: he had the repair write H.264 to the box on port
+    8080 and clear the warning of the box on port 80, which was still sending
+    H.265.
+
+    The flow is handed nothing but `data`, so the device has to travel in it.
+    """
+    coordinator, raised, deleted = _coordinator(UNPLAYABLE, monkeypatch, port=80)
+
+    coordinator._async_report_unplayable_stream()
+
+    issue_id, kwargs = raised[0]
+    assert issue_id == "webrtc_cannot_play_10.0.0.5:80"
+    assert kwargs["data"] == {"address": "10.0.0.5", "device": "10.0.0.5:80"}
+    assert "webrtc_cannot_play_10.0.0.5" in deleted, (
+        "and the address-keyed card from #1048 goes, or an install that "
+        "already has one keeps it for ever"
+    )
+
+
+def test_two_boxes_on_one_address_get_their_own_cards(monkeypatch):
+    """The state behind the card, not just its id. One set per device, so one
+    box's affected channels cannot be listed on the other's card."""
+    first, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch, channel=0, port=80)
+    first._async_report_unplayable_stream()
+    second, raised_two, _d = _coordinator(UNPLAYABLE, monkeypatch, channel=5, port=8080)
+    second._async_report_unplayable_stream()
+
+    assert raised[0][0] == "webrtc_cannot_play_10.0.0.5:80"
+    assert raised[0][1]["translation_placeholders"]["channels"] == "0"
+    assert raised_two[-1][0] == "webrtc_cannot_play_10.0.0.5:8080"
+    assert (
+        raised_two[-1][1]["translation_placeholders"]["channels"] == "5"
+    ), "channel 0 belongs to the other box and must not be listed here"
 
 
 def test_eight_affected_channels_are_one_card(monkeypatch):
@@ -348,3 +392,91 @@ def test_a_camera_whose_table_was_refused_grows_nothing():
     assert "video_codec" not in attributes
     assert "audio" not in attributes
     assert attributes["integration"] == "dahua"
+
+
+# --- re-reading after a repair write -----------------------------------------
+#
+# ⭐ @rroller on #1127. The repair flow writes a codec and then has to ask the
+# device what it actually sends now. The setup reader was reused for that, and
+# it assigns whatever came back and re-judges the card from it. But
+# `async_get_config` answers {} for an HTTP refusal, so a read-back that failed
+# erased the known H.265 state and then DELETED the warning, having learned
+# nothing about the write at all.
+#
+# These drive the real coordinator method rather than a flow double, because
+# the first version of this was tested only through a double and three mutants
+# of the real method survived.
+
+
+def _rechecking(monkeypatch, answer, channel=11, raises=False):
+    coordinator, raised, deleted = _coordinator(
+        UNPLAYABLE, monkeypatch, channel=channel
+    )
+
+    async def _get_config(_name):
+        if raises:
+            raise RuntimeError("the device hung up")
+        return answer
+
+    coordinator.client = SimpleNamespace(
+        async_get_config=_get_config, device_key="10.0.0.5:80"
+    )
+    return coordinator, raised, deleted
+
+
+ANSWERED_H264 = {
+    "table.Encode[11].MainFormat[0].Video.Compression": "H.264",
+    "table.Encode[11].MainFormat[0].AudioEnable": "false",
+}
+
+
+async def test_a_real_answer_updates_the_codecs_and_says_so(monkeypatch):
+    coordinator, _raised, deleted = _rechecking(monkeypatch, ANSWERED_H264)
+
+    assert await coordinator.async_recheck_stream_codecs() is True
+    assert coordinator.get_stream_codec(0) == "H.264"
+    assert deleted, "H.264 is playable, so the card goes"
+
+
+async def test_an_empty_answer_keeps_what_is_held(monkeypatch):
+    """⭐ The reported case. {} is what `async_get_config` returns for a
+    refusal, and it is indistinguishable from a device with nothing to say."""
+    coordinator, _raised, deleted = _rechecking(monkeypatch, {})
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265", "not erased"
+    assert deleted == [], "and the warning is not cleared on an erasure"
+
+
+async def test_an_answer_about_another_channel_is_not_this_ones(monkeypatch):
+    """Encode is one table for the whole device. A reply carrying another
+    channel's rows is nonempty and still says nothing about this channel."""
+    coordinator, _raised, deleted = _rechecking(
+        monkeypatch,
+        {"table.Encode[3].MainFormat[0].Video.Compression": "H.264"},
+    )
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265"
+    assert deleted == []
+
+
+async def test_a_read_that_raises_is_not_a_confirmation(monkeypatch):
+    coordinator, _raised, deleted = _rechecking(monkeypatch, None, raises=True)
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265"
+    assert deleted == []
+
+
+def test_the_affected_channels_are_read_per_device(monkeypatch):
+    """`channels_that_cannot_be_played` is what the repair flow asks for the
+    list of channels to offer. Keyed by address it answered with the other
+    box's channels too, which is the same mix-up one layer down."""
+    first, _raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch, channel=0, port=80)
+    first._async_report_unplayable_stream()
+    second, _r, _d = _coordinator(UNPLAYABLE, monkeypatch, channel=5, port=8080)
+    second._async_report_unplayable_stream()
+
+    assert first.channels_that_cannot_be_played() == {0}
+    assert second.channels_that_cannot_be_played() == {5}
