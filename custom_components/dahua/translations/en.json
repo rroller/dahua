@@ -585,8 +585,27 @@
             "description": "You removed **{removed}**, and {dependents} referred to entities it provided:\n\n{names}\n\nThose entities no longer exist, so anything using them stops working quietly rather than reporting an error. Worth checking each one.\n\nThis is only a notice -- dismiss it once you have looked."
         },
         "webrtc_cannot_play": {
-            "title": "Dahua device at {address} sends video Home Assistant cannot play",
-            "description": "{count} channel(s) on the Dahua device at {address} send their main stream as H.265 with no audio track: channel {channels}. Home Assistant cannot play that combination in a browser, so live view for those channels fails.\n\n**The fix is on the device.** In its web interface, open Video > Encode for each channel listed and set the main stream's compression to H.264. Enabling audio instead does not help, because a browser still cannot decode H.265.\n\nH.264 at a bitrate chosen for H.265 looks a little softer, so consider raising it. This message clears itself once the device reports a stream Home Assistant can play."
+            "title": "Dahua device at {address} sends video some browsers cannot play",
+            "description": "{count} channel(s) on the Dahua device at {address} send their main stream as H.265 with no audio track: channel {channels}.\n\n**Live view for those channels fails on a browser that cannot decode H.265.** Home Assistant's fallback for such a browser asks go2rtc for the stream's audio-only view, and a stream with no audio track has none, so the attempt dies. A browser that can decode H.265 is served the video directly and is unaffected, so this may be costing you nothing. Open one of the listed channels and look before changing anything.\n\n**If live view does fail**, submitting this repair sets the main stream of the channels you pick to H.264, which every browser can play. Only channels whose encoder offers H.264 are listed.\n\nThe main stream is also what the device records. H.264 at a bitrate chosen for H.265 looks a little softer, so consider raising the bitrate afterwards, or change only the channels you watch live.",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Set these channels to H.264?",
+                        "description": "Pick the channels on {address} whose main stream should move from H.265 to H.264.\n\nOnly channels whose encoder offers H.264 are listed. The main stream is also what the device records, so changing a channel you never watch live costs recording efficiency for nothing. H.264 at a bitrate chosen for H.265 looks a little softer, and the bitrate is not changed here.\n\nLeaving everything unticked changes nothing.",
+                        "data": {
+                            "channels": "Channels"
+                        },
+                        "data_description": {
+                            "channels": "Each is written one field at a time and read back. A channel whose device accepted the write but did not change is reported as refused."
+                        }
+                    }
+                },
+                "abort": {
+                    "not_configured": "The device at this address is no longer set up.",
+                    "nothing_to_change": "Nothing was changed. Either no channel still needs it, or none of them offers H.264.",
+                    "write_refused": "At least one channel did not change. The device accepted the write and kept its old codec, which some Dahua firmware does. Set those channels in the device's own web interface, under Video > Encode."
+                }
+            }
         },
         "device_unreachable": {
             "title": "Dahua device at {address} is not responding",

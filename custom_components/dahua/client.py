@@ -2309,6 +2309,58 @@ class DahuaClient:
             return DEFAULT_EXTRA_STREAMS
         return parse_extra_streams(result.get("table.MaxExtraStream"))
 
+    async def async_get_encode_caps(self) -> dict:
+        """What the encoder may be set to, for every channel at once.
+
+        `encode.cgi?action=getConfigCaps` is the only read that says what a
+        stream *can* carry rather than what it carries now. Measured on a
+        DHI-NVR5464-16P-EI it answers for all channels in one 44 KB reply, so
+        this is deliberately host-wide and deliberately not called per channel.
+
+        It is also deliberately not called at setup or in the poll. Nothing
+        needs it until somebody opens the repair that offers to change a codec,
+        and the fan-out there has no `return_exceptions`, so a read this large
+        with no entity depending on it has no business in either
+        (#1006, and the gather note in AGENTS.md).
+
+        Returns {} rather than raising, like `async_get_config`: a device with
+        no such endpoint has nothing to offer, and that is an answer.
+        """
+        try:
+            return await self.get("/cgi-bin/encode.cgi?action=getConfigCaps")
+        except aiohttp.ClientResponseError:
+            return {}
+
+    async def async_set_stream_compression(
+        self, channel: int, stream_index: int, compression: str
+    ) -> bool:
+        """Set one stream's video codec, one field, one stream.
+
+        The address mirrors `parse_stream_codecs`' index convention: stream 0 is
+        `MainFormat[0]`, stream n is `ExtraFormat[n-1]`.
+
+        One field deliberately. A whole-table `setConfig` over RPC2 is refused
+        for size on at least one recorder, and naming any key the table does not
+        have makes the device decline the whole write while still answering 200
+        (#818, and the `Error` body note above). `verify_ok` is what turns that
+        declined write into a failure here instead of a success the caller
+        believes.
+
+        Answering True means the device accepted the write, which is not the
+        same as the stream having changed. The caller reads it back; see
+        `async_recheck_stream_codecs`.
+        """
+        if stream_index == 0:
+            address = "Encode[{0}].MainFormat[0].Video.Compression".format(channel)
+        else:
+            address = "Encode[{0}].ExtraFormat[{1}].Video.Compression".format(
+                channel, stream_index - 1
+            )
+        url = "/cgi-bin/configManager.cgi?action=setConfig&{0}={1}".format(
+            address, compression
+        )
+        return await self.get(url, True)
+
     async def async_get_alarm_output_slots(self) -> dict:
         """Return the number of physical alarm-output slots reported by the device."""
         return await self.get("/cgi-bin/alarm.cgi?action=getOutSlots")
