@@ -2349,6 +2349,12 @@ class DahuaClient:
         Answering True means the device accepted the write, which is not the
         same as the stream having changed. The caller reads it back; see
         `async_recheck_stream_codecs`.
+
+        Measured on a DHI-NVR5464-16P-EI, channel 11, both directions, with
+        ffprobe on the stream rather than a read of the config: H.264 to
+        H.265 gave `codec_name:hevc` and back again gave `codec_name:h264`.
+        So this firmware does follow the write. That is one firmware, which
+        is why the read back stays.
         """
         if stream_index == 0:
             address = "Encode[{0}].MainFormat[0].Video.Compression".format(channel)

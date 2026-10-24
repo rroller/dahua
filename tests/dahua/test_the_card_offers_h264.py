@@ -25,11 +25,23 @@ Which kind of viewer is watching is the one thing the server cannot see. So the
 card now reports the condition and names what it depends on, and the fix it used
 to describe in prose is offered as a flow.
 
-**The write itself is NOT hardware-verified.** The round trip was blocked by
-this environment's sandbox before it could run, so `async_set_stream_compression`
-is proved here against the URL it builds and the refusal it reports, and is
-unproven against a real encoder. That is why the flow reads back rather than
-trusting a 200, and why the PR says so.
+**The write is hardware-verified**, on the same DHI-NVR5464-16P-EI, channel
+11, round tripped in both directions with ffprobe reading the real stream
+rather than the device agreeing with its own config:
+
+    before          config H.264   stream codec_name:h264
+    write H.265     setConfig OK   config H.265   stream codec_name:hevc
+    revert H.264    setConfig OK   config H.264   stream codec_name:h264
+
+So this firmware follows a `Video.Compression` write, and the revert works,
+which is what [[dahua-config-writes-are-not-reversible]] says to establish
+before trusting any of it. Channel 11 was chosen because it was already
+H.264: a failed revert would have left it where its nine neighbours already
+are rather than degrading a channel anyone watches.
+
+The flow still reads back rather than trusting the 200. One firmware
+following the write is not every firmware, and #647 is the case where this
+same device family stored a value, answered OK and drove nothing.
 """
 
 from types import SimpleNamespace
