@@ -4869,11 +4869,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Deliberately additive. A device that answers `VTO` is one, whatever its
         model string says, which is what the list of prefixes below keeps
         failing to cover for rebadges (#690). But a device that answers
-        something else, or does not answer at all, still gets the list: no
-        Amcrest or Imou doorbell has been measured here, and a wrong negative
-        would take every doorbell entity away from people who have them today.
+        something else, or does not answer at all, still gets the list, and a
+        wrong negative would take every doorbell entity away from people who
+        have them today.
+
+        `DB` is the second answer that means doorbell, measured by @phabibjr
+        on a DH-DB6I in #1131: HTTP 200, `class=DB`, not `VTO`. So the Amcrest
+        and Imou family names itself too, and it names itself something the
+        VTO check alone does not recognise. Additive for the same reason as
+        above: it can only make a device a doorbell, never stop one being one.
         """
-        if getattr(self, "_device_class", "") == "VTO":
+        if getattr(self, "_device_class", "") in ("VTO", "DB"):
             return True
         m = self.model.upper()
         return (
@@ -4886,10 +4892,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     def is_amcrest_doorbell(self) -> bool:
-        """Returns true if this is an Amcrest doorbell - IMOU DB61i is identical"""
-        return self.model.upper().startswith("AD") or self.model.upper().startswith(
-            "DB6"
-        )
+        """Returns true if this is an Amcrest doorbell - IMOU DB61i is identical
+
+        The `DB6` family is matched as a prefix and also after a vendor prefix,
+        which is the same shape `is_doorbell` already allows for VTO: a rebadge
+        reports `DH-DB6I` rather than `DB6I`, and a prefix test alone takes
+        every doorbell entity away from it.
+
+        Reported and verified on hardware by @phabibjr in #1131: a DH-DB6I on
+        firmware 1.000.020000000.9.R, where the four doorbell sensors never
+        appeared and the button press was doing nothing, and where making this
+        match brought them back and lit `button_pressed` for about 5 seconds.
+
+        This gates more than those sensors. The illuminator light, the security
+        light select and one poll read are all behind it, so a device that
+        falls through here loses all of them silently. Deliberately not
+        extended to `AD`: two letters that short appear inside unrelated model
+        strings, and nothing has been measured for a vendor-prefixed one.
+        """
+        m = self.model.upper()
+        return m.startswith(("AD", "DB6")) or "-DB6" in m or "_DB6" in m
 
     def is_empiretech_doorbell(self) -> bool:
         """Returns true if this is an EmpireTech doorbell"""
