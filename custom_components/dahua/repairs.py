@@ -327,6 +327,29 @@ class RemoveLeftoverRowsRepairFlow(RepairsFlow):
         )
 
 
+def _channel_label(channel: int, coordinator=None) -> str:
+    """How one channel is named to the person deciding about it.
+
+    `Channel 3` is an index, and nobody has an index on their wall. The
+    recorder's own name for it is what the user recognises, so the picker says
+    `Channel 3 (BACKYARD)` and the same label is used in the text above it, so
+    the two lists can be compared without counting.
+
+    Falls back to the bare number for a channel with no name, for a name that
+    is only the index spelled out, and for a missing coordinator, which is the
+    case when a carded channel belongs to an entry that has since gone.
+    """
+    plain = "Channel %d" % channel
+    try:
+        name = (coordinator.get_device_name() or "").strip() if coordinator else ""
+    except Exception:  # pylint: disable=broad-except
+        # Nothing here is worth failing a repair dialog for.
+        name = ""
+    if not name or name.casefold() == plain.casefold():
+        return plain
+    return "%s (%s)" % (plain, name)
+
+
 class SwitchStreamToH264RepairFlow(RepairsFlow):
     """Move the main stream of the carded channels to H.264.
 
@@ -475,7 +498,9 @@ class SwitchStreamToH264RepairFlow(RepairsFlow):
                     {
                         vol.Required("channels", default=[]): cv.multi_select(
                             {
-                                str(channel): "Channel %d" % channel
+                                str(channel): _channel_label(
+                                    channel, offerable.get(channel)
+                                )
                                 for channel in sorted(offerable)
                             }
                         )
@@ -483,7 +508,10 @@ class SwitchStreamToH264RepairFlow(RepairsFlow):
                 ),
                 description_placeholders={
                     "address": str(self._address),
-                    "channels": ", ".join(str(channel) for channel in sorted(carded)),
+                    "channels": ", ".join(
+                        _channel_label(channel, coordinators.get(channel))
+                        for channel in sorted(carded)
+                    ),
                 },
             )
 
