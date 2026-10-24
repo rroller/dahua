@@ -167,3 +167,92 @@ async def test_a_timeout_still_propagates():
 
     with pytest.raises(TimeoutError):
         await client.get_device_type()
+
+
+# --- the fallbacks that decide the IDENTITY ----------------------------------
+#
+# ⭐ @Masterz69 on #1128 attached a dump reading, three lines apart:
+#
+#     serial_is_derived_from_credentials: true
+#     identity_fallbacks: {}
+#
+# Both true as written, and together they say nothing. The three calls above
+# record because they change a LABEL: a wrong vendor or model is cosmetic. The
+# three below change the device's IDENTITY, because a serial that falls back
+# becomes an md5 of address, RTSP port, username and password, and then the
+# same camera returns as a new device the next time any of those changes
+# (#805). Those three recorded nothing at all, so the field was empty in
+# exactly the case somebody would consult it for.
+#
+# This is the shape the observability memory warns about: a dump field that
+# answers a narrower question than the one it is being read for.
+
+
+def _derived(client):
+    return getattr(client, "identity_derived_from_credentials", False)
+
+
+def _recorded(client):
+    return dict(getattr(client, "_identity_fallbacks", {}) or {})
+
+
+async def test_a_derived_serial_says_which_call_fell_back():
+    client = _refusing(_client(), 400)
+
+    info = await client.async_get_system_info()
+
+    assert info["serialNumber"], "the identity itself is unchanged"
+    assert _derived(client) is True
+    assert _recorded(client) == {"getSystemInfo (serial)": 400}
+
+
+async def test_a_derived_name_says_so_too():
+    client = _refusing(_client(), 400)
+
+    await client.get_machine_name()
+
+    assert _derived(client) is True
+    assert "getMachineName" in _recorded(client)
+
+
+async def test_the_configured_machine_name_no_longer_swallows_the_status():
+    """This one caught the exception without naming it, so not even the log
+    said what the device had answered."""
+    client = _refusing(_client(), 403)
+
+    await client.async_get_machine_name()
+
+    assert _derived(client) is True
+    assert _recorded(client) == {"General.MachineName": 403}
+
+
+# 404 and 501 are `CONFIG_CGI_ABSENT`, which goes looking for a monitor's
+# identity over RPC2 before deciding anything, so they are a different path
+# and not this one's business.
+@pytest.mark.parametrize("status", [400, 401, 403, 500])
+async def test_whatever_the_status_the_reason_is_recorded(status):
+    """The status is the useful half, and it is the whole point of recording
+    the serial: a 401 is a credentials problem and a 400 is firmware that does
+    not serve the action, and they produce the same invented identity."""
+    client = _refusing(_client(), status)
+
+    await client.async_get_system_info()
+
+    assert _recorded(client) == {"getSystemInfo (serial)": status}
+
+
+async def test_an_invented_identity_is_never_silent():
+    """⭐ The claim the #1128 dump disproved, asserted directly rather than
+    one call at a time. Anything that sets the derived flag must also leave a
+    reason behind it, or the dump says "invented" and cannot say why."""
+    for call in (
+        lambda c: c.async_get_system_info(),
+        lambda c: c.get_machine_name(),
+        lambda c: c.async_get_machine_name(),
+    ):
+        client = _refusing(_client(), 400)
+
+        await call(client)
+
+        assert _derived(client) is True
+        assert _recorded(client), "derived an identity and recorded no reason"
