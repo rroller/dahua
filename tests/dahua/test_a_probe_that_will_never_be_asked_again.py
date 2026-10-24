@@ -904,6 +904,180 @@ async def test_a_registration_that_raises_is_remembered_not_just_released(hass):
     assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
 
 
+async def test_a_sibling_registering_cleanly_does_not_certify_the_other(hass):
+    """⭐⭐⭐ @rroller on #1125, third round, and the same mistake a third time.
+
+    ONE build returns TWO entities. The first one's `async_added_to_hass`
+    raises; the second registers normally. A registration failure was keyed by
+    (builder, channel_key, "registration"), which both entities share, so the
+    second one's success discarded the first one's failure. The gate reopened,
+    and the delayed scan offered the first entity's perfectly valid restored
+    row for deletion.
+
+    The keys the two previous rounds added were each the right fix one level
+    too high: a builder may not speak for another builder, a build may not
+    speak for a registration, and now an entity may not speak for its sibling.
+    """
+    entry, made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+
+    class _Breaks(MockEntity):
+        async def async_added_to_hass(self):
+            raise RuntimeError("registration blew up")
+
+    platform = MockEntityPlatform(hass, domain="switch", platform_name=DOMAIN)
+    platform.config_entry = entry
+    platform._setup_complete = True
+
+    # The order matters: the one that fails goes first, so the one that
+    # succeeds is the later writer and gets the chance to clear it.
+    broken = _Breaks(unique_id="SER_broken", name="broken")
+    fine = MockEntity(unique_id="SER_fine", name="fine")
+    calls = []
+
+    async def build(_coordinator):
+        calls.append(1)
+        return [broken, fine] if len(calls) > 1 else []
+
+    await _watching(
+        hass,
+        entry,
+        build,
+        lambda entities, **kwargs: platform._async_schedule_add_entities_for_entry(
+            entities
+        ),
+    )
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await _let_the_delayed_scan_run(hass)
+
+    assert (
+        late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
+    ), "both entities still release, or one bad add wedges the counter"
+    assert (
+        late.async_rebuilds_failed(hass, entry.entry_id) is True
+    ), "the sibling that registered cleanly must not clear the one that did not"
+    assert _issue(hass, entry) is None
+    assert er.async_get(hass).async_get(made["switch.gone"].entity_id) is not None
+
+
+async def test_two_siblings_registering_cleanly_do_clear_it(hass):
+    """The converse, so the fix above cannot be "never clear anything". Two
+    entities that both register leave nothing recorded, and the card is
+    offered as it was before any of this."""
+    entry, made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+
+    platform = MockEntityPlatform(hass, domain="switch", platform_name=DOMAIN)
+    platform.config_entry = entry
+    platform._setup_complete = True
+
+    first = MockEntity(unique_id="SER_first", name="first")
+    second = MockEntity(unique_id="SER_second", name="second")
+    calls = []
+
+    async def build(_coordinator):
+        calls.append(1)
+        return [first, second] if len(calls) > 1 else []
+
+    await _watching(
+        hass,
+        entry,
+        build,
+        lambda entities, **kwargs: platform._async_schedule_add_entities_for_entry(
+            entities
+        ),
+    )
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await _let_the_delayed_scan_run(hass)
+
+    assert late.async_rebuilds_outstanding(hass, entry.entry_id) == 0
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is False
+
+
+async def test_a_registration_that_raised_is_not_quietly_retried(hass):
+    """⚠ Written after mutating the fix above, not after reading it. With an
+    opaque per-attempt token, the mutant "a clean registration clears nothing"
+    passed all 80 tests, which said no test covered whether a registration
+    failure is ever recoverable. It is not, and that is the contract worth
+    pinning rather than the one I assumed.
+
+    The `created` set in `async_add_and_keep_watching` is per builder and per
+    entry, so a unique_id it has already handed to `async_add_entities` is
+    never offered again, whether or not that add worked. A later discovery
+    therefore does NOT retry an entity whose registration raised: the gate
+    stays shut until a reload, which is this module's stated answer for an
+    entity that never arrived.
+
+    Pinned because the alternative is attractive and wrong. Retrying would
+    reopen the gate on an entity that is most likely going to raise again,
+    and the card it would release offers to delete that entity's row.
+    """
+    entry, _made = await _entry_with_rows(hass)
+    coordinator = _Probing(hass, entry, refusals={})
+    entry.runtime_data = {0: coordinator}
+
+    platform = MockEntityPlatform(hass, domain="switch", platform_name=DOMAIN)
+    platform.config_entry = entry
+    platform._setup_complete = True
+
+    attempts = []
+
+    class _BreaksOnce(MockEntity):
+        async def async_added_to_hass(self):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError("registration blew up")
+
+    calls = []
+
+    async def build(_coordinator):
+        calls.append(1)
+        if len(calls) == 1:
+            return []
+        return [_BreaksOnce(unique_id="SER_flaky", name="flaky")]
+
+    await _watching(
+        hass,
+        entry,
+        build,
+        lambda entities, **kwargs: platform._async_schedule_add_entities_for_entry(
+            entities
+        ),
+    )
+    migrate.async_recheck_leftover_rows_when_late_work_settles(
+        hass, entry, [coordinator]
+    )
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await _let_the_delayed_scan_run(hass)
+
+    assert late.async_rebuilds_failed(hass, entry.entry_id) is True
+
+    late.async_notify_capability_discovered(
+        hass, entry.entry_id, coordinator.get_serial_number()
+    )
+    await _let_the_delayed_scan_run(hass)
+
+    assert attempts == [1], "the same unique_id is not handed to the platform twice"
+    assert (
+        late.async_rebuilds_failed(hass, entry.entry_id) is True
+    ), "and the gate stays shut, so the card is not offered until a reload"
+    assert _issue(hass, entry) is None
+
+
 async def test_a_disabled_row_aborting_is_not_a_failure(hass):
     """⚠ The other half of rroller's note. Home Assistant aborts an add for a
     disabled registry row on purpose, and `leftover_rows` excludes disabled

@@ -156,7 +156,7 @@ def _for_entry(hass, entry_id: str):
 
 
 def _note_failed(
-    hass, entry_id: str, builder, channel_key, failed: bool, kind="build"
+    hass, entry_id: str, builder, channel_key, failed: bool, kind="build", token=None
 ) -> None:
     """Remember, or forget, that one builder could not finish one channel.
 
@@ -172,17 +172,30 @@ def _note_failed(
     entity has succeeded at building; whether Home Assistant then managed to
     register that entity is a different question with a different answer, and
     the two were clearing each other.
+
+    ⚠ And by TOKEN, which is the same mistake a third time and the one that
+    survived two rounds. @rroller on #1125, reproduced through
+    `MockEntityPlatform` with two real entities from ONE late build: the first
+    one's `async_added_to_hass` raises, the second registers normally, and the
+    second's success discarded the first's failure because a builder and a
+    channel were all that identified it. `async_rebuilds_failed` went back to
+    False and the delayed scan offered the first entity's perfectly valid
+    restored row for deletion.
+
+    One entity may not certify another, so a registration carries a token of
+    its own and clears only that. Builds pass None, because a build's unit of
+    work really is the whole channel.
     """
     record = _for_entry(hass, entry_id)
     if record is None:
         return
     if failed:
-        # The object itself, not its id: it lives as long as the entry
-        # holds the listener that closes over it, and an id could be
+        # The objects themselves, not their ids: they live as long as the entry
+        # holds the listener that closes over them, and an id could be
         # reused by something else once it did not.
-        record["failed"].add((builder, channel_key, kind))
+        record["failed"].add((builder, channel_key, kind, token))
     else:
-        record["failed"].discard((builder, channel_key, kind))
+        record["failed"].discard((builder, channel_key, kind, token))
 
 
 def _change_outstanding(hass, entry_id: str, delta: int):
@@ -265,30 +278,71 @@ def _hold_until_registered(hass, entry_id: str, builder, channel_key, entities) 
         if _change_outstanding(hass, entry_id, 1) is None:
             return
 
-        async def _finished(_finish=finish) -> None:
+        # ⚠ One per ENTITY, and the whole point of it. Two entities from one
+        # build share a builder and a channel, so without this the one that
+        # registers cleanly discards the failure of the one that did not
+        # (@rroller, #1125).
+        #
+        # The `unique_id` rather than a fresh object, because it names the
+        # ENTITY and an opaque token would only name this ATTEMPT. No test
+        # separates the two today, and that is worth being straight about: the
+        # `created` set above means a builder never offers one unique_id
+        # twice, so a registration that raised is never retried and the clear
+        # below is not reached. The gate stays shut until a reload, which is
+        # this module's documented answer for an entity that never arrived.
+        # The unique_id is chosen as the honest identity, not because it
+        # currently buys a recovery.
+        #
+        # Falling back to an object for an entity with no unique_id: Home
+        # Assistant cannot give it a registry row at all, so it has no row to
+        # protect, and anything that cannot be identified must at least not be
+        # confused with something else.
+        token = getattr(entity, "unique_id", None) or object()
+
+        async def _finished(_finish=finish, _token=token) -> None:
             try:
                 await _finish()
             except Exception:
                 # Raised inside Home Assistant's own add task. Re-raised so HA
                 # still reports it, and remembered so the row this entity was
                 # going to fill is not offered for deletion in the meantime.
-                _note_failed(hass, entry_id, builder, channel_key, True, "registration")
+                _note_failed(
+                    hass,
+                    entry_id,
+                    builder,
+                    channel_key,
+                    True,
+                    "registration",
+                    _token,
+                )
                 raise
             else:
                 _note_failed(
-                    hass, entry_id, builder, channel_key, False, "registration"
+                    hass,
+                    entry_id,
+                    builder,
+                    channel_key,
+                    False,
+                    "registration",
+                    _token,
                 )
             finally:
                 _release(hass, entry_id)
 
         @callback
-        def _aborted(_abort=abort, _entity=entity) -> None:
+        def _aborted(_abort=abort, _entity=entity, _token=token) -> None:
             try:
                 _abort()
             finally:
                 if not _registration_was_skipped_on_purpose(hass, _entity):
                     _note_failed(
-                        hass, entry_id, builder, channel_key, True, "registration"
+                        hass,
+                        entry_id,
+                        builder,
+                        channel_key,
+                        True,
+                        "registration",
+                        _token,
                     )
                 _release(hass, entry_id)
 
