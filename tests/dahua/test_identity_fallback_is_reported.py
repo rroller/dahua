@@ -369,3 +369,80 @@ async def test_a_getserialno_that_raises_does_not_take_setup_down():
 
     assert info["serialNumber"]
     assert _derived(client) is True
+
+
+# --- and an adopted serial is not given back (#1141 review) -----------------
+#
+# @rroller reproduced this against the branch: a camera whose `getSystemInfo`
+# refuses and whose `getSerialNo` answers adopts the real serial, and
+# `migrate.py` moves the entry, its device and every entity row onto it. Have
+# `getSerialNo` refuse on the NEXT setup and the entry comes back up under the
+# old credential-derived hash while the registry still holds the serial, so
+# every platform builds a second set of entities beside the migrated ones.
+#
+# `CONF_REQUIRE_REPORTED_SERIAL` already existed for exactly this, and was
+# only ever persisted for monitors. Two halves to it: the client has to SAY it
+# took this path, and the policy check has to come after the alternate read
+# rather than before it, or the requirement would block the very question that
+# satisfies it.
+
+
+async def test_a_camera_that_adopted_the_other_cgi_says_so():
+    client, _asked = _answering_only_serial(_client())
+
+    await client.async_get_system_info()
+
+    assert client.identity_from_alternate_cgi is True
+
+
+async def test_a_camera_that_never_needed_it_does_not_say_so():
+    async def get(url, verify_ok=False):
+        return {"serialNumber": "REALSERIAL1234", "deviceType": "IPC"}
+
+    client = _client()
+    client.get = get
+
+    await client.async_get_system_info()
+
+    assert client.identity_from_alternate_cgi is False
+
+
+async def test_the_flag_is_false_before_anything_is_asked():
+    """Read off clients the suite builds with `object.__new__`, so it has to
+    be a class level default rather than set in __init__."""
+    assert DahuaClient.identity_from_alternate_cgi is False
+
+
+async def test_the_other_cgi_is_still_asked_under_the_requirement():
+    """⚠ The ordering half. The devices that reach the requirement are
+    exactly the ones that need the second question asked."""
+    client, asked = _answering_only_serial(_client())
+    client._require_reported_serial = True
+
+    info = await client.async_get_system_info()
+
+    assert info["serialNumber"] == "3E0164EPAN00095"
+    assert [url for url in asked if "getSerialNo" in url]
+
+
+async def test_an_adopted_camera_retries_rather_than_hashing():
+    """The regression itself. Both calls refuse on a device that has already
+    been migrated onto a reported serial."""
+    client = _refusing(_client(), 400)
+    client._require_reported_serial = True
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+
+    assert _derived(client) is False, "handed back the hash under the requirement"
+
+
+async def test_a_camera_without_the_requirement_still_gets_an_identity():
+    """The converse, so the check above cannot pass by always raising. A
+    device that has never been given a real serial must still set up."""
+    client = _refusing(_client(), 400)
+
+    info = await client.async_get_system_info()
+
+    assert info["serialNumber"]
+    assert _derived(client) is True
