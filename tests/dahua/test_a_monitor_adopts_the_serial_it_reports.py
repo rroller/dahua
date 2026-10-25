@@ -496,3 +496,215 @@ async def test_no_refusal_ever_prints_an_identity(hass, build):
     assert HASH not in said, said
     assert SECOND_HASH not in said, said
     assert SERIAL not in said, said
+
+
+# --- a row nothing is behind does not get to stop the upgrade (#1143) -------
+#
+# @wiiNinja could not get from 1.3.1 to 2.0 at all. The script on the issue
+# read his registry: 207 Dahua rows, one entry, 44 identities wanted by two
+# rows each, and all 44 the same shape.
+#
+#     binary_sensor.nvrgarage_motion_alarm      32 hex root   disabled by its device
+#     binary_sensor.nvrgarage_motion_alarm_2    real serial   live
+#
+# 44 out of 44, both ways: not one disabled row on a serial, not one live row
+# on a generated identity. The duplication had already happened, long before
+# this migration existed, and his automations were on the live `_2` names and
+# working.
+#
+# So it was refusing to protect entities that were in no danger, and the
+# entry retried for ever. He deleted one row by hand, which cleared one
+# collision out of 44 and changed nothing he could see.
+#
+# Refusing is still right wherever a live row is at stake, which is what the
+# conflict tests above hold. This is the case where it buys nothing.
+
+
+def _row(entities, entry, device, unique_id, object_id):
+    return entities.async_get_or_create(
+        "switch",
+        "dahua",
+        unique_id,
+        config_entry=entry,
+        device_id=device.id,
+        suggested_object_id=object_id,
+    )
+
+
+async def _two_devices(hass):
+    """The dead device and the one that replaced it, as #1143 has them."""
+    entry, dead_device, _created = await _entry_with_rows(hass, rows=())
+    live_device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("dahua", SERIAL)},
+        name="NVR Garage",
+    )
+    return entry, dead_device, live_device
+
+
+async def _switch_off(hass, device):
+    """Disable a device, and let that reach its entities.
+
+    ⚠ Two things cost a red run each. A row created with
+    `disabled_by=DEVICE` on an ENABLED device comes back enabled, and
+    disabling the device before the rows exist does not reach rows added
+    afterwards: the flag arrives through the device update, so the rows have
+    to be there first and the update has to be awaited. A fixture that gets
+    either wrong quietly tests the opposite case.
+    """
+    dr.async_get(hass).async_update_device(
+        device.id, disabled_by=dr.DeviceEntryDisabler.USER
+    )
+    await hass.async_block_till_done()
+
+
+async def _superseded_pair(hass, suffix="silence"):
+    """@wiiNinja's shape: a dead generated row beside the live serial one."""
+    entry, dead_device, live_device = await _two_devices(hass)
+    entities = er.async_get(hass)
+    dead = _row(
+        entities,
+        entry,
+        dead_device,
+        "{0}_{1}".format(HASH, suffix),
+        "nvrgarage_{0}".format(suffix),
+    )
+    live = _row(
+        entities,
+        entry,
+        live_device,
+        "{0}_{1}".format(SERIAL, suffix),
+        "nvrgarage_{0}_2".format(suffix),
+    )
+    await _switch_off(hass, dead_device)
+    assert entities.async_get(dead.entity_id).disabled_by, "fixture is not the shape"
+    assert not entities.async_get(live.entity_id).disabled_by
+    return entry, live_device, dead, live
+
+
+async def test_a_dead_row_blocked_by_a_live_one_does_not_stop_the_migration(hass):
+    """The report. Everything below is a property of this one working."""
+    entry, _live_device, _dead, _live = await _superseded_pair(hass)
+
+    await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert entry.unique_id == SERIAL, "the entry never got off the old identity"
+
+
+async def test_the_row_left_behind_is_left_exactly_as_it_was(hass):
+    """Passed over, not deleted and not altered. Clearing it is a separate
+    card with somebody pressing the button."""
+    entry, _live_device, dead, _live = await _superseded_pair(hass)
+
+    await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    still = er.async_get(hass).async_get(dead.entity_id)
+    assert still is not None, "deleted a row the user never agreed to lose"
+    assert still.unique_id == HASH + "_silence"
+    assert still.disabled_by, "re-enabled a row it was only meant to pass over"
+
+
+async def test_the_live_row_keeps_the_identity_it_already_had(hass):
+    entry, _live_device, _dead, live = await _superseded_pair(hass)
+
+    await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert er.async_get(hass).async_get(live.entity_id).unique_id == SERIAL + "_silence"
+
+
+async def test_everything_that_can_move_still_moves(hass):
+    """Passing one row over must not pass the rest over with it."""
+    entry, live_device, _dead, _live = await _superseded_pair(hass)
+    entities = er.async_get(hass)
+    movable = _row(
+        entities, entry, live_device, HASH + "_ring_volume", "nvrgarage_ring_volume"
+    )
+
+    await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    moved = entities.async_get(movable.entity_id)
+    assert moved.unique_id == SERIAL + "_ring_volume"
+    assert moved.entity_id == movable.entity_id, "entity IDs must not change"
+
+
+async def test_two_dead_rows_still_refuse(hass):
+    """Two ghosts say nothing about which is which, so that is a decision
+    rather than a tidy-up."""
+    entry, dead_device, other_device = await _two_devices(hass)
+    entities = er.async_get(hass)
+    _row(entities, entry, dead_device, HASH + "_silence", "nvrgarage_silence")
+    _row(entities, entry, other_device, SERIAL + "_silence", "nvrgarage_silence_2")
+    await _switch_off(hass, dead_device)
+    await _switch_off(hass, other_device)
+
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+
+async def test_a_live_row_that_cannot_move_still_refuses(hass):
+    """The control, stated here rather than left to the tests above: an
+    enabled row is a live entity and its fate is not a tidy-up."""
+    entry, device, created = await _entry_with_rows(hass, rows=("silence",))
+    entities = er.async_get(hass)
+    _row(entities, entry, device, SERIAL + "_silence", "nvrgarage_silence_2")
+
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert entities.async_get(created[0].entity_id).unique_id == HASH + "_silence"
+
+
+# --- and the same question one level up, on devices -------------------------
+#
+# His rows are disabled BY THEIR DEVICE, so the dead device is in the registry
+# too, and passing over only the entity rows would move the refusal rather
+# than remove it.
+
+
+async def test_a_dead_device_superseded_by_a_live_one_is_passed_over(hass):
+    entry, dead, live = await _two_devices(hass)
+    await _switch_off(hass, dead)
+    devices = dr.async_get(hass)
+
+    await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert devices.async_get(dead.id).identifiers == {("dahua", HASH)}
+    assert devices.async_get(live.id).identifiers == {("dahua", SERIAL)}
+    assert entry.unique_id == SERIAL
+
+
+async def test_a_dead_device_blocked_by_another_dead_one_still_refuses(hass):
+    entry, dead, other = await _two_devices(hass)
+    await _switch_off(hass, dead)
+    await _switch_off(hass, other)
+
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+
+async def test_a_registry_that_is_all_residue_reports_nothing_moved(hass):
+    """Forty four pairs and nothing else is a setup that simply proceeds."""
+    entry, dead_device, live_device = await _two_devices(hass)
+    entities = er.async_get(hass)
+    for index in range(44):
+        _row(
+            entities,
+            entry,
+            dead_device,
+            "{0}_{1}".format(HASH, index),
+            "nvrgarage_{0}".format(index),
+        )
+        _row(
+            entities,
+            entry,
+            live_device,
+            "{0}_{1}".format(SERIAL, index),
+            "nvrgarage_{0}_2".format(index),
+        )
+    await _switch_off(hass, dead_device)
+
+    moved = await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert moved == 0, "moved %d rows that were all residue" % moved
+    assert entry.unique_id == SERIAL
+    assert len(er.async_entries_for_config_entry(entities, entry.entry_id)) == 88

@@ -865,6 +865,49 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
     )
 
 
+def _is_residue(stale, holder) -> bool:
+    """Whether the one that cannot move is the one nothing is behind.
+
+    Both halves are required. A disabled row whose identity is wanted by
+    another disabled row is two ghosts and says nothing about which is which,
+    and an ENABLED row that cannot move is a live entity whose fate is a
+    decision rather than a tidy-up. Only disabled-blocked-by-enabled is
+    unambiguous, and that is the shape all 44 of @wiiNinja's pairs had.
+    """
+    return bool(getattr(stale, "disabled_by", None)) and not getattr(
+        holder, "disabled_by", None
+    )
+
+
+def _superseded_rows(entities, rows) -> set:
+    """The entity IDs among `rows` that are residue, by `_is_residue`."""
+    passed_over = set()
+    for row, target in rows:
+        held = entities.async_get_entity_id(row.domain, row.platform, target)
+        if held is None or held == row.entity_id:
+            continue
+        holder = entities.async_get(held)
+        if holder is not None and _is_residue(row, holder):
+            passed_over.add(row.entity_id)
+    return passed_over
+
+
+def _superseded_devices(devices, stale_devices) -> set:
+    """The device IDs among `stale_devices` that are residue."""
+    passed_over = set()
+    for device, identifiers in stale_devices:
+        holders = [
+            other
+            for identifier in identifiers
+            if identifier[0] == DOMAIN
+            for other in devices_with_identifier(devices, identifier)
+            if other.id != device.id
+        ]
+        if holders and all(_is_residue(device, other) for other in holders):
+            passed_over.add(device.id)
+    return passed_over
+
+
 def _named(device) -> str:
     """Say which device, the way its owner sees it.
 
@@ -960,6 +1003,43 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
             for domain, value in device.identifiers
         )
     ]
+    # ⚠ Rows and devices that cannot move, where nothing is behind them.
+    #
+    # @wiiNinja on #1143 could not upgrade 1.3.1 to 2.0 at all. His registry
+    # held 44 pairs, each one a disabled row carrying the generated identity
+    # next to a live row already carrying the recorder's real serial. 44 out
+    # of 44 the same way round: every stale row disabled, every live row not.
+    # Duplication that had already happened, long before this migration ran.
+    #
+    # So the migration was refusing over rows nothing is behind, to protect
+    # entities that were in no danger, and the entry retried for ever.
+    #
+    # Refusing is still right wherever a live row is at stake, and the
+    # collision tests hold that. This is the one case where it buys nothing:
+    # the row cannot move, it is disabled, and the identity it wants is held
+    # by the enabled row that replaced it. Leaving it exactly as it is changes
+    # nothing about it, and the "registry rows nothing is behind" card can
+    # then offer to clear it with somebody pressing the button. Nothing here
+    # deletes anything.
+    moved_on = _superseded_rows(entities, rows)
+    if moved_on:
+        rows = [pair for pair in rows if pair[0].entity_id not in moved_on]
+    passed_over = _superseded_devices(devices, stale_devices)
+    if passed_over:
+        stale_devices = [
+            pair for pair in stale_devices if pair[0].id not in passed_over
+        ]
+    if moved_on or passed_over:
+        _LOGGER.warning(
+            "%s: leaving %d registry rows and %d devices on their old identity. "
+            "Each is disabled and the identity it would take is already held by "
+            "an enabled one, so there is nothing behind them to move. They are "
+            "offered for removal separately",
+            entry.data.get(CONF_ADDRESS),
+            len(moved_on),
+            len(passed_over),
+        )
+
     new_entry_id = replacement(entry.unique_id)
     if not rows and not stale_devices and new_entry_id == entry.unique_id:
         return 0
