@@ -1799,8 +1799,54 @@ class DahuaClient:
             # `identity_fallbacks: {}` in the same breath and leave nobody any
             # way to find out why (#1128).
             self._note_identity_fallback("getSystemInfo (serial)", e)
+
+            # Before inventing one, ask the other way. `getSystemInfo` is not
+            # the only CGI that knows the serial, and on at least one camera
+            # it is the only one that refuses: @Masterz69's DH-C4K-P answers
+            # `getSystemInfo` with HTTP 400 and `getSerialNo` with `sn=...`
+            # (#1128). The recorder and the doorbell here answer both, so this
+            # is an extra question for the devices that need it rather than a
+            # replacement for the one that works.
+            #
+            # Worth the extra round trip precisely here, because the thing
+            # being decided is the device's identity. The hash below changes
+            # when the password does and every entity is rebuilt under a new
+            # id (#805); a reported serial never does.
+            reported = await self._serial_over_cgi()
+            if reported:
+                return {"serialNumber": reported}
+
             self.identity_derived_from_credentials = True
             return {"serialNumber": self.credential_hash()}
+
+    async def _serial_over_cgi(self) -> str | None:
+        """The serial from `magicBox.cgi?action=getSerialNo`, or None.
+
+        Only ever called where the identity would otherwise be invented, so a
+        device that answers `getSystemInfo` never pays for it.
+
+        Never raises. This runs inside the branch whose whole job is to keep
+        setup alive with some identity, so a second refusal has to fall
+        through to the hash rather than take the entry down with it.
+        """
+        try:
+            answer = await self.get("/cgi-bin/magicBox.cgi?action=getSerialNo")
+        except Exception as error:  # pylint: disable=broad-except
+            self._note_identity_fallback("getSerialNo", error)
+            return None
+        serial = str((answer or {}).get("sn") or "").strip()
+        if not serial:
+            # An empty answer is not a serial. Taking it would give every
+            # device that answers this way the same identity.
+            _LOGGER.debug("%s answered getSerialNo with no serial in it", self._address)
+            return None
+        _LOGGER.info(
+            "%s would not serve getSystemInfo but named its serial through "
+            "getSerialNo, so it keeps a real identity rather than one derived "
+            "from its credentials",
+            self._address,
+        )
+        return serial
 
     def credential_hash(self) -> str:
         """The identity this device gets when it will not state its own.
