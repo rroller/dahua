@@ -590,12 +590,12 @@
                 "step": {
                     "confirm": {
                         "title": "Set these channels to H.264?",
-                        "description": "**Ticking a channel changes it on the recorder:** its main stream is encoded as H.264 instead of H.265. Nothing is written until you press Submit, and leaving every channel unticked changes nothing.\n\n**Why this is being offered.** These channels on {address} send their main stream as H.265 with no audio track: {channels}. A browser that cannot decode H.265 falls back to asking for the stream's audio-only view, and a stream with no audio has none, so live view fails for that browser. A browser that can decode H.265 is served the video directly and sees nothing wrong, so this may already be working for you. Open one of them and look before changing anything.\n\n**What it costs.** The main stream is also what the recorder records, so switching a channel you never watch live gains nothing. H.264 at a bitrate chosen for H.265 looks a little softer, and the bitrate is not changed here.\n\nOnly channels whose encoder offers H.264 can be listed, so the picker below may be shorter than the list above.",
+                        "description": "**Ticking a channel re-encodes its main stream as H.264 instead of H.265, on the recorder.** Nothing is written until you press Submit.\n\n**Why.** These channels on {address} send H.265 with no audio track: {channels}. A browser that cannot decode H.265 asks for the audio-only view instead, and there is no audio, so live view fails. A browser that can decode H.265 is fine, so open one and look before changing anything.\n\n**Cost.** The main stream is also what the recorder records, and H.264 at a bitrate chosen for H.265 looks a little softer. Switching a channel you never watch live gains nothing.\n\nOnly channels whose encoder offers H.264 are listed, so the picker may be shorter than the list above.",
                         "data": {
                             "channels": "Channels to switch to H.264"
                         },
                         "data_description": {
-                            "channels": "Each ticked channel is written one field at a time and read back. A channel whose device accepted the write and kept H.265 anyway is reported back to you rather than quietly counted as done."
+                            "channels": "Each ticked channel is written and read back. One that accepts the write and stays on H.265 anyway is reported, not counted as done."
                         }
                     }
                 },
