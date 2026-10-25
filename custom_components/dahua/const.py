@@ -97,6 +97,12 @@ CONF_MANUAL_SECURITY_LIGHT = "manual_security_light"
 # Ask go2rtc not to open the RTSP talk channel. It otherwise holds it for as
 # long as HA streams, which puts doorbells in a call state -- see #595.
 CONF_DISABLE_BACKCHANNEL = "disable_backchannel"
+
+# The user has looked at live view, found H.265 plays fine in the browsers they
+# use, and asked to stop being warned about it (#1138). Per entry, so one
+# recorder's decision does not silence another's, and an option rather than a
+# hidden store so it can be undone in the same place it is seen.
+CONF_ACCEPT_H265 = "accept_h265"
 CONF_AUTHORIZED_PLATES = "authorized_plates"
 CONF_AUTHORIZED_HOLD_TIME = "authorized_hold_time"
 

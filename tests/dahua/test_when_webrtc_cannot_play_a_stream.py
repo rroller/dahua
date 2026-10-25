@@ -558,3 +558,117 @@ async def test_a_full_answer_is_still_a_confirmation(monkeypatch):
     assert await coordinator.async_recheck_stream_codecs() is True
     assert coordinator.get_stream_codec(0) == "H.264"
     assert _card_was_cleared(deleted)
+
+
+# --- the card has to be dismissible (#1138) ----------------------------------
+#
+# @billjes has five H.265 channels on an Amcrest NV5232E-16P-EI with live view
+# working in Chrome on Windows and in the iOS app, so for him the card
+# describes a failure that does not happen. He had no way to put it down:
+#
+#   - a fixable issue offers its fix flow, not Home Assistant's Ignore
+#   - submitting the picker with nothing ticked changed nothing and the card
+#     came straight back
+#
+# So the choice became explicit, and it is remembered, because deleting the
+# issue alone would last until the next refresh re-raised it.
+
+
+def _entry(options=None):
+    return SimpleNamespace(options=options or {}, entry_id="abc")
+
+
+def test_a_card_is_raised_when_nothing_has_been_chosen(monkeypatch):
+    """The baseline the rest of this section is measured against."""
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    coordinator.config_entry = _entry()
+
+    coordinator._async_report_unplayable_stream()
+
+    assert len(raised) == 1
+
+
+def test_accepting_h265_stops_the_card_being_raised(monkeypatch):
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    coordinator.config_entry = _entry({"accept_h265": True})
+
+    coordinator._async_report_unplayable_stream()
+
+    assert not raised, "the card came back after being dismissed"
+
+
+def test_accepting_h265_also_clears_a_card_already_standing(monkeypatch):
+    """Not raising is not enough. The card is already on their dashboard."""
+    coordinator, _raised, deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    coordinator.config_entry = _entry({"accept_h265": True})
+
+    coordinator._async_report_unplayable_stream()
+
+    assert "webrtc_cannot_play_10.0.0.5" in deleted
+
+
+def test_the_option_being_off_is_not_the_option_being_set(monkeypatch):
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    coordinator.config_entry = _entry({"accept_h265": False})
+
+    coordinator._async_report_unplayable_stream()
+
+    assert len(raised) == 1
+
+
+def test_a_coordinator_with_no_entry_still_raises(monkeypatch):
+    """The doubles here build what each case needs and nothing more.
+
+    A new reader of `config_entry` that demanded it took nine of these down.
+    Showing the card to somebody who never chose is the right way to be wrong.
+    """
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    assert not hasattr(coordinator, "config_entry")
+
+    coordinator._async_report_unplayable_stream()
+
+    assert len(raised) == 1
+
+
+def test_the_decision_is_per_entry_and_not_global():
+    """One recorder's answer must not silence another's."""
+    from custom_components.dahua import h265_was_accepted
+
+    assert h265_was_accepted(_entry({"accept_h265": True}))
+    assert not h265_was_accepted(_entry())
+    assert not h265_was_accepted(None)
+
+
+def test_the_flow_offers_both_ways_out():
+    """Changing nothing has to be reachable, and by choosing it rather than by
+    submitting an empty picker: ticking nothing is what an accidental Submit
+    looks like, and reading that as "never warn me again" would turn a slip
+    into a permanent silent setting."""
+    import asyncio
+
+    from custom_components.dahua.repairs import SwitchStreamToH264RepairFlow
+
+    flow = SwitchStreamToH264RepairFlow({"address": "10.0.0.5", "device": "d"})
+    shown = {}
+    flow.async_show_menu = lambda **kwargs: shown.update(kwargs) or kwargs
+
+    asyncio.run(flow.async_step_init())
+
+    assert shown["menu_options"] == ["confirm", "keep_h265"]
+
+
+def test_every_menu_option_has_a_string():
+    """A menu option with no translation renders as its raw key."""
+    import json
+    from pathlib import Path
+
+    en = json.loads(
+        (
+            Path(__file__).parents[2] / "custom_components/dahua/translations/en.json"
+        ).read_text(encoding="utf-8")
+    )
+    step = en["issues"]["webrtc_cannot_play"]["fix_flow"]["step"]["init"]
+
+    assert set(step["menu_options"]) == {"confirm", "keep_h265"}
+    for key, label in step["menu_options"].items():
+        assert label.strip(), key

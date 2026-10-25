@@ -334,3 +334,54 @@ def test_a_setting_that_moved_onto_the_channel_kept_its_wording():
             channel[key],
             options[key],
         )
+
+
+# --- and the options form, derived the same way (#1140 review) --------------
+#
+# Everything above derives the add form's fields from its schema. The options
+# form had no such test, so `accept_h265` went onto it in #1140 with no string
+# and would have rendered as its raw key to anybody opening Configure to undo
+# the choice. @rroller caught it in review.
+#
+# Derived from the real schema rather than a list, so it covers the next field
+# as well as that one.
+
+
+async def _options_schema_fields(hass):
+    """Every top level field the options form really asks, from the form."""
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.dahua.config_flow import DahuaOptionsFlowHandler
+    from custom_components.dahua.const import DOMAIN
+
+    entry = MockConfigEntry(domain=DOMAIN, data={"address": "10.0.0.1"}, options={})
+    entry.add_to_hass(hass)
+
+    handler = DahuaOptionsFlowHandler()
+    handler.hass = hass
+    # Home Assistant resolves config_entry by looking the id up in hass, so the
+    # entry has to be registered and the handler has to carry its id.
+    handler.handler = entry.entry_id
+    handler.options = {}
+    shown = await handler.async_step_user()
+    return {str(key.schema) for key in shown["data_schema"].schema}
+
+
+async def test_every_field_the_options_form_asks_has_a_label(hass):
+    """A field with no string renders as its raw key, which is what somebody
+    sees in the one place they were told to go to undo something."""
+    asked = await _options_schema_fields(hass)
+    labelled = set(EN["options"]["step"]["user"].get("data", {}))
+
+    # The collapsed platform section is labelled under `sections`, not here.
+    bare = asked - labelled - {OPTIONS_SECTION_PLATFORMS}
+
+    assert not bare, "options form asks %s with no English label" % sorted(bare)
+
+
+async def test_the_options_form_describes_only_fields_it_asks(hass):
+    """`data_description` renders under its field, so an orphan renders nowhere."""
+    asked = await _options_schema_fields(hass)
+    described = set(EN["options"]["step"]["user"].get("data_description", {}))
+
+    assert not described - asked, "describes %s" % sorted(described - asked)

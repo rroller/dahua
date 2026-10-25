@@ -38,6 +38,7 @@ from .dhip import DhipLoginRefused, async_dhip_session
 from .migrate import CHANNEL_SUBENTRY
 from .flow_preview import async_drop_preview, async_store_preview, preview_url
 from .const import (
+    CONF_ACCEPT_H265,
     ALL_EVENTS,
     CONF_ADDRESS,
     CONF_ALL_CHANNELS,
@@ -1847,6 +1848,15 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
             vol.Required(
                 CONF_DISABLE_BACKCHANNEL,
                 default=self.options.get(CONF_DISABLE_BACKCHANNEL, False),
+            )
+        ] = bool
+        # Set by the unplayable-stream repair when somebody chooses to keep
+        # H.265 (#1138). Here as well so the decision can be undone in the
+        # place it would be looked for, rather than only by editing storage.
+        schema[
+            vol.Required(
+                CONF_ACCEPT_H265,
+                default=self.options.get(CONF_ACCEPT_H265, False),
             )
         ] = bool
         schema[

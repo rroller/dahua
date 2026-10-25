@@ -116,12 +116,14 @@
                     "manual_siren": "Manually enable Siren entity",
                     "manual_security_light": "Manually enable Security Light entity",
                     "disable_backchannel": "Don't open the two-way audio channel when streaming (fixes a doorbell stuck in a call, or talkback in the Dahua/Amcrest app; disables talking from Home Assistant)",
+                    "accept_h265": "Keep H.265 and stop warning that live view may not play (turn off to have the check come back)",
                     "authorized_plates": "Authorized license plates (comma-separated, e.g. ABC1234, XYZ5678)",
                     "authorized_hold_time": "Authorized vehicle hold time (seconds to remain ON)",
                     "area": "Area (moves this device to it)",
                     "labels": "Labels (applied to every camera on this device)"
                 },
                 "data_description": {
+                    "accept_h265": "The check reports that a channel sends H.265 with no audio track, which many browsers will not play. It cannot see your browser. Enable this if live view works for you, and the warning is dismissed for this device.",
                     "manual_siren": "Enable this if your camera has a working siren, but the integration did not create the Siren entity.",
                     "manual_security_light": "Enable this if your camera has a working security light, but the integration did not create the Security Light entity."
                 },
@@ -600,6 +602,14 @@
             "title": "Dahua device at {address} sends video some browsers cannot play",
             "fix_flow": {
                 "step": {
+                    "init": {
+                      "title": "Some channels send H.265 with no audio",
+                      "description": "**Only some browsers are affected.** A browser that cannot decode H.265 asks for the audio-only view instead, and there is no audio, so live view fails for that viewer. A browser that can decode H.265 is fine.\n\nSo look at live view first, in the browsers and apps you actually use. If it works, nothing here needs changing and the second option puts this away for good.",
+                      "menu_options": {
+                        "confirm": "Switch some channels to H.264",
+                        "keep_h265": "Live view works for me, keep H.265 and stop asking"
+                      }
+                    },
                     "confirm": {
                         "title": "Set these channels to H.264?",
                         "description": "**Ticking a channel re-encodes its main stream as H.264 instead of H.265, on the recorder.** Nothing is written until you press Submit.\n\n**Why.** These channels on {address} send H.265 with no audio track: {channels}. A browser that cannot decode H.265 asks for the audio-only view instead, and there is no audio, so live view fails. A browser that can decode H.265 is fine, so open one and look before changing anything.\n\n**Cost.** The main stream is also what the recorder records, and H.264 at a bitrate chosen for H.265 looks a little softer. Switching a channel you never watch live gains nothing.\n\nOnly channels whose encoder offers H.264 are listed, so the picker may be shorter than the list above.",
