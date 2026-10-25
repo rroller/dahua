@@ -1,5 +1,6 @@
 """Dahua API Client."""
 
+import datetime
 import logging
 import re
 import socket
@@ -715,6 +716,33 @@ def _cache_lifetime(url: str) -> int:
 # ptz control, door open -- is a write. Unrecognised is treated as a write,
 # which is the safe way round.
 READ_ACTION_PREFIX = "action=get"
+
+# How far a clock may land from what it was sent before the write is called a
+# refusal. Generous on purpose: the value goes out over a round trip and the
+# device's own clock is only accurate to the second, so a couple of seconds is
+# the write working. Anything beyond this is the device having ignored it, or
+# having read the value as a different timezone.
+CLOCK_SET_TOLERANCE_SECONDS = 90
+
+# What `NTP.Port` holds when nobody has changed it, on both devices measured
+# for #436. Only used to decide whether a device with no port field at all is
+# a problem: asking for the default on a device that has no field for it is
+# not, and asking for 8123 is.
+NTP_DEFAULT_PORT = 123
+
+
+def _same_setting(held, wanted) -> bool:
+    """Whether a CGI read-back value is the one that was asked for.
+
+    Everything a CGI read returns is a string, and a device may answer `True`
+    for a boolean it was sent as `true`, so booleans compare without case.
+    Everything else compares exactly once stripped.
+    """
+    held = str(held).strip()
+    wanted = str(wanted).strip()
+    if wanted.lower() in ("true", "false"):
+        return held.lower() == wanted.lower()
+    return held == wanted
 
 
 class DahuaWriteDeclined(ConnectionError):
@@ -2192,6 +2220,183 @@ class DahuaClient:
             # This RPC2 write bypasses get(), which normally clears the shared
             # five-minute config cache. Refresh must see the new settings.
             clear_host_cache(self._device)
+
+    async def async_get_ntp_config(self) -> dict:
+        """The device's NTP table, or an empty one if it serves none.
+
+        **Two shapes, and one recorder carries both at once.** Measured on a
+        DHI-NVR5464-16P-EI:
+
+            table.NTP.Address=au.pool.ntp.org            the flat one
+            table.NTP.ServerList[0].Address=...          the list
+            table.NTP.ServerList[1].Address=...
+
+        Which of the two that recorder actually follows is not known, and
+        nothing it reports says. `async_set_ntp_server` writes every shape the
+        table has rather than guessing, which is the lesson of #458 where
+        `VideoInMode` has three shapes and only one was handled.
+
+        **A doorbell may have no server field at all.** A VTO2000A serves this
+        table with `TimeZone` and `TimeZoneDesc` and nothing else, identically
+        over CGI and over RPC2, so there is no server on it to set. That is
+        the device class #436 was raised about, which is why callers check
+        what came back instead of assuming the fields are there.
+        """
+        return await self.async_get_config("NTP")
+
+    @staticmethod
+    def ntp_server_slots(table: dict) -> list[str]:
+        """The key prefixes this table will take a server on, in write order.
+
+        Empty means the device has no NTP server field, which is a real answer
+        and not a failed read: see `async_get_ntp_config`.
+        """
+        slots = []
+        if "table.NTP.Address" in table:
+            slots.append("NTP")
+        if "table.NTP.ServerList[0].Address" in table:
+            slots.append("NTP.ServerList[0]")
+        return slots
+
+    async def async_set_ntp_server(
+        self, address: str, port: int = 123, update_period: int = None
+    ) -> None:
+        """Point the device's clock at an NTP server, and check it took.
+
+        Every shape the table has is written, for the reason in
+        `async_get_ntp_config`. `ServerList[1]` is left alone, so a device
+        following the list keeps whatever fallback it had.
+
+        **Read back, because this family says no in two voices.** A refused
+        write comes back as HTTP 200 with the body `Error`, which `get` already
+        catches, and a field the device does not have comes back as 200 with
+        nothing changed at all, which only a read-back can see (#937, #647).
+        """
+        if not address or not address.strip():
+            raise ValueError("an NTP server address is required")
+        address = address.strip()
+
+        table = await self.async_get_ntp_config()
+        slots = self.ntp_server_slots(table)
+        if not slots:
+            held = sorted(k.split(".", 2)[-1] for k in table) or ["nothing"]
+            raise ValueError(
+                "{0} has no NTP server field, so there is nothing to point at "
+                "{1}. Its NTP table holds only {2}".format(
+                    self._address, address, ", ".join(held)
+                )
+            )
+
+        # Only fields this table actually has. A `setConfig` naming a field the
+        # device does not serve is refused outright for the whole request, so
+        # asking for one would lose the fields that would have worked.
+        wanted = {}
+        if "table.NTP.Enable" in table:
+            wanted["NTP.Enable"] = "true"
+        for slot in slots:
+            wanted["{0}.Address".format(slot)] = address
+            if "table.{0}.Port".format(slot) in table:
+                wanted["{0}.Port".format(slot)] = str(int(port))
+            if slot != "NTP" and "table.{0}.Enable".format(slot) in table:
+                wanted["{0}.Enable".format(slot)] = "true"
+        if update_period is not None:
+            if "table.NTP.UpdatePeriod" not in table:
+                raise ValueError(
+                    "{0} has no NTP.UpdatePeriod field, so the poll interval "
+                    "cannot be set on it".format(self._address)
+                )
+            wanted["NTP.UpdatePeriod"] = str(int(update_period))
+        if int(port) != NTP_DEFAULT_PORT and not [
+            key for key in wanted if key.endswith(".Port")
+        ]:
+            raise ValueError(
+                "{0} has no NTP port field, so it cannot be pointed at port "
+                "{1}".format(self._address, int(port))
+            )
+
+        await self.get(
+            "/cgi-bin/configManager.cgi?action=setConfig&"
+            + "&".join(
+                "{0}={1}".format(key, quote(value, safe=""))
+                for key, value in wanted.items()
+            )
+        )
+
+        # ⚠ Every requested field, not just the address. @rroller found on
+        # #1139 that checking the address alone reports success for a write
+        # the device ignored entirely, whenever the address it already held
+        # was the one being asked for: Enable could stay false, the port could
+        # stay 123, the poll interval could stay 60, and Home Assistant said
+        # it was done. A clock left pointed at the wrong UDP port, reported as
+        # set, is worse than a refusal.
+        written = await self.async_get_ntp_config()
+        refused = []
+        for key, value in sorted(wanted.items()):
+            held = written.get("table.{0}".format(key))
+            if held is None:
+                refused.append("{0} is not in the table it read back".format(key))
+            elif not _same_setting(held, value):
+                refused.append("{0} is {1!r}, not {2!r}".format(key, str(held), value))
+        if refused:
+            raise DahuaWriteDeclined(
+                "{0} took the NTP write and did not apply all of it: {1}".format(
+                    self._address, "; ".join(refused)
+                )
+            )
+
+    async def async_set_device_time(self, when) -> None:
+        """Set the device's own clock. `when` is a naive local datetime.
+
+        **Local time, and measured rather than assumed.** On a VTO2000A at
+        firmware 3.120.0000.0.R the clock moved by exactly the 299 seconds it
+        was sent, and no daylight saving shift was applied on top of it, so
+        what goes on the wire is the device's local time and not UTC. The
+        device keeps its own `NTP.TimeZone` and its `Locales` DST table, and
+        this touches neither.
+
+        **The whole box, not one channel.** A clock belongs to an address.
+        Calling this against one channel of a recorder sets the recorder's
+        clock and every channel with it, which is what the service
+        description has to say.
+
+        **Read back.** `result: true` from a device that changed nothing is a
+        shape this family has, so the answer is not taken as consent.
+        """
+        stamp = when.strftime("%Y-%m-%d %H:%M:%S")
+
+        async def write(rpc2):
+            await rpc2.request("global.setCurrentTime", params={"time": stamp})
+
+        await self._rpc2_shared_call(write)
+
+        async def read(rpc2):
+            answer = await rpc2.request("global.getCurrentTime", params=None)
+            return ((answer.get("params") or {}) or {}).get("time")
+
+        now_on_device = await self._rpc2_shared_call(read)
+        if not now_on_device:
+            # The clock was set and the device would not say what it now
+            # reads. Not worth failing the call over: the write itself was
+            # acknowledged, and the next read will show it.
+            _LOGGER.debug("%s set its clock but would not read it back", self._address)
+            return
+        try:
+            landed = datetime.datetime.strptime(now_on_device, "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            _LOGGER.debug(
+                "%s answered its clock as %r, which is not a time",
+                self._address,
+                now_on_device,
+            )
+            return
+        out_by = abs((landed - when).total_seconds())
+        if out_by > CLOCK_SET_TOLERANCE_SECONDS:
+            raise DahuaWriteDeclined(
+                "{0} answered the clock write and still reads {1}, {2:.0f}s "
+                "from the {3} it was sent".format(
+                    self._address, now_on_device, out_by, stamp
+                )
+            )
 
     def vth_own_video(self) -> bool | None:
         """For a VTH identified over RPC2: whether it has a camera. None otherwise.

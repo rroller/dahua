@@ -748,3 +748,64 @@ set_privacy_mode:
       default: true
       selector:
         boolean:
+
+set_time:
+  name: Set Device Clock
+  description: >-
+    Sets the device's own clock. Leave the time empty to use Home Assistant's
+    current local time, which is the usual case for a camera with no internet
+    access. This sets the whole device: on a recorder it moves the recorder's
+    clock and every channel with it.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    time:
+      name: Time
+      description: >-
+        The local time to set. Leave empty for Home Assistant's current time.
+      example: "2026-10-25 23:37:56"
+      selector:
+        datetime:
+
+set_ntp_server:
+  name: Set NTP Server
+  description: >-
+    Points the device's clock at an NTP server and enables NTP. Refused on a
+    device that has no NTP server setting, which includes some doorbells, and
+    on those use Set Device Clock instead. This sets the whole device, not one
+    channel.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    address:
+      name: Address
+      description: The NTP server's host name or IP address
+      required: true
+      example: "192.168.0.10"
+      selector:
+        text:
+    port:
+      name: Port
+      description: The NTP server's port
+      example: 123
+      default: 123
+      selector:
+        number:
+          min: 1
+          max: 65535
+          mode: box
+    update_period:
+      name: Update period
+      description: >-
+        How often the device syncs, in minutes. Left empty, the device keeps
+        whatever it already had.
+      example: 60
+      selector:
+        number:
+          min: 1
+          max: 65535
+          mode: box

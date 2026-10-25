@@ -64,6 +64,8 @@ SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
 SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
 SERVICE_PLAY_AUDIO = "play_audio"
+SERVICE_SET_TIME = "set_time"
+SERVICE_SET_NTP_SERVER = "set_ntp_server"
 SERVICE_VTO_OPEN_DOOR = "vto_open_door"
 SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_VTO_CALL = "vto_call"
@@ -476,6 +478,30 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
             ),
         },
         "async_play_audio",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SET_TIME,
+        {
+            # Left out means "now", which is the whole point of the service:
+            # an automation should not have to template the current time in.
+            vol.Optional("time"): cv.datetime,
+        },
+        "async_set_time",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SET_NTP_SERVER,
+        {
+            vol.Required("address"): vol.All(str, vol.Strip, vol.Length(min=1)),
+            vol.Optional("port", default=123): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=65535)
+            ),
+            vol.Optional("update_period"): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=65535)
+            ),
+        },
+        "async_set_ntp_server",
     )
 
     platform.async_register_entity_service(
@@ -971,6 +997,82 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             channel, config_type, mode
         )
         await self._coordinator.async_refresh()
+
+    async def async_set_time(self, time=None):
+        """Set the device's clock, defaulting to Home Assistant's own (#436).
+
+        **This sets the whole device, not this channel.** A clock belongs to
+        an address, so calling it against one channel of a recorder moves the
+        recorder's clock and every channel on it.
+
+        Local time, measured: a VTO2000A took the value as its own local time
+        and applied no daylight saving shift on top. Home Assistant's local
+        time is what goes out, so a device whose timezone is set to something
+        else will end up reading Home Assistant's wall clock rather than its
+        own. That is the behaviour this service is for, and the alternative
+        is `set_ntp_server` on a device that has the field.
+        """
+        when = time or dt_util.now()
+        # The device takes a naive local stamp, so an aware datetime is
+        # converted rather than having its offset dropped: a caller passing
+        # a UTC time should land on the right wall clock, not 11 hours out.
+        if when.tzinfo is not None:
+            when = when.astimezone(dt_util.DEFAULT_TIME_ZONE).replace(tzinfo=None)
+        try:
+            await self._coordinator.client.async_set_device_time(when)
+        except DahuaWriteDeclined as declined:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="clock_not_accepted",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(declined),
+                },
+            ) from declined
+        except (Rpc2MethodRefused, ClientError, OSError) as error:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="clock_could_not_be_set",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(error),
+                },
+            ) from error
+
+    async def async_set_ntp_server(
+        self, address: str, port: int = 123, update_period: int = None
+    ):
+        """Point the device at an NTP server (#436).
+
+        Refused outright on a device with no NTP server field rather than
+        reported as done. A VTO2000A's NTP table holds its timezone and
+        nothing else, and a doorbell is exactly what #436 asked about, so
+        this has to be able to say so.
+
+        Like `set_time`, this is the whole device and not one channel.
+        """
+        try:
+            await self._coordinator.client.async_set_ntp_server(
+                address, port=port, update_period=update_period
+            )
+        except (DahuaWriteDeclined, ValueError) as declined:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="ntp_server_not_accepted",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(declined),
+                },
+            ) from declined
+        except (ClientError, OSError) as error:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="ntp_server_could_not_be_set",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(error),
+                },
+            ) from error
 
     async def async_play_audio(self, media_content_id: str, audio_format: str = None):
         """Play a clip through this channel's own speaker (#177).
