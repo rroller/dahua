@@ -724,6 +724,26 @@ READ_ACTION_PREFIX = "action=get"
 # having read the value as a different timezone.
 CLOCK_SET_TOLERANCE_SECONDS = 90
 
+# What `NTP.Port` holds when nobody has changed it, on both devices measured
+# for #436. Only used to decide whether a device with no port field at all is
+# a problem: asking for the default on a device that has no field for it is
+# not, and asking for 8123 is.
+NTP_DEFAULT_PORT = 123
+
+
+def _same_setting(held, wanted) -> bool:
+    """Whether a CGI read-back value is the one that was asked for.
+
+    Everything a CGI read returns is a string, and a device may answer `True`
+    for a boolean it was sent as `true`, so booleans compare without case.
+    Everything else compares exactly once stripped.
+    """
+    held = str(held).strip()
+    wanted = str(wanted).strip()
+    if wanted.lower() in ("true", "false"):
+        return held.lower() == wanted.lower()
+    return held == wanted
+
 
 class DahuaWriteDeclined(ConnectionError):
     """The device answered a write with 200 and the word Error.
@@ -2267,29 +2287,60 @@ class DahuaClient:
                 )
             )
 
-        fields = ["NTP.Enable=true"]
+        # Only fields this table actually has. A `setConfig` naming a field the
+        # device does not serve is refused outright for the whole request, so
+        # asking for one would lose the fields that would have worked.
+        wanted = {}
+        if "table.NTP.Enable" in table:
+            wanted["NTP.Enable"] = "true"
         for slot in slots:
-            fields.append("{0}.Address={1}".format(slot, quote(address, safe="")))
-            fields.append("{0}.Port={1}".format(slot, int(port)))
-            if slot != "NTP":
-                fields.append("{0}.Enable=true".format(slot))
+            wanted["{0}.Address".format(slot)] = address
+            if "table.{0}.Port".format(slot) in table:
+                wanted["{0}.Port".format(slot)] = str(int(port))
+            if slot != "NTP" and "table.{0}.Enable".format(slot) in table:
+                wanted["{0}.Enable".format(slot)] = "true"
         if update_period is not None:
-            fields.append("NTP.UpdatePeriod={0}".format(int(update_period)))
+            if "table.NTP.UpdatePeriod" not in table:
+                raise ValueError(
+                    "{0} has no NTP.UpdatePeriod field, so the poll interval "
+                    "cannot be set on it".format(self._address)
+                )
+            wanted["NTP.UpdatePeriod"] = str(int(update_period))
+        if int(port) != NTP_DEFAULT_PORT and not [
+            key for key in wanted if key.endswith(".Port")
+        ]:
+            raise ValueError(
+                "{0} has no NTP port field, so it cannot be pointed at port "
+                "{1}".format(self._address, int(port))
+            )
 
         await self.get(
-            "/cgi-bin/configManager.cgi?action=setConfig&" + "&".join(fields)
+            "/cgi-bin/configManager.cgi?action=setConfig&"
+            + "&".join(
+                "{0}={1}".format(key, quote(value, safe=""))
+                for key, value in wanted.items()
+            )
         )
 
+        # ⚠ Every requested field, not just the address. @rroller found on
+        # #1139 that checking the address alone reports success for a write
+        # the device ignored entirely, whenever the address it already held
+        # was the one being asked for: Enable could stay false, the port could
+        # stay 123, the poll interval could stay 60, and Home Assistant said
+        # it was done. A clock left pointed at the wrong UDP port, reported as
+        # set, is worse than a refusal.
         written = await self.async_get_ntp_config()
-        unchanged = [
-            slot
-            for slot in slots
-            if written.get("table.{0}.Address".format(slot)) != address
-        ]
-        if unchanged:
+        refused = []
+        for key, value in sorted(wanted.items()):
+            held = written.get("table.{0}".format(key))
+            if held is None:
+                refused.append("{0} is not in the table it read back".format(key))
+            elif not _same_setting(held, value):
+                refused.append("{0} is {1!r}, not {2!r}".format(key, str(held), value))
+        if refused:
             raise DahuaWriteDeclined(
-                "{0} took the NTP server write and kept its old value on {1}".format(
-                    self._address, ", ".join(unchanged)
+                "{0} took the NTP write and did not apply all of it: {1}".format(
+                    self._address, "; ".join(refused)
                 )
             )
 
