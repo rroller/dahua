@@ -109,3 +109,104 @@ jobs:
         run: |
           gh release upload --clobber --repo "$GITHUB_REPOSITORY" \
             -- "$RELEASE_TAG" dahua.zip
+
+  visible:
+    runs-on: "ubuntu-latest"
+    name: Check HACS can see the release
+    # Only for a real publish. A workflow_dispatch re-run is usually aimed at an
+    # older tag to repair its zip, and that tag is not supposed to be newest.
+    if: github.event_name == 'release'
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      # HACS does not sort. It walks the REST releases list in the order the API
+      # returns it and keeps the first entry of the kind it wants, in
+      # hacs/repositories/base.py:
+      #
+      #     for release in releases:
+      #         if release.draft:            continue
+      #         elif release.prerelease:     if prerelease is None: prerelease = tag
+      #         else:                        last_version = tag; break
+      #
+      # and `GET /repos/{owner}/{repo}/releases` promises no ordering at all. The
+      # only sorting the docs promise is for `releases/latest`. So the first entry
+      # is whatever the API felt like returning first, and it has already been
+      # wrong here: 2.0.0-rc.10 came back THIRD, behind rc.9 and rc.8, while
+      # GraphQL asked at the same moment put it first. Every beta user stayed on
+      # rc.9 and was told there was no update (#1134).
+      #
+      # A release nobody is offered is not much better than a release that will
+      # not install, which is what the job above guards, so this is checked the
+      # same way.
+      - name: Ask the API HACS asks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # HACS sends no pagination arguments, so it gets the default page of 30.
+          # Ask for exactly that, or this guard judges a list HACS never sees.
+          #
+          # Retry on absence only. A release takes a moment to appear, and a tag
+          # that is simply missing is not evidence about ordering.
+          for attempt in 1 2 3 4 5; do
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" > releases.json
+            if jq -e --arg t "$RELEASE_TAG" 'any(.[]; .tag_name == $t)' releases.json > /dev/null; then
+              break
+            fi
+            echo "$RELEASE_TAG is not in the list yet, attempt $attempt"
+            sleep 15
+          done
+
+      - name: Refuse a release HACS would not offer
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          tag = os.environ["RELEASE_TAG"]
+          releases = json.load(open("releases.json"))
+
+          # Drafts are skipped by HACS before anything else, so they cannot be
+          # what stands in the way.
+          live = [r for r in releases if not r.get("draft")]
+          mine = next((r for r in live if r.get("tag_name") == tag), None)
+
+          if mine is None:
+              print(
+                  "::error::%s is not in the first 30 releases the API returns, so "
+                  "HACS cannot see it at all" % tag
+              )
+              sys.exit(1)
+
+          if mine.get("prerelease"):
+              # A prerelease has to be the very first live entry. Not merely the
+              # first prerelease: the loop BREAKS on the first full release, so a
+              # prerelease listed behind one is never reached and `prerelease`
+              # stays None.
+              blocker = live[0]
+              ok = blocker.get("tag_name") == tag
+              audience = "anyone on the beta channel"
+          else:
+              # A full release only has to be the first full one. Prereleases
+              # ahead of it set `prerelease` and keep going.
+              blocker = next(r for r in live if not r.get("prerelease"))
+              ok = blocker.get("tag_name") == tag
+              audience = "anyone on the stable channel"
+
+          if ok:
+              print("%s is first, so HACS will offer it to %s" % (tag, audience))
+              sys.exit(0)
+
+          print(
+              "::error::%s is not the release HACS will offer to %s. The API "
+              "returns %s ahead of it, and HACS takes the first entry without "
+              "sorting, so the update will not be offered." % (tag, audience, blocker.get("tag_name"))
+          )
+          print(
+              "::error::Nothing is wrong with the release itself. Cut the next one "
+              "on a later UTC day, or tell people to pick the version by hand. See "
+              "issue #1134 for the measurement."
+          )
+          print("::error::Order returned: %s" % ", ".join(r.get("tag_name", "?") for r in live[:6]))
+          sys.exit(1)
+          PY
