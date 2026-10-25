@@ -203,9 +203,11 @@ jobs:
               "sorting, so the update will not be offered." % (tag, audience, blocker.get("tag_name"))
           )
           print(
-              "::error::Nothing is wrong with the release itself. Cut the next one "
-              "on a later UTC day, or tell people to pick the version by hand. See "
-              "issue #1134 for the measurement."
+              "::error::Nothing is wrong with the release itself. A release cut on a "
+              "later UTC day is PREDICTED to sort first, from a model fitted to this "
+              "repository rather than a documented rule, so confirm it with the curl "
+              "in issue #1134 before relying on it. Otherwise tell people to pick the "
+              "version by hand."
           )
           print("::error::Order returned: %s" % ", ".join(r.get("tag_name", "?") for r in live[:6]))
           sys.exit(1)
