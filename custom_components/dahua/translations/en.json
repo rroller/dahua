@@ -588,6 +588,14 @@
             "title": "Dahua device at {address} sends video some browsers cannot play",
             "fix_flow": {
                 "step": {
+                    "init": {
+                      "title": "Some channels send H.265 with no audio",
+                      "description": "**Only some browsers are affected.** A browser that cannot decode H.265 asks for the audio-only view instead, and there is no audio, so live view fails for that viewer. A browser that can decode H.265 is fine.\n\nSo look at live view first, in the browsers and apps you actually use. If it works, nothing here needs changing and the second option puts this away for good.",
+                      "menu_options": {
+                        "confirm": "Switch some channels to H.264",
+                        "keep_h265": "Live view works for me, keep H.265 and stop asking"
+                      }
+                    },
                     "confirm": {
                         "title": "Set these channels to H.264?",
                         "description": "**Ticking a channel re-encodes its main stream as H.264 instead of H.265, on the recorder.** Nothing is written until you press Submit.\n\n**Why.** These channels on {address} send H.265 with no audio track: {channels}. A browser that cannot decode H.265 asks for the audio-only view instead, and there is no audio, so live view fails. A browser that can decode H.265 is fine, so open one and look before changing anything.\n\n**Cost.** The main stream is also what the recorder records, and H.264 at a bitrate chosen for H.265 looks a little softer. Switching a channel you never watch live gains nothing.\n\nOnly channels whose encoder offers H.264 are listed, so the picker may be shorter than the list above.",

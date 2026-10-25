@@ -374,7 +374,49 @@ class SwitchStreamToH264RepairFlow(RepairsFlow):
         self._device = data.get("device")
 
     async def async_step_init(self, user_input: dict | None = None):
-        return await self.async_step_confirm()
+        """Two ways out, because one of them used to be missing (#1138).
+
+        @billjes has five H.265 channels and live view working in Chrome and
+        the iOS app, so the right answer for him is to change nothing. There
+        was no way to say that: a fixable issue offers its flow instead of an
+        Ignore, and submitting the picker with nothing ticked left the card
+        exactly where it was.
+
+        Submitting an empty picker is deliberately still not the way to say
+        it. Ticking nothing is what an accidental Submit looks like, and
+        reading it as "never warn me again" would turn a slip into a silent
+        permanent setting. It has to be chosen.
+        """
+        return self.async_show_menu(
+            step_id="init", menu_options=["confirm", "keep_h265"]
+        )
+
+    async def async_step_keep_h265(self, user_input: dict | None = None):
+        """Record that H.265 plays here, and take the card down.
+
+        Written to the config entry's options rather than to a store, so it
+        appears in the entry's own settings and can be turned back on in the
+        place somebody would look for it.
+        """
+        from . import CONF_ACCEPT_H265
+        from .coordinator import ISSUE_WEBRTC_CANNOT_PLAY
+
+        coordinators = self._coordinators()
+        if not coordinators:
+            return self.async_abort(reason="not_configured")
+
+        entries = {}
+        for coordinator in coordinators.values():
+            entry = coordinator.config_entry
+            entries[entry.entry_id] = entry
+        for entry in entries.values():
+            self.hass.config_entries.async_update_entry(
+                entry, options={**entry.options, CONF_ACCEPT_H265: True}
+            )
+
+        issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(self._device or self._address)
+        ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+        return self.async_create_entry(title="", data={})
 
     def _coordinators(self) -> dict:
         """Every loaded coordinator on this DEVICE, by channel index.

@@ -35,6 +35,7 @@ from .ivs import (  # noqa: F401  pylint: disable=unused-import
 )
 
 from .const import (
+    CONF_ACCEPT_H265,
     CONF_ADDRESS,
     CONF_CHANNEL,
     CONF_EVENTS,
@@ -305,6 +306,25 @@ def get_configured_events(entry: ConfigEntry) -> list:
     if CONF_EVENTS in entry.data:
         return list(entry.data[CONF_EVENTS] or [])
     return list(DEFAULT_EVENTS)
+
+
+def h265_was_accepted(entry: ConfigEntry | None) -> bool:
+    """Whether this entry's owner said H.265 plays fine for them (#1138).
+
+    @billjes has five channels on H.265 with no audio track and live view
+    working in every browser he uses, so the card was describing a problem he
+    does not have and there was no way to put it down: a fixable issue offers
+    its flow rather than an Ignore, and submitting the flow with nothing
+    ticked changed nothing and left the card standing.
+
+    Deliberately not a channel list. The card is about whether a viewer's
+    browser can decode H.265, which is a property of the browsers rather than
+    of any one channel, so a sixth channel going the same way is not news to
+    somebody who has already said this.
+    """
+    if entry is None:
+        return False
+    return bool(entry.options.get(CONF_ACCEPT_H265))
 
 
 def get_configured_use_https(entry: ConfigEntry):

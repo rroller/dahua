@@ -4203,6 +4203,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             return
 
+        # Asked and answered. The card describes a conditional failure, and
+        # somebody who has looked at live view and found H.265 plays in the
+        # browsers they use has answered the condition for their install
+        # (#1138). Raising it again every refresh is then nagging about a
+        # problem they do not have, and a fixable issue offers its flow rather
+        # than an Ignore, so there was no way to put it down.
+        #
+        # Deleted as well as not raised, so the decision clears a card that is
+        # already standing instead of waiting for the condition to change.
+        #
+        # `getattr`, because this is a new reader of `config_entry` on a path
+        # the test doubles reach with `object.__new__` and only the attributes
+        # each case needs. Demanding it here took nine of them down with an
+        # AttributeError, and a card shown to somebody who never chose is the
+        # right way to be wrong anyway.
+        from . import h265_was_accepted
+
+        if h265_was_accepted(getattr(self, "config_entry", None)):
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+
         ir.async_create_issue(
             self.hass,
             DOMAIN,
