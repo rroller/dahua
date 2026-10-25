@@ -865,6 +865,17 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
     )
 
 
+def _named(device) -> str:
+    """Say which device, the way its owner sees it.
+
+    A registry ID is unique and means nothing to anybody reading a setup
+    error. The name is what is on the device page. Never the identifier
+    itself: that is the credential-derived hash (#1143).
+    """
+    label = getattr(device, "name_by_user", None) or getattr(device, "name", None)
+    return "%s (%s)" % (label, device.id) if label else str(device.id)
+
+
 async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) -> int:
     """Adopt a reported serial while preserving entity IDs and device metadata.
 
@@ -954,35 +965,85 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
         return 0
 
     def preflight():
-        targets = set()
+        # Every refusal below names BOTH sides. @wiiNinja on #1143 upgraded a
+        # recorder, got one entity ID and no way to tell what was in the way,
+        # and the entry then retried for ever. One side of a collision is not
+        # something anybody can act on.
+        #
+        # They name both sides and stop there. Which duplicate should win is a
+        # policy question with real blast radius, and a wrong remedy printed
+        # with this much confidence is worse than none: an entity rename in
+        # Home Assistant moves the entity ID, not the unique ID the collision
+        # is on, so it would not clear anything.
+        #
+        # None of these messages may carry a unique ID. The identity being
+        # moved away from is an md5 of address, RTSP port, username and
+        # password, this text is shown on the UI and gets screenshotted into
+        # issues, and that would put the password up for an offline attack.
+        targets = {}
         for row, target in rows:
             key = (row.domain, row.platform, target)
+            claimed = targets.get(key)
+            if claimed is not None:
+                raise ValueError(
+                    "Serial migration entity conflict: %s and %s would both become "
+                    "the same entity." % (claimed, row.entity_id)
+                )
             held = entities.async_get_entity_id(*key)
-            if key in targets or (held is not None and held != row.entity_id):
-                raise ValueError("Serial migration entity conflict: " + row.entity_id)
-            targets.add(key)
+            if held is not None and held != row.entity_id:
+                raise ValueError(
+                    "Serial migration entity conflict: %s cannot take the identity "
+                    "it needs because %s already holds it." % (row.entity_id, held)
+                )
+            targets[key] = row.entity_id
             current = entities.async_get(row.entity_id)
             if current is None or current.unique_id != row.unique_id:
                 raise ValueError("Serial migration registry changed; retry setup")
-        device_targets = set()
+        device_targets = {}
         for device, identifiers in stale_devices:
             for identifier in identifiers:
                 if identifier[0] != DOMAIN:
                     continue
-                held = devices_with_identifier(devices, identifier)
-                if identifier in device_targets or any(
-                    other.id != device.id for other in held
-                ):
-                    raise ValueError("Serial migration device conflict: " + device.id)
-                device_targets.add(identifier)
+                claimed = device_targets.get(identifier)
+                if claimed is not None:
+                    raise ValueError(
+                        "Serial migration device conflict: devices %s and %s would "
+                        "both become the same device." % (claimed, _named(device))
+                    )
+                other = next(
+                    (
+                        held
+                        for held in devices_with_identifier(devices, identifier)
+                        if held.id != device.id
+                    ),
+                    None,
+                )
+                if other is not None:
+                    raise ValueError(
+                        "Serial migration device conflict: device %s cannot take the "
+                        "identity it needs because device %s already holds it."
+                        % (_named(device), _named(other))
+                    )
+                device_targets[identifier] = _named(device)
             current = devices.async_get(device.id)
             if current is None or current.identifiers != device.identifiers:
                 raise ValueError("Serial migration registry changed; retry setup")
-        if new_entry_id != entry.unique_id and any(
-            other.entry_id != entry.entry_id and other.unique_id == new_entry_id
-            for other in hass.config_entries.async_entries(DOMAIN)
-        ):
-            raise ValueError("Serial migration config entry conflict")
+        if new_entry_id != entry.unique_id:
+            other = next(
+                (
+                    candidate
+                    for candidate in hass.config_entries.async_entries(DOMAIN)
+                    if candidate.entry_id != entry.entry_id
+                    and candidate.unique_id == new_entry_id
+                ),
+                None,
+            )
+            if other is not None:
+                raise ValueError(
+                    "Serial migration config entry conflict: this device cannot take "
+                    "the identity it reports because the entry %r already holds it."
+                    % (other.title,)
+                )
 
     preflight()
     backup = await _async_backup_once(hass)
