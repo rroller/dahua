@@ -970,6 +970,12 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
         # and the entry then retried for ever. One side of a collision is not
         # something anybody can act on.
         #
+        # They name both sides and stop there. Which duplicate should win is a
+        # policy question with real blast radius, and a wrong remedy printed
+        # with this much confidence is worse than none: an entity rename in
+        # Home Assistant moves the entity ID, not the unique ID the collision
+        # is on, so it would not clear anything.
+        #
         # None of these messages may carry a unique ID. The identity being
         # moved away from is an md5 of address, RTSP port, username and
         # password, this text is shown on the UI and gets screenshotted into
@@ -981,15 +987,13 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
             if claimed is not None:
                 raise ValueError(
                     "Serial migration entity conflict: %s and %s would both become "
-                    "the same entity. Remove or rename one of them."
-                    % (claimed, row.entity_id)
+                    "the same entity." % (claimed, row.entity_id)
                 )
             held = entities.async_get_entity_id(*key)
             if held is not None and held != row.entity_id:
                 raise ValueError(
                     "Serial migration entity conflict: %s cannot take the identity "
-                    "it needs because %s already holds it. Remove or rename %s."
-                    % (row.entity_id, held, held)
+                    "it needs because %s already holds it." % (row.entity_id, held)
                 )
             targets[key] = row.entity_id
             current = entities.async_get(row.entity_id)
@@ -1017,8 +1021,8 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
                 if other is not None:
                     raise ValueError(
                         "Serial migration device conflict: device %s cannot take the "
-                        "identity it needs because device %s already holds it. Remove "
-                        "%s." % (_named(device), _named(other), _named(other))
+                        "identity it needs because device %s already holds it."
+                        % (_named(device), _named(other))
                     )
                 device_targets[identifier] = _named(device)
             current = devices.async_get(device.id)
@@ -1037,8 +1041,8 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
             if other is not None:
                 raise ValueError(
                     "Serial migration config entry conflict: this device cannot take "
-                    "the identity it reports because the entry %r already holds it. "
-                    "Remove that entry." % (other.title,)
+                    "the identity it reports because the entry %r already holds it."
+                    % (other.title,)
                 )
 
     preflight()
