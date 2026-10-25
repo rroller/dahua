@@ -384,3 +384,115 @@ async def test_a_target_claimed_during_backup_stops_before_changes(hass, monkeyp
         await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
     assert entities.async_get(created[0].entity_id).unique_id == HASH + "_silence"
     assert entry.unique_id == HASH
+
+
+# --- a refusal has to name both sides (#1143) -------------------------------
+#
+# @wiiNinja upgraded 1.3.1 to 2.0 and setup stopped with
+#
+#     Serial migration entity conflict: binary_sensor.amcrestnvr_motion_alarm
+#
+# and nothing else. That is one entity ID out of two, and the one it names is
+# the row being MOVED rather than whatever is standing in its place, so the
+# only action it supports is deleting the wrong row. He deleted the wrong row.
+#
+# Stopping is right, and the tests above hold that: a half-finished move is
+# far worse than a failed one. What was wrong is that the entry then retried
+# for ever on a condition no amount of retrying clears, with nothing to act on.
+#
+# Two different collisions produce that one sentence and they want opposite
+# fixes, so it has to say which:
+#
+#   - two legacy rows both want one new identity, which is an #805 duplicate
+#     set after an address or password change
+#   - the new identity is already held, so the legacy row has nowhere to go
+#
+# ⚠ And none of it may print a unique ID. The identity being left behind is
+# md5(address_rtspport_username_password); this text lands on the UI and gets
+# screenshotted into issues, and that is the password offered up for an
+# offline attack. The parametrised test at the end is the one that holds that
+# line, and it covers every refusal rather than the one being added today.
+
+SECOND_HASH = "0123456789abcdef0123456789abcdef"
+
+
+async def _collision_two_legacy_rows(hass):
+    """The #805 shape: one suffix under two generated roots."""
+    entry, device, created = await _entry_with_rows(hass, rows=("silence",))
+    twin = er.async_get(hass).async_get_or_create(
+        "switch",
+        "dahua",
+        SECOND_HASH + "_silence",
+        config_entry=entry,
+        device_id=device.id,
+        suggested_object_id="spare_monitor_silence",
+    )
+    return entry, [created[0].entity_id, twin.entity_id]
+
+
+async def _collision_target_already_held(hass):
+    """The report's shape: something already carries the new identity."""
+    entry, device, created = await _entry_with_rows(hass, rows=("silence",))
+    holder = er.async_get(hass).async_get_or_create(
+        "switch",
+        "dahua",
+        SERIAL + "_silence",
+        config_entry=entry,
+        device_id=device.id,
+        suggested_object_id="spare_monitor_silence",
+    )
+    return entry, [created[0].entity_id, holder.entity_id]
+
+
+async def _collision_device_already_held(hass):
+    entry, _device, _created = await _entry_with_rows(hass)
+    other = MockConfigEntry(domain="dahua", data={"address": "10.0.0.231"})
+    other.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=other.entry_id,
+        identifiers={("dahua", SERIAL)},
+        name="Spare Monitor",
+    )
+    return entry, ["Hallway Monitor", "Spare Monitor"]
+
+
+async def _collision_entry_already_held(hass):
+    entry, _device, _created = await _entry_with_rows(hass)
+    MockConfigEntry(
+        domain="dahua", unique_id=SERIAL, title="Spare Hallway Monitor"
+    ).add_to_hass(hass)
+    return entry, ["Spare Hallway Monitor"]
+
+
+COLLISIONS = [
+    _collision_two_legacy_rows,
+    _collision_target_already_held,
+    _collision_device_already_held,
+    _collision_entry_already_held,
+]
+
+
+@pytest.mark.parametrize("build", COLLISIONS, ids=lambda f: f.__name__[11:])
+async def test_a_refusal_names_everything_somebody_would_act_on(hass, build):
+    entry, expected = await build(hass)
+
+    with pytest.raises(ValueError) as refused:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    said = str(refused.value)
+    assert [name for name in expected if name not in said] == [], said
+
+
+@pytest.mark.parametrize("build", COLLISIONS, ids=lambda f: f.__name__[11:])
+async def test_no_refusal_ever_prints_an_identity(hass, build):
+    """⚠ The generated identity is an md5 of the credentials, and these
+    strings are shown on the UI and pasted into issues."""
+    entry, _expected = await build(hass)
+
+    with pytest.raises(ValueError) as refused:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    said = str(refused.value)
+    assert HASH not in said, said
+    assert SECOND_HASH not in said, said
+    assert SERIAL not in said, said
