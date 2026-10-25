@@ -593,7 +593,9 @@ async def test_the_text_names_every_carded_channel_not_just_the_fixable_ones(has
 
     result = await _flow(hass).async_step_confirm()
 
-    assert result["description_placeholders"]["channels"] == "0, 2, 3"
+    assert result["description_placeholders"]["channels"] == (
+        "Channel 0, Channel 2, Channel 3"
+    )
     assert sorted(result["data_schema"].schema["channels"].options) == ["0", "3"]
 
 
@@ -720,3 +722,83 @@ async def test_unconfirmed_is_a_failure_even_if_the_held_codec_looks_right(hass)
     result = await _flow(hass).async_step_confirm({"channels": ["3"]})
 
     assert result["reason"] == "write_refused"
+
+
+# --- the picker says which camera, not which index ---------------------------
+#
+# Adrian's feedback on the shipped card, 2026-10-25: "it just shows a drop down
+# list and channel names. doesnt say what it is doing and why." `Channel 3` is
+# an index and nobody has an index on their wall, so the picker and the text
+# above it both name the camera the recorder knows.
+
+
+def _named(coordinators, names):
+    for channel, name in names.items():
+        coordinators[channel].get_device_name = (lambda n: (lambda: n))(name)
+    return coordinators
+
+
+async def test_the_picker_names_the_camera(hass):
+    _, coordinators = _setup(hass, carded=(0, 2, 3))
+    _named(coordinators, {0: "Gerty New", 2: "BACKYARD", 3: "POOL"})
+
+    result = await _flow(hass).async_step_confirm()
+    listed = result["data_schema"].schema["channels"].options
+
+    assert listed["3"] == "Channel 3 (POOL)"
+    assert listed["0"] == "Channel 0 (Gerty New)"
+
+
+async def test_the_text_above_uses_the_same_labels(hass):
+    """So the two lists can be compared without counting."""
+    _, coordinators = _setup(hass, carded=(0, 2, 3))
+    _named(coordinators, {0: "Gerty New", 2: "BACKYARD", 3: "POOL"})
+
+    result = await _flow(hass).async_step_confirm()
+    said = result["description_placeholders"]["channels"]
+
+    assert "Channel 2 (BACKYARD)" in said
+    assert "Channel 3 (POOL)" in said
+
+
+async def test_a_channel_with_no_name_is_still_offered(hass):
+    """A name is an improvement, never a requirement."""
+    _, coordinators = _setup(hass, carded=(0, 3))
+    _named(coordinators, {3: ""})
+
+    result = await _flow(hass).async_step_confirm()
+
+    assert result["data_schema"].schema["channels"].options["3"] == "Channel 3"
+
+
+async def test_a_name_that_is_only_the_index_is_not_doubled(hass):
+    _, coordinators = _setup(hass, carded=(0, 3))
+    _named(coordinators, {3: "channel 3"})
+
+    result = await _flow(hass).async_step_confirm()
+
+    assert result["data_schema"].schema["channels"].options["3"] == "Channel 3"
+
+
+async def test_a_coordinator_that_cannot_name_itself_does_not_break_the_dialog(hass):
+    """Nothing here is worth failing a repair dialog for."""
+    _, coordinators = _setup(hass, carded=(0, 3))
+
+    def boom():
+        raise RuntimeError("no name for you")
+
+    coordinators[3].get_device_name = boom
+
+    result = await _flow(hass).async_step_confirm()
+
+    assert result["data_schema"].schema["channels"].options["3"] == "Channel 3"
+
+
+async def test_the_label_does_not_change_what_gets_written(hass):
+    """The keys stay bare channel numbers; only the display text moved."""
+    client, coordinators = _setup(hass, carded=(0, 3))
+    _named(coordinators, {3: "POOL"})
+
+    await _flow(hass).async_step_confirm({"channels": ["3"]})
+
+    assert (3, 0, "H.264") in client.writes
