@@ -492,6 +492,18 @@
         "audio_stopped": {
             "message": "{device} did not play the whole clip: {reason}. If this keeps happening, try another audio format: the speaker's own format has not been measured on any device yet"
         },
+        "clock_not_accepted": {
+          "message": "{device} answered the clock change and then still read a different time. {reason}"
+        },
+        "clock_could_not_be_set": {
+          "message": "Could not set the clock on {device}. {reason}"
+        },
+        "ntp_server_not_accepted": {
+          "message": "{device} would not take that NTP server. {reason}"
+        },
+        "ntp_server_could_not_be_set": {
+          "message": "Could not set the NTP server on {device}. {reason}"
+        },
         "audio_could_not_be_sent": {
             "message": "Could not play audio on {device}: {reason}"
         },

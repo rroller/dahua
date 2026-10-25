@@ -1,5 +1,6 @@
 """Dahua API Client."""
 
+import datetime
 import logging
 import re
 import socket
@@ -715,6 +716,13 @@ def _cache_lifetime(url: str) -> int:
 # ptz control, door open -- is a write. Unrecognised is treated as a write,
 # which is the safe way round.
 READ_ACTION_PREFIX = "action=get"
+
+# How far a clock may land from what it was sent before the write is called a
+# refusal. Generous on purpose: the value goes out over a round trip and the
+# device's own clock is only accurate to the second, so a couple of seconds is
+# the write working. Anything beyond this is the device having ignored it, or
+# having read the value as a different timezone.
+CLOCK_SET_TOLERANCE_SECONDS = 90
 
 
 class DahuaWriteDeclined(ConnectionError):
@@ -2192,6 +2200,152 @@ class DahuaClient:
             # This RPC2 write bypasses get(), which normally clears the shared
             # five-minute config cache. Refresh must see the new settings.
             clear_host_cache(self._device)
+
+    async def async_get_ntp_config(self) -> dict:
+        """The device's NTP table, or an empty one if it serves none.
+
+        **Two shapes, and one recorder carries both at once.** Measured on a
+        DHI-NVR5464-16P-EI:
+
+            table.NTP.Address=au.pool.ntp.org            the flat one
+            table.NTP.ServerList[0].Address=...          the list
+            table.NTP.ServerList[1].Address=...
+
+        Which of the two that recorder actually follows is not known, and
+        nothing it reports says. `async_set_ntp_server` writes every shape the
+        table has rather than guessing, which is the lesson of #458 where
+        `VideoInMode` has three shapes and only one was handled.
+
+        **A doorbell may have no server field at all.** A VTO2000A serves this
+        table with `TimeZone` and `TimeZoneDesc` and nothing else, identically
+        over CGI and over RPC2, so there is no server on it to set. That is
+        the device class #436 was raised about, which is why callers check
+        what came back instead of assuming the fields are there.
+        """
+        return await self.async_get_config("NTP")
+
+    @staticmethod
+    def ntp_server_slots(table: dict) -> list[str]:
+        """The key prefixes this table will take a server on, in write order.
+
+        Empty means the device has no NTP server field, which is a real answer
+        and not a failed read: see `async_get_ntp_config`.
+        """
+        slots = []
+        if "table.NTP.Address" in table:
+            slots.append("NTP")
+        if "table.NTP.ServerList[0].Address" in table:
+            slots.append("NTP.ServerList[0]")
+        return slots
+
+    async def async_set_ntp_server(
+        self, address: str, port: int = 123, update_period: int = None
+    ) -> None:
+        """Point the device's clock at an NTP server, and check it took.
+
+        Every shape the table has is written, for the reason in
+        `async_get_ntp_config`. `ServerList[1]` is left alone, so a device
+        following the list keeps whatever fallback it had.
+
+        **Read back, because this family says no in two voices.** A refused
+        write comes back as HTTP 200 with the body `Error`, which `get` already
+        catches, and a field the device does not have comes back as 200 with
+        nothing changed at all, which only a read-back can see (#937, #647).
+        """
+        if not address or not address.strip():
+            raise ValueError("an NTP server address is required")
+        address = address.strip()
+
+        table = await self.async_get_ntp_config()
+        slots = self.ntp_server_slots(table)
+        if not slots:
+            held = sorted(k.split(".", 2)[-1] for k in table) or ["nothing"]
+            raise ValueError(
+                "{0} has no NTP server field, so there is nothing to point at "
+                "{1}. Its NTP table holds only {2}".format(
+                    self._address, address, ", ".join(held)
+                )
+            )
+
+        fields = ["NTP.Enable=true"]
+        for slot in slots:
+            fields.append("{0}.Address={1}".format(slot, quote(address, safe="")))
+            fields.append("{0}.Port={1}".format(slot, int(port)))
+            if slot != "NTP":
+                fields.append("{0}.Enable=true".format(slot))
+        if update_period is not None:
+            fields.append("NTP.UpdatePeriod={0}".format(int(update_period)))
+
+        await self.get(
+            "/cgi-bin/configManager.cgi?action=setConfig&" + "&".join(fields)
+        )
+
+        written = await self.async_get_ntp_config()
+        unchanged = [
+            slot
+            for slot in slots
+            if written.get("table.{0}.Address".format(slot)) != address
+        ]
+        if unchanged:
+            raise DahuaWriteDeclined(
+                "{0} took the NTP server write and kept its old value on {1}".format(
+                    self._address, ", ".join(unchanged)
+                )
+            )
+
+    async def async_set_device_time(self, when) -> None:
+        """Set the device's own clock. `when` is a naive local datetime.
+
+        **Local time, and measured rather than assumed.** On a VTO2000A at
+        firmware 3.120.0000.0.R the clock moved by exactly the 299 seconds it
+        was sent, and no daylight saving shift was applied on top of it, so
+        what goes on the wire is the device's local time and not UTC. The
+        device keeps its own `NTP.TimeZone` and its `Locales` DST table, and
+        this touches neither.
+
+        **The whole box, not one channel.** A clock belongs to an address.
+        Calling this against one channel of a recorder sets the recorder's
+        clock and every channel with it, which is what the service
+        description has to say.
+
+        **Read back.** `result: true` from a device that changed nothing is a
+        shape this family has, so the answer is not taken as consent.
+        """
+        stamp = when.strftime("%Y-%m-%d %H:%M:%S")
+
+        async def write(rpc2):
+            await rpc2.request("global.setCurrentTime", params={"time": stamp})
+
+        await self._rpc2_shared_call(write)
+
+        async def read(rpc2):
+            answer = await rpc2.request("global.getCurrentTime", params=None)
+            return ((answer.get("params") or {}) or {}).get("time")
+
+        now_on_device = await self._rpc2_shared_call(read)
+        if not now_on_device:
+            # The clock was set and the device would not say what it now
+            # reads. Not worth failing the call over: the write itself was
+            # acknowledged, and the next read will show it.
+            _LOGGER.debug("%s set its clock but would not read it back", self._address)
+            return
+        try:
+            landed = datetime.datetime.strptime(now_on_device, "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            _LOGGER.debug(
+                "%s answered its clock as %r, which is not a time",
+                self._address,
+                now_on_device,
+            )
+            return
+        out_by = abs((landed - when).total_seconds())
+        if out_by > CLOCK_SET_TOLERANCE_SECONDS:
+            raise DahuaWriteDeclined(
+                "{0} answered the clock write and still reads {1}, {2:.0f}s "
+                "from the {3} it was sent".format(
+                    self._address, now_on_device, out_by, stamp
+                )
+            )
 
     def vth_own_video(self) -> bool | None:
         """For a VTH identified over RPC2: whether it has a camera. None otherwise.
