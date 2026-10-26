@@ -796,8 +796,10 @@ def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
                 "serial": str(serial),
                 # Safe to show: each of these refusals names entity IDs, device
                 # names or an entry title, and `_named` exists so that none of
-                # them prints an identifier. The identifier is the hash derived
-                # from the credentials.
+                # them prints an identifier. The identifier is an md5 of the
+                # address, RTSP port, username and password, so a card that
+                # printed one would be handing out an offline attack on the
+                # password every time somebody screenshotted it.
                 "reason": str(conflict),
             },
         )

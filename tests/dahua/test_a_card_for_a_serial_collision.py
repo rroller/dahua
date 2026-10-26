@@ -1026,22 +1026,34 @@ async def test_the_card_that_explains_says_what_stopped_it(hass):
     assert placeholders["serial"] == SERIAL
 
 
-async def test_the_card_that_explains_never_prints_the_identity(hass):
-    """The identity is md5 of the address, port, username and password. A card
-    is read on screen and pasted into issues, so printing one hands out an
-    offline attack on the password. `_named` exists for this reason."""
-    entry, _devices = await _two_roots_one_device_target(hass)
-    conflict = migrate.SerialMigrationConflict(
-        "Serial migration device conflict: devices Front Door siren (abc) and "
-        "Front Door motion (def) would both become the same device."
-    )
-    conflict.serial = SERIAL
+@pytest.mark.parametrize(
+    "build",
+    [
+        _two_roots_one_row_target,
+        _two_roots_one_device_target,
+        _another_entry_holds_the_serial,
+    ],
+    ids=["rows-converge", "devices-converge", "another-entry"],
+)
+async def test_the_card_that_explains_never_prints_the_identity(hass, build):
+    """⭐ The identity is md5 of the address, RTSP port, username and password.
+    A card is read on screen and pasted into issues, so printing one hands out
+    an offline attack on the password. `_named` exists for this reason.
 
-    await _setup_raising(hass, entry, conflict)
+    The refusal is produced by the real migration and rendered by the real
+    classification, because the property belongs to the message `migrate.py`
+    writes and nothing is proven by feeding this a message written here. It
+    is also the only test that runs the whole path end to end.
+    """
+    entry = (await build(hass))[0]
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    dahua_module._async_offer_to_clear_the_conflict(hass, entry, raised.value)
 
     rendered = " ".join(_manual_issue(hass, entry).translation_placeholders.values())
-    assert HASH not in rendered
-    assert HASH2 not in rendered
+    assert HASH not in rendered, rendered
+    assert HASH2 not in rendered, rendered
 
 
 async def test_a_removable_collision_still_gets_the_button(hass):
