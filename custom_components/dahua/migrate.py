@@ -1075,6 +1075,41 @@ def serial_conflict_collateral(hass: HomeAssistant, entry, serial) -> list:
     return _collateral(er.async_get(hass), blocked_devices, {r.entity_id for r in rows})
 
 
+def serial_entry_holder(hass: HomeAssistant, entry, serial):
+    """The other config entry already filed under `serial`, if there is one.
+
+    `preflight` reaches this condition only after the row and device loops,
+    so a device collision is raised first and this one never surfaces. The
+    card still has to know: `_conflict_holders` would find the device, offer
+    the button, remove the device, and the entry would come back refusing on
+    a condition no deletion here touches. A destructive button that fixes
+    nothing is the #1146 defect one layer further in.
+    """
+    if not serial:
+        return None
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    roots = _legacy_roots(
+        entry,
+        er.async_entries_for_config_entry(entities, entry.entry_id),
+        dr.async_entries_for_config_entry(devices, entry.entry_id),
+    )
+    if serial in roots:
+        return None
+    new_entry_id = _replacer(roots, serial)(entry.unique_id)
+    if new_entry_id == entry.unique_id:
+        return None
+    return next(
+        (
+            candidate
+            for candidate in hass.config_entries.async_entries(DOMAIN)
+            if candidate.entry_id != entry.entry_id
+            and candidate.unique_id == new_entry_id
+        ),
+        None,
+    )
+
+
 def serial_conflict_device_labels(hass: HomeAssistant, entry, serial) -> list:
     """Each device that would be removed, beside whatever holds its place.
 

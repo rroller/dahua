@@ -763,14 +763,21 @@ def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
     fixable = ISSUE_SERIAL_CONFLICT.format(entry.entry_id)
     manual = ISSUE_SERIAL_CONFLICT_MANUAL.format(entry.entry_id)
     try:
-        from .migrate import serial_conflicts
+        from .migrate import serial_conflicts, serial_entry_holder
 
         serial = getattr(conflict, "serial", None)
         rows, devices = serial_conflicts(hass, entry, serial)
+        # Something to remove is not the same as a removal that would help.
+        # The migration checks "another entry already holds this serial" only
+        # after its row and device loops, so a device collision is raised
+        # first and hides it. Offer the button on that and it deletes a
+        # device, reloads, and refuses again on the condition underneath.
+        held_elsewhere = serial_entry_holder(hass, entry, serial)
+        offer = bool(rows or devices) and held_elsewhere is None
         # Only ever one of the two on screen. A reload can change which shape
         # applies, and two cards for one entry is two answers to one question.
-        ir.async_delete_issue(hass, DOMAIN, manual if (rows or devices) else fixable)
-        if rows or devices:
+        ir.async_delete_issue(hass, DOMAIN, manual if offer else fixable)
+        if offer:
             ir.async_create_issue(
                 hass,
                 DOMAIN,
@@ -783,6 +790,17 @@ def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
                 data={"entry_id": entry.entry_id, "serial": serial},
             )
             return
+        # The refusal that was raised is the device or row one, because the
+        # entry check never ran. Printing only that would send somebody to
+        # remove a device and leave them exactly where they started, so the
+        # condition underneath is named too. Title only, never an identifier.
+        reason = str(conflict)
+        if held_elsewhere is not None and "config entry conflict" not in reason:
+            reason += (
+                " The entry %r is also already filed under that serial, so "
+                "clearing the collision above on its own would not finish "
+                "the move." % (held_elsewhere.title or "untitled",)
+            )
         ir.async_create_issue(
             hass,
             DOMAIN,
@@ -800,7 +818,7 @@ def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
                 # address, RTSP port, username and password, so a card that
                 # printed one would be handing out an offline attack on the
                 # password every time somebody screenshotted it.
-                "reason": str(conflict),
+                "reason": reason,
             },
         )
     except Exception:  # pylint: disable=broad-except

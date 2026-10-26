@@ -1260,3 +1260,124 @@ async def test_the_form_never_prints_the_identity(hass):
     rendered = " ".join(str(v) for v in shown["description_placeholders"].values())
     assert HASH not in rendered, rendered
     assert HASH2 not in rendered, rendered
+
+
+# --- the holder in a different config entry ---------------------------------
+#
+# Two cameras means two entries, and `_only_a_device_blocked` above keeps both
+# devices on one. That matters, because `async_adopt_the_real_serial` checks
+# the config entry condition AFTER the device loop: if another entry is also
+# filed under the serial, the device refusal is raised first and hides it.
+# `_conflict_holders` looks at rows and devices only, so it would offer the
+# button for a collision that removing a device cannot clear.
+
+
+async def _another_entry_holds_it_as_a_device(hass):
+    """@pathia's topology: the holder is another entry's device.
+
+    And that other entry is filed under the serial itself, which is what a
+    successful migration leaves behind. Both the device refusal and the
+    config entry refusal apply; only one of them is reachable.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=dict(DATA), unique_id=HASH, title="voorzijde"
+    )
+    entry.add_to_hass(hass)
+    # Deliberately NOT the holder device's name. They were the same string
+    # at first, and the assertion that the entry title reaches the card then
+    # passed without the code that puts it there: the device refusal already
+    # printed that name.
+    other = MockConfigEntry(
+        domain=DOMAIN,
+        data=dict(DATA),
+        unique_id=SERIAL,
+        title="Tuinhuis",
+    )
+    other.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    legacy = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, HASH)},
+        name="voorzijde",
+    )
+    holder = devices.async_get_or_create(
+        config_entry_id=other.entry_id,
+        identifiers={(DOMAIN, SERIAL), (DOMAIN, HASH2)},
+        name="Achterzijde schuur",
+    )
+    return entry, other, legacy, holder
+
+
+async def test_removing_the_device_would_not_clear_the_entry_conflict(hass):
+    """⭐ The premise of the guard below, asserted rather than assumed.
+
+    Clear the device collision by hand and ask the migration itself whether
+    that helped. It does not: the refusal underneath is still there. If this
+    ever stops being true the guard is describing a bug that has moved, and
+    this fails loudly rather than the card quietly offering a button again.
+    """
+    entry, _other, legacy, holder = await _another_entry_holds_it_as_a_device(hass)
+
+    await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    devices = dr.async_get(hass)
+    assert devices.async_get(legacy.id) is None, "the legacy device went"
+    assert devices.async_get(holder.id) is not None, "the other entry's survived"
+
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+    assert "config entry conflict" in str(raised.value), str(raised.value)
+
+
+async def test_the_card_that_explains_never_prints_either_identity(hass):
+    """⭐ Both sides this time. The holder above carries HASH2 as well, so a
+    label that printed identifiers would leak the other camera's too."""
+    entry, _other, _legacy, _holder = await _another_entry_holds_it_as_a_device(hass)
+
+    shown = await _flow(hass, entry).async_step_init()
+
+    rendered = " ".join(str(v) for v in shown["description_placeholders"].values())
+    assert HASH not in rendered, rendered
+    assert HASH2 not in rendered, rendered
+
+
+async def test_a_collision_another_entry_also_blocks_is_not_a_button(hass):
+    """⭐ The guard. Something removable is in the way, so the old
+    classification offered the button, and pressing it would have deleted a
+    device and left the entry refusing on the condition underneath."""
+    entry, _other, _legacy, _holder = await _another_entry_holds_it_as_a_device(hass)
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    dahua_module._async_offer_to_clear_the_conflict(hass, entry, raised.value)
+
+    assert _issue(hass, entry) is None, "offered a button that cannot help"
+    assert _manual_issue(hass, entry) is not None
+
+
+async def test_the_manual_card_names_the_entry_underneath_too(hass):
+    """The refusal raised is the device one, because the entry check never
+    ran. Saying only that sends somebody to remove a device for nothing."""
+    entry, other, _legacy, _holder = await _another_entry_holds_it_as_a_device(hass)
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    dahua_module._async_offer_to_clear_the_conflict(hass, entry, raised.value)
+
+    reason = _manual_issue(hass, entry).translation_placeholders["reason"]
+    assert "Achterzijde schuur" in reason, reason  # the device, from the refusal
+    assert other.title in reason, reason  # the entry, which only the append adds
+    assert HASH not in reason and HASH2 not in reason, reason
+
+
+async def test_a_plain_device_collision_still_gets_the_button(hass):
+    """The converse, so the guard cannot quietly swallow the case it is not
+    for. Nothing else is filed under the serial here."""
+    entry, _legacy, _holder = await _only_a_device_blocked(hass)
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    dahua_module._async_offer_to_clear_the_conflict(hass, entry, raised.value)
+
+    assert _issue(hass, entry) is not None
+    assert _manual_issue(hass, entry) is None
