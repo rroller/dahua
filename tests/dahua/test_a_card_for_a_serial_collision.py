@@ -670,3 +670,122 @@ async def test_the_form_names_the_entities_it_is_keeping(hass):
     assert bystander.entity_id in kept
     assert siren.entity_id not in kept
     assert siren.entity_id in shown["description_placeholders"]["entities"]
+
+
+# --- and what changed while the form sat open -------------------------------
+#
+# A wider window than the backup by a long way. The card recomputing at the
+# button stops it deleting something that has since gone; it does nothing
+# about something that has since arrived, which was never on screen.
+
+
+async def test_a_collision_that_appears_while_the_form_is_open_is_not_removed(hass):
+    """Pressing the button agrees to the list that was on screen. A row that
+    started colliding after it was drawn is not on that list."""
+    entry, old, _holder = await _collided(hass)
+    entities = er.async_get(hass)
+    flow = _flow(hass, entry)
+    shown = await flow.async_step_init()
+    assert (
+        "sensor.front_door_temperature"
+        not in shown["description_placeholders"]["entities"]
+    )
+
+    late = entities.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        HASH + "_temperature",
+        config_entry=entry,
+        suggested_object_id="front_door_temperature",
+    )
+    entities.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        SERIAL + "_temperature",
+        config_entry=entry,
+        suggested_object_id="front_door_temperature_2",
+    )
+
+    again = await flow.async_step_confirm({})
+
+    assert again["type"] == "form"
+    assert again["errors"] == {"base": "plan_changed"}
+    assert entities.async_get(old.entity_id) is not None
+    assert entities.async_get(late.entity_id) is not None
+
+
+async def test_the_second_press_goes_ahead_with_the_list_it_showed(hass):
+    """The way out. The form that comes back is the current one, and pressing
+    that removes both. Without this the refusal above could be permanent."""
+    entry, old, _holder = await _collided(hass)
+    entities = er.async_get(hass)
+    flow = _flow(hass, entry)
+    await flow.async_step_init()
+    late = entities.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        HASH + "_temperature",
+        config_entry=entry,
+        suggested_object_id="front_door_temperature",
+    )
+    entities.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        SERIAL + "_temperature",
+        config_entry=entry,
+        suggested_object_id="front_door_temperature_2",
+    )
+    await flow.async_step_confirm({})
+
+    done = await flow.async_step_confirm({})
+
+    assert done["type"] == "create_entry"
+    assert entities.async_get(old.entity_id) is None
+    assert entities.async_get(late.entity_id) is None
+
+
+# --- the bystander afterwards -----------------------------------------------
+
+
+async def test_the_kept_row_then_migrates_onto_the_serial(hass):
+    """@rroller's actual point: the temperature row could have migrated while
+    keeping its entity ID. Surviving the removal is only half of that, so the
+    migration is run here and the entity ID checked on the other side."""
+    entry, _legacy, _siren, bystander = await _device_blocked(hass)
+    entities = er.async_get(hass)
+
+    await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+    moved = await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    survivor = entities.async_get(bystander.entity_id)
+    assert survivor is not None, "the row the card kept did not survive the migration"
+    assert survivor.entity_id == bystander.entity_id
+    assert survivor.unique_id == SERIAL + "_temperature"
+    assert moved >= 1
+
+
+async def test_a_kept_row_goes_back_on_a_device_when_it_is_added_again(hass):
+    """The form promises it is put back. What puts it back is the platform
+    re-registering it, so that is what is exercised: `async_get_or_create`
+    with the same unique ID updates `device_id` on the row that is already
+    there, rather than creating a second one."""
+    entry, _legacy, _siren, bystander = await _device_blocked(hass)
+    entities = er.async_get(hass)
+    await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+    assert entities.async_get(bystander.entity_id).device_id is None
+    # Not `async_get_device`, which this Home Assistant reports as deprecated
+    # because identifiers are no longer unique across config entries.
+    serial_device = dahua_module.devices_with_identifier(
+        dr.async_get(hass), (DOMAIN, SERIAL)
+    )[0]
+
+    again = entities.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        HASH + "_temperature",
+        config_entry=entry,
+        device_id=serial_device.id,
+    )
+
+    assert again.entity_id == bystander.entity_id
+    assert again.device_id == serial_device.id

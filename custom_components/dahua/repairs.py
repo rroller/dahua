@@ -231,6 +231,9 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
     def __init__(self, data: dict) -> None:
         self._entry_id = data.get("entry_id")
         self._serial = data.get("serial")
+        # The plan the form last put on screen. Pressing the button agrees to
+        # that one and no other, and a form can sit open for a long time.
+        self._shown = None
 
     async def async_step_init(self, user_input: dict | None = None):
         return await self.async_step_confirm()
@@ -240,9 +243,9 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
         from . import ISSUE_SERIAL_CONFLICT
         from .migrate import (
             SerialConflictPlanChanged,
+            _removal_plan,
             async_clear_serial_conflicts,
             serial_conflict_collateral,
-            serial_conflicts,
         )
 
         issue_id = ISSUE_SERIAL_CONFLICT.format(self._entry_id)
@@ -251,7 +254,7 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             return self.async_abort(reason="not_configured")
 
-        rows, devices = serial_conflicts(self.hass, entry, self._serial)
+        rows, devices, plan = _removal_plan(self.hass, entry, self._serial)
         if not rows and not devices:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             return self.async_abort(reason="nothing_to_remove")
@@ -259,7 +262,9 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
         errors = None
         if user_input is not None:
             try:
-                await async_clear_serial_conflicts(self.hass, entry, self._serial)
+                await async_clear_serial_conflicts(
+                    self.hass, entry, self._serial, expected=self._shown
+                )
             except SerialConflictPlanChanged:
                 # Nothing was removed. Fall through and show the form again,
                 # rebuilt from the registry as it is now, because what is on
@@ -270,7 +275,7 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
                     entry.title,
                 )
                 errors = {"base": "plan_changed"}
-                rows, devices = serial_conflicts(self.hass, entry, self._serial)
+                rows, devices, plan = _removal_plan(self.hass, entry, self._serial)
                 if not rows and not devices:
                     ir.async_delete_issue(self.hass, DOMAIN, issue_id)
                     return self.async_abort(reason="nothing_to_remove")
@@ -285,6 +290,8 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
         # being kept are listed as well: a confirmation that names some of
         # what it affects is the defect this is here to close.
         kept = serial_conflict_collateral(self.hass, entry, self._serial)
+        # What is about to be on screen is what the next press agrees to.
+        self._shown = plan
         return self.async_show_form(
             step_id="confirm",
             data_schema=vol.Schema({}),

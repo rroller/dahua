@@ -1072,7 +1072,9 @@ def serial_conflict_collateral(hass: HomeAssistant, entry, serial) -> list:
     return _collateral(er.async_get(hass), blocked_devices, {r.entity_id for r in rows})
 
 
-async def async_clear_serial_conflicts(hass: HomeAssistant, entry, serial) -> int:
+async def async_clear_serial_conflicts(
+    hass: HomeAssistant, entry, serial, expected=None
+) -> int:
     """Remove the rows that cannot move, so the serial can be adopted.
 
     The device's own serial wins. Everything removed here is a row filed
@@ -1083,10 +1085,21 @@ async def async_clear_serial_conflicts(hass: HomeAssistant, entry, serial) -> in
     A backup of all three registries is taken first, and a failure to take
     one stops the whole thing: this deletes entities somebody may be using,
     and the #827 merge card is why that is not negotiable.
+
+    `expected` is the plan a form put in front of somebody, from
+    `_removal_plan`. Pressing the button agrees to that plan and no other.
+    The form can sit open for minutes, which is a far wider window than the
+    backup, and a row that starts colliding while it is open would otherwise
+    be deleted having never been on screen.
     """
     rows, blocked_devices, planned = _removal_plan(hass, entry, serial)
     if not rows and not blocked_devices:
         return 0
+    if expected is not None and planned != expected:
+        raise SerialConflictPlanChanged(
+            "What the form showed is no longer what would happen, so nothing "
+            "was removed. Press the button again to see the current list."
+        )
     if await _async_backup_once(hass) is None:
         raise ValueError("Could not back up all three registries before removing rows")
 
