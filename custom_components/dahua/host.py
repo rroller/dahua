@@ -734,6 +734,12 @@ class DahuaHostEventStream:
     _motion_push_checks = 0
     _motion_push_last_check = 0.0
 
+    # The selection, on the class as well as in __init__ for the reason the
+    # flag below carries a default: a stream built with object.__new__ now
+    # reaches `_wire_codes` through the diagnostics dump, and an empty
+    # selection is the right answer there rather than a raise inside a dump.
+    _events: frozenset = frozenset()
+
     _using_all_events = False
     # Bare instances in focused tests predate this optional sidecar. Keeping a
     # class default makes their old construction contract remain valid.

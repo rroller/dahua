@@ -309,6 +309,20 @@ def _client_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
     }
 
 
+def _subscribed_as(stream) -> list:
+    """The code list the device was actually asked for.
+
+    Falls back to the selection for anything that is not a real stream: the
+    dump must never raise, and it is collected when something is already wrong.
+    """
+    if getattr(stream, "_using_all_events", False):
+        return ["All"]
+    wire = getattr(stream, "_wire_codes", None)
+    if callable(wire):
+        return wire()
+    return sorted(getattr(stream, "_events", ()) or ())
+
+
 def _stream_block(coordinator) -> dict[str, Any]:
     """The state of the event stream that actually exists.
 
@@ -354,11 +368,14 @@ def _stream_block(coordinator) -> dict[str, Any]:
         # as [All] and filtered again locally. Reporting only the union then
         # described a request the device never received, which is the field
         # somebody would have to reconcile against a packet capture to doubt.
-        "subscribed_as": (
-            ["All"]
-            if getattr(stream, "_using_all_events", False)
-            else sorted(getattr(stream, "_events", ()) or ())
-        ),
+        #
+        # The second way the two diverge is #1121: a selected code that is only
+        # ever derived from another one has its sources added to the request by
+        # `_wire_codes`, so somebody who ticked DoorbellPressed is asked for
+        # four codes. Asked of the stream rather than re-derived here, because
+        # a second copy of that rule would go stale the moment the map gains a
+        # key, and this field exists to be reconciled against a capture.
+        "subscribed_as": _subscribed_as(stream),
         "received_data": bool(getattr(stream, "_received_data", False)),
         "last_attach_failed": bool(getattr(stream, "_failing", False)),
         "consecutive_failures": getattr(stream, "_consecutive_failures", 0),
