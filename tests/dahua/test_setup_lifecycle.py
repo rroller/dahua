@@ -352,3 +352,42 @@ async def test_reported_serial_policy_survives_monitor_reload(hass):
         assert await _try_setup(hass, entry)
         assert entry.runtime_data[0].client._require_reported_serial is True
         await dahua_module.async_unload_entry(hass, entry)
+
+
+async def test_reported_serial_policy_survives_a_camera_reload(hass):
+    """The monitor case above, for a camera that adopted `getSerialNo`.
+
+    @rroller's #1141 finding: the first setup migrates the registry onto the
+    reported serial, and without the requirement the second setup comes up on
+    the old hash and duplicates every entity. Driven through the real entry
+    so the persistence and the reload are both the real ones.
+    """
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    async def refresh(coordinator):
+        coordinator._serial_number = "3E0164EPAN00095"
+        coordinator.client.identity_from_alternate_cgi = True
+        return {"serialNumber": "3E0164EPAN00095"}
+
+    with patch.object(
+        dahua_module.DahuaDataUpdateCoordinator, "_async_update_data", refresh
+    ), starts, forward, unload:
+        assert await _try_setup(hass, entry)
+        assert entry.data["require_reported_serial"] is True
+        await dahua_module.async_unload_entry(hass, entry)
+        assert await _try_setup(hass, entry)
+        assert entry.runtime_data[0].client._require_reported_serial is True
+        await dahua_module.async_unload_entry(hass, entry)
+
+
+async def test_a_camera_that_never_adopted_one_is_not_held_to_it(hass):
+    """The converse. A camera answering `getSystemInfo` normally must not
+    acquire a requirement that would stop it setting up on a bad day."""
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    with _working(), starts, forward, unload:
+        assert await _try_setup(hass, entry)
+        assert entry.data.get("require_reported_serial") is not True
+        await dahua_module.async_unload_entry(hass, entry)

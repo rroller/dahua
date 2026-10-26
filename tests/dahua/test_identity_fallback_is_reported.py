@@ -203,7 +203,10 @@ async def test_a_derived_serial_says_which_call_fell_back():
 
     assert info["serialNumber"], "the identity itself is unchanged"
     assert _derived(client) is True
-    assert _recorded(client) == {"getSystemInfo (serial)": 400}
+    # The call this test is about, asserted by name rather than by comparing
+    # the whole dict: a device refusing everything also refuses `getSerialNo`,
+    # and that record is a second true thing rather than this one being wrong.
+    assert _recorded(client)["getSystemInfo (serial)"] == 400
 
 
 async def test_a_derived_name_says_so_too():
@@ -238,7 +241,7 @@ async def test_whatever_the_status_the_reason_is_recorded(status):
 
     await client.async_get_system_info()
 
-    assert _recorded(client) == {"getSystemInfo (serial)": status}
+    assert _recorded(client)["getSystemInfo (serial)"] == status
 
 
 async def test_an_invented_identity_is_never_silent():
@@ -256,3 +259,190 @@ async def test_an_invented_identity_is_never_silent():
 
         assert _derived(client) is True
         assert _recorded(client), "derived an identity and recorded no reason"
+
+
+# --- ask the other way before inventing one (#1128) --------------------------
+#
+# @Masterz69's DH-C4K-P answers `magicBox.cgi?action=getSystemInfo` with HTTP
+# 400 and `magicBox.cgi?action=getSerialNo` with `sn=...`. So the device knows
+# its serial perfectly well and was being given an invented one because only
+# the refusing call was ever asked.
+#
+# A reported serial matters more than a label: the invented one is an md5 of
+# address, RTSP port, username and password, so it moves the first time any of
+# those changes and every entity is rebuilt under a new id (#805).
+#
+# The recorder and the doorbell here both answer `getSystemInfo`, so neither
+# reaches this path. It is an extra question for the devices that need it.
+
+
+def _answering_only_serial(client, serial="3E0164EPAN00095", status=400):
+    """The measured DH-C4K-P: getSystemInfo refuses, getSerialNo answers."""
+    asked = []
+
+    async def get(url, verify_ok=False):
+        asked.append(url)
+        if "getSerialNo" in url:
+            return {"sn": serial}
+        raise _http(status)
+
+    client.get = get
+    return client, asked
+
+
+async def test_a_reported_serial_is_used_instead_of_an_invented_one():
+    client, _asked = _answering_only_serial(_client())
+
+    info = await client.async_get_system_info()
+
+    assert info["serialNumber"] == "3E0164EPAN00095"
+    assert _derived(client) is False, "invented an identity the device had"
+
+
+async def test_the_refusal_that_sent_us_there_is_still_recorded():
+    """The dump must still say why the usual call was no good."""
+    client, _asked = _answering_only_serial(_client())
+
+    await client.async_get_system_info()
+
+    assert _recorded(client)["getSystemInfo (serial)"] == 400
+
+
+async def test_a_device_that_answers_normally_is_never_asked():
+    """One extra round trip, only where the identity would be invented."""
+    asked = []
+
+    async def get(url, verify_ok=False):
+        asked.append(url)
+        return {"serialNumber": "REALSERIAL1234", "deviceType": "IPC"}
+
+    client = _client()
+    client.get = get
+
+    await client.async_get_system_info()
+
+    assert not [url for url in asked if "getSerialNo" in url]
+
+
+async def test_a_device_refusing_both_still_gets_an_identity():
+    """Setup has to survive. The hash is poor, and poor beats none."""
+    client = _refusing(_client(), 400)
+
+    info = await client.async_get_system_info()
+
+    assert info["serialNumber"]
+    assert _derived(client) is True
+
+
+async def test_refusing_both_records_both():
+    """So a dump says the second question was asked and also turned down."""
+    client = _refusing(_client(), 400)
+
+    await client.async_get_system_info()
+
+    assert _recorded(client)["getSystemInfo (serial)"] == 400
+    assert _recorded(client)["getSerialNo"] == 400
+
+
+async def test_an_empty_serial_is_not_a_serial():
+    """Taking it would give every device answering this way one identity."""
+    client, _asked = _answering_only_serial(_client(), serial="   ")
+
+    info = await client.async_get_system_info()
+
+    assert _derived(client) is True
+    assert info["serialNumber"] != ""
+
+
+async def test_a_getserialno_that_raises_does_not_take_setup_down():
+    """It runs inside the branch whose job is to keep the entry alive."""
+
+    async def get(url, verify_ok=False):
+        if "getSerialNo" in url:
+            raise RuntimeError("something nobody predicted")
+        raise _http(400)
+
+    client = _client()
+    client.get = get
+
+    info = await client.async_get_system_info()
+
+    assert info["serialNumber"]
+    assert _derived(client) is True
+
+
+# --- and an adopted serial is not given back (#1141 review) -----------------
+#
+# @rroller reproduced this against the branch: a camera whose `getSystemInfo`
+# refuses and whose `getSerialNo` answers adopts the real serial, and
+# `migrate.py` moves the entry, its device and every entity row onto it. Have
+# `getSerialNo` refuse on the NEXT setup and the entry comes back up under the
+# old credential-derived hash while the registry still holds the serial, so
+# every platform builds a second set of entities beside the migrated ones.
+#
+# `CONF_REQUIRE_REPORTED_SERIAL` already existed for exactly this, and was
+# only ever persisted for monitors. Two halves to it: the client has to SAY it
+# took this path, and the policy check has to come after the alternate read
+# rather than before it, or the requirement would block the very question that
+# satisfies it.
+
+
+async def test_a_camera_that_adopted_the_other_cgi_says_so():
+    client, _asked = _answering_only_serial(_client())
+
+    await client.async_get_system_info()
+
+    assert client.identity_from_alternate_cgi is True
+
+
+async def test_a_camera_that_never_needed_it_does_not_say_so():
+    async def get(url, verify_ok=False):
+        return {"serialNumber": "REALSERIAL1234", "deviceType": "IPC"}
+
+    client = _client()
+    client.get = get
+
+    await client.async_get_system_info()
+
+    assert client.identity_from_alternate_cgi is False
+
+
+async def test_the_flag_is_false_before_anything_is_asked():
+    """Read off clients the suite builds with `object.__new__`, so it has to
+    be a class level default rather than set in __init__."""
+    assert DahuaClient.identity_from_alternate_cgi is False
+
+
+async def test_the_other_cgi_is_still_asked_under_the_requirement():
+    """⚠ The ordering half. The devices that reach the requirement are
+    exactly the ones that need the second question asked."""
+    client, asked = _answering_only_serial(_client())
+    client._require_reported_serial = True
+
+    info = await client.async_get_system_info()
+
+    assert info["serialNumber"] == "3E0164EPAN00095"
+    assert [url for url in asked if "getSerialNo" in url]
+
+
+async def test_an_adopted_camera_retries_rather_than_hashing():
+    """The regression itself. Both calls refuse on a device that has already
+    been migrated onto a reported serial."""
+    client = _refusing(_client(), 400)
+    client._require_reported_serial = True
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+
+    assert _derived(client) is False, "handed back the hash under the requirement"
+
+
+async def test_a_camera_without_the_requirement_still_gets_an_identity():
+    """The converse, so the check above cannot pass by always raising. A
+    device that has never been given a real serial must still set up."""
+    client = _refusing(_client(), 400)
+
+    info = await client.async_get_system_info()
+
+    assert info["serialNumber"]
+    assert _derived(client) is True
