@@ -33,6 +33,8 @@ async def async_create_fix_flow(
         return RemoveSiblingsRepairFlow(data or {})
     if issue_id.startswith("leftover_rows_"):
         return RemoveLeftoverRowsRepairFlow(data or {})
+    if issue_id.startswith("serial_conflict_"):
+        return ClearSerialConflictRepairFlow(data or {})
     if issue_id.startswith("webrtc_cannot_play_"):
         return SwitchStreamToH264RepairFlow(data or {})
     return ConfirmRepairFlow()
@@ -208,6 +210,157 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
                     if protected
                     else ""
                 ),
+            },
+        )
+
+
+class ClearSerialConflictRepairFlow(RepairsFlow):
+    """Clear the rows standing in the way of the serial the device reports.
+
+    The device's own serial wins, which is the only defensible answer: every
+    row removed here is filed under an identity generated from credentials,
+    and its place has already been taken by one filed under the serial the
+    hardware states. The survivor is the one the device agrees with.
+
+    **The list is recomputed when the button is pressed**, never read out of
+    the card's data, for the reason written across `RemoveLeftoverRowsRepairFlow`
+    and the #827 merge card: a card that acts on evidence gathered earlier is
+    how 232 entities were deleted.
+    """
+
+    def __init__(self, data: dict) -> None:
+        self._entry_id = data.get("entry_id")
+        self._serial = data.get("serial")
+        # The plan the form last put on screen. Pressing the button agrees to
+        # that one and no other, and a form can sit open for a long time.
+        self._shown = None
+
+    async def async_step_init(self, user_input: dict | None = None):
+        return await self.async_step_confirm()
+
+    async def _async_nothing_left(self, entry, issue_id):
+        """An empty list is not a migration that can now succeed.
+
+        @rroller on #1146: three of the five things the migration refuses on
+        are invisible to `_conflict_holders`, which only finds an identity
+        somebody else is holding. On those this flow found nothing, deleted
+        its own card and reported that nothing was standing in the way, while
+        the same migration still failed and nothing retried it.
+
+        So the migration is asked rather than the list. A reload is what the
+        success path does anyway and is the only thing that runs the preflight
+        again.
+
+        The card goes down first, and what is read afterwards is whether a
+        serial conflict card came back up. Not whether the entry loaded: an
+        entry can fail to load for reasons that have nothing to do with a
+        serial, a device that went offline being the obvious one, and
+        answering "still blocked" to that would be pointing at the wrong
+        thing. A collision that is still there re-raises and says so itself.
+        """
+        from . import ISSUE_SERIAL_CONFLICT, ISSUE_SERIAL_CONFLICT_MANUAL
+
+        # Stale either way: it describes a removal with nothing in it.
+        ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+        await self.hass.config_entries.async_reload(entry.entry_id)
+        registry = ir.async_get(self.hass)
+        if any(
+            registry.async_get_issue(DOMAIN, template.format(self._entry_id))
+            is not None
+            for template in (ISSUE_SERIAL_CONFLICT, ISSUE_SERIAL_CONFLICT_MANUAL)
+        ):
+            return self.async_abort(reason="still_blocked")
+        return self.async_abort(reason="nothing_to_remove")
+
+    async def async_step_confirm(self, user_input: dict | None = None):
+        # Imported here rather than at module scope to avoid a circular import.
+        from . import ISSUE_SERIAL_CONFLICT
+        from .migrate import (
+            SerialConflictPlanChanged,
+            _removal_plan,
+            async_clear_serial_conflicts,
+            serial_adoption_blockers,
+            serial_conflict_collateral,
+            serial_conflict_device_labels,
+        )
+
+        issue_id = ISSUE_SERIAL_CONFLICT.format(self._entry_id)
+        entry = self.hass.config_entries.async_get_entry(self._entry_id or "")
+        if entry is None:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return self.async_abort(reason="not_configured")
+
+        rows, devices, plan = _removal_plan(self.hass, entry, self._serial)
+        if not rows and not devices:
+            return await self._async_nothing_left(entry, issue_id)
+        if serial_adoption_blockers(self.hass, entry, self._serial):
+            # There is something to remove and removing it would not help.
+            # The card was raised when this was not yet true, or was raised
+            # correctly and another config entry has taken the serial since;
+            # either way a form offering deletion is now the wrong screen,
+            # and nothing is deleted on the way to saying so.
+            _LOGGER.warning(
+                "Serial conflict repair for %s removed nothing: the move is "
+                "blocked by something this cannot clear",
+                entry.title,
+            )
+            return await self._async_nothing_left(entry, issue_id)
+
+        errors = None
+        if user_input is not None:
+            try:
+                await async_clear_serial_conflicts(
+                    self.hass, entry, self._serial, expected=self._shown
+                )
+            except SerialConflictPlanChanged:
+                # Nothing was removed. Fall through and show the form again,
+                # rebuilt from the registry as it is now, because what is on
+                # screen is no longer what would happen (@rroller, #1146).
+                _LOGGER.warning(
+                    "Serial conflict repair for %s stopped without removing "
+                    "anything: the registry changed while it was being copied",
+                    entry.title,
+                )
+                errors = {"base": "plan_changed"}
+                rows, devices, plan = _removal_plan(self.hass, entry, self._serial)
+                if not rows and not devices:
+                    return await self._async_nothing_left(entry, issue_id)
+            else:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+                # The entry failed permanently, so nothing is going to retry it.
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_create_entry(data={})
+
+        # Everything the removal touches, not only what it was aimed at.
+        # Removing a device takes its entity rows too, so the ones that are
+        # being kept are listed as well: a confirmation that names some of
+        # what it affects is the defect this is here to close.
+        kept = serial_conflict_collateral(self.hass, entry, self._serial)
+        # Both halves of what goes. The count has always included devices, and
+        # the list never did: a device-shaped collision read "1" and then
+        # "(none, only devices)", which is a button whose subject is not on
+        # the screen (@pathia, #1143). Names, never identifiers.
+        removals = ["- `%s`" % row.entity_id for row in rows[:40]]
+        removals += [
+            "- the device **%s**, whose identity is held by %s"
+            % (label, " and ".join("**%s**" % held for held in holders) or "something")
+            for label, holders in serial_conflict_device_labels(
+                self.hass, entry, self._serial
+            )[:40]
+        ]
+        # What is about to be on screen is what the next press agrees to.
+        self._shown = plan
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            errors=errors,
+            description_placeholders={
+                "name": entry.title or "untitled",
+                "serial": str(self._serial),
+                "count": str(len(rows) + len(devices)),
+                "removals": "\n".join(removals) or "- (none)",
+                "kept": "\n".join("- `%s`" % entity_id for entity_id in kept[:40])
+                or "- (none)",
             },
         )
 

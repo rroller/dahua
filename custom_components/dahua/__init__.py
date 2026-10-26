@@ -10,7 +10,7 @@ import logging
 # on this module.
 import time  # noqa: F401  pylint: disable=unused-import
 
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -596,9 +596,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # completed. Otherwise an error or unavailable backup creates duplicate
     # entities and strands automations on the old IDs.
     try:
-        from .migrate import async_adopt_the_real_serial
+        from .migrate import SerialMigrationConflict, async_adopt_the_real_serial
 
         moved = await async_adopt_the_real_serial(hass, entry, coordinators)
+        for template in (ISSUE_SERIAL_CONFLICT, ISSUE_SERIAL_CONFLICT_MANUAL):
+            ir.async_delete_issue(hass, DOMAIN, template.format(entry.entry_id))
         if any(
             (getattr(c.client, "_vth_identity", None) or {}).get("class") == "VTH"
             for c in coordinators
@@ -616,6 +618,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         await asyncio.gather(
             *[c.async_stop() for c in coordinators], return_exceptions=True
         )
+        if isinstance(error, SerialMigrationConflict):
+            # Permanent, and saying "will retry" about it is the complaint in
+            # #1143. Two rows want one identity and no amount of retrying
+            # changes that, so setup stops and a card offers the one thing
+            # that does change it.
+            _async_offer_to_clear_the_conflict(hass, entry, error)
+            raise ConfigEntryError(
+                "Serial registry migration cannot complete: " + str(error)
+            ) from error
         if isinstance(error, Exception):
             raise ConfigEntryNotReady(
                 "Serial registry migration could not complete: " + str(error)
@@ -717,6 +728,108 @@ ISSUE_REMOVAL_BROKE_THINGS = "removal_broke_things_{0}"
 # is recomputed from the registry on every start, and the flow recomputes it
 # again before removing anything.
 ISSUE_LEFTOVER_ROWS = "leftover_rows_{0}"
+ISSUE_SERIAL_CONFLICT = "serial_conflict_{0}"
+# Raised for the collisions the card above cannot clear. `_conflict_holders`
+# only finds an identity somebody else is HOLDING, and three of the five
+# things the migration refuses on are not that shape: two of this entry's own
+# rows converging on one target, two of its devices converging, and another
+# config entry already carrying the serial. Nothing is in the way to remove,
+# so there is no list to confirm and no button that would help (@rroller,
+# #1146). Not fixable, and therefore carries its own description.
+ISSUE_SERIAL_CONFLICT_MANUAL = "serial_conflict_manual_{0}"
+
+
+@callback
+def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
+    """Raise whichever of the two cards this collision actually has.
+
+    A button that removes rows is only an answer where there are rows to
+    remove. Asked on a collision of the other shape it finds an empty list,
+    and an empty list used to read as "resolved": the card deleted itself and
+    said nothing was standing in the way, while the entry stayed dead and
+    nothing retried it (@rroller, #1146).
+
+    So the shape is decided here, from the registry, by the same function the
+    flow will use. Something is holding an identity: the card that offers to
+    remove it. Nothing is: a card that explains it instead, which is not
+    fixable because there is no safe automatic answer. Which of two
+    duplicates should win is a decision about somebody's setup, and the
+    refusals in `migrate.py` name both sides and stop there for that reason.
+
+    Quiet about its own failures. A card is what makes a dead entry
+    recoverable, and a card that raised on the way to raising would make the
+    entry no worse but the log a great deal more confusing.
+    """
+    fixable = ISSUE_SERIAL_CONFLICT.format(entry.entry_id)
+    manual = ISSUE_SERIAL_CONFLICT_MANUAL.format(entry.entry_id)
+    try:
+        from .migrate import serial_adoption_blockers, serial_conflicts
+
+        serial = getattr(conflict, "serial", None)
+        rows, devices = serial_conflicts(hass, entry, serial)
+        # Something to remove is not the same as a removal that would help.
+        # The migration reaches three of its five refusals only after the row
+        # and device loops, so one of those two is raised first and hides
+        # them. Offer the button on that and it deletes, reloads, and refuses
+        # again on the condition underneath. So the whole move is replayed
+        # with this removal plan subtracted, and anything still refusing
+        # afterwards is a refusal the button cannot clear.
+        remaining = serial_adoption_blockers(hass, entry, serial)
+        offer = bool(rows or devices) and not remaining
+        # Only ever one of the two on screen. A reload can change which shape
+        # applies, and two cards for one entry is two answers to one question.
+        ir.async_delete_issue(hass, DOMAIN, manual if offer else fixable)
+        if offer:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                fixable,
+                is_fixable=True,
+                is_persistent=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="serial_conflict",
+                translation_placeholders={"name": entry.title or "untitled"},
+                data={"entry_id": entry.entry_id, "serial": serial},
+            )
+            return
+        # The refusal that was raised may be the removable one, because the
+        # conditions underneath it are never reached. Printing only that
+        # would send somebody to delete something and leave them exactly
+        # where they started, so everything that would still be refusing is
+        # named too. These messages name entity IDs, device names and entry
+        # titles, and never a unique ID.
+        reason = str(conflict)
+        underneath = [other for other in remaining if other not in reason]
+        if underneath:
+            reason += (
+                " Clearing that on its own would not finish the move. "
+                + " ".join(underneath)
+            )
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            manual,
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="serial_conflict_manual",
+            translation_placeholders={
+                "name": entry.title or "untitled",
+                "serial": str(serial),
+                # Safe to show: each of these refusals names entity IDs, device
+                # names or an entry title, and `_named` exists so that none of
+                # them prints an identifier. The identifier is an md5 of the
+                # address, RTSP port, username and password, so a card that
+                # printed one would be handing out an offline attack on the
+                # password every time somebody screenshotted it.
+                "reason": reason,
+            },
+        )
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not raise the registry conflict card for %s",
+            entry.data.get(CONF_ADDRESS),
+        )
 
 
 async def async_migrate_synthesised_unique_id(hass, entry) -> None:

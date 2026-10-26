@@ -31,6 +31,13 @@ ISSUE_PLACEHOLDERS = {
     # Title only, as siblings_remain above: the flow fills its own form, and it
     # recomputes the list rather than reading it out of the issue's data.
     "leftover_rows": {"name", "count"},
+    # Title only again. Its flow recomputes what it would remove when the
+    # button is pressed, so the count on the form is not the count here.
+    "serial_conflict": {"name"},
+    # All three, unlike every fixable issue above: this one has no flow to
+    # fill a form, so its own description is the whole of what is on screen
+    # and each name has to be supplied where the issue is raised.
+    "serial_conflict_manual": {"name", "serial", "reason"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
 
@@ -72,6 +79,7 @@ def _form_placeholders(class_name: str) -> set:
 
 SIBLINGS_FLOW_PLACEHOLDERS = _form_placeholders("RemoveSiblingsRepairFlow")
 LEFTOVER_FLOW_PLACEHOLDERS = _form_placeholders("RemoveLeftoverRowsRepairFlow")
+CONFLICT_FLOW_PLACEHOLDERS = _form_placeholders("ClearSerialConflictRepairFlow")
 
 
 def _placeholders(text: str) -> set:
@@ -278,3 +286,57 @@ def test_the_other_locales_fall_back_to_english():
         if path.name == "en.json":
             continue
         assert "issues" not in json.loads(path.read_text(encoding="utf-8")), path.name
+
+
+SERIAL_CONFLICT_FLOW_PLACEHOLDERS = _form_placeholders("ClearSerialConflictRepairFlow")
+
+
+def test_the_serial_conflict_placeholders_were_really_read_from_the_code():
+    assert {"name", "serial", "count", "removals", "kept"} <= (
+        SERIAL_CONFLICT_FLOW_PLACEHOLDERS
+    )
+
+
+def test_the_serial_conflict_flow_only_uses_its_own_placeholders():
+    """The two flows above have had this guard since each shipped a literal
+    {removed} on screen. This one never did, and it is the card with the
+    widest blast radius: it deletes whole devices."""
+    step = EN["issues"]["serial_conflict"]["fix_flow"]["step"]["confirm"]
+    used = _placeholders(step["title"]) | _placeholders(step["description"])
+    assert (
+        used <= SERIAL_CONFLICT_FLOW_PLACEHOLDERS
+    ), f"unsupplied: {used - SERIAL_CONFLICT_FLOW_PLACEHOLDERS}"
+
+
+def test_the_serial_conflict_card_lists_what_it_will_remove():
+    """Same claim as the leftover card's, and it has to hold for devices too.
+    The count has always included blocked devices while the list was built
+    from entity rows alone, so @pathia's device-only collision asked to
+    remove one thing and printed none (#1143)."""
+    step = EN["issues"]["serial_conflict"]["fix_flow"]["step"]["confirm"]
+    assert "{removals}" in step["description"]
+    assert "{kept}" in step["description"]
+
+
+@pytest.mark.parametrize(
+    "path", sorted(p.name for p in TRANSLATIONS.glob("*.json")), ids=lambda n: n
+)
+def test_no_string_contains_an_escaped_newline(path):
+    """A doubled escape renders as the two characters \n on screen instead of
+    a paragraph break. json.loads cannot see it, black cannot see it, and
+    hassfest cannot see it: the file is valid JSON either way. A scripted
+    edit of en.json put ten of them into the serial conflict card, which is
+    the one that asks to delete things.
+    """
+    strings = json.loads((TRANSLATIONS / path).read_text(encoding="utf-8"))
+    bad = []
+
+    def walk(node, where):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, where + "." + key)
+        elif isinstance(node, str) and chr(92) + "n" in node:
+            bad.append((where, node.count(chr(92) + "n")))
+
+    walk(strings, "")
+    assert not bad, bad
