@@ -1075,6 +1075,33 @@ def serial_conflict_collateral(hass: HomeAssistant, entry, serial) -> list:
     return _collateral(er.async_get(hass), blocked_devices, {r.entity_id for r in rows})
 
 
+def serial_conflict_device_labels(hass: HomeAssistant, entry, serial) -> list:
+    """Each device that would be removed, beside whatever holds its place.
+
+    The confirm form listed blocked entity ROWS and nothing else, so a
+    collision whose blocker is a device asked to remove a count of one and
+    printed "(none, only devices)" where the subject should have been. A
+    confirmation that does not name what it deletes is the #827 defect this
+    card exists to avoid, and @pathia's #1143 report is exactly that shape:
+    two device names, no entity row in the message at all.
+
+    Both sides, because the holder is the whole reason any of this may go,
+    and a name their owner recognises is what tells a dead leftover from a
+    camera still on a wall. Names only, through `_named`: an identifier here
+    is the md5 of address, RTSP port, username and password, and this form
+    gets screenshotted into issues.
+
+    Recomputed, never carried. Same rule as `_conflict_holders` itself.
+    """
+    devices = dr.async_get(hass)
+    _, blocked_devices = _conflict_holders(hass, entry, serial)
+    labels = []
+    for device, holder_ids in blocked_devices:
+        held = [devices.async_get(holder_id) for holder_id in holder_ids]
+        labels.append((_named(device), [_named(h) for h in held if h is not None]))
+    return labels
+
+
 async def async_clear_serial_conflicts(
     hass: HomeAssistant, entry, serial, expected=None
 ) -> int:

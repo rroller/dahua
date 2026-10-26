@@ -280,6 +280,7 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
             _removal_plan,
             async_clear_serial_conflicts,
             serial_conflict_collateral,
+            serial_conflict_device_labels,
         )
 
         issue_id = ISSUE_SERIAL_CONFLICT.format(self._entry_id)
@@ -322,6 +323,18 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
         # being kept are listed as well: a confirmation that names some of
         # what it affects is the defect this is here to close.
         kept = serial_conflict_collateral(self.hass, entry, self._serial)
+        # Both halves of what goes. The count has always included devices, and
+        # the list never did: a device-shaped collision read "1" and then
+        # "(none, only devices)", which is a button whose subject is not on
+        # the screen (@pathia, #1143). Names, never identifiers.
+        removals = ["- `%s`" % row.entity_id for row in rows[:40]]
+        removals += [
+            "- the device **%s**, whose identity is held by %s"
+            % (label, " and ".join("**%s**" % held for held in holders) or "something")
+            for label, holders in serial_conflict_device_labels(
+                self.hass, entry, self._serial
+            )[:40]
+        ]
         # What is about to be on screen is what the next press agrees to.
         self._shown = plan
         return self.async_show_form(
@@ -332,8 +345,7 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
                 "name": entry.title or "untitled",
                 "serial": str(self._serial),
                 "count": str(len(rows) + len(devices)),
-                "entities": "\n".join("- `%s`" % row.entity_id for row in rows[:40])
-                or "- (none, only devices)",
+                "removals": "\n".join(removals) or "- (none)",
                 "kept": "\n".join("- `%s`" % entity_id for entity_id in kept[:40])
                 or "- (none)",
             },

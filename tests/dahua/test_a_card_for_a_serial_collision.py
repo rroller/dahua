@@ -310,7 +310,7 @@ async def test_the_form_names_every_row_it_would_remove(hass):
     shown = await _flow(hass, entry).async_step_init()
 
     assert shown["type"] == "form"
-    listed = shown["description_placeholders"]["entities"]
+    listed = shown["description_placeholders"]["removals"]
     assert old.entity_id in listed
     assert holder.entity_id not in listed, "offered to delete the survivor"
 
@@ -669,7 +669,7 @@ async def test_the_form_names_the_entities_it_is_keeping(hass):
     kept = shown["description_placeholders"]["kept"]
     assert bystander.entity_id in kept
     assert siren.entity_id not in kept
-    assert siren.entity_id in shown["description_placeholders"]["entities"]
+    assert siren.entity_id in shown["description_placeholders"]["removals"]
 
 
 # --- and what changed while the form sat open -------------------------------
@@ -688,7 +688,7 @@ async def test_a_collision_that_appears_while_the_form_is_open_is_not_removed(ha
     shown = await flow.async_step_init()
     assert (
         "sensor.front_door_temperature"
-        not in shown["description_placeholders"]["entities"]
+        not in shown["description_placeholders"]["removals"]
     )
 
     late = entities.async_get_or_create(
@@ -1190,3 +1190,73 @@ async def test_the_abort_the_user_reads_is_a_real_string(hass):
     manual = issues["serial_conflict_manual"]
     assert "description" in manual and "title" in manual
     assert "fix_flow" not in manual, "hassfest fails the integration for both"
+
+
+# --- the shape where the blocker is a device and nothing else ---------------
+#
+# @pathia reported this one on #1143, and it is the only shape where the old
+# form had nothing to show: the count came from rows plus devices while the
+# list came from rows alone, so a lone device collision asked to remove "1"
+# and then printed "(none, only devices)".
+
+
+async def _only_a_device_blocked(hass):
+    """Two device rows, no colliding entity row anywhere.
+
+    Named the way @pathia's were, because the names are the point: one of
+    these is a camera still on a wall and the other may be a leftover from
+    the same camera's previous life, and the only thing that tells them
+    apart on the form is what their owner called them.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=dict(DATA), unique_id=HASH, title="voorzijde"
+    )
+    entry.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    legacy = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, HASH)},
+        name="voorzijde",
+    )
+    holder = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, SERIAL)},
+        name="Achterzijde schuur",
+    )
+    return entry, legacy, holder
+
+
+async def test_the_form_names_the_device_it_would_remove(hass):
+    """⭐ The confirmation has to name its own subject. A count of one over a
+    list that says "none" is a button nobody can check before pressing."""
+    entry, _legacy, _holder = await _only_a_device_blocked(hass)
+
+    shown = await _flow(hass, entry).async_step_init()
+
+    assert shown["type"] == "form"
+    listed = shown["description_placeholders"]["removals"]
+    assert "voorzijde" in listed, listed
+    assert shown["description_placeholders"]["count"] == "1"
+
+
+async def test_the_form_names_what_is_holding_the_identity_too(hass):
+    """Both sides, for the same reason every refusal names both: the holder is
+    the entire reason the other one may be deleted."""
+    entry, _legacy, _holder = await _only_a_device_blocked(hass)
+
+    shown = await _flow(hass, entry).async_step_init()
+
+    assert "Achterzijde schuur" in shown["description_placeholders"]["removals"]
+
+
+async def test_the_form_never_prints_the_identity(hass):
+    """⭐ The identity is an md5 of the address, RTSP port, username and
+    password. This form is screenshotted into issues, so printing one would
+    hand out an offline attack on the camera password."""
+    entry, _legacy, _holder = await _only_a_device_blocked(hass)
+
+    shown = await _flow(hass, entry).async_step_init()
+
+    rendered = " ".join(str(v) for v in shown["description_placeholders"].values())
+    assert HASH not in rendered, rendered
+    assert HASH2 not in rendered, rendered
