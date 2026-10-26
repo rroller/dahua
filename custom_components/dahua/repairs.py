@@ -238,7 +238,12 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
     async def async_step_confirm(self, user_input: dict | None = None):
         # Imported here rather than at module scope to avoid a circular import.
         from . import ISSUE_SERIAL_CONFLICT
-        from .migrate import async_clear_serial_conflicts, serial_conflicts
+        from .migrate import (
+            SerialConflictPlanChanged,
+            async_clear_serial_conflicts,
+            serial_conflict_collateral,
+            serial_conflicts,
+        )
 
         issue_id = ISSUE_SERIAL_CONFLICT.format(self._entry_id)
         entry = self.hass.config_entries.async_get_entry(self._entry_id or "")
@@ -251,22 +256,47 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             return self.async_abort(reason="nothing_to_remove")
 
+        errors = None
         if user_input is not None:
-            await async_clear_serial_conflicts(self.hass, entry, self._serial)
-            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
-            # The entry failed permanently, so nothing is going to retry it.
-            await self.hass.config_entries.async_reload(entry.entry_id)
-            return self.async_create_entry(data={})
+            try:
+                await async_clear_serial_conflicts(self.hass, entry, self._serial)
+            except SerialConflictPlanChanged:
+                # Nothing was removed. Fall through and show the form again,
+                # rebuilt from the registry as it is now, because what is on
+                # screen is no longer what would happen (@rroller, #1146).
+                _LOGGER.warning(
+                    "Serial conflict repair for %s stopped without removing "
+                    "anything: the registry changed while it was being copied",
+                    entry.title,
+                )
+                errors = {"base": "plan_changed"}
+                rows, devices = serial_conflicts(self.hass, entry, self._serial)
+                if not rows and not devices:
+                    ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+                    return self.async_abort(reason="nothing_to_remove")
+            else:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+                # The entry failed permanently, so nothing is going to retry it.
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_create_entry(data={})
 
+        # Everything the removal touches, not only what it was aimed at.
+        # Removing a device takes its entity rows too, so the ones that are
+        # being kept are listed as well: a confirmation that names some of
+        # what it affects is the defect this is here to close.
+        kept = serial_conflict_collateral(self.hass, entry, self._serial)
         return self.async_show_form(
             step_id="confirm",
             data_schema=vol.Schema({}),
+            errors=errors,
             description_placeholders={
                 "name": entry.title or "untitled",
                 "serial": str(self._serial),
                 "count": str(len(rows) + len(devices)),
                 "entities": "\n".join("- `%s`" % row.entity_id for row in rows[:40])
                 or "- (none, only devices)",
+                "kept": "\n".join("- `%s`" % entity_id for entity_id in kept[:40])
+                or "- (none)",
             },
         )
 

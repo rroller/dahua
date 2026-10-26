@@ -424,3 +424,249 @@ async def test_the_list_is_recomputed_at_the_button_not_at_the_card(hass):
 
     assert shown["type"] == "abort"
     assert shown["reason"] == "nothing_to_remove"
+
+
+# --- what changed while the backup was being written ------------------------
+#
+# @rroller on the #1146 review: the plan was decided, `_async_backup_once` was
+# awaited, and the rows in that plan were then removed without anything
+# looking again. He reproduced both ends of it. Each of these mutates the
+# registry from inside the backup, which is exactly where the yield is.
+
+
+def _mutating_backup(hass, mutate):
+    """A backup that changes the registry while it is being written.
+
+    Patched at `_async_backup_once` rather than at `_backup`, because what is
+    being tested is the await, and this is the only await between deciding
+    what to delete and deleting it.
+    """
+
+    async def backup(_hass):
+        mutate()
+        return "/tmp/backup"
+
+    return patch.object(migrate, "_async_backup_once", backup)
+
+
+async def test_the_holder_disappearing_during_the_backup_removes_nothing(hass):
+    """The reason to delete is that something else already holds the identity.
+    Remove that something during the backup and the reason is gone, but the
+    plan still had the row down for deletion."""
+    entry, old, holder = await _collided(hass)
+    entities = er.async_get(hass)
+
+    with _mutating_backup(hass, lambda: entities.async_remove(holder.entity_id)):
+        with pytest.raises(migrate.SerialConflictPlanChanged):
+            await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    assert entities.async_get(old.entity_id) is not None
+
+
+async def test_a_row_that_stops_colliding_during_the_backup_is_not_removed(hass):
+    """The other end of it: the row itself is given an identity that no longer
+    wants the serial. Nothing is in its way any more, so nothing may go."""
+    entry, old, holder = await _collided(hass)
+    entities = er.async_get(hass)
+
+    with _mutating_backup(
+        hass,
+        lambda: entities.async_update_entity(
+            old.entity_id, new_unique_id="something_else_entirely"
+        ),
+    ):
+        with pytest.raises(migrate.SerialConflictPlanChanged):
+            await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    assert entities.async_get(old.entity_id) is not None
+    assert entities.async_get(holder.entity_id) is not None
+
+
+async def test_a_different_row_taking_the_identity_is_a_different_plan(hass):
+    """Identical entity IDs on both sides and the deletion is still refused.
+    The holder is part of the reason, so swapping it is a change even though
+    the list of things to delete reads the same."""
+    entry, old, holder = await _collided(hass)
+    entities = er.async_get(hass)
+
+    def swap():
+        # Moved aside rather than removed and recreated. Home Assistant
+        # remembers a deleted row and hands the same entity ID back to the
+        # next one with that unique ID, so remove-and-recreate rebuilds the
+        # same holder and would test nothing.
+        entities.async_update_entity(holder.entity_id, new_unique_id="parked")
+        entities.async_get_or_create(
+            "switch",
+            DOMAIN,
+            SERIAL + "_siren",
+            config_entry=entry,
+            suggested_object_id="front_door_siren_3",
+        )
+
+    with _mutating_backup(hass, swap):
+        with pytest.raises(migrate.SerialConflictPlanChanged):
+            await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    assert entities.async_get(old.entity_id) is not None
+
+
+async def test_a_plan_that_did_not_change_still_goes_ahead(hass):
+    """The negative control. Without it every test above would pass just as
+    well if the function refused unconditionally."""
+    entry, old, holder = await _collided(hass)
+    entities = er.async_get(hass)
+
+    with _mutating_backup(hass, lambda: None):
+        removed = await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    assert removed == 1
+    assert entities.async_get(old.entity_id) is None
+    assert entities.async_get(holder.entity_id) is not None
+
+
+async def test_the_card_asks_again_rather_than_failing(hass):
+    """What somebody sees. The button did nothing, so the form comes back with
+    the list worked out again and says why, rather than "unknown error"."""
+    entry, _old, holder = await _collided(hass)
+    entities = er.async_get(hass)
+    flow = _flow(hass, entry)
+    await flow.async_step_init()
+
+    captured = []
+
+    def swap():
+        captured.append(True)
+        entities.async_update_entity(holder.entity_id, new_unique_id="parked")
+        entities.async_get_or_create(
+            "switch",
+            DOMAIN,
+            SERIAL + "_siren",
+            config_entry=entry,
+            suggested_object_id="front_door_siren_3",
+        )
+
+    with _mutating_backup(hass, swap):
+        shown = await flow.async_step_confirm({})
+
+    assert captured, "the backup never ran, so nothing was being tested"
+    assert shown["type"] == "form"
+    assert shown["errors"] == {"base": "plan_changed"}
+
+
+# --- the entities a device removal takes with it ----------------------------
+#
+# @rroller again: Home Assistant removes a device's entity rows along with the
+# device. A legacy device held back by one colliding row also carries rows
+# that are not colliding, and confirming took those too, without ever naming
+# them.
+
+
+async def _device_blocked(hass):
+    """A legacy device blocked by a serial one, carrying a bystander row.
+
+    The siren collides. The temperature does not: nothing holds
+    `<serial>_temperature`, so it could have moved and kept its entity ID.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=dict(DATA), unique_id=HASH, title="Front Door"
+    )
+    entry.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    legacy = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, HASH)},
+        name="Front Door",
+    )
+    devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, SERIAL)},
+        name="Front Door (serial)",
+    )
+    entities = er.async_get(hass)
+    siren = entities.async_get_or_create(
+        "switch",
+        DOMAIN,
+        HASH + "_siren",
+        config_entry=entry,
+        device_id=legacy.id,
+        suggested_object_id="front_door_siren",
+    )
+    entities.async_get_or_create(
+        "switch",
+        DOMAIN,
+        SERIAL + "_siren",
+        config_entry=entry,
+        suggested_object_id="front_door_siren_2",
+    )
+    bystander = entities.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        HASH + "_temperature",
+        config_entry=entry,
+        device_id=legacy.id,
+        suggested_object_id="front_door_temperature",
+    )
+    return entry, legacy, siren, bystander
+
+
+async def test_an_entity_nobody_confirmed_survives_the_device_removal(hass):
+    """The finding itself. The form named the siren; the temperature went with
+    the device and was never mentioned."""
+    entry, legacy, siren, bystander = await _device_blocked(hass)
+    entities = er.async_get(hass)
+
+    await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    assert dr.async_get(hass).async_get(legacy.id) is None
+    assert entities.async_get(siren.entity_id) is None
+    survivor = entities.async_get(bystander.entity_id)
+    assert survivor is not None
+    assert survivor.entity_id == bystander.entity_id
+    assert survivor.unique_id == HASH + "_temperature"
+
+
+async def test_the_survivor_is_taken_off_the_device_first(hass):
+    """How it survives, which is the part that could regress silently. Left on
+    the device it is deleted by the cascade, so the row must point at no
+    device by the time the device goes."""
+    entry, _legacy, _siren, bystander = await _device_blocked(hass)
+
+    await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    assert er.async_get(hass).async_get(bystander.entity_id).device_id is None
+
+
+async def test_a_disabled_bystander_survives_too(hass):
+    """`async_entries_for_device` leaves disabled rows out by default while the
+    removal cascade takes them, so the one read that matters here is the one
+    that includes them."""
+    entry, legacy, _siren, _bystander = await _device_blocked(hass)
+    entities = er.async_get(hass)
+    off = entities.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        HASH + "_humidity",
+        config_entry=entry,
+        device_id=legacy.id,
+        disabled_by=er.RegistryEntryDisabler.USER,
+        suggested_object_id="front_door_humidity",
+    )
+
+    await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    assert entities.async_get(off.entity_id) is not None
+
+
+async def test_the_form_names_the_entities_it_is_keeping(hass):
+    """A confirmation that lists some of what it affects is the defect. The
+    kept rows are moved out from under a device somebody is about to delete,
+    which is a thing done to them, so it is on the form."""
+    entry, _legacy, siren, bystander = await _device_blocked(hass)
+
+    shown = await _flow(hass, entry).async_step_init()
+
+    assert shown["type"] == "form"
+    kept = shown["description_placeholders"]["kept"]
+    assert bystander.entity_id in kept
+    assert siren.entity_id not in kept
+    assert siren.entity_id in shown["description_placeholders"]["entities"]

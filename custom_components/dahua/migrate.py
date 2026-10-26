@@ -865,6 +865,15 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
     )
 
 
+class SerialConflictPlanChanged(ValueError):
+    """The registry moved while the backup was being written.
+
+    Raised instead of removing anything. The card recomputes and asks again,
+    so the only cost is a second press, and the alternative is deleting on a
+    reason that stopped being true (@rroller, #1146).
+    """
+
+
 class SerialMigrationConflict(ValueError):
     """Two rows want one identity, and no retry changes that.
 
@@ -923,8 +932,14 @@ def _replacer(roots, serial):
     return replacement
 
 
-def serial_conflicts(hass: HomeAssistant, entry, serial):
-    """The rows and devices that cannot take `serial`, because one is held.
+def _conflict_holders(hass: HomeAssistant, entry, serial):
+    """Every blocked row and device, each with whatever is holding its place.
+
+    The holder is part of the answer rather than a detail of it. The only
+    reason any of this may be deleted is that something else, filed under the
+    serial the hardware states, has already taken the identity it needs. A
+    different thing holding it is a different reason, and @rroller's #1146
+    review is that nothing may be deleted on a reason nobody was shown.
 
     ⚠ Recomputed from the registry every time it is asked, and never carried
     in a card's `data`. The #827 merge card deleted 232 entities because it
@@ -954,7 +969,7 @@ def serial_conflicts(hass: HomeAssistant, entry, serial):
         holder = entities.async_get(held)
         if holder is None or _is_residue(row, holder):
             continue
-        blocked_rows.append(row)
+        blocked_rows.append((row, holder))
 
     blocked_devices = []
     for device in entry_devices:
@@ -973,9 +988,88 @@ def serial_conflicts(hass: HomeAssistant, entry, serial):
         ]
         if not holders or all(_is_residue(device, other) for other in holders):
             continue
-        blocked_devices.append(device)
+        blocked_devices.append((device, tuple(sorted(other.id for other in holders))))
 
     return blocked_rows, blocked_devices
+
+
+def serial_conflicts(hass: HomeAssistant, entry, serial):
+    """The rows and devices that cannot take `serial`, because one is held."""
+    blocked_rows, blocked_devices = _conflict_holders(hass, entry, serial)
+    return (
+        [row for row, _ in blocked_rows],
+        [device for device, _ in blocked_devices],
+    )
+
+
+def _removal_plan(hass: HomeAssistant, entry, serial):
+    """What would be removed, and every fact the decision rests on.
+
+    The third value is the comparable one. Recomputing the lists across the
+    awaited backup is not enough on its own: two reads can return the same
+    entity IDs while the identity, the owning entry or the holder behind them
+    has changed, and each of those is a reason to stop rather than a detail.
+    """
+    blocked_rows, blocked_devices = _conflict_holders(hass, entry, serial)
+    signature = (
+        tuple(
+            sorted(
+                (
+                    row.entity_id,
+                    row.unique_id or "",
+                    row.config_entry_id or "",
+                    holder.entity_id,
+                )
+                for row, holder in blocked_rows
+            )
+        ),
+        tuple(
+            sorted(
+                (device.id, tuple(sorted(device.identifiers)), holders)
+                for device, holders in blocked_devices
+            )
+        ),
+    )
+    return (
+        [row for row, _ in blocked_rows],
+        [device for device, _ in blocked_devices],
+        signature,
+    )
+
+
+def _collateral(entities, blocked_devices, doomed) -> list:
+    """Entity IDs that removing those devices would take, uninvited.
+
+    Home Assistant deletes a device's entity rows along with the device.
+    @rroller reproduced it on #1146: a legacy device held back by one
+    colliding siren row, with a temperature row beside it that could have
+    moved, where confirming the siren removed the temperature too.
+
+    Disabled rows included, deliberately. The cascade does not skip them, so
+    a count that does would be describing a smaller event than the one about
+    to happen, and `async_entries_for_device` leaves them out by default.
+
+    Wider than what the cascade deletes, also deliberately. Home Assistant
+    2026.9.3 removes only the rows whose config entry and subentry match the
+    device's and detaches the rest itself, so some of these were never in
+    danger. Taking them all off is the same end state for those, and the
+    safe direction to be wrong in if that rule ever widens. Every one of
+    them is listed on the form, which says they are moved and kept.
+    """
+    return sorted(
+        row.entity_id
+        for device in blocked_devices
+        for row in er.async_entries_for_device(
+            entities, device.id, include_disabled_entities=True
+        )
+        if row.entity_id not in doomed
+    )
+
+
+def serial_conflict_collateral(hass: HomeAssistant, entry, serial) -> list:
+    """What the card has to say survives, so the form is the whole story."""
+    rows, blocked_devices = serial_conflicts(hass, entry, serial)
+    return _collateral(er.async_get(hass), blocked_devices, {r.entity_id for r in rows})
 
 
 async def async_clear_serial_conflicts(hass: HomeAssistant, entry, serial) -> int:
@@ -990,25 +1084,52 @@ async def async_clear_serial_conflicts(hass: HomeAssistant, entry, serial) -> in
     one stops the whole thing: this deletes entities somebody may be using,
     and the #827 merge card is why that is not negotiable.
     """
-    rows, blocked_devices = serial_conflicts(hass, entry, serial)
+    rows, blocked_devices, planned = _removal_plan(hass, entry, serial)
     if not rows and not blocked_devices:
         return 0
     if await _async_backup_once(hass) is None:
         raise ValueError("Could not back up all three registries before removing rows")
 
+    # ⚠ Nothing below this line may await, and the plan below is the one that
+    # is acted on. Writing the backup yields, and @rroller reproduced both
+    # ends of what that lets through on #1146: remove the holder during the
+    # backup, or give the blocked row an identity that no longer collides,
+    # and the earlier answer still had it down for deletion. Refusing rather
+    # than deleting the smaller set, because the count, the list on the form
+    # and the log line all have to describe the same event.
+    rows, blocked_devices, current = _removal_plan(hass, entry, serial)
+    if current != planned:
+        raise SerialConflictPlanChanged(
+            "The registry changed while it was being copied, so nothing was "
+            "removed. Press the button again to see the current list."
+        )
+
     entities = er.async_get(hass)
     devices = dr.async_get(hass)
+    doomed = {row.entity_id for row in rows}
+    kept = _collateral(entities, blocked_devices, doomed)
+    # Off the device before the device goes, so the cascade cannot reach them.
+    # Detached rather than rehomed onto the holder: the entity ID, its history
+    # and everything pointing at it survive, and the reload this repair
+    # performs re-registers each one with its device, which puts it back.
+    # Choosing a new home for them would be guessing, and a device can carry
+    # rows this entry does not provide.
+    for entity_id in kept:
+        entities.async_update_entity(entity_id, device_id=None)
     for row in rows:
         entities.async_remove(row.entity_id)
     for device in blocked_devices:
         devices.async_remove_device(device.id)
     _LOGGER.warning(
         "%s: removed %d registry rows and %d devices that were holding the "
-        "reported serial %s out of reach; registries were copied first",
+        "reported serial %s out of reach; registries were copied first. %d "
+        "entities on those devices were kept and taken off them instead: %s",
         entry.data.get(CONF_ADDRESS),
         len(rows),
         len(blocked_devices),
         serial,
+        len(kept),
+        ", ".join(kept) or "none",
     )
     return len(rows) + len(blocked_devices)
 
