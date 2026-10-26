@@ -586,6 +586,41 @@ What this integration cannot do, as distinct from the bugs and firmware quirks u
   NVR passes a siren or white light command through to the camera behind it varies by
   model, and on some it accepts the command and does nothing at all. That is why those
   entities are off by default rather than created automatically.
+- <a name="playing-a-clip-is-silent-on-some-firmware"></a>**`dahua.play_audio` is silent on some firmware, and the audio format is not always
+  the reason.** It posts the clip to `audio.cgi?action=postAudio`, which answers
+  nothing at all -- no status line, no body -- so a device that played the clip and one
+  that threw it away look identical from Home Assistant. Two devices, measured:
+
+  | Device | Firmware | Result |
+  |---|---|---|
+  | VTO2000A | `3.120.0000.0.R` | Plays G.711 A-law and little-endian PCM at 8 kHz, judged by ear |
+  | DHI-VTO2211G-WP-S2 | `4.810.0000000.3.R` | Takes the whole body, plays nothing |
+
+  On the VTO2211G-WP-S2 that was nine pushes over `httptype=multipart` covering
+  A-law, mu-law and 16-bit PCM, with a person standing at the door for each one. Every
+  push was accepted in full and none made a sound, and the device was healthy
+  afterwards. So on that firmware the path itself is dead and a different
+  `audio_format` will not help. Reported by @mcsdodo on
+  [#177](https://github.com/rroller/dahua/issues/177).
+
+- **Where `dahua.play_audio` is silent, the go2rtc RTSP backchannel may still work.**
+  This is not something the integration does, and it is recorded here because it is
+  the route that has been measured working where the service is not. The same
+  DHI-VTO2211G-WP-S2 offers a talk-back track in its RTSP description:
+
+  ```text
+  m=audio 0 RTP/AVP 8
+  a=control:trackID=5
+  a=rtpmap:8 PCMA/8000
+  a=sendonly
+  ```
+
+  and a clip pushed into a go2rtc stream whose source ends in `#backchannel=1` was
+  heard at the door, twice, without interrupting anyone watching the camera. That was
+  go2rtc 1.9.14 driven through its own API, not through Home Assistant, and whether
+  the copy of go2rtc inside Home Assistant can be used the same way has not been
+  tried. Note the rate: these speakers want **PCMA at 8 kHz**, and a device that is
+  sent 16 kHz plays noise or nothing.
 - **A large configuration write can be refused on a recorder.** RPC2 answers
   `Request length error!` to a big `setConfig`, and a recorder's IVS rule table can be
   large enough to hit that, so an IVS rule switch may fail to toggle. Measured on one
@@ -893,7 +928,7 @@ Service | Parameters | Description
 `dahua.enable_ivs_rule` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `index`: The rule index <br /> enabled`: True to enable the IVS rule, False to disable the IVS rule | Enable or disable an IVS rule
 `dahua.vto_open_door` | `target`: camera.cam13_main <br /> `door_id`: The door ID to open, e.g.: 1 <br /> Opens a door via a VTO
 `dahua.vto_cancel_call` | `target`: camera.cam13_main <br />Cancels a call on a VTO device (Doorbell)
-`dahua.play_audio` | `target`: camera.front_door_main <br /> `media_content_id`: the clip, as a media source, a TTS result, a URL or a file path <br /> `audio_format`: `g711a_8000` (default), `g711u_8000`, `pcm_8000` | Plays a clip through the device's own speaker, for a doorbell announcement or a camera deterrent message. The clip is converted with ffmpeg, so anything it can open works. A VTO2000A has been verified with G.711 A-law and little-endian PCM at 8 kHz. Other devices may need a different supported format; please report results on [#177](https://github.com/rroller/dahua/issues/177)
+`dahua.play_audio` | `target`: camera.front_door_main <br /> `media_content_id`: the clip, as a media source, a TTS result, a URL or a file path <br /> `audio_format`: `g711a_8000` (default), `g711u_8000`, `pcm_8000` | Plays a clip through the device's own speaker, for a doorbell announcement or a camera deterrent message. The clip is converted with ffmpeg, so anything it can open works. A VTO2000A has been verified with G.711 A-law and little-endian PCM at 8 kHz. It does not work on every device, and trying another format is not always the remedy: see [Playing a clip is silent on some firmware](#playing-a-clip-is-silent-on-some-firmware)
 `dahua.vto_call` | `target`: camera.cam13_main <br /> `room`: The room to ring, e.g.: 9901 | Rings an indoor monitor (VTH) from a VTO, as its call button does. `9901#0` is dialled as `9901`, which rings the main monitor and its extensions. Measured on a DHI-VTO2211G-WP-S2
 `dahua.set_video_in_day_night_mode` | `target`: camera.cam13_main <br /> `config_type`: The config type: general, day, night <br /> `mode`: The mode: Auto, Color, BlackWhite. Note Auto is also known as Brightness by Dahua|Set the camera's Day/Night Mode. For example, Color, BlackWhite, or Auto
 `dahua.reboot` | `target`: camera.cam13_main <br />Reboots the device
