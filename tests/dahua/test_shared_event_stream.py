@@ -643,6 +643,21 @@ def test_a_translated_code_that_becomes_selectable_must_be_mapped():
     )
 
 
+def test_the_press_is_a_code_somebody_can_tick():
+    """#1121's user-facing half. The add and options forms both hand
+    `cv.multi_select` this list verbatim, so this is the box @DrSpaldo ticks
+    instead of `All`. Imported from config_flow rather than const, because
+    that is the module the form is built in.
+
+    Not in DEFAULT_EVENTS, so nobody's subscription changes until they ask.
+    """
+    from custom_components.dahua.config_flow import ALL_EVENTS
+    from custom_components.dahua.const import DEFAULT_EVENTS
+
+    assert "DoorbellPressed" in ALL_EVENTS
+    assert "DoorbellPressed" not in DEFAULT_EVENTS
+
+
 def test_every_mapped_source_is_a_code_the_translation_really_rewrites():
     """A key nothing produces would rescue nothing, silently.
 
