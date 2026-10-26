@@ -1036,6 +1036,12 @@ def _removal_plan(hass: HomeAssistant, entry, serial):
         # that arrives while the form is open would otherwise be moved
         # without ever having appeared on it.
         tuple(_collateral(er.async_get(hass), devices, {r.entity_id for r in rows})),
+        # And whether this removal would actually finish the job. A config
+        # entry filed under the serial can appear while the form is open, or
+        # inside the one await there is, and it changes neither list: the
+        # same rows would be deleted, for a move that now cannot happen
+        # either way (@rroller, #1146). It is part of what was agreed to.
+        tuple(serial_adoption_blockers(hass, entry, serial)),
     )
     return rows, devices, signature
 
@@ -1075,39 +1081,231 @@ def serial_conflict_collateral(hass: HomeAssistant, entry, serial) -> list:
     return _collateral(er.async_get(hass), blocked_devices, {r.entity_id for r in rows})
 
 
-def serial_entry_holder(hass: HomeAssistant, entry, serial):
-    """The other config entry already filed under `serial`, if there is one.
+def _adoption_targets(entry, entry_rows, entry_devices, roots, serial):
+    """Every row and device that has to move, and what each one becomes.
 
-    `preflight` reaches this condition only after the row and device loops,
-    so a device collision is raised first and this one never surfaces. The
-    card still has to know: `_conflict_holders` would find the device, offer
-    the button, remove the device, and the entry would come back refusing on
-    a condition no deletion here touches. A destructive button that fixes
-    nothing is the #1146 defect one layer further in.
+    One function because the migration and the card have to be asking about
+    the same move. They worked it out separately before, and the card's copy
+    knew about one of the five conditions the migration refuses on.
     """
-    if not serial:
-        return None
+    replacement = _replacer(roots, serial)
+    rows = [
+        (row, replacement(row.unique_id))
+        for row in entry_rows
+        if replacement(row.unique_id) != row.unique_id
+    ]
+    stale_devices = [
+        (
+            device,
+            {
+                (domain, replacement(value) if domain == DOMAIN else value)
+                for domain, value in device.identifiers
+            },
+        )
+        for device in entry_devices
+        if any(
+            domain == DOMAIN and replacement(value) != value
+            for domain, value in device.identifiers
+        )
+    ]
+    return rows, stale_devices, replacement(entry.unique_id)
+
+
+def _adoption_refusals(
+    hass: HomeAssistant,
+    entry,
+    rows,
+    stale_devices,
+    new_entry_id,
+    ignore_rows=(),
+    ignore_devices=(),
+):
+    """What would move, and EVERY reason the move cannot happen.
+
+    Collected rather than raised, because two callers ask different
+    questions of the same five conditions. The migration wants the first
+    refusal, in the order it has always printed them, and raises that. The
+    card wants to know whether any refusal would still be there after the
+    deletion it is about to offer, which is a question about the ones the
+    migration never reaches.
+
+    `ignore_rows` and `ignore_devices` are the entity IDs and device IDs a
+    removal plan would delete, and each is treated as already gone. That is
+    the whole point: a refusal that survives its own removal plan is one no
+    button clears, and offering the button anyway is @rroller's #1146
+    finding, in each of the shapes it has now been found in.
+
+    Gone as a thing that has to move, and not also as a thing holding
+    somebody else's place, because nothing in a plan is ever holding one.
+    A row here is filed under a legacy root and the row blocking it is filed
+    under the serial, which is not a root, so the blocker is never in the
+    plan; devices are the same, and carry one device per identifier besides.
+    Both guards for that were written and both were unreachable, which two
+    weakenings that reddened nothing is how it came out.
+
+    Order is load-bearing. The migration raises `refusals[0]`, so the
+    sequence here is the sequence of messages every existing report maps to.
+    """
     entities = er.async_get(hass)
     devices = dr.async_get(hass)
-    roots = _legacy_roots(
+    ignore_rows = set(ignore_rows)
+    ignore_devices = set(ignore_devices)
+    refusals = []
+
+    # Every refusal below names BOTH sides. @wiiNinja on #1143 upgraded a
+    # recorder, got one entity ID and no way to tell what was in the way,
+    # and the entry then retried for ever. One side of a collision is not
+    # something anybody can act on.
+    #
+    # They name both sides and stop there. Which duplicate should win is a
+    # policy question with real blast radius, and a wrong remedy printed
+    # with this much confidence is worse than none: an entity rename in
+    # Home Assistant moves the entity ID, not the unique ID the collision
+    # is on, so it would not clear anything.
+    #
+    # None of these messages may carry a unique ID. The identity being
+    # moved away from is an md5 of address, RTSP port, username and
+    # password, this text is shown on the UI and gets screenshotted into
+    # issues, and that would put the password up for an offline attack.
+    moving = []
+    retained_rows = []
+    targets = {}
+    for row, target in rows:
+        if row.entity_id in ignore_rows:
+            continue
+        current = entities.async_get(row.entity_id)
+        if current is None or current.unique_id != row.unique_id:
+            raise ValueError("Serial migration registry changed; retry setup")
+        key = (row.domain, row.platform, target)
+        claimed = targets.get(key)
+        if claimed is not None:
+            refusals.append(
+                "Serial migration entity conflict: %s and %s would both become "
+                "the same entity." % (claimed, row.entity_id)
+            )
+            continue
+        held = entities.async_get_entity_id(*key)
+        if held is not None and held != row.entity_id:
+            holder = entities.async_get(held)
+            # Disabled, and the identity it wants already taken by an
+            # enabled one. Nothing is behind it, so it is left alone
+            # rather than refused (#1143). Judged on what the registry
+            # says NOW, which is why it is judged here.
+            if holder is not None and _is_residue(current, holder):
+                retained_rows.append(current)
+                continue
+            refusals.append(
+                "Serial migration entity conflict: %s cannot take the identity "
+                "it needs because %s already holds it." % (row.entity_id, held)
+            )
+            continue
+        targets[key] = row.entity_id
+        moving.append((row, target))
+
+    moving_devices = []
+    retained_devices = []
+    device_targets = {}
+    for device, identifiers in stale_devices:
+        if device.id in ignore_devices:
+            continue
+        current = devices.async_get(device.id)
+        if current is None or current.identifiers != device.identifiers:
+            raise ValueError("Serial migration registry changed; retry setup")
+        holders = [
+            other
+            for identifier in identifiers
+            if identifier[0] == DOMAIN
+            for other in devices_with_identifier(devices, identifier)
+            if other.id != device.id
+        ]
+        if holders and all(_is_residue(current, other) for other in holders):
+            retained_devices.append(current)
+            continue
+        refused = False
+        for identifier in identifiers:
+            if identifier[0] != DOMAIN:
+                continue
+            claimed = device_targets.get(identifier)
+            if claimed is not None:
+                refusals.append(
+                    "Serial migration device conflict: devices %s and %s would "
+                    "both become the same device." % (claimed, _named(device))
+                )
+                refused = True
+                break
+            other = next(
+                (
+                    held
+                    for held in devices_with_identifier(devices, identifier)
+                    if held.id != device.id
+                ),
+                None,
+            )
+            if other is not None:
+                refusals.append(
+                    "Serial migration device conflict: device %s cannot take the "
+                    "identity it needs because device %s already holds it."
+                    % (_named(device), _named(other))
+                )
+                refused = True
+                break
+            device_targets[identifier] = _named(device)
+        if not refused:
+            moving_devices.append((device, identifiers))
+
+    if new_entry_id != entry.unique_id:
+        other = next(
+            (
+                candidate
+                for candidate in hass.config_entries.async_entries(DOMAIN)
+                if candidate.entry_id != entry.entry_id
+                and candidate.unique_id == new_entry_id
+            ),
+            None,
+        )
+        if other is not None:
+            refusals.append(
+                "Serial migration config entry conflict: this device cannot take "
+                "the identity it reports because the entry %r already holds it."
+                % (other.title,)
+            )
+    return moving, moving_devices, retained_rows, retained_devices, refusals
+
+
+def serial_adoption_blockers(hass: HomeAssistant, entry, serial) -> list:
+    """Every refusal that would STILL be there once the card has deleted.
+
+    Something removable being in the way is not the same as removing it
+    helping. Three of the five conditions `async_adopt_the_real_serial`
+    refuses on are reached only after its row and device loops, so a row or
+    device collision is raised first and hides them. The card then offers a
+    destructive button, the button works, and the entry comes back refusing
+    on a condition no deletion it performs touches.
+
+    So the question is asked properly: replay the whole move with the
+    removal plan subtracted, and report what is left. Empty means the button
+    really does finish the job.
+    """
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    entry_rows = er.async_entries_for_config_entry(entities, entry.entry_id)
+    entry_devices = dr.async_entries_for_config_entry(devices, entry.entry_id)
+    roots = _legacy_roots(entry, entry_rows, entry_devices)
+    if not serial or serial in roots:
+        return []
+    rows, stale_devices, new_entry_id = _adoption_targets(
+        entry, entry_rows, entry_devices, roots, serial
+    )
+    doomed_rows, doomed_devices = serial_conflicts(hass, entry, serial)
+    return _adoption_refusals(
+        hass,
         entry,
-        er.async_entries_for_config_entry(entities, entry.entry_id),
-        dr.async_entries_for_config_entry(devices, entry.entry_id),
-    )
-    if serial in roots:
-        return None
-    new_entry_id = _replacer(roots, serial)(entry.unique_id)
-    if new_entry_id == entry.unique_id:
-        return None
-    return next(
-        (
-            candidate
-            for candidate in hass.config_entries.async_entries(DOMAIN)
-            if candidate.entry_id != entry.entry_id
-            and candidate.unique_id == new_entry_id
-        ),
-        None,
-    )
+        rows,
+        stale_devices,
+        new_entry_id,
+        ignore_rows={row.entity_id for row in doomed_rows},
+        ignore_devices={device.id for device in doomed_devices},
+    )[4]
 
 
 def serial_conflict_device_labels(hass: HomeAssistant, entry, serial) -> list:
@@ -1274,35 +1472,16 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
     if not serial or serial in roots:
         return 0
 
-    replacement = _replacer(roots, serial)
-
-    rows = [
-        (row, replacement(row.unique_id))
-        for row in entry_rows
-        if replacement(row.unique_id) != row.unique_id
-    ]
-    stale_devices = [
-        (
-            device,
-            {
-                (domain, replacement(value) if domain == DOMAIN else value)
-                for domain, value in device.identifiers
-            },
-        )
-        for device in entry_devices
-        if any(
-            domain == DOMAIN and replacement(value) != value
-            for domain, value in device.identifiers
-        )
-    ]
-    new_entry_id = replacement(entry.unique_id)
+    rows, stale_devices, new_entry_id = _adoption_targets(
+        entry, entry_rows, entry_devices, roots, serial
+    )
     if not rows and not stale_devices and new_entry_id == entry.unique_id:
         return 0
 
     def preflight():
         """Check every target, and return what is actually going to move.
 
-        ⚠ Returns the plan rather than filtering it beforehand, and that
+        Returns the plan rather than filtering it beforehand, and that
         is the whole point of returning anything. @rroller found on #1145
         that deciding what to pass over BEFORE the awaited backup means
         nothing rechecks it afterwards: enable the dead device during the
@@ -1311,111 +1490,19 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
         second call is the one whose plan is used, and no await separates it
         from the registry writes.
 
+        The conditions themselves live in `_adoption_refusals`, which the
+        repair card replays with its own removals subtracted. They were two
+        copies of the same rules until @rroller's fourth #1146 review, and
+        the card's copy knew about one of the five.
         """
-        # Every refusal below names BOTH sides. @wiiNinja on #1143 upgraded a
-        # recorder, got one entity ID and no way to tell what was in the way,
-        # and the entry then retried for ever. One side of a collision is not
-        # something anybody can act on.
-        #
-        # They name both sides and stop there. Which duplicate should win is a
-        # policy question with real blast radius, and a wrong remedy printed
-        # with this much confidence is worse than none: an entity rename in
-        # Home Assistant moves the entity ID, not the unique ID the collision
-        # is on, so it would not clear anything.
-        #
-        # None of these messages may carry a unique ID. The identity being
-        # moved away from is an md5 of address, RTSP port, username and
-        # password, this text is shown on the UI and gets screenshotted into
-        # issues, and that would put the password up for an offline attack.
-        moving = []
-        retained_rows = []
-        targets = {}
-        for row, target in rows:
-            current = entities.async_get(row.entity_id)
-            if current is None or current.unique_id != row.unique_id:
-                raise ValueError("Serial migration registry changed; retry setup")
-            key = (row.domain, row.platform, target)
-            claimed = targets.get(key)
-            if claimed is not None:
-                raise SerialMigrationConflict(
-                    "Serial migration entity conflict: %s and %s would both become "
-                    "the same entity." % (claimed, row.entity_id)
-                )
-            held = entities.async_get_entity_id(*key)
-            if held is not None and held != row.entity_id:
-                holder = entities.async_get(held)
-                # Disabled, and the identity it wants already taken by an
-                # enabled one. Nothing is behind it, so it is left alone
-                # rather than refused (#1143). Judged on what the registry
-                # says NOW, which is why it is judged here.
-                if holder is not None and _is_residue(current, holder):
-                    retained_rows.append(current)
-                    continue
-                raise SerialMigrationConflict(
-                    "Serial migration entity conflict: %s cannot take the identity "
-                    "it needs because %s already holds it." % (row.entity_id, held)
-                )
-            targets[key] = row.entity_id
-            moving.append((row, target))
-        moving_devices = []
-        retained_devices = []
-        device_targets = {}
-        for device, identifiers in stale_devices:
-            current = devices.async_get(device.id)
-            if current is None or current.identifiers != device.identifiers:
-                raise ValueError("Serial migration registry changed; retry setup")
-            holders = [
-                other
-                for identifier in identifiers
-                if identifier[0] == DOMAIN
-                for other in devices_with_identifier(devices, identifier)
-                if other.id != device.id
-            ]
-            if holders and all(_is_residue(current, other) for other in holders):
-                retained_devices.append(current)
-                continue
-            for identifier in identifiers:
-                if identifier[0] != DOMAIN:
-                    continue
-                claimed = device_targets.get(identifier)
-                if claimed is not None:
-                    raise SerialMigrationConflict(
-                        "Serial migration device conflict: devices %s and %s would "
-                        "both become the same device." % (claimed, _named(device))
-                    )
-                other = next(
-                    (
-                        held
-                        for held in devices_with_identifier(devices, identifier)
-                        if held.id != device.id
-                    ),
-                    None,
-                )
-                if other is not None:
-                    raise SerialMigrationConflict(
-                        "Serial migration device conflict: device %s cannot take the "
-                        "identity it needs because device %s already holds it."
-                        % (_named(device), _named(other))
-                    )
-                device_targets[identifier] = _named(device)
-            moving_devices.append((device, identifiers))
-        if new_entry_id != entry.unique_id:
-            other = next(
-                (
-                    candidate
-                    for candidate in hass.config_entries.async_entries(DOMAIN)
-                    if candidate.entry_id != entry.entry_id
-                    and candidate.unique_id == new_entry_id
-                ),
-                None,
-            )
-            if other is not None:
-                raise SerialMigrationConflict(
-                    "Serial migration config entry conflict: this device cannot take "
-                    "the identity it reports because the entry %r already holds it."
-                    % (other.title,)
-                )
-        return moving, moving_devices, retained_rows, retained_devices
+        *plan, refusals = _adoption_refusals(
+            hass, entry, rows, stale_devices, new_entry_id
+        )
+        if refusals:
+            # The first one, in the order they have always been printed, so
+            # an existing report still maps to the message it quotes.
+            raise SerialMigrationConflict(refusals[0])
+        return tuple(plan)
 
     try:
         preflight()

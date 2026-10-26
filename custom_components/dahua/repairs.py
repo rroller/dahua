@@ -279,6 +279,7 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
             SerialConflictPlanChanged,
             _removal_plan,
             async_clear_serial_conflicts,
+            serial_adoption_blockers,
             serial_conflict_collateral,
             serial_conflict_device_labels,
         )
@@ -291,6 +292,18 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
 
         rows, devices, plan = _removal_plan(self.hass, entry, self._serial)
         if not rows and not devices:
+            return await self._async_nothing_left(entry, issue_id)
+        if serial_adoption_blockers(self.hass, entry, self._serial):
+            # There is something to remove and removing it would not help.
+            # The card was raised when this was not yet true, or was raised
+            # correctly and another config entry has taken the serial since;
+            # either way a form offering deletion is now the wrong screen,
+            # and nothing is deleted on the way to saying so.
+            _LOGGER.warning(
+                "Serial conflict repair for %s removed nothing: the move is "
+                "blocked by something this cannot clear",
+                entry.title,
+            )
             return await self._async_nothing_left(entry, issue_id)
 
         errors = None

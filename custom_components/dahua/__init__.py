@@ -763,17 +763,19 @@ def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
     fixable = ISSUE_SERIAL_CONFLICT.format(entry.entry_id)
     manual = ISSUE_SERIAL_CONFLICT_MANUAL.format(entry.entry_id)
     try:
-        from .migrate import serial_conflicts, serial_entry_holder
+        from .migrate import serial_adoption_blockers, serial_conflicts
 
         serial = getattr(conflict, "serial", None)
         rows, devices = serial_conflicts(hass, entry, serial)
         # Something to remove is not the same as a removal that would help.
-        # The migration checks "another entry already holds this serial" only
-        # after its row and device loops, so a device collision is raised
-        # first and hides it. Offer the button on that and it deletes a
-        # device, reloads, and refuses again on the condition underneath.
-        held_elsewhere = serial_entry_holder(hass, entry, serial)
-        offer = bool(rows or devices) and held_elsewhere is None
+        # The migration reaches three of its five refusals only after the row
+        # and device loops, so one of those two is raised first and hides
+        # them. Offer the button on that and it deletes, reloads, and refuses
+        # again on the condition underneath. So the whole move is replayed
+        # with this removal plan subtracted, and anything still refusing
+        # afterwards is a refusal the button cannot clear.
+        remaining = serial_adoption_blockers(hass, entry, serial)
+        offer = bool(rows or devices) and not remaining
         # Only ever one of the two on screen. A reload can change which shape
         # applies, and two cards for one entry is two answers to one question.
         ir.async_delete_issue(hass, DOMAIN, manual if offer else fixable)
@@ -790,16 +792,18 @@ def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
                 data={"entry_id": entry.entry_id, "serial": serial},
             )
             return
-        # The refusal that was raised is the device or row one, because the
-        # entry check never ran. Printing only that would send somebody to
-        # remove a device and leave them exactly where they started, so the
-        # condition underneath is named too. Title only, never an identifier.
+        # The refusal that was raised may be the removable one, because the
+        # conditions underneath it are never reached. Printing only that
+        # would send somebody to delete something and leave them exactly
+        # where they started, so everything that would still be refusing is
+        # named too. These messages name entity IDs, device names and entry
+        # titles, and never a unique ID.
         reason = str(conflict)
-        if held_elsewhere is not None and "config entry conflict" not in reason:
+        underneath = [other for other in remaining if other not in reason]
+        if underneath:
             reason += (
-                " The entry %r is also already filed under that serial, so "
-                "clearing the collision above on its own would not finish "
-                "the move." % (held_elsewhere.title or "untitled",)
+                " Clearing that on its own would not finish the move. "
+                + " ".join(underneath)
             )
         ir.async_create_issue(
             hass,

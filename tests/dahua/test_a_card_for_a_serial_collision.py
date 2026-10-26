@@ -1331,14 +1331,33 @@ async def test_removing_the_device_would_not_clear_the_entry_conflict(hass):
 
 async def test_the_card_that_explains_never_prints_either_identity(hass):
     """⭐ Both sides this time. The holder above carries HASH2 as well, so a
-    label that printed identifiers would leak the other camera's too."""
+    label that printed identifiers would leak the other camera's too.
+
+    The manual card rather than the form, because this topology no longer
+    reaches a form: the reason it is manual is that the deletion would not
+    help, and that is the text somebody actually sees.
+    """
     entry, _other, _legacy, _holder = await _another_entry_holds_it_as_a_device(hass)
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
 
-    shown = await _flow(hass, entry).async_step_init()
+    dahua_module._async_offer_to_clear_the_conflict(hass, entry, raised.value)
 
-    rendered = " ".join(str(v) for v in shown["description_placeholders"].values())
+    card = _manual_issue(hass, entry)
+    rendered = " ".join(str(v) for v in card.translation_placeholders.values())
     assert HASH not in rendered, rendered
     assert HASH2 not in rendered, rendered
+
+
+async def test_that_topology_is_not_offered_a_form_at_all(hass):
+    """And the flow agrees with the classification, which is the half that
+    matters when the blocker arrives after the card was raised."""
+    entry, _other, _legacy, holder = await _another_entry_holds_it_as_a_device(hass)
+
+    result = await _flow(hass, entry).async_step_init()
+
+    assert result["type"] != "form", result
+    assert dr.async_get(hass).async_get(holder.id) is not None
 
 
 async def test_a_collision_another_entry_also_blocks_is_not_a_button(hass):
@@ -1381,3 +1400,175 @@ async def test_a_plain_device_collision_still_gets_the_button(hass):
 
     assert _issue(hass, entry) is not None
     assert _manual_issue(hass, entry) is None
+
+
+# --- @rroller's fourth review: removable is still not the same as clearable --
+#
+# Two more ways the button got offered, or pressed, over a blocker no deletion
+# it performs would touch. Both are the same mistake as the one above, caught
+# in places the first guard does not reach: the guard asked one question about
+# one blocker, at one moment.
+
+
+async def _removable_collision_masking_a_row_convergence(hass):
+    """One collision a deletion clears and one it cannot, in the same entry.
+
+    `HASH_siren` is held by `SERIAL_siren`, so the card finds something to
+    remove and offers the button. `HASH_temperature` and `HASH2_temperature`
+    both want `SERIAL_temperature`, which nobody holds, so they are not in
+    any removal plan and the migration refuses on them the moment the first
+    collision is out of the way. A second synthesised root is what a password
+    change leaves behind.
+    """
+    entry, old, holder = await _collided(hass)
+    entities = er.async_get(hass)
+    for root, slug in ((HASH, "temperature"), (HASH2, "temperature_old")):
+        entities.async_get_or_create(
+            "sensor",
+            DOMAIN,
+            root + "_temperature",
+            config_entry=entry,
+            suggested_object_id="front_door_" + slug,
+        )
+    return entry, old, holder
+
+
+async def _removable_collision_masking_a_device_convergence(hass):
+    """The same mask, one layer up: the survivor is two devices becoming one.
+
+    The row collision is removable. The two devices both resolve to
+    `(dahua, SERIAL)` and nothing holds that, so the device loop has nobody
+    to name as a holder and the card never sees them.
+    """
+    entry, old, holder = await _collided(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, HASH2)},
+        name="Front Door, before the password change",
+    )
+    return entry, old, holder
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        _removable_collision_masking_a_row_convergence,
+        _removable_collision_masking_a_device_convergence,
+    ],
+    ids=["rows-converge", "devices-converge"],
+)
+async def test_clearing_the_removable_half_leaves_the_migration_refusing(hass, build):
+    """⭐ The premise, asserted rather than assumed, for both shapes.
+
+    Clear the removable collision by hand and ask the migration itself
+    whether that finished the job. It did not. If either of these ever does
+    become sufficient, this fails loudly instead of the guard below quietly
+    refusing a button that would have worked.
+    """
+    entry, old, _holder = await build(hass)
+
+    removed = await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    assert removed == 1
+    assert er.async_get(hass).async_get(old.entity_id) is None, "the row went"
+
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+    assert "would both become the same" in str(raised.value), str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        _removable_collision_masking_a_row_convergence,
+        _removable_collision_masking_a_device_convergence,
+    ],
+    ids=["rows-converge", "devices-converge"],
+)
+async def test_a_collision_masking_a_convergence_is_not_a_button(hass, build):
+    """⭐ The guard. Something removable is in the way, so the classification
+    offered the button, and pressing it deletes a row and leaves the entry
+    refusing on the convergence underneath."""
+    entry, _old, _holder = await build(hass)
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    dahua_module._async_offer_to_clear_the_conflict(hass, entry, raised.value)
+
+    assert _issue(hass, entry) is None, "offered a button that cannot help"
+    assert _manual_issue(hass, entry) is not None
+
+
+async def test_the_manual_card_names_the_convergence_underneath_too(hass):
+    """The refusal raised is the row collision, because the convergence is
+    found later. Printing only that sends somebody to delete for nothing."""
+    entry, _old, _holder = await _removable_collision_masking_a_row_convergence(hass)
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    dahua_module._async_offer_to_clear_the_conflict(hass, entry, raised.value)
+
+    reason = _manual_issue(hass, entry).translation_placeholders["reason"]
+    assert "would both become the same" in reason, reason
+    assert "front_door_temperature" in reason, reason
+    assert HASH not in reason and HASH2 not in reason, reason
+
+
+async def test_an_entry_taking_the_serial_while_the_form_is_open_removes_nothing(hass):
+    """⭐ @rroller's P1 timing. The form is shown, another entry is then filed
+    under the serial, and the row and device plan is identical either side of
+    that, so the agreement check sees nothing and the deletion goes ahead."""
+    entry, old, _holder = await _collided(hass)
+    flow = _flow(hass, entry)
+    shown = await flow.async_step_init()
+    assert shown["type"] == "form"
+
+    _entry(hass, title="Tuinhuis", unique_id=SERIAL)
+    result = await flow.async_step_confirm({})
+
+    assert er.async_get(hass).async_get(old.entity_id) is not None, "deleted anyway"
+    assert result["type"] != "create_entry", "reported success"
+
+
+async def test_an_entry_taking_the_serial_during_the_backup_removes_nothing(hass):
+    """The same blocker arriving inside the one await there is."""
+    entry, old, _holder = await _collided(hass)
+
+    with _mutating_backup(
+        hass, lambda: _entry(hass, title="Tuinhuis", unique_id=SERIAL)
+    ):
+        with pytest.raises(migrate.SerialConflictPlanChanged):
+            await migrate.async_clear_serial_conflicts(hass, entry, SERIAL)
+
+    assert er.async_get(hass).async_get(old.entity_id) is not None
+
+
+async def test_the_refusal_raised_is_still_the_first_one(hass):
+    """The five conditions are collected now rather than raised one at a
+    time, and the migration raises the first of them.
+
+    That ordering is the whole reason the collecting is safe. Every existing
+    report quotes the message it got, and the fixture here satisfies two
+    conditions at once, so a change of order would silently re-point them.
+    It is also why `preflight` was not reordered to name the real blocker:
+    the card says that part now, and the refusal stays where it was.
+    """
+    entry, _other, _legacy, _holder = await _another_entry_holds_it_as_a_device(hass)
+
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert "device conflict" in str(raised.value), str(raised.value)
+    assert "config entry conflict" not in str(raised.value), "the order moved"
+
+
+async def test_the_blocker_list_is_what_the_deletion_would_leave(hass):
+    """Not "every refusal": the one the card is about to clear is not in it,
+    and the one underneath is. An empty list is what permits the button."""
+    entry, other, _legacy, _holder = await _another_entry_holds_it_as_a_device(hass)
+
+    remaining = migrate.serial_adoption_blockers(hass, entry, SERIAL)
+
+    assert len(remaining) == 1, remaining
+    assert "config entry conflict" in remaining[0], remaining
+    assert other.title in remaining[0], remaining
