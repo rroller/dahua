@@ -187,6 +187,19 @@ def test_an_amcrest_press_with_no_state_raises_the_sensor():
     assert c._dahua_event_timestamp[key] > 0
 
 
+def test_a_backkeylight_with_no_state_at_all_still_does_not_ring():
+    """The scope of the rule above. `BackKeyLight` does carry a call state,
+    so one arriving without it is a device being unexpected, not a code that
+    has no such field, and the VTO path everybody is already on must not
+    start ringing on an event it used to ignore."""
+    c = _vto()
+    key = _listening(c)
+
+    c.on_receive_vto_event({"Code": "BackKeyLight", "Action": "Pulse", "Data": {}})
+
+    assert c._dahua_event_timestamp[key] == 0
+
+
 def test_a_missing_state_is_not_the_same_as_an_unreadable_one():
     """Absent means the code does not have the field. Present and unreadable
     means a device said something nobody can judge, and that must still not

@@ -616,6 +616,17 @@ PULSE_STATE_CODES = frozenset({"DoorbellPressed", "AccessControl"})
 # 9 unlock failed, 11 rebooted. Only a ring should raise the button sensor.
 DOORBELL_RINGING_STATES = frozenset({1, 2})
 
+# The raw codes whose payload really does carry the call state above, so an
+# absent one from them is a device saying something unexpected rather than a
+# code with no such field. Anything else translated into DoorbellPressed was
+# decided to be a press before it got here and has nothing left to test.
+#
+# A list of the codes that DO carry it, rather than of the ones that do not:
+# a new spelling arriving is the common case, and the safe default for one
+# nobody has measured is to trust the translation rather than read a missing
+# field as "not ringing", which is what made @DrSpaldo's press silent (#1121).
+DOORBELL_STATE_SOURCES = frozenset({"BackKeyLight"})
+
 # How many recent events diagnostics keeps per device.
 #
 # Ten rather than fifty: an ANPR event measured about 5 KB, so ten is a diagnostics
@@ -3364,7 +3375,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # Absent, not merely unreadable. A `State` that is
                     # present and cannot be read is a state nobody can
                     # judge, and that still must not ring.
-                    if code == "DoorbellPressed" and "State" not in payload:
+                    if (
+                        code == "DoorbellPressed"
+                        and raw_code not in DOORBELL_STATE_SOURCES
+                        and "State" not in payload
+                    ):
                         # A press derived from a code that carries no call
                         # state at all. `translate_event_code` has already
                         # decided it is a press -- `_DoTalkAction_` only on
@@ -3375,12 +3390,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         # and the translation both worked, the Invite
                         # reached its listeners, and the sensor still never
                         # moved, because a missing State read as 0 and 0 is
-                        # not a ring. `PhoneCallDetect` carries no State
-                        # either (test_an_amcrest_doorbell_is_unaffected
-                        # says so in as many words), so an Amcrest doorbell
-                        # on this path has had the same dead sensor the
-                        # whole time, and nothing said so: the state was
-                        # not unknown, it was absent.
+                        # not a ring, and 0 is the value for idle so
+                        # the unknown-state note returns without logging.
+                        #
+                        # `BackKeyLight` is excluded above because it does
+                        # carry a state, so a missing one there is a device
+                        # being unexpected and must still not ring.
+                        # `PhoneCallDetect` has no State in the fixture
+                        # this repo has always carried for it, so the same
+                        # silence would follow for any device that sends it
+                        # as a Pulse. Not measured on Amcrest hardware.
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
                         state = payload.get("State", 0)
