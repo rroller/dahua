@@ -865,6 +865,18 @@ async def _async_merge_host(hass: HomeAssistant, address: str, group: list) -> N
     )
 
 
+class SerialMigrationConflict(ValueError):
+    """Two rows want one identity, and no retry changes that.
+
+    Separate from the other `ValueError`s this module raises, which are
+    genuinely transient: a registry that moved under us, or a backup that
+    could not be taken. `async_setup_entry` retries those and refuses to
+    retry this, because "will retry" about a permanent condition is how
+    @wiiNinja spent an evening on #1143 watching a card that was never going
+    to clear.
+    """
+
+
 def _is_residue(stale, holder) -> bool:
     """Whether the one that cannot move is the one nothing is behind.
 
@@ -877,6 +889,128 @@ def _is_residue(stale, holder) -> bool:
     return bool(getattr(stale, "disabled_by", None)) and not getattr(
         holder, "disabled_by", None
     )
+
+
+def _legacy_roots(entry, entry_rows, entry_devices, extra=None) -> set:
+    """Every generated identity this entry is filed under.
+
+    The stored identity may predate a password change, so the registries, not
+    today's credentials, are authoritative about which legacy IDs need moving.
+    `extra` is the hash the client would generate right now, which the
+    migration knows and a repair flow run later does not.
+    """
+    roots = set(extra or ())
+    for value in [
+        entry.unique_id,
+        *[v for d in entry_devices for domain, v in d.identifiers if domain == DOMAIN],
+        *[row.unique_id for row in entry_rows if row.platform == DOMAIN],
+    ]:
+        root = (value or "").split("_", 1)[0]
+        if is_synthesised_identity(root):
+            roots.add(root)
+    return roots
+
+
+def _replacer(roots, serial):
+    """What each identity becomes once `serial` is adopted."""
+
+    def replacement(value):
+        for root in roots:
+            if value == root or (value or "").startswith(root + "_"):
+                return serial + value[len(root) :]
+        return value
+
+    return replacement
+
+
+def serial_conflicts(hass: HomeAssistant, entry, serial):
+    """The rows and devices that cannot take `serial`, because one is held.
+
+    ⚠ Recomputed from the registry every time it is asked, and never carried
+    in a card's `data`. The #827 merge card deleted 232 entities because it
+    acted on a list gathered earlier (see #1114); anything that has changed
+    since is simply not in this answer.
+
+    Residue is excluded, because #1145 passes that over rather than refusing,
+    so it is not a conflict and must not be offered for deletion here.
+    """
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    entry_rows = er.async_entries_for_config_entry(entities, entry.entry_id)
+    entry_devices = dr.async_entries_for_config_entry(devices, entry.entry_id)
+    roots = _legacy_roots(entry, entry_rows, entry_devices)
+    if not serial or serial in roots:
+        return [], []
+    replacement = _replacer(roots, serial)
+
+    blocked_rows = []
+    for row in entry_rows:
+        target = replacement(row.unique_id)
+        if target == row.unique_id:
+            continue
+        held = entities.async_get_entity_id(row.domain, row.platform, target)
+        if held is None or held == row.entity_id:
+            continue
+        holder = entities.async_get(held)
+        if holder is None or _is_residue(row, holder):
+            continue
+        blocked_rows.append(row)
+
+    blocked_devices = []
+    for device in entry_devices:
+        targets = {
+            (domain, replacement(value) if domain == DOMAIN else value)
+            for domain, value in device.identifiers
+        }
+        if targets == device.identifiers:
+            continue
+        holders = [
+            other
+            for identifier in targets
+            if identifier[0] == DOMAIN
+            for other in devices_with_identifier(devices, identifier)
+            if other.id != device.id
+        ]
+        if not holders or all(_is_residue(device, other) for other in holders):
+            continue
+        blocked_devices.append(device)
+
+    return blocked_rows, blocked_devices
+
+
+async def async_clear_serial_conflicts(hass: HomeAssistant, entry, serial) -> int:
+    """Remove the rows that cannot move, so the serial can be adopted.
+
+    The device's own serial wins. Everything removed here is a row filed
+    under a generated identity whose place has already been taken by one
+    filed under the serial the hardware reports, so the survivor is the one
+    the device agrees with.
+
+    A backup of all three registries is taken first, and a failure to take
+    one stops the whole thing: this deletes entities somebody may be using,
+    and the #827 merge card is why that is not negotiable.
+    """
+    rows, blocked_devices = serial_conflicts(hass, entry, serial)
+    if not rows and not blocked_devices:
+        return 0
+    if await _async_backup_once(hass) is None:
+        raise ValueError("Could not back up all three registries before removing rows")
+
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    for row in rows:
+        entities.async_remove(row.entity_id)
+    for device in blocked_devices:
+        devices.async_remove_device(device.id)
+    _LOGGER.warning(
+        "%s: removed %d registry rows and %d devices that were holding the "
+        "reported serial %s out of reach; registries were copied first",
+        entry.data.get(CONF_ADDRESS),
+        len(rows),
+        len(blocked_devices),
+        serial,
+    )
+    return len(rows) + len(blocked_devices)
 
 
 def _named(device) -> str:
@@ -920,15 +1054,7 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
     entry_devices = dr.async_entries_for_config_entry(devices, entry.entry_id)
     # The stored identity may predate a password change. The registries, not
     # today's credentials, are authoritative about which legacy IDs need moving.
-    roots = {old}
-    for value in [
-        entry.unique_id,
-        *[v for d in entry_devices for domain, v in d.identifiers if domain == DOMAIN],
-        *[row.unique_id for row in entry_rows if row.platform == DOMAIN],
-    ]:
-        root = (value or "").split("_", 1)[0]
-        if is_synthesised_identity(root):
-            roots.add(root)
+    roots = _legacy_roots(entry, entry_rows, entry_devices, extra={old})
 
     def is_legacy(value):
         return any(
@@ -949,11 +1075,7 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
     if not serial or serial in roots:
         return 0
 
-    def replacement(value):
-        for root in roots:
-            if value == root or (value or "").startswith(root + "_"):
-                return serial + value[len(root) :]
-        return value
+    replacement = _replacer(roots, serial)
 
     rows = [
         (row, replacement(row.unique_id))
@@ -1016,7 +1138,7 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
             key = (row.domain, row.platform, target)
             claimed = targets.get(key)
             if claimed is not None:
-                raise ValueError(
+                raise SerialMigrationConflict(
                     "Serial migration entity conflict: %s and %s would both become "
                     "the same entity." % (claimed, row.entity_id)
                 )
@@ -1030,7 +1152,7 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
                 if holder is not None and _is_residue(current, holder):
                     retained_rows.append(current)
                     continue
-                raise ValueError(
+                raise SerialMigrationConflict(
                     "Serial migration entity conflict: %s cannot take the identity "
                     "it needs because %s already holds it." % (row.entity_id, held)
                 )
@@ -1058,7 +1180,7 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
                     continue
                 claimed = device_targets.get(identifier)
                 if claimed is not None:
-                    raise ValueError(
+                    raise SerialMigrationConflict(
                         "Serial migration device conflict: devices %s and %s would "
                         "both become the same device." % (claimed, _named(device))
                     )
@@ -1071,7 +1193,7 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
                     None,
                 )
                 if other is not None:
-                    raise ValueError(
+                    raise SerialMigrationConflict(
                         "Serial migration device conflict: device %s cannot take the "
                         "identity it needs because device %s already holds it."
                         % (_named(device), _named(other))
@@ -1089,14 +1211,21 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
                 None,
             )
             if other is not None:
-                raise ValueError(
+                raise SerialMigrationConflict(
                     "Serial migration config entry conflict: this device cannot take "
                     "the identity it reports because the entry %r already holds it."
                     % (other.title,)
                 )
         return moving, moving_devices, retained_rows, retained_devices
 
-    preflight()
+    try:
+        preflight()
+    except SerialMigrationConflict as conflict:
+        # The card needs to know which serial is being blocked; it recomputes
+        # everything else for itself when the button is pressed.
+        conflict.serial = serial
+        raise
+
     backup = await _async_backup_once(hass)
     if backup is None:
         raise ValueError(
@@ -1105,7 +1234,11 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
     # Backup yields to other entry setups. Recheck every target afterwards,
     # and act on THIS answer rather than the one above; no await separates it
     # from the registry mutations below.
-    moving, moving_devices, retained_rows, retained_devices = preflight()
+    try:
+        moving, moving_devices, retained_rows, retained_devices = preflight()
+    except SerialMigrationConflict as conflict:
+        conflict.serial = serial
+        raise
     if retained_rows or retained_devices:
         # Said plainly, because it is not what the tidy-up card covers.
         # `leftover_rows` skips every row with `disabled_by` set and never

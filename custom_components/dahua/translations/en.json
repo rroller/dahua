@@ -646,6 +646,21 @@
                 }
             }
         },
+        "serial_conflict": {
+            "title": "{name} cannot finish moving onto the serial its device reports",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Remove {count} old registry entries for {name}?",
+                        "description": "**{name}** reports the serial `{serial}`, and Home Assistant is trying to file it under that instead of under a value worked out from its address and password. A value worked out that way changes whenever the password or the address does, and takes every entity with it, which is what this move is meant to stop happening again.\\n\\nIt cannot finish, because {count} of the identities it needs are already taken by other entries in the registry. The device cannot be in two places, so it is not set up at all until one of them goes, and nothing will change on its own.\\n\\nThese are the ones that would be removed:\\n\\n{entities}\\n\\nEach of them is filed under the old worked-out value, and the identity it wants is already held by an entry filed under the serial the device itself states. **This cannot be undone.** Their history goes with them, and anything pointing at them in an automation or a dashboard stops resolving. A copy of the registries is written first.\\n\\nThe device is then set up again straight away."
+                    }
+                },
+                "abort": {
+                    "not_configured": "That Dahua configuration entry has been removed, so there is nothing left to tidy up.",
+                    "nothing_to_remove": "Nothing is standing in the way any more, so there is nothing to remove. Nothing was changed, and the device should set up normally."
+                }
+            }
+        },
         "leftover_rows": {
             "title": "{count} Dahua entities for {name} are no longer provided",
             "fix_flow": {

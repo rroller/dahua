@@ -31,6 +31,9 @@ ISSUE_PLACEHOLDERS = {
     # Title only, as siblings_remain above: the flow fills its own form, and it
     # recomputes the list rather than reading it out of the issue's data.
     "leftover_rows": {"name", "count"},
+    # Title only again. Its flow recomputes what it would remove when the
+    # button is pressed, so the count on the form is not the count here.
+    "serial_conflict": {"name"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
 
@@ -72,6 +75,7 @@ def _form_placeholders(class_name: str) -> set:
 
 SIBLINGS_FLOW_PLACEHOLDERS = _form_placeholders("RemoveSiblingsRepairFlow")
 LEFTOVER_FLOW_PLACEHOLDERS = _form_placeholders("RemoveLeftoverRowsRepairFlow")
+CONFLICT_FLOW_PLACEHOLDERS = _form_placeholders("ClearSerialConflictRepairFlow")
 
 
 def _placeholders(text: str) -> set:

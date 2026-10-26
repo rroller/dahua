@@ -10,7 +10,7 @@ import logging
 # on this module.
 import time  # noqa: F401  pylint: disable=unused-import
 
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -596,9 +596,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # completed. Otherwise an error or unavailable backup creates duplicate
     # entities and strands automations on the old IDs.
     try:
-        from .migrate import async_adopt_the_real_serial
+        from .migrate import SerialMigrationConflict, async_adopt_the_real_serial
 
         moved = await async_adopt_the_real_serial(hass, entry, coordinators)
+        ir.async_delete_issue(
+            hass, DOMAIN, ISSUE_SERIAL_CONFLICT.format(entry.entry_id)
+        )
         if any(
             (getattr(c.client, "_vth_identity", None) or {}).get("class") == "VTH"
             for c in coordinators
@@ -616,6 +619,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         await asyncio.gather(
             *[c.async_stop() for c in coordinators], return_exceptions=True
         )
+        if isinstance(error, SerialMigrationConflict):
+            # Permanent, and saying "will retry" about it is the complaint in
+            # #1143. Two rows want one identity and no amount of retrying
+            # changes that, so setup stops and a card offers the one thing
+            # that does change it.
+            _async_offer_to_clear_the_conflict(hass, entry, error)
+            raise ConfigEntryError(
+                "Serial registry migration cannot complete: " + str(error)
+            ) from error
         if isinstance(error, Exception):
             raise ConfigEntryNotReady(
                 "Serial registry migration could not complete: " + str(error)
@@ -717,6 +729,37 @@ ISSUE_REMOVAL_BROKE_THINGS = "removal_broke_things_{0}"
 # is recomputed from the registry on every start, and the flow recomputes it
 # again before removing anything.
 ISSUE_LEFTOVER_ROWS = "leftover_rows_{0}"
+ISSUE_SERIAL_CONFLICT = "serial_conflict_{0}"
+
+
+@callback
+def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
+    """Raise the card that is the only way out of a serial collision.
+
+    Quiet about its own failures. A card is what makes a dead entry
+    recoverable, and a card that raised on the way to raising would make the
+    entry no worse but the log a great deal more confusing.
+    """
+    try:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            ISSUE_SERIAL_CONFLICT.format(entry.entry_id),
+            is_fixable=True,
+            is_persistent=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="serial_conflict",
+            translation_placeholders={"name": entry.title or "untitled"},
+            data={
+                "entry_id": entry.entry_id,
+                "serial": getattr(conflict, "serial", None),
+            },
+        )
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not raise the registry conflict card for %s",
+            entry.data.get(CONF_ADDRESS),
+        )
 
 
 async def async_migrate_synthesised_unique_id(hass, entry) -> None:

@@ -33,6 +33,8 @@ async def async_create_fix_flow(
         return RemoveSiblingsRepairFlow(data or {})
     if issue_id.startswith("leftover_rows_"):
         return RemoveLeftoverRowsRepairFlow(data or {})
+    if issue_id.startswith("serial_conflict_"):
+        return ClearSerialConflictRepairFlow(data or {})
     if issue_id.startswith("webrtc_cannot_play_"):
         return SwitchStreamToH264RepairFlow(data or {})
     return ConfirmRepairFlow()
@@ -208,6 +210,63 @@ class RemoveSiblingsRepairFlow(RepairsFlow):
                     if protected
                     else ""
                 ),
+            },
+        )
+
+
+class ClearSerialConflictRepairFlow(RepairsFlow):
+    """Clear the rows standing in the way of the serial the device reports.
+
+    The device's own serial wins, which is the only defensible answer: every
+    row removed here is filed under an identity generated from credentials,
+    and its place has already been taken by one filed under the serial the
+    hardware states. The survivor is the one the device agrees with.
+
+    **The list is recomputed when the button is pressed**, never read out of
+    the card's data, for the reason written across `RemoveLeftoverRowsRepairFlow`
+    and the #827 merge card: a card that acts on evidence gathered earlier is
+    how 232 entities were deleted.
+    """
+
+    def __init__(self, data: dict) -> None:
+        self._entry_id = data.get("entry_id")
+        self._serial = data.get("serial")
+
+    async def async_step_init(self, user_input: dict | None = None):
+        return await self.async_step_confirm()
+
+    async def async_step_confirm(self, user_input: dict | None = None):
+        # Imported here rather than at module scope to avoid a circular import.
+        from . import ISSUE_SERIAL_CONFLICT
+        from .migrate import async_clear_serial_conflicts, serial_conflicts
+
+        issue_id = ISSUE_SERIAL_CONFLICT.format(self._entry_id)
+        entry = self.hass.config_entries.async_get_entry(self._entry_id or "")
+        if entry is None:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return self.async_abort(reason="not_configured")
+
+        rows, devices = serial_conflicts(self.hass, entry, self._serial)
+        if not rows and not devices:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return self.async_abort(reason="nothing_to_remove")
+
+        if user_input is not None:
+            await async_clear_serial_conflicts(self.hass, entry, self._serial)
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            # The entry failed permanently, so nothing is going to retry it.
+            await self.hass.config_entries.async_reload(entry.entry_id)
+            return self.async_create_entry(data={})
+
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "name": entry.title or "untitled",
+                "serial": str(self._serial),
+                "count": str(len(rows) + len(devices)),
+                "entities": "\n".join("- `%s`" % row.entity_id for row in rows[:40])
+                or "- (none, only devices)",
             },
         )
 
