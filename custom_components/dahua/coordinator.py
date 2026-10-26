@@ -3360,17 +3360,40 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # That project also warns the values vary by model, so this
                     # widens what counts as a ring rather than claiming a
                     # complete mapping.
-                    state = event_payload(event).get("State", 0)
-                    try:
-                        numeric_state = int(state)
-                    except (TypeError, ValueError):
-                        numeric_state = None
-                    pressed = numeric_state in DOORBELL_RINGING_STATES
-                    if pressed:
+                    payload = event_payload(event)
+                    # Absent, not merely unreadable. A `State` that is
+                    # present and cannot be read is a state nobody can
+                    # judge, and that still must not ring.
+                    if code == "DoorbellPressed" and "State" not in payload:
+                        # A press derived from a code that carries no call
+                        # state at all. `translate_event_code` has already
+                        # decided it is a press -- `_DoTalkAction_` only on
+                        # `Action: Invite` -- and there is nothing further
+                        # to test.
+                        #
+                        # Measured by @DrSpaldo on #1121: the subscription
+                        # and the translation both worked, the Invite
+                        # reached its listeners, and the sensor still never
+                        # moved, because a missing State read as 0 and 0 is
+                        # not a ring. `PhoneCallDetect` carries no State
+                        # either (test_an_amcrest_doorbell_is_unaffected
+                        # says so in as many words), so an Amcrest doorbell
+                        # on this path has had the same dead sensor the
+                        # whole time, and nothing said so: the state was
+                        # not unknown, it was absent.
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
-                        self._dahua_event_timestamp[event_key] = 0
-                        self._note_unknown_doorbell_state(numeric_state, state)
+                        state = payload.get("State", 0)
+                        try:
+                            numeric_state = int(state)
+                        except (TypeError, ValueError):
+                            numeric_state = None
+                        pressed = numeric_state in DOORBELL_RINGING_STATES
+                        if pressed:
+                            self._dahua_event_timestamp[event_key] = int(time.time())
+                        else:
+                            self._dahua_event_timestamp[event_key] = 0
+                            self._note_unknown_doorbell_state(numeric_state, state)
             else:
                 continue
 
