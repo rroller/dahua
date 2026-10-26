@@ -1272,8 +1272,16 @@ def _adoption_refusals(
     return moving, moving_devices, retained_rows, retained_devices, refusals
 
 
-def serial_adoption_blockers(hass: HomeAssistant, entry, serial) -> list:
+def serial_adoption_blockers(
+    hass: HomeAssistant, entry, serial, after_removing=True
+) -> list:
     """Every refusal that would STILL be there once the card has deleted.
+
+    With `after_removing=False`, every refusal there is instead, with
+    nothing subtracted, the first of which is what the migration raises.
+    The card needs that one to say what stopped the move, and asking here
+    rather than keeping a copy is the point: one set of conditions, one
+    answer, however it is being asked.
 
     Something removable being in the way is not the same as removing it
     helping. Three of the five conditions `async_adopt_the_real_serial`
@@ -1296,7 +1304,9 @@ def serial_adoption_blockers(hass: HomeAssistant, entry, serial) -> list:
     rows, stale_devices, new_entry_id = _adoption_targets(
         entry, entry_rows, entry_devices, roots, serial
     )
-    doomed_rows, doomed_devices = serial_conflicts(hass, entry, serial)
+    doomed_rows, doomed_devices = (
+        serial_conflicts(hass, entry, serial) if after_removing else ([], [])
+    )
     return _adoption_refusals(
         hass,
         entry,

@@ -272,6 +272,36 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
             return self.async_abort(reason="still_blocked")
         return self.async_abort(reason="nothing_to_remove")
 
+    async def _async_cannot_help(self, entry):
+        """Something is removable and removing it would not finish the move.
+
+        The card goes up from what is already known here, rather than from
+        a reload. `_async_nothing_left` asks the migration because an empty
+        list is not evidence of anything; this is the opposite case, where
+        the evidence is in hand, and a reload can fail for reasons that have
+        nothing to do with a serial. Answering "nothing is standing in the
+        way" because a camera was offline is the 08:50 #1146 finding again
+        with a different cause.
+
+        One card builder, so the manual card reads the same however it was
+        reached, and the refusal it quotes is the one the migration raises.
+        """
+        from . import _async_offer_to_clear_the_conflict
+        from .migrate import SerialMigrationConflict, serial_adoption_blockers
+
+        _LOGGER.warning(
+            "Serial conflict repair for %s removed nothing: the move is "
+            "blocked by something this cannot clear",
+            entry.title,
+        )
+        every = serial_adoption_blockers(
+            self.hass, entry, self._serial, after_removing=False
+        )
+        conflict = SerialMigrationConflict(every[0])
+        conflict.serial = self._serial
+        _async_offer_to_clear_the_conflict(self.hass, entry, conflict)
+        return self.async_abort(reason="still_blocked")
+
     async def async_step_confirm(self, user_input: dict | None = None):
         # Imported here rather than at module scope to avoid a circular import.
         from . import ISSUE_SERIAL_CONFLICT
@@ -295,16 +325,11 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
             return await self._async_nothing_left(entry, issue_id)
         if serial_adoption_blockers(self.hass, entry, self._serial):
             # There is something to remove and removing it would not help.
-            # The card was raised when this was not yet true, or was raised
+            # The card was raised before that was true, or was raised
             # correctly and another config entry has taken the serial since;
             # either way a form offering deletion is now the wrong screen,
             # and nothing is deleted on the way to saying so.
-            _LOGGER.warning(
-                "Serial conflict repair for %s removed nothing: the move is "
-                "blocked by something this cannot clear",
-                entry.title,
-            )
-            return await self._async_nothing_left(entry, issue_id)
+            return await self._async_cannot_help(entry)
 
         errors = None
         if user_input is not None:
@@ -325,6 +350,11 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
                 rows, devices, plan = _removal_plan(self.hass, entry, self._serial)
                 if not rows and not devices:
                     return await self._async_nothing_left(entry, issue_id)
+                # What changed during the backup may be the thing that makes
+                # the whole removal pointless. "Press the button again" is
+                # the wrong answer to that, and it is the same screen again.
+                if serial_adoption_blockers(self.hass, entry, self._serial):
+                    return await self._async_cannot_help(entry)
             else:
                 ir.async_delete_issue(self.hass, DOMAIN, issue_id)
                 # The entry failed permanently, so nothing is going to retry it.

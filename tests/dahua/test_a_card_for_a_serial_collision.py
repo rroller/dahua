@@ -1356,8 +1356,13 @@ async def test_that_topology_is_not_offered_a_form_at_all(hass):
 
     result = await _flow(hass, entry).async_step_init()
 
-    assert result["type"] != "form", result
+    assert result["reason"] == "still_blocked", result
     assert dr.async_get(hass).async_get(holder.id) is not None
+    # And it says so rather than going quiet. "Nothing is standing in the
+    # way" was the 08:50 finding, and routing through a reload would bring
+    # it back whenever the reload fails for its own reasons.
+    assert _manual_issue(hass, entry) is not None
+    assert _issue(hass, entry) is None
 
 
 async def test_a_collision_another_entry_also_blocks_is_not_a_button(hass):
@@ -1527,7 +1532,9 @@ async def test_an_entry_taking_the_serial_while_the_form_is_open_removes_nothing
     result = await flow.async_step_confirm({})
 
     assert er.async_get(hass).async_get(old.entity_id) is not None, "deleted anyway"
-    assert result["type"] != "create_entry", "reported success"
+    assert result["reason"] == "still_blocked", result
+    assert _manual_issue(hass, entry) is not None, "said nothing instead"
+    assert _issue(hass, entry) is None, "left the button up"
 
 
 async def test_an_entry_taking_the_serial_during_the_backup_removes_nothing(hass):
@@ -1572,3 +1579,43 @@ async def test_the_blocker_list_is_what_the_deletion_would_leave(hass):
     assert len(remaining) == 1, remaining
     assert "config entry conflict" in remaining[0], remaining
     assert other.title in remaining[0], remaining
+
+
+async def test_the_flow_routes_to_the_card_when_the_blocker_lands_mid_backup(hass):
+    """The pressed button, not the function under it.
+
+    The direct test above proves nothing is deleted. This one is about what
+    the person is then looking at: not the same deletion form again with
+    "press the button again", which is an answer to a different question.
+    """
+    entry, old, _holder = await _collided(hass)
+    flow = _flow(hass, entry)
+    assert (await flow.async_step_init())["type"] == "form"
+
+    with _mutating_backup(
+        hass, lambda: _entry(hass, title="Tuinhuis", unique_id=SERIAL)
+    ):
+        result = await flow.async_step_confirm({})
+
+    assert er.async_get(hass).async_get(old.entity_id) is not None, "deleted anyway"
+    assert result["reason"] == "still_blocked", result
+    assert _manual_issue(hass, entry) is not None
+    assert _issue(hass, entry) is None
+
+
+async def test_the_card_the_flow_raises_quotes_what_the_migration_would(hass):
+    """Not the surviving blocker, which is the second half of the story.
+
+    The flow has the whole list, so it names the refusal the entry itself
+    would print, and the card appends what is underneath. A card that
+    quoted only the survivor would describe a collision the person never
+    saw in their log.
+    """
+    entry, _other, _legacy, _holder = await _another_entry_holds_it_as_a_device(hass)
+
+    await _flow(hass, entry).async_step_init()
+
+    reason = _manual_issue(hass, entry).translation_placeholders["reason"]
+    assert "device conflict" in reason, reason
+    assert "config entry conflict" in reason, reason
+    assert HASH not in reason and HASH2 not in reason, reason
