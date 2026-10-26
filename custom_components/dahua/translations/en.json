@@ -660,9 +660,14 @@
                 },
                 "abort": {
                     "not_configured": "That Dahua configuration entry has been removed, so there is nothing left to tidy up.",
-                    "nothing_to_remove": "Nothing is standing in the way any more, so there is nothing to remove. Nothing was changed, and the device should set up normally."
+                    "nothing_to_remove": "Nothing is standing in the way any more, so there is nothing to remove. Nothing was changed, and the device should set up normally.",
+                    "still_blocked": "Nothing here was standing in the way any more, so nothing was removed, and the device was asked to set up again. It still did not. Whatever is stopping it now has its own notification, and this one has been left alone."
                 }
             }
+        },
+        "serial_conflict_manual": {
+            "title": "{name} cannot move onto the serial its device reports",
+            "description": "**{name}** reports the serial `{serial}`, and Home Assistant files it under that rather than under a value worked out from its address and password, because a value worked out that way changes whenever the password or the address does and takes every entity with it.\n\nIt cannot, and this one is not a case of something being in the way that could be removed. Nothing is holding the identity it wants. What stopped it:\n\n> {reason}\n\nThe device is not set up at all until the two sides named above stop asking for the same identity, and nothing changes that on its own. Once you have separated them, reload this entry from the three dot menu on its card under **Settings > Devices and services** and this notification will go.\n\nTwo things worth knowing first. Removing a device from the registry removes the entities sitting on it as well, along with their history. And which of two duplicates should survive is a decision about your setup rather than one this integration can make for you, which is why it names both sides and stops there."
         },
         "leftover_rows": {
             "title": "{count} Dahua entities for {name} are no longer provided",

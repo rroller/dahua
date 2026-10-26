@@ -599,9 +599,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         from .migrate import SerialMigrationConflict, async_adopt_the_real_serial
 
         moved = await async_adopt_the_real_serial(hass, entry, coordinators)
-        ir.async_delete_issue(
-            hass, DOMAIN, ISSUE_SERIAL_CONFLICT.format(entry.entry_id)
-        )
+        for template in (ISSUE_SERIAL_CONFLICT, ISSUE_SERIAL_CONFLICT_MANUAL):
+            ir.async_delete_issue(hass, DOMAIN, template.format(entry.entry_id))
         if any(
             (getattr(c.client, "_vth_identity", None) or {}).get("class") == "VTH"
             for c in coordinators
@@ -730,29 +729,76 @@ ISSUE_REMOVAL_BROKE_THINGS = "removal_broke_things_{0}"
 # again before removing anything.
 ISSUE_LEFTOVER_ROWS = "leftover_rows_{0}"
 ISSUE_SERIAL_CONFLICT = "serial_conflict_{0}"
+# Raised for the collisions the card above cannot clear. `_conflict_holders`
+# only finds an identity somebody else is HOLDING, and three of the five
+# things the migration refuses on are not that shape: two of this entry's own
+# rows converging on one target, two of its devices converging, and another
+# config entry already carrying the serial. Nothing is in the way to remove,
+# so there is no list to confirm and no button that would help (@rroller,
+# #1146). Not fixable, and therefore carries its own description.
+ISSUE_SERIAL_CONFLICT_MANUAL = "serial_conflict_manual_{0}"
 
 
 @callback
 def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
-    """Raise the card that is the only way out of a serial collision.
+    """Raise whichever of the two cards this collision actually has.
+
+    A button that removes rows is only an answer where there are rows to
+    remove. Asked on a collision of the other shape it finds an empty list,
+    and an empty list used to read as "resolved": the card deleted itself and
+    said nothing was standing in the way, while the entry stayed dead and
+    nothing retried it (@rroller, #1146).
+
+    So the shape is decided here, from the registry, by the same function the
+    flow will use. Something is holding an identity: the card that offers to
+    remove it. Nothing is: a card that explains it instead, which is not
+    fixable because there is no safe automatic answer. Which of two
+    duplicates should win is a decision about somebody's setup, and the
+    refusals in `migrate.py` name both sides and stop there for that reason.
 
     Quiet about its own failures. A card is what makes a dead entry
     recoverable, and a card that raised on the way to raising would make the
     entry no worse but the log a great deal more confusing.
     """
+    fixable = ISSUE_SERIAL_CONFLICT.format(entry.entry_id)
+    manual = ISSUE_SERIAL_CONFLICT_MANUAL.format(entry.entry_id)
     try:
+        from .migrate import serial_conflicts
+
+        serial = getattr(conflict, "serial", None)
+        rows, devices = serial_conflicts(hass, entry, serial)
+        # Only ever one of the two on screen. A reload can change which shape
+        # applies, and two cards for one entry is two answers to one question.
+        ir.async_delete_issue(hass, DOMAIN, manual if (rows or devices) else fixable)
+        if rows or devices:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                fixable,
+                is_fixable=True,
+                is_persistent=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="serial_conflict",
+                translation_placeholders={"name": entry.title or "untitled"},
+                data={"entry_id": entry.entry_id, "serial": serial},
+            )
+            return
         ir.async_create_issue(
             hass,
             DOMAIN,
-            ISSUE_SERIAL_CONFLICT.format(entry.entry_id),
-            is_fixable=True,
+            manual,
+            is_fixable=False,
             is_persistent=False,
             severity=ir.IssueSeverity.ERROR,
-            translation_key="serial_conflict",
-            translation_placeholders={"name": entry.title or "untitled"},
-            data={
-                "entry_id": entry.entry_id,
-                "serial": getattr(conflict, "serial", None),
+            translation_key="serial_conflict_manual",
+            translation_placeholders={
+                "name": entry.title or "untitled",
+                "serial": str(serial),
+                # Safe to show: each of these refusals names entity IDs, device
+                # names or an entry title, and `_named` exists so that none of
+                # them prints an identifier. The identifier is the hash derived
+                # from the credentials.
+                "reason": str(conflict),
             },
         )
     except Exception:  # pylint: disable=broad-except

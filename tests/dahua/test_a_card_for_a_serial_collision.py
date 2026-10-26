@@ -816,3 +816,365 @@ async def test_a_bystander_that_arrives_while_the_form_is_open_is_not_moved(hass
     assert again["errors"] == {"base": "plan_changed"}
     assert entities.async_get(late.entity_id).device_id == legacy.id
     assert late.entity_id in again["description_placeholders"]["kept"]
+
+
+# --- the collisions nothing is holding ---------------------------------------
+#
+# @rroller on #1146. `_conflict_holders` finds one shape of collision: an
+# identity somebody else is HOLDING. Three of the five things
+# `async_adopt_the_real_serial` refuses on are not that shape, because the
+# identity is not held by anything -- two of this entry's own rows converging
+# on one target, two of its devices converging, and another config entry
+# already carrying the serial.
+#
+# On those the migration raised, the fixable card went up, and pressing its
+# button found an empty list, deleted the card and reported that nothing was
+# standing in the way. The entry was still dead, nothing retried it, and the
+# one notification saying so had just removed itself.
+#
+# Two changes. The shape is decided before the card is raised, so the
+# unremovable ones get a card that explains instead of a button that cannot
+# help. And an empty list no longer means resolved: the migration is asked.
+
+HASH2 = "0a1b2c3d4e5f60718293a4b5c6d7e8f9"
+
+
+def _entry(hass, title="Front Door", unique_id=HASH):
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=dict(DATA), unique_id=unique_id, title=title
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+async def _two_roots_one_row_target(hass):
+    """Two of this entry's own rows wanting one identity, nothing holding it.
+
+    A second synthesised root is what a password change leaves behind: rows
+    written under the old hash beside rows under the new one, both of which
+    resolve to the serial. `SERIAL_siren` is held by nobody, so there is
+    nothing a deletion card could offer to remove.
+    """
+    entry = _entry(hass)
+    entities = er.async_get(hass)
+    first = entities.async_get_or_create(
+        "switch",
+        DOMAIN,
+        HASH + "_siren",
+        config_entry=entry,
+        suggested_object_id="front_door_siren",
+    )
+    second = entities.async_get_or_create(
+        "switch",
+        DOMAIN,
+        HASH2 + "_siren",
+        config_entry=entry,
+        suggested_object_id="front_door_siren_old",
+    )
+    return entry, first, second
+
+
+async def _two_roots_one_device_target(hass):
+    """The same, one layer up: two devices that would become one device.
+
+    Each carries a row of its own with a distinct name, so the entity loop
+    finds nothing to complain about and the device loop is actually reached.
+    """
+    entry = _entry(hass)
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    pairs = []
+    for root, slug in ((HASH, "siren"), (HASH2, "motion")):
+        device = devices.async_get_or_create(
+            config_entry_id=entry.entry_id,
+            identifiers={(DOMAIN, root)},
+            name="Front Door " + slug,
+        )
+        entities.async_get_or_create(
+            "switch",
+            DOMAIN,
+            root + "_" + slug,
+            config_entry=entry,
+            device_id=device.id,
+            suggested_object_id="front_door_" + slug,
+        )
+        pairs.append(device)
+    return entry, pairs
+
+
+async def _another_entry_holds_the_serial(hass):
+    """The serial this device reports is already some other entry's identity."""
+    entry = _entry(hass)
+    entities = er.async_get(hass)
+    entities.async_get_or_create(
+        "switch",
+        DOMAIN,
+        HASH + "_siren",
+        config_entry=entry,
+        suggested_object_id="front_door_siren",
+    )
+    other = _entry(hass, title="The Same Camera Twice", unique_id=SERIAL)
+    return entry, other
+
+
+# --- each one still refuses, and refuses permanently -------------------------
+
+
+async def test_two_rows_converging_on_one_identity_is_refused(hass):
+    entry, _first, _second = await _two_roots_one_row_target(hass)
+
+    with pytest.raises(migrate.SerialMigrationConflict):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+
+async def test_two_devices_converging_on_one_identity_is_refused(hass):
+    entry, _devices = await _two_roots_one_device_target(hass)
+
+    with pytest.raises(migrate.SerialMigrationConflict):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+
+async def test_another_entry_already_holding_the_serial_is_refused(hass):
+    entry, _other = await _another_entry_holds_the_serial(hass)
+
+    with pytest.raises(migrate.SerialMigrationConflict) as raised:
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert "The Same Camera Twice" in str(raised.value), "names the other side"
+
+
+# --- and none of them is something the deletion card can clear ---------------
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        _two_roots_one_row_target,
+        _two_roots_one_device_target,
+        _another_entry_holds_the_serial,
+    ],
+    ids=["rows-converge", "devices-converge", "another-entry"],
+)
+async def test_the_deletion_card_has_nothing_to_offer_for_these(hass, build):
+    """⭐ The premise of the whole section, asserted rather than assumed.
+
+    If any of these ever did produce a removal plan, the card below would be
+    the wrong one and this file would be describing something that no longer
+    happens.
+    """
+    entry = (await build(hass))[0]
+
+    rows, devices = migrate.serial_conflicts(hass, entry, SERIAL)
+
+    assert (rows, devices) == ([], [])
+
+
+def _manual_issue(hass, entry):
+    return ir.async_get(hass).async_get_issue(
+        DOMAIN, dahua_module.ISSUE_SERIAL_CONFLICT_MANUAL.format(entry.entry_id)
+    )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        _two_roots_one_row_target,
+        _two_roots_one_device_target,
+        _another_entry_holds_the_serial,
+    ],
+    ids=["rows-converge", "devices-converge", "another-entry"],
+)
+async def test_an_unremovable_collision_gets_the_card_that_explains(hass, build):
+    """⭐ The report. A button that deletes rows is not an answer where there
+    are no rows to delete, and the card that offered one deleted itself."""
+    entry = (await build(hass))[0]
+    conflict = migrate.SerialMigrationConflict("two things want one identity")
+    conflict.serial = SERIAL
+
+    await _setup_raising(hass, entry, conflict)
+
+    assert _manual_issue(hass, entry) is not None
+    assert _issue(hass, entry) is None, "offered a button that cannot help"
+
+
+async def test_the_card_that_explains_is_not_fixable(hass):
+    """Which is the whole difference, and it is also a hassfest rule: an issue
+    carries a description or a fix flow and never both."""
+    entry, _first, _second = await _two_roots_one_row_target(hass)
+    conflict = migrate.SerialMigrationConflict("two things want one identity")
+    conflict.serial = SERIAL
+
+    await _setup_raising(hass, entry, conflict)
+
+    assert _manual_issue(hass, entry).is_fixable is False
+
+
+async def test_the_card_that_explains_says_what_stopped_it(hass):
+    """Both sides, which is #1144's rule, carried through to the card."""
+    entry, _other = await _another_entry_holds_the_serial(hass)
+    conflict = migrate.SerialMigrationConflict(
+        "Serial migration config entry conflict: this device cannot take the "
+        "identity it reports because the entry 'The Same Camera Twice' already "
+        "holds it."
+    )
+    conflict.serial = SERIAL
+
+    await _setup_raising(hass, entry, conflict)
+
+    placeholders = _manual_issue(hass, entry).translation_placeholders
+    assert "The Same Camera Twice" in placeholders["reason"]
+    assert placeholders["serial"] == SERIAL
+
+
+async def test_the_card_that_explains_never_prints_the_identity(hass):
+    """The identity is md5 of the address, port, username and password. A card
+    is read on screen and pasted into issues, so printing one hands out an
+    offline attack on the password. `_named` exists for this reason."""
+    entry, _devices = await _two_roots_one_device_target(hass)
+    conflict = migrate.SerialMigrationConflict(
+        "Serial migration device conflict: devices Front Door siren (abc) and "
+        "Front Door motion (def) would both become the same device."
+    )
+    conflict.serial = SERIAL
+
+    await _setup_raising(hass, entry, conflict)
+
+    rendered = " ".join(_manual_issue(hass, entry).translation_placeholders.values())
+    assert HASH not in rendered
+    assert HASH2 not in rendered
+
+
+async def test_a_removable_collision_still_gets_the_button(hass):
+    """The control. The classification must not turn every card into prose."""
+    entry, _old, _holder = await _collided(hass)
+    conflict = migrate.SerialMigrationConflict("one row holds another's place")
+    conflict.serial = SERIAL
+
+    await _setup_raising(hass, entry, conflict)
+
+    assert _issue(hass, entry) is not None
+    assert _manual_issue(hass, entry) is None
+
+
+async def test_only_ever_one_of_the_two_is_on_screen(hass):
+    """A reload can change which shape applies. Two cards for one entry is two
+    answers to one question, and clearing one would leave the other."""
+    entry, _old, _holder = await _collided(hass)
+    conflict = migrate.SerialMigrationConflict("one row holds another's place")
+    conflict.serial = SERIAL
+    await _setup_raising(hass, entry, conflict)
+    assert _issue(hass, entry) is not None
+
+    # The holder goes away, so what is left is two roots converging.
+    er.async_get(hass).async_remove(_holder.entity_id)
+    er.async_get(hass).async_update_entity(
+        _old.entity_id, new_unique_id=HASH2 + "_siren"
+    )
+    er.async_get(hass).async_get_or_create(
+        "switch",
+        DOMAIN,
+        HASH + "_siren",
+        config_entry=entry,
+        suggested_object_id="front_door_siren_again",
+    )
+    await _setup_raising(hass, entry, conflict)
+
+    assert _manual_issue(hass, entry) is not None
+    assert _issue(hass, entry) is None
+
+
+async def test_setting_up_clears_the_card_that_explains_too(hass):
+    """It is raised on a failure, so the success path has to take it down.
+    Only the fixable one was ever deleted there."""
+    entry, _first, _second = await _two_roots_one_row_target(hass)
+    conflict = migrate.SerialMigrationConflict("two things want one identity")
+    conflict.serial = SERIAL
+    await _setup_raising(hass, entry, conflict)
+    assert _manual_issue(hass, entry) is not None
+
+    starts, forward, unload = _no_platforms(hass)
+    with patch.object(
+        dahua_module.DahuaDataUpdateCoordinator,
+        "_async_update_data",
+        return_value={"serialNumber": SERIAL},
+    ), starts, forward, unload, patch(
+        "custom_components.dahua.migrate.async_adopt_the_real_serial",
+        AsyncMock(return_value=0),
+    ), patch.object(
+        dahua_module, "async_migrate_synthesised_unique_id", AsyncMock()
+    ):
+        entry.mock_state(hass, ConfigEntryState.SETUP_IN_PROGRESS)
+        await dahua_module.async_setup_entry(hass, entry)
+
+    assert _manual_issue(hass, entry) is None
+
+
+# --- an empty list is not a migration that can now succeed -------------------
+
+
+async def _fixable_card_over_an_empty_plan(hass):
+    """The state @rroller reproduced: the button's card is up, and the thing
+    it would remove is not there to remove."""
+    entry, _first, _second = await _two_roots_one_row_target(hass)
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        dahua_module.ISSUE_SERIAL_CONFLICT.format(entry.entry_id),
+        is_fixable=True,
+        is_persistent=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key="serial_conflict",
+        translation_placeholders={"name": entry.title},
+        data={"entry_id": entry.entry_id, "serial": SERIAL},
+    )
+    return entry
+
+
+async def test_an_empty_plan_asks_the_migration_rather_than_assuming(hass):
+    """⭐ "An empty removal plan does not establish that migration can now
+    succeed." The entry is reloaded, it does not come back, so the card stays
+    and the abort says the entry still did not set up."""
+    entry = await _fixable_card_over_an_empty_plan(hass)
+    conflict = migrate.SerialMigrationConflict("two things want one identity")
+    conflict.serial = SERIAL
+
+    async def _reload(entry_id):
+        """What reloading really does here: run setup, which refuses again."""
+        await _setup_raising(hass, entry, conflict)
+
+    with patch.object(hass.config_entries, "async_reload", _reload):
+        done = await _flow(hass, entry).async_step_init()
+
+    assert done["type"] == "abort"
+    assert done["reason"] == "still_blocked"
+    assert _manual_issue(hass, entry) is not None, "left nothing saying why"
+
+
+async def test_an_empty_plan_that_really_did_resolve_still_clears(hass):
+    """The control, and the behaviour that was right all along: somebody
+    tidied the registry by hand, the entry loads, the card goes."""
+    entry = await _fixable_card_over_an_empty_plan(hass)
+
+    with patch.object(hass.config_entries, "async_reload", AsyncMock()):
+        done = await _flow(hass, entry).async_step_init()
+
+    assert done["type"] == "abort"
+    assert done["reason"] == "nothing_to_remove"
+    assert _issue(hass, entry) is None
+    assert _manual_issue(hass, entry) is None
+
+
+async def test_the_abort_the_user_reads_is_a_real_string(hass):
+    """A reason with no translation renders as the raw key."""
+    import json
+
+    with open(
+        "custom_components/dahua/translations/en.json", encoding="utf-8"
+    ) as handle:
+        strings = json.load(handle)
+
+    issues = strings["issues"]
+    assert "still_blocked" in issues["serial_conflict"]["fix_flow"]["abort"]
+    manual = issues["serial_conflict_manual"]
+    assert "description" in manual and "title" in manual
+    assert "fix_flow" not in manual, "hassfest fails the integration for both"

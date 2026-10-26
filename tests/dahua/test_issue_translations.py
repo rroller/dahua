@@ -34,6 +34,10 @@ ISSUE_PLACEHOLDERS = {
     # Title only again. Its flow recomputes what it would remove when the
     # button is pressed, so the count on the form is not the count here.
     "serial_conflict": {"name"},
+    # All three, unlike every fixable issue above: this one has no flow to
+    # fill a form, so its own description is the whole of what is on screen
+    # and each name has to be supplied where the issue is raised.
+    "serial_conflict_manual": {"name", "serial", "reason"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
 

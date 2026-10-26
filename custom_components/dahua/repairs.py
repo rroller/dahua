@@ -238,6 +238,40 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
     async def async_step_init(self, user_input: dict | None = None):
         return await self.async_step_confirm()
 
+    async def _async_nothing_left(self, entry, issue_id):
+        """An empty list is not a migration that can now succeed.
+
+        @rroller on #1146: three of the five things the migration refuses on
+        are invisible to `_conflict_holders`, which only finds an identity
+        somebody else is holding. On those this flow found nothing, deleted
+        its own card and reported that nothing was standing in the way, while
+        the same migration still failed and nothing retried it.
+
+        So the migration is asked rather than the list. A reload is what the
+        success path does anyway and is the only thing that runs the preflight
+        again.
+
+        The card goes down first, and what is read afterwards is whether a
+        serial conflict card came back up. Not whether the entry loaded: an
+        entry can fail to load for reasons that have nothing to do with a
+        serial, a device that went offline being the obvious one, and
+        answering "still blocked" to that would be pointing at the wrong
+        thing. A collision that is still there re-raises and says so itself.
+        """
+        from . import ISSUE_SERIAL_CONFLICT, ISSUE_SERIAL_CONFLICT_MANUAL
+
+        # Stale either way: it describes a removal with nothing in it.
+        ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+        await self.hass.config_entries.async_reload(entry.entry_id)
+        registry = ir.async_get(self.hass)
+        if any(
+            registry.async_get_issue(DOMAIN, template.format(self._entry_id))
+            is not None
+            for template in (ISSUE_SERIAL_CONFLICT, ISSUE_SERIAL_CONFLICT_MANUAL)
+        ):
+            return self.async_abort(reason="still_blocked")
+        return self.async_abort(reason="nothing_to_remove")
+
     async def async_step_confirm(self, user_input: dict | None = None):
         # Imported here rather than at module scope to avoid a circular import.
         from . import ISSUE_SERIAL_CONFLICT
@@ -256,8 +290,7 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
 
         rows, devices, plan = _removal_plan(self.hass, entry, self._serial)
         if not rows and not devices:
-            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
-            return self.async_abort(reason="nothing_to_remove")
+            return await self._async_nothing_left(entry, issue_id)
 
         errors = None
         if user_input is not None:
@@ -277,8 +310,7 @@ class ClearSerialConflictRepairFlow(RepairsFlow):
                 errors = {"base": "plan_changed"}
                 rows, devices, plan = _removal_plan(self.hass, entry, self._serial)
                 if not rows and not devices:
-                    ir.async_delete_issue(self.hass, DOMAIN, issue_id)
-                    return self.async_abort(reason="nothing_to_remove")
+                    return await self._async_nothing_left(entry, issue_id)
             else:
                 ir.async_delete_issue(self.hass, DOMAIN, issue_id)
                 # The entry failed permanently, so nothing is going to retry it.
