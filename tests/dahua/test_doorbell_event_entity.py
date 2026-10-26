@@ -31,7 +31,8 @@ class _Coordinator:
     # `async_add_entities` wants for an entry that has no subentries.
     subentry_id = None
 
-    def __init__(self, doorbell=True, timestamp=0):
+    def __init__(self, doorbell=True, timestamp=0, events=()):
+        self._events = list(events)
         self._doorbell = doorbell
         self._timestamp = timestamp
         self._channel = 0
@@ -39,6 +40,9 @@ class _Coordinator:
 
     def is_doorbell(self):
         return self._doorbell
+
+    def get_event_list(self):
+        return self._events
 
     def get_device_name(self):
         return "Front Door"
@@ -100,6 +104,43 @@ async def test_a_camera_does_not():
     """There is no button, so the entity would sit at unknown for ever."""
     added = []
     coordinator = _Coordinator(doorbell=False)
+    hass = type("H", (), {"data": {}})()
+    await async_setup_entry(
+        hass,
+        type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})(),
+        adds_entities(added),
+    )
+
+    assert added == []
+
+
+async def test_a_door_station_that_selected_the_press_gets_one():
+    """@DrSpaldo's DHI-ASI7214S is an access controller with a call button and
+    `is_doorbell()` is false for it, so the model check alone leaves it with no
+    event entity however many presses it reports (#1121).
+
+    Selecting DoorbellPressed is the user saying the device has a button, which
+    is the only answer available: no read reports a call button, and the model
+    prefixes are the thing this integration keeps getting wrong (#570, #676,
+    #690, #1131).
+    """
+    added = []
+    coordinator = _Coordinator(doorbell=False, events=["DoorbellPressed"])
+    hass = type("H", (), {"data": {}})()
+    await async_setup_entry(
+        hass,
+        type("E", (), {"entry_id": "e1", "runtime_data": {0: coordinator}})(),
+        adds_entities(added),
+    )
+
+    assert len(added) == 1
+    assert isinstance(added[0], DahuaDoorbellEvent)
+
+
+async def test_selecting_some_other_event_does_not_make_one():
+    """Only the press counts. A camera with motion selected has no button."""
+    added = []
+    coordinator = _Coordinator(doorbell=False, events=["VideoMotion"])
     hass = type("H", (), {"data": {}})()
     await async_setup_entry(
         hass,

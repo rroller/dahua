@@ -616,6 +616,17 @@ PULSE_STATE_CODES = frozenset({"DoorbellPressed", "AccessControl"})
 # 9 unlock failed, 11 rebooted. Only a ring should raise the button sensor.
 DOORBELL_RINGING_STATES = frozenset({1, 2})
 
+# The raw codes whose payload really does carry the call state above, so an
+# absent one from them is a device saying something unexpected rather than a
+# code with no such field. Anything else translated into DoorbellPressed was
+# decided to be a press before it got here and has nothing left to test.
+#
+# A list of the codes that DO carry it, rather than of the ones that do not:
+# a new spelling arriving is the common case, and the safe default for one
+# nobody has measured is to trust the translation rather than read a missing
+# field as "not ringing", which is what made @DrSpaldo's press silent (#1121).
+DOORBELL_STATE_SOURCES = frozenset({"BackKeyLight"})
+
 # How many recent events diagnostics keeps per device.
 #
 # Ten rather than fifty: an ANPR event measured about 5 KB, so ten is a diagnostics
@@ -3360,17 +3371,48 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # That project also warns the values vary by model, so this
                     # widens what counts as a ring rather than claiming a
                     # complete mapping.
-                    state = event_payload(event).get("State", 0)
-                    try:
-                        numeric_state = int(state)
-                    except (TypeError, ValueError):
-                        numeric_state = None
-                    pressed = numeric_state in DOORBELL_RINGING_STATES
-                    if pressed:
+                    payload = event_payload(event)
+                    # Absent, not merely unreadable. A `State` that is
+                    # present and cannot be read is a state nobody can
+                    # judge, and that still must not ring.
+                    if (
+                        code == "DoorbellPressed"
+                        and raw_code not in DOORBELL_STATE_SOURCES
+                        and "State" not in payload
+                    ):
+                        # A press derived from a code that carries no call
+                        # state at all. `translate_event_code` has already
+                        # decided it is a press -- `_DoTalkAction_` only on
+                        # `Action: Invite` -- and there is nothing further
+                        # to test.
+                        #
+                        # Measured by @DrSpaldo on #1121: the subscription
+                        # and the translation both worked, the Invite
+                        # reached its listeners, and the sensor still never
+                        # moved, because a missing State read as 0 and 0 is
+                        # not a ring, and 0 is the value for idle so
+                        # the unknown-state note returns without logging.
+                        #
+                        # `BackKeyLight` is excluded above because it does
+                        # carry a state, so a missing one there is a device
+                        # being unexpected and must still not ring.
+                        # `PhoneCallDetect` has no State in the fixture
+                        # this repo has always carried for it, so the same
+                        # silence would follow for any device that sends it
+                        # as a Pulse. Not measured on Amcrest hardware.
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
-                        self._dahua_event_timestamp[event_key] = 0
-                        self._note_unknown_doorbell_state(numeric_state, state)
+                        state = payload.get("State", 0)
+                        try:
+                            numeric_state = int(state)
+                        except (TypeError, ValueError):
+                            numeric_state = None
+                        pressed = numeric_state in DOORBELL_RINGING_STATES
+                        if pressed:
+                            self._dahua_event_timestamp[event_key] = int(time.time())
+                        else:
+                            self._dahua_event_timestamp[event_key] = 0
+                            self._note_unknown_doorbell_state(numeric_state, state)
             else:
                 continue
 
@@ -3518,6 +3560,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     codes.append("SmartMotionVehicle")
 
             return codes if codes else [code]
+
+        # A door station that talks SIP reports the whole call on one code,
+        # and only the invitation is a button press (#1121). Measured by
+        # @DrSpaldo on a DHI-ASI7214S and a DHI-ASI6214S-PW: one press sends
+        # four _DoTalkAction_ events, Invite then Answer then two Hangups,
+        # sharing a CallID. A sensor built straight from the code would come
+        # on again when the call was answered and twice more when it ended.
+        #
+        # So only Invite is the press, and it joins the translation that is
+        # already here rather than becoming a code of its own. Everything
+        # else returns the raw code, which nothing subscribes to, so it is
+        # dropped where every other unselected code is dropped.
+        #
+        # RoomNo is deliberately not read: it is the room the station is
+        # calling, set per device in its web UI, so it identifies the
+        # destination rather than the press, and Answer does not carry it.
+        if code == "_DoTalkAction_":
+            if event_payload(event).get("Action") == "Invite":
+                return ["DoorbellPressed"]
+            return [code]
 
         # Convert doorbell pressed related events to common event name, DoorbellPressed.
         # VTO devices will use the event BackKeyLight and the Amcrest devices seem to use PhoneCallDetect

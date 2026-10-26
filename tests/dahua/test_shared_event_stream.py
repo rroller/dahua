@@ -573,48 +573,175 @@ async def test_a_channels_own_code_is_not_dropped_because_a_sibling_wanted_it(ha
 
 
 # --- and the coupling that keeps DERIVES_INTO honest --------------------------
+#
+# Both tests below ask `translate_event_code` what it does rather than holding
+# a table of the answer. The table that used to be here named two raw codes and
+# went stale the moment #1121 added a third doorbell spelling, and it would
+# have gone stale in silence: a copy of somebody else's rule agrees with
+# itself for ever.
+
+# One payload per raw code the translation rewrites. This is the INPUT. What
+# each one becomes is asked of the real function, never written down here.
+TRANSLATED_PAYLOADS = (
+    {"Code": "CrossLineDetection", "data": {"Object": {"ObjectType": "human"}}},
+    {"Code": "CrossLineDetection", "data": {"Object": {"ObjectType": "vehicle"}}},
+    {"Code": "CrossRegionDetection", "data": {"Object": {"ObjectType": "human"}}},
+    {"Code": "CrossRegionDetection", "data": {"Object": {"ObjectType": "vehicle"}}},
+    {"Code": "BackKeyLight", "data": {"State": 1}},
+    {"Code": "PhoneCallDetect", "data": {}},
+    {"Code": "_DoTalkAction_", "data": {"Action": "Invite"}},
+)
+
+
+def _what_each_code_becomes():
+    """{raw code: the set of other codes it can turn into}."""
+    from custom_components.dahua import DahuaDataUpdateCoordinator
+
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = 0
+    coordinator._dahua_event_listeners = {}
+
+    becomes = {}
+    for payload in TRANSLATED_PAYLOADS:
+        code = payload["Code"]
+        derived = set(coordinator.translate_event_code(payload)) - {code}
+        if derived:
+            becomes.setdefault(code, set()).update(derived)
+    return becomes
 
 
 def test_a_translated_code_that_becomes_selectable_must_be_mapped():
-    """`translate_event_code` rewrites four raw codes, and the host filter runs
-    before it, so any rewrite whose *target* a user can select needs its source
-    in DERIVES_INTO or the event is dropped before translation.
+    """The host filter runs before the translation, so any rewrite whose
+    *target* a user can select needs its source in DERIVES_INTO, or the event
+    is dropped before it can be translated.
 
-    Two are mapped. The doorbell pair is safe only because `DoorbellPressed` is
-    absent from ALL_EVENTS and so can never be in anybody's selection. That is a
-    fact about the selectable list rather than about doorbells, and it would stop
-    being true the moment somebody made it selectable, which is exactly the
-    change this catches. #556 and #593 were both about `BackKeyLight` reaching an
-    entity, so it is not a hypothetical request.
+    This used to be a dormant check: the doorbell codes were safe only because
+    `DoorbellPressed` was absent from ALL_EVENTS, and the test said so and said
+    it would stop being true the moment somebody made it selectable. #1121 did
+    exactly that, so the check now has something to catch.
     """
     from custom_components.dahua.config_flow import ALL_EVENTS
     from custom_components.dahua import DERIVES_INTO
 
-    translations = {
-        "CrossLineDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
-        "CrossRegionDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
-        "BackKeyLight": ("DoorbellPressed",),
-        "PhoneCallDetect": ("DoorbellPressed",),
-    }
+    becomes = _what_each_code_becomes()
+    assert becomes, "nothing is translated, so this proves nothing"
 
-    for raw, derived in translations.items():
-        selectable = [code for code in derived if code in ALL_EVENTS]
+    checked = 0
+    for raw, derived in becomes.items():
+        selectable = derived & set(ALL_EVENTS)
         if not selectable:
             continue
+        checked += 1
         assert raw in DERIVES_INTO, (
             "%s is selectable and is derived from %s, which the host filter "
             "drops before translation. Add it to DERIVES_INTO." % (selectable, raw)
         )
-        assert set(selectable) <= set(DERIVES_INTO[raw])
+        assert selectable <= set(DERIVES_INTO[raw])
+    assert checked == len(becomes), (
+        "a raw code was skipped because nothing it derives into is selectable; "
+        "that is the vacuous pass this test used to be"
+    )
 
 
-def test_the_mapped_sources_are_codes_a_device_actually_sends():
-    """A map keyed on something unselectable would silently never fire. Both
-    keys are real IVS codes a user can also select in their own right."""
+def test_the_press_is_a_code_somebody_can_tick():
+    """#1121's user-facing half. The add and options forms both hand
+    `cv.multi_select` this list verbatim, so this is the box @DrSpaldo ticks
+    instead of `All`. Imported from config_flow rather than const, because
+    that is the module the form is built in.
+
+    Not in DEFAULT_EVENTS, so nobody's subscription changes until they ask.
+    """
     from custom_components.dahua.config_flow import ALL_EVENTS
+    from custom_components.dahua.const import DEFAULT_EVENTS
+
+    assert "DoorbellPressed" in ALL_EVENTS
+    assert "DoorbellPressed" not in DEFAULT_EVENTS
+
+
+def test_every_mapped_source_is_a_code_the_translation_really_rewrites():
+    """A key nothing produces would rescue nothing, silently.
+
+    This replaces an older assertion that every key was itself in ALL_EVENTS,
+    which held only while the map had two keys and both happened to be IVS
+    codes a user can also select in their own right. The three doorbell
+    sources are not selectable and should not be: `_DoTalkAction_` is four
+    events for one press and `BackKeyLight` also carries unlock results, which
+    is why they are translated rather than offered. What has to hold is that
+    each key is a code the translation really reads.
+    """
     from custom_components.dahua import DERIVES_INTO
 
-    assert set(DERIVES_INTO) <= set(ALL_EVENTS)
+    becomes = _what_each_code_becomes()
+    for raw, derived in DERIVES_INTO.items():
+        assert raw in becomes, (
+            "DERIVES_INTO maps %s, but translate_event_code does not rewrite "
+            "it, so the map rescues an event nothing turns into anything" % raw
+        )
+        assert set(derived) & becomes[raw]
+
+
+# --- and the request that actually goes to the device -------------------------
+#
+# The other half of the same problem, and the half #1121 was really about. The
+# device filters by the list it is given: measured on a DHI-NVR5464-16P-EI,
+# where two attaches held concurrently for seven minutes delivered the same
+# events except that the unsubscribed InterVideoAccess was withheld from the
+# explicit nine-code list and delivered to `All`.
+#
+# So a subscription of exactly ["DoorbellPressed"] asks for a code no device
+# ever sends, and @DrSpaldo measured the consequence on a DHI-ASI7214S and a
+# DHI-ASI6214S-PW: the call press reached the bus only with `All` ticked, at
+# 22 to 27 events a minute of everything else the box had to say.
+
+
+async def test_selecting_only_a_derived_code_asks_for_its_sources(hass):
+    stream = _host_stream(hass, ADDRESS)
+    coordinator = _Coordinator(0, ["DoorbellPressed"])
+    stream.register(coordinator)
+    await _settle()
+
+    assert coordinator.client.attached_with == [
+        ["BackKeyLight", "DoorbellPressed", "PhoneCallDetect", "_DoTalkAction_"]
+    ]
+
+
+async def test_selecting_smart_motion_asks_for_the_codes_it_comes_from(hass):
+    """The same gap, on the pair that has been in this map all along. Somebody
+    who selected SmartMotionHuman and nothing else was subscribing to a code
+    their camera never sends, which is the shape of #728, #767 and #825."""
+    stream = _host_stream(hass, ADDRESS)
+    coordinator = _Coordinator(0, ["SmartMotionHuman"])
+    stream.register(coordinator)
+    await _settle()
+
+    assert coordinator.client.attached_with == [
+        ["CrossLineDetection", "CrossRegionDetection", "SmartMotionHuman"]
+    ]
+
+
+async def test_a_selection_with_no_derived_code_is_sent_unchanged(hass):
+    """The control. Widening must not happen to everybody."""
+    stream = _host_stream(hass, ADDRESS)
+    coordinator = _Coordinator(0, ["VideoMotion", "AlarmLocal"])
+    stream.register(coordinator)
+    await _settle()
+
+    assert coordinator.client.attached_with == [["AlarmLocal", "VideoMotion"]]
+
+
+async def test_widening_the_request_does_not_broaden_it_to_all(hass):
+    """`use_all_events` compares the union against the largest single channel's
+    list. Widening the union itself would make one camera with one derived code
+    selected look like a host whose sharing grew the request, and it would
+    attach with ["All"] -- the exact thing this change exists to stop needing.
+    """
+    stream = _host_stream(hass, ADDRESS)
+    coordinator = _Coordinator(0, ["DoorbellPressed"])
+    stream.register(coordinator)
+    await _settle()
+
+    assert stream._using_all_events is False
+    assert stream._events == frozenset({"DoorbellPressed"})
 
 
 # --- the flag has to survive an incompletely built stream ---------------------

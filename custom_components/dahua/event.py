@@ -58,7 +58,17 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     for coordinator in entry_coordinators(entry).values():
         # Only a doorbell has a button to press. On anything else this entity would
         # sit at unknown for ever, which is worse than not offering it.
-        if coordinator.is_doorbell():
+        #
+        # Or a device whose owner selected DoorbellPressed, which since #1121
+        # is a thing they can do. @DrSpaldo's DHI-ASI7214S is an access
+        # controller with a call button: `is_doorbell()` is false for it, and
+        # it does report a press. Selecting the event is the user saying the
+        # device has one, which is the same answer the capability gate wants
+        # and the only one available while no read reports it.
+        if (
+            coordinator.is_doorbell()
+            or DOORBELL_PRESSED in coordinator.get_event_list()
+        ):
             async_add_devices(
                 [DahuaDoorbellEvent(coordinator, entry)],
                 config_subentry_id=coordinator.subentry_id,

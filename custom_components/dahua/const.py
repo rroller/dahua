@@ -250,6 +250,7 @@ ALL_EVENTS = [
     "AudioMutation",
     "SmartMotionHuman",
     "SmartMotionVehicle",
+    "DoorbellPressed",
     "VideoBlind",
     "AudioAnomaly",
     "VideoMotionInfo",
