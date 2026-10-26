@@ -789,3 +789,30 @@ async def test_a_kept_row_goes_back_on_a_device_when_it_is_added_again(hass):
 
     assert again.entity_id == bystander.entity_id
     assert again.device_id == serial_device.id
+
+
+async def test_a_bystander_that_arrives_while_the_form_is_open_is_not_moved(hass):
+    """Nothing deletes a bystander, but it is taken off its device, and the
+    form lists them for exactly that reason. One that turned up after the
+    form was drawn was never on it, so the press does not cover it."""
+    entry, legacy, _siren, _bystander = await _device_blocked(hass)
+    entities = er.async_get(hass)
+    flow = _flow(hass, entry)
+    shown = await flow.async_step_init()
+    assert "sensor.front_door_pressure" not in shown["description_placeholders"]["kept"]
+
+    late = entities.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        HASH + "_pressure",
+        config_entry=entry,
+        device_id=legacy.id,
+        suggested_object_id="front_door_pressure",
+    )
+
+    again = await flow.async_step_confirm({})
+
+    assert again["type"] == "form"
+    assert again["errors"] == {"base": "plan_changed"}
+    assert entities.async_get(late.entity_id).device_id == legacy.id
+    assert late.entity_id in again["description_placeholders"]["kept"]

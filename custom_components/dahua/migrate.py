@@ -1011,6 +1011,8 @@ def _removal_plan(hass: HomeAssistant, entry, serial):
     has changed, and each of those is a reason to stop rather than a detail.
     """
     blocked_rows, blocked_devices = _conflict_holders(hass, entry, serial)
+    rows = [row for row, _ in blocked_rows]
+    devices = [device for device, _ in blocked_devices]
     signature = (
         tuple(
             sorted(
@@ -1029,12 +1031,13 @@ def _removal_plan(hass: HomeAssistant, entry, serial):
                 for device, holders in blocked_devices
             )
         ),
+        # The bystanders too. Nothing deletes them, but each is moved off a
+        # device, which is a thing done to it, and the form lists them. One
+        # that arrives while the form is open would otherwise be moved
+        # without ever having appeared on it.
+        tuple(_collateral(er.async_get(hass), devices, {r.entity_id for r in rows})),
     )
-    return (
-        [row for row, _ in blocked_rows],
-        [device for device, _ in blocked_devices],
-        signature,
-    )
+    return rows, devices, signature
 
 
 def _collateral(entities, blocked_devices, doomed) -> list:
