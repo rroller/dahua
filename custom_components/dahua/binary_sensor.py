@@ -240,7 +240,13 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 
         # For doorbells we'll just add these since most people will want them
         if coordinator.is_doorbell():
-            sensors.append(DahuaEventSensor(coordinator, entry, "DoorbellPressed"))
+            # Not again if the selection loop above already made it. Since
+            # #1121 DoorbellPressed is selectable, so a doorbell owner who
+            # ticks it would otherwise get two sensors built with the same
+            # unique_id, and Home Assistant drops the second with a log line
+            # most people never read.
+            if "DoorbellPressed" not in coordinator.get_event_list():
+                sensors.append(DahuaEventSensor(coordinator, entry, "DoorbellPressed"))
             sensors.append(DahuaEventSensor(coordinator, entry, "Invite"))
             sensors.append(DahuaEventSensor(coordinator, entry, "DoorStatus"))
             sensors.append(DahuaEventSensor(coordinator, entry, "CallNoAnswered"))

@@ -3519,6 +3519,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
             return codes if codes else [code]
 
+        # A door station that talks SIP reports the whole call on one code,
+        # and only the invitation is a button press (#1121). Measured by
+        # @DrSpaldo on a DHI-ASI7214S and a DHI-ASI6214S-PW: one press sends
+        # four _DoTalkAction_ events, Invite then Answer then two Hangups,
+        # sharing a CallID. A sensor built straight from the code would come
+        # on again when the call was answered and twice more when it ended.
+        #
+        # So only Invite is the press, and it joins the translation that is
+        # already here rather than becoming a code of its own. Everything
+        # else returns the raw code, which nothing subscribes to, so it is
+        # dropped where every other unselected code is dropped.
+        #
+        # RoomNo is deliberately not read: it is the room the station is
+        # calling, set per device in its web UI, so it identifies the
+        # destination rather than the press, and Answer does not carry it.
+        if code == "_DoTalkAction_":
+            if event_payload(event).get("Action") == "Invite":
+                return ["DoorbellPressed"]
+            return [code]
+
         # Convert doorbell pressed related events to common event name, DoorbellPressed.
         # VTO devices will use the event BackKeyLight and the Amcrest devices seem to use PhoneCallDetect
         if code == "BackKeyLight" or code == "PhoneCallDetect":
