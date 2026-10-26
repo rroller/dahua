@@ -98,14 +98,15 @@ DISCOVERY_TIMEOUT_SECONDS = 30
 # that finishes inside that round trip fires into an empty room and the dialog
 # spins for ever with the flow already waiting on the next form. A catch-up
 # fetch after subscribing landed in home-assistant/frontend#54866 on
-# 2026-10-19, after every frontend release there has so far been, and an
-# earlier attempt at it (#18775) was reverted in 2023.
+# 2026-10-19, which no release carries as of 2026-10-27 (the newest is
+# 20260930.5, tagged on the 23rd), and an earlier attempt at the same fix
+# (#18775) was reverted in 2023.
 #
 # So the search is given this long to finish before a dialog is raised at all.
-# A device with no RemoteDevice table -- every standalone camera, every VTO,
-# every VTH -- answers in single-digit milliseconds and now never sees one.
-# A recorder takes seconds, gets the dialog, and the browser has subscribed
-# long before the probes are done.
+# A device with no RemoteDevice table refuses the first read, which is one
+# round trip: measured at 6ms on the VTH2421F-P of #949, and nothing that
+# shape can approach two seconds. A recorder takes seconds, gets the dialog,
+# and the browser has subscribed long before the probes are done.
 #
 # It shrinks the window rather than closing it: a search finishing just after
 # this expires can still beat the subscription. Nothing in an integration can

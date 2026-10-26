@@ -12,8 +12,8 @@ whether or not anyone is listening and never replays. The frontend subscribes
 in `willUpdate`, after it has received and rendered the progress step, so an
 event fired a few milliseconds after the POST response went out lands before
 the subscription exists. home-assistant/frontend#54866 added a catch-up fetch
-for exactly this on 2026-10-19, which is after every frontend release there
-has been, and the 2023 attempt at the same fix was reverted.
+for exactly this on 2026-10-19, which no release carries as of 2026-10-27
+(the newest is 20260930.5), and the 2023 attempt at it was reverted.
 
 So these tests are about not raising the dialog in the first place. They drive
 the real flow manager rather than calling the step, because the manager is
