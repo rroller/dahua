@@ -90,6 +90,32 @@ SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 # the same outcome as a device that has no channels to offer.
 DISCOVERY_TIMEOUT_SECONDS = 30
 
+# How long the search may run before it is given a dialog of its own.
+#
+# A progress step tells the browser it has finished by firing one bus event,
+# `data_entry_flow_progressed`, and nothing replays it. The frontend only
+# subscribes once it has received and rendered the progress step, so a search
+# that finishes inside that round trip fires into an empty room and the dialog
+# spins for ever with the flow already waiting on the next form. A catch-up
+# fetch after subscribing landed in home-assistant/frontend#54866 on
+# 2026-10-19, which no release carries as of 2026-10-27 (the newest is
+# 20260930.5, tagged on the 23rd), and an earlier attempt at the same fix
+# (#18775) was reverted in 2023.
+#
+# So the search is given this long to finish before a dialog is raised at all.
+# A device with nothing to offer settles in one round trip: 6ms on the
+# VTH2421F-P of #949, where the table is read and holds no slots, and 55ms
+# end to end on @kmich's, counting the CGI 404 and the RPC2 login. A recorder
+# takes seconds, gets the dialog, and the browser has subscribed long before
+# the probes are done.
+#
+# It shrinks the window rather than closing it: a search finishing just after
+# this expires can still beat the subscription. Nothing in an integration can
+# close it, because the event is all core offers. Two seconds is chosen so the
+# devices that answer at once are all on the safe side of it, and it costs a
+# submit button that spins for two seconds rather than a dialog that says 30.
+PROGRESS_GRACE_SECONDS = 2
+
 # Dahua's own protocols: DHIP on 5000 and the private SDK port on 37777. A device
 # answering either of these while refusing HTTP is switched on, reachable, and has
 # its web/CGI service turned off. Measured on three cameras here which serve 5000
@@ -760,6 +786,18 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     self.init_info, int(self.init_info[CONF_CHANNEL])
                 )
             )
+            # A search that is over before the browser could have subscribed
+            # gets no dialog at all. See PROGRESS_GRACE_SECONDS: the dialog is
+            # left with no way of being told to go away, which is how a VTH
+            # that answered in six milliseconds spun for ever on #949. The
+            # wait does not cancel on expiry, so a slower search carries on
+            # underneath and is picked up below.
+            await asyncio.wait({self._discovery_task}, timeout=PROGRESS_GRACE_SECONDS)
+            if self._discovery_task.done():
+                self._async_take_the_search_result()
+                if self._found_channels:
+                    return await self.async_step_channels()
+                return await self.async_step_name()
 
         # Whether the search has finished, not whether it has been started.
         # A step showing progress is re-entered for reasons other than the task
@@ -775,6 +813,20 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 progress_task=self._discovery_task,
             )
 
+        self._async_take_the_search_result()
+        return self.async_show_progress_done(
+            next_step_id="channels" if self._found_channels else "name"
+        )
+
+    @callback
+    def _async_take_the_search_result(self) -> None:
+        """What the finished search found, or nothing if it did not finish.
+
+        One reader for both routes out of the step. The route that skips the
+        dialog needs the same answer as the route through it, and the first
+        version of it read `.result()` of its own, which is the shape that put
+        an InvalidStateError inside a catch-all once already.
+        """
         try:
             self._found_channels = self._discovery_task.result()
         except (Exception, asyncio.CancelledError):  # pylint: disable=broad-except
@@ -783,10 +835,6 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # camera the user actually asked for is still added.
             _LOGGER.debug("The channel search did not finish", exc_info=True)
             self._found_channels = {}
-
-        return self.async_show_progress_done(
-            next_step_id="channels" if self._found_channels else "name"
-        )
 
     async def _async_discover_channels(self, user_input, exclude) -> dict:
         """The search, inside the ceiling the dialog puts on screen.
