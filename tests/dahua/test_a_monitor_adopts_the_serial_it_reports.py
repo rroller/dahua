@@ -708,3 +708,108 @@ async def test_a_registry_that_is_all_residue_reports_nothing_moved(hass):
     assert moved == 0, "moved %d rows that were all residue" % moved
     assert entry.unique_id == SERIAL
     assert len(er.async_entries_for_config_entry(entities, entry.entry_id)) == 88
+
+
+# --- and it is decided again after the backup (#1145 review) ----------------
+#
+# @rroller found that deciding what to pass over BEFORE `_async_backup_once`
+# means nothing rechecks it afterwards. The backup is the one await in this
+# function, it yields to every other entry setting up, and the second
+# `preflight` exists precisely to cover it. A pass-over settled before that
+# await skipped straight past the thing guarding it.
+#
+# Both directions matter, and they fail differently:
+#
+#   - the dead device is switched back on, so its row is live again
+#   - the live holder is switched off, so it is residue too, and which of
+#     two ghosts should win is not something to decide quietly
+#
+# Either way the pass-over is no longer justified, and the answer is the
+# refusal, not a migration that went ahead on a stale reading.
+
+
+async def _during_the_backup(hass, monkeypatch, job):
+    """Run `job` inside the one await `async_adopt_the_real_serial` has."""
+
+    async def backup_job(*args):
+        await job()
+        return "backup"
+
+    monkeypatch.setattr(hass, "async_add_executor_job", backup_job)
+
+
+async def test_a_dead_row_that_comes_back_during_the_backup_is_not_passed_over(
+    hass, monkeypatch
+):
+    entry, _live_device, dead, _live = await _superseded_pair(hass)
+    dead_device_id = er.async_get(hass).async_get(dead.entity_id).device_id
+
+    async def switched_back_on():
+        dr.async_get(hass).async_update_device(dead_device_id, disabled_by=None)
+        await hass.async_block_till_done()
+
+    await _during_the_backup(hass, monkeypatch, switched_back_on)
+
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert er.async_get(hass).async_get(dead.entity_id).unique_id == HASH + "_silence"
+    assert entry.unique_id == HASH, "migrated on a reading that had stopped being true"
+
+
+async def test_a_holder_switched_off_during_the_backup_stops_the_pass_over(
+    hass, monkeypatch
+):
+    entry, live_device, dead, _live = await _superseded_pair(hass)
+
+    async def switched_off():
+        dr.async_get(hass).async_update_device(
+            live_device.id, disabled_by=dr.DeviceEntryDisabler.USER
+        )
+        await hass.async_block_till_done()
+
+    await _during_the_backup(hass, monkeypatch, switched_off)
+
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert er.async_get(hass).async_get(dead.entity_id).unique_id == HASH + "_silence"
+    assert entry.unique_id == HASH
+
+
+async def test_a_dead_device_revived_during_the_backup_is_not_passed_over(
+    hass, monkeypatch
+):
+    """The same question one level up, where there are no entity rows at all
+    to carry the answer."""
+    entry, dead, _live = await _two_devices(hass)
+    await _switch_off(hass, dead)
+
+    async def switched_back_on():
+        dr.async_get(hass).async_update_device(dead.id, disabled_by=None)
+        await hass.async_block_till_done()
+
+    await _during_the_backup(hass, monkeypatch, switched_back_on)
+
+    with pytest.raises(ValueError, match="conflict"):
+        await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert dr.async_get(hass).async_get(dead.id).identifiers == {("dahua", HASH)}
+    assert entry.unique_id == HASH
+
+
+async def test_a_pass_over_that_is_still_true_after_the_backup_still_happens(
+    hass, monkeypatch
+):
+    """The control. Rechecking must not turn every pass-over into a refusal."""
+    entry, _live_device, dead, _live = await _superseded_pair(hass)
+
+    async def nothing_changes():
+        await hass.async_block_till_done()
+
+    await _during_the_backup(hass, monkeypatch, nothing_changes)
+
+    await migrate.async_adopt_the_real_serial(hass, entry, [_coordinator()])
+
+    assert entry.unique_id == SERIAL
+    assert er.async_get(hass).async_get(dead.entity_id) is not None

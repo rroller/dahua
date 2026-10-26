@@ -879,35 +879,6 @@ def _is_residue(stale, holder) -> bool:
     )
 
 
-def _superseded_rows(entities, rows) -> set:
-    """The entity IDs among `rows` that are residue, by `_is_residue`."""
-    passed_over = set()
-    for row, target in rows:
-        held = entities.async_get_entity_id(row.domain, row.platform, target)
-        if held is None or held == row.entity_id:
-            continue
-        holder = entities.async_get(held)
-        if holder is not None and _is_residue(row, holder):
-            passed_over.add(row.entity_id)
-    return passed_over
-
-
-def _superseded_devices(devices, stale_devices) -> set:
-    """The device IDs among `stale_devices` that are residue."""
-    passed_over = set()
-    for device, identifiers in stale_devices:
-        holders = [
-            other
-            for identifier in identifiers
-            if identifier[0] == DOMAIN
-            for other in devices_with_identifier(devices, identifier)
-            if other.id != device.id
-        ]
-        if holders and all(_is_residue(device, other) for other in holders):
-            passed_over.add(device.id)
-    return passed_over
-
-
 def _named(device) -> str:
     """Say which device, the way its owner sees it.
 
@@ -1003,48 +974,23 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
             for domain, value in device.identifiers
         )
     ]
-    # ⚠ Rows and devices that cannot move, where nothing is behind them.
-    #
-    # @wiiNinja on #1143 could not upgrade 1.3.1 to 2.0 at all. His registry
-    # held 44 pairs, each one a disabled row carrying the generated identity
-    # next to a live row already carrying the recorder's real serial. 44 out
-    # of 44 the same way round: every stale row disabled, every live row not.
-    # Duplication that had already happened, long before this migration ran.
-    #
-    # So the migration was refusing over rows nothing is behind, to protect
-    # entities that were in no danger, and the entry retried for ever.
-    #
-    # Refusing is still right wherever a live row is at stake, and the
-    # collision tests hold that. This is the one case where it buys nothing:
-    # the row cannot move, it is disabled, and the identity it wants is held
-    # by the enabled row that replaced it. Leaving it exactly as it is changes
-    # nothing about it, and the "registry rows nothing is behind" card can
-    # then offer to clear it with somebody pressing the button. Nothing here
-    # deletes anything.
-    moved_on = _superseded_rows(entities, rows)
-    if moved_on:
-        rows = [pair for pair in rows if pair[0].entity_id not in moved_on]
-    passed_over = _superseded_devices(devices, stale_devices)
-    if passed_over:
-        stale_devices = [
-            pair for pair in stale_devices if pair[0].id not in passed_over
-        ]
-    if moved_on or passed_over:
-        _LOGGER.warning(
-            "%s: leaving %d registry rows and %d devices on their old identity. "
-            "Each is disabled and the identity it would take is already held by "
-            "an enabled one, so there is nothing behind them to move. They are "
-            "offered for removal separately",
-            entry.data.get(CONF_ADDRESS),
-            len(moved_on),
-            len(passed_over),
-        )
-
     new_entry_id = replacement(entry.unique_id)
     if not rows and not stale_devices and new_entry_id == entry.unique_id:
         return 0
 
     def preflight():
+        """Check every target, and return what is actually going to move.
+
+        ⚠ Returns the plan rather than filtering it beforehand, and that
+        is the whole point of returning anything. @rroller found on #1145
+        that deciding what to pass over BEFORE the awaited backup means
+        nothing rechecks it afterwards: enable the dead device during the
+        backup, or disable the live one, and the pass-over is no longer
+        justified while the migration goes ahead on the earlier answer. The
+        second call is the one whose plan is used, and no await separates it
+        from the registry writes.
+
+        """
         # Every refusal below names BOTH sides. @wiiNinja on #1143 upgraded a
         # recorder, got one entity ID and no way to tell what was in the way,
         # and the entry then retried for ever. One side of a collision is not
@@ -1060,8 +1006,13 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
         # moved away from is an md5 of address, RTSP port, username and
         # password, this text is shown on the UI and gets screenshotted into
         # issues, and that would put the password up for an offline attack.
+        moving = []
+        retained_rows = []
         targets = {}
         for row, target in rows:
+            current = entities.async_get(row.entity_id)
+            if current is None or current.unique_id != row.unique_id:
+                raise ValueError("Serial migration registry changed; retry setup")
             key = (row.domain, row.platform, target)
             claimed = targets.get(key)
             if claimed is not None:
@@ -1071,16 +1022,37 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
                 )
             held = entities.async_get_entity_id(*key)
             if held is not None and held != row.entity_id:
+                holder = entities.async_get(held)
+                # Disabled, and the identity it wants already taken by an
+                # enabled one. Nothing is behind it, so it is left alone
+                # rather than refused (#1143). Judged on what the registry
+                # says NOW, which is why it is judged here.
+                if holder is not None and _is_residue(current, holder):
+                    retained_rows.append(current)
+                    continue
                 raise ValueError(
                     "Serial migration entity conflict: %s cannot take the identity "
                     "it needs because %s already holds it." % (row.entity_id, held)
                 )
             targets[key] = row.entity_id
-            current = entities.async_get(row.entity_id)
-            if current is None or current.unique_id != row.unique_id:
-                raise ValueError("Serial migration registry changed; retry setup")
+            moving.append((row, target))
+        moving_devices = []
+        retained_devices = []
         device_targets = {}
         for device, identifiers in stale_devices:
+            current = devices.async_get(device.id)
+            if current is None or current.identifiers != device.identifiers:
+                raise ValueError("Serial migration registry changed; retry setup")
+            holders = [
+                other
+                for identifier in identifiers
+                if identifier[0] == DOMAIN
+                for other in devices_with_identifier(devices, identifier)
+                if other.id != device.id
+            ]
+            if holders and all(_is_residue(current, other) for other in holders):
+                retained_devices.append(current)
+                continue
             for identifier in identifiers:
                 if identifier[0] != DOMAIN:
                     continue
@@ -1105,9 +1077,7 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
                         % (_named(device), _named(other))
                     )
                 device_targets[identifier] = _named(device)
-            current = devices.async_get(device.id)
-            if current is None or current.identifiers != device.identifiers:
-                raise ValueError("Serial migration registry changed; retry setup")
+            moving_devices.append((device, identifiers))
         if new_entry_id != entry.unique_id:
             other = next(
                 (
@@ -1124,6 +1094,7 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
                     "the identity it reports because the entry %r already holds it."
                     % (other.title,)
                 )
+        return moving, moving_devices, retained_rows, retained_devices
 
     preflight()
     backup = await _async_backup_once(hass)
@@ -1131,22 +1102,37 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
         raise ValueError(
             "Could not back up all three registries before serial migration"
         )
-    # Backup yields to other entry setups. Recheck every target afterwards;
-    # no await separates the checks from the registry mutations below.
-    preflight()
+    # Backup yields to other entry setups. Recheck every target afterwards,
+    # and act on THIS answer rather than the one above; no await separates it
+    # from the registry mutations below.
+    moving, moving_devices, retained_rows, retained_devices = preflight()
+    if retained_rows or retained_devices:
+        # Said plainly, because it is not what the tidy-up card covers.
+        # `leftover_rows` skips every row with `disabled_by` set and never
+        # looks at the device registry at all, so nothing offers to clear
+        # these (@rroller on #1145). They are retained as they are.
+        _LOGGER.warning(
+            "%s: %d registry rows and %d devices stay on their old identity. "
+            "Each one is disabled and the identity it would take is already "
+            "held by an enabled one, so there is nothing behind it to move. "
+            "Nothing removes them: they are kept exactly as they are",
+            entry.data.get(CONF_ADDRESS),
+            len(retained_rows),
+            len(retained_devices),
+        )
     _LOGGER.warning(
         "%s reports serial %s. Moving %d entities and %d devices; persisted "
         "registry files were copied to %s first",
         entry.data.get(CONF_ADDRESS),
         serial,
-        len(rows),
-        len(stale_devices),
+        len(moving),
+        len(moving_devices),
         backup,
     )
-    for row, target in rows:
+    for row, target in moving:
         entities.async_update_entity(row.entity_id, new_unique_id=target)
-    for device, identifiers in stale_devices:
+    for device, identifiers in moving_devices:
         devices.async_update_device(device.id, new_identifiers=identifiers)
     if new_entry_id != entry.unique_id:
         hass.config_entries.async_update_entry(entry, unique_id=new_entry_id)
-    return len(rows)
+    return len(moving)
