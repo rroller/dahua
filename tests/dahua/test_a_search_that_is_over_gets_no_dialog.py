@@ -2,9 +2,10 @@
 
 @Dieghito72 on #949: adding a VTH2421F-P sat on "Looking for other channels on
 this device. This can take up to 30 seconds." for ever. His own log shows the
-search answering in **six milliseconds** -- the monitor has no RemoteDevice
-table, so there was nothing to search -- which rules out the slow-search
-reading that #1000 was closed on.
+search answering in **six milliseconds**, which rules out the slow-search
+reading that #1000 was closed on. The monitor does answer with a RemoteDevice
+table; none of its rows is spelled as a slot, so there is nothing to probe.
+test_discover_channels.py pins that half.
 
 The dialog is the part that never moved. A progress step tells the browser it
 is over by firing one `data_entry_flow_progressed` bus event, which core fires

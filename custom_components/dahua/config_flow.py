@@ -103,10 +103,11 @@ DISCOVERY_TIMEOUT_SECONDS = 30
 # (#18775) was reverted in 2023.
 #
 # So the search is given this long to finish before a dialog is raised at all.
-# A device with no RemoteDevice table refuses the first read, which is one
-# round trip: measured at 6ms on the VTH2421F-P of #949, and nothing that
-# shape can approach two seconds. A recorder takes seconds, gets the dialog,
-# and the browser has subscribed long before the probes are done.
+# A device with nothing to offer settles in one round trip: 6ms on the
+# VTH2421F-P of #949, where the table is read and holds no slots, and 55ms
+# end to end on @kmich's, counting the CGI 404 and the RPC2 login. A recorder
+# takes seconds, gets the dialog, and the browser has subscribed long before
+# the probes are done.
 #
 # It shrinks the window rather than closing it: a search finishing just after
 # this expires can still beat the subscription. Nothing in an integration can
