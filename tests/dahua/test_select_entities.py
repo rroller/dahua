@@ -12,13 +12,14 @@ name looks exactly like the camera being in that mode.
 import pytest
 
 from custom_components.dahua import select as select_module
+from custom_components.dahua.const import VIDEO_COLOR_STYLE_OPTIONS
 from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
     DahuaDayNightModeSelect,
     DahuaDoorbellLightSelect,
+    DahuaImageRotationSelect,
     DahuaVideoColorStyleSelect,
 )
-from custom_components.dahua.const import VIDEO_COLOR_STYLE_OPTIONS
 
 from . import adds_entities
 
@@ -58,6 +59,9 @@ class _Coordinator:
 
     def get_video_color_style(self):
         return self.data.get("table.VideoColor[{0}][0].Style".format(self._channel))
+
+    def get_video_image_control(self, field):
+        return self.data.get("table.VideoImageControl[0].{0}".format(field))
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -339,6 +343,7 @@ async def _added_for(coordinator, cgi_presets=None):
         DahuaCameraPresetPositionSelect=lambda *a, **k: ("preset", k.get("preset_ids")),
         DahuaDayNightModeSelect=lambda *a, **k: "day_night",
         DahuaVideoColorStyleSelect=lambda *a, **k: "style",
+        DahuaImageRotationSelect=lambda *a, **k: "rotation",
         _async_preset_ids=_preset_ids,
     ):
         await select_module.async_setup_entry(
@@ -358,11 +363,13 @@ class _SetupCoordinator(_Coordinator):
         day_night_supported=False,
         infrared_supported=False,
         style_supported=False,
+        image_control_fields=(),
     ):
         super().__init__()
         self._day_night_supported = day_night_supported
         self._infrared_supported = infrared_supported
         self._style_supported = style_supported
+        self._image_control_fields = frozenset(image_control_fields)
         self._amcrest = amcrest
         self._security_light = security_light
         self._model = model
@@ -394,6 +401,9 @@ class _SetupCoordinator(_Coordinator):
     def supports_video_color(self, field):
         return field == "Style" and self._style_supported
 
+    def supports_video_image_control(self, field):
+        return field in self._image_control_fields
+
     def supports_infrared_light(self):
         return self._infrared_supported
 
@@ -424,6 +434,66 @@ async def test_the_doorbell_light_select_needs_a_doorbell_with_one():
     assert "light" in await _added_for(
         _SetupCoordinator(amcrest=True, security_light=True)
     )
+
+
+@pytest.mark.parametrize(
+    "flip,rotate,expected",
+    [
+        (False, 0, "0°"),
+        (True, 0, "180°"),
+        (False, 1, None),
+        (False, 2, None),
+        (True, 1, None),
+        (None, 0, None),
+    ],
+)
+def test_image_rotation_reads_only_supported_combinations(flip, rotate, expected):
+    c = _Coordinator(
+        {
+            "table.VideoImageControl[0].Flip": flip,
+            "table.VideoImageControl[0].Rotate90": rotate,
+        }
+    )
+    entity = _select(DahuaImageRotationSelect, c)
+
+    assert entity.current_option == expected
+
+
+@pytest.mark.parametrize(
+    "option,expected_flip",
+    [("0°", False), ("180°", True)],
+)
+async def test_image_rotation_writes_only_flip_and_refreshes(option, expected_flip):
+    c = _Coordinator(channel=3)
+    entity = _select(DahuaImageRotationSelect, c)
+
+    await entity.async_select_option(option)
+
+    assert c.client.calls == [("async_set_video_image_control", "Flip", expected_flip)]
+    assert c.refreshed == 1
+
+
+async def test_invalid_image_rotation_does_not_write_or_refresh():
+    c = _Coordinator()
+    entity = _select(DahuaImageRotationSelect, c)
+
+    await entity.async_select_option("90°")
+
+    assert c.client.calls == []
+    assert c.refreshed == 0
+
+
+@pytest.mark.parametrize("fields", [{"Flip"}, {"Rotate90"}])
+async def test_image_rotation_requires_both_reported_fields(fields):
+    coordinator = _SetupCoordinator(image_control_fields=fields)
+
+    assert "rotation" not in await _added_for(coordinator)
+
+
+async def test_image_rotation_is_created_when_both_fields_are_reported():
+    coordinator = _SetupCoordinator(image_control_fields={"Flip", "Rotate90"})
+
+    assert "rotation" in await _added_for(coordinator)
 
 
 async def test_a_device_that_refuses_to_list_its_presets_still_gets_a_select():

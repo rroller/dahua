@@ -948,6 +948,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # and the number platform read this. Only ever reassigned, never mutated, so
     # one shared empty default is safe.
     _video_color_fields: frozenset = frozenset()
+    _video_image_control_fields: frozenset = frozenset()
 
     # Whether the device never answered what kind of device it is, as opposed to
     # answering that it does not serve the question. On the class for the reason
@@ -1101,6 +1102,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_lighting = False
         self._supports_day_night_color = False
         self._video_color_fields: frozenset = frozenset()
+        self._video_image_control_fields: frozenset = frozenset()
         # What the device said when a probe failed, keyed by probe name.
         self._probe_refusals: Dict[str, dict] = {}
         self._channel_model = None
@@ -1986,6 +1988,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         already = bool(self._video_color_fields)
         return await self._async_probe_video_color() and not already
 
+    async def _async_probe_video_image_control(self) -> bool:
+        """Ask which image controls this camera reports."""
+        try:
+            table = await self.client.async_get_video_image_control()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("video_image_control", probe_error)
+            self._video_image_control_fields = frozenset()
+            return False
+        self._note_probe_answered("video_image_control")
+        self._video_image_control_fields = frozenset(
+            field
+            for field in ("Flip", "Rotate90", "Mirror")
+            if table.get(f"table.VideoImageControl[0].{field}") is not None
+        )
+        return bool(self._video_image_control_fields)
+
+    async def _async_retry_video_image_control(self) -> bool:
+        """Whether image controls turned up after an unanswered probe."""
+        already = bool(self._video_image_control_fields)
+        return await self._async_probe_video_image_control() and not already
+
     async def _async_probe_profile_mode(self) -> bool:
         """Ask whether this channel has selectable day/night/general profiles.
 
@@ -2498,6 +2521,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if self._wanted_by(NUMBER, SELECT):
                     await self._async_probe_video_color()
 
+                if self._wanted_by(SWITCH, SELECT):
+                    await self._async_probe_video_image_control()
+
                 # Which camera is actually on this channel. Every channel of a
                 # recorder reports the recorder's model, so a doorbell behind an
                 # NVR is invisible as one and every model-string capability
@@ -2909,6 +2935,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # the way #1006 did.
             if self._video_color_fields and self._wanted_by(NUMBER, SELECT):
                 coros.append(asyncio.ensure_future(self._async_fetch_video_color()))
+            if self._video_image_control_fields and self._wanted_by(SWITCH, SELECT):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_video_image_control())
+                )
             # Lighting_V2 is the light platform's table -- except that the
             # Amcrest doorbell's "Security Light" is a *select*, and its
             # current_option reads table.Lighting_V2[0][0][1].Mode/.State. A
@@ -4643,6 +4673,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return field in getattr(self, "_video_color_fields", frozenset())
 
+    def supports_video_image_control(self, field: str) -> bool:
+        """Whether this channel reported the requested image-control field."""
+        return field in getattr(self, "_video_image_control_fields", frozenset())
+
     # Which region's sensitivity and threshold are exposed, of the four the
     # recorder's own UI offers.
     #
@@ -4737,6 +4771,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return int(raw)
         except (TypeError, ValueError):
             return None
+
+    def get_video_image_control(self, field: str) -> bool | int | None:
+        """Read a reported image-control field from the latest poll."""
+        raw = self.data.get(f"table.VideoImageControl[0].{field}")
+        if raw is None:
+            return None
+        if field in {"Flip", "Mirror"}:
+            return {"true": True, "false": False}.get(str(raw).strip().lower())
+        if field == "Rotate90":
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def get_video_color_style(self) -> str | None:
         """The supported Style value for this channel's general profile."""
@@ -6457,6 +6505,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             }
             return carried or None
 
+    async def _async_fetch_video_image_control(self) -> dict | None:
+        """Poll image controls, keeping the last answer on a refusal."""
+        try:
+            return await self.client.async_get_video_image_control()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read image controls for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.VideoImageControl[")
+            }
+            return carried or None
+
     async def _async_fetch_ivs_rules(self) -> dict | None:
         """Poll the IVS rules, keeping the last answer on a refusal.
 
@@ -6622,4 +6688,5 @@ RETRYABLE_CAPABILITIES = {
     # also rename the field the diagnostics dump has been reporting.
     "system load": DahuaDataUpdateCoordinator._async_retry_system_load,
     "video_color": DahuaDataUpdateCoordinator._async_retry_video_color,
+    "video_image_control": DahuaDataUpdateCoordinator._async_retry_video_image_control,
 }

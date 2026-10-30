@@ -1,6 +1,7 @@
 """Select entity platform for Dahua."""
 
 import logging
+from typing import ClassVar
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.const import EntityCategory
@@ -109,6 +110,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             and coordinator.supports_video_color("Style")
         ):
             devices.append(DahuaVideoColorStyleSelect(coordinator, entry))
+        if coordinator.supports_video_image_control(
+            "Flip"
+        ) and coordinator.supports_video_image_control("Rotate90"):
+            devices.append(DahuaImageRotationSelect(coordinator, entry))
 
         if coordinator.supports_infrared_light():
             devices.append(DahuaInfraredModeSelect(coordinator, entry))
@@ -307,6 +312,41 @@ class DahuaSmartMotionSensitivitySelect(DahuaBaseEntity, SelectEntity):
             return
         await self._coordinator.client.async_set_smart_motion_sensitivity(
             self._coordinator.get_channel(), option
+        )
+        await self._coordinator.async_refresh()
+
+
+class DahuaImageRotationSelect(DahuaBaseEntity, SelectEntity):
+    """Rotate the image by flipping it vertically when supported."""
+
+    _attr_translation_key = "image_rotation"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options: ClassVar[list[str]] = ["0°", "180°"]
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_image_rotation"
+
+    @property
+    def current_option(self):
+        if self._coordinator.get_video_image_control("Rotate90") != 0:
+            return None
+        flip = self._coordinator.get_video_image_control("Flip")
+        if flip is True:
+            return "180°"
+        if flip is False:
+            return "0°"
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        await self._coordinator.client.async_set_video_image_control(
+            "Flip", option == "180°"
         )
         await self._coordinator.async_refresh()
 

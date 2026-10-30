@@ -540,6 +540,7 @@ def _setup_double(links, indoor_monitor=True):
         get_channel_number=lambda: 1,
         supports_ptz_position=lambda: False,
         supports_video_color=lambda field: False,
+        supports_video_image_control=lambda _field: False,
     )
 
 

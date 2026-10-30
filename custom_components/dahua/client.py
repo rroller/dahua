@@ -2988,6 +2988,20 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoColor"
         return await self.get(url)
 
+    async def async_get_video_image_control(self) -> dict:
+        """Read the camera's image orientation and mirror controls."""
+        return await self.async_get_config("VideoImageControl")
+
+    async def async_set_video_image_control(self, field: str, value: bool):
+        """Write one supported VideoImageControl field on its general row."""
+        if field not in {"Flip", "Mirror"}:
+            raise ValueError("Unsupported VideoImageControl field")
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&VideoImageControl[0].{field}={'true' if value else 'false'}"
+        )
+        return await self.get(url)
+
     async def async_set_video_color(self, channel: int, field: str, value: int):
         """Set one picture adjustment on a channel's general profile (0-100)."""
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoColor[{0}][0].{1}={2}".format(

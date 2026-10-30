@@ -376,6 +376,9 @@
             "video_color_style": {
                 "name": "Video Color Style"
             },
+            "image_rotation": {
+                "name": "Image Rotation"
+            },
             "smart_motion_sensitivity": {
                 "name": "Smart Motion Sensitivity"
             },
@@ -449,6 +452,9 @@
             },
             "privacy_mode": {
                 "name": "Privacy Mode"
+            },
+            "mirror": {
+                "name": "Mirror"
             },
             "siren": {
                 "name": "Siren"

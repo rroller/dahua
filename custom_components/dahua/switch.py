@@ -193,6 +193,8 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         # nothing says every monitor has it.
         if coordinator.supports_vth_phone_setting(VTH_SILENCE_FIELD):
             devices.append(DahuaMonitorSilenceSwitch(coordinator, entry))
+        if coordinator.supports_video_image_control("Mirror"):
+            devices.append(DahuaMirrorSwitch(coordinator, entry))
         return devices
 
     await async_add_and_keep_watching(
@@ -742,6 +744,31 @@ class DahuaPrivacyModeBinarySwitch(DahuaBaseEntity, SwitchEntity):
         Value is fetched from client.async_get_privacy_mode
         """
         return self._coordinator.is_privacy_mode_enabled()
+
+
+class DahuaMirrorSwitch(DahuaBaseEntity, SwitchEntity):
+    """Mirror the camera image."""
+
+    _attr_translation_key = "mirror"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    async def async_turn_on(self, **kwargs):
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs):
+        await self._set(False)
+
+    async def _set(self, enabled: bool) -> None:
+        await self._coordinator.client.async_set_video_image_control("Mirror", enabled)
+        await self._coordinator.async_refresh()
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_mirror"
+
+    @property
+    def is_on(self):
+        return self._coordinator.get_video_image_control("Mirror")
 
 
 class DahuaMonitorSilenceSwitch(DahuaBaseEntity, SwitchEntity):
