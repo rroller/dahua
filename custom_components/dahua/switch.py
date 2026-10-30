@@ -1,6 +1,7 @@
 """Switch platform for dahua."""
 
 import asyncio
+import re
 
 import aiohttp
 
@@ -32,6 +33,10 @@ SIREN_CONTROL = refusals.SIREN
 # coordinator does not help here, since it only centralises inbound reads and
 # leaves outbound actions uncontrolled.
 PARALLEL_UPDATES = 1
+
+_AUDIO_ENABLE_KEY = re.compile(
+    r"table\.Encode\[(\d+)\]\.(MainFormat|ExtraFormat)\[(\d+)\]\.AudioEnable$"
+)
 
 
 def _cloud_reporter(coordinators: list):
@@ -170,6 +175,16 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.supports_intelli_tour():
             devices.append(DahuaIntelliTourSwitch(coordinator, entry))
 
+        # The initialization probe settles which fields this channel exposes.
+        for key in getattr(coordinator, "_encode_audio_keys", ()):
+            match = _AUDIO_ENABLE_KEY.fullmatch(key)
+            if match and int(match.group(1)) == coordinator.get_channel():
+                devices.append(
+                    DahuaEncodeAudioSwitch(
+                        coordinator, entry, match.group(2), int(match.group(3)), key
+                    )
+                )
+
         # The coordinator already asked the device this during setup and kept the
         # answer. Asking again here put a network round trip inside platform setup,
         # where a device that is slow to answer eats the entry's setup budget.
@@ -203,6 +218,86 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         entry_coordinators,
         subentry_for=_filed_under,
     )
+
+
+class DahuaEncodeAudioSwitch(DahuaBaseEntity, SwitchEntity):
+    """Enable or disable audio for one Dahua encoder format."""
+
+    _attr_translation_key = "encode_audio"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator, config_entry, format_type, format_index, key):
+        super().__init__(coordinator, config_entry)
+        self._format_type = format_type
+        self._format_index = format_index
+        self._key = key
+        self._attr_unique_id = (
+            f"{coordinator.get_serial_number()}_audio_"
+            f"{format_type.lower()}_{format_index}"
+        )
+        self._attr_translation_placeholders = {
+            "format_type": format_type.replace("Format", ""),
+            "format_index": str(format_index + 1),
+        }
+
+    @property
+    def unique_id(self):
+        """Return this format's own id, not the device's.
+
+        `DahuaBaseEntity` defines `unique_id` and is first in the MRO, so
+        without this the id assigned above is never read and every encoder
+        control on a channel reports the same serial. Home Assistant then
+        registers one of them and drops the rest.
+        """
+        return self._attr_unique_id
+
+    @property
+    def is_on(self):
+        """Return the audio setting last read from Encode, or None if unreadable.
+
+        Three states, not two. Every value other than the literal `true` used
+        to read as off, so an empty or malformed `AudioEnable` reported the
+        audio as disabled rather than as unknown (#997 review). A switch is
+        what automations act on, and inventing "off" for a field nobody could
+        read is the one answer that makes them act wrongly: the device may have
+        audio on throughout.
+
+        CGI answers `key=value` text, so every value arrives as a string and
+        the comparison is on the text. Only the two words the device really
+        writes are believed; anything else is unknown, which Home Assistant
+        shows as such rather than as a position the switch is not in.
+        """
+        value = (self._coordinator.data or {}).get(self._key)
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if text == "true":
+            return True
+        if text == "false":
+            return False
+        return None
+
+    async def async_turn_on(self, **kwargs):
+        """Enable audio for this encoder format."""
+        await self._coordinator.client.async_set_encode_audio_value(
+            self._coordinator.get_channel(),
+            self._format_type,
+            self._format_index,
+            "AudioEnable",
+            True,
+        )
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):
+        """Disable audio for this encoder format."""
+        await self._coordinator.client.async_set_encode_audio_value(
+            self._coordinator.get_channel(),
+            self._format_type,
+            self._format_index,
+            "AudioEnable",
+            False,
+        )
+        await self._coordinator.async_refresh()
 
 
 class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
