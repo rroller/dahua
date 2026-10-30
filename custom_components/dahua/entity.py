@@ -82,6 +82,13 @@ class DahuaBaseEntity(CoordinatorEntity):
             return channel_value() or host_value()
 
         info = {
+            # `coordinator.device_identifier()` builds this same pair for the
+            # event path, and is deliberately not called here: most doubles in
+            # the suite are not coordinator instances at all, so requiring the
+            # method of them breaks twenty-two tests that only ever needed
+            # `get_serial_number`. The two are tied by a test that registers a
+            # device under what this reports and looks it up with what the event
+            # path uses, rather than by sharing the expression.
             "identifiers": {(DOMAIN, coordinator.get_serial_number())},
             "name": coordinator.get_device_name(),
             "model": channel_or_host(
