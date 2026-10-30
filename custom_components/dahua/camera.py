@@ -714,6 +714,11 @@ def rtsp_stream_source(url: str, disable_backchannel: bool) -> str:
 class DahuaCamera(DahuaBaseEntity, Camera):
     """An implementation of a Dahua IP camera."""
 
+    # Named on the class as well as in __init__ because the tests build cameras
+    # with object.__new__ and set only the attributes they care about, so a new
+    # one read by async_camera_image has to have a value without them.
+    _media_channel: int | None = None
+
     @property
     def extra_state_attributes(self):
         """The base attributes, plus what this stream actually carries.
@@ -755,6 +760,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         self._channel_number = (
             coordinator.get_channel_number() if media_channel is None else media_channel
         )
+        # A dual-sensor camera names the media channel for both paths, so its
+        # still stays on the sensor it was built for. Everything else asks the
+        # coordinator when the still is fetched -- see _snapshot_channel.
+        self._media_channel = media_channel
         self._coordinator = coordinator
         self._stream_stills = stream_stills
         self._name = display_name if display_name else stream_name
@@ -816,11 +825,32 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """
         try:
             return await self._coordinator.client.async_get_snapshot(
-                self._channel_number
+                self._snapshot_channel()
             )
         except (ClientError, TimeoutError, asyncio.TimeoutError) as error:
             _LOGGER.debug("%s: could not fetch a snapshot: %s", self._name, error)
             return None
+
+    def _snapshot_channel(self) -> int:
+        """The channel number this still is asked for.
+
+        Not `_channel_number`, which numbers the stream. A device can number
+        the two paths differently, and one did: see
+        DahuaDataUpdateCoordinator.get_snapshot_channel and #1151.
+
+        A dual-sensor camera was built with its media channel named for both
+        paths, so that stands.
+
+        getattr because the stand-in coordinators in the tests predate the
+        question, and a camera built around one should still fetch a still
+        rather than raise.
+        """
+        if self._media_channel is not None:
+            return self._media_channel
+        ask = getattr(self._coordinator, "get_snapshot_channel", None)
+        if ask is None:
+            return self._channel_number
+        return ask()
 
     @property
     def use_stream_for_stills(self) -> bool:

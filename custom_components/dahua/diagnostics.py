@@ -178,6 +178,14 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         ),
         "channel_index": _safe(coordinator.get_channel),
         "channel_number": _safe(coordinator.get_channel_number),
+        # The stream's number is above; this is the still's. They differ on a
+        # device that numbers snapshot.cgi and RTSP differently (#1151), and
+        # "the thumbnail shows a different camera from the live view" is only
+        # answerable with both of them in front of you.
+        # The lambda matters: the dump is built around whatever coordinator it
+        # is handed, and a stand-in that predates this accessor would raise on
+        # the attribute itself, outside _safe, and take the whole dump with it.
+        "snapshot_channel": _safe(lambda: coordinator.get_snapshot_channel()),
         "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
         # What the auto-detect actually concluded, which is what decides
         # channel_number above. True means the device answered a snapshot on
