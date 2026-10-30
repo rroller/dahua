@@ -1,12 +1,13 @@
 """A device can number its stills and its streams differently.
 
-#1151, on a Lorex LHV2008 (HCVR, firmware 2.616.GM00.0). Its owner measured
-both paths from a browser:
+#1151, on a Lorex LHV2008 (HCVR, firmware 2.616.GM00.0). Its owner opened the
+still path in a browser:
 
     snapshot.cgi?channel=1   -> the picture from channel 2 (index 1)
-    rtsp .../channel=1       -> channel 1 (index 0)
 
-So `snapshot.cgi` counts from 0 on that firmware and RTSP counts from 1. The
+and reported that with the auto-detect option off, which numbers the stream
+`index + 1`, every one of their six live views shows the right camera. So
+`snapshot.cgi` counts from 0 on that firmware and RTSP counts from 1. The
 integration asked one question, of `snapshot.cgi`, and sent the single answer
 down both paths, which left every setting half right:
 

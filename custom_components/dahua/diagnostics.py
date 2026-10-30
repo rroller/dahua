@@ -186,9 +186,18 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         # is handed, and a stand-in that predates this accessor would raise on
         # the attribute itself, outside _safe, and take the whole dump with it.
         "snapshot_channel": _safe(lambda: coordinator.get_snapshot_channel()),
-        "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
-        # What the auto-detect actually concluded, which is what decides
-        # channel_number above. True means the device answered a snapshot on
+        # Read the way the coordinator reads it. This option is per channel
+        # since #895, so taking it from the entry's options reports the wrong
+        # value for a merged recorder whose channel sets its own -- next to the
+        # two numbers it is here to explain.
+        "auto_detect_channel": _safe(
+            lambda: coordinator.channel_option(CONF_AUTO_DETECT_CHANNEL, True),
+            config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
+        ),
+        # What the numbering probe concluded. It decides snapshot_channel, and
+        # channel_number too where the option above is on, and it is asked
+        # whichever way that option is set because the still needs the answer
+        # either way (#1151). True means the device answered a snapshot on
         # channel 0, False means it answered with a status saying no, and
         # None means it never answered and the numbering was left alone.
         #

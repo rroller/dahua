@@ -2361,9 +2361,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
                 # The option governs the STREAM, which is the path its label
                 # names: "disable if HTTP snapshot at channel=0 works but RTSP
-                # only streams on channel=1". A Lorex LHV2008 is exactly that,
-                # measured by its owner on #1151: snapshot.cgi?channel=1 returns
-                # the second camera while RTSP channel=1 returns the first. One
+                # only streams on channel=1". A Lorex LHV2008 is exactly that
+                # (#1151): its owner read snapshot.cgi?channel=1 and got the
+                # second camera, while the streams are right at index + 1. One
                 # number cannot serve both, so unticking the box now moves the
                 # stream back to index + 1 and leaves the still on what the
                 # device answered, rather than moving both and trading a wrong
@@ -6105,8 +6105,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Separate from get_channel_number, which numbers the stream and the
         controls, because a device can number the two paths differently. On a
         Lorex LHV2008 (#1151) `snapshot.cgi` counts from 0 while RTSP counts
-        from 1, measured by its owner: `snapshot.cgi?channel=1` returns the
-        second camera, and the first camera streams on RTSP channel 1. Sending
+        from 1: its owner read `snapshot.cgi?channel=1` in a browser and got
+        the second camera, and reported that every live view is right when the
+        stream is numbered `index + 1`. Sending
         one number down both paths is right on most devices and cannot be right
         on that one.
 
