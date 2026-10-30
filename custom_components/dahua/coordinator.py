@@ -4740,9 +4740,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_video_color_style(self) -> str | None:
         """The supported Style value for this channel's general profile."""
-        raw = self.data.get(
-            "table.VideoColor[{0}][0].Style".format(self.get_channel())
-        )
+        raw = self.data.get("table.VideoColor[{0}][0].Style".format(self.get_channel()))
         return raw if isinstance(raw, str) else None
 
     async def _async_retry_device_class(self) -> None:

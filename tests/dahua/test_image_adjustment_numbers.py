@@ -101,9 +101,7 @@ def test_native_value_comes_from_the_poll():
 
 
 def test_gamma_native_value_is_numeric():
-    n = _number(
-        _Coordinator(values={"Gamma": 37}), key="image_gamma", field="Gamma"
-    )
+    n = _number(_Coordinator(values={"Gamma": 37}), key="image_gamma", field="Gamma")
 
     assert n.native_value == 37
 

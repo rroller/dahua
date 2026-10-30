@@ -122,8 +122,7 @@ async def test_gamma_write_targets_only_its_channel_and_general_profile():
     await client.async_set_video_color(3, "Gamma", 42)
 
     assert _url(client) == (
-        "/cgi-bin/configManager.cgi?action=setConfig"
-        "&VideoColor[3][0].Gamma=42"
+        "/cgi-bin/configManager.cgi?action=setConfig" "&VideoColor[3][0].Gamma=42"
     )
 
 
