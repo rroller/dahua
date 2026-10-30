@@ -530,7 +530,6 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     # async_step_channels reads it and the tests reach that step without
     # running the search.
     _onvif_channels: list = []
-    CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
     def __init__(self):
         """Initialize."""
