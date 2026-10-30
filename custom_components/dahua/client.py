@@ -14,7 +14,7 @@ from yarl import URL
 
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import ALL_EVENTS, DOMAIN
+from .const import ALL_EVENTS, DOMAIN, VIDEO_COLOR_STYLE_OPTIONS
 from .dhip import DhipLoginRefused, DhipTransport
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
@@ -2992,6 +2992,16 @@ class DahuaClient:
         """Set one picture adjustment on a channel's general profile (0-100)."""
         url = "/cgi-bin/configManager.cgi?action=setConfig&VideoColor[{0}][0].{1}={2}".format(
             channel, field, int(value)
+        )
+        return await self.get(url)
+
+    async def async_set_video_color_style(self, channel: int, value: str):
+        """Set a supported Style on a channel's general VideoColor profile."""
+        if value not in VIDEO_COLOR_STYLE_OPTIONS:
+            raise ValueError("Unsupported VideoColor Style")
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            "&VideoColor[{0}][0].Style={1}".format(channel, value)
         )
         return await self.get(url)
 

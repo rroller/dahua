@@ -248,6 +248,7 @@ def _setup_coordinator(
         is_indoor_monitor_without_video=lambda: no_video,
         reported_device_class=lambda: device_class,
         asked_for_presets=asked,
+        supports_video_color=lambda _field: False,
     )
 
 

@@ -116,6 +116,37 @@ async def test_the_two_day_night_writes_do_not_share_a_table():
     assert _url(profile) != _url(switch)
 
 
+async def test_gamma_write_targets_only_its_channel_and_general_profile():
+    client = _client()
+
+    await client.async_set_video_color(3, "Gamma", 42)
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=setConfig" "&VideoColor[3][0].Gamma=42"
+    )
+
+
+@pytest.mark.parametrize("style", ["Soft", "Standard", "Vivid"])
+async def test_style_write_targets_only_its_channel_and_general_profile(style):
+    client = _client()
+
+    await client.async_set_video_color_style(3, style)
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=setConfig"
+        "&VideoColor[3][0].Style={0}".format(style)
+    )
+
+
+async def test_style_write_rejects_an_unsupported_value_before_requesting():
+    client = _client()
+
+    with pytest.raises(ValueError, match="Unsupported VideoColor Style"):
+        await client.async_set_video_color_style(3, "Custom")
+
+    assert client._sent.urls == []
+
+
 @pytest.mark.parametrize(
     "method",
     [

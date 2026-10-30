@@ -86,6 +86,8 @@ WAS = {
     ("number", "image_contrast"): "Contrast",
     ("number", "image_saturation"): "Saturation",
     ("number", "image_hue"): "Hue",
+    ("number", "image_gamma"): "Gamma",
+    ("select", "video_color_style"): "Video Color Style",
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
     ("switch", "cloud_connection"): "Cloud Connection",

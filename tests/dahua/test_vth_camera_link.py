@@ -539,6 +539,7 @@ def _setup_double(links, indoor_monitor=True):
         client=SimpleNamespace(async_get_ptz_presets=no_presets),
         get_channel_number=lambda: 1,
         supports_ptz_position=lambda: False,
+        supports_video_color=lambda field: False,
     )
 
 

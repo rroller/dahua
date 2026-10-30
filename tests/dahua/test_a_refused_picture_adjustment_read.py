@@ -12,7 +12,7 @@ it can read events and streams and nothing else. `VideoColor` is one of the
 things it cannot read. The refusal escaped the poll's `gather`, which has no
 `return_exceptions`, became `UpdateFailed`, and on the first refresh that is
 `ConfigEntryNotReady` -- so two working cameras sat in `setup_retry` with every
-entity unavailable, over four sliders they were never going to serve. 1.0.1 was
+entity unavailable, over picture controls they were never going to serve. 1.0.1 was
 fine because the read did not exist yet.
 
 Two properties, and both are needed. The probe (in test_what_setup_probes.py,
@@ -171,6 +171,8 @@ def test_this_channels_row_is_what_counts():
         "table.VideoColor[0][0].Contrast": "50",
         "table.VideoColor[0][0].Saturation": "50",
         "table.VideoColor[0][0].Hue": "50",
+        "table.VideoColor[0][0].Gamma": "37",
+        "table.VideoColor[0][0].Style": "Standard",
     }
 
     assert video_color_fields(data, 0) == frozenset(VIDEO_COLOR_FIELDS)
@@ -200,9 +202,25 @@ def test_a_device_reporting_some_fields_reports_only_those():
     data = {
         "table.VideoColor[2][0].Brightness": "40",
         "table.VideoColor[2][0].Hue": "0",
+        "table.VideoColor[2][0].Style": "Soft",
+        "table.VideoColor[2][1].Gamma": "50",
+        "table.VideoColor[3][0].Gamma": "50",
     }
 
-    assert video_color_fields(data, 2) == frozenset({"Brightness", "Hue"})
+    assert video_color_fields(data, 2) == frozenset({"Brightness", "Hue", "Style"})
+
+
+def test_gamma_is_discovered_only_in_this_channels_general_profile():
+    assert (
+        video_color_fields(
+            {
+                "table.VideoColor[2][1].Gamma": "50",
+                "table.VideoColor[3][0].Gamma": "50",
+            },
+            2,
+        )
+        == frozenset()
+    )
 
 
 def test_a_zero_is_a_value_like_any_other():
@@ -219,6 +237,19 @@ def test_an_answer_that_names_nothing_is_no_capability(answer):
     `async_get_config`'s swallowed error returns `{}` as well. Neither is a
     device saying it has picture adjustments."""
     assert video_color_fields(answer, 0) == frozenset()
+
+
+def test_gamma_is_read_as_an_integer_and_style_keeps_its_exact_string():
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = 2
+    coordinator.data = {
+        "table.VideoColor[2][0].Gamma": "37",
+        "table.VideoColor[2][0].Style": "Standard",
+    }
+
+    assert coordinator.get_video_color("Gamma") == 37
+    assert isinstance(coordinator.get_video_color("Gamma"), int)
+    assert coordinator.get_video_color_style() == "Standard"
 
 
 # --- what the poll does ------------------------------------------------------
@@ -239,6 +270,15 @@ async def test_a_channel_with_adjustments_is_asked():
     """The guard against the test above passing for the wrong reason: with the
     read never made at all, every assertion here would hold."""
     coordinator = _coordinator(fields=VIDEO_COLOR_FIELDS)
+
+    await coordinator._async_update_data()
+
+    assert VIDEO_COLOR in coordinator.client.asked
+
+
+async def test_a_style_select_can_poll_video_color_without_numbers():
+    coordinator = _coordinator(fields=["Style"])
+    coordinator._wanted_by = lambda *platforms: "select" in platforms
 
     await coordinator._async_update_data()
 
