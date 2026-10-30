@@ -1,9 +1,9 @@
 """Number entity platform for Dahua: picture adjustments, and a monitor's volumes.
 
-Brightness, contrast, saturation and hue, the controls Reolink and Tapo expose
-as sliders and this integration did not. Backed by the VideoColor config table
-(measured 0-100 on a DHI-NVR5464 and a VTO), read on the poll and written per
-change to the channel's general profile (index 0).
+Brightness, contrast, saturation, hue and gamma, the controls Reolink and Tapo
+expose as sliders and this integration did not. Backed by the VideoColor config
+table (measured 0-100 on a DHI-NVR5464 and a VTO), read on the poll and written
+per change to the channel's general profile (index 0).
 """
 
 import logging
@@ -34,6 +34,7 @@ IMAGE_ADJUSTMENTS = (
     ("image_contrast", "Contrast"),
     ("image_saturation", "Saturation"),
     ("image_hue", "Hue"),
+    ("image_gamma", "Gamma"),
 )
 
 
@@ -80,13 +81,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         if coordinator.is_indoor_monitor_without_video():
             return []
         # One entity per adjustment the device actually reported for this
-        # channel. These were created unconditionally, which gave four sliders
+        # channel. These were created unconditionally, which gave sliders
         # to every device including the ones whose VideoColor table is refused
         # outright -- a camera account in the `user` group answers 403 to it
         # (#1006) -- and a slider that can only read unknown is worse than no
         # slider (the profile sensor's rule, #641). Per field, because a device
-        # reporting three of the four should get three rather than a fourth that
-        # never resolves.
+        # reporting only some adjustments should get only those entities.
         return [
             DahuaImageAdjustmentNumber(coordinator, entry, key, field)
             for key, field in IMAGE_ADJUSTMENTS
@@ -191,7 +191,7 @@ class DahuaImageAdjustmentNumber(DahuaBaseEntity, NumberEntity):
     @property
     def available(self) -> bool:
         """Off until the poll has a value, so a device without VideoColor does not
-        show four sliders stuck at an invented default."""
+        show sliders stuck at an invented default."""
         return (
             super().available
             and self._coordinator.get_video_color(self._field) is not None

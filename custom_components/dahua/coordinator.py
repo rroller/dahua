@@ -456,9 +456,8 @@ def day_night_color_name(data: dict, channel: int):
     return DAY_NIGHT_NAMES.get(str(value).strip())
 
 
-# The picture adjustments the number platform offers, as the device spells them
-# in its VideoColor table.
-VIDEO_COLOR_FIELDS = ("Brightness", "Contrast", "Saturation", "Hue")
+# The picture controls exposed from VideoColor, as the device spells them.
+VIDEO_COLOR_FIELDS = ("Brightness", "Contrast", "Saturation", "Hue", "Gamma", "Style")
 
 
 def video_color_fields(data: dict, channel: int) -> frozenset:
@@ -471,8 +470,8 @@ def video_color_fields(data: dict, channel: int) -> frozenset:
     and taking another channel's row as evidence is how a control comes to
     report a camera it is not attached to.
 
-    Per field rather than a single yes, so a device reporting three of the four
-    gets three sliders instead of a fourth that can only ever read unknown.
+    Per field rather than a single yes, so a device gets entities only for the
+    fields it reports.
 
     Empty when the device named none, which covers both a table it does not
     have and the empty 200 some firmware answers for one -- the same thing
@@ -1977,7 +1976,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_retry_video_color(self) -> bool:
         """Whether picture adjustments turned up that were missed at setup.
 
-        Four sliders are gated on this, one per field, and the poll decides
+        VideoColor entities are gated on this, one per field, and the poll decides
         each cycle whether to read the table, so they work from the next poll
         rather than reading unknown until a reload.
 
@@ -2475,17 +2474,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     "Device supports day/night mode=%s", self._supports_day_night_color
                 )
 
-                # The picture adjustments, probed rather than read blind on
+                # The picture controls, probed rather than read blind on
                 # every poll. #1006 is a camera account in the device's `user`
                 # group, which answers 403 to this table: the read sat in the
                 # poll's gather with no capability check and no handler, so one
                 # refusal failed the whole refresh, and on the first one that is
                 # ConfigEntryNotReady -- every entity of a working camera
-                # unavailable for four sliders it was never going to serve.
+                # unavailable for controls it was never going to serve.
                 #
                 # Judged on this channel's own row, not on the request
                 # succeeding; see video_color_fields. A device that names none
-                # gets no number entities, which is the rule the profile sensor
+                # gets no VideoColor entities, which is the rule the profile sensor
                 # established (#641): an entity that can only read unknown is
                 # worse than no entity.
                 #
@@ -2493,11 +2492,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # URL carries no channel, so the shared read cache answers it
                 # once for every channel setting up and holds it for
                 # CONFIG_CACHE_TTL_SECONDS.
-                # Inside the gate: a device whose number platform is switched
-                # off is never asked, and saying it reports none would read as
-                # the device refusing. The probe itself is shared with the
-                # retry a later poll makes (#1057).
-                if self._wanted_by(NUMBER):
+                # Inside the gate: a device whose number and select platforms
+                # are switched off is never asked. The probe itself is shared
+                # with the retry a later poll makes (#1057).
+                if self._wanted_by(NUMBER, SELECT):
                     await self._async_probe_video_color()
 
                 # Which camera is actually on this channel. Every channel of a
@@ -2903,13 +2901,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # reason every read here is.
             if self._supports_system_load and self._wanted_by(SENSOR):
                 coros.append(asyncio.ensure_future(self._async_fetch_system_load()))
-            # Picture adjustments for the number platform (brightness, contrast,
-            # saturation, hue): one read per poll, and only where the device
-            # actually reported them at setup. Gated on the probe rather than on
-            # the platform alone, so a device that refuses the table is never
-            # asked again, and wrapped, so a permissions change made after setup
-            # cannot take the entry down the way #1006 did.
-            if self._video_color_fields and self._wanted_by(NUMBER):
+            # Picture controls for the number and select platforms: one read per
+            # poll, and only where the device actually reported them at setup.
+            # Gated on the probe rather than on the platform alone, so a device
+            # that refuses the table is never asked again, and wrapped, so a
+            # permissions change made after setup cannot take the entry down
+            # the way #1006 did.
+            if self._video_color_fields and self._wanted_by(NUMBER, SELECT):
                 coros.append(asyncio.ensure_future(self._async_fetch_video_color()))
             # Lighting_V2 is the light platform's table -- except that the
             # Amcrest doorbell's "Security Light" is a *select*, and its
@@ -4725,10 +4723,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return {"true": True, "false": False}.get(str(raw).strip().lower())
 
     def get_video_color(self, field: str):
-        """A picture adjustment for this channel's general profile, or None.
+        """A numeric picture adjustment for this channel's general profile.
 
         Read from the poll's VideoColor table by the image-adjustment number
-        entities (brightness, contrast, saturation, hue).
+        entities.
         """
         raw = self.data.get(
             "table.VideoColor[{0}][0].{1}".format(self.get_channel(), field)
@@ -4739,6 +4737,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return int(raw)
         except (TypeError, ValueError):
             return None
+
+    def get_video_color_style(self) -> str | None:
+        """The supported Style value for this channel's general profile."""
+        raw = self.data.get(
+            "table.VideoColor[{0}][0].Style".format(self.get_channel())
+        )
+        return raw if isinstance(raw, str) else None
 
     async def _async_retry_device_class(self) -> None:
         """Ask again for a device class the device did not answer.

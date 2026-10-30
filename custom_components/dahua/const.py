@@ -28,6 +28,7 @@ SENSOR = "sensor"
 EVENT = "event"
 NUMBER = "number"
 UPDATE = "update"
+VIDEO_COLOR_STYLE_OPTIONS = ("Soft", "Standard", "Vivid")
 PLATFORMS = [
     BINARY_SENSOR,
     SWITCH,

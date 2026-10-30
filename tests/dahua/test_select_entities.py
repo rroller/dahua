@@ -16,7 +16,9 @@ from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
     DahuaDayNightModeSelect,
     DahuaDoorbellLightSelect,
+    DahuaVideoColorStyleSelect,
 )
+from custom_components.dahua.const import VIDEO_COLOR_STYLE_OPTIONS
 
 from . import adds_entities
 
@@ -53,6 +55,9 @@ class _Coordinator:
 
     def get_day_night_color(self):
         return self._day_night
+
+    def get_video_color_style(self):
+        return self.data.get("table.VideoColor[{0}][0].Style".format(self._channel))
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -256,6 +261,53 @@ async def test_an_option_the_select_does_not_offer_is_ignored():
     assert c.refreshed == 0
 
 
+# --- VideoColor Style --------------------------------------------------------
+
+
+@pytest.mark.parametrize("style", VIDEO_COLOR_STYLE_OPTIONS)
+def test_style_reports_only_values_the_device_supports(style):
+    c = _Coordinator(
+        {"table.VideoColor[2][0].Style": style},
+        channel=2,
+    )
+    s = _select(DahuaVideoColorStyleSelect, c)
+
+    assert s.current_option == style
+    assert s.options == ["Soft", "Standard", "Vivid"]
+    assert s.unique_id == "SERIAL1_video_color_style"
+    assert s.entity_category.value == "config"
+
+
+def test_unknown_style_is_reported_as_unknown():
+    s = _select(
+        DahuaVideoColorStyleSelect,
+        _Coordinator({"table.VideoColor[0][0].Style": "Custom"}),
+    )
+
+    assert s.current_option is None
+
+
+@pytest.mark.parametrize("style", VIDEO_COLOR_STYLE_OPTIONS)
+async def test_selecting_a_style_writes_the_exact_value_and_refreshes(style):
+    c = _Coordinator(channel=3)
+    s = _select(DahuaVideoColorStyleSelect, c)
+
+    await s.async_select_option(style)
+
+    assert c.client.calls == [("async_set_video_color_style", 3, style)]
+    assert c.refreshed == 1
+
+
+async def test_an_invalid_style_is_ignored_without_a_write_or_refresh():
+    c = _Coordinator(channel=3)
+    s = _select(DahuaVideoColorStyleSelect, c)
+
+    await s.async_select_option("Custom")
+
+    assert c.client.calls == []
+    assert c.refreshed == 0
+
+
 # --- which selects an entry creates ------------------------------------------
 
 
@@ -286,6 +338,7 @@ async def _added_for(coordinator, cgi_presets=None):
         DahuaDoorbellLightSelect=lambda *a, **k: "light",
         DahuaCameraPresetPositionSelect=lambda *a, **k: ("preset", k.get("preset_ids")),
         DahuaDayNightModeSelect=lambda *a, **k: "day_night",
+        DahuaVideoColorStyleSelect=lambda *a, **k: "style",
         _async_preset_ids=_preset_ids,
     ):
         await select_module.async_setup_entry(
@@ -304,10 +357,12 @@ class _SetupCoordinator(_Coordinator):
         preset_error=None,
         day_night_supported=False,
         infrared_supported=False,
+        style_supported=False,
     ):
         super().__init__()
         self._day_night_supported = day_night_supported
         self._infrared_supported = infrared_supported
+        self._style_supported = style_supported
         self._amcrest = amcrest
         self._security_light = security_light
         self._model = model
@@ -335,6 +390,9 @@ class _SetupCoordinator(_Coordinator):
 
     def supports_day_night_color(self):
         return self._day_night_supported
+
+    def supports_video_color(self, field):
+        return field == "Style" and self._style_supported
 
     def supports_infrared_light(self):
         return self._infrared_supported
@@ -394,6 +452,11 @@ async def test_the_day_night_select_needs_a_device_that_reports_the_mode():
     would leave a control showing unknown for ever."""
     assert "day_night" not in await _added_for(_SetupCoordinator())
     assert "day_night" in await _added_for(_SetupCoordinator(day_night_supported=True))
+
+
+async def test_style_select_requires_reported_style_support():
+    assert "style" not in await _added_for(_SetupCoordinator())
+    assert "style" in await _added_for(_SetupCoordinator(style_supported=True))
 
 
 async def test_a_camera_that_holds_no_presets_gets_no_preset_control():

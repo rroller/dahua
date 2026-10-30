@@ -69,8 +69,8 @@ PROBES = [
 ]
 
 # The probes whose capability is a set of field names rather than a bool, so
-# "off" for them is an empty set. Only the picture adjustments: a device can
-# serve three of the four, and a single yes could not say which.
+# "off" for them is an empty set. Only the picture controls: a device can
+# serve any subset, and a single yes could not say which.
 PROBE_SETS = {"_video_color_fields"}
 
 

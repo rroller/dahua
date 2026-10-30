@@ -338,6 +338,9 @@
             "image_hue": {
                 "name": "Hue"
             },
+            "image_gamma": {
+                "name": "Gamma"
+            },
             "vth_ring_volume": {
                 "name": "Door station ring volume"
             },
@@ -369,6 +372,9 @@
             },
             "day_night_mode": {
                 "name": "Day/Night Mode"
+            },
+            "video_color_style": {
+                "name": "Video Color Style"
             },
             "smart_motion_sensitivity": {
                 "name": "Smart Motion Sensitivity"
