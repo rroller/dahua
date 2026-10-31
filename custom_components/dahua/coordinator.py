@@ -23,9 +23,11 @@ from aiohttp import ClientError, ClientResponseError, ClientSession
 
 from homeassistant.components.tag import async_scan_tag
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_DEVICE_ID
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -3146,6 +3148,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # as the device having sent nothing.
         self._remember_event(event)
         event["DeviceName"] = self.get_device_name()
+        self._tag_event_with_device_id(event)
         _LOGGER.debug(f"VTO Data received: {event}")
         self._handle_anpr_plate(event)
         self.hass.bus.fire("dahua_event_received", event)
@@ -3448,6 +3451,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             for listener in listeners:
                 listener()
 
+    @callback
+    def _tag_event_with_device_id(self, event: dict) -> None:
+        """Name the sending device on an event about to reach the bus.
+
+        Called on both transports, after `_remember_event`, for the same reason
+        `DeviceName` is: the diagnostics buffer is meant to hold what the device
+        sent rather than what we added to it, and `_remember_event` takes its own
+        `dict(event)` copy, so anything set after this point stays out of it.
+
+        The key is absent rather than None when the device cannot be resolved.
+        An automation filtering on `event_data` matches on the keys present, so a
+        null would match nothing and read as "sent by no device" instead of "not
+        known yet".
+        """
+        device_id = self.event_device_id()
+        if device_id is not None:
+            event[ATTR_DEVICE_ID] = device_id
+
     def _remember_event(self, event: dict) -> None:
         """Keep the last few events, so diagnostics can show what arrived.
 
@@ -3495,6 +3516,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # Put the event on the HA event bus
         event["name"] = self.get_device_name()
         event["DeviceName"] = self.get_device_name()
+        self._tag_event_with_device_id(event)
         self.hass.bus.fire("dahua_event_received", event)
 
         # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
@@ -5529,6 +5551,59 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # We need a unique identifier. For NVRs we get back the same serial, so add the channel to the end of the sn
             return "{0}_{1}".format(self._serial_number, self._channel)
         return self._serial_number
+
+    @callback
+    def device_identifier(self) -> tuple[str, str]:
+        """The registry identifier of this channel's device.
+
+        The same pair `entity.py` files every entity against, which is the
+        device `event_device_id` has to find. It is not called from there: most
+        of the doubles in the suite are not coordinator instances, so demanding
+        this method of them reddens twenty-two tests that only ever needed
+        `get_serial_number`. The two are held together by a test that registers
+        a device under what `device_info` reports and looks it up with this,
+        which is the coupling that matters rather than the shared expression.
+        """
+        return (DOMAIN, self.get_serial_number())
+
+    @callback
+    def event_device_id(self) -> str | None:
+        """This channel's device registry id, or None if it has none yet.
+
+        What Home Assistant means by "which device sent this", and what core
+        integrations put on a bus event they fire: rfxtrx, deconz, zwave_js, zha
+        and others all carry `device_id`, holding the registry entry id rather
+        than a vendor serial. A device trigger matches on it, so it is also the
+        prerequisite for offering one.
+
+        None rather than an exception for every way this can fail to resolve.
+        The device is registered when the first entity is added, so an event
+        arriving before that has no id to carry, and an entry being removed
+        unregisters it. This runs on the event stream, where an unguarded
+        exception takes every camera on the host down until the stream
+        reconnects (#705, #706), so it is written to be incapable of raising.
+
+        The lookup is not cached. `DeviceRegistryItems.get_entry` is index
+        backed, two dict reads, so caching would buy nothing and cost a stale id
+        after a device is deleted and recreated.
+        """
+        try:
+            device = dr.async_get(self.hass).async_get_device_by_identifier(
+                self.device_identifier(),
+                self.config_entry.entry_id,
+            )
+        except Exception:  # pylint: disable=broad-except
+            return None
+
+        device_id = getattr(device, "id", None)
+
+        # A str and nothing else. Much of the suite hands the coordinator a
+        # MagicMock for `hass`, and a mock registry answers every lookup with a
+        # mock whose `.id` is itself a mock: without this the payload would
+        # carry that object and every assertion about it would still pass.
+        if isinstance(device_id, str) and device_id:
+            return device_id
+        return None
 
     def get_last_plate(self) -> str:
         """Return the last recognized license plate string, or 'unknown'."""
