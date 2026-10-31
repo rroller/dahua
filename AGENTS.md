@@ -28,7 +28,7 @@ CONTRIBUTING wins.
 
 <!-- tags: navigation, directory-structure -->
 
-36 modules, about 22,500 lines.
+38 modules, about 35,000 lines.
 
 ```
 custom_components/dahua/
@@ -58,6 +58,12 @@ custom_components/dahua/
 ├── diagnostics.py          # The dump. Talks to no device; reports held state only
 ├── media_source.py         # Browse and play the recorder's clips
 ├── flow_preview.py         # Serves one snapshot to the add dialog
+├── audio.py                # Turns "play this" into bytes the speaker takes:
+│                           #   a URL or a file becomes A-law at 8 kHz. Knows
+│                           #   about media sources so client.py does not
+├── late.py                 # Capability probes that timed out at setup, asked
+│                           #   again once the device is idle, so an answer that
+│                           #   arrives late still produces its entities (#1043)
 ├── illuminator_restore.py  # Persistent stores for lighting overrides
 ├── white_light_override.py # Pure table builders for the channel-scoped white light
 ├── infrared.py             # Infrared mode writes, transport routing, refusals
@@ -71,12 +77,12 @@ custom_components/dahua/
 ├── entity.py               # DahuaBaseEntity and DahuaEventDrivenEntity
 ├── <platform>.py           # binary_sensor, button, camera, event, light, number,
 │                           #   select, sensor, switch, update
-├── services.yaml           # 26 services, all registered in camera.py
+├── services.yaml           # 32 services, all registered in camera.py
 ├── icons.json              # Entity icons, keyed by translation key
 └── translations/           # en plus 8 others. English is the per-key fallback
 ```
 
-Other directories: `tests/` (242 files, ~3,000 tests), `scripts/`,
+Other directories: `tests/` (320 files, ~5,700 tests), `scripts/`,
 `.github/workflows/`.
 
 ## Architecture Overview
