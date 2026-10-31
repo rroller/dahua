@@ -348,7 +348,8 @@ class DahuaImageRotationSelect(DahuaBaseEntity, SelectEntity):
         rotate90 = self._coordinator.get_video_image_control("Rotate90")
         if type(rotate90) is not int or rotate90 != 0:
             raise HomeAssistantError(
-                "Cannot set image rotation safely because Rotate90 is unsupported or unknown."
+                translation_domain=DOMAIN,
+                translation_key="image_rotation_unsupported",
             )
         await self._coordinator.client.async_set_video_image_control(
             self._coordinator.get_channel(), "Flip", option == "180°"
