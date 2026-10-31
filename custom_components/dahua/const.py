@@ -225,6 +225,7 @@ BACKED_UP_TABLES = (
     "VSP_PaaS",
     "VideoAnalyseRule",
     "VideoColor",
+    "VideoImageControl",
     "VideoInDayNight",
     "VideoInMode",
     "VideoInOptions",

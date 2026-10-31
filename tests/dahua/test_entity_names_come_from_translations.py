@@ -88,6 +88,7 @@ WAS = {
     ("number", "image_hue"): "Hue",
     ("number", "image_gamma"): "Gamma",
     ("select", "video_color_style"): "Video Color Style",
+    ("select", "image_rotation"): "Image Rotation",
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
     ("switch", "cloud_connection"): "Cloud Connection",
@@ -99,6 +100,7 @@ WAS = {
     ("switch", "privacy_mode"): "Privacy Mode",
     # Named by the platform until the six below moved; the two pairs are a
     # capability choice, not an index.
+    ("switch", "mirror"): "Mirror",
     ("light", "infrared"): "Infrared",
     ("light", "illuminator"): "Illuminator",
     ("light", "flood_light"): "Flood Light",

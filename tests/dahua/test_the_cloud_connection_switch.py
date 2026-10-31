@@ -377,6 +377,9 @@ class _PlatformCoordinator:
         """Not an indoor monitor, so it has no call settings (#949)."""
         return False
 
+    def supports_video_image_control(self, field):
+        return False
+
     def get_ivs_rules(self):
         return []
 

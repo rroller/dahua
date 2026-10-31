@@ -53,6 +53,16 @@ def _url(client):
     return client._sent.urls[0][0]
 
 
+async def test_video_image_control_read_targets_its_config_table():
+    client = _client()
+
+    await client.async_get_video_image_control()
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=getConfig&name=VideoImageControl"
+    )
+
+
 # --- the day/night pair, which are not interchangeable ----------------------
 
 
@@ -124,6 +134,36 @@ async def test_gamma_write_targets_only_its_channel_and_general_profile():
     assert _url(client) == (
         "/cgi-bin/configManager.cgi?action=setConfig" "&VideoColor[3][0].Gamma=42"
     )
+
+
+@pytest.mark.parametrize(
+    "channel,field,value,expected",
+    [
+        (0, "Mirror", False, "VideoImageControl[0].Mirror=false"),
+        (0, "Flip", True, "VideoImageControl[0].Flip=true"),
+        (3, "Mirror", False, "VideoImageControl[3].Mirror=false"),
+        (3, "Mirror", True, "VideoImageControl[3].Mirror=true"),
+        (3, "Flip", False, "VideoImageControl[3].Flip=false"),
+        (3, "Flip", True, "VideoImageControl[3].Flip=true"),
+    ],
+)
+async def test_image_control_writes_target_one_supported_field(
+    channel, field, value, expected
+):
+    client = _client()
+
+    await client.async_set_video_image_control(channel, field, value)
+
+    assert _url(client) == ("/cgi-bin/configManager.cgi?action=setConfig&" + expected)
+
+
+async def test_image_control_does_not_write_rotate90():
+    client = _client()
+
+    with pytest.raises(ValueError, match="Unsupported VideoImageControl field"):
+        await client.async_set_video_image_control(3, "Rotate90", True)
+
+    assert client._sent.urls == []
 
 
 @pytest.mark.parametrize("style", ["Soft", "Standard", "Vivid"])
