@@ -759,7 +759,9 @@ class DahuaMirrorSwitch(DahuaBaseEntity, SwitchEntity):
         await self._set(False)
 
     async def _set(self, enabled: bool) -> None:
-        await self._coordinator.client.async_set_video_image_control("Mirror", enabled)
+        await self._coordinator.client.async_set_video_image_control(
+            self._coordinator.get_channel(), "Mirror", enabled
+        )
         await self._coordinator.async_refresh()
 
     @property

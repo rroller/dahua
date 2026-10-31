@@ -137,18 +137,22 @@ async def test_gamma_write_targets_only_its_channel_and_general_profile():
 
 
 @pytest.mark.parametrize(
-    "field,value,expected",
+    "channel,field,value,expected",
     [
-        ("Mirror", False, "VideoImageControl[0].Mirror=false"),
-        ("Mirror", True, "VideoImageControl[0].Mirror=true"),
-        ("Flip", False, "VideoImageControl[0].Flip=false"),
-        ("Flip", True, "VideoImageControl[0].Flip=true"),
+        (0, "Mirror", False, "VideoImageControl[0].Mirror=false"),
+        (0, "Flip", True, "VideoImageControl[0].Flip=true"),
+        (3, "Mirror", False, "VideoImageControl[3].Mirror=false"),
+        (3, "Mirror", True, "VideoImageControl[3].Mirror=true"),
+        (3, "Flip", False, "VideoImageControl[3].Flip=false"),
+        (3, "Flip", True, "VideoImageControl[3].Flip=true"),
     ],
 )
-async def test_image_control_writes_target_one_supported_field(field, value, expected):
+async def test_image_control_writes_target_one_supported_field(
+    channel, field, value, expected
+):
     client = _client()
 
-    await client.async_set_video_image_control(field, value)
+    await client.async_set_video_image_control(channel, field, value)
 
     assert _url(client) == ("/cgi-bin/configManager.cgi?action=setConfig&" + expected)
 
@@ -157,7 +161,7 @@ async def test_image_control_does_not_write_rotate90():
     client = _client()
 
     with pytest.raises(ValueError, match="Unsupported VideoImageControl field"):
-        await client.async_set_video_image_control("Rotate90", True)
+        await client.async_set_video_image_control(3, "Rotate90", True)
 
     assert client._sent.urls == []
 

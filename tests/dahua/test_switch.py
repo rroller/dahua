@@ -749,7 +749,7 @@ async def test_mirror_switch_writes_one_field_and_refreshes(enabled):
     await (switch.async_turn_on() if enabled else switch.async_turn_off())
 
     assert coordinator.client.calls == [
-        ("async_set_video_image_control", "Mirror", enabled)
+        ("async_set_video_image_control", 3, "Mirror", enabled)
     ]
     assert coordinator.refreshed == 1
 
@@ -771,6 +771,13 @@ async def test_mirror_switch_is_created_only_when_the_field_is_reported():
     supported = _Coordinator()
     supported.states["video_image_control_fields"] = {"Mirror"}
     assert "mirror" in await _added_for(supported)
+
+
+async def test_channel_three_mirror_is_not_created_from_row_zero_state():
+    coordinator = _Coordinator(channel=3)
+    coordinator.states["video_image_control"] = {"Mirror": True}
+
+    assert "mirror" not in await _added_for(coordinator)
 
 
 # --- naming several relays ----------------------------------------------------

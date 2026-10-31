@@ -2000,7 +2000,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._video_image_control_fields = frozenset(
             field
             for field in ("Flip", "Rotate90", "Mirror")
-            if table.get(f"table.VideoImageControl[0].{field}") is not None
+            if table.get(f"table.VideoImageControl[{self.get_channel()}].{field}")
+            is not None
         )
         return bool(self._video_image_control_fields)
 
@@ -4773,8 +4774,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return None
 
     def get_video_image_control(self, field: str) -> bool | int | None:
-        """Read a reported image-control field from the latest poll."""
-        raw = self.data.get(f"table.VideoImageControl[0].{field}")
+        """Read a reported image-control field from this channel's latest poll."""
+        raw = self.data.get(f"table.VideoImageControl[{self.get_channel()}].{field}")
         if raw is None:
             return None
         if field in {"Flip", "Mirror"}:

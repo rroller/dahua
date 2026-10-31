@@ -10,6 +10,7 @@ name looks exactly like the camera being in that mode.
 """
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.dahua import select as select_module
 from custom_components.dahua.const import VIDEO_COLOR_STYLE_OPTIONS
@@ -61,7 +62,7 @@ class _Coordinator:
         return self.data.get("table.VideoColor[{0}][0].Style".format(self._channel))
 
     def get_video_image_control(self, field):
-        return self.data.get("table.VideoImageControl[0].{0}".format(field))
+        return self.data.get(f"table.VideoImageControl[{self._channel}].{field}")
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -450,9 +451,10 @@ async def test_the_doorbell_light_select_needs_a_doorbell_with_one():
 def test_image_rotation_reads_only_supported_combinations(flip, rotate, expected):
     c = _Coordinator(
         {
-            "table.VideoImageControl[0].Flip": flip,
-            "table.VideoImageControl[0].Rotate90": rotate,
-        }
+            "table.VideoImageControl[3].Flip": flip,
+            "table.VideoImageControl[3].Rotate90": rotate,
+        },
+        channel=3,
     )
     entity = _select(DahuaImageRotationSelect, c)
 
@@ -464,13 +466,43 @@ def test_image_rotation_reads_only_supported_combinations(flip, rotate, expected
     [("0°", False), ("180°", True)],
 )
 async def test_image_rotation_writes_only_flip_and_refreshes(option, expected_flip):
-    c = _Coordinator(channel=3)
+    c = _Coordinator(
+        {"table.VideoImageControl[3].Rotate90": 0},
+        channel=3,
+    )
     entity = _select(DahuaImageRotationSelect, c)
 
     await entity.async_select_option(option)
 
-    assert c.client.calls == [("async_set_video_image_control", "Flip", expected_flip)]
+    assert c.client.calls == [
+        ("async_set_video_image_control", 3, "Flip", expected_flip)
+    ]
     assert c.refreshed == 1
+
+
+@pytest.mark.parametrize(
+    "rotate,option",
+    [
+        (1, "0°"),
+        (1, "180°"),
+        (2, "0°"),
+        (2, "180°"),
+        (None, "0°"),
+        (None, "180°"),
+    ],
+)
+async def test_image_rotation_rejects_unsupported_rotate90(rotate, option):
+    c = _Coordinator(
+        {"table.VideoImageControl[3].Rotate90": rotate},
+        channel=3,
+    )
+    entity = _select(DahuaImageRotationSelect, c)
+
+    with pytest.raises(HomeAssistantError):
+        await entity.async_select_option(option)
+
+    assert c.client.calls == []
+    assert c.refreshed == 0
 
 
 async def test_invalid_image_rotation_does_not_write_or_refresh():
