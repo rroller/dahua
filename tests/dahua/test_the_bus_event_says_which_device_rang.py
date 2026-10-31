@@ -33,6 +33,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from homeassistant.const import ATTR_DEVICE_ID
+from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -62,9 +63,12 @@ def _coordinator(hass, entry, channel=0, serial=SERIAL, name="Front Door"):
 
 def _listen(hass):
     seen = []
-    hass.bus.async_listen(
-        "dahua_event_received", lambda event: seen.append(dict(event.data))
-    )
+
+    @callback
+    def remember(event):
+        seen.append(dict(event.data))
+
+    hass.bus.async_listen("dahua_event_received", remember)
     return seen
 
 
@@ -131,15 +135,20 @@ async def test_two_channels_on_one_host_name_different_devices(hass):
     second = _register(hass, entry, f"{SERIAL}_1", "HA-LaQuinta")
     assert first.id != second.id, "two devices, two ids"
 
-    gate = _coordinator(hass, entry, channel=0)
-    laquinta = _coordinator(hass, entry, channel=1)
+    gate = _coordinator(hass, entry, channel=0, name="Dahua Gate")
+    laquinta = _coordinator(hass, entry, channel=1, name="HA-LaQuinta")
     seen = _listen(hass)
 
     gate.handle_event({"Code": "_DoTalkAction_", "action": "Start"})
     laquinta.handle_event({"Code": "_DoTalkAction_", "action": "Start"})
     await hass.async_block_till_done()
 
-    assert [event[ATTR_DEVICE_ID] for event in seen] == [first.id, second.id]
+    # Match each sender to its id without assuming listener completion order.
+    assert len(seen) == 2
+    assert {event["DeviceName"]: event[ATTR_DEVICE_ID] for event in seen} == {
+        "Dahua Gate": first.id,
+        "HA-LaQuinta": second.id,
+    }
 
 
 # --- what it does when it cannot answer -------------------------------------
