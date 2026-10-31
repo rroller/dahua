@@ -51,6 +51,7 @@ SERVICE_SET_ILLUMINATOR_MODE = "set_illuminator_mode"
 # This service handles setting the video profile mode to day or night
 SERVICE_SET_VIDEO_PROFILE_MODE = "set_video_profile_mode"
 SERVICE_SET_FOCUS_ZOOM = "set_focus_zoom"
+SERVICE_AUTOFOCUS = "autofocus"
 SERVICE_SET_PRIVACY_MASKING = "set_privacy_masking"
 SERVICE_SET_PRIVACY_MODE = "set_privacy_mode"
 SERVICE_SET_CHANNEL_TITLE = "set_channel_title"
@@ -389,6 +390,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         },
         "async_adjustfocus",
     )
+
+    platform.async_register_entity_service(SERVICE_AUTOFOCUS, {}, "async_autofocus")
 
     platform.async_register_entity_service(
         SERVICE_SET_PRIVACY_MASKING,
@@ -1173,6 +1176,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Handles the service call from SERVICE_SET_INFRARED_MODE to set zoom and focus"""
         await self._coordinator.client.async_adjustfocus_v1(focus, zoom)
         await self._coordinator.async_refresh()
+
+    async def async_autofocus(self):
+        """Ask the camera to focus without changing its zoom."""
+        await self._coordinator.client.async_autofocus()
 
     async def async_set_privacy_masking(self, index: int, enabled: bool):
         """Handles the service call from SERVICE_SET_PRIVACY_MASKING to control the privacy masking"""

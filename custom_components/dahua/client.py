@@ -4297,6 +4297,10 @@ class DahuaClient:
         )
         return await self.get(url, True)
 
+    async def async_autofocus(self):
+        """Trigger autofocus using the parameter-free camera CGI command."""
+        return await self.get("/cgi-bin/devVideoInput.cgi?action=autoFocus", True)
+
     async def async_setprivacymask(self, index: int, enabled: bool):
         """
         async_setprivacymask will enable or disable the privacy mask

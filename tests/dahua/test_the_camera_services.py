@@ -436,6 +436,30 @@ async def test_adjusting_focus_takes_no_channel():
     assert camera._coordinator.refreshed == 1
 
 
+async def test_autofocus_takes_no_focus_zoom_or_channel():
+    camera = _camera()
+
+    await camera.async_autofocus()
+
+    assert camera._coordinator.client.only() == ("async_autofocus", (), {})
+    assert camera._coordinator.refreshed == 0
+
+
+async def test_autofocus_does_not_hide_a_device_refusal():
+    coordinator = _Coordinator()
+    error = ClientResponseError(
+        request_info=None, history=(), status=400, message="Unsupported"
+    )
+    coordinator.client = _Client(raises={"async_autofocus": error})
+
+    with pytest.raises(ClientResponseError) as raised:
+        await _camera(coordinator).async_autofocus()
+
+    assert raised.value is error
+    assert coordinator.client.only() == ("async_autofocus", (), {})
+    assert coordinator.refreshed == 0
+
+
 async def test_privacy_masking_takes_an_index_and_no_channel():
     camera = _camera()
 
