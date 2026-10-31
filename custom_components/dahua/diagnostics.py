@@ -623,6 +623,37 @@ def _latest_by_code_block(coordinator, now: int) -> dict[str, Any]:
     return out
 
 
+def _rpc2_key_of(client) -> Any:
+    """The key this client's shared RPC2 state is really filed under.
+
+    Asked of the client, because rebuilding it here is what broke. This block
+    spelled it out as `(address, username)`, and #665 put the port into the
+    device key (`_device_key` gives "address:port") so that two boxes behind one
+    IP are not one device. The writer changed and this reader did not, so the
+    lookup stopped matching anything and five fields have reported the healthy
+    answer for every device since: `rpc2_session_open` False,
+    `rpc2_session_refcount` 0, `rpc2_keepalive_running` False,
+    `rpc2_ruled_out_for_host` False and `rpc2_tables_refused` empty.
+
+    That is the worst way for a dump to fail, because each of those is also what
+    a healthy device reports, so nothing in a dump looked wrong.
+
+    The fallback is for the doubles: most of the suite's clients are a
+    SimpleNamespace with `device_key` and no `_rpc2_key`, and a dump that raises
+    on one is worse than a field that reads empty.
+    """
+    ask = getattr(client, "_rpc2_key", None)
+    if callable(ask):
+        try:
+            return ask()
+        except Exception:  # pragma: no cover - a double that cannot answer
+            pass
+    return (
+        getattr(client, "device_key", None),
+        getattr(client, "_username", None),
+    )
+
+
 def _host_block(
     hass: HomeAssistant, coordinator, config_entry: ConfigEntry
 ) -> dict[str, Any]:
@@ -657,7 +688,7 @@ def _host_block(
         if entry.data.get(CONF_ADDRESS) == address
     ]
 
-    rpc2_key = (client_address, getattr(coordinator.client, "_username", None))
+    rpc2_key = _rpc2_key_of(coordinator.client)
     rpc2 = _HOST_RPC2.get(rpc2_key)
 
     # Absent until something fails, so an empty dict is the healthy answer and

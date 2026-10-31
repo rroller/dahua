@@ -12,6 +12,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import dahua as dahua_module
 from custom_components.dahua import client as client_module
+from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.const import DOMAIN
 from custom_components.dahua.diagnostics import (
     async_get_config_entry_diagnostics,
@@ -42,6 +43,11 @@ def _clean_registries():
 
 
 class _Client:
+    # The real method, not a copy of it, so a test that files shared RPC2 state
+    # uses the key `client.py` files it under. A copy is how the refusal test
+    # below came to agree with the diagnostics reader and with nothing else.
+    _rpc2_key = DahuaClient._rpc2_key
+
     def __init__(self):
         self._base = f"http://{ADDRESS}:80"
         self._address = ADDRESS
@@ -53,6 +59,9 @@ class _Client:
         # device keys on it rather than on the address, because one address
         # can answer for two devices on different ports.
         self.device_key = "%s:80" % ADDRESS
+        # What `_rpc2_key` reads, under the names the real client gives them.
+        self._device = self.device_key
+        self._username = USERNAME
         self._rpc2_session_instance = None
         self._host_limit = client_module._host_limiter(ADDRESS)
         self.identity_derived_from_credentials = False
@@ -512,9 +521,12 @@ async def test_it_reports_the_tables_this_device_refused(hass):
 
     entry = _entry(hass)
     coordinator = _install(hass, entry)
-    # The same key diagnostics builds, getattr and all: this fake client has
-    # no _username, and the real one may not either before login.
-    key = (coordinator.client._address, getattr(coordinator.client, "_username", None))
+    # Asked of the client, which is how `client.py` files a refusal. This used
+    # to rebuild the key the way the diagnostics reader rebuilt it -- so the
+    # two agreed with each other and with nothing that writes, and the
+    # assertion held for five weeks while the field was dead in every real
+    # dump (#665 put the port in the key, the reader kept the bare address).
+    key = coordinator.client._rpc2_key()
     client_module._RPC2_TABLE_UNAVAILABLE.add((key, "LightingScheme"))
     try:
         host = (await async_get_config_entry_diagnostics(hass, entry))["host"]
