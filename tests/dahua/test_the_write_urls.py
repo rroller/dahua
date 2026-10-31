@@ -50,6 +50,16 @@ def _refusing_once(status=400):
     return get, calls
 
 
+async def test_autofocus_uses_the_parameter_free_command_and_checks_ok():
+    client = _client()
+
+    await client.async_autofocus()
+
+    client.get.assert_awaited_once_with(
+        "/cgi-bin/devVideoInput.cgi?action=autoFocus", True
+    )
+
+
 # --- the disarming linkage ----------------------------------------------------
 
 

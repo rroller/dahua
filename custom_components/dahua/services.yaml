@@ -601,6 +601,18 @@ vto_call:
       selector:
         text:
 
+autofocus:
+  name: Autofocus
+  description: >-
+    Asks a camera with a motorized lens to focus itself, so the focus does not
+    have to be set by number. Carries no channel, the same scope as Set the
+    Dahua Focus and Zoom has, and untested against a recorder. A camera with a
+    fixed lens is expected to refuse it.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+
 set_focus_zoom:
   name: Set the Dahua Focus and Zoom
   description: Sets the camera's focus and zoom
