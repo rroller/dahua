@@ -23,6 +23,15 @@ came back with the porch and the garden swapped side for side. Writing it back
 to `false` restored both the table and the picture. So the write is honoured by
 the hardware and not merely stored, which is the half a read-back cannot show.
 
+`Flip` was measured the same way and is honoured too, with the picture turning
+top for bottom. That one needed the snapshots judged by correlating each
+against the four orientations of the other rather than by eye: the first pair
+was taken while the camera was still recovering its exposure after the write,
+and scored +0.366 for a flip against +0.316 for no change, which is not a
+result. A settled pair a minute apart scored +0.980 against +0.559, matching
+the mirror's own +0.982. An unreadable frame is not evidence of anything, and
+the margin is what says which.
+
 The order is the load-bearing part: `VideoImageControl` is asked first and, when
 it reports a field, is the only table read, so a camera is read exactly where it
 was read before.
