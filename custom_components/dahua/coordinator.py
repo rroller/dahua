@@ -5096,6 +5096,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         if not self._supports_lighting:
             return False
+        if self.is_indoor_monitor_without_video():
+            # A VTH5221D answers the Lighting table with exactly one key,
+            # `Mode=Off`, and no light bank at all -- so the probe above reads
+            # "this channel has an infrared light" from a table that is there
+            # rather than from an emitter that is there. A camera on the same
+            # recorder returns Mode, Correction, Sensitive and MiddleLight.
+            #
+            # The device has already said it has no camera, in its own
+            # RemoteDevice entry, and every other camera capability is gated on
+            # that answer. These two were the last ones that were not, so an
+            # indoor monitor kept an Infrared light and an Infrared Mode select
+            # and nothing else.
+            #
+            # Here rather than in light.py and select.py because the poll reads
+            # the same rule: this also stops `async_get_config_lighting` being
+            # fetched every scan interval for the life of the entry.
+            #
+            # Judged on `is_indoor_monitor_without_video` and not on the class,
+            # because some indoor monitors do have a camera and this says
+            # nothing about those.
+            return False
         return (
             "-AS-PV" not in self.model
             and "-AS-NI" not in self.model
