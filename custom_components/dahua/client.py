@@ -730,6 +730,16 @@ CLOCK_SET_TOLERANCE_SECONDS = 90
 # not, and asking for 8123 is.
 NTP_DEFAULT_PORT = 123
 
+# How often a device that is being given NTP for the first time is told to ask,
+# in minutes, when the caller did not say.
+#
+# The field has to be sent rather than left out: a device that has never had NTP
+# configured has no `UpdatePeriod` either, and a server it never polls is a
+# setting that looks applied and does nothing. The doorbell's own web page sends
+# all five fields together for the same reason, and limits this one to 1..30.
+# Ten was written to a VTO2000A and read back intact.
+NTP_BOOTSTRAP_UPDATE_PERIOD_MINUTES = 10
+
 
 def _same_setting(held, wanted) -> bool:
     """Whether a CGI read-back value is the one that was asked for.
@@ -2304,20 +2314,30 @@ class DahuaClient:
         table has rather than guessing, which is the lesson of #458 where
         `VideoInMode` has three shapes and only one was handled.
 
-        **A doorbell may have no server field at all.** A VTO2000A serves this
+        **A doorbell may hold no server field yet.** A VTO2000A serves this
         table with `TimeZone` and `TimeZoneDesc` and nothing else, identically
-        over CGI and over RPC2, so there is no server on it to set. That is
-        the device class #436 was raised about, which is why callers check
-        what came back instead of assuming the fields are there.
+        over CGI and over RPC2. That is the device class #436 was raised
+        about, which is why callers check what came back instead of assuming
+        the fields are there.
+
+        **An absent field is not a field the device refuses**, which is what
+        this said until 2026-11-01 and it was wrong. The doorbell's own web
+        page reads this same table, finds the same two keys, and on Save sends
+        `Enable`, `Address`, `Port`, `UpdatePeriod` and `TimeZone` together --
+        creating by writing what the read does not report. Measured on the
+        VTO2000A at 192.168.0.232: the five fields were written through that
+        page and read back here intact, so the table reports what has been
+        stored rather than what the firmware will accept.
         """
         return await self.async_get_config("NTP")
 
     @staticmethod
     def ntp_server_slots(table: dict) -> list[str]:
-        """The key prefixes this table will take a server on, in write order.
+        """The key prefixes this table already holds a server on, in write order.
 
-        Empty means the device has no NTP server field, which is a real answer
-        and not a failed read: see `async_get_ntp_config`.
+        Empty means the device is holding no NTP server field, which is a real
+        answer and not a failed read. It does not mean the device will not take
+        one: see `async_get_ntp_config`.
         """
         slots = []
         if "table.NTP.Address" in table:
@@ -2335,6 +2355,25 @@ class DahuaClient:
         `async_get_ntp_config`. `ServerList[1]` is left alone, so a device
         following the list keeps whatever fallback it had.
 
+        **A table holding no server at all is given one.** This used to refuse,
+        on the reading that a field the table does not report is a field the
+        device does not have. The doorbell in #436 is the case, and it is the
+        one case where refusing guaranteed the setting could never be reached
+        from Home Assistant: the device has no server field until something
+        writes one, and the rule was never to write a field that is not there.
+
+        So that table is bootstrapped the way the device's own page does it,
+        with `Enable`, `Address`, `Port` and `UpdatePeriod` sent together.
+        `TimeZone` is not: the page rewrites it and this does not, because the
+        device already holds the right one and nothing here was asked to
+        change it.
+
+        A device that genuinely refuses the fields still says so, in whichever
+        of its two voices: outright, as HTTP 200 carrying `Error`, which `get`
+        raises on, or by taking the write and changing nothing, which the
+        read-back below catches (#937, #647). What is no longer done is
+        deciding on the device's behalf that it would have refused.
+
         **Read back, because this family says no in two voices.** A refused
         write comes back as HTTP 200 with the body `Error`, which `get` already
         catches, and a field the device does not have comes back as 200 with
@@ -2345,35 +2384,42 @@ class DahuaClient:
         address = address.strip()
 
         table = await self.async_get_ntp_config()
-        slots = self.ntp_server_slots(table)
-        if not slots:
-            held = sorted(k.split(".", 2)[-1] for k in table) or ["nothing"]
+        if not table:
             raise ValueError(
-                "{0} has no NTP server field, so there is nothing to point at "
-                "{1}. Its NTP table holds only {2}".format(
-                    self._address, address, ", ".join(held)
-                )
+                "{0} serves no NTP table at all, so there is nothing to point "
+                "at {1}".format(self._address, address)
             )
+        slots = self.ntp_server_slots(table)
+        # A table that holds no server yet gets the flat shape, which is the
+        # one the doorbell's own page writes. The list shape is not invented:
+        # a device that wanted a ServerList would be reporting one.
+        bootstrap = not slots
+        if bootstrap:
+            slots = ["NTP"]
 
-        # Only fields this table actually has. A `setConfig` naming a field the
+        # Only fields this table actually has, except when bootstrapping, where
+        # by definition it has none of them. A `setConfig` naming a field the
         # device does not serve is refused outright for the whole request, so
-        # asking for one would lose the fields that would have worked.
+        # on a table that already holds a server, asking for one it does not
+        # have would lose the fields that would have worked.
         wanted = {}
-        if "table.NTP.Enable" in table:
+        if bootstrap or "table.NTP.Enable" in table:
             wanted["NTP.Enable"] = "true"
         for slot in slots:
             wanted["{0}.Address".format(slot)] = address
-            if "table.{0}.Port".format(slot) in table:
+            if bootstrap or "table.{0}.Port".format(slot) in table:
                 wanted["{0}.Port".format(slot)] = str(int(port))
             if slot != "NTP" and "table.{0}.Enable".format(slot) in table:
                 wanted["{0}.Enable".format(slot)] = "true"
         if update_period is not None:
-            if "table.NTP.UpdatePeriod" not in table:
+            if not bootstrap and "table.NTP.UpdatePeriod" not in table:
                 raise ValueError(
                     "{0} has no NTP.UpdatePeriod field, so the poll interval "
                     "cannot be set on it".format(self._address)
                 )
             wanted["NTP.UpdatePeriod"] = str(int(update_period))
+        elif bootstrap:
+            wanted["NTP.UpdatePeriod"] = str(NTP_BOOTSTRAP_UPDATE_PERIOD_MINUTES)
         if int(port) != NTP_DEFAULT_PORT and not [
             key for key in wanted if key.endswith(".Port")
         ]:
