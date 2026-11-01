@@ -784,10 +784,11 @@ set_time:
 set_ntp_server:
   name: Set NTP Server
   description: >-
-    Points the device's clock at an NTP server and enables NTP. Refused on a
-    device that has no NTP server setting, which includes some doorbells, and
-    on those use Set Device Clock instead. This sets the whole device, not one
-    channel.
+    Points the device's clock at an NTP server and enables NTP. A device
+    that has never had one is given the setting rather than refused, which is
+    how a doorbell gets NTP at all. Refused, and said so, where the device
+    will not take it: use Set Device Clock on those. This sets the whole
+    device, not one channel.
   target:
     entity:
       integration: dahua

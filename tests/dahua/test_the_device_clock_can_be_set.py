@@ -15,10 +15,20 @@ any of it, on 2026-10-25:
 
 Three things follow, and this file holds each one in place.
 
-* **A doorbell may have no server field at all.** Not empty, absent, and the
-  same answer over CGI and over RPC2. So the feature as literally requested
-  does nothing for the device class that prompted the request, and asking for
-  it has to fail loudly rather than report success.
+* **A doorbell may hold no server field at all.** Not empty, absent, and the
+  same answer over CGI and over RPC2.
+
+  This was read as "the device has no such setting" and the service refused.
+  **Corrected on 2026-11-01**: the doorbell's own web page reads this same
+  table, finds the same two keys, and on Save writes `Enable`, `Address`,
+  `Port`, `UpdatePeriod` and `TimeZone` together. All five were stored and
+  read back here intact on the VTO2000A at 192.168.0.232. So the table reports
+  what has been stored, not what the firmware will accept, and refusing was
+  the one answer that could never come right: the field does not exist until
+  something writes it, and the rule was never to write a field that is not
+  there. A table with no server is now bootstrapped the way the page does it,
+  and a device that really will not take the fields is caught by the
+  read-back instead of being guessed at.
 * **`setCurrentTime` is the one mechanism both families have**, and it needs
   nothing on the network, which is the point for a device with no internet.
   Measured on the VTO2000A: sent a time 300s ahead, the clock moved 299s, and
@@ -71,12 +81,19 @@ class _Recorder:
     device IGNORES instead. `ignores` names the fields it takes and silently
     does not apply, which is the second voice a Dahua device says no in
     (#647, #937).
+
+    `creates` models the other measured behaviour: a device whose table does
+    not report a field, and which stores it when one is written. That is what
+    the VTO2000A at 192.168.0.232 did with its NTP server on 2026-11-01, so
+    both halves of "absent" now have a double, and a test has to say which
+    device it is talking about.
     """
 
-    def __init__(self, table, ignores=()):
+    def __init__(self, table, ignores=(), creates=False):
         self.urls = []
         self._table = dict(table)
         self._ignores = set(ignores)
+        self._creates = creates
 
     async def get(self, url):
         self.urls.append(url)
@@ -86,7 +103,7 @@ class _Recorder:
                 continue
             if key in self._ignores:
                 continue
-            if "table." + key in self._table:
+            if self._creates or "table." + key in self._table:
                 self._table["table." + key] = unquote(value)
         return {}
 
@@ -141,17 +158,98 @@ async def test_the_second_server_is_left_as_a_fallback():
     assert "ServerList[1]" not in recorder.urls[0]
 
 
-async def test_a_doorbell_is_told_it_has_no_such_setting():
-    """The #436 case, and it must not report success."""
+async def test_a_doorbell_holding_no_server_is_given_one():
+    """The #436 case. Measured on the VTO2000A on 2026-11-01: the five fields
+    were written through the device's own page and read back here intact, so
+    the table reports what has been stored and not what will be accepted.
+
+    Refusing here was the one answer that could never come right, because the
+    field does not exist until something writes it."""
+    recorder = _Recorder(VTO_TABLE, creates=True)
+    client = _client()
+    _wire(client, recorder)
+
+    await client.async_set_ntp_server("0.au.pool.ntp.org")
+
+    url = recorder.urls[0]
+    assert "NTP.Address=0.au.pool.ntp.org" in unquote(url)
+    assert "NTP.Enable=true" in url
+    assert "NTP.Port=123" in url
+    assert "NTP.UpdatePeriod=10" in url
+
+
+async def test_the_bootstrap_invents_no_server_list():
+    """A device that wanted the list shape would be reporting one."""
+    recorder = _Recorder(VTO_TABLE, creates=True)
+    client = _client()
+    _wire(client, recorder)
+
+    await client.async_set_ntp_server("0.au.pool.ntp.org")
+
+    assert "ServerList" not in recorder.urls[0]
+
+
+async def test_the_bootstrap_leaves_the_timezone_alone():
+    """The device's own page rewrites TimeZone on Save. Nothing asked for
+    that here, and the doorbell already holds the right one."""
+    recorder = _Recorder(VTO_TABLE, creates=True)
+    client = _client()
+    _wire(client, recorder)
+
+    await client.async_set_ntp_server("0.au.pool.ntp.org")
+
+    assert "TimeZone" not in recorder.urls[0]
+
+
+async def test_the_bootstrap_takes_the_poll_interval_it_was_given():
+    recorder = _Recorder(VTO_TABLE, creates=True)
+    client = _client()
+    _wire(client, recorder)
+
+    await client.async_set_ntp_server("h", update_period=30)
+
+    assert "NTP.UpdatePeriod=30" in recorder.urls[0]
+
+
+async def test_the_bootstrap_takes_a_port_other_than_the_default():
+    """The port guard refuses a non-default port on a table with no port
+    field. A bootstrapped table is given one, so it must not trip that."""
+    recorder = _Recorder(VTO_TABLE, creates=True)
+    client = _client()
+    _wire(client, recorder)
+
+    await client.async_set_ntp_server("h", port=8123)
+
+    assert "NTP.Port=8123" in recorder.urls[0]
+
+
+async def test_a_doorbell_that_will_not_take_the_fields_still_says_so():
+    """The other half of absent: a device that answers 200 and stores
+    nothing. The read-back is what tells them apart, and the service reports
+    this one rather than claiming it worked."""
     recorder = _Recorder(VTO_TABLE)
+    client = _client()
+    _wire(client, recorder)
+
+    with pytest.raises(DahuaWriteDeclined) as error:
+        await client.async_set_ntp_server("192.168.0.10")
+
+    assert "did not apply all of it" in str(error.value)
+    assert "NTP.Address" in str(error.value)
+
+
+async def test_a_device_serving_no_ntp_table_at_all_is_refused():
+    """An empty answer is also what a failed read returns, so nothing is
+    written into the dark."""
+    recorder = _Recorder({})
     client = _client()
     _wire(client, recorder)
 
     with pytest.raises(ValueError) as error:
         await client.async_set_ntp_server("192.168.0.10")
 
-    assert "no NTP server field" in str(error.value)
-    assert not recorder.urls, "a device with no field was written to anyway"
+    assert "serves no NTP table" in str(error.value)
+    assert not recorder.urls, "a device that answered nothing was written to"
 
 
 async def test_a_write_the_device_quietly_ignored_is_a_failure():

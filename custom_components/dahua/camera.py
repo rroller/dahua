@@ -1047,10 +1047,11 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     ):
         """Point the device at an NTP server (#436).
 
-        Refused outright on a device with no NTP server field rather than
-        reported as done. A VTO2000A's NTP table holds its timezone and
-        nothing else, and a doorbell is exactly what #436 asked about, so
-        this has to be able to say so.
+        A device whose NTP table holds no server yet is given the fields
+        rather than refused: a VTO2000A reports only its timezone until
+        something writes a server, and a doorbell is exactly what #436 asked
+        about. A device that will not take them still fails loudly rather
+        than being reported as done.
 
         Like `set_time`, this is the whole device and not one channel.
         """
