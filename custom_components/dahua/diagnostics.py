@@ -29,6 +29,7 @@ from . import dahua_utils, entry_coordinators
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
     CONF_CHANNEL,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -194,10 +195,20 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
             lambda: coordinator.channel_option(CONF_AUTO_DETECT_CHANNEL, True),
             config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
         ),
-        # What the numbering probe concluded. It decides snapshot_channel, and
-        # channel_number too where the option above is on, and it is asked
-        # whichever way that option is set because the still needs the answer
-        # either way (#1151). True means the device answered a snapshot on
+        # Whether the owner has said this device numbers its stills from zero
+        # while its stream counts from one. Off means the still follows the
+        # stream, which is what every unmeasured device does (#1151). Read the
+        # way the coordinator reads it, per channel, for the reason above.
+        "snapshot_channel_from_zero": _safe(
+            lambda: coordinator.channel_option(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False),
+            config_entry.options.get(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False),
+        ),
+        # What the numbering probe concluded. It decides channel_number where
+        # the auto-detect option above is on. It deliberately does NOT decide
+        # snapshot_channel: a snapshot answering on channel 0 cannot tell
+        # genuine zero-based numbering from channel 0 aliasing channel 1, so
+        # the still is split from the stream only by the option above (#1151).
+        # True means the device answered a snapshot on
         # channel 0, False means it answered with a status saying no, and
         # None means it never answered and the numbering was left alone.
         #
@@ -226,12 +237,12 @@ def _zero_indexed(coordinator):
     value: a device that did not answer the probe leaves the numbering as it
     was rather than guessing.
     """
-    from . import _HOST_CHANNEL_BASE
+    from .host import device_numbers_channels_from_zero
 
     device = _safe(lambda: coordinator.client.device_key)
     if device is None:
         return None
-    return _HOST_CHANNEL_BASE.get(device)
+    return device_numbers_channels_from_zero(device)
 
 
 def _capabilities_block(coordinator) -> dict[str, Any]:

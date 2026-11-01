@@ -839,6 +839,26 @@ async def test_a_channels_own_auto_detect_setting_is_the_one_reported(hass):
     assert coordinator is entry.runtime_data[0]
 
 
+async def test_whether_the_still_is_numbered_apart_is_reported(hass):
+    """The field that explains a snapshot_channel differing from channel_number.
+
+    Without it, a dump showing the two numbers apart gives no way to tell a
+    deliberate #1151 split from a bug.
+    """
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["snapshot_channel_from_zero"] is False, "off is the default"
+
+    entry.runtime_data[0].channel_option = lambda key, default=None: True
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["snapshot_channel_from_zero"] is True
+
+
 async def test_a_coordinator_that_cannot_say_does_not_break_the_dump(hass):
     """The double above has neither accessor, which is the tolerance asserted."""
     entry = _entry(hass)

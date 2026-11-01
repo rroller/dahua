@@ -54,6 +54,12 @@ CONF_EVENTS = "events"
 CONF_NAME = "name"
 CONF_CHANNEL = "channel"
 CONF_AUTO_DETECT_CHANNEL = "auto_detect_channel"
+# Numbers the still independently of the stream, for a device that numbers
+# snapshot.cgi and RTSP differently (#1151). Off by default, so the still keeps
+# following the stream's number on every device that has not been measured: the
+# channel-0 probe cannot tell genuine zero-based numbering from channel 0
+# aliasing channel 1, so it must not decide this on its own.
+CONF_SNAPSHOT_CHANNEL_FROM_ZERO = "snapshot_channel_from_zero"
 # Which other channels of a recorder to add alongside the one being set up.
 CONF_EXTRA_CHANNELS = "extra_channels"
 # Take every channel discovery found, without ticking sixteen boxes.
@@ -136,6 +142,7 @@ CHANNEL_OPTION_KEYS = frozenset(
         CONF_MANUAL_SECURITY_LIGHT,
         CONF_MANUAL_SIREN,
         CONF_NVR_ACTIVE_DETERRENCE,
+        CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
     }
 )
 
