@@ -46,6 +46,7 @@ from .const import (
     CONF_AUTHORIZED_HOLD_TIME,
     CONF_AUTHORIZED_PLATES,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
     CONF_CHANNEL,
     CONF_DISABLE_BACKCHANNEL,
     CONF_EVENTS,
@@ -1849,6 +1850,12 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
         ] = bool
         schema[
             vol.Required(
+                CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
+                default=self.options.get(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False),
+            )
+        ] = bool
+        schema[
+            vol.Required(
                 CONF_USE_RPC2,
                 default=self.options.get(CONF_USE_RPC2, False),
             )
@@ -2139,6 +2146,10 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
                     vol.Required(
                         CONF_AUTO_DETECT_CHANNEL,
                         default=data.get(CONF_AUTO_DETECT_CHANNEL, True),
+                    ): bool,
+                    vol.Required(
+                        CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
+                        default=data.get(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False),
                     ): bool,
                     vol.Required(
                         CONF_NVR_ACTIVE_DETERRENCE,

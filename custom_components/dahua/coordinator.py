@@ -49,6 +49,7 @@ from .const import (
     CONF_AUTHORIZED_HOLD_TIME,
     CONF_AUTHORIZED_PLATES,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
     CONF_MANUAL_SECURITY_LIGHT,
     CONF_MANUAL_SIREN,
     CONF_NVR_ACTIVE_DETERRENCE,
@@ -2398,12 +2399,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # both want it.
                 await self._async_read_stream_codecs()
 
-                # Some Dahua firmwares index channels from 0, others from 1. The default
-                # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
-                # 0-indexed and reset channel_number accordingly. Users on cameras where this
-                # heuristic gets it wrong (HTTP snapshot at 0 succeeds but RTSP only streams
-                # on channel=1) can disable it via the integration options.
+                # Some Dahua firmwares index channels from 0, others from 1. The
+                # default is to auto-detect: if a snapshot at index 0 succeeds,
+                # treat this camera as 0-indexed and reset channel_number
+                # accordingly. Users on cameras where this heuristic gets it
+                # wrong (HTTP snapshot at 0 succeeds but RTSP only streams on
+                # channel=1) can disable it via the integration options.
+                #
+                # Only asked when the option is on, because the option is its
+                # only reader. The still is numbered by
+                # CONF_SNAPSHOT_CHANNEL_FROM_ZERO instead and deliberately not
+                # by this answer: a snapshot succeeding on channel 0 cannot tell
+                # genuine zero-based numbering from channel 0 aliasing channel 1
+                # (#1151, and see get_snapshot_channel).
                 auto_detect = self.channel_option(CONF_AUTO_DETECT_CHANNEL, True)
+                zero_indexed = None
                 if auto_detect:
                     # Asked once for the device and shared, and a device that does
                     # not answer leaves this alone rather than renumbering the
@@ -2414,10 +2424,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # A doorbell is excluded because channel 0 does not exist on a VTO.
                     if zero_indexed and not self.is_doorbell():
                         self._channel_number = self._channel
+                # Both numbers, because they can differ and "the thumbnail is
+                # a different camera from the live view" is unreadable with
+                # only one of them in the log (#1151).
                 _LOGGER.debug(
-                    "Using channel number %s (auto_detect=%s)",
+                    "Using channel number %s for the stream and %s for the still"
+                    " (auto_detect=%s, device numbers from zero=%s)",
                     self._channel_number,
+                    self.get_snapshot_channel(),
                     auto_detect,
+                    zero_indexed,
                 )
 
                 await self._async_probe_direct_deterrence()
@@ -6279,6 +6295,52 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_channel_number(self) -> int:
         """returns the channel number of this camera"""
+        return self._channel_number
+
+    def get_snapshot_channel(self) -> int:
+        """The channel number this channel's still is fetched with.
+
+        Separate from get_channel_number, which numbers the stream and the
+        controls, because a device can number the two paths differently. On a
+        Lorex LHV2008 (#1151) `snapshot.cgi` counts from 0 while RTSP counts
+        from 1: its owner read `snapshot.cgi?channel=1` in a browser and got
+        the second camera, and reported that every live view is right when the
+        stream is numbered `index + 1`. One number cannot be right for both
+        paths on that device.
+
+        **It follows the stream unless the owner says otherwise.** The obvious
+        rule -- give the still whatever the channel-0 probe concluded -- is the
+        one thing that cannot be done here, because a successful snapshot on
+        channel 0 has two explanations and the probe cannot tell them apart:
+
+          - the device genuinely numbers from 0, or
+          - channel 0 *aliases* channel 1 and the numbering is one-based.
+
+        On the second kind, unticking auto-detect is the owner's only way to
+        put the stream back on `index + 1`, and letting the probe keep the
+        still on the probe's answer would hand them the first camera's picture
+        under every other camera's name with nothing left to untick. rroller
+        replayed exactly that against the first version of this: responses
+        0=first, 1=first, 2=second, channel index 1, auto-detect off -- the
+        stream stayed correctly on 2 and the still moved to 1.
+
+        So the split is opt-in and the default is what the integration has
+        always done, which is also what every device but the measured one
+        wants. The owner reads `snapshot.cgi?channel=<n>` in a browser, sees
+        which camera comes back, and ticks the box if the stills are numbered
+        from zero. That is a measurement, which is what the probe is not.
+
+        A doorbell keeps its channel number either way: channel 0 does not
+        exist on a VTO.
+        """
+        if self.is_doorbell():
+            return self._channel_number
+        if self.channel_option(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False):
+            return self._channel
+        # Not `self._channel + 1`: the stream's number is the answer, and on a
+        # genuinely zero-based device with auto-detect on that is `_channel`
+        # already. Deriving it again here would disagree with the stream on the
+        # devices the probe got right.
         return self._channel_number
 
     def get_event_key(self, event_name: str) -> str:

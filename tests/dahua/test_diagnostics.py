@@ -804,6 +804,72 @@ async def test_a_device_that_never_answered_reports_nothing_decided(hass):
     assert device["device_is_zero_indexed"] is None
 
 
+async def test_the_still_and_the_stream_are_both_reported(hass):
+    """Two numbers, because a device can number the two paths differently.
+
+    #1151: snapshot.cgi counts from 0 on a Lorex LHV2008 while RTSP counts
+    from 1, so "the thumbnail is a different camera from the live view" is
+    unanswerable with either number on its own.
+    """
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    coordinator.get_channel_number = lambda: 2
+    coordinator.get_snapshot_channel = lambda: 1
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["channel_number"] == 2
+    assert device["snapshot_channel"] == 1
+
+
+async def test_a_channels_own_auto_detect_setting_is_the_one_reported(hass):
+    """Read the way the coordinator reads it.
+
+    The option is per channel since #895. Reporting the entry's value puts a
+    number in the dump that the channel never used, next to the two channel
+    numbers this section exists to explain.
+    """
+    entry = _entry(hass)
+    coordinator = _install(hass, entry)
+    entry.runtime_data[0].channel_option = lambda key, default=None: False
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["auto_detect_channel"] is False
+    assert coordinator is entry.runtime_data[0]
+
+
+async def test_whether_the_still_is_numbered_apart_is_reported(hass):
+    """The field that explains a snapshot_channel differing from channel_number.
+
+    Without it, a dump showing the two numbers apart gives no way to tell a
+    deliberate #1151 split from a bug.
+    """
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["snapshot_channel_from_zero"] is False, "off is the default"
+
+    entry.runtime_data[0].channel_option = lambda key, default=None: True
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["snapshot_channel_from_zero"] is True
+
+
+async def test_a_coordinator_that_cannot_say_does_not_break_the_dump(hass):
+    """The double above has neither accessor, which is the tolerance asserted."""
+    entry = _entry(hass)
+    _install(hass, entry)
+
+    device = (await async_get_config_entry_diagnostics(hass, entry))["device"]
+
+    assert device["snapshot_channel"] is None
+    assert device["auto_detect_channel"] is True, "the entry's value is the fallback"
+
+
 async def test_another_devices_answer_is_not_borrowed(hass):
     from custom_components.dahua import _HOST_CHANNEL_BASE
 

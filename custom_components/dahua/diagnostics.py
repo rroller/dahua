@@ -29,6 +29,7 @@ from . import dahua_utils, entry_coordinators
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
     CONF_CHANNEL,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -178,9 +179,36 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         ),
         "channel_index": _safe(coordinator.get_channel),
         "channel_number": _safe(coordinator.get_channel_number),
-        "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
-        # What the auto-detect actually concluded, which is what decides
-        # channel_number above. True means the device answered a snapshot on
+        # The stream's number is above; this is the still's. They differ on a
+        # device that numbers snapshot.cgi and RTSP differently (#1151), and
+        # "the thumbnail shows a different camera from the live view" is only
+        # answerable with both of them in front of you.
+        # The lambda matters: the dump is built around whatever coordinator it
+        # is handed, and a stand-in that predates this accessor would raise on
+        # the attribute itself, outside _safe, and take the whole dump with it.
+        "snapshot_channel": _safe(lambda: coordinator.get_snapshot_channel()),
+        # Read the way the coordinator reads it. This option is per channel
+        # since #895, so taking it from the entry's options reports the wrong
+        # value for a merged recorder whose channel sets its own -- next to the
+        # two numbers it is here to explain.
+        "auto_detect_channel": _safe(
+            lambda: coordinator.channel_option(CONF_AUTO_DETECT_CHANNEL, True),
+            config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
+        ),
+        # Whether the owner has said this device numbers its stills from zero
+        # while its stream counts from one. Off means the still follows the
+        # stream, which is what every unmeasured device does (#1151). Read the
+        # way the coordinator reads it, per channel, for the reason above.
+        "snapshot_channel_from_zero": _safe(
+            lambda: coordinator.channel_option(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False),
+            config_entry.options.get(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False),
+        ),
+        # What the numbering probe concluded. It decides channel_number where
+        # the auto-detect option above is on. It deliberately does NOT decide
+        # snapshot_channel: a snapshot answering on channel 0 cannot tell
+        # genuine zero-based numbering from channel 0 aliasing channel 1, so
+        # the still is split from the stream only by the option above (#1151).
+        # True means the device answered a snapshot on
         # channel 0, False means it answered with a status saying no, and
         # None means it never answered and the numbering was left alone.
         #
@@ -209,12 +237,12 @@ def _zero_indexed(coordinator):
     value: a device that did not answer the probe leaves the numbering as it
     was rather than guessing.
     """
-    from . import _HOST_CHANNEL_BASE
+    from .host import device_numbers_channels_from_zero
 
     device = _safe(lambda: coordinator.client.device_key)
     if device is None:
         return None
-    return _HOST_CHANNEL_BASE.get(device)
+    return device_numbers_channels_from_zero(device)
 
 
 def _capabilities_block(coordinator) -> dict[str, Any]:
