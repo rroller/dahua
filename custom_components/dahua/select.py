@@ -351,9 +351,7 @@ class DahuaImageRotationSelect(DahuaBaseEntity, SelectEntity):
                 translation_domain=DOMAIN,
                 translation_key="image_rotation_unsupported",
             )
-        await self._coordinator.client.async_set_video_image_control(
-            self._coordinator.get_channel(), "Flip", option == "180°"
-        )
+        await self._coordinator.async_set_video_image_control("Flip", option == "180°")
         await self._coordinator.async_refresh()
 
 

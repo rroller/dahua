@@ -9,11 +9,24 @@ from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 
 
-def _coordinator(table=None, *, channel=0, raises=None):
-    async def read():
+def _coordinator(table=None, *, channel=0, raises=None, tables=None, asked=None):
+    """A device that serves one table and not another.
+
+    The probe reads `VideoImageControl` first and `VideoInOptions` second, so a
+    double that hands back the same rows whatever it is asked for cannot tell
+    the two apart, and would pass a probe that read the wrong table. `asked` is
+    handed the name of each read in order.
+    """
+    served = dict(tables or {})
+    if table is not None:
+        served.setdefault("VideoImageControl", table)
+
+    async def read(name="VideoImageControl"):
+        if asked is not None:
+            asked.append(name)
         if raises is not None:
             raise raises
-        return table or {}
+        return served.get(name, {})
 
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator.client = SimpleNamespace(async_get_video_image_control=read)
@@ -21,6 +34,7 @@ def _coordinator(table=None, *, channel=0, raises=None):
     coordinator.get_channel = lambda: coordinator._channel
     coordinator._probe_refusals = {}
     coordinator._video_image_control_fields = frozenset()
+    coordinator._video_image_control_table = "VideoImageControl"
     coordinator.data = {}
     return coordinator
 

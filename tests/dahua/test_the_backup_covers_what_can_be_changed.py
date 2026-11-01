@@ -40,30 +40,75 @@ _WRITES = re.compile(
 )
 
 
-def _backed_up() -> tuple:
-    """BACKED_UP_TABLES, read out of const.py without importing it."""
+def _const_tuple(name: str) -> tuple:
+    """A tuple of strings assigned at the top level of const.py, without importing it."""
     tree = ast.parse(io.open(PACKAGE / "const.py", encoding="utf-8").read())
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
         if not any(
-            isinstance(target, ast.Name) and target.id == "BACKED_UP_TABLES"
+            isinstance(target, ast.Name) and target.id == name
             for target in node.targets
         ):
+            continue
+        if not isinstance(node.value, ast.Tuple):
             continue
         return tuple(
             element.value
             for element in node.value.elts
             if isinstance(element, ast.Constant)
         )
-    raise AssertionError("const.py no longer defines BACKED_UP_TABLES")
+    return ()
+
+
+def _backed_up() -> tuple:
+    """BACKED_UP_TABLES, read out of const.py without importing it."""
+    tables = _const_tuple("BACKED_UP_TABLES")
+    if not tables:
+        raise AssertionError("const.py no longer defines BACKED_UP_TABLES")
+    return tables
+
+
+# A third shape: a write whose table is chosen at runtime.
+#
+#   "...action=setConfig&{table}[{channel}].{field}=true"
+#
+# The table name is not in the source at all, so the two shapes above see
+# nothing and the table silently leaves the scan. It is resolved instead
+# through the check the function makes on the way past:
+#
+#   if table not in VIDEO_IMAGE_CONTROL_TABLES:
+#
+# which names a tuple in const.py holding every table that write can reach.
+# A parameterised write with no such check cannot be resolved and fails the
+# scan rather than disappearing from it.
+_PARAMETERISED = re.compile(r"&\{([a-z_][a-z0-9_]*)\}\[")
+_VALIDATED = re.compile(r"if +([a-z_][a-z0-9_]*) +not +in +([A-Z][A-Z0-9_]*) *:")
 
 
 def _tables_written() -> set:
-    """Every config table name that appears in a setConfig URL in client.py."""
+    """Every config table name a setConfig URL in client.py can reach."""
     source = io.open(PACKAGE / "client.py", encoding="utf-8").read()
     # One group per shape, so each match has an empty half.
-    return {name for pair in _WRITES.findall(source) for name in pair if name}
+    found = {name for pair in _WRITES.findall(source) for name in pair if name}
+
+    guards = dict(_VALIDATED.findall(source))
+    for parameter in set(_PARAMETERISED.findall(source)):
+        constant = guards.get(parameter)
+        assert constant, (
+            "client.py builds a setConfig URL around `{%s}` and never checks "
+            "that parameter against a tuple of table names, so the backup scan "
+            "cannot tell which tables that write reaches. Validate it against a "
+            "constant in const.py." % parameter
+        )
+        reachable = _const_tuple(constant)
+        assert reachable, (
+            "client.py checks `%s` against `%s`, which is not a tuple of "
+            "strings at the top level of const.py, so the tables that write "
+            "reaches cannot be read." % (parameter, constant)
+        )
+        found.update(reachable)
+    return found
 
 
 def test_every_table_the_integration_writes_is_backed_up():

@@ -45,6 +45,18 @@ class _Coordinator:
     # supports_siren below, exactly as production does.
     creates_siren_entity = DahuaDataUpdateCoordinator.creates_siren_entity
 
+    # The real methods rather than copies of them. The platform asks the
+    # coordinator to write, because the table the field lives in is something
+    # only the coordinator learned, and a hand-written forwarder here would
+    # assert this file's idea of that rule instead of production's.
+    # The real coordinator carries this as a class default, so a double that
+    # borrows its methods has to carry it too.
+    _video_image_control_table = "VideoImageControl"
+    video_image_control_table = DahuaDataUpdateCoordinator.video_image_control_table
+    async_set_video_image_control = (
+        DahuaDataUpdateCoordinator.async_set_video_image_control
+    )
+
     def __init__(self, channel=4, amcrest=False):
         self.client = _Client()
         self._channel = channel
@@ -749,7 +761,7 @@ async def test_mirror_switch_writes_one_field_and_refreshes(enabled):
     await (switch.async_turn_on() if enabled else switch.async_turn_off())
 
     assert coordinator.client.calls == [
-        ("async_set_video_image_control", 3, "Mirror", enabled)
+        ("async_set_video_image_control", 3, "Mirror", enabled, "VideoImageControl")
     ]
     assert coordinator.refreshed == 1
 
