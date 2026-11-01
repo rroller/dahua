@@ -26,8 +26,6 @@ _dispatch_event is called, so nothing an automation could read is lost.
 
 from types import SimpleNamespace
 
-import pytest
-
 from custom_components.dahua import (
     DahuaDataUpdateCoordinator,
     door_status_is_relay,
@@ -96,6 +94,9 @@ def _vto(channel=0):
     c.hass = SimpleNamespace(bus=SimpleNamespace(fire=lambda *a, **k: None))
     c.get_device_name = lambda: "Front Gate"
     c._handle_anpr_plate = lambda event: None
+    # handle_event logs the address before dispatching, and get_address reads
+    # this. Only the CGI replay below needs it.
+    c._address = "10.0.0.5"
     return c
 
 
@@ -105,39 +106,65 @@ def _listening(coordinator):
     return key
 
 
-def _event(payload, key="Data"):
-    return {"Code": "DoorStatus", "Action": "Pulse", key: payload}
+def _event(payload):
+    return {"Code": "DoorStatus", "Action": "Pulse", "Data": payload}
 
 
-def _relay(status, key="Data"):
-    return _event({"Relay": True, "Status": status}, key)
+def _relay(status):
+    return _event({"Relay": True, "Status": status})
 
 
-def _contact(status, key="Data"):
-    return _event({"DoorIndex": 0, "Status": status}, key)
+def _contact(status):
+    return _event({"DoorIndex": 0, "Status": status})
 
 
-@pytest.mark.parametrize("payload_key", ["Data", "data"])
-def test_the_reported_sequence_leaves_the_gate_open(payload_key):
+def test_the_reported_sequence_leaves_the_gate_open():
     """The five lines from the report, in their order. The gate is open from
     the third line on, and the relay's Close must not close it."""
     c = _vto()
     key = _listening(c)
 
-    c.on_receive_vto_event(_relay("Close", payload_key))
-    c.on_receive_vto_event(_contact("Close", payload_key))
-    c.on_receive_vto_event(_contact("Open", payload_key))
+    c.on_receive_vto_event(_relay("Close"))
+    c.on_receive_vto_event(_contact("Close"))
+    c.on_receive_vto_event(_contact("Open"))
     open_at = c._dahua_event_timestamp[key]
     assert open_at > 0, "the contact said Open"
 
-    c.on_receive_vto_event(_relay("Close", payload_key))
+    c.on_receive_vto_event(_relay("Close"))
 
     assert (
         c._dahua_event_timestamp[key] == open_at
     ), "the relay closing reported the gate shut while it was still swinging"
 
     # And the contact still closes it, which is the whole point of keeping it.
-    c.on_receive_vto_event(_contact("Close", payload_key))
+    c.on_receive_vto_event(_contact("Close"))
+    assert c._dahua_event_timestamp[key] == 0
+
+
+def test_the_reported_sequence_on_the_cgi_path_too():
+    """The same five lines down the other transport, entered where that one
+    enters: `handle_event`, with the lowercase `action` and `data` the CGI wire
+    format parses to. A doorbell that does not answer `getDeviceClass` and is
+    not in `is_doorbell`'s model list takes this path instead of DHIP, which is
+    the #690 rebadge class, and three reads named only the DHIP spelling once
+    before."""
+    c = _vto()
+    key = _listening(c)
+
+    def cgi(payload):
+        c.handle_event({"Code": "DoorStatus", "action": "Pulse", "data": payload})
+
+    cgi({"Relay": True, "Status": "Close"})
+    cgi({"DoorIndex": 0, "Status": "Close"})
+    cgi({"DoorIndex": 0, "Status": "Open"})
+    open_at = c._dahua_event_timestamp[key]
+    assert open_at > 0, "the contact said Open"
+
+    cgi({"Relay": True, "Status": "Close"})
+
+    assert c._dahua_event_timestamp[key] == open_at
+
+    cgi({"DoorIndex": 0, "Status": "Close"})
     assert c._dahua_event_timestamp[key] == 0
 
 
