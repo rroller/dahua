@@ -149,6 +149,7 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     day_night_color_name,
     describe_update_failure,
     door_index,
+    door_status_is_relay,
     doorbell_state,
     event_payload,
     failure_backoff,

@@ -742,6 +742,34 @@ def door_index(event: dict) -> int:
     return max(0, index)
 
 
+def door_status_is_relay(event: dict) -> bool:
+    """Whether a DoorStatus event is about the relay rather than the door.
+
+    A VTO2202F-P-S2 sends two shapes of `DoorStatus` in the same few
+    milliseconds while a gate is opening (#1166):
+
+        {"Relay": true,   "Status": "Close"}      the relay
+        {"DoorIndex": 0,  "Status": "Close"}      the contact
+        {"DoorIndex": 0,  "Status": "Open"}
+
+    Both reach the one Door Status sensor, which exists to report the physical
+    contact, so the relay's `Close` wrote the gate shut while it was still
+    swinging.
+
+    **The key decides, not the value.** Both relay lines in the report carry
+    `Relay: true` while the gate is in opposite states, so that `true` reads as
+    "this event is the relay" rather than as the relay's own position. Nothing
+    has been seen sending `Relay: false`, so nothing here reads the value.
+
+    **Only the shape that was reported.** A payload that also names a
+    `DoorIndex` is left alone: a device that says which door an event is about
+    is telling us something about a door, and no such payload has been
+    measured. Widening this needs a device that sends one.
+    """
+    payload = event_payload(event)
+    return "Relay" in payload and "DoorIndex" not in payload
+
+
 def illuminator_light_index(data: dict, channel: int, profile_mode) -> int:
     """Which Lighting_V2 light index is the white illuminator on this device.
 
@@ -937,6 +965,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # shared by every coordinator in the process: eleven channels of a recorder
     # would pool their counts and the field would name no channel in particular.
     _events_without_listener: dict = None
+
+    # Whether this channel has ever been sent a DoorStatus event that was about
+    # a door contact rather than about the relay. On the class for the reason
+    # the lines above it are: the suite builds coordinators with object.__new__.
+    #
+    # False means every DoorStatus this device has sent so far has been the
+    # relay form, and a device that only ever sends that form must keep driving
+    # its sensor -- there is nothing else for it to report. See the DoorStatus
+    # branch of _dispatch_event.
+    _door_contact_seen: bool = False
 
     # The flood light's pre-force mode, captured by turn_on before it forces the
     # camera to manual so turn_off can put it back. None means nothing was
@@ -3362,6 +3400,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # and only door 1 may write to it.
                     if door_index(event) != 0:
                         continue
+                    # And the relay is not the door. A VTO2202F-P-S2 reports
+                    # both down this one code, and the relay's Close landed on
+                    # the contact sensor while the gate was still swinging
+                    # (#1166).
+                    #
+                    # Learned from what the device has actually sent, rather
+                    # than filtered outright: a VTO with no contact wired to it
+                    # may have nothing but the relay form to report, and
+                    # dropping that would leave its sensor unable to move. So
+                    # the relay drives the sensor until a contact event proves
+                    # there is something better, and never again after.
+                    if door_status_is_relay(event):
+                        if self._door_contact_seen:
+                            _LOGGER.debug(
+                                "Ignoring a DoorStatus relay event on %s: the "
+                                "door contact reports this sensor",
+                                self.get_device_name(),
+                            )
+                            continue
+                    else:
+                        self._door_contact_seen = True
                     if event_payload(event).get("Status", "") == "Open":
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
