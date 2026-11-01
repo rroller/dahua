@@ -29,6 +29,21 @@ EVENT = "event"
 NUMBER = "number"
 UPDATE = "update"
 VIDEO_COLOR_STYLE_OPTIONS = ("Soft", "Standard", "Vivid")
+
+# The three image orientation fields, and the tables that carry them.
+#
+# A camera keeps Flip, Mirror and Rotate90 in `VideoImageControl`. A doorbell
+# has the same hardware and the same three fields, but keeps them among the
+# picture settings in `VideoInOptions` and answers an empty table for
+# `VideoImageControl`, so the mirror switch and the rotation select were never
+# built for it. Measured on a VTO2000A at 3.120.0000.0.R, where its own web
+# page reads and writes `VideoInOptions[0].Mirror` and `.Flip`.
+#
+# Order matters: the first table that reports a field wins, so a camera that
+# serves both is read exactly where it was read before.
+VIDEO_IMAGE_CONTROL_FIELDS = ("Flip", "Rotate90", "Mirror")
+VIDEO_IMAGE_CONTROL_TABLES = ("VideoImageControl", "VideoInOptions")
+VIDEO_IMAGE_CONTROL_TABLE = VIDEO_IMAGE_CONTROL_TABLES[0]
 PLATFORMS = [
     BINARY_SENSOR,
     SWITCH,

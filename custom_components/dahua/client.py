@@ -14,7 +14,13 @@ from yarl import URL
 
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import ALL_EVENTS, DOMAIN, VIDEO_COLOR_STYLE_OPTIONS
+from .const import (
+    ALL_EVENTS,
+    DOMAIN,
+    VIDEO_COLOR_STYLE_OPTIONS,
+    VIDEO_IMAGE_CONTROL_TABLE,
+    VIDEO_IMAGE_CONTROL_TABLES,
+)
 from .dhip import DhipLoginRefused, DhipTransport
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
@@ -2988,20 +2994,35 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoColor"
         return await self.get(url)
 
-    async def async_get_video_image_control(self) -> dict:
-        """Read the camera's image orientation and mirror controls."""
-        url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoImageControl"
+    async def async_get_video_image_control(
+        self, table: str = VIDEO_IMAGE_CONTROL_TABLE
+    ) -> dict:
+        """Read the camera's image orientation and mirror controls.
+
+        Most cameras keep them in `VideoImageControl`. A doorbell keeps the
+        same three fields in `VideoInOptions` instead and serves an empty
+        `VideoImageControl`, so the caller says which table it found them in.
+        """
+        if table not in VIDEO_IMAGE_CONTROL_TABLES:
+            raise ValueError("Unsupported image control table")
+        url = f"/cgi-bin/configManager.cgi?action=getConfig&name={table}"
         return await self.get(url)
 
     async def async_set_video_image_control(
-        self, channel: int, field: str, value: bool
+        self,
+        channel: int,
+        field: str,
+        value: bool,
+        table: str = VIDEO_IMAGE_CONTROL_TABLE,
     ):
-        """Write one supported VideoImageControl field on its channel row."""
+        """Write one supported image control field on its channel row."""
         if field not in {"Flip", "Mirror"}:
             raise ValueError("Unsupported VideoImageControl field")
+        if table not in VIDEO_IMAGE_CONTROL_TABLES:
+            raise ValueError("Unsupported image control table")
         url = (
             "/cgi-bin/configManager.cgi?action=setConfig"
-            f"&VideoImageControl[{channel}].{field}={'true' if value else 'false'}"
+            f"&{table}[{channel}].{field}={'true' if value else 'false'}"
         )
         return await self.get(url)
 

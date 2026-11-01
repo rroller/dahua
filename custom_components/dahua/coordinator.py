@@ -71,6 +71,9 @@ from .const import (
     SENSOR,
     SWITCH,
     UPDATE,
+    VIDEO_IMAGE_CONTROL_FIELDS,
+    VIDEO_IMAGE_CONTROL_TABLE,
+    VIDEO_IMAGE_CONTROL_TABLES,
 )
 from .dahua_utils import cloud_upgrade_version, parse_event
 from .deterrence import (
@@ -951,6 +954,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # one shared empty default is safe.
     _video_color_fields: frozenset = frozenset()
     _video_image_control_fields: frozenset = frozenset()
+    _video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
 
     # Whether the device never answered what kind of device it is, as opposed to
     # answering that it does not serve the question. On the class for the reason
@@ -1105,6 +1109,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_day_night_color = False
         self._video_color_fields: frozenset = frozenset()
         self._video_image_control_fields: frozenset = frozenset()
+        self._video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
         # What the device said when a probe failed, keyed by probe name.
         self._probe_refusals: Dict[str, dict] = {}
         self._channel_model = None
@@ -1991,21 +1996,42 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return await self._async_probe_video_color() and not already
 
     async def _async_probe_video_image_control(self) -> bool:
-        """Ask which image controls this camera reports."""
-        try:
-            table = await self.client.async_get_video_image_control()
-        except PROBE_FAILED as probe_error:
-            self._note_probe_refusal("video_image_control", probe_error)
-            self._video_image_control_fields = frozenset()
-            return False
-        self._note_probe_answered("video_image_control")
-        self._video_image_control_fields = frozenset(
-            field
-            for field in ("Flip", "Rotate90", "Mirror")
-            if table.get(f"table.VideoImageControl[{self.get_channel()}].{field}")
-            is not None
-        )
-        return bool(self._video_image_control_fields)
+        """Ask which image controls this channel reports, and from which table.
+
+        `VideoImageControl` is asked first and, when it reports a field, is the
+        only table read, so nothing changes for a camera. A doorbell answers it
+        empty and keeps the same fields in `VideoInOptions`, which is asked
+        second. An empty answer is what a device sends for a table it does not
+        have, so the next table is tried on an empty answer as well as on a
+        refusal.
+        """
+        answered = False
+        refusal = None
+        for table_name in VIDEO_IMAGE_CONTROL_TABLES:
+            try:
+                table = await self.client.async_get_video_image_control(table_name)
+            except PROBE_FAILED as probe_error:
+                refusal = probe_error
+                continue
+            answered = True
+            fields = frozenset(
+                field
+                for field in VIDEO_IMAGE_CONTROL_FIELDS
+                if table.get(f"table.{table_name}[{self.get_channel()}].{field}")
+                is not None
+            )
+            if fields:
+                self._note_probe_answered("video_image_control")
+                self._video_image_control_table = table_name
+                self._video_image_control_fields = fields
+                return True
+        self._video_image_control_table = VIDEO_IMAGE_CONTROL_TABLE
+        self._video_image_control_fields = frozenset()
+        if answered:
+            self._note_probe_answered("video_image_control")
+        else:
+            self._note_probe_refusal("video_image_control", refusal)
+        return False
 
     async def _async_retry_video_image_control(self) -> bool:
         """Whether image controls turned up after an unanswered probe."""
@@ -4700,6 +4726,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether this channel reported the requested image-control field."""
         return field in getattr(self, "_video_image_control_fields", frozenset())
 
+    def video_image_control_table(self) -> str:
+        """Which table this channel reported its image controls in.
+
+        A plain attribute read, so the class default is the only thing holding
+        the answer for a coordinator built without `__init__` -- which is how
+        much of the suite and every `object.__new__` path builds one. A
+        `getattr` fallback here would answer correctly with the class default
+        deleted, which is a second copy of the same decision and hides the loss
+        of the first.
+        """
+        return self._video_image_control_table
+
+    async def async_set_video_image_control(self, field: str, value: bool):
+        """Write one image control back to the table it was read from."""
+        return await self.client.async_set_video_image_control(
+            self.get_channel(),
+            field,
+            value,
+            self.video_image_control_table(),
+        )
+
     # Which region's sensitivity and threshold are exposed, of the four the
     # recorder's own UI offers.
     #
@@ -4797,7 +4844,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def get_video_image_control(self, field: str) -> bool | int | None:
         """Read a reported image-control field from this channel's latest poll."""
-        raw = self.data.get(f"table.VideoImageControl[{self.get_channel()}].{field}")
+        raw = self.data.get(
+            f"table.{self.video_image_control_table()}[{self.get_channel()}].{field}"
+        )
         if raw is None:
             return None
         if field in {"Flip", "Mirror"}:
@@ -6605,7 +6654,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_fetch_video_image_control(self) -> dict | None:
         """Poll image controls, keeping the last answer on a refusal."""
         try:
-            return await self.client.async_get_video_image_control()
+            return await self.client.async_get_video_image_control(
+                self.video_image_control_table()
+            )
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.debug(
                 "Could not read image controls for channel %s",
@@ -6616,7 +6667,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             carried = {
                 key: value
                 for key, value in previous.items()
-                if key.startswith("table.VideoImageControl[")
+                if key.startswith(f"table.{self.video_image_control_table()}[")
             }
             return carried or None
 

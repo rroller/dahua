@@ -14,6 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.dahua import select as select_module
 from custom_components.dahua.const import VIDEO_COLOR_STYLE_OPTIONS
+from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
     DahuaDayNightModeSelect,
@@ -41,6 +42,18 @@ class _Coordinator:
     # read this on every entity they add. None is a single camera, and is what
     # `async_add_entities` wants for an entry that has no subentries.
     subentry_id = None
+
+    # The real methods rather than copies of them. The platform asks the
+    # coordinator to write, because the table the field lives in is something
+    # only the coordinator learned, and a hand-written forwarder here would
+    # assert this file's idea of that rule instead of production's.
+    # The real coordinator carries this as a class default, so a double that
+    # borrows its methods has to carry it too.
+    _video_image_control_table = "VideoImageControl"
+    video_image_control_table = DahuaDataUpdateCoordinator.video_image_control_table
+    async_set_video_image_control = (
+        DahuaDataUpdateCoordinator.async_set_video_image_control
+    )
 
     def __init__(self, data=None, channel=0, day_night=None):
         self.client = _Client()
@@ -475,7 +488,7 @@ async def test_image_rotation_writes_only_flip_and_refreshes(option, expected_fl
     await entity.async_select_option(option)
 
     assert c.client.calls == [
-        ("async_set_video_image_control", 3, "Flip", expected_flip)
+        ("async_set_video_image_control", 3, "Flip", expected_flip, "VideoImageControl")
     ]
     assert c.refreshed == 1
 
