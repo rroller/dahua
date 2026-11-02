@@ -327,19 +327,19 @@
         },
         "number": {
             "image_brightness": {
-                "name": "Brightness"
+                "name": "Image brightness"
             },
             "image_contrast": {
-                "name": "Contrast"
+                "name": "Image contrast"
             },
             "image_saturation": {
-                "name": "Saturation"
+                "name": "Image saturation"
             },
             "image_hue": {
-                "name": "Hue"
+                "name": "Image hue"
             },
             "image_gamma": {
-                "name": "Gamma"
+                "name": "Image gamma"
             },
             "vth_ring_volume": {
                 "name": "Door station ring volume"
@@ -374,10 +374,10 @@
                 "name": "Day/Night Mode"
             },
             "video_color_style": {
-                "name": "Video Color Style"
+                "name": "Image color style"
             },
             "image_rotation": {
-                "name": "Image Rotation"
+                "name": "Image rotation"
             },
             "smart_motion_sensitivity": {
                 "name": "Smart Motion Sensitivity"
@@ -454,7 +454,7 @@
                 "name": "Privacy Mode"
             },
             "mirror": {
-                "name": "Mirror"
+                "name": "Image mirror"
             },
             "siren": {
                 "name": "Siren"
