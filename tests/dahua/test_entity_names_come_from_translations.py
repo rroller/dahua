@@ -80,15 +80,19 @@ WAS = {
     ("sensor", "profile"): "Profile",
     ("sensor", "configured_channels"): "Configured Channels",
     ("sensor", "license_plate"): "License Plate",
-    # New with the picture adjustments being translated. These are the
-    # words the _attr_name they replaced returned, so no entity is renamed.
-    ("number", "image_brightness"): "Brightness",
-    ("number", "image_contrast"): "Contrast",
-    ("number", "image_saturation"): "Saturation",
-    ("number", "image_hue"): "Hue",
-    ("number", "image_gamma"): "Gamma",
-    ("select", "video_color_style"): "Video Color Style",
-    ("select", "image_rotation"): "Image Rotation",
+    # The picture controls, deliberately renamed with a shared "Image " prefix.
+    # Home Assistant's device page sorts each card by name and offers no other
+    # ordering, so these sorted to B, C, G, H, I, S and V with the reboot
+    # button at R in the middle of them: Saturation and Video Color Style came
+    # out below it. The prefix is the whole mechanism for keeping a family
+    # together, so changing one of these back strands it again.
+    ("number", "image_brightness"): "Image brightness",
+    ("number", "image_contrast"): "Image contrast",
+    ("number", "image_saturation"): "Image saturation",
+    ("number", "image_hue"): "Image hue",
+    ("number", "image_gamma"): "Image gamma",
+    ("select", "video_color_style"): "Image color style",
+    ("select", "image_rotation"): "Image rotation",
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
     ("switch", "cloud_connection"): "Cloud Connection",
@@ -99,8 +103,9 @@ WAS = {
     ("switch", "alarm_output"): "Alarm Output",
     ("switch", "privacy_mode"): "Privacy Mode",
     # Named by the platform until the six below moved; the two pairs are a
-    # capability choice, not an index.
-    ("switch", "mirror"): "Mirror",
+    # capability choice, not an index. "Image mirror" rather than "Mirror" to
+    # sort with the picture controls above, for the reason given there.
+    ("switch", "mirror"): "Image mirror",
     ("light", "infrared"): "Infrared",
     ("light", "illuminator"): "Illuminator",
     ("light", "flood_light"): "Flood Light",
