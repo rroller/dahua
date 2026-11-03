@@ -306,11 +306,7 @@ def test_adding_issues_did_not_disturb_config_or_options():
 
 @pytest.mark.parametrize(
     "path",
-    sorted(
-        path
-        for path in TRANSLATIONS.glob("*.json")
-        if path.name != "en.json"
-    ),
+    sorted(path for path in TRANSLATIONS.glob("*.json") if path.name != "en.json"),
     ids=lambda path: path.stem,
 )
 def test_localized_issues_match_english_or_use_fallback(path):
