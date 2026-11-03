@@ -86,6 +86,31 @@ def _placeholders(text: str) -> set:
     return set(re.findall(r"\{(\w+)\}", text))
 
 
+def _validate_issue_translations(translated, english, locale: str) -> None:
+    """Validate translated issue keys and placeholders; missing text uses English."""
+    if translated is None:
+        return
+
+    assert isinstance(translated, dict), f"{locale}: issues must be an object"
+    assert isinstance(english, dict)
+
+    for key, value in translated.items():
+        assert key in english, f"{locale}: unknown issue key {key!r}"
+        english_value = english[key]
+        if isinstance(value, dict):
+            assert isinstance(
+                english_value, dict
+            ), f"{locale}.{key}: expected a translated string"
+            _validate_issue_translations(value, english_value, f"{locale}.{key}")
+            continue
+
+        assert isinstance(value, str), f"{locale}.{key}: expected a string"
+        assert isinstance(english_value, str), f"{locale}.{key}: expected English text"
+        assert _placeholders(value) == _placeholders(
+            english_value
+        ), f"{locale}.{key}: placeholders differ from English"
+
+
 # An issue key is one handed to `async_create_issue`. Read from the call rather
 # than matched in the text: this was a regex with a lookbehind to keep an entity's
 # `_attr_translation_key` out, which worked until `HomeAssistantError` learnt
@@ -279,13 +304,75 @@ def test_adding_issues_did_not_disturb_config_or_options():
     assert "reconfigure" in EN["config"]["step"]
 
 
-def test_the_other_locales_fall_back_to_english():
-    """English is the per-key fallback, so copying untranslated text into the
-    other eight files would look identical while silently rotting."""
-    for path in TRANSLATIONS.glob("*.json"):
-        if path.name == "en.json":
-            continue
-        assert "issues" not in json.loads(path.read_text(encoding="utf-8")), path.name
+@pytest.mark.parametrize(
+    "path",
+    sorted(
+        path
+        for path in TRANSLATIONS.glob("*.json")
+        if path.name != "en.json"
+    ),
+    ids=lambda path: path.stem,
+)
+def test_localized_issues_match_english_or_use_fallback(path):
+    """Any locale may translate any subset of issues; omitted text falls back."""
+    locale = json.loads(path.read_text(encoding="utf-8"))
+    _validate_issue_translations(locale.get("issues"), EN["issues"], path.stem)
+
+
+def test_translated_issues_with_matching_placeholders_pass():
+    english = {
+        "sample": {
+            "title": "Device {device}",
+            "description": "Problem: {reason}",
+        }
+    }
+    translated = {
+        "sample": {
+            "title": "Dispositivo {device}",
+            "description": "Problema: {reason}",
+        }
+    }
+
+    _validate_issue_translations(translated, english, "synthetic")
+
+
+def test_missing_issue_is_allowed_for_english_fallback():
+    english = {
+        "translated": {"title": "English title {device}"},
+        "omitted": {"title": "English fallback title"},
+    }
+    translated = {"translated": {"title": "Título traducido {device}"}}
+
+    _validate_issue_translations(translated, english, "synthetic")
+    assert "omitted" not in translated
+    assert english["omitted"]["title"] == "English fallback title"
+
+
+def test_unknown_issue_key_is_rejected():
+    with pytest.raises(AssertionError, match="unknown issue key"):
+        _validate_issue_translations(
+            {"not_in_english": {"title": "Unknown"}},
+            {"known": {"title": "Known"}},
+            "synthetic",
+        )
+
+
+def test_placeholder_mismatch_is_rejected():
+    with pytest.raises(AssertionError, match="placeholders differ from English"):
+        _validate_issue_translations(
+            {"sample": {"title": "Device {channel}"}},
+            {"sample": {"title": "Device {device}"}},
+            "synthetic",
+        )
+
+
+def test_missing_placeholder_is_rejected():
+    with pytest.raises(AssertionError, match="placeholders differ from English"):
+        _validate_issue_translations(
+            {"sample": {"title": "Device"}},
+            {"sample": {"title": "Device {device}"}},
+            "synthetic",
+        )
 
 
 SERIAL_CONFLICT_FLOW_PLACEHOLDERS = _form_placeholders("ClearSerialConflictRepairFlow")
