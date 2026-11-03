@@ -1,71 +1,746 @@
 {
     "config": {
+        "flow_title": "{name} ({address})",
         "step": {
             "user": {
-                "title": "Agregar una Camara Dahua",
-                "description": "Dirección IP de ejemplo: 192.168.1.108",
+                "title": "Agregar Dispositivo Dahua",
+                "description": "Home Assistant se conecta directamente al dispositivo. Necesitas una cuenta creada en el propio dispositivo, no una cuenta de Dahua Cloud ni de Imou Cloud.",
                 "data": {
                     "username": "Usuario",
                     "password": "Contraseña",
-                    "address": "Dirección IP",
+                    "address": "Dirección",
                     "port": "Puerto",
                     "rtsp_port": "Puerto RTSP",
-                    "channel": "Canal (Generalmente es el 0 a menos que uses un grabador)"
+                    "use_https": "Usar HTTPS",
+                    "channel": "Canal"
+                },
+                "data_description": {
+                    "username": "Una cuenta del propio dispositivo, no una cuenta de Dahua Cloud ni de Imou Cloud. Normalmente es admin, en minúsculas.",
+                    "password": "Contraseña del dispositivo. Si nunca se configuró una, usa el código de seguridad impreso en la etiqueta del dispositivo.",
+                    "address": "Dirección IP o nombre de host del dispositivo. Por ejemplo: 192.168.1.108",
+                    "port": "Puerto donde el dispositivo ofrece su interfaz web. Normalmente es 80 o 443 si se usa HTTPS.",
+                    "rtsp_port": "Puerto por el que el dispositivo transmite vídeo. Normalmente es 554.",
+                    "use_https": "Activa esta opción si el dispositivo ofrece HTTPS en el puerto indicado. Si la dejas desactivada, solo se usará HTTPS cuando el puerto sea 443.",
+                    "channel": "La numeración empieza en 0: una cámara individual usa el canal 0 y el canal 4 del grabador corresponde al 3 aquí. Puedes añadir los demás canales del grabador en la siguiente pantalla, donde aparecen con la numeración que muestra el grabador."
                 }
             },
-            "name": {
-                "title": "Configurar el nombre del dispositivo",
+            "channels": {
+                "title": "Agregar Otros Canales",
+                "description": "Este grabador tiene {count} canales adicionales con una cámara conectada. Puedes agregarlos todos o seleccionar solo los que quieras.\n\n{skipped_note}\n\nLos canales vacíos o desactivados tampoco aparecen en la lista.",
                 "data": {
-                    "name": "Nombre del dispositivo"
+                    "all_channels": "Agregar los {count} Canales",
+                    "extra_channels": "O Seleccionar Canales"
+                }
+            },
+            "areas": {
+                "title": "¿Dónde Están Estas Cámaras?",
+                "description": "Asigna un área a cada cámara para que quede organizada al agregarla. Si lo prefieres, deja el campo vacío y asígnala más tarde. También puedes crear áreas nuevas aquí."
+            },
+            "name": {
+                "title": "Asignar Nombre a Esta Cámara",
+                "description": "Elige un nombre fácil de reconocer en tus paneles y automatizaciones. Si no es la cámara que querías agregar, cierra este diálogo e inténtalo de nuevo con otro número de canal.\n\n{preview}",
+                "data": {
+                    "name": "Nombre del Dispositivo",
+                    "labels": "Etiquetas"
+                },
+                "data_description": {
+                    "name": "Se usa como nombre del dispositivo y como prefijo de todas las entidades que crea.",
+                    "labels": "Se aplican a todos los dispositivos que se agreguen, incluidos los canales del grabador. Puedes modificarlas después desde Configurar; al desmarcar una etiqueta se quita. Las etiquetas que ya hayas asignado manualmente a una cámara se conservan."
                 }
             },
             "reauth_confirm": {
-                "title": "Re-autenticar la cámara Dahua",
-                "description": "Las credenciales de {name} ya no son válidas. Ingrese credenciales actualizadas.",
+                "title": "Actualizar Credenciales Dahua",
+                "description": "Las credenciales de {name} ya no son válidas. Introduce las credenciales actualizadas.",
                 "data": {
                     "username": "Usuario",
                     "password": "Contraseña"
                 }
+            },
+            "reconfigure": {
+                "title": "Conexión del Dispositivo Dahua",
+                "description": "Actualiza cómo se conecta Home Assistant a este dispositivo. Las credenciales no cambiarán; para actualizarlas, usa la reautenticación.",
+                "data": {
+                    "address": "Dirección",
+                    "port": "Puerto",
+                    "rtsp_port": "Puerto RTSP",
+                    "channel": "Canal",
+                    "use_https": "Usar HTTPS"
+                },
+                "data_description": {
+                    "address": "Dirección IP o nombre de host del dispositivo; por ejemplo, 192.168.1.108.",
+                    "port": "Puerto donde el dispositivo ofrece su interfaz web. Normalmente es 80 o 443 si se usa HTTPS.",
+                    "rtsp_port": "Puerto por el que el dispositivo transmite vídeo. Normalmente es 554.",
+                    "use_https": "Activa esta opción si el dispositivo ofrece HTTPS en el puerto indicado. Si la dejas desactivada, solo se usará HTTPS cuando el puerto sea 443.",
+                    "channel": "La numeración empieza en 0: una cámara individual usa el canal 0 y el canal 4 del grabador corresponde al 3 aquí. Puedes añadir los demás canales del grabador en la siguiente pantalla, donde aparecen con la numeración que muestra el grabador."
+                }
             }
         },
+        "progress": {
+            "discover": "Buscando otros canales en este dispositivo. El proceso puede tardar hasta {seconds} segundos."
+        },
         "error": {
-            "auth": "La cámara rechazó ese usuario y contraseña.",
-            "channel_not_on_device": "El grabador no tiene ese canal. Este campo cuenta desde 0, así que el canal 4 del grabador es 3 aquí, y su último canal es uno menos que el número que muestra.",
-            "channel_disabled": "Ese canal existe en el grabador pero está desactivado, así que no tiene cámara que leer. Actívalo primero en el grabador y añádelo aquí después.",
-            "channel_is_onvif": "Ese canal se alcanza por ONVIF, que esta integración no puede manejar: el grabador no lo sirve por sus propias rutas Dahua. Usa la integración ONVIF de Home Assistant para esa cámara, o cambia el canal al protocolo propio de Dahua en el grabador.",
-            "cannot_connect": "Nada respondió en esa dirección y puerto. Comprueba que la cámara está encendida, que la IP y el puerto son correctos y que Home Assistant puede alcanzarla.",
-            "timeout": "La cámara no respondió a tiempo. Puede estar ocupada, o ser alcanzable pero muy lenta: inténtalo de nuevo y comprueba que el puerto es el que sirve HTTP.",
-            "ssl_error": "Falló la conexión segura. Si la cámara no sirve HTTPS, desmarca la opción HTTPS; si sí lo hace, suele estar en el puerto 443.",
-            "unexpected_reply": "Algo respondió, pero no una cámara Dahua. Comprueba el puerto: la interfaz web y la API no siempre son la misma.",
-            "cgi_disabled": "Esa dirección sirve páginas web, pero no la API de Dahua. En un dispositivo Dahua casi siempre es el servicio CGI desactivado: actívalo en System, luego Security o Safety, luego System Service, luego CGI, e inténtalo de nuevo. Si CGI ya está activo, comprueba el puerto, porque la interfaz web y la API no siempre son la misma.",
-            "vth_without_http": "Este es un monitor interior (VTH) que no ofrece ninguna interfaz web, solo el protocolo propio de Dahua, y allí aceptó ese usuario y contraseña. La integración todavía no puede añadir un monitor así. Los monitores que sí ofrecen HTTP, como el VTH2421F-P, se pueden añadir.",
-            "https_available": "Nada respondió en ese puerto, pero el dispositivo escucha en el 443, así que probablemente sirve HTTPS. Marca la opción HTTPS y usa el puerto 443.",
-            "https_redirect": "Este dispositivo redirigió la conexión a HTTPS, así que el usuario y la contraseña nunca se comprobaron. Marca la opción HTTPS y usa el puerto 443.",
-            "http_service_off": "El dispositivo está encendido y responde al protocolo propio de Dahua, pero nada sirve HTTP en ese puerto, así que la integración no puede llegar a su API. Lo más probable es que su servicio web esté desactivado: activa HTTP y CGI en System, luego Security o Safety, luego System Service.",
-            "unknown": "No se pudo añadir la cámara. El registro de Home Assistant tiene el motivo."
+            "auth": "El dispositivo rechazó el usuario o la contraseña.",
+            "channel_not_on_device": "El grabador no tiene ese canal. La numeración de este campo empieza en 0: el canal 4 del grabador corresponde al 3 aquí y el último canal se indica con un número menos del que muestra el equipo.",
+            "channel_disabled": "Ese canal existe en el grabador, pero está desactivado y no tiene ninguna cámara disponible. Actívalo primero en el grabador y vuelve a agregarlo.",
+            "channel_is_onvif": "Ese canal usa ONVIF, un protocolo que esta integración no puede controlar: el grabador no lo expone mediante sus propias rutas Dahua. Usa la integración ONVIF de Home Assistant para esa cámara o cambia el canal al protocolo Dahua en el grabador.",
+            "cannot_connect": "No hubo respuesta en esa dirección y puerto. Comprueba que la cámara esté encendida, que la IP y el puerto sean correctos y que Home Assistant pueda acceder a ella.",
+            "timeout": "La cámara no respondió a tiempo. Puede estar ocupada o responder con lentitud. Inténtalo de nuevo y comprueba que el puerto indicado sea el que ofrece HTTP.",
+            "ssl_error": "Falló la conexión segura. Si la cámara no ofrece HTTPS, desactiva esa opción. Si lo ofrece, normalmente utiliza el puerto 443.",
+            "unexpected_reply": "Hubo respuesta, pero no parece provenir de una cámara Dahua. Comprueba el puerto: la interfaz web y la API no siempre usan el mismo.",
+            "cgi_disabled": "Esa dirección muestra páginas web, pero no ofrece la API Dahua. En dispositivos Dahua, casi siempre se debe a que el servicio CGI está desactivado: actívalo en System, luego Security o Safety, después System Service y, por último, CGI. Si CGI ya está activado, comprueba el puerto, porque la interfaz web y la API no siempre usan el mismo.",
+            "vth_without_http": "Es un monitor interior VTH que no ofrece interfaz web, solo el protocolo propio de Dahua, y allí aceptó el usuario y la contraseña. Esta integración todavía no puede agregar este tipo de monitor. Sí se pueden agregar los monitores que ofrecen HTTP, como el VTH2421F-P.",
+            "https_available": "No hubo respuesta en ese puerto, pero el dispositivo escucha en el 443, así que probablemente ofrece HTTPS. Activa la opción HTTPS y usa el puerto 443.",
+            "https_redirect": "El dispositivo redirigió la conexión a HTTPS, por lo que no llegó a comprobar el usuario ni la contraseña. Activa la opción HTTPS y usa el puerto 443.",
+            "http_service_off": "El dispositivo está encendido y responde mediante su protocolo Dahua, pero no ofrece HTTP en ese puerto y la integración no puede acceder a su API. Lo más probable es que el servicio web esté desactivado: activa HTTP y CGI en System, luego Security o Safety y después System Service.",
+            "unknown": "No se pudo agregar la cámara. Consulta el registro de Home Assistant para ver el motivo."
         },
         "abort": {
             "single_instance_allowed": "Solo se permite una instancia.",
-            "already_configured": "Solo se permite una única instancia por dispositivo.",
-            "reauth_successful": "Reautenticación exitosa.",
-            "channel_not_added": "No se pudo añadir ese canal. Un aviso de reparación en Ajustes indica cuál y por qué."
+            "already_configured": "Esa cámara y ese canal ya están agregados. Para cambiar la dirección o el puerto, usa Configurar en la entrada existente. Para cambiar la contraseña, usa la reautenticación en lugar de agregarla otra vez.",
+            "reauth_successful": "Credenciales actualizadas correctamente.",
+            "reconfigure_successful": "Configuración de conexión actualizada.",
+            "channel_not_added": "No se pudo agregar ese canal. En Ajustes encontrarás un aviso de reparación que indica cuál es y el motivo."
         }
     },
     "options": {
         "step": {
             "user": {
+                "data": {
+                    "auto_detect_channel": "Detectar índice de canal automáticamente (desactívalo si la captura HTTP en channel=0 funciona, pero RTSP solo transmite en channel=1)",
+                    "use_rpc2": "Leer la configuración mediante una sesión RPC2 por dispositivo (reduce los accesos registrados en el equipo; déjalo desactivado si no tienes claro si usarlo)",
+                    "poll_video_motion": "Consultar el estado de movimiento si el grabador no envía eventos VideoMotion (una solicitud por grabador)",
+                    "events": "Eventos a los que suscribirse",
+                    "scan_interval": "Segundos entre consultas al dispositivo (no afecta a los eventos)",
+                    "nvr_active_deterrence": "Activar controles de disuasión activa del NVR",
+                    "manual_siren": "Mostrar manualmente la entidad Sirena",
+                    "manual_security_light": "Mostrar manualmente la entidad Luz Seguridad",
+                    "disable_backchannel": "No abrir el canal de audio bidireccional al transmitir (soluciona llamadas bloqueadas en timbres o el audio de retorno en la aplicación Dahua/Amcrest; desactiva el audio desde Home Assistant)",
+                    "accept_h265": "Mantener H.265 y dejar de avisar de posibles problemas en la vista en directo (desactívalo para volver a mostrar el aviso)",
+                    "authorized_plates": "Matrículas autorizadas (separadas por comas; por ejemplo, ABC1234, XYZ5678)",
+                    "authorized_hold_time": "Tiempo de activación por vehículo autorizado (segundos que permanece activado)",
+                    "area": "Área (traslada este dispositivo a ella)",
+                    "labels": "Etiquetas (se aplican a todas las cámaras de este dispositivo)"
+                },
+                "data_description": {
+                    "accept_h265": "La comprobación detecta si un canal transmite H.265 sin pista de audio, un formato que muchos navegadores no reproducen. No puede detectar qué navegador usas. Activa esta opción si la vista en directo funciona; el aviso se descartará para este dispositivo.",
+                    "manual_siren": "Activa esta opción si la cámara tiene una sirena operativa, pero la integración no creó la entidad Sirena.",
+                    "manual_security_light": "Activa esta opción si la cámara tiene una luz de seguridad operativa, pero la integración no creó la entidad Luz Seguridad."
+                },
                 "sections": {
                     "platforms": {
+                        "name": "Entidades a Crear",
+                        "description": "De forma predeterminada se crean todos los tipos de entidades. Si desactivas uno, el dispositivo dejará de crear todas las entidades de ese tipo. Es una opción general: para ocultar una sola entidad, desactívala desde la página del dispositivo.",
                         "data": {
                             "binary_sensor": "Sensor binario habilitado",
-                            "camera": "Camara habilitada",
+                            "button": "Botón habilitado",
+                            "camera": "Cámara habilitada",
+                            "event": "Evento habilitado",
                             "light": "Luz habilitada",
-                            "select": "Seleccionar habilitado",
+                            "number": "Número habilitado",
+                            "select": "Selector habilitado",
                             "sensor": "Sensor habilitado",
-                            "switch": "Interruptor habilitado"
+                            "switch": "Interruptor habilitado",
+                            "update": "Actualización habilitada"
                         }
                     }
                 }
+            }
+        }
+    },
+    "entity": {
+        "binary_sensor": {
+            "alarm_local": {
+                "name": "Alarma Local"
+            },
+            "alarm_output": {
+                "name": "Salida Alarma"
+            },
+            "audio_anomaly": {
+                "name": "Audio Anómalo"
+            },
+            "audio_mutation": {
+                "name": "Audio Alterado"
+            },
+            "button_pressed": {
+                "name": "Botón Pulsado"
+            },
+            "call_no_answered": {
+                "name": "Llamada Sin Respuesta"
+            },
+            "cross_line_alarm": {
+                "name": "Alarma Cruce Línea"
+            },
+            "cross_region_detection": {
+                "name": "Detección Cruce Región"
+            },
+            "crowd_detection": {
+                "name": "Detección Aglomeración"
+            },
+            "door_status": {
+                "name": "Estado Puerta"
+            },
+            "face_detection": {
+                "name": "Detección Rostro"
+            },
+            "face_recognition": {
+                "name": "Reconocimiento Rostro"
+            },
+            "fire_warning": {
+                "name": "Alerta Incendio"
+            },
+            "fire_warning_info": {
+                "name": "Información Alerta Incendio"
+            },
+            "heat_imaging_temper": {
+                "name": "Temperatura Térmica"
+            },
+            "human_trait": {
+                "name": "Rasgos Humanos"
+            },
+            "intelli_frame": {
+                "name": "Encuadre Inteligente"
+            },
+            "inter_video_access": {
+                "name": "Acceso Entre Vídeos"
+            },
+            "invite": {
+                "name": "Invitación"
+            },
+            "left_detection": {
+                "name": "Detección Objeto Abandonado"
+            },
+            "mdresult": {
+                "name": "Resultado Detección Movimiento"
+            },
+            "motion_alarm": {
+                "name": "Alarma Movimiento"
+            },
+            "move_detection": {
+                "name": "Detección Movimiento"
+            },
+            "new_file": {
+                "name": "Archivo Nuevo"
+            },
+            "ntpadjust_time": {
+                "name": "Ajuste Hora NTP"
+            },
+            "object_placement_detection": {
+                "name": "Detección Objeto Colocado"
+            },
+            "object_removal_detection": {
+                "name": "Detección Objeto Retirado"
+            },
+            "parking_detection": {
+                "name": "Detección Estacionamiento"
+            },
+            "rioter_detection": {
+                "name": "Detección Altercado"
+            },
+            "smart_motion_human": {
+                "name": "Movimiento IA Personas"
+            },
+            "smart_motion_vehicle": {
+                "name": "Movimiento IA Vehículos"
+            },
+            "storage_failure": {
+                "name": "Fallo Almacenamiento"
+            },
+            "storage_low_space": {
+                "name": "Poco Espacio Almacenamiento"
+            },
+            "storage_not_exist": {
+                "name": "Almacenamiento No Disponible"
+            },
+            "taken_away_detection": {
+                "name": "Detección Objeto Retirado"
+            },
+            "time_change": {
+                "name": "Cambio Hora"
+            },
+            "traffic": {
+                "name": "Tráfico"
+            },
+            "traffic_junction": {
+                "name": "Tráfico En Cruce"
+            },
+            "traffic_snapshot": {
+                "name": "Captura Tráfico"
+            },
+            "video_abnormal_detection": {
+                "name": "Detección Vídeo Anómalo"
+            },
+            "video_blind": {
+                "name": "Obstrucción Cámara"
+            },
+            "video_loss": {
+                "name": "Pérdida Vídeo"
+            },
+            "video_motion_info": {
+                "name": "Información Movimiento Vídeo"
+            },
+            "video_un_focus": {
+                "name": "Desenfoque Vídeo"
+            },
+            "wander_detection": {
+                "name": "Detección Merodeo"
+            },
+            "authorized_vehicle": {
+                "name": "Vehículo Autorizado"
+            }
+        },
+        "event": {
+            "doorbell": {
+                "name": "Timbre"
+            }
+        },
+        "button": {
+            "reboot": {
+                "name": "Reiniciar"
+            },
+            "open_door": {
+                "name": "Abrir Puerta"
+            },
+            "cancel_call": {
+                "name": "Cancelar Llamada"
+            }
+        },
+        "light": {
+            "infrared": {
+                "name": "Infrarrojos"
+            },
+            "illuminator": {
+                "name": "Iluminador"
+            },
+            "flood_light": {
+                "name": "Reflector"
+            },
+            "ring_light": {
+                "name": "Luz Timbre"
+            },
+            "security_light": {
+                "name": "Luz Seguridad"
+            },
+            "warning_light": {
+                "name": "Luz Advertencia"
+            }
+        },
+        "number": {
+            "image_brightness": {
+                "name": "Brillo"
+            },
+            "image_contrast": {
+                "name": "Contraste"
+            },
+            "image_saturation": {
+                "name": "Saturación"
+            },
+            "image_hue": {
+                "name": "Tono"
+            },
+            "image_gamma": {
+                "name": "Gamma"
+            },
+            "vth_ring_volume": {
+                "name": "Volumen Timbre Placa"
+            },
+            "vth_indoor_ring_volume": {
+                "name": "Volumen Timbre Interior"
+            },
+            "vth_talk_volume": {
+                "name": "Volumen Conversación"
+            },
+            "vth_alarm_volume": {
+                "name": "Volumen Alarma"
+            },
+            "vth_vto_ring_volume": {
+                "name": "Volumen Timbre Llamadas {vto}"
+            },
+            "motion_region1_sensitivity": {
+                "name": "Sensibilidad Región Movimiento 1"
+            },
+            "motion_region1_threshold": {
+                "name": "Umbral Región Movimiento 1"
+            }
+        },
+        "select": {
+            "security_light": {
+                "name": "Luz Seguridad"
+            },
+            "preset_position": {
+                "name": "Posición Predefinida"
+            },
+            "day_night_mode": {
+                "name": "Modo Día/Noche"
+            },
+            "video_color_style": {
+                "name": "Estilo Color Imagen"
+            },
+            "image_rotation": {
+                "name": "Rotación Imagen"
+            },
+            "smart_motion_sensitivity": {
+                "name": "Sensibilidad Movimiento IA"
+            },
+            "vth_camera_link": {
+                "name": "Cámara Llamadas {vto}",
+                "state": {
+                    "none": "Ninguna"
+                }
+            },
+            "infrared_mode": {
+                "name": "Modo Infrarrojos",
+                "state": {
+                    "auto": "Automático",
+                    "manual": "Manual",
+                    "off": "Apagado"
+                }
+            },
+            "lighting_scheme": {
+                "name": "Modo Iluminación",
+                "state": {
+                    "infrared": "Infrarrojos",
+                    "white": "Luz Blanca",
+                    "smart_dual": "Luz Dual Inteligente"
+                }
+            }
+        },
+        "sensor": {
+            "processor_usage": {
+                "name": "Uso CPU"
+            },
+            "memory_used": {
+                "name": "Memoria Usada"
+            },
+            "firmware_version": {
+                "name": "Firmware"
+            },
+            "serial_number": {
+                "name": "Serie"
+            },
+            "profile": {
+                "name": "Perfil"
+            },
+            "configured_channels": {
+                "name": "Canales Configurados"
+            },
+            "license_plate": {
+                "name": "Matrícula"
+            }
+        },
+        "switch": {
+            "motion_detection": {
+                "name": "Detección Movimiento"
+            },
+            "disarming": {
+                "name": "Desarmado"
+            },
+            "cloud_connection": {
+                "name": "Conexión Nube"
+            },
+            "intelli_tour": {
+                "name": "Recorrido IA"
+            },
+            "event_notifications": {
+                "name": "Notificaciones Eventos"
+            },
+            "smart_motion_detection": {
+                "name": "Movimiento IA"
+            },
+            "alarm_output": {
+                "name": "Salida Alarma"
+            },
+            "privacy_mode": {
+                "name": "Modo Privacidad"
+            },
+            "mirror": {
+                "name": "Espejo Imagen"
+            },
+            "siren": {
+                "name": "Sirena"
+            },
+            "alarm": {
+                "name": "Alarma"
+            },
+            "vth_silence": {
+                "name": "No Molestar"
+            }
+        },
+        "update": {
+            "firmware_update": {
+                "name": "Actualización Firmware"
+            }
+        }
+    },
+    "exceptions": {
+        "image_rotation_unsupported": {
+            "message": "No se puede cambiar la rotación de imagen porque Rotate90 no es compatible o su compatibilidad es desconocida."
+        },
+        "lighting_scheme_held_by_illuminator": {
+            "message": "No se puede cambiar el modo de iluminación mientras el Iluminador controla este canal. Apaga primero el Iluminador; la cámara volverá al modo anterior. Después podrás elegir el modo deseado."
+        },
+        "lighting_scheme_not_accepted": {
+            "message": "La cámara no aplicó {mode} como modo de iluminación y sigue indicando {got}. Algunos dispositivos Dahua responden OK aunque no apliquen un ajuste; en este caso, la cámara rechazó el cambio y no se trata de un problema de conexión."
+        },
+        "lighting_scheme_unknown": {
+            "message": "{mode} no es uno de los modos de iluminación disponibles en esta cámara. La cámara indica: {known}."
+        },
+        "audio_path_not_allowed": {
+            "message": "Home Assistant no tiene permiso para leer {path}. Usa una fuente multimedia, una URL o un archivo dentro del directorio de configuración, o incluido en allowlist_external_dirs."
+        },
+        "audio_format_unknown": {
+            "message": "Formato de audio desconocido: {format}. Formatos conocidos: {known}"
+        },
+        "audio_conversion_timed_out": {
+            "message": "La conversión de {url} para el altavoz tardó más de {seconds} segundos."
+        },
+        "audio_conversion_failed": {
+            "message": "No se pudo convertir {url} para el altavoz: {reason}"
+        },
+        "audio_has_no_sound": {
+            "message": "{url} no contiene audio, así que no hay nada que reproducir."
+        },
+        "audio_needs_ffmpeg": {
+            "message": "Para reproducir audio se necesita la integración ffmpeg, que aún no está configurada. Añade `ffmpeg:` a configuration.yaml y reinicia Home Assistant."
+        },
+        "audio_declined": {
+            "message": "{device} rechazó el archivo de audio: {reason}"
+        },
+        "audio_stopped": {
+            "message": "{device} no reprodujo el audio completo: {reason}. Si sigue ocurriendo, prueba otro formato de audio; todavía no se ha comprobado el formato propio del altavoz en ningún dispositivo."
+        },
+        "clock_not_accepted": {
+            "message": "{device} confirmó el cambio de hora, pero después siguió indicando una hora distinta. {reason}"
+        },
+        "clock_could_not_be_set": {
+            "message": "No se pudo ajustar la hora de {device}. {reason}"
+        },
+        "ntp_server_not_accepted": {
+            "message": "{device} rechazó ese servidor NTP. {reason}"
+        },
+        "ntp_server_could_not_be_set": {
+            "message": "No se pudo configurar el servidor NTP en {device}. {reason}"
+        },
+        "audio_could_not_be_sent": {
+            "message": "No se pudo reproducir audio en {device}: {reason}"
+        },
+        "video_profile_not_switchable": {
+            "message": "No se puede cambiar desde Home Assistant el perfil de vídeo día/noche de {device}: su VideoInMode tiene el formato {shape}, que no selecciona el perfil mediante el campo que modifica esta integración. Consulta el issue #458."
+        },
+        "backup_could_not_be_read": {
+            "message": "No se pudo leer la copia de seguridad Dahua en {filename}: {reason}"
+        },
+        "backup_is_not_a_backup": {
+            "message": "{filename} no es una copia de seguridad Dahua: no contiene la sección `tables`. Selecciona un archivo creado con la acción Hacer copia de seguridad."
+        },
+        "backup_could_not_be_written": {
+            "message": "No se pudo guardar la copia de seguridad Dahua en {filename}: {reason}"
+        },
+        "backup_path_not_allowed": {
+            "message": "Home Assistant no tiene permiso para escribir en {filename}. Elige una ruta dentro del directorio de configuración o añade su directorio a allowlist_external_dirs en configuration.yaml."
+        },
+        "cancel_call_refused": {
+            "message": "El timbre rechazó la orden de cancelar la llamada: {reason}"
+        },
+        "infrared_write_already_refused": {
+            "message": "{device} ya rechazó el cambio de iluminación infrarroja, así que Home Assistant no volverá a solicitarlo. El modo y el nivel se siguen leyendo y mostrando. Recarga la entrada de la integración para volver a intentarlo después de cambiar algún ajuste en el dispositivo."
+        },
+        "infrared_write_ignored": {
+            "message": "{device} aceptó el cambio de infrarrojos, pero no lo aplicó: se solicitó {wanted} y sigue indicando {reported}. Un grabador puede responder OK aunque no transfiera el ajuste a una cámara."
+        },
+        "infrared_write_refused": {
+            "message": "{device} rechazó el cambio de iluminación infrarroja: {reason}"
+        },
+        "ivs_rule_write_failed": {
+            "message": "No se pudo cambiar esa regla IVS: {reason}"
+        },
+        "no_vto_connection_for_button": {
+            "message": "{device} no tiene una conexión activa con el timbre para cancelar la llamada. La opción volverá a estar disponible cuando se restablezca la conexión de eventos."
+        },
+        "no_vto_connection_for_service": {
+            "message": "{device} no tiene una conexión activa con el timbre para cancelar la llamada. Este servicio funciona con un timbre VTO cuando la conexión de eventos está activa."
+        },
+        "open_door_needs_a_doorbell": {
+            "message": "{device} no es un timbre y, por tanto, no tiene una puerta que abrir. Este servicio funciona con un VTO."
+        },
+        "overlay_lines_and_numbered_text": {
+            "message": "En set_text_overlay, indica lines o text1-text4, pero no ambos. Usar uno de los formatos descartaría el otro."
+        },
+        "siren_already_refused": {
+            "message": "{device} ya rechazó la orden de activar la sirena, así que Home Assistant no volverá a solicitarlo. Recarga la entrada de la integración para volver a intentarlo después de cambiar algún ajuste en el dispositivo."
+        },
+        "siren_refused": {
+            "message": "{device} rechazó la orden de activar la sirena: {reason}"
+        },
+        "vth_camera_link_ignored": {
+            "message": "{device} aceptó {option} como cámara para las llamadas de {vto}, pero después no lo indicó. No se aplicó ningún cambio."
+        },
+        "vto_call_needs_a_doorbell": {
+            "message": "{device} no es un timbre y, por tanto, no puede llamar a una habitación. Este servicio funciona con un VTO."
+        },
+        "vto_call_refused": {
+            "message": "El timbre rechazó la llamada a la habitación {room}: {reason}"
+        },
+        "vth_vto_ring_volume_ignored": {
+            "message": "{device} aceptó el volumen del timbre para {vto}, pero no lo guardó. Algunos Firmware responden OK a una escritura VTOInfo y luego la ignoran."
+        }
+    },
+    "issues": {
+        "motion_not_pushed": {
+            "title": "El dispositivo Dahua en {address} detecta movimiento, pero no lo notifica",
+            "description": "El dispositivo Dahua en {address} indica que ahora mismo detecta movimiento en el canal {channels}, pero nunca ha enviado a Home Assistant un evento VideoMotion. Mientras esto ocurra, sus sensores binarios de movimiento no podrán activarse.\n\n**Hay un ajuste para este caso.** Algunos grabadores y XVR siguen enviando normalmente eventos de detección inteligente, pero nunca notifican el movimiento convencional. En esos equipos, la integración puede consultar el estado de movimiento directamente en lugar de esperar a que el dispositivo lo notifique.\n\nAbre **Ajustes > Dispositivos y servicios > Dahua**, selecciona **Configurar** en este dispositivo y activa **Consultar el estado de movimiento si el grabador no envía eventos VideoMotion**.\n\nEsta opción está desactivada de forma predeterminada porque añade una solicitud por dispositivo cada dos segundos, sin beneficio en equipos que sí envían estos eventos. Este aviso solo aparece si el dispositivo detecta movimiento pero no lo notifica; desaparecerá cuando llegue un evento o actives la opción."
+        },
+        "channel_not_added": {
+            "title": "No se agregó el canal {channel} de {address}",
+            "description": "Seleccionaste el canal {channel} al agregar este grabador, pero no se pudo agregar y se omitió. Los demás canales se agregaron correctamente.\n\nEl motivo indicado fue `{reason}`. Las causas habituales son que la cámara de ese canal dejó de responder desde la última vez que el grabador la detectó, que la ranura está habilitada pero no tiene una cámara conectada o que el grabador ofrece ese canal mediante ONVIF, protocolo que esta integración no puede controlar.\n\nComprueba el canal en la interfaz del grabador y, cuando funcione, agrégalo desde Añadir integración. El registro de Home Assistant contiene el motivo completo."
+        },
+        "siblings_remain": {
+            "title": "Quedan {count} entradas Dahua más que usan {address}",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "¿Quitar las otras {count} entradas de {address}?",
+                        "description": "Quitaste **{removed}**, pero todavía hay {count} entradas de configuración Dahua que usan el dispositivo en {address}.\n\nLos grabadores se agregan con una entrada por canal. Para quitar todo el grabador, hay que eliminar cada entrada. Esta acción quitará las {count} restantes, una por una:\n\n{titles}\n\n**Esta acción no se puede deshacer.** También se eliminarán las entidades y su historial. Si solo querías quitar un canal, cierra este aviso.\n\n{protected_note}\n\n{dependents_note}"
+                    }
+                },
+                "abort": {
+                    "not_configured": "Ya no hay entradas de configuración Dahua que usen {address}; no queda nada que quitar.",
+                    "nothing_to_remove": "Cada entrada Dahua restante para {address} contiene el grabador completo, así que ninguna es una entrada sobrante que pueda quitarse aquí. No se eliminó nada. Si querías quitar el grabador, hazlo desde la página de integraciones."
+                }
+            }
+        },
+        "removal_broke_things": {
+            "title": "{dependents} dependían de la entrada Dahua que quitaste",
+            "description": "Quitaste **{removed}**, y {dependents} utilizaban entidades que proporcionaba:\n\n{names}\n\nEsas entidades ya no existen. Todo lo que las utilizaba dejará de funcionar sin avisar de un error. Conviene revisar cada elemento.\n\nEste es solo un aviso; puedes cerrarlo después de revisarlo."
+        },
+        "webrtc_cannot_play": {
+            "title": "El dispositivo Dahua en {address} envía vídeo que algunos navegadores no pueden reproducir",
+            "fix_flow": {
+                "step": {
+                    "init": {
+                        "title": "Algunos canales envían H.265 sin audio",
+                        "description": "**El problema solo afecta a algunos navegadores.** Si un navegador no puede decodificar H.265, solicita la vista solo de audio. Como no hay audio, la vista en directo falla en ese navegador. En los navegadores compatibles con H.265 funciona correctamente.\n\nComprueba primero la vista en directo en los navegadores y aplicaciones que usas. Si funciona, no hace falta cambiar nada; con la segunda opción puedes descartar este aviso definitivamente.",
+                        "menu_options": {
+                            "confirm": "Cambiar Algunos Canales a H.264",
+                            "keep_h265": "La vista funciona; mantener H.265 y no volver a preguntar"
+                        }
+                    },
+                    "confirm": {
+                        "title": "¿Configurar estos canales en H.264?",
+                        "description": "**Al seleccionar un canal, el grabador codificará su flujo principal en H.264 en lugar de H.265.** No se aplicará ningún cambio hasta que pulses Enviar.\n\n**Motivo.** Estos canales de {address} envían H.265 sin pista de audio: {channels}. Si un navegador no puede decodificar H.265, solicita una vista solo de audio; como no hay audio, la vista en directo falla. Los navegadores compatibles con H.265 funcionan correctamente, así que compruébalo antes de cambiar nada.\n\n**Consecuencia.** El grabador también utiliza el flujo principal para grabar. Con una tasa de bits configurada para H.265, H.264 puede ofrecer una imagen algo menos nítida. No ganas nada cambiando un canal cuya vista en directo nunca usas.\n\nSolo se muestran los canales cuyo codificador admite H.264; por eso la lista puede ser más corta que la anterior.",
+                        "data": {
+                            "channels": "Canales que cambiar a H.264"
+                        },
+                        "data_description": {
+                            "channels": "Cada canal seleccionado se configura y se vuelve a consultar. Si acepta el cambio, pero sigue en H.265, se notificará y no se contará como completado."
+                        }
+                    }
+                },
+                "abort": {
+                    "not_configured": "El dispositivo en esta dirección ya no está configurado.",
+                    "nothing_to_change": "No se cambió nada. Ningún canal necesita el cambio o ninguno admite H.264.",
+                    "write_refused": "Al menos un canal no cambió. El dispositivo aceptó la orden, pero mantuvo el códec anterior; algunos Firmware Dahua se comportan así. Configura esos canales desde la interfaz web del dispositivo, en Video > Encode."
+                }
+            }
+        },
+        "device_unreachable": {
+            "title": "El dispositivo Dahua en {address} no responde",
+            "description": "Home Assistant no ha podido acceder al dispositivo Dahua en {address} durante aproximadamente {minutes} minutos. {entries} entradas de configuración usan este dispositivo.\n\nComprueba que esté encendido y accesible en la red. En la sección de depuración de la documentación se explica cómo recopilar registros.\n\nEste aviso desaparecerá en cuanto el dispositivo vuelva a responder."
+        },
+        "http_dead_https_available": {
+            "title": "El dispositivo Dahua en {address} responde por HTTPS, pero no en el puerto {port}",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Cambiar {address} a HTTPS",
+                        "description": "El dispositivo Dahua en {address} dejó de responder en el puerto {port}, pero acepta conexiones en el puerto 443. Algunos Firmware Dahua dejan de ofrecer HTTP sin cifrar mientras HTTPS sigue funcionando.\n\nEsta acción cambiará las {entries} entradas de configuración Dahua de {address} al puerto 443 con HTTPS y las recargará una por una.\n\nEl usuario y la contraseña no cambiarán."
+                    }
+                },
+                "abort": {
+                    "not_configured": "Ya no hay entradas de configuración Dahua que usen {address}."
+                }
+            }
+        },
+        "serial_conflict": {
+            "title": "{name} no puede terminar de usar el número de serie que informa el dispositivo",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "¿Quitar {count} entradas antiguas del registro de {name}?",
+                        "description": "**{name}** informa el número de serie `{serial}`. Home Assistant intenta identificarlo con ese dato en vez de calcular un valor a partir de la dirección y la contraseña. El valor calculado cambia al modificar la contraseña o la dirección y arrastra consigo todas las entidades; precisamente eso es lo que se quiere evitar con este cambio.\n\nNo se puede completar la migración porque {count} de las identidades necesarias ya están ocupadas por otras entradas del registro. El dispositivo no puede tener dos identidades, por lo que no se configura hasta que se quite una de ellas; esto no se resolverá por sí solo.\n\nEstas son las entradas que se quitarían:\n\n{removals}\n\nCada una usa la antigua identidad calculada y la identidad necesaria ya pertenece a una entrada identificada con el número de serie que informa el dispositivo. **Esta acción no se puede deshacer.** También se eliminarán su historial y las referencias desde automatizaciones y paneles. Primero se guardará una copia de los registros.\n\nEstas entradas se conservarán y solo se desvincularán del dispositivo que se va a quitar. Mantendrán sus ID de entidad y su historial. Cuando la integración vuelva a agregarlas, se asignarán a un dispositivo; esto ocurrirá inmediatamente con todas las que no estén deshabilitadas:\n\n{kept}\n\nDespués, el dispositivo se configurará de nuevo automáticamente."
+                    }
+                },
+                "error": {
+                    "plan_changed": "El registro cambió mientras se guardaba la copia, así que no se quitó nada. Se volvió a calcular la lista anterior y ahora está actualizada. Pulsa el botón para continuar con esta lista."
+                },
+                "abort": {
+                    "not_configured": "La entrada de configuración Dahua se quitó; no queda nada que limpiar.",
+                    "nothing_to_remove": "Ya no hay nada que impida completar la migración. No se quitó nada y el dispositivo debería configurarse con normalidad.",
+                    "still_blocked": "Ya no quedaba ningún obstáculo en esta lista, así que no se quitó nada y se volvió a iniciar la configuración del dispositivo. Aun así, no se pudo configurar. El motivo actual tiene su propio aviso; este se ha dejado intacto."
+                }
+            }
+        },
+        "serial_conflict_manual": {
+            "title": "{name} no puede usar el número de serie que informa el dispositivo",
+            "description": "**{name}** informa el número de serie `{serial}` y Home Assistant lo identifica con ese dato, en lugar de calcular una identidad a partir de la dirección y la contraseña. La identidad calculada cambia al modificar esos datos y arrastra todas las entidades; por eso se usa el número de serie.\n\nEsta notificación no puede resolver el conflicto automáticamente. Puede que ninguna entrada tenga la identidad que necesita el dispositivo o que otra entrada ya la esté usando y quitarla no baste para completar el cambio. Motivo:\n\n> {reason}\n\nEl dispositivo no se configurará hasta que las dos partes indicadas dejen de reclamar la misma identidad. Cuando lo hayas resuelto, recarga esta entrada desde el menú de tres puntos de su tarjeta en **Ajustes > Dispositivos y servicios** para cerrar este aviso.\n\nTen en cuenta lo siguiente: al quitar un dispositivo del registro también se eliminan sus entidades y su historial. Decidir cuál de dos elementos duplicados debe conservarse depende de tu configuración; por eso la integración identifica ambos y no toma esa decisión por ti."
+        },
+        "leftover_rows": {
+            "title": "Ya no se proporcionan {count} entidades Dahua de {name}",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "¿Quitar {count} entidades sobrantes de {name}?",
+                        "description": "**{name}** tiene {count} entidades en el registro de Home Assistant que la integración Dahua ya no crea. Aparecen como no disponibles y seguirán así: puede ocurrir si un dispositivo deja de informar una función o si una versión deja de ofrecerla para ese modelo.\n\nEstas son las entidades que se quitarían:\n\n{entities}\n\n**Esta acción no se puede deshacer.** Su historial se eliminará y dejarán de resolverse las referencias desde automatizaciones y paneles. También puedes quitarlas de una en una desde la página de ajustes de cada entidad si prefieres revisarlas primero.\n\nEste aviso solo aparece cuando todos los canales se consultan con normalidad y se han cargado correctamente todos los tipos de entidades habilitados. No se ofrecerá la limpieza si el dispositivo está desconectado o aún se está cargando. La lista se actualiza al pulsar el botón, así que se conservarán las entidades que hayan vuelto a aparecer."
+                    }
+                },
+                "abort": {
+                    "not_configured": "La entrada de configuración Dahua se quitó; no queda nada que limpiar.",
+                    "nothing_to_remove": "Todas esas entidades vuelven a estar disponibles; no hay nada que quitar. No se cambió nada.",
+                    "not_loaded": "El dispositivo Dahua todavía no está configurado por completo. Mientras tanto, todas sus entidades parecen sobrantes. No se eliminó nada. El aviso volverá a aparecer cuando el dispositivo se inicie con normalidad, si aún queda algo que limpiar."
+                }
+            }
+        }
+    },
+    "config_subentries": {
+        "channel": {
+            "entry_type": "channel",
+            "initiate_flow": {
+                "user": "Agregar un Canal"
+            },
+            "step": {
+                "user": {
+                    "title": "Agregar un Canal",
+                    "description": "Agrega otro canal de este grabador. La conexión y los ajustes generales del dispositivo se heredan del grabador. Aquí puedes elegir el índice del canal (empieza en 0, según la numeración interna del grabador) y asignarle un nombre. Después podrás modificar otros ajustes del canal con el botón Configurar de este canal.",
+                    "data": {
+                        "channel": "Índice de Canal (empieza en 0)",
+                        "name": "Nombre",
+                        "area": "Área (traslada este dispositivo a ella)",
+                        "events": "Eventos a los que suscribirse"
+                    }
+                },
+                "reconfigure": {
+                    "title": "{name}",
+                    "description": "Ajustes del canal {channel} de este grabador. Los ajustes generales del dispositivo, como la frecuencia de consulta, están en el botón Configurar del propio grabador.",
+                    "data": {
+                        "name": "Nombre",
+                        "area": "Área (traslada este dispositivo a ella)",
+                        "events": "Eventos a los que suscribirse",
+                        "auto_detect_channel": "Detectar índice de canal automáticamente (desactívalo si la captura HTTP en channel=0 funciona, pero RTSP solo transmite en channel=1)",
+                        "nvr_active_deterrence": "Activar controles de disuasión activa del NVR",
+                        "manual_siren": "Mostrar manualmente la entidad Sirena",
+                        "manual_security_light": "Mostrar manualmente la entidad Luz Seguridad",
+                        "disable_backchannel": "No abrir el canal de audio bidireccional al transmitir (soluciona llamadas bloqueadas en timbres o el audio de retorno en la aplicación Dahua/Amcrest; desactiva el audio desde Home Assistant)"
+                    },
+                    "data_description": {
+                        "manual_security_light": "Activa esta opción si la cámara tiene una luz de seguridad operativa, pero la integración no creó la entidad Luz Seguridad.",
+                        "manual_siren": "Activa esta opción si la cámara tiene una sirena operativa, pero la integración no creó la entidad Sirena."
+                    }
+                }
+            },
+            "abort": {
+                "reconfigure_successful": "Canal actualizado."
+            },
+            "error": {
+                "channel_already_added": "Ese canal ya está agregado a este grabador. Elige un índice de canal que no esté en uso."
             }
         }
     }

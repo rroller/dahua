@@ -1,9 +1,9 @@
 # About these translations
 
-**The error messages in the non-English files are machine-assisted, not written by
-native speakers. Corrections from a native speaker would be very welcome** — a pull
-request changing any string here needs no discussion, and you do not need to know
-anything about the integration to improve one.
+**The non-English translations are machine-assisted, not written by native speakers.
+Corrections from a native speaker would be very welcome** — a pull request changing any
+string here needs no discussion, and you do not need to know anything about the
+integration to improve one.
 
 ## Why they were added rather than left out
 
@@ -25,11 +25,12 @@ machine translations and a string that was actively wrong.
 
 ## What was translated, and what was not
 
-**Translated:** the twelve `config.error` strings, and the `channel_not_added` abort
-reason.
+**Translated:** the complete Spanish file, including forms, options, entities, errors,
+exceptions, repair notices, and channel subentries. The other non-English files contain
+the twelve `config.error` strings and the `channel_not_added` abort reason.
 
-**Not translated:** the form labels, the step titles and descriptions, the repair
-notices, and most of the options screen. Those fall back to English, which is
+**Not translated in the other languages:** form labels, step titles and descriptions,
+repair notices, and most of the options screen. Those fall back to English, which is
 accurate, so they are ordinary translation debt rather than a correctness problem.
 
 ## A deliberate choice about device menus
