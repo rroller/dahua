@@ -85,6 +85,7 @@ NOTIFICATIONS = "async_get_event_notifications"
 SMART_MOTION = "async_get_smart_motion_detection"
 PRIVACY = "async_get_privacy_mode"
 DAY_NIGHT = "async_get_video_in_options"
+VIDEO_WIDGET = "async_get_video_widget"
 ALARM_OUT = "async_get_alarm_output_state"
 CLOUD_UPGRADE = "async_get_cloud_upgrade_info"
 VIDEO_IMAGE_CONTROL = "async_get_video_image_control"
@@ -126,13 +127,51 @@ async def test_the_day_night_read_is_skipped_without_the_select_platform():
 
 
 async def test_the_day_night_read_is_skipped_when_the_device_has_no_mode():
-    """A device that reported no DayNightColor must not be polled for one."""
+    """A device that reported no DayNightColor and no image option must not be
+    polled for a table it does not serve."""
     c = _coordinator()
     c._supports_day_night_color = False
 
     await c._async_update_data()
 
     assert DAY_NIGHT not in c.client.calls
+
+
+async def test_the_day_night_read_is_kept_for_wdr_or_exposure_alone():
+    """The same table carries WDR and ExposureMode, so a camera without
+    DayNightColor but with one of those still has a select reading it. The
+    gate used to be Day/Night only, which left those selects stale for ever."""
+    c = _coordinator()
+    c._supports_day_night_color = False
+    c._image_option_fields = frozenset({"WideDynamicRangeMode"})
+
+    await c._async_update_data()
+
+    assert DAY_NIGHT in c.client.calls
+
+
+async def test_video_widget_is_polled_only_when_a_supported_overlay_has_a_reader():
+    c = _coordinator()
+    c._video_widget_fields = frozenset({"TimeTitle.EncodeBlend"})
+    await c._async_update_data()
+    assert VIDEO_WIDGET in c.client.calls
+
+    c = _coordinator(switch=False)
+    c._video_widget_fields = frozenset({"TimeTitle.EncodeBlend"})
+    await c._async_update_data()
+    assert VIDEO_WIDGET not in c.client.calls
+
+
+async def test_video_widget_is_not_polled_for_a_monitor_without_a_camera():
+    """The probe can answer for a VTH's screen, but no switch is created there,
+    so reading the table every cycle would feed nothing."""
+    c = _coordinator()
+    c._video_widget_fields = frozenset({"TimeTitle.EncodeBlend"})
+    c.is_indoor_monitor_without_video = lambda: True
+
+    await c._async_update_data()
+
+    assert VIDEO_WIDGET not in c.client.calls
 
 
 async def test_switch_reads_are_skipped_without_the_switch_platform():

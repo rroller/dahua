@@ -1,9 +1,11 @@
 """Number entity platform for Dahua: picture adjustments, and a monitor's volumes.
 
-Brightness, contrast, saturation, hue and gamma, the controls Reolink and Tapo
-expose as sliders and this integration did not. Backed by the VideoColor config
-table (measured 0-100 on a DHI-NVR5464 and a VTO), read on the poll and written
-per change to the channel's general profile (index 0).
+Brightness, contrast, saturation, hue and gamma are the controls Reolink and
+Tapo expose as sliders and this integration did not. Backed by the VideoColor
+config table (0-100, measured on a DHI-NVR5464 and a VTO), read on the poll and
+written per change to the channel's general profile (index 0). Chroma
+suppression is the same table and the same range, ported from the Intelbras
+fork where it was write+restore tested on an iME-360-C and a VIP-1220.
 """
 
 import logging
@@ -35,6 +37,9 @@ IMAGE_ADJUSTMENTS = (
     ("image_saturation", "Saturation"),
     ("image_hue", "Hue"),
     ("image_gamma", "Gamma"),
+    # Ported from the Intelbras fork, where it was measured on both cameras:
+    # 50 -> 55 -> read back 55 -> restored 50.
+    ("image_chroma_suppress", "ChromaSuppress"),
 )
 
 

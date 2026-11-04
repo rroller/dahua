@@ -250,6 +250,7 @@ def _setup_coordinator(
         asked_for_presets=asked,
         supports_video_color=lambda _field: False,
         supports_video_image_control=lambda _field: False,
+        supports_image_option=lambda _field: False,
     )
 
 

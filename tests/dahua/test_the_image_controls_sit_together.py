@@ -17,7 +17,7 @@ all; what is checked here is the property that made those strings the right
 ones, so a later edit that renames one of them away from the family fails with
 the reason rather than just the difference.
 
-The five sliders are read out of `number.py` rather than listed, so a sixth
+The six sliders are read out of `number.py` rather than listed, so a seventh
 picture adjustment added without the prefix fails here on its first run.
 """
 
@@ -32,6 +32,8 @@ PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 SINGLETON_CONTROLS = {
     ("select", "video_color_style"),
     ("select", "image_rotation"),
+    ("select", "image_wide_dynamic_range"),
+    ("select", "image_exposure_mode"),
     ("switch", "mirror"),
 }
 

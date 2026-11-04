@@ -462,7 +462,86 @@ def day_night_color_name(data: dict, channel: int):
 
 
 # The picture controls exposed from VideoColor, as the device spells them.
-VIDEO_COLOR_FIELDS = ("Brightness", "Contrast", "Saturation", "Hue", "Gamma", "Style")
+# ChromaSuppress was ported from the Intelbras fork, where it was measured on an
+# iME-360-C and a VIP-1220 (50 -> 55 -> read back 55 -> restored 50).
+VIDEO_COLOR_FIELDS = (
+    "Brightness",
+    "Contrast",
+    "Saturation",
+    "Hue",
+    "Gamma",
+    "ChromaSuppress",
+    "Style",
+)
+
+
+# The VideoInOptions fields exposed as selects beside Day/Night. They are read
+# from the same host-wide table the Day/Night probe already fetches, so adding
+# them costs no extra request. `WideDynamicRange` is the level that must be
+# written with the mode: Intelbras measured that mode 0 alone is ignored while
+# the level stays at 50. It is listed here so the probe sees it too, and the
+# WDR select is only created where both fields came back.
+IMAGE_OPTION_FIELDS = ("WideDynamicRangeMode", "WideDynamicRange", "ExposureMode")
+
+# As the device spells the values, and the words the selects show. WDR mode 2
+# is left as "Mode 2" rather than "Auto": the reference accepted 0/1/2 on two
+# cameras but only Off and On were validated, and the vendor's name for 2 was
+# not confirmed (v1.14.1 renamed it back from "Auto"). Exposure mode 4 is
+# manual and needs shutter and gain values this integration does not expose.
+WIDE_DYNAMIC_RANGE_OPTIONS = {"0": "Off", "1": "On", "2": "Mode 2"}
+EXPOSURE_MODE_OPTIONS = {
+    "0": "Auto",
+    "1": "Gain Priority",
+    "2": "Shutter Priority",
+}
+WIDE_DYNAMIC_RANGE_LEVEL = 50
+
+
+def image_option_fields(data: dict, channel: int) -> frozenset:
+    """Which VideoInOptions controls this channel reports.
+
+    Judged on this channel's own keys for the same reason video_color_fields
+    is: VideoInOptions is host-wide and indexed by channel, so a 200 for the
+    table says nothing about whether this channel is in it. Per field, because
+    a device can serve WDR without an exposure mode.
+    """
+    if not isinstance(data, dict):
+        return frozenset()
+    return frozenset(
+        field
+        for field in IMAGE_OPTION_FIELDS
+        if data.get("table.VideoInOptions[{0}].{1}".format(channel, field)) is not None
+    )
+
+
+# The overlay visibility fields inside VideoWidget, and the group whose custom
+# title the switch follows. Only EncodeBlend is written: Intelbras measured
+# that these cameras accept a PreviewBlend write with `OK` and never read it
+# back, so a switch on that field would control nothing.
+#
+# Group 1 matches the enable_text_overlay service default and set_text_overlay
+# after the group defaults were brought into line with services.yaml; group 0
+# was ignored on the VIP-1220 the reference measured.
+VIDEO_WIDGET_OVERLAY_FIELDS = (
+    "TimeTitle.EncodeBlend",
+    "ChannelTitle.EncodeBlend",
+    "CustomTitle[1].EncodeBlend",
+)
+
+
+def video_widget_fields(data: dict, channel: int) -> frozenset:
+    """Which overlay visibility switches this channel reports.
+
+    VideoWidget is host-wide and indexed by channel, so the same per-channel
+    rule applies as image_option_fields.
+    """
+    if not isinstance(data, dict):
+        return frozenset()
+    return frozenset(
+        field
+        for field in VIDEO_WIDGET_OVERLAY_FIELDS
+        if data.get("table.VideoWidget[{0}].{1}".format(channel, field)) is not None
+    )
 
 
 def video_color_fields(data: dict, channel: int) -> frozenset:
@@ -955,6 +1034,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _video_color_fields: frozenset = frozenset()
     _video_image_control_fields: frozenset = frozenset()
     _video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
+    # The VideoInOptions controls beyond Day/Night, and the VideoWidget overlay
+    # visibility fields. On the class for the same reason as the three above:
+    # the suite builds coordinators with object.__new__ and both the poll and
+    # the select/switch platforms read them.
+    _image_option_fields: frozenset = frozenset()
+    _video_widget_fields: frozenset = frozenset()
 
     # Whether the device never answered what kind of device it is, as opposed to
     # answering that it does not serve the question. On the class for the reason
@@ -1110,6 +1195,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._video_color_fields: frozenset = frozenset()
         self._video_image_control_fields: frozenset = frozenset()
         self._video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
+        self._image_option_fields: frozenset = frozenset()
+        self._video_widget_fields: frozenset = frozenset()
         # What the device said when a probe failed, keyed by probe name.
         self._probe_refusals: Dict[str, dict] = {}
         self._channel_model = None
@@ -1615,10 +1702,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         One judgment, used by setup and by the later retry, because the rule it
         applies is easy to get subtly different in two places: the answer is
         whether *this channel's row* came back, not whether the request raised.
-        `async_get_config` swallows a `ClientResponseError` and returns {}, and
-        a device can answer 200 with an empty body for a table it does not
-        have. Both of those are the device answering, and `_note_probe_answered`
-        is what stops them being asked again.
+        A device can answer 200 with an empty body for a table it does not
+        have, which is the device answering, and `_note_probe_answered` is what
+        stops it being asked again.
+
+        The read is the strict one (`async_probe_video_in_options`), not
+        `async_get_config`: the lenient form turns an HTTP 403 into `{}`, which
+        would record a restricted account as a model without the table and
+        leave the diagnostics dump with an empty capability list and no
+        refusal beside it. A refusal with a status is an answer, so it is not
+        retried; only silence is.
 
         Only silence leaves the question open. Setting the flag False with it
         is what setup always did, and is safe to keep here: the flag starts
@@ -1626,29 +1719,48 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         there is no earlier yes for this to overwrite.
         """
         try:
-            options = await self.client.async_get_video_in_options()
+            options = await self.client.async_probe_video_in_options()
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("day_night_color", probe_error)
             self._supports_day_night_color = False
+            self._image_option_fields = frozenset()
             return False
         self._note_probe_answered("day_night_color")
         self._supports_day_night_color = (
             day_night_color_name(options, self._channel) is not None
         )
+        # The same read carries WDR and ExposureMode. Cached whole table, so
+        # this costs nothing beside the Day/Night answer it was already making.
+        self._image_option_fields = image_option_fields(options, self._channel)
+        _LOGGER.debug(
+            "Channel %s reports image options %s",
+            self._channel,
+            sorted(self._image_option_fields) or "none",
+        )
         return self._supports_day_night_color
 
     async def _async_retry_day_night_color(self) -> bool:
-        """Whether a Day/Night mode turned up that was missed at setup.
+        """Whether either family this probe gates turned up late.
 
-        The Day/Night select is the entity this gates, and the poll decides
-        each cycle whether to read the table, so the control works from the
-        next poll rather than reading unknown until a reload.
+        Setup and the retry share the one probe, which now fills two answers:
+        `_supports_day_night_color` and `_image_option_fields` (WDR and
+        ExposureMode). Both entity families are gated on the retry's result, so
+        the comparison is per family -- not an OR of "was anything there
+        before", which would hide a newly appeared image option on a channel
+        that already had a Day/Night answer.
 
-        What the flag said is read first, because the probe is the thing that
-        writes it: asking afterwards would compare the answer with itself.
+        The poll decides each cycle whether to read the table, so the controls
+        work from the next poll rather than reading unknown until a reload.
         """
-        already = self._supports_day_night_color
-        return await self._async_probe_day_night_color() and not already
+        already = (
+            self._supports_day_night_color,
+            frozenset(self._image_option_fields),
+        )
+        await self._async_probe_day_night_color()
+        return (
+            self._supports_day_night_color,
+            frozenset(self._image_option_fields),
+        ) != already
 
     async def _async_probe_smart_motion_detect(self) -> bool:
         """Ask for the SmartMotionDetect table, and remember what came back.
@@ -2037,6 +2149,42 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether image controls turned up after an unanswered probe."""
         already = bool(self._video_image_control_fields)
         return await self._async_probe_video_image_control() and not already
+
+    async def _async_probe_video_widget(self) -> bool:
+        """Ask which overlay visibility switches this channel reports.
+
+        Judged on this channel's own keys rather than on the request succeeding,
+        the rule `video_widget_fields` applies: VideoWidget is host-wide and
+        indexed by channel, so a 200 for the table says nothing about whether
+        this channel is in it. An empty answer is the device saying it has none,
+        which `_note_probe_answered` keeps from being asked again.
+
+        Only the switch platform reads the answer, so setup asks this only when
+        that platform is enabled.
+        """
+        try:
+            table = await self.client.async_get_video_widget()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("video_widget", probe_error)
+            self._video_widget_fields = frozenset()
+            return False
+        self._note_probe_answered("video_widget")
+        self._video_widget_fields = video_widget_fields(table, self._channel)
+        _LOGGER.debug(
+            "Channel %s reports overlay visibility fields %s",
+            self._channel,
+            sorted(self._video_widget_fields) or "none",
+        )
+        return bool(self._video_widget_fields)
+
+    async def _async_retry_video_widget(self) -> bool:
+        """Whether overlay switches turned up that were missed at setup.
+
+        The poll decides each cycle whether to read the table, so the switches
+        work from the next poll rather than reading unknown until a reload.
+        """
+        already = bool(self._video_widget_fields)
+        return await self._async_probe_video_widget() and not already
 
     async def _async_probe_profile_mode(self) -> bool:
         """Ask whether this channel has selectable day/night/general profiles.
@@ -2553,6 +2701,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if self._wanted_by(SWITCH, SELECT):
                     await self._async_probe_video_image_control()
 
+                # The overlay visibility switches. Only the switch platform
+                # reads this table, so a device whose switches are turned off
+                # is never asked. The probe is shared with the retry a later
+                # poll makes when this one goes unanswered (#1057).
+                if self._wanted_by(SWITCH):
+                    await self._async_probe_video_widget()
+
                 # Which camera is actually on this channel. Every channel of a
                 # recorder reports the recorder's model, so a doorbell behind an
                 # NVR is invisible as one and every model-string capability
@@ -2869,11 +3024,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self.client.async_get_config_motion_detection()
                     )
                 )
-            # Only the preset position select reads this, and it is one of the
-            # two per-poll calls the config cache does not cover.
-            if self.supports_day_night_color() and self._wanted_by(SELECT):
+            # Read each cycle only while a select is present. It is a getConfig,
+            # so the shared config cache serves most cycles without a request;
+            # the wrapper keeps a refusal from failing the whole refresh, the
+            # same reason its two siblings below are wrapped.
+            if (
+                self.supports_day_night_color() or self.supports_image_options()
+            ) and self._wanted_by(SELECT):
                 coros.append(
-                    asyncio.ensure_future(self.client.async_get_video_in_options())
+                    asyncio.ensure_future(self._async_fetch_video_in_options())
                 )
             if self._supports_ptz_position and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(_ptz_position()))
@@ -2968,6 +3127,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_video_image_control())
                 )
+            # Overlay visibility for the switches. Gated on the probe and the
+            # platform, and wrapped, for the same reasons as the two above.
+            if self.reads_video_widget() and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self._async_fetch_video_widget()))
             # Lighting_V2 is the light platform's table -- except that the
             # Amcrest doorbell's "Security Light" is a *select*, and its
             # current_option reads table.Lighting_V2[0][0][1].Mode/.State. A
@@ -4745,6 +4908,101 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             field,
             value,
             self.video_image_control_table(),
+        )
+
+    def supports_image_options(self) -> bool:
+        """Whether this channel reported any VideoInOptions control.
+
+        Not on an indoor monitor without a camera, for the same reason
+        `supports_day_night_color` excludes it: the monitor answers the table
+        for an image it does not have.
+        """
+        return bool(self._image_option_fields) and not (
+            self.is_indoor_monitor_without_video()
+        )
+
+    def supports_image_option(self, field: str) -> bool:
+        """Whether this channel reported this VideoInOptions control."""
+        return field in self._image_option_fields and not (
+            self.is_indoor_monitor_without_video()
+        )
+
+    def reads_video_widget(self) -> bool:
+        """Whether the poll should read VideoWidget for this channel.
+
+        The poll and the switch platform must agree on the monitor rule. The
+        probe can only answer what the table said, and an indoor monitor
+        without a camera answers it for its screen, so the fields alone are not
+        enough: no switch is created there, and reading the table every cycle
+        would feed nothing.
+        """
+        return bool(self._video_widget_fields) and not (
+            self.is_indoor_monitor_without_video()
+        )
+
+    def get_image_option(self, field: str):
+        """One VideoInOptions field for this channel, as the device spells it."""
+        return (getattr(self, "data", None) or {}).get(
+            "table.VideoInOptions[{0}].{1}".format(self.get_channel(), field)
+        )
+
+    def get_wide_dynamic_range_option(self) -> str | None:
+        """The WDR select's current word, or None if the device said something
+        this mapping does not cover."""
+        raw = self.get_image_option("WideDynamicRangeMode")
+        if raw is None:
+            return None
+        return WIDE_DYNAMIC_RANGE_OPTIONS.get(str(raw).strip())
+
+    def get_wide_dynamic_range_level(self) -> int | None:
+        """The WDR level the device holds, or None.
+
+        The caller writes 0 for Off because mode 0 alone is ignored while the
+        level stays at 50 -- Intelbras measured that on both cameras it
+        validated. Reading is all this method does.
+        """
+        try:
+            return int(self.get_image_option("WideDynamicRange"))
+        except (TypeError, ValueError):
+            return None
+
+    def get_exposure_mode_option(self) -> str | None:
+        """The Exposure Mode select's current word, or None when unknown."""
+        raw = self.get_image_option("ExposureMode")
+        if raw is None:
+            return None
+        return EXPOSURE_MODE_OPTIONS.get(str(raw).strip())
+
+    def supports_video_widget_overlay(self, field: str) -> bool:
+        """Whether this channel reported an overlay visibility field.
+
+        Not on an indoor monitor without a camera: it has no video to burn an
+        overlay into, so a VTH that answers the table for its screen would
+        otherwise get controls that change nothing. `reads_video_widget` is the
+        same rule for the poll, so the two cannot drift.
+        """
+        return field in self._video_widget_fields and self.reads_video_widget()
+
+    def is_video_widget_overlay_on(self, field: str) -> bool | None:
+        """Whether an overlay is visible, or None if the poll has no usable value.
+
+        None rather than False so a channel whose table read failed does not
+        report an overlay as hidden; the switch also gates `available` on it.
+        A present value this mapping does not recognise is None for the same
+        reason: `get_video_image_control` reads its booleans the same way, and
+        a guessed "off" is worse than an unavailable switch.
+        """
+        raw = (getattr(self, "data", None) or {}).get(
+            "table.VideoWidget[{0}].{1}".format(self.get_channel(), field)
+        )
+        if raw is None:
+            return None
+        return {"true": True, "false": False}.get(str(raw).strip().lower())
+
+    async def async_set_video_widget_overlay(self, field: str, enabled: bool):
+        """Show or hide one VideoWidget overlay on this channel."""
+        return await self.client.async_set_video_widget_overlay(
+            self.get_channel(), field, enabled
         )
 
     # Which region's sensitivity and threshold are exposed, of the four the
@@ -6671,6 +6929,55 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             }
             return carried or None
 
+    async def _async_fetch_video_in_options(self) -> dict | None:
+        """Poll VideoInOptions, keeping the last answer on a refusal.
+
+        The probe at setup means this is only asked of a device that served the
+        table, so a refusal here is a change of mind -- a permissions change
+        made after setup, or a device that stops answering under load. Neither
+        is a reason to fail the refresh and take every entity on the channel
+        with it. Carries only this table's keys, for the reason
+        `_async_fetch_video_color` gives.
+        """
+        try:
+            return await self.client.async_get_video_in_options()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the image options for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.VideoInOptions[")
+            }
+            return carried or None
+
+    async def _async_fetch_video_widget(self) -> dict | None:
+        """Poll overlay visibility, keeping the last answer on a refusal.
+
+        The probe at setup means this is only asked of a device that served the
+        table. A refusal here is a change of mind, which must not fail the
+        refresh and take every entity on the channel with it.
+        """
+        try:
+            return await self.client.async_get_video_widget()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the overlay visibility for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.VideoWidget[")
+            }
+            return carried or None
+
     async def _async_fetch_ivs_rules(self) -> dict | None:
         """Poll the IVS rules, keeping the last answer on a refusal.
 
@@ -6837,4 +7144,5 @@ RETRYABLE_CAPABILITIES = {
     "system load": DahuaDataUpdateCoordinator._async_retry_system_load,
     "video_color": DahuaDataUpdateCoordinator._async_retry_video_color,
     "video_image_control": DahuaDataUpdateCoordinator._async_retry_video_image_control,
+    "video_widget": DahuaDataUpdateCoordinator._async_retry_video_widget,
 }

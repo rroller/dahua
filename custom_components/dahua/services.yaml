@@ -277,9 +277,9 @@ get_overlay_text:
   fields:
     group:
       name: Group
-      description: "Which overlay group to read. The default 0 matches the services that set them."
-      example: 0
-      default: 0
+      description: "Which overlay group to read. The default 1 matches the setting services and the Custom Title Overlay switch."
+      example: 1
+      default: 1
       selector:
         number:
           mode: box

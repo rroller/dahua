@@ -1,10 +1,11 @@
 """What setup asks a device, and what it concludes when the device refuses.
 
-The one-time initialisation asks a camera thirteen separate questions about what it can
-do, each in its own handler, each turning one capability on or off. That block is the
-largest single piece of the integration and almost none of it was executed.
+The one-time initialisation asks a camera a series of separate questions about
+what it can do, each in its own handler, each turning one capability on or off.
+That block is the largest single piece of the integration and almost none of it
+was executed.
 
-The property that matters is the same for all thirteen: **a refusal is an answer, not a
+The property that matters is the same for all fifteen: **a refusal is an answer, not a
 failure.** A camera without a siren, without PTZ, without an illuminator is a perfectly
 good camera, and a probe that took setup down with it would make one missing feature into
 no integration at all. #854 was exactly that, reported by three people: an RPC2 refusal of
@@ -37,7 +38,7 @@ PROBES = [
     ("async_get_event_notifications", "_supports_event_notifications", None),
     ("async_get_ptz_position", "_supports_ptz_position", None),
     ("async_get_smart_motion_detection", "_supports_smart_motion_detection", None),
-    ("async_get_video_in_options", "_supports_day_night_color", None),
+    ("async_probe_video_in_options", "_supports_day_night_color", None),
     ("async_get_lighting_v2", "_supports_lighting_v2", None),
     # Gated on a model name whitelist, which is the bug class #570, #676 and
     # #690 were all instances of. Named here so the probe actually runs.
@@ -60,6 +61,12 @@ PROBES = [
     # inherits the three properties this file is about, which is exactly what it
     # did not have.
     ("async_get_video_color", "_video_color_fields", None),
+    # The two families ported from the Intelbras fork. VideoInOptions was
+    # already asked for Day/Night; the row below pins that the same read also
+    # decides WDR and ExposureMode. VideoWidget is new and only the overlay
+    # visibility switches read it.
+    ("async_probe_video_in_options", "_image_option_fields", None),
+    ("async_get_video_widget", "_video_widget_fields", None),
     # The device's own processor and memory. Both are RPC2 only with no CGI
     # form, so a device with RPC2 switched off refuses them in a way none of the
     # others do -- with a RuntimeError, not a ClientResponseError -- which is
@@ -71,7 +78,7 @@ PROBES = [
 # The probes whose capability is a set of field names rather than a bool, so
 # "off" for them is an empty set. Only the picture controls: a device can
 # serve any subset, and a single yes could not say which.
-PROBE_SETS = {"_video_color_fields"}
+PROBE_SETS = {"_video_color_fields", "_image_option_fields", "_video_widget_fields"}
 
 
 # What setup asks the coordinator about itself. Off, so the fan-out afterwards is
@@ -102,6 +109,8 @@ FLAGS = (
     "_supports_smart_motion_detection",
     "_supports_system_load",
     "_video_color_fields",
+    "_image_option_fields",
+    "_video_widget_fields",
 )
 
 
@@ -238,7 +247,7 @@ async def test_setup_finishes(hass):
 
 async def test_setup_only_runs_its_probes_once(hass):
     """`initialized` is what stops the whole block running on every poll. Asking a
-    camera thirteen capability questions every thirty seconds is most of a poll
+    camera fifteen capability questions every thirty seconds is most of a poll
     budget spent on answers that do not change."""
     coordinator = _coordinator(hass)
     await coordinator._async_update_data()
