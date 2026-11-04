@@ -103,6 +103,7 @@ WAS = {
     ("switch", "event_notifications"): "Event Notifications",
     ("switch", "smart_motion_detection"): "Smart Motion Detection",
     ("switch", "alarm_output"): "Alarm Output",
+    ("switch", "noise_filter"): "Noise filter",
     ("switch", "privacy_mode"): "Privacy Mode",
     # Named by the platform until the six below moved; the two pairs are a
     # capability choice, not an index. "Image mirror" rather than "Mirror" to

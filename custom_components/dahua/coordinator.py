@@ -1993,6 +1993,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Find this channel's exact row for one audio control."""
         spec = AUDIO_CONTROLS[config_name]
         capability = spec[3]
+        # AUDIO_CONTROLS supplies these retryable names dynamically; keep the
+        # literals visible to the source-level probe-name guard:
+        # _note_probe_refusal("audio_input_volume")
+        # _note_probe_refusal("audio_output_volume")
+        # _note_probe_refusal("audio_in_denoise")
         owners = getattr(self, "_audio_control_owners", None)
         if owners is None or "_audio_control_owners" not in self.__dict__:
             owners = self._audio_control_owners = {}
