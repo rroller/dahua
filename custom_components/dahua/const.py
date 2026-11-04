@@ -212,6 +212,9 @@ If you have any issues with this you need to open an issue here:
 # put back; diagnostics already reports the rest, and the get_config service
 # reads any table at all.
 BACKED_UP_TABLES = (
+    "AudioInDenoise",
+    "AudioInputVolume",
+    "AudioOutputVolume",
     "ChannelTitle",
     "DisableEventNotify",
     "DisableLinkage",

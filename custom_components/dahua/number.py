@@ -9,12 +9,13 @@ per change to the channel's general profile (index 0).
 import logging
 
 from homeassistant.components.number import NumberEntity, NumberMode
-from homeassistant.const import EntityCategory
+from homeassistant.const import EntityCategory, PERCENTAGE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.dahua import entry_coordinators
 
+from .audio import AUDIO_CONTROLS, audio_config_value
 from .const import DOMAIN
 from .entity import DahuaBaseEntity
 from .late import async_add_and_keep_watching
@@ -145,6 +146,16 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             if coordinator.supports_motion_region(field)
         ]
 
+    async def build_audio_volumes(coordinator):
+        """Microphone and speaker volume, owned by the channel's audio row."""
+        return [
+            DahuaAudioVolumeNumber(
+                coordinator, entry, key, coordinator.audio_control_owner(key)
+            )
+            for key, spec in AUDIO_CONTROLS.items()
+            if spec[2] == "percentage" and coordinator.supports_audio_control(key)
+        ]
+
     await async_add_and_keep_watching(
         hass, entry, build, async_add_devices, entry_coordinators
     )
@@ -156,6 +167,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     )
     await async_add_and_keep_watching(
         hass, entry, build_motion_region, async_add_devices, entry_coordinators
+    )
+    await async_add_and_keep_watching(
+        hass, entry, build_audio_volumes, async_add_devices, entry_coordinators
     )
 
 
@@ -325,6 +339,52 @@ class DahuaVtoRingVolumeNumber(DahuaBaseEntity, NumberEntity):
                     "vto": self._slot().get("name") or self._vto,
                 },
             )
+
+
+class DahuaAudioVolumeNumber(DahuaBaseEntity, NumberEntity):
+    """One of the device's per-channel audio volumes, 0-100."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = 0
+    _attr_native_max_value = 100
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(self, coordinator, entry, key, owner):
+        DahuaBaseEntity.__init__(self, coordinator, entry)
+        NumberEntity.__init__(self)
+        self._coordinator = coordinator
+        self._key = key
+        self._owner = owner
+        self._attr_translation_key = key
+        self._attr_unique_id = "%s_%s_%s" % (
+            coordinator.get_serial_number(),
+            key,
+            owner,
+        )
+
+    @property
+    def unique_id(self):
+        return self._attr_unique_id
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and audio_config_value(self._coordinator.data, self._key, self._owner)
+            is not None
+        )
+
+    @property
+    def native_value(self):
+        return audio_config_value(self._coordinator.data, self._key, self._owner)
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self._coordinator.client.async_set_audio_config(
+            self._key, self._owner, value
+        )
+        await self._coordinator.async_refresh()
 
 
 class DahuaMotionRegionNumber(DahuaBaseEntity, NumberEntity):
