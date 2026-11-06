@@ -259,6 +259,17 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
         "video_color_fields": _safe(
             lambda: sorted(getattr(coordinator, "_video_color_fields", None) or ()), []
         ),
+        # The same answer for the two families ported from the Intelbras fork.
+        # A refused VideoInOptions read is recorded under `day_night_color`
+        # (the probe that owns the table), and a refused VideoWidget read under
+        # `video_widget`; an empty list here beside one of those entries is the
+        # answer to "where did my WDR/exposure/overlay control go".
+        "image_option_fields": _safe(
+            lambda: sorted(getattr(coordinator, "_image_option_fields", None) or ()), []
+        ),
+        "video_widget_fields": _safe(
+            lambda: sorted(getattr(coordinator, "_video_widget_fields", None) or ()), []
+        ),
         # Why each probe that failed did. A status is the device
         # answering, and a 400 for a config table is it saying it does
         # not serve that table, which is a fact about the model. No

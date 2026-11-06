@@ -347,6 +347,9 @@
             "image_gamma": {
                 "name": "Image gamma"
             },
+            "image_chroma_suppress": {
+                "name": "Image chroma suppress"
+            },
             "vth_ring_volume": {
                 "name": "Door station ring volume"
             },
@@ -381,6 +384,12 @@
             },
             "video_color_style": {
                 "name": "Image color style"
+            },
+            "image_wide_dynamic_range": {
+                "name": "Image wide dynamic range"
+            },
+            "image_exposure_mode": {
+                "name": "Image exposure mode"
             },
             "image_rotation": {
                 "name": "Image rotation"
@@ -464,6 +473,15 @@
             },
             "mirror": {
                 "name": "Image mirror"
+            },
+            "timestamp_overlay": {
+                "name": "Timestamp Overlay"
+            },
+            "channel_title_overlay": {
+                "name": "Channel Title Overlay"
+            },
+            "custom_title_overlay": {
+                "name": "Custom Title Overlay"
             },
             "siren": {
                 "name": "Siren"

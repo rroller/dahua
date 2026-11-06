@@ -395,6 +395,9 @@ class _PlatformCoordinator:
     def supports_video_image_control(self, field):
         return False
 
+    def supports_video_widget_overlay(self, field):
+        return False
+
     def get_ivs_rules(self):
         return []
 

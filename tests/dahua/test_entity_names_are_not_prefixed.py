@@ -93,6 +93,8 @@ def test_every_entity_class_inherits_the_base():
             # DahuaNamedAlarmOutputSwitch inherits DahuaAlarmOutputSwitch for
             # the same reason the IVS sensors inherit theirs: it is the same
             # entity naming itself instead of translating.
+            # DahuaOverlayVisibilitySwitch is the shared base of the three
+            # overlay switches, and is itself a DahuaBaseEntity.
             if not any(
                 base in bases
                 for base in (
@@ -101,6 +103,7 @@ def test_every_entity_class_inherits_the_base():
                     "DahuaEventSensor",
                     "DahuaHostEntity",
                     "DahuaAlarmOutputSwitch",
+                    "DahuaOverlayVisibilitySwitch",
                 )
             ):
                 offenders.append("%s.%s" % (name, classname))

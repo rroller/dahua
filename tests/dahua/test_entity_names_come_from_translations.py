@@ -93,7 +93,10 @@ WAS = {
     ("number", "image_saturation"): "Image saturation",
     ("number", "image_hue"): "Image hue",
     ("number", "image_gamma"): "Image gamma",
+    ("number", "image_chroma_suppress"): "Image chroma suppress",
     ("select", "video_color_style"): "Image color style",
+    ("select", "image_wide_dynamic_range"): "Image wide dynamic range",
+    ("select", "image_exposure_mode"): "Image exposure mode",
     ("select", "image_rotation"): "Image rotation",
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
@@ -109,6 +112,9 @@ WAS = {
     # capability choice, not an index. "Image mirror" rather than "Mirror" to
     # sort with the picture controls above, for the reason given there.
     ("switch", "mirror"): "Image mirror",
+    ("switch", "timestamp_overlay"): "Timestamp Overlay",
+    ("switch", "channel_title_overlay"): "Channel Title Overlay",
+    ("switch", "custom_title_overlay"): "Custom Title Overlay",
     ("light", "infrared"): "Infrared",
     ("light", "illuminator"): "Illuminator",
     ("light", "flood_light"): "Flood Light",

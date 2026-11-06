@@ -1,8 +1,10 @@
-"""Picture-adjustment number entities: brightness, contrast, saturation, hue, gamma.
+"""Picture-adjustment number entities: brightness, contrast, saturation, hue, gamma
+and chroma suppression.
 
 The controls Reolink and Tapo expose as sliders. Backed by the VideoColor config
-table (0-100, measured on a DHI-NVR5464 and a VTO); the entity reads the poll's
-value and writes the channel's general profile on change.
+table (0-100, measured on a DHI-NVR5464 and a VTO; chroma suppression on the
+Intelbras fork's iME-360-C and VIP-1220); the entity reads the poll's value and
+writes the channel's general profile on change.
 """
 
 from types import SimpleNamespace
@@ -176,7 +178,7 @@ def _hass():
 # --- the platform -----------------------------------------------------------
 
 
-async def test_a_camera_gets_the_five_adjustments():
+async def test_a_camera_gets_the_six_adjustments():
     added = []
     coordinator = _Coordinator()
     entry = type(
@@ -196,6 +198,7 @@ async def test_a_camera_gets_the_five_adjustments():
     keys = sorted(n.unique_id for n in added)
     assert keys == [
         "SERIAL1_image_brightness",
+        "SERIAL1_image_chroma_suppress",
         "SERIAL1_image_contrast",
         "SERIAL1_image_gamma",
         "SERIAL1_image_hue",

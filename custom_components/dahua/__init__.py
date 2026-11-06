@@ -155,6 +155,7 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     get_configured_scan_interval,
     illuminator_brightness_bank,
     illuminator_light_index,
+    image_option_fields,
     infrared_profile,
     is_onvif_channel,
     model_name,
@@ -162,6 +163,7 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     remote_device_protocol,
     smart_motion_row_indices,
     video_color_fields,
+    video_widget_fields,
     vto_retry_state,
 )
 

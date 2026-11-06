@@ -541,6 +541,7 @@ def _setup_double(links, indoor_monitor=True):
         supports_ptz_position=lambda: False,
         supports_video_color=lambda field: False,
         supports_video_image_control=lambda _field: False,
+        supports_image_option=lambda _field: False,
     )
 
 
