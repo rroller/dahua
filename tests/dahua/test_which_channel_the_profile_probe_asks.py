@@ -90,6 +90,7 @@ FLAGS = (
     "_supports_day_night_color",
     "_supports_disarming_linkage",
     "_supports_event_notifications",
+    "_supports_exposure_anti_flicker",
     "_supports_floodlightmode",
     "_supports_lighting",
     "_supports_lighting_scheme_illuminator",

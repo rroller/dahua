@@ -63,6 +63,7 @@ WAS = {
     ("select", "security_light"): "Security Light",
     ("select", "preset_position"): "Preset Position",
     ("select", "day_night_mode"): "Day/Night Mode",
+    ("select", "exposure_anti_flicker"): "Image exposure anti-flicker",
     # New with the infrared mode control, so there is no earlier property for it
     # to match. Listed because this table is asserted as equal to the file, which
     # is what makes a rename fail rather than pass quietly.

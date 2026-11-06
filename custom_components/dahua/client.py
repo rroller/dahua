@@ -23,6 +23,7 @@ from .audio import (
 from .const import (
     ALL_EVENTS,
     DOMAIN,
+    EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE,
     VIDEO_COLOR_STYLE_OPTIONS,
     VIDEO_IMAGE_CONTROL_TABLE,
     VIDEO_IMAGE_CONTROL_TABLES,
@@ -739,6 +740,10 @@ def _cache_lifetime(url: str) -> int:
         # the Lighting row it names. Held for five minutes, a command issued in
         # that window goes to the row the camera is not rendering from, where
         # the device accepts and ignores it -- the #582/#605/#689 shape.
+        return HOST_CACHE_TTL_SECONDS
+    if "name=VideoInExposure" in url:
+        # Dahua switches profiles internally; the selected AntiFlicker row is
+        # live state and must follow that change on the next poll.
         return HOST_CACHE_TTL_SECONDS
     return (
         CONFIG_CACHE_TTL_SECONDS
@@ -3285,6 +3290,37 @@ class DahuaClient:
         )
         return await self.get(url)
 
+    async def async_set_exposure_anti_flicker(
+        self, channel: int, active_profile_index: int, value: int
+    ) -> dict:
+        """Set AntiFlicker on the selected channel's active exposure profile."""
+        if type(channel) is not int or channel < 0:
+            raise ValueError("Unsupported VideoInExposure channel")
+        if type(active_profile_index) is not int or active_profile_index < 0:
+            raise ValueError("Unsupported VideoInExposure profile")
+        if type(value) is not int or value not in EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE:
+            raise ValueError("Unsupported AntiFlicker value")
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&VideoInExposure[{channel}][{active_profile_index}].AntiFlicker={value}"
+        )
+        try:
+            return await self.get(url)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            return await self._rpc2_set_config_field(
+                f"VideoInExposure[{channel}][{active_profile_index}].AntiFlicker",
+                value,
+            )
+
+    async def async_get_exposure_anti_flicker_config(self) -> dict:
+        """Read VideoInExposure without hiding a refused or unavailable table."""
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInExposure"
+        )
+
     async def async_set_motion_region(
         self, channel: int, region: int, field: str, value: int
     ):
@@ -5192,7 +5228,7 @@ class DahuaClient:
             "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"
         )
 
-    async def async_get_video_in_mode(self) -> dict:
+    async def async_get_video_in_mode(self, fresh: bool = False) -> dict:
         """
         async_get_video_in_mode will return the profile mode (day/night)
         0 means config for day,
@@ -5205,6 +5241,8 @@ class DahuaClient:
         """
 
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
+        if fresh:
+            _HOST_CACHE.pop((self._device, self._username, url), None)
         return await self.get(url)
 
     async def async_set_coaxial_control_state(

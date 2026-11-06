@@ -29,6 +29,11 @@ EVENT = "event"
 NUMBER = "number"
 UPDATE = "update"
 VIDEO_COLOR_STYLE_OPTIONS = ("Soft", "Standard", "Vivid")
+EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION = {"outdoor": 0, "50_hz": 1, "60_hz": 2}
+EXPOSURE_ANTI_FLICKER_OPTIONS = tuple(EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION)
+EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE = {
+    value: option for option, value in EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION.items()
+}
 
 # The three image orientation fields, and the tables that carry them.
 #
@@ -252,6 +257,7 @@ BACKED_UP_TABLES = (
     "VideoColor",
     "VideoImageControl",
     "VideoInDayNight",
+    "VideoInExposure",
     "VideoInMode",
     "VideoInOptions",
     "VideoWidget",

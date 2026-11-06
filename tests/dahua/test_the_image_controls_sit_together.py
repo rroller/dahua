@@ -59,6 +59,7 @@ LANGUAGES = sorted(path.name for path in TRANSLATIONS.glob("*.json"))
 # The controls that are not built from a table, with the platform each lives in.
 SINGLETON_CONTROLS = {
     ("select", "video_color_style"),
+    ("select", "exposure_anti_flicker"),
     ("select", "image_rotation"),
     ("select", "image_wide_dynamic_range"),
     ("select", "image_exposure_mode"),

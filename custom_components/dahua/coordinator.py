@@ -78,6 +78,8 @@ from .const import (
     SENSOR,
     SWITCH,
     UPDATE,
+    EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE,
+    EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION,
     VIDEO_IMAGE_CONTROL_FIELDS,
     VIDEO_IMAGE_CONTROL_TABLE,
     VIDEO_IMAGE_CONTROL_TABLES,
@@ -466,6 +468,60 @@ def day_night_color_name(data: dict, channel: int):
     if value is None:
         return None
     return DAY_NIGHT_NAMES.get(str(value).strip())
+
+
+def resolve_profile_mode(data: dict, channel: int):
+    """Resolve this channel's active VideoInMode profile using supported semantics."""
+    config = data.get(f"table.VideoInMode[{channel}].Config[0]")
+    if config == "2":
+        return "2"
+
+    config_ex = data.get(f"table.VideoInMode[{channel}].ConfigEx")
+    if config_ex is not None:
+        named = str(config_ex).strip().lower()
+        if named == "night":
+            return "1"
+        if named == "day":
+            return "0"
+    return config
+
+
+def active_profile_index(data: dict, channel: int) -> int | None:
+    """Return this channel's resolved and validated active profile index."""
+    raw = resolve_profile_mode(data, channel)
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        index = raw
+    elif isinstance(raw, str):
+        try:
+            index = int(raw.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return index if index >= 0 else None
+
+
+def exposure_anti_flicker_option(
+    data: dict, channel: int, profile_index: int
+) -> str | None:
+    """Read a supported AntiFlicker value from one exact channel/profile row."""
+    raw = data.get(
+        "table.VideoInExposure[{0}][{1}].AntiFlicker".format(channel, profile_index)
+    )
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str):
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE.get(value)
 
 
 # The picture controls exposed from VideoColor, as the device spells them.
@@ -1270,6 +1326,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_ptz_position = False
         self._supports_lighting = False
         self._supports_day_night_color = False
+        self._supports_exposure_anti_flicker = False
         self._video_color_fields: frozenset = frozenset()
         self._video_image_control_fields: frozenset = frozenset()
         self._video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
@@ -2173,6 +2230,39 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return bool(self._video_color_fields)
 
+    async def _async_probe_exposure_anti_flicker(self) -> bool:
+        """Check this channel's current profile and its AntiFlicker property."""
+        try:
+            mode_data = await self.client.async_get_video_in_mode()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("exposure_anti_flicker", probe_error)
+            self._supports_exposure_anti_flicker = False
+            return False
+
+        profile_index = active_profile_index(mode_data, self._channel)
+        if profile_index is None:
+            self._note_probe_answered("exposure_anti_flicker")
+            self._supports_exposure_anti_flicker = False
+            return False
+
+        try:
+            exposure_data = await self.client.async_get_exposure_anti_flicker_config()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("exposure_anti_flicker", probe_error)
+            self._supports_exposure_anti_flicker = False
+            return False
+
+        self._note_probe_answered("exposure_anti_flicker")
+        self._supports_exposure_anti_flicker = (
+            exposure_anti_flicker_option(exposure_data, self._channel, profile_index)
+            is not None
+        )
+        return self._supports_exposure_anti_flicker
+
+    async def _async_retry_exposure_anti_flicker(self) -> bool:
+        already = self.supports_exposure_anti_flicker()
+        return await self._async_probe_exposure_anti_flicker() and not already
+
     async def _async_probe_audio_control(self, config_name: str) -> bool:
         """Find this channel's exact row for one audio control."""
         spec = AUDIO_CONTROLS[config_name]
@@ -2844,6 +2934,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if self._wanted_by(SWITCH, SELECT):
                     await self._async_probe_video_image_control()
 
+                if self._wanted_by(SELECT):
+                    await self._async_probe_exposure_anti_flicker()
+
                 # Each setting has its own table, owner, retry, and platform
                 # gate. An answer for one never implies another is available.
                 if self._wanted_by(NUMBER):
@@ -3117,7 +3210,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             await self._async_check_video_motion_is_pushed()
 
             # We need the profile mode (0=day, 1=night, 2=scene)
-            if self._supports_profile_mode and not self.is_doorbell():
+            if (self._supports_profile_mode and not self.is_doorbell()) or (
+                self.supports_exposure_anti_flicker() and self._wanted_by(SELECT)
+            ):
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
@@ -3125,7 +3220,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
-                    pass
+                    if self.supports_exposure_anti_flicker():
+                        previous_mode = getattr(self, "data", None) or {}
+                        # Hold the last displayed state for this failed poll.
+                        # Writes resolve the profile from a fresh read.
+                        for field in ("Config[0]", "ConfigEx"):
+                            key = f"table.VideoInMode[{self._channel}].{field}"
+                            if key in previous_mode:
+                                data[key] = previous_mode[key]
 
             # The profile mode above has to be read first because the lighting
             # call below needs it. The PTZ position does not, so it joins the
@@ -3276,6 +3378,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if self._video_image_control_fields and self._wanted_by(SWITCH, SELECT):
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_video_image_control())
+                )
+            if self.supports_exposure_anti_flicker() and self._wanted_by(SELECT):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_exposure_anti_flicker())
                 )
             for config_name, spec in AUDIO_CONTROLS.items():
                 platform = NUMBER if spec[2] == "percentage" else SWITCH
@@ -5066,6 +5172,43 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return field in getattr(self, "_video_color_fields", frozenset())
 
+    def supports_exposure_anti_flicker(self) -> bool:
+        return bool(getattr(self, "_supports_exposure_anti_flicker", False))
+
+    def get_active_profile_index(self) -> int | None:
+        return active_profile_index(getattr(self, "data", None) or {}, self._channel)
+
+    def get_exposure_anti_flicker(self) -> str | None:
+        profile_index = self.get_active_profile_index()
+        if profile_index is None:
+            return None
+        return exposure_anti_flicker_option(
+            getattr(self, "data", None) or {}, self._channel, profile_index
+        )
+
+    async def async_set_exposure_anti_flicker(self, option: str) -> None:
+        value = EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION.get(option)
+        if value is None:
+            return
+
+        mode_data = await self.client.async_get_video_in_mode(fresh=True)
+        profile_index = active_profile_index(mode_data, self._channel)
+        if profile_index is None:
+            raise ConnectionError(
+                "The current VideoInMode profile could not be established"
+            )
+        exposure_data = await self.client.async_get_exposure_anti_flicker_config()
+        if (
+            exposure_anti_flicker_option(exposure_data, self._channel, profile_index)
+            is None
+        ):
+            raise ConnectionError(
+                "The current VideoInExposure AntiFlicker value could not be established"
+            )
+        await self.client.async_set_exposure_anti_flicker(
+            self._channel, profile_index, value
+        )
+
     def supports_audio_control(self, config_name: str) -> bool:
         """Whether the device reported a verified owner for this control."""
         return self.audio_control_owner(config_name) is not None
@@ -6560,26 +6703,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         two cameras.
         """
 
-        def field(name):
-            return mode_data.get(
-                "table.VideoInMode[{0}].{1}".format(self._channel, name)
-            )
-
-        config = field("Config[0]")
-        config_ex = field("ConfigEx")
-
-        if config == "2":
-            return "2"
-        if config_ex is not None:
-            # Only act on a value we recognise. Treating anything else as day
-            # would override a Config[0] that is very likely right, for a
-            # string we do not understand.
-            named = str(config_ex).strip().lower()
-            if named == "night":
-                return "1"
-            if named == "day":
-                return "0"
-        return config or "0"
+        return resolve_profile_mode(mode_data, self._channel) or "0"
 
     def describe_video_profile_shape(self) -> str:
         """Which of the three VideoInMode shapes this channel is in, by name.
@@ -7178,6 +7302,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             }
             return carried or None
 
+    async def _async_fetch_exposure_anti_flicker(self) -> dict | None:
+        """Poll VideoInExposure, carrying only its prior values on failure."""
+        try:
+            return await self.client.async_get_exposure_anti_flicker_config()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read Exposure Anti-Flicker for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.VideoInExposure[")
+            }
+            return carried or None
+
     async def _async_fetch_audio_control(self, config_name: str) -> dict | None:
         """Poll one audio table, carrying only its prior keys on refusal."""
         try:
@@ -7439,6 +7581,7 @@ RETRYABLE_CAPABILITIES = {
     # also rename the field the diagnostics dump has been reporting.
     "system load": DahuaDataUpdateCoordinator._async_retry_system_load,
     "video_color": DahuaDataUpdateCoordinator._async_retry_video_color,
+    "exposure_anti_flicker": DahuaDataUpdateCoordinator._async_retry_exposure_anti_flicker,
     "video_image_control": DahuaDataUpdateCoordinator._async_retry_video_image_control,
     "video_widget": DahuaDataUpdateCoordinator._async_retry_video_widget,
 }

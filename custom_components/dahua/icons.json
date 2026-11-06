@@ -26,6 +26,9 @@
             "day_night_mode": {
                 "default": "mdi:theme-light-dark"
             },
+            "exposure_anti_flicker": {
+                "default": "mdi:flash"
+            },
             "lighting_scheme": {
                 "default": "mdi:lightbulb-auto"
             },
