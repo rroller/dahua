@@ -41,8 +41,13 @@ known to leave recorders like it alone: `snapshot.cgi?channel=0` answers 400
 there, channels 1, 2, 3, 12 and 15 answer 200, and 16 answers 400.
 """
 
+import io
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+
+import pytest
 
 import custom_components.dahua as dahua
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -295,3 +300,89 @@ async def test_the_probe_is_not_asked_when_nothing_reads_it(hass):
     await c._async_update_data()
 
     assert "async_probe_snapshot" not in c.client.called
+
+
+# --- the label has to separate the two device shapes --------------------------
+#
+# rroller's P2 on this PR. The option was offered with the words "tick only if
+# snapshot.cgi?channel=0 returns the FIRST camera while live view is right",
+# and both of those are also true of the aliasing device from the earlier
+# review -- which must leave the option off, because on it channel 0 and
+# channel 1 are the same camera. So the instruction sent one of the two shapes
+# it addressed the wrong way, and the owner who followed it would see every
+# still move one camera backwards.
+#
+# What separates them is channel 1, and only a comparison against two cameras
+# the owner can tell apart:
+#
+#     numbered from zero   0 -> first camera   1 -> second camera   tick it
+#     0 aliases 1          0 -> first camera   1 -> first camera    leave it
+#
+# These read the shipped strings rather than describing them, so a later
+# rewording that drops the comparison fails here. Both forms are checked
+# because both offer the option; that they say the SAME thing is already
+# covered generically, by
+# test_form_labels_match_the_form.py::test_a_setting_that_moved_onto_the_channel_kept_its_wording.
+
+OPTION_FORMS = ("options", "channel reconfigure")
+
+
+def _option_labels() -> dict:
+    """The option's label on each form that offers it."""
+    path = Path(dahua.__file__).parent / "translations" / "en.json"
+    with io.open(path, encoding="utf-8") as handle:
+        loaded = json.load(handle)
+    return {
+        "options": loaded["options"]["step"]["user"]["data"][
+            CONF_SNAPSHOT_CHANNEL_FROM_ZERO
+        ],
+        "channel reconfigure": loaded["config_subentries"]["channel"]["step"][
+            "reconfigure"
+        ]["data"][CONF_SNAPSHOT_CHANNEL_FROM_ZERO],
+    }
+
+
+@pytest.mark.parametrize("form", OPTION_FORMS)
+def test_the_label_asks_about_channel_one_as_well(form):
+    """Channel 0 answering with the first camera is true of both shapes, so on
+    its own it is not a reason to tick anything."""
+    label = _option_labels()[form]
+
+    assert "channel=0" in label, label
+    assert "channel=1" in label, (
+        "the %s label does not mention channel=1, so it cannot tell a device "
+        "numbered from zero from one where channel 0 is another name for "
+        "channel 1: %r" % (form, label)
+    )
+    assert (
+        "second" in label.lower()
+    ), "the %s label does not say what channel=1 has to show: %r" % (form, label)
+
+
+@pytest.mark.parametrize("form", OPTION_FORMS)
+def test_the_label_says_what_leaves_it_off(form):
+    """The aliasing owner needs to be told to leave it off, not merely not told
+    to tick it."""
+    label = _option_labels()[form]
+
+    assert "leave off" in label.lower() or "leave it off" in label.lower(), label
+
+
+def test_the_readme_gives_the_procedure():
+    """rroller asked for it there as well as on the form, which is the only
+    place there is room to say why."""
+    readme = io.open(
+        Path(dahua.__file__).parents[2] / "README.md", encoding="utf-8"
+    ).read()
+
+    rows = [
+        line
+        for line in readme.splitlines()
+        if line.startswith("Number stills from zero |")
+    ]
+
+    assert len(rows) == 1, "expected one options-table row, found %d" % len(rows)
+    row = rows[0]
+    assert "snapshot.cgi?channel=0" in row
+    assert "channel=1" in row
+    assert "both show the first camera" in row, row
