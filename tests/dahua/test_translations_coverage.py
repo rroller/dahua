@@ -123,3 +123,20 @@ def test_the_machine_assisted_translations_say_so_somewhere():
     text = note.read_text(encoding="utf-8").casefold()
     assert "machine" in text
     assert "native" in text
+
+
+@pytest.mark.parametrize("language", _languages())
+def test_translation_files_do_not_silently_replace_duplicate_keys(language):
+    """Ordinary JSON loading drops earlier objects with the same key."""
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            assert key not in result, f"{language}: duplicate JSON key {key!r}"
+            result[key] = value
+        return result
+
+    json.loads(
+        (TRANSLATIONS / f"{language}.json").read_text(encoding="utf-8"),
+        object_pairs_hook=unique_object,
+    )

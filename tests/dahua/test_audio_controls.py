@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import aiohttp
 import pytest
 
@@ -118,25 +121,25 @@ class _Coordinator:
             "microphone_volume",
             0,
             42,
-            "/cgi-bin/configManager.cgi?action=setConfig&table.AudioInputVolume[0]=42",
+            "/cgi-bin/configManager.cgi?action=setConfig&AudioInputVolume[0]=42",
         ),
         (
             "speaker_volume",
             3,
             73,
-            "/cgi-bin/configManager.cgi?action=setConfig&table.AudioOutputVolume[3]=73",
+            "/cgi-bin/configManager.cgi?action=setConfig&AudioOutputVolume[3]=73",
         ),
         (
             "noise_filter",
             3,
             True,
-            "/cgi-bin/configManager.cgi?action=setConfig&table.AudioInDenoise[3].enable=true",
+            "/cgi-bin/configManager.cgi?action=setConfig&AudioInDenoise[3].enable=true",
         ),
         (
             "noise_filter",
             3,
             False,
-            "/cgi-bin/configManager.cgi?action=setConfig&table.AudioInDenoise[3].enable=false",
+            "/cgi-bin/configManager.cgi?action=setConfig&AudioInDenoise[3].enable=false",
         ),
     ],
 )
@@ -381,3 +384,21 @@ def test_audio_controls_have_separate_retryable_capabilities():
     assert {
         AUDIO_CONTROLS[name][3] for name in AUDIO_CONTROLS
     } <= coordinator_module.RETRYABLE_CAPABILITIES.keys()
+
+
+@pytest.mark.parametrize(
+    ("platform", "key", "expected"),
+    [
+        ("number", "microphone_volume", "Volumen del micrófono"),
+        ("number", "speaker_volume", "Volumen del parlante"),
+        ("switch", "noise_filter", "Filtro de ruido"),
+    ],
+)
+def test_spanish_audio_labels_survive_json_loading(platform, key, expected):
+    """A second entity object used to silently discard these new labels."""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "custom_components/dahua/translations/es.json"
+    )
+    translations = json.loads(path.read_text(encoding="utf-8"))
+    assert translations["entity"][platform].get(key) == {"name": expected}

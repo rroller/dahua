@@ -2327,7 +2327,8 @@ class DahuaClient:
         else:
             value = validate_audio_bool(value)
 
-        key = audio_config_key(config_name, owner)
+        # Readback keys include "table."; setConfig takes the field itself.
+        key = audio_config_key(config_name, owner).removeprefix("table.")
         encoded = str(value).lower() if isinstance(value, bool) else str(value)
         await self._request(
             "/cgi-bin/configManager.cgi?action=setConfig&{0}={1}".format(

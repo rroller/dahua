@@ -325,47 +325,47 @@
             }
         },
         "number": {
+            "image_brightness": {
+                "name": "Brillo"
+            },
+            "image_contrast": {
+                "name": "Contraste"
+            },
+            "image_saturation": {
+                "name": "Saturación"
+            },
+            "image_hue": {
+                "name": "Tono"
+            },
+            "image_gamma": {
+                "name": "Gamma"
+            },
+            "vth_ring_volume": {
+                "name": "Volumen Timbre Placa"
+            },
+            "vth_indoor_ring_volume": {
+                "name": "Volumen Timbre Interior"
+            },
+            "vth_talk_volume": {
+                "name": "Volumen Conversación"
+            },
+            "vth_alarm_volume": {
+                "name": "Volumen Alarma"
+            },
+            "vth_vto_ring_volume": {
+                "name": "Volumen Timbre Llamadas {vto}"
+            },
+            "motion_region1_sensitivity": {
+                "name": "Sensibilidad Región Movimiento 1"
+            },
+            "motion_region1_threshold": {
+                "name": "Umbral Región Movimiento 1"
+            },
             "microphone_volume": {
                 "name": "Volumen del micrófono"
             },
             "speaker_volume": {
                 "name": "Volumen del parlante"
-            },
-            "image_brightness": {
-                "name": "Brillo"
-            },
-            "image_contrast": {
-                "name": "Contraste"
-            },
-            "image_saturation": {
-                "name": "Saturación"
-            },
-            "image_hue": {
-                "name": "Tono"
-            },
-            "image_gamma": {
-                "name": "Gamma"
-            },
-            "vth_ring_volume": {
-                "name": "Volumen Timbre Placa"
-            },
-            "vth_indoor_ring_volume": {
-                "name": "Volumen Timbre Interior"
-            },
-            "vth_talk_volume": {
-                "name": "Volumen Conversación"
-            },
-            "vth_alarm_volume": {
-                "name": "Volumen Alarma"
-            },
-            "vth_vto_ring_volume": {
-                "name": "Volumen Timbre Llamadas {vto}"
-            },
-            "motion_region1_sensitivity": {
-                "name": "Sensibilidad Región Movimiento 1"
-            },
-            "motion_region1_threshold": {
-                "name": "Umbral Región Movimiento 1"
             }
         },
         "select": {
@@ -434,641 +434,44 @@
             }
         },
         "switch": {
+            "motion_detection": {
+                "name": "Detección Movimiento"
+            },
+            "disarming": {
+                "name": "Desarmado"
+            },
+            "cloud_connection": {
+                "name": "Conexión Nube"
+            },
+            "intelli_tour": {
+                "name": "Recorrido IA"
+            },
+            "event_notifications": {
+                "name": "Notificaciones Eventos"
+            },
+            "smart_motion_detection": {
+                "name": "Movimiento IA"
+            },
+            "alarm_output": {
+                "name": "Salida Alarma"
+            },
+            "privacy_mode": {
+                "name": "Modo Privacidad"
+            },
+            "mirror": {
+                "name": "Espejo Imagen"
+            },
+            "siren": {
+                "name": "Sirena"
+            },
+            "alarm": {
+                "name": "Alarma"
+            },
+            "vth_silence": {
+                "name": "No Molestar"
+            },
             "noise_filter": {
                 "name": "Filtro de ruido"
-            },
-            "motion_detection": {
-                "name": "Detección Movimiento"
-            },
-            "disarming": {
-                "name": "Desarmado"
-            },
-            "cloud_connection": {
-                "name": "Conexión Nube"
-            },
-            "intelli_tour": {
-                "name": "Recorrido IA"
-            },
-            "event_notifications": {
-                "name": "Notificaciones Eventos"
-            },
-            "smart_motion_detection": {
-                "name": "Movimiento IA"
-            },
-            "alarm_output": {
-                "name": "Salida Alarma"
-            },
-            "privacy_mode": {
-                "name": "Modo Privacidad"
-            },
-            "mirror": {
-                "name": "Espejo Imagen"
-            },
-            "siren": {
-                "name": "Sirena"
-            },
-            "alarm": {
-                "name": "Alarma"
-            },
-            "vth_silence": {
-                "name": "No Molestar"
-            }
-        },
-        "update": {
-            "firmware_update": {
-                "name": "Actualización Firmware"
-            }
-        }
-    },
-    "exceptions": {
-        "image_rotation_unsupported": {
-            "message": "No se puede cambiar la rotación de imagen porque Rotate90 no es compatible o su compatibilidad es desconocida."
-        },
-        "lighting_scheme_held_by_illuminator": {
-            "message": "No se puede cambiar el modo de iluminación mientras el Iluminador controla este canal. Apaga primero el Iluminador; la cámara volverá al modo anterior. Después podrás elegir el modo deseado."
-        },
-        "lighting_scheme_not_accepted": {
-            "message": "La cámara no aplicó {mode} como modo de iluminación y sigue indicando {got}. Algunos dispositivos Dahua responden OK aunque no apliquen un ajuste; en este caso, la cámara rechazó el cambio y no se trata de un problema de conexión."
-        },
-        "lighting_scheme_unknown": {
-            "message": "{mode} no es uno de los modos de iluminación disponibles en esta cámara. La cámara indica: {known}."
-        },
-        "audio_path_not_allowed": {
-            "message": "Home Assistant no tiene permiso para leer {path}. Usa una fuente multimedia, una URL o un archivo dentro del directorio de configuración, o incluido en allowlist_external_dirs."
-        },
-        "audio_format_unknown": {
-            "message": "Formato de audio desconocido: {format}. Formatos conocidos: {known}"
-        },
-        "audio_conversion_timed_out": {
-            "message": "La conversión de {url} para el altavoz tardó más de {seconds} segundos."
-        },
-        "audio_conversion_failed": {
-            "message": "No se pudo convertir {url} para el altavoz: {reason}"
-        },
-        "audio_has_no_sound": {
-            "message": "{url} no contiene audio, así que no hay nada que reproducir."
-        },
-        "audio_needs_ffmpeg": {
-            "message": "Para reproducir audio se necesita la integración ffmpeg, que aún no está configurada. Añade `ffmpeg:` a configuration.yaml y reinicia Home Assistant."
-        },
-        "audio_declined": {
-            "message": "{device} rechazó el archivo de audio: {reason}"
-        },
-        "audio_stopped": {
-            "message": "{device} no reprodujo el audio completo: {reason}. Si sigue ocurriendo, prueba otro formato de audio; todavía no se ha comprobado el formato propio del altavoz en ningún dispositivo."
-        },
-        "clock_not_accepted": {
-            "message": "{device} confirmó el cambio de hora, pero después siguió indicando una hora distinta. {reason}"
-        },
-        "clock_could_not_be_set": {
-            "message": "No se pudo ajustar la hora de {device}. {reason}"
-        },
-        "ntp_server_not_accepted": {
-            "message": "{device} rechazó ese servidor NTP. {reason}"
-        },
-        "ntp_server_could_not_be_set": {
-            "message": "No se pudo configurar el servidor NTP en {device}. {reason}"
-        },
-        "audio_could_not_be_sent": {
-            "message": "No se pudo reproducir audio en {device}: {reason}"
-        },
-        "video_profile_not_switchable": {
-            "message": "No se puede cambiar desde Home Assistant el perfil de vídeo día/noche de {device}: su VideoInMode tiene el formato {shape}, que no selecciona el perfil mediante el campo que modifica esta integración. Consulta el issue #458."
-        },
-        "backup_could_not_be_read": {
-            "message": "No se pudo leer la copia de seguridad Dahua en {filename}: {reason}"
-        },
-        "backup_is_not_a_backup": {
-            "message": "{filename} no es una copia de seguridad Dahua: no contiene la sección `tables`. Selecciona un archivo creado con la acción Hacer copia de seguridad."
-        },
-        "backup_could_not_be_written": {
-            "message": "No se pudo guardar la copia de seguridad Dahua en {filename}: {reason}"
-        },
-        "backup_path_not_allowed": {
-            "message": "Home Assistant no tiene permiso para escribir en {filename}. Elige una ruta dentro del directorio de configuración o añade su directorio a allowlist_external_dirs en configuration.yaml."
-        },
-        "cancel_call_refused": {
-            "message": "El timbre rechazó la orden de cancelar la llamada: {reason}"
-        },
-        "infrared_write_already_refused": {
-            "message": "{device} ya rechazó el cambio de iluminación infrarroja, así que Home Assistant no volverá a solicitarlo. El modo y el nivel se siguen leyendo y mostrando. Recarga la entrada de la integración para volver a intentarlo después de cambiar algún ajuste en el dispositivo."
-        },
-        "infrared_write_ignored": {
-            "message": "{device} aceptó el cambio de infrarrojos, pero no lo aplicó: se solicitó {wanted} y sigue indicando {reported}. Un grabador puede responder OK aunque no transfiera el ajuste a una cámara."
-        },
-        "infrared_write_refused": {
-            "message": "{device} rechazó el cambio de iluminación infrarroja: {reason}"
-        },
-        "ivs_rule_write_failed": {
-            "message": "No se pudo cambiar esa regla IVS: {reason}"
-        },
-        "no_vto_connection_for_button": {
-            "message": "{device} no tiene una conexión activa con el timbre para cancelar la llamada. La opción volverá a estar disponible cuando se restablezca la conexión de eventos."
-        },
-        "no_vto_connection_for_service": {
-            "message": "{device} no tiene una conexión activa con el timbre para cancelar la llamada. Este servicio funciona con un timbre VTO cuando la conexión de eventos está activa."
-        },
-        "open_door_needs_a_doorbell": {
-            "message": "{device} no es un timbre y, por tanto, no tiene una puerta que abrir. Este servicio funciona con un VTO."
-        },
-        "overlay_lines_and_numbered_text": {
-            "message": "En set_text_overlay, indica lines o text1-text4, pero no ambos. Usar uno de los formatos descartaría el otro."
-        },
-        "siren_already_refused": {
-            "message": "{device} ya rechazó la orden de activar la sirena, así que Home Assistant no volverá a solicitarlo. Recarga la entrada de la integración para volver a intentarlo después de cambiar algún ajuste en el dispositivo."
-        },
-        "siren_refused": {
-            "message": "{device} rechazó la orden de activar la sirena: {reason}"
-        },
-        "vth_camera_link_ignored": {
-            "message": "{device} aceptó {option} como cámara para las llamadas de {vto}, pero después no lo indicó. No se aplicó ningún cambio."
-        },
-        "vto_call_needs_a_doorbell": {
-            "message": "{device} no es un timbre y, por tanto, no puede llamar a una habitación. Este servicio funciona con un VTO."
-        },
-        "vto_call_refused": {
-            "message": "El timbre rechazó la llamada a la habitación {room}: {reason}"
-        },
-        "vth_vto_ring_volume_ignored": {
-            "message": "{device} aceptó el volumen del timbre para {vto}, pero no lo guardó. Algunos Firmware responden OK a una escritura VTOInfo y luego la ignoran."
-        }
-    },
-    "issues": {
-        "motion_not_pushed": {
-            "title": "El dispositivo Dahua en {address} detecta movimiento, pero no lo notifica",
-            "description": "El dispositivo Dahua en {address} indica que ahora mismo detecta movimiento en el canal {channels}, pero nunca ha enviado a Home Assistant un evento VideoMotion. Mientras esto ocurra, sus sensores binarios de movimiento no podrán activarse.\n\n**Hay un ajuste para este caso.** Algunos grabadores y XVR siguen enviando normalmente eventos de detección inteligente, pero nunca notifican el movimiento convencional. En esos equipos, la integración puede consultar el estado de movimiento directamente en lugar de esperar a que el dispositivo lo notifique.\n\nAbre **Ajustes > Dispositivos y servicios > Dahua**, selecciona **Configurar** en este dispositivo y activa **Consultar el estado de movimiento si el grabador no envía eventos VideoMotion**.\n\nEsta opción está desactivada de forma predeterminada porque añade una solicitud por dispositivo cada dos segundos, sin beneficio en equipos que sí envían estos eventos. Este aviso solo aparece si el dispositivo detecta movimiento pero no lo notifica; desaparecerá cuando llegue un evento o actives la opción."
-        },
-        "channel_not_added": {
-            "title": "No se agregó el canal {channel} de {address}",
-            "description": "Seleccionaste el canal {channel} al agregar este grabador, pero no se pudo agregar y se omitió. Los demás canales se agregaron correctamente.\n\nEl motivo indicado fue `{reason}`. Las causas habituales son que la cámara de ese canal dejó de responder desde la última vez que el grabador la detectó, que la ranura está habilitada pero no tiene una cámara conectada o que el grabador ofrece ese canal mediante ONVIF, protocolo que esta integración no puede controlar.\n\nComprueba el canal en la interfaz del grabador y, cuando funcione, agrégalo desde Añadir integración. El registro de Home Assistant contiene el motivo completo."
-        },
-        "siblings_remain": {
-            "title": "Quedan {count} entradas Dahua más que usan {address}",
-            "fix_flow": {
-                "step": {
-                    "confirm": {
-                        "title": "¿Quitar las otras {count} entradas de {address}?",
-                        "description": "Quitaste **{removed}**, pero todavía hay {count} entradas de configuración Dahua que usan el dispositivo en {address}.\n\nLos grabadores se agregan con una entrada por canal. Para quitar todo el grabador, hay que eliminar cada entrada. Esta acción quitará las {count} restantes, una por una:\n\n{titles}\n\n**Esta acción no se puede deshacer.** También se eliminarán las entidades y su historial. Si solo querías quitar un canal, cierra este aviso.\n\n{protected_note}\n\n{dependents_note}"
-                    }
-                },
-                "abort": {
-                    "not_configured": "Ya no hay entradas de configuración Dahua que usen {address}; no queda nada que quitar.",
-                    "nothing_to_remove": "Cada entrada Dahua restante para {address} contiene el grabador completo, así que ninguna es una entrada sobrante que pueda quitarse aquí. No se eliminó nada. Si querías quitar el grabador, hazlo desde la página de integraciones."
-                }
-            }
-        },
-        "removal_broke_things": {
-            "title": "{dependents} dependían de la entrada Dahua que quitaste",
-            "description": "Quitaste **{removed}**, y {dependents} utilizaban entidades que proporcionaba:\n\n{names}\n\nEsas entidades ya no existen. Todo lo que las utilizaba dejará de funcionar sin avisar de un error. Conviene revisar cada elemento.\n\nEste es solo un aviso; puedes cerrarlo después de revisarlo."
-        },
-        "webrtc_cannot_play": {
-            "title": "El dispositivo Dahua en {address} envía vídeo que algunos navegadores no pueden reproducir",
-            "fix_flow": {
-                "step": {
-                    "init": {
-                        "title": "Algunos canales envían H.265 sin audio",
-                        "description": "**El problema solo afecta a algunos navegadores.** Si un navegador no puede decodificar H.265, solicita la vista solo de audio. Como no hay audio, la vista en directo falla en ese navegador. En los navegadores compatibles con H.265 funciona correctamente.\n\nComprueba primero la vista en directo en los navegadores y aplicaciones que usas. Si funciona, no hace falta cambiar nada; con la segunda opción puedes descartar este aviso definitivamente.",
-                        "menu_options": {
-                            "confirm": "Cambiar Algunos Canales a H.264",
-                            "keep_h265": "La vista funciona; mantener H.265 y no volver a preguntar"
-                        }
-                    },
-                    "confirm": {
-                        "title": "¿Configurar estos canales en H.264?",
-                        "description": "**Al seleccionar un canal, el grabador codificará su flujo principal en H.264 en lugar de H.265.** No se aplicará ningún cambio hasta que pulses Enviar.\n\n**Motivo.** Estos canales de {address} envían H.265 sin pista de audio: {channels}. Si un navegador no puede decodificar H.265, solicita una vista solo de audio; como no hay audio, la vista en directo falla. Los navegadores compatibles con H.265 funcionan correctamente, así que compruébalo antes de cambiar nada.\n\n**Consecuencia.** El grabador también utiliza el flujo principal para grabar. Con una tasa de bits configurada para H.265, H.264 puede ofrecer una imagen algo menos nítida. No ganas nada cambiando un canal cuya vista en directo nunca usas.\n\nSolo se muestran los canales cuyo codificador admite H.264; por eso la lista puede ser más corta que la anterior.",
-                        "data": {
-                            "channels": "Canales que cambiar a H.264"
-                        },
-                        "data_description": {
-                            "channels": "Cada canal seleccionado se configura y se vuelve a consultar. Si acepta el cambio, pero sigue en H.265, se notificará y no se contará como completado."
-                        }
-                    }
-                },
-                "abort": {
-                    "not_configured": "El dispositivo en esta dirección ya no está configurado.",
-                    "nothing_to_change": "No se cambió nada. Ningún canal necesita el cambio o ninguno admite H.264.",
-                    "write_refused": "Al menos un canal no cambió. El dispositivo aceptó la orden, pero mantuvo el códec anterior; algunos Firmware Dahua se comportan así. Configura esos canales desde la interfaz web del dispositivo, en Video > Encode."
-                }
-            }
-        },
-        "device_unreachable": {
-            "title": "El dispositivo Dahua en {address} no responde",
-            "description": "Home Assistant no ha podido acceder al dispositivo Dahua en {address} durante aproximadamente {minutes} minutos. {entries} entradas de configuración usan este dispositivo.\n\nComprueba que esté encendido y accesible en la red. En la sección de depuración de la documentación se explica cómo recopilar registros.\n\nEste aviso desaparecerá en cuanto el dispositivo vuelva a responder."
-        },
-        "http_dead_https_available": {
-            "title": "El dispositivo Dahua en {address} responde por HTTPS, pero no en el puerto {port}",
-            "fix_flow": {
-                "step": {
-                    "confirm": {
-                        "title": "Cambiar {address} a HTTPS",
-                        "description": "El dispositivo Dahua en {address} dejó de responder en el puerto {port}, pero acepta conexiones en el puerto 443. Algunos Firmware Dahua dejan de ofrecer HTTP sin cifrar mientras HTTPS sigue funcionando.\n\nEsta acción cambiará las {entries} entradas de configuración Dahua de {address} al puerto 443 con HTTPS y las recargará una por una.\n\nEl usuario y la contraseña no cambiarán."
-                    }
-                },
-                "abort": {
-                    "not_configured": "Ya no hay entradas de configuración Dahua que usen {address}."
-                }
-            }
-        },
-        "serial_conflict": {
-            "title": "{name} no puede terminar de usar el número de serie que informa el dispositivo",
-            "fix_flow": {
-                "step": {
-                    "confirm": {
-                        "title": "¿Quitar {count} entradas antiguas del registro de {name}?",
-                        "description": "**{name}** informa el número de serie `{serial}`. Home Assistant intenta identificarlo con ese dato en vez de calcular un valor a partir de la dirección y la contraseña. El valor calculado cambia al modificar la contraseña o la dirección y arrastra consigo todas las entidades; precisamente eso es lo que se quiere evitar con este cambio.\n\nNo se puede completar la migración porque {count} de las identidades necesarias ya están ocupadas por otras entradas del registro. El dispositivo no puede tener dos identidades, por lo que no se configura hasta que se quite una de ellas; esto no se resolverá por sí solo.\n\nEstas son las entradas que se quitarían:\n\n{removals}\n\nCada una usa la antigua identidad calculada y la identidad necesaria ya pertenece a una entrada identificada con el número de serie que informa el dispositivo. **Esta acción no se puede deshacer.** También se eliminarán su historial y las referencias desde automatizaciones y paneles. Primero se guardará una copia de los registros.\n\nEstas entradas se conservarán y solo se desvincularán del dispositivo que se va a quitar. Mantendrán sus ID de entidad y su historial. Cuando la integración vuelva a agregarlas, se asignarán a un dispositivo; esto ocurrirá inmediatamente con todas las que no estén deshabilitadas:\n\n{kept}\n\nDespués, el dispositivo se configurará de nuevo automáticamente."
-                    }
-                },
-                "error": {
-                    "plan_changed": "El registro cambió mientras se guardaba la copia, así que no se quitó nada. Se volvió a calcular la lista anterior y ahora está actualizada. Pulsa el botón para continuar con esta lista."
-                },
-                "abort": {
-                    "not_configured": "La entrada de configuración Dahua se quitó; no queda nada que limpiar.",
-                    "nothing_to_remove": "Ya no hay nada que impida completar la migración. No se quitó nada y el dispositivo debería configurarse con normalidad.",
-                    "still_blocked": "Ya no quedaba ningún obstáculo en esta lista, así que no se quitó nada y se volvió a iniciar la configuración del dispositivo. Aun así, no se pudo configurar. El motivo actual tiene su propio aviso; este se ha dejado intacto."
-                }
-            }
-        },
-        "serial_conflict_manual": {
-            "title": "{name} no puede usar el número de serie que informa el dispositivo",
-            "description": "**{name}** informa el número de serie `{serial}` y Home Assistant lo identifica con ese dato, en lugar de calcular una identidad a partir de la dirección y la contraseña. La identidad calculada cambia al modificar esos datos y arrastra todas las entidades; por eso se usa el número de serie.\n\nEsta notificación no puede resolver el conflicto automáticamente. Puede que ninguna entrada tenga la identidad que necesita el dispositivo o que otra entrada ya la esté usando y quitarla no baste para completar el cambio. Motivo:\n\n> {reason}\n\nEl dispositivo no se configurará hasta que las dos partes indicadas dejen de reclamar la misma identidad. Cuando lo hayas resuelto, recarga esta entrada desde el menú de tres puntos de su tarjeta en **Ajustes > Dispositivos y servicios** para cerrar este aviso.\n\nTen en cuenta lo siguiente: al quitar un dispositivo del registro también se eliminan sus entidades y su historial. Decidir cuál de dos elementos duplicados debe conservarse depende de tu configuración; por eso la integración identifica ambos y no toma esa decisión por ti."
-        },
-        "leftover_rows": {
-            "title": "Ya no se proporcionan {count} entidades Dahua de {name}",
-            "fix_flow": {
-                "step": {
-                    "confirm": {
-                        "title": "¿Quitar {count} entidades sobrantes de {name}?",
-                        "description": "**{name}** tiene {count} entidades en el registro de Home Assistant que la integración Dahua ya no crea. Aparecen como no disponibles y seguirán así: puede ocurrir si un dispositivo deja de informar una función o si una versión deja de ofrecerla para ese modelo.\n\nEstas son las entidades que se quitarían:\n\n{entities}\n\n**Esta acción no se puede deshacer.** Su historial se eliminará y dejarán de resolverse las referencias desde automatizaciones y paneles. También puedes quitarlas de una en una desde la página de ajustes de cada entidad si prefieres revisarlas primero.\n\nEste aviso solo aparece cuando todos los canales se consultan con normalidad y se han cargado correctamente todos los tipos de entidades habilitados. No se ofrecerá la limpieza si el dispositivo está desconectado o aún se está cargando. La lista se actualiza al pulsar el botón, así que se conservarán las entidades que hayan vuelto a aparecer."
-                    }
-                },
-                "abort": {
-                    "not_configured": "La entrada de configuración Dahua se quitó; no queda nada que limpiar.",
-                    "nothing_to_remove": "Todas esas entidades vuelven a estar disponibles; no hay nada que quitar. No se cambió nada.",
-                    "not_loaded": "El dispositivo Dahua todavía no está configurado por completo. Mientras tanto, todas sus entidades parecen sobrantes. No se eliminó nada. El aviso volverá a aparecer cuando el dispositivo se inicie con normalidad, si aún queda algo que limpiar."
-                }
-            }
-        }
-    },
-    "config_subentries": {
-        "channel": {
-            "entry_type": "channel",
-            "initiate_flow": {
-                "user": "Agregar un Canal"
-            },
-            "step": {
-                "user": {
-                    "title": "Agregar un Canal",
-                    "description": "Agrega otro canal de este grabador. La conexión y los ajustes generales del dispositivo se heredan del grabador. Aquí puedes elegir el índice del canal (empieza en 0, según la numeración interna del grabador) y asignarle un nombre. Después podrás modificar otros ajustes del canal con el botón Configurar de este canal.",
-                    "data": {
-                        "channel": "Índice de Canal (empieza en 0)",
-                        "name": "Nombre",
-                        "area": "Área (traslada este dispositivo a ella)",
-                        "events": "Eventos a los que suscribirse"
-                    }
-                },
-                "reconfigure": {
-                    "title": "{name}",
-                    "description": "Ajustes del canal {channel} de este grabador. Los ajustes generales del dispositivo, como la frecuencia de consulta, están en el botón Configurar del propio grabador.",
-                    "data": {
-                        "name": "Nombre",
-                        "area": "Área (traslada este dispositivo a ella)",
-                        "events": "Eventos a los que suscribirse",
-                        "auto_detect_channel": "Detectar índice de canal automáticamente (desactívalo si la captura HTTP en channel=0 funciona, pero RTSP solo transmite en channel=1)",
-                        "nvr_active_deterrence": "Activar controles de disuasión activa del NVR",
-                        "manual_siren": "Mostrar manualmente la entidad Sirena",
-                        "manual_security_light": "Mostrar manualmente la entidad Luz Seguridad",
-                        "disable_backchannel": "No abrir el canal de audio bidireccional al transmitir (soluciona llamadas bloqueadas en timbres o el audio de retorno en la aplicación Dahua/Amcrest; desactiva el audio desde Home Assistant)"
-                    },
-                    "data_description": {
-                        "manual_security_light": "Activa esta opción si la cámara tiene una luz de seguridad operativa, pero la integración no creó la entidad Luz Seguridad.",
-                        "manual_siren": "Activa esta opción si la cámara tiene una sirena operativa, pero la integración no creó la entidad Sirena."
-                    }
-                }
-            },
-            "abort": {
-                "reconfigure_successful": "Canal actualizado."
-            },
-            "error": {
-                "channel_already_added": "Ese canal ya está agregado a este grabador. Elige un índice de canal que no esté en uso."
-            }
-        }
-    },
-    "entity": {
-        "binary_sensor": {
-            "alarm_local": {
-                "name": "Alarma Local"
-            },
-            "alarm_output": {
-                "name": "Salida Alarma"
-            },
-            "audio_anomaly": {
-                "name": "Audio Anómalo"
-            },
-            "audio_mutation": {
-                "name": "Audio Alterado"
-            },
-            "button_pressed": {
-                "name": "Botón Pulsado"
-            },
-            "call_no_answered": {
-                "name": "Llamada Sin Respuesta"
-            },
-            "cross_line_alarm": {
-                "name": "Alarma Cruce Línea"
-            },
-            "cross_region_detection": {
-                "name": "Detección Cruce Región"
-            },
-            "crowd_detection": {
-                "name": "Detección Aglomeración"
-            },
-            "door_status": {
-                "name": "Estado Puerta"
-            },
-            "face_detection": {
-                "name": "Detección Rostro"
-            },
-            "face_recognition": {
-                "name": "Reconocimiento Rostro"
-            },
-            "fire_warning": {
-                "name": "Alerta Incendio"
-            },
-            "fire_warning_info": {
-                "name": "Información Alerta Incendio"
-            },
-            "heat_imaging_temper": {
-                "name": "Temperatura Térmica"
-            },
-            "human_trait": {
-                "name": "Rasgos Humanos"
-            },
-            "intelli_frame": {
-                "name": "Encuadre Inteligente"
-            },
-            "inter_video_access": {
-                "name": "Acceso Entre Vídeos"
-            },
-            "invite": {
-                "name": "Invitación"
-            },
-            "left_detection": {
-                "name": "Detección Objeto Abandonado"
-            },
-            "mdresult": {
-                "name": "Resultado Detección Movimiento"
-            },
-            "motion_alarm": {
-                "name": "Alarma Movimiento"
-            },
-            "move_detection": {
-                "name": "Detección Movimiento"
-            },
-            "new_file": {
-                "name": "Archivo Nuevo"
-            },
-            "ntpadjust_time": {
-                "name": "Ajuste Hora NTP"
-            },
-            "object_placement_detection": {
-                "name": "Detección Objeto Colocado"
-            },
-            "object_removal_detection": {
-                "name": "Detección Objeto Retirado"
-            },
-            "parking_detection": {
-                "name": "Detección Estacionamiento"
-            },
-            "rioter_detection": {
-                "name": "Detección Altercado"
-            },
-            "smart_motion_human": {
-                "name": "Movimiento IA Personas"
-            },
-            "smart_motion_vehicle": {
-                "name": "Movimiento IA Vehículos"
-            },
-            "storage_failure": {
-                "name": "Fallo Almacenamiento"
-            },
-            "storage_low_space": {
-                "name": "Poco Espacio Almacenamiento"
-            },
-            "storage_not_exist": {
-                "name": "Almacenamiento No Disponible"
-            },
-            "taken_away_detection": {
-                "name": "Detección Objeto Retirado"
-            },
-            "time_change": {
-                "name": "Cambio Hora"
-            },
-            "traffic": {
-                "name": "Tráfico"
-            },
-            "traffic_junction": {
-                "name": "Tráfico En Cruce"
-            },
-            "traffic_snapshot": {
-                "name": "Captura Tráfico"
-            },
-            "video_abnormal_detection": {
-                "name": "Detección Vídeo Anómalo"
-            },
-            "video_blind": {
-                "name": "Obstrucción Cámara"
-            },
-            "video_loss": {
-                "name": "Pérdida Vídeo"
-            },
-            "video_motion_info": {
-                "name": "Información Movimiento Vídeo"
-            },
-            "video_un_focus": {
-                "name": "Desenfoque Vídeo"
-            },
-            "wander_detection": {
-                "name": "Detección Merodeo"
-            },
-            "authorized_vehicle": {
-                "name": "Vehículo Autorizado"
-            }
-        },
-        "event": {
-            "doorbell": {
-                "name": "Timbre"
-            }
-        },
-        "button": {
-            "reboot": {
-                "name": "Reiniciar"
-            },
-            "open_door": {
-                "name": "Abrir Puerta"
-            },
-            "cancel_call": {
-                "name": "Cancelar Llamada"
-            }
-        },
-        "light": {
-            "infrared": {
-                "name": "Infrarrojos"
-            },
-            "illuminator": {
-                "name": "Iluminador"
-            },
-            "flood_light": {
-                "name": "Reflector"
-            },
-            "ring_light": {
-                "name": "Luz Timbre"
-            },
-            "security_light": {
-                "name": "Luz Seguridad"
-            },
-            "warning_light": {
-                "name": "Luz Advertencia"
-            }
-        },
-        "number": {
-            "image_brightness": {
-                "name": "Brillo"
-            },
-            "image_contrast": {
-                "name": "Contraste"
-            },
-            "image_saturation": {
-                "name": "Saturación"
-            },
-            "image_hue": {
-                "name": "Tono"
-            },
-            "image_gamma": {
-                "name": "Gamma"
-            },
-            "vth_ring_volume": {
-                "name": "Volumen Timbre Placa"
-            },
-            "vth_indoor_ring_volume": {
-                "name": "Volumen Timbre Interior"
-            },
-            "vth_talk_volume": {
-                "name": "Volumen Conversación"
-            },
-            "vth_alarm_volume": {
-                "name": "Volumen Alarma"
-            },
-            "vth_vto_ring_volume": {
-                "name": "Volumen Timbre Llamadas {vto}"
-            },
-            "motion_region1_sensitivity": {
-                "name": "Sensibilidad Región Movimiento 1"
-            },
-            "motion_region1_threshold": {
-                "name": "Umbral Región Movimiento 1"
-            }
-        },
-        "select": {
-            "security_light": {
-                "name": "Luz Seguridad"
-            },
-            "preset_position": {
-                "name": "Posición Predefinida"
-            },
-            "day_night_mode": {
-                "name": "Modo Día/Noche"
-            },
-            "video_color_style": {
-                "name": "Estilo Color Imagen"
-            },
-            "image_rotation": {
-                "name": "Rotación Imagen"
-            },
-            "smart_motion_sensitivity": {
-                "name": "Sensibilidad Movimiento IA"
-            },
-            "vth_camera_link": {
-                "name": "Cámara Llamadas {vto}",
-                "state": {
-                    "none": "Ninguna"
-                }
-            },
-            "infrared_mode": {
-                "name": "Modo Infrarrojos",
-                "state": {
-                    "auto": "Automático",
-                    "manual": "Manual",
-                    "off": "Apagado"
-                }
-            },
-            "lighting_scheme": {
-                "name": "Modo Iluminación",
-                "state": {
-                    "infrared": "Infrarrojos",
-                    "white": "Luz Blanca",
-                    "smart_dual": "Luz Dual Inteligente"
-                }
-            }
-        },
-        "sensor": {
-            "processor_usage": {
-                "name": "Uso CPU"
-            },
-            "memory_used": {
-                "name": "Memoria Usada"
-            },
-            "firmware_version": {
-                "name": "Firmware"
-            },
-            "serial_number": {
-                "name": "Serie"
-            },
-            "profile": {
-                "name": "Perfil"
-            },
-            "configured_channels": {
-                "name": "Canales Configurados"
-            },
-            "license_plate": {
-                "name": "Matrícula"
-            }
-        },
-        "switch": {
-            "motion_detection": {
-                "name": "Detección Movimiento"
-            },
-            "disarming": {
-                "name": "Desarmado"
-            },
-            "cloud_connection": {
-                "name": "Conexión Nube"
-            },
-            "intelli_tour": {
-                "name": "Recorrido IA"
-            },
-            "event_notifications": {
-                "name": "Notificaciones Eventos"
-            },
-            "smart_motion_detection": {
-                "name": "Movimiento IA"
-            },
-            "alarm_output": {
-                "name": "Salida Alarma"
-            },
-            "privacy_mode": {
-                "name": "Modo Privacidad"
-            },
-            "mirror": {
-                "name": "Espejo Imagen"
-            },
-            "siren": {
-                "name": "Sirena"
-            },
-            "alarm": {
-                "name": "Alarma"
-            },
-            "vth_silence": {
-                "name": "No Molestar"
             }
         },
         "update": {
