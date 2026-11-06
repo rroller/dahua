@@ -1867,10 +1867,9 @@ class DahuaClient:
                 # today. It falls through to the hash as before, and is held to
                 # a reported serial only once it has actually given one.
                 #
-                # Retry the actual reads too: _vth_identity_over_rpc2
-                # memoises incomplete answers.
-                self._vth_identity_asked = False
-                self._vth_identity = None
+                # Retry the actual reads too: both identity readers
+                # memoise incomplete answers.
+                self._forget_identity_memos()
                 raise
             # ⚠ Recorded, and this is the one that matters most. The three
             # calls that record below are cosmetic: a wrong vendor or a wrong
@@ -1916,8 +1915,7 @@ class DahuaClient:
                 # The devices that reach it are exactly the ones that need
                 # that second question asked, so checking the policy first
                 # would stop the read that would have satisfied it.
-                self._vth_identity_asked = False
-                self._vth_identity = None
+                self._forget_identity_memos()
                 raise
 
             self.identity_derived_from_credentials = True
@@ -2172,6 +2170,26 @@ class DahuaClient:
         )
         self._rpc2_identity = identity
         return self._rpc2_identity
+
+    def _forget_identity_memos(self) -> None:
+        """Forget both remembered identity answers, so a retry really retries.
+
+        Called from the two paths in `async_get_system_info` that raise rather
+        than fall back. That raise is not the end of anything: the caller is the
+        one-time init block in `_async_update_data`, which keeps `initialized`
+        False and re-enters on the **same client** on the next refresh. Both
+        `_identity_over_rpc2` and `_vth_identity_over_rpc2` remember a None, so
+        without this a single RPC2 timeout on the first refresh would be
+        remembered for the life of the entry and the device would never set up.
+
+        The VTH half of this already existed and was written inline. It is a
+        method now because the second memo was missed when it was added, and a
+        third would be missed the same way.
+        """
+        self._vth_identity_asked = False
+        self._vth_identity = None
+        self._rpc2_identity_asked = False
+        self._rpc2_identity = None
 
     async def _identity_over_rpc2_if_cgi_cannot(self, error) -> dict | None:
         """The identity over RPC2, when this CGI refusal says CGI cannot answer.

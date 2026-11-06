@@ -404,6 +404,47 @@ async def test_a_camera_that_names_itself_but_not_its_serial_still_sets_up():
     assert (await client.get_device_type())["type"] == "IPC-HDW2849TM-S-IL"
 
 
+async def test_a_transient_rpc2_failure_is_retried_on_the_next_refresh():
+    """A memoised None plus a raise would be a permanent failure, not a retry.
+
+    `async_get_system_info` is called from the one-time init block in
+    `_async_update_data`, which leaves `initialized` False on a raise and
+    re-enters **on the same client** next refresh. Both identity readers
+    remember a None, so a single RPC2 timeout on an entry that is held to a
+    reported serial would otherwise be remembered for the life of the entry and
+    the device would never set up again.
+
+    The VTH half of this reset already existed. The new memo was missed when it
+    was added, which none of this change's mutations caught, so it is asserted
+    here with a client that fails once and then answers.
+    """
+    client, rpc2 = _client(_mangled())
+    # The policy an entry acquires once it has adopted a reported serial (#1141).
+    client._require_reported_serial = True
+
+    calls = {"n": 0}
+    real_request = rpc2.request
+
+    async def fails_once(method, params="unset", **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("the device did not answer in time")
+        return await real_request(method, params, **kwargs)
+
+    rpc2.request = fails_once
+
+    # First refresh: nothing readable over either transport, so it raises
+    # rather than silently going back to the credential hash.
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_system_info()
+
+    # Next refresh, same client. The memo must not have survived.
+    assert (await client.async_get_system_info()) == {
+        "serialNumber": "NOT-A-REAL-SERIAL"
+    }
+    assert client.identity_from_rpc2 is True
+
+
 async def test_a_device_that_will_not_name_itself_over_rpc2_falls_back_as_before():
     """RPC2 answering nothing useful must not stop the camera setting up at all.
 
