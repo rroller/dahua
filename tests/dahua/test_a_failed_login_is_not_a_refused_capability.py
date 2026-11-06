@@ -25,6 +25,7 @@ an exception here. Only the sentence and the latch were wrong.
 
 import json
 
+import aiohttp
 import pytest
 
 import custom_components.dahua as dahua
@@ -360,3 +361,22 @@ async def test_a_declined_login_is_not_logged_as_the_capability_being_refused(ca
     assert (
         "refuses the coaxial status too" not in messages
     ), "RPC2 was never asked about the coaxial status, so it refused nothing"
+
+
+async def test_a_stale_second_opinion_holds_the_reading_and_retries_next_poll():
+    http = _Http(code=287637505, message="Invalid session in request data!")
+    coordinator = _coordinator(http)
+    coordinator.uses_rpc2_deterrence = lambda: False
+
+    async def refuse_cgi(channel):
+        assert channel == 0
+        raise aiohttp.ClientResponseError(None, (), status=400)
+
+    coordinator.client.async_get_coaxial_control_io_status = refuse_cgi
+
+    for _ in range(2):
+        assert await coordinator._async_coaxial_status(0) == coordinator.data
+        assert coordinator._coaxial_status_rpc2_asked is False
+        assert coordinator._coaxial_status_over_rpc2 is False
+
+    assert http.methods == [RPC2_LOGIN_METHOD] * 4

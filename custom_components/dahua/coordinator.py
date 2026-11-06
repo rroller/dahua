@@ -6884,10 +6884,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             status = await self.client.async_get_coaxial_control_io_status_rpc2(channel)
         except Rpc2MethodRefused as refused:
             if rpc2_refusal_is_a_stale_login(refused):
-                # The session, not the capability. Let it out so the shared
-                # login is rebuilt, and do not record this as an answer.
+                # The client has already discarded the expired session. Keep
+                # the fallback inside this poll's refusal handling and allow
+                # the next poll to ask again with a rebuilt login.
                 self._coaxial_status_rpc2_asked = False
-                raise
+                _LOGGER.debug(
+                    "%s channel %s: the RPC2 second opinion met an expired "
+                    "session (%s); retry on the next poll",
+                    self._address,
+                    channel,
+                    refused,
+                )
+                return None
             if rpc2_refusal_is_a_failed_login(refused):
                 # The device would not accept a login, so RPC2 was never asked
                 # about the siren and the answer below would be a fabrication.
@@ -6975,9 +6983,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         different codes, and a third device answering "Authority:check failure",
         which is measured to mean no such method rather than a permission.
 
-        A stale login is re-raised rather than swallowed. That one is worth
-        recovering from, and treating it as "this device has no siren" would
-        silently drop a capability the device does have.
+        A stale login holds the last reading without deciding the capability
+        is absent. The client discards the session so a later poll can retry.
         """
         try:
             if self.uses_rpc2_deterrence() or getattr(
