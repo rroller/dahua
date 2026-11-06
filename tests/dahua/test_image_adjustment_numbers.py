@@ -80,6 +80,21 @@ class _Coordinator:
         double has to answer the question even though it is not the subject."""
         return False
 
+    def supports_audio_control(self, key):
+        return False
+
+    def supports_audio_input_volume(self):
+        return False
+
+    def supports_audio_output_volume(self):
+        return False
+
+    def supports_audio_in_denoise(self):
+        return False
+
+    def audio_control_owner(self, key):
+        return None
+
     def supports_video_color(self, field):
         return field in self._fields
 

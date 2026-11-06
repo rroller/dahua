@@ -326,6 +326,12 @@
             }
         },
         "number": {
+            "microphone_volume": {
+                "name": "Microphone volume"
+            },
+            "speaker_volume": {
+                "name": "Speaker volume"
+            },
             "image_brightness": {
                 "name": "Image brightness"
             },
@@ -438,6 +444,9 @@
             }
         },
         "switch": {
+            "noise_filter": {
+                "name": "Noise filter"
+            },
             "motion_detection": {
                 "name": "Motion Detection"
             },

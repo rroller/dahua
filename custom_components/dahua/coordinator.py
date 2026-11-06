@@ -33,6 +33,11 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from . import dahua_utils
 from . import refusals
+from .audio import (
+    AUDIO_CONTROLS,
+    audio_row_owner,
+    audio_table_prefix,
+)
 from .client import (
     VTH_PHONE_TABLE,
     DahuaClient,
@@ -1034,6 +1039,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _video_color_fields: frozenset = frozenset()
     _video_image_control_fields: frozenset = frozenset()
     _video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
+    _audio_control_owners: dict = {}
     # The VideoInOptions controls beyond Day/Night, and the VideoWidget overlay
     # visibility fields. On the class for the same reason as the three above:
     # the suite builds coordinators with object.__new__ and both the poll and
@@ -1199,6 +1205,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._video_widget_fields: frozenset = frozenset()
         # What the device said when a probe failed, keyed by probe name.
         self._probe_refusals: Dict[str, dict] = {}
+        self._audio_control_owners: dict[str, int | None] = {}
         self._channel_model = None
         self._supports_privacy_mode = False
         self._supports_floodlightmode = False
@@ -2094,6 +2101,55 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return bool(self._video_color_fields)
 
+    async def _async_probe_audio_control(self, config_name: str) -> bool:
+        """Find this channel's exact row for one audio control."""
+        spec = AUDIO_CONTROLS[config_name]
+        capability = spec[3]
+        # AUDIO_CONTROLS supplies these retryable names dynamically; keep the
+        # literals visible to the source-level probe-name guard:
+        # _note_probe_refusal("audio_input_volume")
+        # _note_probe_refusal("audio_output_volume")
+        # _note_probe_refusal("audio_in_denoise")
+        owners = getattr(self, "_audio_control_owners", None)
+        if owners is None or "_audio_control_owners" not in self.__dict__:
+            owners = self._audio_control_owners = {}
+        try:
+            table = await self.client.async_get_audio_config(config_name)
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal(capability, probe_error)
+            owners[config_name] = None
+            return False
+
+        self._note_probe_answered(capability)
+        owner = audio_row_owner(
+            table,
+            config_name,
+            self._channel,
+            recorder=self.is_recorder_host(),
+        )
+        owners[config_name] = owner
+        _LOGGER.debug(
+            "Channel %s audio control %s owner: %s",
+            self._channel,
+            config_name,
+            owner,
+        )
+        return owner is not None
+
+    async def _async_retry_audio_input_volume(self) -> bool:
+        already = self.supports_audio_input_volume()
+        return (
+            await self._async_probe_audio_control("microphone_volume")
+        ) and not already
+
+    async def _async_retry_audio_output_volume(self) -> bool:
+        already = self.supports_audio_output_volume()
+        return (await self._async_probe_audio_control("speaker_volume")) and not already
+
+    async def _async_retry_audio_in_denoise(self) -> bool:
+        already = self.supports_audio_in_denoise()
+        return (await self._async_probe_audio_control("noise_filter")) and not already
+
     async def _async_retry_video_color(self) -> bool:
         """Whether picture adjustments turned up that were missed at setup.
 
@@ -2701,6 +2757,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if self._wanted_by(SWITCH, SELECT):
                     await self._async_probe_video_image_control()
 
+                # Each setting has its own table, owner, retry, and platform
+                # gate. An answer for one never implies another is available.
+                if self._wanted_by(NUMBER):
+                    await self._async_probe_audio_control("microphone_volume")
+                    await self._async_probe_audio_control("speaker_volume")
+                if self._wanted_by(SWITCH):
+                    await self._async_probe_audio_control("noise_filter")
                 # The overlay visibility switches. Only the switch platform
                 # reads this table, so a device whose switches are turned off
                 # is never asked. The probe is shared with the retry a later
@@ -3127,6 +3190,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_video_image_control())
                 )
+            for config_name, spec in AUDIO_CONTROLS.items():
+                platform = NUMBER if spec[2] == "percentage" else SWITCH
+                if self.supports_audio_control(config_name) and self._wanted_by(
+                    platform
+                ):
+                    coros.append(
+                        asyncio.ensure_future(
+                            self._async_fetch_audio_control(config_name)
+                        )
+                    )
             # Overlay visibility for the switches. Gated on the probe and the
             # platform, and wrapped, for the same reasons as the two above.
             if self.reads_video_widget() and self._wanted_by(SWITCH):
@@ -4884,6 +4957,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         fetched.
         """
         return field in getattr(self, "_video_color_fields", frozenset())
+
+    def supports_audio_control(self, config_name: str) -> bool:
+        """Whether the device reported a verified owner for this control."""
+        return self.audio_control_owner(config_name) is not None
+
+    def audio_control_owner(self, config_name: str) -> int | None:
+        """Return the exact row established by this control's capability probe."""
+        return (getattr(self, "_audio_control_owners", None) or {}).get(config_name)
+
+    def supports_audio_input_volume(self) -> bool:
+        return self.supports_audio_control("microphone_volume")
+
+    def supports_audio_output_volume(self) -> bool:
+        return self.supports_audio_control("speaker_volume")
+
+    def supports_audio_in_denoise(self) -> bool:
+        return self.supports_audio_control("noise_filter")
 
     def supports_video_image_control(self, field: str) -> bool:
         """Whether this channel reported the requested image-control field."""
@@ -6909,6 +6999,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             }
             return carried or None
 
+    async def _async_fetch_audio_control(self, config_name: str) -> dict | None:
+        """Poll one audio table, carrying only its prior keys on refusal."""
+        try:
+            return await self.client.async_get_audio_config(config_name)
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read audio control %s for channel %s",
+                config_name,
+                self._channel,
+                exc_info=exception,
+            )
+            prefix = audio_table_prefix(config_name)
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value for key, value in previous.items() if key.startswith(prefix)
+            }
+            return carried or None
+
     async def _async_fetch_video_image_control(self) -> dict | None:
         """Poll image controls, keeping the last answer on a refusal."""
         try:
@@ -7126,6 +7234,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 # together, so a channel that lost that probe lost both of its controls.
 RETRYABLE_CAPABILITIES = {
     "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
+    AUDIO_CONTROLS["microphone_volume"][
+        3
+    ]: DahuaDataUpdateCoordinator._async_retry_audio_input_volume,
+    AUDIO_CONTROLS["speaker_volume"][
+        3
+    ]: DahuaDataUpdateCoordinator._async_retry_audio_output_volume,
+    AUDIO_CONTROLS["noise_filter"][
+        3
+    ]: DahuaDataUpdateCoordinator._async_retry_audio_in_denoise,
     "coaxial_control": DahuaDataUpdateCoordinator._async_retry_coaxial_control,
     "cloud_connection": DahuaDataUpdateCoordinator._async_retry_cloud_connection,
     "intelli_tour": DahuaDataUpdateCoordinator._async_retry_intelli_tour,

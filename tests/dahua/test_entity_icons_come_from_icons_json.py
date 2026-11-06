@@ -51,6 +51,9 @@ WAS = {
     ("sensor", "memory_used"): "mdi:memory",
     ("sensor", "processor_usage"): "mdi:cpu-64-bit",
     ("sensor", "profile"): "mdi:theme-light-dark",
+    ("number", "microphone_volume"): "mdi:microphone",
+    ("number", "speaker_volume"): "mdi:volume-high",
+    ("switch", "noise_filter"): "mdi:filter",
     ("switch", "alarm_output"): "mdi:alarm-light",
     ("switch", "cloud_connection"): "mdi:cloud-outline",
     ("switch", "intelli_tour"): "mdi:rotate-360",
@@ -183,6 +186,23 @@ def _keys_in_code():
     for platform in PLATFORMS:
         for key in _keys_passed_in(platform):
             found.setdefault((platform, key), "chosen by %s.py" % platform)
+    audio = ast.parse(io.open(PACKAGE / "audio.py", encoding="utf-8").read())
+    for node in audio.body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(target, ast.Name) and target.id == "AUDIO_CONTROLS"
+            for target in node.targets
+        ):
+            continue
+        for key, spec in zip(node.value.keys, node.value.values):
+            if (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and isinstance(spec, ast.Tuple)
+                and len(spec.elts) > 2
+                and isinstance(spec.elts[2], ast.Constant)
+                and spec.elts[2].value == "percentage"
+            ):
+                found[("number", key.value)] = "AUDIO_CONTROLS in audio.py"
     return found
 
 
