@@ -6970,11 +6970,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if declined not in _CAPABILITY_REFUSALS_REPORTED:
                     _CAPABILITY_REFUSALS_REPORTED.add(declined)
                     _LOGGER.warning(
-                        "%s did not accept an RPC2 login (%s), so nothing was read "
-                        "over RPC2 this cycle, the siren and white light state "
-                        "included. That is not this device saying what it supports, "
-                        "so those entities hold their last value and a later poll "
-                        "asks again. Reported once per device",
+                        "%s did not accept an RPC2 login (%s), so the siren and "
+                        "white light state could not be read over RPC2 this cycle. "
+                        "That is not this device saying what it supports, so those "
+                        "entities hold their last value and a later poll asks "
+                        "again. Reported once per device",
                         self._address,
                         refused,
                     )

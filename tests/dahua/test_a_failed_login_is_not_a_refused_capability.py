@@ -269,8 +269,17 @@ async def test_a_declined_login_says_so_once_per_device(caplog):
 
 async def test_a_stale_session_is_still_asked_about_first():
     """#1159's other line, `Invalid session in request data!`, arrives on
-    `global.login` too. It must keep escaping so the shared session is rebuilt,
-    which it only does while the stale question is asked before this one."""
+    `global.login` too, and it must keep escaping rather than being swallowed by
+    the branch above.
+
+    Pinning existing behaviour deliberately, not claiming it is ideal. Measured
+    both ways: two polls cost four login posts whichever branch takes the
+    refusal, because `_shared_rpc2` clears `holder.task` before its bare
+    `raise`, so the session is rebuilt either way. What the escape actually
+    does is fail the poll, which is the `Error fetching dahua data: ... code
+    287637505` line in #1159's log. Changing that is changing the poll, which
+    #1164 explicitly does not propose.
+    """
     coordinator = _coordinator(
         _Http(code=287637505, message="Invalid session in request data!")
     )
