@@ -1,10 +1,10 @@
 """What setup asks a device, and what it concludes when the device refuses.
 
-The one-time initialisation asks a camera thirteen separate questions about what it can
-do, each in its own handler, each turning one capability on or off. That block is the
-largest single piece of the integration and almost none of it was executed.
+The one-time initialisation asks a camera separate questions about what it can
+do, each in its own handler, each turning one capability on or off. That block
+is the largest single piece of the integration.
 
-The property that matters is the same for all thirteen: **a refusal is an answer, not a
+The property that matters is the same for all: **a refusal is an answer, not a
 failure.** A camera without a siren, without PTZ, without an illuminator is a perfectly
 good camera, and a probe that took setup down with it would make one missing feature into
 no integration at all. #854 was exactly that, reported by three people: an RPC2 refusal of
@@ -62,6 +62,7 @@ PROBES = [
     # inherits the three properties this file is about, which is exactly what it
     # did not have.
     ("async_get_video_color", "_video_color_fields", None),
+    ("async_probe_video_in_options", "_image_option_fields", None),
     # The device's own processor and memory. Both are RPC2 only with no CGI
     # form, so a device with RPC2 switched off refuses them in a way none of the
     # others do -- with a RuntimeError, not a ClientResponseError -- which is
@@ -81,6 +82,7 @@ PROBES = [
 # serve any subset, and a single yes could not say which.
 PROBE_SETS = {
     "_video_color_fields",
+    "_image_option_fields",
     "_video_widget_fields",
 }
 
@@ -113,6 +115,8 @@ FLAGS = (
     "_supports_smart_motion_detection",
     "_supports_system_load",
     "_video_color_fields",
+    "_image_option_fields",
+    "_video_widget_fields",
     "_supports_exposure_anti_flicker",
 )
 
@@ -256,7 +260,7 @@ async def test_setup_finishes(hass):
 
 async def test_setup_only_runs_its_probes_once(hass):
     """`initialized` is what stops the whole block running on every poll. Asking a
-    camera thirteen capability questions every thirty seconds is most of a poll
+    camera every capability question every thirty seconds is most of a poll
     budget spent on answers that do not change."""
     coordinator = _coordinator(hass)
     await coordinator._async_update_data()

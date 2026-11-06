@@ -3221,13 +3221,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
                     if self.supports_exposure_anti_flicker():
                         previous_mode = getattr(self, "data", None) or {}
-                        active_profile_key = (
-                            f"table.VideoInMode[{self._channel}].Config[0]"
-                        )
                         # Hold the last displayed state for this failed poll.
                         # Writes resolve the profile from a fresh read.
-                        if active_profile_key in previous_mode:
-                            data[active_profile_key] = previous_mode[active_profile_key]
+                        for field in ("Config[0]", "ConfigEx"):
+                            key = f"table.VideoInMode[{self._channel}].{field}"
+                            if key in previous_mode:
+                                data[key] = previous_mode[key]
 
             # The profile mode above has to be read first because the lighting
             # call below needs it. The PTZ position does not, so it joins the
