@@ -44,7 +44,18 @@
                 "default": "mdi:theme-light-dark"
             }
         },
+        "number": {
+            "microphone_volume": {
+                "default": "mdi:microphone"
+            },
+            "speaker_volume": {
+                "default": "mdi:volume-high"
+            }
+        },
         "switch": {
+            "noise_filter": {
+                "default": "mdi:filter"
+            },
             "alarm": {
                 "default": "mdi:bullhorn"
             },

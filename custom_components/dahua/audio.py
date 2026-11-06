@@ -22,6 +22,7 @@ produces a service error rather than preventing Dahua from setting up.
 import asyncio
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 from homeassistant.core import HomeAssistant
@@ -295,3 +296,122 @@ def _ffmpeg_binary(hass: HomeAssistant) -> str:
             translation_domain=DOMAIN,
             translation_key="audio_needs_ffmpeg",
         ) from error
+
+
+# (table, property, value kind, retryable capability) for the controls exposed
+# by the number and switch platforms.
+AUDIO_CONTROLS = {
+    "microphone_volume": (
+        "AudioInputVolume",
+        None,
+        "percentage",
+        "audio_input_volume",
+    ),
+    "speaker_volume": (
+        "AudioOutputVolume",
+        None,
+        "percentage",
+        "audio_output_volume",
+    ),
+    "noise_filter": (
+        "AudioInDenoise",
+        "enable",
+        "boolean",
+        "audio_in_denoise",
+    ),
+}
+
+
+def audio_config_key(config_name: str, owner: int) -> str:
+    """Return the exact config key for one verified audio-control owner."""
+    spec = AUDIO_CONTROLS.get(config_name)
+    if spec is None:
+        raise ValueError(f"{config_name} is not a supported Dahua audio setting")
+    if type(owner) is not int or owner < 0:
+        raise ValueError("Dahua audio-control owner must be a non-negative integer")
+    table, property_name, _kind, _capability = spec
+    key = f"table.{table}[{owner}]"
+    return f"{key}.{property_name}" if property_name else key
+
+
+def audio_row_owner(
+    table: dict, config_name: str, channel: int, *, recorder: bool = False
+) -> int | None:
+    """Return only the row explicitly matching this channel.
+
+    A lone row zero on a recorder does not identify which camera owns it.
+    """
+    try:
+        wanted = audio_config_key(config_name, channel)
+    except ValueError:
+        return None
+    if wanted not in table:
+        return None
+
+    spec = AUDIO_CONTROLS[config_name]
+    table_name, property_name, _kind, _capability = spec
+    suffix = f".{property_name}" if property_name else ""
+    pattern = re.compile(rf"table\.{re.escape(table_name)}\[(\d+)\]{re.escape(suffix)}")
+    owners = {
+        int(match.group(1))
+        for key in table
+        if (match := pattern.fullmatch(key)) is not None
+    }
+    if recorder and channel == 0 and owners == {0}:
+        return None
+    return channel
+
+
+def validate_audio_percentage(value) -> int:
+    """Accept an exact integer step in the 0..100 range without truncation."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Audio volume must be an integer between 0 and 100")
+    if (
+        value < 0 or value > 100 or not value.is_integer()
+        if isinstance(value, float)
+        else value < 0 or value > 100
+    ):
+        raise ValueError("Audio volume must be an integer between 0 and 100")
+    return int(value)
+
+
+def validate_audio_bool(value) -> bool:
+    """Accept only a real boolean for the noise filter."""
+    if type(value) is not bool:
+        raise ValueError("Noise filter must be a boolean")
+    return value
+
+
+def audio_config_value(data: dict, config_name: str, owner: int | None):
+    """Read and validate one audio control value from coordinator state."""
+    if owner is None:
+        return None
+    key = audio_config_key(config_name, owner)
+    value = data.get(key)
+    if value is None:
+        return None
+
+    _table, _property_name, kind, _capability = AUDIO_CONTROLS[config_name]
+    if kind == "boolean":
+        if value is True or value == "true":
+            return True
+        if value is False or value == "false":
+            return False
+        return None
+
+    if isinstance(value, str):
+        if not re.fullmatch(r"(?:0|[1-9]\d*)", value):
+            return None
+        value = int(value)
+    try:
+        return validate_audio_percentage(value)
+    except ValueError:
+        return None
+
+
+def audio_table_prefix(config_name: str) -> str:
+    """Return the table prefix used to carry only this control's prior state."""
+    spec = AUDIO_CONTROLS.get(config_name)
+    if spec is None:
+        raise ValueError(f"{config_name} is not a supported Dahua audio setting")
+    return f"table.{spec[0]}["

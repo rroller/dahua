@@ -91,6 +91,8 @@ def _tables_written() -> set:
     source = io.open(PACKAGE / "client.py", encoding="utf-8").read()
     # One group per shape, so each match has an empty half.
     found = {name for pair in _WRITES.findall(source) for name in pair if name}
+    audio = io.open(PACKAGE / "audio.py", encoding="utf-8").read()
+    found.update(re.findall(r'"(Audio(?:InDenoise|InputVolume|OutputVolume))"', audio))
 
     guards = dict(_VALIDATED.findall(source))
     for parameter in set(_PARAMETERISED.findall(source)):

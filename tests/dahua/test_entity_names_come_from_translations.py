@@ -55,6 +55,8 @@ WAS = {
     ("number", "vth_vto_ring_volume"): "Ring volume for {vto} calls",
     ("number", "motion_region1_sensitivity"): "Motion region 1 sensitivity",
     ("number", "motion_region1_threshold"): "Motion region 1 threshold",
+    ("number", "microphone_volume"): "Microphone volume",
+    ("number", "speaker_volume"): "Speaker volume",
     ("button", "reboot"): "Reboot",
     ("button", "open_door"): "Open Door",
     ("button", "cancel_call"): "Cancel Call",
@@ -101,6 +103,7 @@ WAS = {
     ("switch", "event_notifications"): "Event Notifications",
     ("switch", "smart_motion_detection"): "Smart Motion Detection",
     ("switch", "alarm_output"): "Alarm Output",
+    ("switch", "noise_filter"): "Noise filter",
     ("switch", "privacy_mode"): "Privacy Mode",
     # Named by the platform until the six below moved; the two pairs are a
     # capability choice, not an index. "Image mirror" rather than "Mirror" to
@@ -240,6 +243,23 @@ def _keys_in_code():
     for platform, table in KEY_TABLES:
         for key in _keys_in_a_table(platform, table):
             found.setdefault((platform, key), "%s in %s.py" % (table, platform))
+    audio = ast.parse(io.open(PACKAGE / "audio.py", encoding="utf-8").read())
+    for node in audio.body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(target, ast.Name) and target.id == "AUDIO_CONTROLS"
+            for target in node.targets
+        ):
+            continue
+        for key, spec in zip(node.value.keys, node.value.values):
+            if (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and isinstance(spec, ast.Tuple)
+                and len(spec.elts) > 2
+                and isinstance(spec.elts[2], ast.Constant)
+                and spec.elts[2].value == "percentage"
+            ):
+                found[("number", key.value)] = "AUDIO_CONTROLS in audio.py"
     return found
 
 

@@ -11,6 +11,7 @@ from homeassistant.const import EntityCategory
 from custom_components.dahua import entry_coordinators
 
 from . import dahua_utils, refusals
+from .audio import audio_config_value
 from .const import DOMAIN
 from .entity import DahuaBaseEntity, DahuaHostEntity
 from .const import VTH_SILENCE_FIELD
@@ -183,6 +184,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
                 DahuaDisarmingEventNotificationsLinkageBinarySwitch(coordinator, entry)
             )
 
+        if coordinator.supports_audio_in_denoise():
+            devices.append(DahuaAudioNoiseFilterSwitch(coordinator, entry))
+
         devices.extend(
             DahuaIVSRuleSwitch(coordinator, entry, rule)
             for rule in coordinator.get_ivs_rules()
@@ -205,6 +209,51 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         entry_coordinators,
         subentry_for=_filed_under,
     )
+
+
+class DahuaAudioNoiseFilterSwitch(DahuaBaseEntity, SwitchEntity):
+    """The per-channel noise filter enable switch."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_translation_key = "noise_filter"
+
+    def __init__(self, coordinator, entry):
+        DahuaBaseEntity.__init__(self, coordinator, entry)
+        SwitchEntity.__init__(self)
+        self._coordinator = coordinator
+        self._owner = coordinator.audio_control_owner("noise_filter")
+        self._attr_unique_id = "%s_noise_filter_%s" % (
+            coordinator.get_serial_number(),
+            self._owner,
+        )
+
+    @property
+    def unique_id(self):
+        return self._attr_unique_id
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and audio_config_value(self._coordinator.data, "noise_filter", self._owner)
+            is not None
+        )
+
+    @property
+    def is_on(self):
+        return audio_config_value(self._coordinator.data, "noise_filter", self._owner)
+
+    async def async_turn_on(self, **kwargs):
+        await self._coordinator.client.async_set_audio_config(
+            "noise_filter", self._owner, True
+        )
+        await self._coordinator.async_refresh()
+
+    async def async_turn_off(self, **kwargs):
+        await self._coordinator.client.async_set_audio_config(
+            "noise_filter", self._owner, False
+        )
+        await self._coordinator.async_refresh()
 
 
 class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
