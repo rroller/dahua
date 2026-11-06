@@ -30,7 +30,7 @@ from .const import (
 from .dhip import DhipLoginRefused, DhipTransport
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
-from .rpc2 import DahuaRpc2Client, Rpc2MethodRefused
+from .rpc2 import RPC2_LOGIN_METHOD, DahuaRpc2Client, Rpc2MethodRefused
 
 # An indoor monitor's call settings: do not disturb, and the volumes (#949, #998).
 VTH_PHONE_TABLE = "VideoTalkPhoneGeneral"
@@ -248,6 +248,28 @@ def rpc2_refusal_is_a_stale_login(refused) -> bool:
         return True
     message = getattr(refused, "message", None)
     return isinstance(message, str) and "session" in message.lower()
+
+
+def rpc2_refusal_is_a_failed_login(refused) -> bool:
+    """Whether the device refused the login rather than the call.
+
+    Every RPC2 read logs in first, so a login the device declines surfaces at
+    the caller as a refusal of whatever that caller was reading. Taken from
+    @Masterz69's log on https://github.com/rroller/dahua/issues/1159: a camera
+    out of login slots answered `global.login` with `InterfaceNotFound`, and the
+    siren read reported the camera as not serving `CoaxialControlIO.getStatus`,
+    which the device had said nothing about.
+
+    Asked by method rather than by code or message on purpose. The codes a
+    declined login carries are not documented and differ between the reports,
+    while the method is what this client itself sent, so it is the one part of
+    the refusal that is not the device's choice of words.
+
+    A **stale** login is a different question, answered by
+    `rpc2_refusal_is_a_stale_login` above: that one is worth a retry and this
+    one is not.
+    """
+    return getattr(refused, "method", None) == RPC2_LOGIN_METHOD
 
 
 async def drop_stale_rpc2_login(holder, login_task) -> None:

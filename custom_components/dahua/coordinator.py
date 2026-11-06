@@ -44,6 +44,7 @@ from .client import (
     _describe_client_error,
     parse_alarm_inputs,
     parse_storage_disks,
+    rpc2_refusal_is_a_failed_login,
     rpc2_refusal_is_a_stale_login,
 )
 from .late import async_notify_capability_discovered, async_notify_late_work_settled
@@ -6959,6 +6960,31 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # The login, not the capability. Let it out so the session is
                 # rebuilt rather than swallowing it as "no such method".
                 raise
+            if rpc2_refusal_is_a_failed_login(refused):
+                # The device would not accept a login, so it was never asked
+                # about the siren at all. Reported on its own key: spending the
+                # capability slot here is what kept the accurate sentence below
+                # from ever being printed on a device that had met this first
+                # (#1164).
+                declined = (self.client.device_key, "rpc2-login")
+                if declined not in _CAPABILITY_REFUSALS_REPORTED:
+                    _CAPABILITY_REFUSALS_REPORTED.add(declined)
+                    _LOGGER.warning(
+                        "%s did not accept an RPC2 login (%s), so the siren and "
+                        "white light state could not be read over RPC2 this cycle. "
+                        "That is not this device saying what it supports, so those "
+                        "entities hold their last value and a later poll asks "
+                        "again. Reported once per device",
+                        self._address,
+                        refused,
+                    )
+                else:
+                    _LOGGER.debug(
+                        "%s still will not accept an RPC2 login (%s)",
+                        self._address,
+                        refused,
+                    )
+                return self._previous_coaxial_status()
             target = (self.client.device_key, "rpc2")
             if target not in _CAPABILITY_REFUSALS_REPORTED:
                 _CAPABILITY_REFUSALS_REPORTED.add(target)
