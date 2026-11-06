@@ -60,6 +60,12 @@ PROBES = [
     # inherits the three properties this file is about, which is exactly what it
     # did not have.
     ("async_get_video_color", "_video_color_fields", None),
+    ("async_get_video_in_mode", "_supports_exposure_anti_flicker", None),
+    (
+        "async_get_exposure_anti_flicker_config",
+        "_supports_exposure_anti_flicker",
+        None,
+    ),
     # The device's own processor and memory. Both are RPC2 only with no CGI
     # form, so a device with RPC2 switched off refuses them in a way none of the
     # others do -- with a RuntimeError, not a ClientResponseError -- which is
@@ -91,6 +97,7 @@ FLAGS = (
     "_supports_day_night_color",
     "_supports_disarming_linkage",
     "_supports_event_notifications",
+    "_supports_exposure_anti_flicker",
     "_supports_intelli_tour",
     "_supports_floodlightmode",
     "_supports_lighting",
@@ -140,6 +147,10 @@ class _Client:
     SHAPED = {
         "get_max_extra_streams": 1,
         "get_software_version": {"version": "1.0"},
+        "async_get_video_in_mode": {"table.VideoInMode[0].Config[0]": "0"},
+        "async_get_exposure_anti_flicker_config": {
+            "table.VideoInExposure[0][0].AntiFlicker": "0"
+        },
     }
 
     def __init__(self, refusing=None, model="IPC-HFW1234"):

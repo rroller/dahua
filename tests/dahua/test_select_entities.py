@@ -13,7 +13,9 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.dahua import select as select_module
-from custom_components.dahua.const import VIDEO_COLOR_STYLE_OPTIONS
+from custom_components.dahua.const import (
+    VIDEO_COLOR_STYLE_OPTIONS,
+)
 from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 from custom_components.dahua.select import (
     DahuaCameraPresetPositionSelect,
@@ -356,6 +358,7 @@ async def _added_for(coordinator, cgi_presets=None):
         DahuaDoorbellLightSelect=lambda *a, **k: "light",
         DahuaCameraPresetPositionSelect=lambda *a, **k: ("preset", k.get("preset_ids")),
         DahuaDayNightModeSelect=lambda *a, **k: "day_night",
+        DahuaExposureAntiFlickerSelect=lambda *a, **k: "exposure_anti_flicker",
         DahuaVideoColorStyleSelect=lambda *a, **k: "style",
         DahuaImageRotationSelect=lambda *a, **k: "rotation",
         _async_preset_ids=_preset_ids,
@@ -375,12 +378,14 @@ class _SetupCoordinator(_Coordinator):
         presets=(1, 2),
         preset_error=None,
         day_night_supported=False,
+        exposure_anti_flicker_supported=False,
         infrared_supported=False,
         style_supported=False,
         image_control_fields=(),
     ):
         super().__init__()
         self._day_night_supported = day_night_supported
+        self._exposure_anti_flicker_supported = exposure_anti_flicker_supported
         self._infrared_supported = infrared_supported
         self._style_supported = style_supported
         self._image_control_fields = frozenset(image_control_fields)
@@ -411,6 +416,9 @@ class _SetupCoordinator(_Coordinator):
 
     def supports_day_night_color(self):
         return self._day_night_supported
+
+    def supports_exposure_anti_flicker(self):
+        return self._exposure_anti_flicker_supported
 
     def supports_video_color(self, field):
         return field == "Style" and self._style_supported
@@ -567,6 +575,13 @@ async def test_the_day_night_select_needs_a_device_that_reports_the_mode():
     would leave a control showing unknown for ever."""
     assert "day_night" not in await _added_for(_SetupCoordinator())
     assert "day_night" in await _added_for(_SetupCoordinator(day_night_supported=True))
+
+
+async def test_exposure_anti_flicker_select_needs_reported_support():
+    assert "exposure_anti_flicker" not in await _added_for(_SetupCoordinator())
+    assert "exposure_anti_flicker" in await _added_for(
+        _SetupCoordinator(exposure_anti_flicker_supported=True)
+    )
 
 
 async def test_style_select_requires_reported_style_support():

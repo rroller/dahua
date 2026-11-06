@@ -88,6 +88,8 @@ DAY_NIGHT = "async_get_video_in_options"
 ALARM_OUT = "async_get_alarm_output_state"
 CLOUD_UPGRADE = "async_get_cloud_upgrade_info"
 VIDEO_IMAGE_CONTROL = "async_get_video_image_control"
+VIDEO_IN_MODE = "async_get_video_in_mode"
+GET_EXPOSURE_CONFIG = "async_get_exposure_anti_flicker_config"
 
 
 async def test_everything_is_fetched_when_every_platform_is_on():
@@ -167,6 +169,20 @@ async def test_image_controls_are_polled_only_when_a_supported_control_has_a_rea
     c._video_image_control_fields = frozenset({"Flip", "Rotate90"})
     await c._async_update_data()
     assert VIDEO_IMAGE_CONTROL not in c.client.calls
+
+
+async def test_exposure_anti_flicker_polls_only_for_its_select():
+    c = _coordinator()
+    c._supports_exposure_anti_flicker = True
+    await c._async_update_data()
+    assert VIDEO_IN_MODE in c.client.calls
+    assert GET_EXPOSURE_CONFIG in c.client.calls
+
+    c = _coordinator(select=False)
+    c._supports_exposure_anti_flicker = True
+    await c._async_update_data()
+    assert VIDEO_IN_MODE not in c.client.calls
+    assert GET_EXPOSURE_CONFIG not in c.client.calls
 
 
 # --- a request with two readers survives losing one of them ------------------

@@ -378,6 +378,14 @@
             "day_night_mode": {
                 "name": "Modo Día/Noche"
             },
+            "exposure_anti_flicker": {
+                "name": "Imagen exposición antiparpadeo",
+                "state": {
+                    "outdoor": "Exterior",
+                    "50_hz": "50 Hz",
+                    "60_hz": "60 Hz"
+                }
+            },
             "video_color_style": {
                 "name": "Estilo Color Imagen"
             },

@@ -31,6 +31,7 @@ PACKAGE = Path(__file__).resolve().parents[2] / "custom_components" / "dahua"
 # The controls that are not built from a table, with the platform each lives in.
 SINGLETON_CONTROLS = {
     ("select", "video_color_style"),
+    ("select", "exposure_anti_flicker"),
     ("select", "image_rotation"),
     ("switch", "mirror"),
 }

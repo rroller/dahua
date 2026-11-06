@@ -11,7 +11,12 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
 from . import dahua_utils, entry_coordinators
-from .const import DOMAIN, VIDEO_COLOR_STYLE_OPTIONS
+from .const import (
+    DOMAIN,
+    EXPOSURE_ANTI_FLICKER_OPTIONS,
+    EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION,
+    VIDEO_COLOR_STYLE_OPTIONS,
+)
 from .entity import DahuaBaseEntity
 from .infrared import (
     MODE_BY_OPTION,
@@ -104,6 +109,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 
         if coordinator.supports_day_night_color():
             devices.append(DahuaDayNightModeSelect(coordinator, entry))
+
+        if coordinator.supports_exposure_anti_flicker():
+            devices.append(DahuaExposureAntiFlickerSelect(coordinator, entry))
 
         if (
             not coordinator.is_indoor_monitor_without_video()
@@ -487,6 +495,32 @@ class DahuaVideoColorStyleSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.client.async_set_video_color_style(
             self._coordinator.get_channel(), option
         )
+        await self._coordinator.async_refresh()
+
+
+class DahuaExposureAntiFlickerSelect(DahuaBaseEntity, SelectEntity):
+    """Select the AntiFlicker value on Dahua's active exposure profile."""
+
+    _attr_translation_key = "exposure_anti_flicker"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options: ClassVar[list[str]] = list(EXPOSURE_ANTI_FLICKER_OPTIONS)
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_exposure_anti_flicker"
+
+    @property
+    def current_option(self):
+        return self._coordinator.get_exposure_anti_flicker()
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION:
+            return
+        await self._coordinator.async_set_exposure_anti_flicker(option)
         await self._coordinator.async_refresh()
 
 
