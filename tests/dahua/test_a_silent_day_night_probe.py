@@ -270,14 +270,14 @@ def test_the_day_night_judgment_is_made_in_exactly_one_place():
     then be free to disagree about whether a 200 with no row is an answer,
     which is precisely the distinction the fix rests on.
 
-    The probe reads through the strict method and the poll through the lenient
-    one. Both URLs are the same, so the shared cache still serves them from one
-    request; a second call site of either would mean a second judgment.
+    The probe and poll have one reader each. The poll's client reader delegates
+    to the strict reader, so the two strict call sites are that delegation and
+    the coordinator's capability probe. Both share the same request and cache.
     """
     assert _SOURCE.count('_note_probe_refusal("day_night_color"') == 1
     assert (
-        _SOURCE.count("async_probe_video_in_options()") == 1
-    ), "the strict read belongs to the probe, and only the probe"
+        _SOURCE.count("async_probe_video_in_options()") == 2
+    ), "the strict read belongs to the capability probe and poll-reader delegation"
     assert (
         _SOURCE.count("async_get_video_in_options()") == 1
-    ), "the lenient read belongs to the poll's fetch, and only the fetch"
+    ), "the poll read belongs to the poll's fetch, and only the fetch"

@@ -13,7 +13,11 @@ pinning here that a per-entity test would miss:
 
 from types import SimpleNamespace
 
+import pytest
+from aiohttp import ClientResponseError
+
 from custom_components.dahua import coordinator as coordinator_module
+from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.coordinator import (
     DahuaDataUpdateCoordinator,
     WIDE_DYNAMIC_RANGE_OPTIONS,
@@ -356,6 +360,52 @@ async def test_the_video_in_options_fetch_keeps_the_last_answer_on_a_refusal():
         "table.VideoInOptions[0].WideDynamicRangeMode": "1",
         "table.VideoInOptions[0].WideDynamicRange": "50",
     }
+
+
+@pytest.mark.parametrize("status", [400, 403, 500])
+async def test_image_option_http_refusal_carries_state_through_real_client(status):
+    """The lenient reader swallows HTTP errors before the wrapper sees them."""
+    client = DahuaClient.__new__(DahuaClient)
+
+    async def get(url, *args, **kwargs):
+        assert url == (
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"
+        )
+        raise ClientResponseError(
+            SimpleNamespace(real_url="http://device.invalid/cgi-bin/configManager.cgi"),
+            (),
+            status=status,
+        )
+
+    client.get = get
+    coordinator = _coordinator(client=client, _channel=3)
+    expected = {
+        "table.VideoInOptions[3].WideDynamicRangeMode": "1",
+        "table.VideoInOptions[3].WideDynamicRange": "50",
+        "table.VideoInOptions[3].ExposureMode": "2",
+    }
+    coordinator.data = {**expected, "unrelated": "not carried"}
+
+    assert await coordinator._async_fetch_video_in_options() == expected
+
+
+async def test_image_option_successful_empty_response_does_not_carry_old_state():
+    client = DahuaClient.__new__(DahuaClient)
+
+    async def get(url, *args, **kwargs):
+        assert url == (
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"
+        )
+        return {}
+
+    client.get = get
+    coordinator = _coordinator(
+        client=client,
+        _channel=3,
+        data={"table.VideoInOptions[3].ExposureMode": "2"},
+    )
+
+    assert await coordinator._async_fetch_video_in_options() == {}
 
 
 async def test_the_video_widget_fetch_keeps_the_last_answer_on_a_refusal():

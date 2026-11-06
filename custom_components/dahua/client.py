@@ -5020,20 +5020,20 @@ class DahuaClient:
         one fetch per five minutes per host rather than one per poll. A write
         clears that cache for the device, so setting the mode is reflected on
         the next read rather than up to five minutes later.
+
+        Let HTTP failures reach the coordinator's carry-forward wrapper. An
+        error converted to an empty table would discard its last known state.
         """
-        return await self.async_get_config("VideoInOptions")
+        return await self.async_probe_video_in_options()
 
     async def async_probe_video_in_options(self) -> dict:
         """Read VideoInOptions for a capability probe, letting refusals raise.
 
-        `async_get_config` is the right shape for a poll read -- a device with
-        no such table is not an error there -- but the wrong shape for a probe:
-        it turns an HTTP 403 into `{}`, so a restricted account would be
-        recorded as "this model has no such table" and the diagnostics dump
-        would show an empty capability list with no refusal beside it. This
-        asks through `get` so `_note_probe_refusal` can tell a refusal from an
-        empty answer. The URL is identical, so the shared read cache still
-        serves both callers from one request.
+        `async_get_config` turns an HTTP refusal into `{}`, which loses the
+        distinction between a failed read and a successful empty response.
+        Both the capability probe and the poll need that distinction: the
+        former records the refusal, and the latter keeps its last known state.
+        The shared URL lets both callers use the same cached request.
         """
         return await self.get(
             "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"
