@@ -1032,6 +1032,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _coaxial_status_over_rpc2: bool = False
     _coaxial_status_rpc2_asked: bool = False
 
+    # How many times this channel has met a declined RPC2 login while
+    # asking for the coaxial status, so the asking stops rather than
+    # spending a login every poll for the life of the process.
+    _coaxial_status_login_refusals: int = 0
+
     # The recorder's own alarm input terminals (#1090), on the class for the
     # same reason and with the same rule: reassigned, never mutated. Only the
     # one coordinator that probed them has a non-empty list, so these also
@@ -6883,6 +6888,33 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # login is rebuilt, and do not record this as an answer.
                 self._coaxial_status_rpc2_asked = False
                 raise
+            if rpc2_refusal_is_a_failed_login(refused):
+                # The device would not accept a login, so RPC2 was never asked
+                # about the siren and the answer below would be a fabrication.
+                #
+                # Retried, but a bounded number of times. Measured in a double:
+                # seven channels refreshing together cost **one** declined login,
+                # not seven, because `_shared_rpc2` registers the login future
+                # before awaiting it and the poll fans out with `asyncio.gather`.
+                # One per poll is still not free -- at a 30 second scan interval
+                # that is ten inside the 300 second window a device locks out
+                # after five failures in -- so this stops after
+                # MAX_CAPABILITY_RETRIES rather than asking for ever.
+                attempts = self._coaxial_status_login_refusals = (
+                    self._coaxial_status_login_refusals + 1
+                )
+                if attempts < MAX_CAPABILITY_RETRIES:
+                    self._coaxial_status_rpc2_asked = False
+                _LOGGER.debug(
+                    "%s channel %s: RPC2 would not accept a login (%s), so the "
+                    "coaxial status was not asked over it. Attempt %s of %s",
+                    self._address,
+                    channel,
+                    refused,
+                    attempts,
+                    MAX_CAPABILITY_RETRIES,
+                )
+                return None
             _LOGGER.debug(
                 "%s channel %s: RPC2 refuses the coaxial status too (%s)",
                 self._address,
@@ -6957,9 +6989,39 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return await self.client.async_get_coaxial_control_io_status(channel)
         except Rpc2MethodRefused as refused:
             if rpc2_refusal_is_a_stale_login(refused):
-                # The login, not the capability. Let it out so the session is
-                # rebuilt rather than swallowing it as "no such method".
-                raise
+                # The session, not the capability, and not a reason to fail the
+                # refresh either.
+                #
+                # This used to re-raise, on the stated grounds that letting it
+                # out is what rebuilds the shared login. Measured both ways, that
+                # is not so: two polls cost four login posts whichever branch
+                # takes the refusal, because `_shared_rpc2` clears `holder.task`
+                # in its own handler before re-raising. The session is rebuilt
+                # either way, so the only thing the escape achieved was an
+                # `Error fetching dahua data` for every refresh that met an
+                # expired session -- which is the `code=287637505` line in
+                # https://github.com/rroller/dahua/issues/1159's log.
+                #
+                # Reported on its own key, like the declined login below: an
+                # expired session is not this device saying what it supports.
+                expired = (self.client.device_key, "rpc2-session")
+                if expired not in _CAPABILITY_REFUSALS_REPORTED:
+                    _CAPABILITY_REFUSALS_REPORTED.add(expired)
+                    _LOGGER.warning(
+                        "%s had an expired RPC2 session when the siren and white "
+                        "light state was read (%s). The session is rebuilt for the "
+                        "next poll and those entities hold their last value until "
+                        "then. Reported once per device",
+                        self._address,
+                        refused,
+                    )
+                else:
+                    _LOGGER.debug(
+                        "%s met an expired RPC2 session again (%s)",
+                        self._address,
+                        refused,
+                    )
+                return self._previous_coaxial_status()
             if rpc2_refusal_is_a_failed_login(refused):
                 # The device would not accept a login, so it was never asked
                 # about the siren at all. Reported on its own key: spending the

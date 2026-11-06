@@ -28,6 +28,7 @@ import json
 import pytest
 
 import custom_components.dahua as dahua
+from custom_components.dahua.coordinator import MAX_CAPABILITY_RETRIES
 from custom_components.dahua.client import (
     DahuaClient,
     rpc2_refusal_is_a_failed_login,
@@ -267,27 +268,95 @@ async def test_a_declined_login_says_so_once_per_device(caplog):
     assert len(warnings) == 1, warnings
 
 
-async def test_a_stale_session_is_still_asked_about_first():
+async def test_a_stale_session_is_still_asked_about_first_and_is_not_a_failure():
     """#1159's other line, `Invalid session in request data!`, arrives on
-    `global.login` too, and it must keep escaping rather than being swallowed by
-    the branch above.
+    `global.login` too, and the stale question must keep being asked first.
 
-    Pinning existing behaviour deliberately, not claiming it is ideal. Measured
-    both ways: two polls cost four login posts whichever branch takes the
-    refusal, because `_shared_rpc2` clears `holder.task` before its bare
-    `raise`, so the session is rebuilt either way. What the escape actually
-    does is fail the poll, which is the `Error fetching dahua data: ... code
-    287637505` line in #1159's log. Changing that is changing the poll, which
-    #1164 explicitly does not propose.
+    The order is what this is about. A stale session and a declined login are
+    both refusals of `global.login`, so whichever branch runs first claims both
+    unless the narrower question goes first. That is why the two are told apart
+    by the session code and the word "session" rather than by the method alone.
+
+    Neither of them fails the refresh any more. The escape used to, and the
+    reason given for it was wrong: measured both ways, two polls cost four login
+    posts whichever branch takes the refusal, because `_shared_rpc2` clears
+    `holder.task` in its own handler before re-raising. The session is rebuilt
+    either way, so the escape bought only the `Error fetching dahua data: ...
+    code 287637505` line in #1159's log.
     """
     coordinator = _coordinator(
         _Http(code=287637505, message="Invalid session in request data!")
     )
+    coordinator.data = {"status.status.Speaker": "On"}
 
-    with pytest.raises(Rpc2MethodRefused) as refused:
-        await coordinator._async_coaxial_status(0)
+    held = await coordinator._async_coaxial_status(0)
 
-    assert refused.value.method == RPC2_LOGIN_METHOD
+    assert held == {"status.status.Speaker": "On"}, "the reading was not held"
+    assert dahua._CAPABILITY_REFUSALS_REPORTED == {
+        (DEVICE, "rpc2-session")
+    }, "an expired session is reported as itself, not as a declined login"
     assert (
-        dahua._CAPABILITY_REFUSALS_REPORTED == set()
-    ), "a stale login is not an answer about anything, so it spends no slot"
+        coordinator._coaxial_status_over_rpc2 is False
+    ), "the transport verdict is not something an expired session gets to make"
+    assert coordinator._coaxial_status_rpc2_asked is False, (
+        "nor is 'this channel has been asked': the session expired before the "
+        "device answered anything"
+    )
+
+
+# --- the second opinion, and what a declined login costs it ------------------
+
+
+async def test_a_declined_login_does_not_write_rpc2_off_for_the_channel():
+    """The second opinion latched `_coaxial_status_rpc2_asked` before the call
+    and only un-latched it for an expired session, so a declined login stopped
+    that channel ever trying RPC2 again and logged "RPC2 refuses the coaxial
+    status too" about a transport that had answered nothing."""
+    coordinator = _coordinator(_Http())
+
+    assert await coordinator._async_coaxial_status_second_opinion(0) is None
+    assert (
+        coordinator._coaxial_status_rpc2_asked is False
+    ), "a declined login is not this channel's answer about RPC2"
+    assert coordinator._coaxial_status_over_rpc2 is False
+
+
+async def test_the_retry_is_bounded_and_the_bound_is_the_login_count():
+    """Measured, because this is the only part with a cost attached.
+
+    Seven channels refreshing together spend **one** declined login, not seven:
+    `_shared_rpc2` registers the login future before awaiting it and the poll
+    fans out with `asyncio.gather`. One per poll is still not free, though. At
+    the 30 second scan interval of
+    https://github.com/rroller/dahua/issues/1159 that would be ten inside the
+    300 second window a Dahua device locks out after five failures in, so the
+    asking stops rather than going on for the life of the process.
+    """
+    http = _Http()
+    coordinator = _coordinator(http)
+
+    for _poll in range(6):
+        await coordinator._async_coaxial_status_second_opinion(0)
+
+    # Two posts per login: the challenge, then the attempt that is declined.
+    logins = len(http.methods) // 2
+    assert (
+        logins == MAX_CAPABILITY_RETRIES
+    ), "six polls spent %s declined logins; the bound is %s" % (
+        logins,
+        MAX_CAPABILITY_RETRIES,
+    )
+    assert coordinator._coaxial_status_rpc2_asked is True, "the asking never stopped"
+
+
+async def test_a_declined_login_is_not_logged_as_the_capability_being_refused(caplog):
+    coordinator = _coordinator(_Http())
+
+    with caplog.at_level("DEBUG"):
+        await coordinator._async_coaxial_status_second_opinion(0)
+
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "would not accept a login" in messages
+    assert (
+        "refuses the coaxial status too" not in messages
+    ), "RPC2 was never asked about the coaxial status, so it refused nothing"
