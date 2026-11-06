@@ -1581,6 +1581,45 @@ def _is_login_refused(exception: aiohttp.ClientResponseError) -> bool:
     return exception.status == 401
 
 
+# What aiohttp puts in `message` when it synthesises this 400 itself. The C
+# parser appends the offending bytes and a caret, the pure-Python parser stops
+# here, so this is a prefix rather than the whole string. It is aiohttp's own
+# wording and nothing promises it is stable, which is why there is a test that
+# pins it against a real aiohttp over loopback: an upgrade that changes it has
+# to redden that test rather than quietly put #1176's camera back on a hash.
+MANGLED_FRAMING_MESSAGE = "Data after `Connection: close`"
+
+
+def refusal_is_mangled_framing(exception) -> bool:
+    """True when aiohttp synthesised this 400, rather than the device sending it.
+
+    A DH-IPC-HDW2849TM-S-IL on firmware 3.120 answers every authenticated CGI
+    call with a complete 200 and then one stray header line (#1176). aiohttp
+    rejects the whole exchange over those trailing bytes and raises
+    `ClientResponseError` with `status = 400` -- a status the device never sent.
+    Both parsers do it, so running the lenient one is not a way out.
+
+    The status alone cannot be the test. A recorder answers a real 400 to
+    `snapshot.cgi` for a channel it does not have, which is exactly why
+    `CONFIG_CGI_ABSENT` lists only 404 and 501. Measured 2026-11-07 over
+    loopback on aiohttp 3.14.3, two things do separate them:
+
+        trailing data, C parser            message "Data after `Conn...  headers None
+        trailing data, pure-Python parser  message 'Data after `Conn...  headers None
+        a real 400, empty body             message 'Bad Request'        headers set
+        a real 400 with an `Error` body    message 'Bad Request'        headers set
+
+    The message is what this reads, because it says what actually happened.
+    `headers is None` is the weaker signal: it says only that no response
+    survived to carry them, which other synthesised errors also manage.
+    """
+    if getattr(exception, "status", None) != 400:
+        return False
+    return str(getattr(exception, "message", "") or "").startswith(
+        MANGLED_FRAMING_MESSAGE
+    )
+
+
 # The four diagonals, which carry the speed in arg1 as well as in arg2.
 #
 # A straight move sends arg1=0 and the speed in arg2 only. A diagonal sent that
@@ -1627,6 +1666,15 @@ class DahuaClient:
     # level default because the test suite builds clients with `object.__new__`
     # and every reader would otherwise need a getattr.
     identity_from_alternate_cgi = False
+    # Whether this device's identity came over RPC2 because its CGI answers
+    # were unreadable (#1176). Read by `async_setup_entry` alongside the two
+    # above, so the serial it reported is adopted and then held to. Class level
+    # defaults for the same reason as every flag here: much of the suite builds
+    # clients with `object.__new__`, and the memo fields are read before the
+    # first call as well as after it.
+    identity_from_rpc2 = False
+    _rpc2_identity_asked = False
+    _rpc2_identity = None
 
     def __init__(
         self,
@@ -1795,9 +1843,11 @@ class DahuaClient:
             # identity simply fell back and the entry carried on.
             if strict_auth and _is_login_refused(e):
                 raise
-            if e.status in self.CONFIG_CGI_ABSENT:
+            identity = await self._identity_over_rpc2_if_cgi_cannot(e)
+            if identity and identity.get("serial"):
                 # A monitor with no magicBox CGI still knows its own serial, and
-                # the hash below changes when the password does (#805).
+                # so does the camera in #1176 whose answers are unreadable. The
+                # hash below changes when the password does (#805).
                 #
                 # #1103 held this to monitors reached over DHIP, because a VTH
                 # that serves HTTP answers 404 to magicBox.cgi as well and
@@ -1809,32 +1859,40 @@ class DahuaClient:
                 # already moved on him once, when he changed the password.
                 # `migrate.py` now moves the registry with it, so the gate is
                 # gone and every monitor gets the serial printed on it.
-                vth = await self._vth_identity_over_rpc2()
-                if vth and vth.get("serial"):
-                    return {"serialNumber": vth["serial"]}
-                if vth or self._rpc2_over_dhip:
-                    # A monitor that would not name itself this time. Either
-                    # it still says it is a VTH, or it was identified as a
-                    # DHIP monitor when it was added and has no other
-                    # transport to be anything else on. A missing model,
-                    # firmware or serial now is no reason to assign it a
-                    # different device identity, so this retries rather than
-                    # hashing: the hash would give the entry a second set of
-                    # entities on `_2` names and nothing would undo it.
-                    #
-                    # The condition carries the whole fallback for everything
-                    # else. A camera whose CGI is simply absent is not a
-                    # monitor, has never had an identity but the hash, and
-                    # must still get one here or it stops setting up at all
-                    # (an SL300, and every `Generic RTSP` device in #583 and
-                    # #728). `vth` being None is how a device says it is not
-                    # one of these.
-                    #
-                    # Retry the actual reads too: _vth_identity_over_rpc2
-                    # memoises incomplete answers.
-                    self._vth_identity_asked = False
-                    self._vth_identity = None
-                    raise
+                self.identity_from_rpc2 = True
+                return {"serialNumber": identity["serial"]}
+            if e.status in self.CONFIG_CGI_ABSENT and (
+                identity or self._rpc2_over_dhip
+            ):
+                # A monitor that would not name itself this time. Either it
+                # still says it is a VTH, or it was identified as a DHIP
+                # monitor when it was added and has no other transport to be
+                # anything else on. A missing model, firmware or serial now is
+                # no reason to assign it a different device identity, so this
+                # retries rather than hashing: the hash would give the entry a
+                # second set of entities on `_2` names and nothing would undo
+                # it.
+                #
+                # The condition carries the whole fallback for everything
+                # else. A camera whose CGI is simply absent is not a monitor,
+                # has never had an identity but the hash, and must still get
+                # one here or it stops setting up at all (an SL300, and every
+                # `Generic RTSP` device in #583 and #728). `identity` being
+                # None is how a device says it is not one of these.
+                #
+                # ⚠ Still gated on CONFIG_CGI_ABSENT, deliberately, so #1176's
+                # camera does not reach it. This escape is right for a device
+                # that has already been given a real identity and must not go
+                # back to the hash. A camera whose answers are unreadable has
+                # never had one, so raising here would stop it setting up at
+                # all -- strictly worse than the badly identified entry it has
+                # today. It falls through to the hash as before, and is held to
+                # a reported serial only once it has actually given one.
+                #
+                # Retry the actual reads too: both identity readers
+                # memoise incomplete answers.
+                self._forget_identity_memos()
+                raise
             # ⚠ Recorded, and this is the one that matters most. The three
             # calls that record below are cosmetic: a wrong vendor or a wrong
             # model is a label. THIS one decides the device's identity, and
@@ -1879,8 +1937,7 @@ class DahuaClient:
                 # The devices that reach it are exactly the ones that need
                 # that second question asked, so checking the policy first
                 # would stop the read that would have satisfied it.
-                self._vth_identity_asked = False
-                self._vth_identity = None
+                self._forget_identity_memos()
                 raise
 
             self.identity_derived_from_credentials = True
@@ -2015,13 +2072,52 @@ class DahuaClient:
             return getattr(self, "_vth_identity", None)
         self._vth_identity_asked = True
         self._vth_identity = None
+        identity = await self._magicbox_over_rpc2(require_class="VTH")
+        if identity is None:
+            return None
+        _LOGGER.info(
+            "%s has no magicBox CGI and is a VTH; read its identity over RPC2: %s, %s",
+            self._address,
+            identity["type"],
+            identity["version"],
+        )
+        self._vth_identity = {
+            **identity,
+            "own_video": await self._vth_own_video(),
+        }
+        return self._vth_identity
+
+    async def _magicbox_over_rpc2(self, require_class: str = None) -> dict | None:
+        """magicBox's class, model, firmware and serial over RPC2, or None.
+
+        The reads only. Which devices may be asked, what is remembered and what
+        is logged belong to the callers: this is shared by the VTH path above,
+        which may ask only a monitor, and by `_identity_over_rpc2` below, which
+        may ask anything whose CGI answers are unreadable.
+
+        `require_class` short-circuits after the first read, so a caller that
+        wants only one kind of device does not pay for the other three calls.
+        That ordering is load-bearing rather than tidy: every device whose CGI
+        is merely absent reaches the VTH path, and most of them are not VTHs.
+
+        The serial matters more than it looks. Without it `async_get_system_info`
+        falls back to an md5 of the address, port, username and password, which
+        is #805: the identity changes when the password does and the same device
+        comes back as a new one. A VTH answers magicBox.getSerialNo (measured on
+        3.000.0012000.0.R: "3E0164EPAN00095"). Wrapped separately, because an
+        identity without a serial is still better than no identity.
+
+        Never raises. Both callers run where the client would otherwise give up,
+        and giving up is still what happens when RPC2 has no answer either.
+        """
         try:
             device_class = await self._rpc2_shared_call(
                 lambda client: client.request("magicBox.getDeviceClass", params=None)
             )
-            if (
-                (device_class.get("params") or {}).get("type") or ""
-            ).strip().upper() != "VTH":
+            reported = (
+                ((device_class.get("params") or {}).get("type") or "").strip().upper()
+            )
+            if require_class is not None and reported != require_class:
                 return None
             device_type = await self._rpc2_shared_call(
                 lambda client: client.request("magicBox.getDeviceType", params=None)
@@ -2032,21 +2128,12 @@ class DahuaClient:
                 )
             )
         except Exception:  # pylint: disable=broad-except
-            _LOGGER.debug(
-                "No VTH identity over RPC2 from %s", self._address, exc_info=True
-            )
+            _LOGGER.debug("No identity over RPC2 from %s", self._address, exc_info=True)
             return None
         model = ((device_type.get("params") or {}).get("type") or "").strip()
         firmware = rpc2_software_version(version.get("params"))
         if not model or not firmware:
             return None
-        # The serial matters more than it looks. Without it `async_get_system_info`
-        # falls back to an md5 of the address, port, username and password, which
-        # is #805: the identity changes when the password does and the same
-        # monitor comes back as a new device. A VTH answers magicBox.getSerialNo
-        # (measured on 3.000.0012000.0.R: "3E0164EPAN00095"), so there is no need
-        # to derive one. Wrapped separately, because an identity without a serial
-        # is still better than no identity.
         serial = None
         try:
             answer = await self._rpc2_shared_call(
@@ -2054,23 +2141,97 @@ class DahuaClient:
             )
             serial = ((answer.get("params") or {}).get("sn") or "").strip() or None
         except Exception:  # pylint: disable=broad-except
-            _LOGGER.debug(
-                "No serial over RPC2 from the VTH at %s", self._address, exc_info=True
-            )
-        _LOGGER.info(
-            "%s has no magicBox CGI and is a VTH; read its identity over RPC2: %s, %s",
-            self._address,
-            model,
-            firmware,
-        )
-        self._vth_identity = {
+            _LOGGER.debug("No serial over RPC2 from %s", self._address, exc_info=True)
+        return {
             "type": model,
             "version": firmware,
-            "class": "VTH",
+            "class": reported,
             "serial": serial,
-            "own_video": await self._vth_own_video(),
         }
-        return self._vth_identity
+
+    async def _identity_over_rpc2(self) -> dict | None:
+        """This device's identity over RPC2, whatever kind of device it is.
+
+        For the camera in #1176, whose CGI answers are **unreadable rather than
+        absent** -- see `refusal_is_mangled_framing`. Every identity read falls
+        back for it, so it reports as `Generic RTSP` on firmware `1.0` with a
+        serial derived from its credentials, and its config-backed entities are
+        missing entirely.
+
+        Unlike the VTH path this does not gate on the class, and the reason the
+        gate exists there does not apply here. That gate is so a device whose
+        CGI is merely absent, and which has been running as `Generic RTSP` for
+        years, does not change shape under its user: which entities a device
+        gets is decided from its model. A device that reaches **here** has no
+        working shape to preserve. Its CGI reads all come back empty, because
+        `ClientResponseError` subclasses `ClientError` and every optional read
+        in this integration is guarded on that, so the entities are already
+        absent and the identity is already a hash.
+
+        @defre92 measured that RPC2 answers for exactly this camera on firmware
+        3.120 with the integration's own credentials -- the config-backed
+        entities appeared and nothing RPC2 related was logged -- which is what
+        makes this route available at all (#1176).
+
+        Asked once per client and remembered, including a None.
+        """
+        if getattr(self, "_rpc2_identity_asked", False):
+            return getattr(self, "_rpc2_identity", None)
+        self._rpc2_identity_asked = True
+        self._rpc2_identity = None
+        identity = await self._magicbox_over_rpc2()
+        if identity is None:
+            return None
+        _LOGGER.info(
+            "%s answered its identity over RPC2 (%s, %s) after its CGI answers "
+            "came back unreadable, so it keeps a real identity rather than one "
+            "derived from its credentials",
+            self._address,
+            identity["type"],
+            identity["version"],
+        )
+        self._rpc2_identity = identity
+        return self._rpc2_identity
+
+    def _forget_identity_memos(self) -> None:
+        """Forget both remembered identity answers, so a retry really retries.
+
+        Called from the two paths in `async_get_system_info` that raise rather
+        than fall back. That raise is not the end of anything: the caller is the
+        one-time init block in `_async_update_data`, which keeps `initialized`
+        False and re-enters on the **same client** on the next refresh. Both
+        `_identity_over_rpc2` and `_vth_identity_over_rpc2` remember a None, so
+        without this a single RPC2 timeout on the first refresh would be
+        remembered for the life of the entry and the device would never set up.
+
+        The VTH half of this already existed and was written inline. It is a
+        method now because the second memo was missed when it was added, and a
+        third would be missed the same way.
+        """
+        self._vth_identity_asked = False
+        self._vth_identity = None
+        self._rpc2_identity_asked = False
+        self._rpc2_identity = None
+
+    async def _identity_over_rpc2_if_cgi_cannot(self, error) -> dict | None:
+        """The identity over RPC2, when this CGI refusal says CGI cannot answer.
+
+        Two refusals say that, and they say it about different devices:
+
+        - **404 or 501** (`CONFIG_CGI_ABSENT`): the endpoint is not there. Only
+          a monitor is asked, deliberately -- see `_vth_identity_over_rpc2`.
+        - **a 400 aiohttp synthesised itself**: the endpoint answered and the
+          answer could not be read (#1176). Any device is asked, because it has
+          nothing readable over CGI to preserve.
+
+        Anything else returns None without asking the device anything, and the
+        caller falls back exactly as it did before.
+        """
+        if error.status in self.CONFIG_CGI_ABSENT:
+            return await self._vth_identity_over_rpc2()
+        if refusal_is_mangled_framing(error):
+            return await self._identity_over_rpc2()
+        return None
 
     async def _vth_own_video(self) -> bool | None:
         """Whether this VTH says it has a camera of its own, or None if it does not say.
@@ -2591,10 +2752,9 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getDeviceType")
         except aiohttp.ClientResponseError as e:
-            if e.status in self.CONFIG_CGI_ABSENT:
-                vth = await self._vth_identity_over_rpc2()
-                if vth:
-                    return {"type": vth["type"]}
+            identity = await self._identity_over_rpc2_if_cgi_cannot(e)
+            if identity:
+                return {"type": identity["type"]}
             self._note_identity_fallback("getDeviceType", e)
             return {"type": "Generic RTSP"}
 
@@ -2619,13 +2779,16 @@ class DahuaClient:
         try:
             result = await self.get("/cgi-bin/magicBox.cgi?action=getDeviceClass")
         except aiohttp.ClientResponseError as e:
-            # A VTH answers this over RPC2 only. Anything else raises exactly
+            # A VTH answers this over RPC2 only, and so does a device whose
+            # CGI answers are unreadable (#1176). Anything else raises exactly
             # as before, so the caller still records the refusal.
-            if (
-                e.status in self.CONFIG_CGI_ABSENT
-                and await self._vth_identity_over_rpc2()
-            ):
-                return "VTH"
+            #
+            # The class comes back from RPC2 already stripped and upper-cased,
+            # the same shape the CGI answer is given below, so a caller cannot
+            # tell which transport answered.
+            identity = await self._identity_over_rpc2_if_cgi_cannot(e)
+            if identity and identity.get("class"):
+                return identity["class"]
             raise
         return (result.get("class") or "").strip().upper()
 
@@ -2637,10 +2800,9 @@ class DahuaClient:
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=getSoftwareVersion")
         except aiohttp.ClientResponseError as e:
-            if e.status in self.CONFIG_CGI_ABSENT:
-                vth = await self._vth_identity_over_rpc2()
-                if vth:
-                    return {"version": vth["version"]}
+            identity = await self._identity_over_rpc2_if_cgi_cannot(e)
+            if identity:
+                return {"version": identity["version"]}
             self._note_identity_fallback("getSoftwareVersion", e)
             return {"version": "1.0"}
 
@@ -2651,16 +2813,15 @@ class DahuaClient:
         except aiohttp.ClientResponseError as e:
             if _is_login_refused(e):
                 raise
-            if e.status in self.CONFIG_CGI_ABSENT:
-                # The model is a better name than a hash of the credentials,
-                # and it is what the add form showed when the monitor was added.
-                # Ungated with the serial above: a device name is cosmetic and
-                # does not rename an entity_id that already exists, but holding
-                # the two apart would have left a monitor called after its
-                # serial and named after its credentials.
-                vth = await self._vth_identity_over_rpc2()
-                if vth:
-                    return {"name": vth["type"]}
+            # The model is a better name than a hash of the credentials,
+            # and it is what the add form showed when the monitor was added.
+            # Ungated with the serial above: a device name is cosmetic and
+            # does not rename an entity_id that already exists, but holding
+            # the two apart would have left a monitor called after its
+            # serial and named after its credentials.
+            identity = await self._identity_over_rpc2_if_cgi_cannot(e)
+            if identity:
+                return {"name": identity["type"]}
             self._note_identity_fallback("getMachineName", e)
             self.identity_derived_from_credentials = True
             return {"name": self.credential_hash()}
