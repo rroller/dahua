@@ -30,7 +30,7 @@ Reintroduced against the real source, with the tests that failed:
 | no second opinion after a CGI refusal | `answers_over_rpc2`, `the_reading_is_returned` |
 | the channel not pinned afterwards | `pinned_to_rpc2`, `cgi_is_not_asked_again` |
 | RPC2 retried on every poll | `asked_once_not_every_poll` |
-| a stale login swallowed as "no such method" | `a_stale_login_still_escapes` |
+| a stale login treated as "no such method" | `a_stale_login_does_not_use_up_the_one_attempt` |
 | the fallback raising on an unrelated error | `a_broken_fallback_does_not_fail_the_poll` |
 """
 
@@ -188,16 +188,17 @@ async def test_rpc2_is_asked_once_and_not_on_every_poll():
     ), "CGI must keep being asked; it recovers"
 
 
-async def test_a_stale_login_still_escapes_instead_of_counting_as_no_method():
-    """Treating an expired session as "this device has no siren" would drop a
-    capability the device has, and silently."""
+async def test_a_stale_login_holds_the_reading_instead_of_failing_the_fallback():
+    """The client has already dropped the session. Propagating from inside the
+    CGI exception handler bypasses the outer RPC2 handler and fails the poll;
+    holding the reading still leaves the capability undecided and retryable."""
     stale = Rpc2MethodRefused(
         "stale", code=287637505, message="Invalid session in request data!"
     )
     coordinator = _coordinator(rpc2_answer=stale)
 
-    with pytest.raises(Rpc2MethodRefused):
-        await coordinator._async_coaxial_status(CHANNEL)
+    coordinator.data = {"status.WhiteLight": "On"}
+    assert await coordinator._async_coaxial_status(CHANNEL) == coordinator.data
 
 
 async def test_a_stale_login_does_not_use_up_the_one_attempt():
@@ -208,8 +209,7 @@ async def test_a_stale_login_does_not_use_up_the_one_attempt():
     )
     coordinator = _coordinator(rpc2_answer=stale)
 
-    with pytest.raises(Rpc2MethodRefused):
-        await coordinator._async_coaxial_status(CHANNEL)
+    await coordinator._async_coaxial_status(CHANNEL)
 
     assert coordinator._coaxial_status_rpc2_asked is False
 
