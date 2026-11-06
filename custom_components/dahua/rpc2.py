@@ -17,6 +17,11 @@ from custom_components.dahua.ivs import ivs_rule_index
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 _PARAMS_UNSET = object()
 
+# The one method every other call depends on. Named here because a refusal of
+# it has to be told apart from a refusal of whatever the caller asked for, and
+# a handler comparing against its own copy of the string would drift.
+RPC2_LOGIN_METHOD = "global.login"
+
 if sys.version_info > (3, 0):
     unicode = str
 
@@ -28,12 +33,23 @@ class Rpc2MethodRefused(ConnectionError):
     distinct type because it means something quite different: the transport
     reached the device and the device declined this particular method or
     config table. That is evidence RPC2 *works* here, not that it does not.
+
+    The method is carried because the description alone cannot be asked a
+    question. A handler that catches this is almost always a handler that
+    asked for one specific thing, and "the device declined what you asked"
+    and "the device would not let you in to ask" are different answers that
+    arrive as the same type (#1164).
     """
 
-    def __init__(self, description: str, code=None, message=None):
+    # A class default, so a handler may read the attribute off any instance
+    # rather than reaching for getattr at each of the thirteen catch sites.
+    method = None
+
+    def __init__(self, description: str, code=None, message=None, method=None):
         super().__init__(description)
         self.code = code
         self.message = message
+        self.method = method
 
 
 class Rpc2TableAbsent(ValueError):
@@ -206,6 +222,7 @@ class DahuaRpc2Client:
                 "Dahua RPC2 method {0} returned result=false{1}".format(method, suffix),
                 code=code,
                 message=message,
+                method=method,
             )
 
         return resp_json
@@ -230,7 +247,7 @@ class DahuaRpc2Client:
         self._ptz_objects.clear()
         self._id = 0
         url = "{0}/RPC2_Login".format(self._base)
-        method = "global.login"
+        method = RPC2_LOGIN_METHOD
         params = {"userName": self._username, "password": "", "clientType": "Web5.0"}
         r = await self.request(
             method=method, params=params, url=url, verify_result=False
