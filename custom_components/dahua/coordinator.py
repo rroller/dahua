@@ -843,9 +843,12 @@ def door_index(event: dict) -> int:
 # Measured by @altserg over five calls on a two-button VTO3221D, and the point
 # is that it held still: 999 for the first button when the call was answered,
 # rejected and left ringing, 1999 for the second on both of its. That is what
-# rules out a call counter, which the first two samples could not. A
-# single-button DHI-VTO1201G-P on the same network also reports 999, which is
-# why 999 is the first button rather than "some button".
+# rules out a call counter, which the first two samples could not.
+#
+# One device, and the only one. Every CallNoAnswered line in
+# https://github.com/rroller/dahua/issues/175 is from that VTO3221D, so which
+# physical button is "button 1" is that station's own numbering and nothing
+# corroborates it on other hardware yet.
 CALL_BUTTON_BY_INDEX = {999: 1, 1999: 2}
 
 # The events whose `Index` identifies which call button rang rather than a video
