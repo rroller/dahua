@@ -770,6 +770,38 @@ def door_status_is_relay(event: dict) -> bool:
     return "Relay" in payload and "DoorIndex" not in payload
 
 
+# The two values a DoorStatus payload has ever been seen to carry, and the two
+# the sensor below can act on: it opens on exactly "Open" and closes on
+# anything else. A third spelling would therefore read as closed, so it is not
+# a door status this integration can report and it is not in here.
+#
+# A tuple rather than a set on purpose. `in` on a set hashes the value, and a
+# payload is whatever JSON arrived: `{"Status": []}` would raise TypeError
+# inside the event handler, which is the #475 failure that takes the stream
+# down for every event after it. A tuple compares with `==` instead.
+DOOR_CONTACT_STATUSES = ("Close", "Open")
+
+
+def door_status_is_contact(event: dict) -> bool:
+    """Whether a DoorStatus event reports a door contact this sensor can read.
+
+    The complement of `door_status_is_relay` over the payloads that say
+    something, which is not the same as its negation: an event can be neither.
+    `{}` is what `event_payload` returns for a truncated frame, for `Data:
+    null` and for a payload that is not an object at all, and a payload can
+    arrive with no `Status` or with one this integration does not know.
+
+    None of those is evidence that the device has a door contact. The flag they
+    were setting is permanent, so one unreadable frame used to retire the relay
+    fallback for the rest of the session and leave a relay-only device's sensor
+    stuck wherever it was (rroller's review on #1169, reproduced on both
+    transports). A frame we cannot read tells us nothing about the hardware.
+    """
+    if door_status_is_relay(event):
+        return False
+    return event_payload(event).get("Status") in DOOR_CONTACT_STATUSES
+
+
 def illuminator_light_index(data: dict, channel: int, profile_mode) -> int:
     """Which Lighting_V2 light index is the white illuminator on this device.
 
@@ -3419,7 +3451,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                                 self.get_device_name(),
                             )
                             continue
-                    else:
+                    elif door_status_is_contact(event):
                         self._door_contact_seen = True
                     if event_payload(event).get("Status", "") == "Open":
                         self._dahua_event_timestamp[event_key] = int(time.time())

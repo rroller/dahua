@@ -26,8 +26,12 @@ _dispatch_event is called, so nothing an automation could read is lost.
 
 from types import SimpleNamespace
 
+import pytest
+
 from custom_components.dahua import (
+    DOOR_CONTACT_STATUSES,
     DahuaDataUpdateCoordinator,
+    door_status_is_contact,
     door_status_is_relay,
 )
 
@@ -253,3 +257,175 @@ def test_the_filter_is_per_coordinator():
     fresh.on_receive_vto_event(_relay("Open"))
 
     assert fresh._dahua_event_timestamp[key] > 0
+
+
+# --- a frame we cannot read is not evidence of a contact ----------------------
+#
+# rroller's review on #1169. `_door_contact_seen` is permanent, and it was being
+# set by every DoorStatus that was not relay-shaped -- including the ones
+# carrying nothing to read. So one malformed frame retired the relay fallback
+# for the rest of the session, and a device with only the relay form to report
+# sat wherever its sensor had got to until the entry was reloaded.
+
+# A payload cannot express "the event had no payload key at all", which is one
+# of the shapes, so the builders below take this instead of a payload.
+ABSENT = object()
+
+UNREADABLE_PAYLOADS = {
+    "no payload key at all": ABSENT,
+    "a null payload": None,
+    "a truncated frame": "{'Relay':tr",
+    "an empty payload": {},
+    "a payload with no Status": {"DoorIndex": 0},
+    "a Status this integration does not know": {"DoorIndex": 0, "Status": "Ajar"},
+    "a Status that is not a string": {"DoorIndex": 0, "Status": []},
+}
+
+
+def _dhip(payload):
+    """What the DHIP listener hands over: `Data`, and a capitalised `Action`."""
+    event = {"Code": "DoorStatus", "Action": "Pulse"}
+    if payload is not ABSENT:
+        event["Data"] = payload
+    return event
+
+
+def _cgi(payload):
+    """What the CGI wire format parses to: lowercase `data` and `action`."""
+    event = {"Code": "DoorStatus", "action": "Pulse"}
+    if payload is not ABSENT:
+        event["data"] = payload
+    return event
+
+
+def _send_dhip(coordinator, payload):
+    coordinator.on_receive_vto_event(_dhip(payload))
+
+
+def _send_cgi(coordinator, payload):
+    coordinator.handle_event(_cgi(payload))
+
+
+# Both, every time. `_dispatch_event` is shared and the payload is spelled
+# differently on each side, which is how three reads came to work on one
+# transport only (see `event_payload`).
+TRANSPORTS = {"dhip": _send_dhip, "cgi": _send_cgi}
+
+RELAY_CLOSE = {"Relay": True, "Status": "Close"}
+RELAY_OPEN = {"Relay": True, "Status": "Open"}
+CONTACT_CLOSE = {"DoorIndex": 0, "Status": "Close"}
+
+
+@pytest.mark.parametrize("transport", sorted(TRANSPORTS))
+@pytest.mark.parametrize(
+    "payload", UNREADABLE_PAYLOADS.values(), ids=list(UNREADABLE_PAYLOADS)
+)
+def test_an_unreadable_door_status_leaves_the_relay_driving(transport, payload):
+    """The replay from the review: relay Close, then the frame that used to
+    latch the flag, then relay Open. The relay has to still be able to open the
+    sensor afterwards.
+
+    Deliberately silent about what the unreadable frame itself does to the
+    sensor. It writes closed, as it did before this branch and as it does on
+    any other device, and that is a separate question from this one."""
+    send = TRANSPORTS[transport]
+    coordinator = _vto()
+    key = _listening(coordinator)
+
+    send(coordinator, RELAY_CLOSE)
+    send(coordinator, payload)
+
+    assert (
+        coordinator._door_contact_seen is False
+    ), "a frame with nothing to read was taken as proof of a door contact"
+
+    send(coordinator, RELAY_OPEN)
+
+    assert (
+        coordinator._dahua_event_timestamp[key] > 0
+    ), "the relay could no longer open its own sensor"
+
+
+@pytest.mark.parametrize("transport", sorted(TRANSPORTS))
+def test_a_readable_contact_status_still_retires_the_relay(transport):
+    """The converse, on both transports. Narrowing what counts as a contact
+    event must not stop the real ones counting."""
+    send = TRANSPORTS[transport]
+    coordinator = _vto()
+    key = _listening(coordinator)
+
+    send(coordinator, CONTACT_CLOSE)
+    assert coordinator._door_contact_seen is True
+
+    send(coordinator, {"DoorIndex": 0, "Status": "Open"})
+    open_at = coordinator._dahua_event_timestamp[key]
+    assert open_at > 0
+
+    send(coordinator, RELAY_CLOSE)
+    assert coordinator._dahua_event_timestamp[key] == open_at
+
+
+# --- the two questions, asked of the helpers ----------------------------------
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"DoorIndex": 0, "Status": "Close"},
+        {"DoorIndex": 0, "Status": "Open"},
+        {"Status": "Open", "LocaleTime": "2026-10-31 19:49:46", "UTC": 1},
+    ],
+    ids=["the contact, closed", "the contact, open", "the VTO2000A payload"],
+)
+def test_a_measured_contact_payload_is_a_contact(payload):
+    assert door_status_is_contact({"Data": payload})
+    assert door_status_is_contact({"data": payload})
+
+
+@pytest.mark.parametrize(
+    "payload", UNREADABLE_PAYLOADS.values(), ids=list(UNREADABLE_PAYLOADS)
+)
+def test_nothing_unreadable_is_a_contact(payload):
+    assert not door_status_is_contact(_dhip(payload))
+    assert not door_status_is_contact(_cgi(payload))
+
+
+def test_a_status_that_is_not_a_string_does_not_raise():
+    """`in` on a set hashes what it is given, and the payload is whatever JSON
+    arrived. A list or a dict there would raise TypeError inside the event
+    handler, which takes the stream down for every event after it (#475)."""
+    for status in ([], {}, 0, None, True):
+        assert not door_status_is_contact({"Data": {"Status": status}})
+
+
+def test_the_relay_is_never_also_a_contact():
+    """`door_status_is_contact` answers its own question rather than relying on
+    being asked second."""
+    for status in DOOR_CONTACT_STATUSES:
+        relay = {"Data": {"Relay": True, "Status": status}}
+        assert door_status_is_relay(relay)
+        assert not door_status_is_contact(relay)
+
+
+def test_the_two_questions_are_not_a_negation_of_each_other():
+    """Which is the whole fix: an event can be neither, and neither is what an
+    unreadable frame is."""
+    neither = [
+        event
+        for payload in UNREADABLE_PAYLOADS.values()
+        for event in (_dhip(payload), _cgi(payload))
+        if not door_status_is_relay(event) and not door_status_is_contact(event)
+    ]
+
+    assert len(neither) == 2 * len(UNREADABLE_PAYLOADS), (
+        "every unreadable shape has to answer no to both questions, or the "
+        "dispatch branch has nowhere to put it: %d of %d did"
+        % (len(neither), 2 * len(UNREADABLE_PAYLOADS))
+    )
+
+
+def test_the_recognised_statuses_are_the_ones_the_sensor_can_act_on():
+    """A guard on the constant. The sensor opens on exactly "Open" and closes
+    on everything else, so a third spelling added here would be learned as a
+    contact and then reported as closed."""
+    assert DOOR_CONTACT_STATUSES == ("Close", "Open")
