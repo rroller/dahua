@@ -381,6 +381,32 @@ async def test_reported_serial_policy_survives_a_camera_reload(hass):
         await dahua_module.async_unload_entry(hass, entry)
 
 
+async def test_reported_serial_policy_survives_an_rpc2_identified_reload(hass):
+    """The same, for a camera whose CGI answers were unreadable (#1176).
+
+    It adopts the serial RPC2 reported, so it needs the same hold as the two
+    above: without it the next setup falls back to the credential hash and
+    duplicates every entity the migration had just moved.
+    """
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    async def refresh(coordinator):
+        coordinator._serial_number = "NOT-A-REAL-SERIAL"
+        coordinator.client.identity_from_rpc2 = True
+        return {"serialNumber": "NOT-A-REAL-SERIAL"}
+
+    with patch.object(
+        dahua_module.DahuaDataUpdateCoordinator, "_async_update_data", refresh
+    ), starts, forward, unload:
+        assert await _try_setup(hass, entry)
+        assert entry.data["require_reported_serial"] is True
+        await dahua_module.async_unload_entry(hass, entry)
+        assert await _try_setup(hass, entry)
+        assert entry.runtime_data[0].client._require_reported_serial is True
+        await dahua_module.async_unload_entry(hass, entry)
+
+
 async def test_a_camera_that_never_adopted_one_is_not_held_to_it(hass):
     """The converse. A camera answering `getSystemInfo` normally must not
     acquire a requirement that would stop it setting up on a bad day."""

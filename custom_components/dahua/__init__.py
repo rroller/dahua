@@ -610,13 +610,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         # Anything that has been given a serial the device reported, rather
         # than one derived from its credentials, is held to it from now on.
         # Monitors reach this by answering over RPC2; a camera reaches it by
-        # answering `getSerialNo` after `getSystemInfo` refused (#1128). Both
-        # have had their registries migrated onto that serial by the call
-        # above, so a later setup that falls back to the hash would build a
+        # answering `getSerialNo` after `getSystemInfo` refused (#1128), or by
+        # answering over RPC2 when its CGI answers are unreadable (#1176). All
+        # of them have had their registries migrated onto that serial by the
+        # call above, so a later setup that falls back to the hash would build a
         # second set of entities beside the migrated ones (@rroller, #1141).
         if any(
             (getattr(c.client, "_vth_identity", None) or {}).get("class") == "VTH"
             or getattr(c.client, "identity_from_alternate_cgi", False)
+            or getattr(c.client, "identity_from_rpc2", False)
             for c in coordinators
         ) and not entry.data.get(CONF_REQUIRE_REPORTED_SERIAL):
             hass.config_entries.async_update_entry(
