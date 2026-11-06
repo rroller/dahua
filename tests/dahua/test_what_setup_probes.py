@@ -39,6 +39,7 @@ PROBES = [
     ("async_get_ptz_position", "_supports_ptz_position", None),
     ("async_get_smart_motion_detection", "_supports_smart_motion_detection", None),
     ("async_probe_video_in_options", "_supports_day_night_color", None),
+    ("async_get_video_widget", "_video_widget_fields", None),
     ("async_get_lighting_v2", "_supports_lighting_v2", None),
     # Gated on a model name whitelist, which is the bug class #570, #676 and
     # #690 were all instances of. Named here so the probe actually runs.
@@ -78,7 +79,10 @@ PROBES = [
 # The probes whose capability is a set of field names rather than a bool, so
 # "off" for them is an empty set. Only the picture controls: a device can
 # serve any subset, and a single yes could not say which.
-PROBE_SETS = {"_video_color_fields"}
+PROBE_SETS = {
+    "_video_color_fields",
+    "_video_widget_fields",
+}
 
 
 # What setup asks the coordinator about itself. Off, so the fan-out afterwards is

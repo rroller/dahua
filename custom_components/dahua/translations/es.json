@@ -326,19 +326,19 @@
         },
         "number": {
             "image_brightness": {
-                "name": "Brillo"
+                "name": "Imagen brillo"
             },
             "image_contrast": {
-                "name": "Contraste"
+                "name": "Imagen contraste"
             },
             "image_saturation": {
-                "name": "Saturación"
+                "name": "Imagen saturación"
             },
             "image_hue": {
-                "name": "Tono"
+                "name": "Imagen tono"
             },
             "image_gamma": {
-                "name": "Gamma"
+                "name": "Imagen gamma"
             },
             "vth_ring_volume": {
                 "name": "Volumen Timbre Placa"
@@ -387,10 +387,10 @@
                 }
             },
             "video_color_style": {
-                "name": "Estilo Color Imagen"
+                "name": "Imagen estilo de color"
             },
             "image_rotation": {
-                "name": "Rotación Imagen"
+                "name": "Imagen rotación"
             },
             "smart_motion_sensitivity": {
                 "name": "Sensibilidad Movimiento IA"
@@ -467,7 +467,7 @@
                 "name": "Modo Privacidad"
             },
             "mirror": {
-                "name": "Espejo Imagen"
+                "name": "Imagen espejo"
             },
             "siren": {
                 "name": "Sirena"
