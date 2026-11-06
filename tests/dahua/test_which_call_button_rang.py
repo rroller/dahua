@@ -199,6 +199,33 @@ def test_a_later_unmeasured_index_does_not_keep_the_old_button(transport):
 
 
 @pytest.mark.parametrize("transport", sorted(TRANSPORTS))
+def test_a_later_call_without_details_does_not_keep_the_old_button(transport):
+    send = TRANSPORTS[transport]
+    c = _vto()
+    _listening(c)
+
+    send(c, 999, "8")
+    assert c.get_event_details(CODE)["call_button"] == 1
+    send(c, ABSENT, ABSENT)
+
+    assert c.get_event_details(CODE) == {}
+
+
+@pytest.mark.parametrize("transport", sorted(TRANSPORTS))
+def test_a_stop_without_details_preserves_the_last_call(transport):
+    c = _vto()
+    _listening(c)
+    TRANSPORTS[transport](c, 999, "8")
+    expected = dict(c.get_event_details(CODE))
+    if transport == "dhip":
+        c.on_receive_vto_event({"Code": CODE, "Action": "Stop"})
+    else:
+        c.handle_event({"Code": CODE, "action": "Stop"})
+
+    assert c.get_event_details(CODE) == expected
+
+
+@pytest.mark.parametrize("transport", sorted(TRANSPORTS))
 def test_a_station_that_reports_no_button_claims_none(transport):
     """`Index: -1` is what the same device puts on the press event. It means
     "not a button", exactly as `door_index` reads it as "not a door"."""

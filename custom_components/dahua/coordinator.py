@@ -3754,7 +3754,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # the sensor can report which rule tripped (#373). Only when the event
             # carried any -- a plain VideoMotion leaves whatever was last there
             # rather than blanking it, matching how the timestamp persists.
-            if details and code not in clear_only:
+            # A new call replaces the previous call's identity even when this
+            # payload has no usable details. A detail-free Stop still keeps
+            # the last call available after ringing ends.
+            if (
+                details
+                or (raw_code in CALL_BUTTON_EVENTS and action in {"Start", "Pulse"})
+            ) and code not in clear_only:
                 self._dahua_event_details[event_key] = details
 
             if action == "Start":
