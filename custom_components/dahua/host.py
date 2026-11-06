@@ -579,6 +579,25 @@ async def async_device_is_zero_indexed(client, device: str):
 
 
 @callback
+def device_numbers_channels_from_zero(device: str):
+    """What the numbering probe concluded for this device, asking nothing.
+
+    True, False, or None where nothing was concluded, which is the same three
+    states `async_device_is_zero_indexed` returns and means the same thing. The
+    difference is that this never probes, so a reader that wants the answer as
+    it stands -- a still about to be fetched, the diagnostics dump -- can have
+    it without a request and without waiting on a lock.
+
+    Read rather than frozen at setup, because the answer can arrive after a
+    channel has already numbered itself: a probe that went unanswered leaves
+    that channel alone (#724) while the next channel on the same host asks
+    again and may get a real answer. A channel that reads this at call time
+    picks that up; one that copied it at setup keeps the gap for ever (#1151).
+    """
+    return _HOST_CHANNEL_BASE.get(device)
+
+
+@callback
 def host_auth_budget_exhausted(address: str) -> bool:
     """Whether a transport on this host must stop offering credentials."""
     return (

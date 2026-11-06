@@ -113,6 +113,7 @@ from .host import (  # noqa: F401  pylint: disable=unused-import
     async_record_host_auth_refusal,
     async_record_host_failure,
     async_record_host_success,
+    device_numbers_channels_from_zero,
     event_stream_retry_delay,
     is_synthesised_identity,
     jittered,
