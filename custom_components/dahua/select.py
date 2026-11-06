@@ -17,6 +17,7 @@ from .const import (
     EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION,
     VIDEO_COLOR_STYLE_OPTIONS,
 )
+from .coordinator import WIDE_DYNAMIC_RANGE_LEVEL
 from .entity import DahuaBaseEntity
 from .infrared import (
     MODE_BY_OPTION,
@@ -112,6 +113,24 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 
         if coordinator.supports_exposure_anti_flicker():
             devices.append(DahuaExposureAntiFlickerSelect(coordinator, entry))
+
+        # The two picture controls that live in VideoInOptions rather than
+        # VideoColor. Gated per field, because a camera can serve WDR without an
+        # exposure mode and vice versa. WDR needs both its fields: the mode
+        # alone is ignored while the level stays at 50, and a write naming the
+        # level on a camera that does not carry it is refused wholesale.
+        if (
+            not coordinator.is_indoor_monitor_without_video()
+            and coordinator.supports_image_option("WideDynamicRangeMode")
+            and coordinator.supports_image_option("WideDynamicRange")
+        ):
+            devices.append(DahuaWideDynamicRangeSelect(coordinator, entry))
+
+        if (
+            not coordinator.is_indoor_monitor_without_video()
+            and coordinator.supports_image_option("ExposureMode")
+        ):
+            devices.append(DahuaExposureModeSelect(coordinator, entry))
 
         if (
             not coordinator.is_indoor_monitor_without_video()
@@ -465,6 +484,81 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
             return
         await self._coordinator.client.async_set_video_in_day_night_mode(
             self._coordinator.get_channel(), "general", option
+        )
+        await self._coordinator.async_refresh()
+
+
+class DahuaWideDynamicRangeSelect(DahuaBaseEntity, SelectEntity):
+    """Wide Dynamic Range: Off, On or mode 2.
+
+    Ported from the Intelbras fork. Off and On were validated there on two
+    cameras; mode 2 was accepted but the vendor's name for it was not
+    confirmed, which is why it stays "Mode 2" rather than "Auto". Off writes the
+    level to 0 as well: mode 0 alone was ignored while the level stayed at 50
+    on both of them.
+    """
+
+    _attr_translation_key = "image_wide_dynamic_range"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = ["Off", "On", "Mode 2"]
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_image_wide_dynamic_range"
+
+    @property
+    def current_option(self):
+        return self._coordinator.get_wide_dynamic_range_option()
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        mode = {"Off": 0, "On": 1, "Mode 2": 2}[option]
+        level = 0
+        if mode:
+            level = self._coordinator.get_wide_dynamic_range_level() or 0
+            if level <= 0:
+                level = WIDE_DYNAMIC_RANGE_LEVEL
+        await self._coordinator.client.async_set_wide_dynamic_range(
+            self._coordinator.get_channel(), mode, level
+        )
+        await self._coordinator.async_refresh()
+
+
+class DahuaExposureModeSelect(DahuaBaseEntity, SelectEntity):
+    """Exposure mode: Auto, Gain Priority or Shutter Priority.
+
+    Ported from the Intelbras fork, where 0 -> 1 -> 2 -> 0 was validated on
+    both cameras. Mode 4 is manual and needs shutter and gain values this
+    integration does not expose, so it is not an option here.
+    """
+
+    _attr_translation_key = "image_exposure_mode"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = ["Auto", "Gain Priority", "Shutter Priority"]
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_image_exposure_mode"
+
+    @property
+    def current_option(self):
+        return self._coordinator.get_exposure_mode_option()
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        mode = {"Auto": 0, "Gain Priority": 1, "Shutter Priority": 2}[option]
+        await self._coordinator.client.async_set_exposure_mode(
+            self._coordinator.get_channel(), mode
         )
         await self._coordinator.async_refresh()
 

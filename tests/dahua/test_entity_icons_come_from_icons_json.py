@@ -44,6 +44,10 @@ WAS = {
     ("select", "day_night_mode"): "mdi:theme-light-dark",
     ("select", "exposure_anti_flicker"): "mdi:flash",
     ("select", "lighting_scheme"): "mdi:lightbulb-auto",
+    # New with the two VideoInOptions picture controls ported from the
+    # Intelbras fork; there is no earlier code icon to match.
+    ("select", "image_wide_dynamic_range"): "mdi:contrast-box",
+    ("select", "image_exposure_mode"): "mdi:camera-iris",
     ("sensor", "license_plate"): "mdi:car-back",
     ("sensor", "memory_used"): "mdi:memory",
     ("sensor", "processor_usage"): "mdi:cpu-64-bit",
@@ -59,6 +63,10 @@ WAS = {
     ("switch", "motion_detection"): "mdi:motion-sensor",
     ("switch", "privacy_mode"): "mdi:shield-lock",
     ("switch", "smart_motion_detection"): "mdi:motion-sensor",
+    # New with the overlay visibility switches ported from the Intelbras fork.
+    ("switch", "timestamp_overlay"): "mdi:clock-outline",
+    ("switch", "channel_title_overlay"): "mdi:format-title",
+    ("switch", "custom_title_overlay"): "mdi:text-box-outline",
     # Moved once #843 gave these three a translation key. The two pairs are one
     # entity each under either of its two keys, because the name is a capability
     # choice: the same glyph has to go under both or half the installs lose it.

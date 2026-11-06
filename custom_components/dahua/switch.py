@@ -199,6 +199,18 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             devices.append(DahuaMonitorSilenceSwitch(coordinator, entry))
         if coordinator.supports_video_image_control("Mirror"):
             devices.append(DahuaMirrorSwitch(coordinator, entry))
+
+        # Overlay visibility. These expose as entities what the enable_* services
+        # already write, so the state the camera is in can be read rather than
+        # only set. Per field, because a device can serve one overlay and not
+        # another, and gated on the probe so a refused VideoWidget table gets no
+        # switch that could only read unknown.
+        if coordinator.supports_video_widget_overlay("TimeTitle.EncodeBlend"):
+            devices.append(DahuaTimestampOverlaySwitch(coordinator, entry))
+        if coordinator.supports_video_widget_overlay("ChannelTitle.EncodeBlend"):
+            devices.append(DahuaChannelTitleOverlaySwitch(coordinator, entry))
+        if coordinator.supports_video_widget_overlay("CustomTitle[1].EncodeBlend"):
+            devices.append(DahuaCustomTitleOverlaySwitch(coordinator, entry))
         return devices
 
     await async_add_and_keep_watching(
@@ -818,6 +830,79 @@ class DahuaMirrorSwitch(DahuaBaseEntity, SwitchEntity):
     @property
     def is_on(self):
         return self._coordinator.get_video_image_control("Mirror")
+
+
+class DahuaOverlayVisibilitySwitch(DahuaBaseEntity, SwitchEntity):
+    """Show or hide one of the camera's on-screen overlays.
+
+    The visibility fields live in VideoWidget and are per channel. The three
+    subclasses differ only in which field they read and write, so the shared
+    behaviour is here and the name comes from each subclass's translation key.
+
+    A field the poll has no value for makes the switch unavailable rather than
+    off, so a refused table does not report an overlay as hidden.
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _field: str
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+
+    @property
+    def unique_id(self):
+        return "{0}_{1}".format(
+            self._coordinator.get_serial_number(), self._attr_translation_key
+        )
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and self._coordinator.is_video_widget_overlay_on(self._field) is not None
+        )
+
+    @property
+    def is_on(self):
+        return self._coordinator.is_video_widget_overlay_on(self._field)
+
+    async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
+        await self._set(False)
+
+    async def _set(self, enabled: bool) -> None:
+        await self._coordinator.async_set_video_widget_overlay(self._field, enabled)
+        await self._coordinator.async_refresh()
+
+
+class DahuaTimestampOverlaySwitch(DahuaOverlayVisibilitySwitch):
+    """The burned-in camera timestamp (VideoWidget.TimeTitle.EncodeBlend)."""
+
+    _attr_translation_key = "timestamp_overlay"
+    _field = "TimeTitle.EncodeBlend"
+
+
+class DahuaChannelTitleOverlaySwitch(DahuaOverlayVisibilitySwitch):
+    """The channel title overlay (VideoWidget.ChannelTitle.EncodeBlend)."""
+
+    _attr_translation_key = "channel_title_overlay"
+    _field = "ChannelTitle.EncodeBlend"
+
+
+class DahuaCustomTitleOverlaySwitch(DahuaOverlayVisibilitySwitch):
+    """The custom text overlay, group 1 (VideoWidget.CustomTitle[1].EncodeBlend).
+
+    Group 1 is the group set_text_overlay and get_overlay_text default to, and
+    the one Intelbras measured its cameras actually writing; group 0 was
+    ignored on a VIP-1220. enable_custom_overlay is a different array
+    (`UserDefinedTitle`), not another group of this one.
+    """
+
+    _attr_translation_key = "custom_title_overlay"
+    _field = "CustomTitle[1].EncodeBlend"
 
 
 class DahuaMonitorSilenceSwitch(DahuaBaseEntity, SwitchEntity):

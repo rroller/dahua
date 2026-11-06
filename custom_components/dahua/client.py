@@ -4472,6 +4472,25 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not enable/disable customer overlay")
 
+    async def async_set_video_widget_overlay(
+        self, channel: int, field: str, enabled: bool
+    ):
+        """Show or hide one VideoWidget overlay by its field name.
+
+        The switch platform carries one field per entity, and the three
+        visibility fields are spelled differently by the table, so the field is
+        passed whole rather than rebuilt from a group number. The specific
+        `async_enable_*` methods above remain for the services. This used to
+        need a branch per overlay in the entity.
+        """
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            "&VideoWidget[{0}].{1}={2}".format(channel, field, str(enabled).lower())
+        )
+        value = await self.get(url)
+        if "OK" not in value and "ok" not in value:
+            raise Exception("Could not set video overlay visibility")
+
     async def async_get_remote_devices(self) -> dict:
         """Read the recorder's camera slots.
 
@@ -4969,6 +4988,32 @@ class DahuaClient:
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set Day/Night mode")
 
+    async def async_set_wide_dynamic_range(self, channel: int, mode: int, level: int):
+        """Set the WDR mode and level together.
+
+        Mode 0 (off) only sticks when the level is also 0: the Intelbras fork
+        recorded that mode 0 alone was ignored while the level stayed at 50, on
+        both of the cameras it validated. The caller owns that rule, because it
+        is the one that reads the existing level; this method only writes what
+        it was given, so the URL carries both fields in one request.
+        """
+        query = (
+            "VideoInOptions[{0}].WideDynamicRangeMode={1}"
+            "&VideoInOptions[{0}].WideDynamicRange={2}"
+        ).format(channel, int(mode), int(level))
+        return await self.get("/cgi-bin/configManager.cgi?action=setConfig&" + query)
+
+    async def async_set_exposure_mode(self, channel: int, mode: int):
+        """Set the exposure mode: 0 Auto, 1 Gain Priority, 2 Shutter Priority.
+
+        Mode 4 is manual and needs shutter and gain values this integration
+        does not expose, so it is deliberately not reachable here.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            "&VideoInOptions[{0}].ExposureMode={1}".format(channel, int(mode))
+        )
+
     async def async_get_video_in_options(self) -> dict:
         """The VideoInOptions table, which carries this device's Day/Night mode.
 
@@ -4981,10 +5026,26 @@ class DahuaClient:
         one fetch per five minutes per host rather than one per poll. A write
         clears that cache for the device, so setting the mode is reflected on
         the next read rather than up to five minutes later.
-        """
-        return await self.async_get_config("VideoInOptions")
 
-    async def async_get_video_in_mode(self) -> dict:
+        Let HTTP failures reach the coordinator's carry-forward wrapper. An
+        error converted to an empty table would discard its last known state.
+        """
+        return await self.async_probe_video_in_options()
+
+    async def async_probe_video_in_options(self) -> dict:
+        """Read VideoInOptions for a capability probe, letting refusals raise.
+
+        `async_get_config` turns an HTTP refusal into `{}`, which loses the
+        distinction between a failed read and a successful empty response.
+        Both the capability probe and the poll need that distinction: the
+        former records the refusal, and the latter keeps its last known state.
+        The shared URL lets both callers use the same cached request.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"
+        )
+
+    async def async_get_video_in_mode(self, fresh: bool = False) -> dict:
         """
         async_get_video_in_mode will return the profile mode (day/night)
         0 means config for day,
@@ -4997,6 +5058,8 @@ class DahuaClient:
         """
 
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
+        if fresh:
+            _HOST_CACHE.pop((self._device, self._username, url), None)
         return await self.get(url)
 
     async def async_set_coaxial_control_state(

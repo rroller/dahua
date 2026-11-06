@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from custom_components.dahua.client import DahuaClient
+from custom_components.dahua.client import DahuaClient, clear_host_cache
 from custom_components.dahua.const import (
     EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE,
     EXPOSURE_ANTI_FLICKER_OPTIONS,
@@ -20,6 +20,7 @@ from custom_components.dahua.select import DahuaExposureAntiFlickerSelect
 
 CHANNEL = 3
 PROFILE_KEY = f"table.VideoInMode[{CHANNEL}].Config[0]"
+PROFILE_CONFIG_EX_KEY = f"table.VideoInMode[{CHANNEL}].ConfigEx"
 
 
 def _exposure_key(channel, profile):
@@ -45,6 +46,33 @@ def test_active_profile_index_reads_this_channels_reported_value(raw, expected):
 )
 def test_missing_or_invalid_active_profile_is_not_guessed(data):
     assert active_profile_index(data, CHANNEL) is None
+
+
+def test_active_profile_index_preserves_general_profile_precedence():
+    assert (
+        active_profile_index(
+            {PROFILE_KEY: "2", PROFILE_CONFIG_EX_KEY: "Night"}, CHANNEL
+        )
+        == 2
+    )
+
+
+def test_active_profile_index_uses_config_ex_when_config_is_static_zero():
+    assert (
+        active_profile_index(
+            {PROFILE_KEY: "0", PROFILE_CONFIG_EX_KEY: "Night"}, CHANNEL
+        )
+        == 1
+    )
+
+
+def test_unrecognized_profile_semantics_fail_closed():
+    assert (
+        active_profile_index(
+            {PROFILE_KEY: "not-an-index", PROFILE_CONFIG_EX_KEY: "Auto"}, CHANNEL
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -93,6 +121,20 @@ def test_state_tracks_the_profile_reported_on_each_update():
 
     coordinator.data = dict(coordinator.data, **{PROFILE_KEY: "2"})
     assert coordinator.get_exposure_anti_flicker() == "60_hz"
+
+
+def test_state_reads_the_profile_selected_by_config_ex():
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = CHANNEL
+    coordinator.data = {
+        PROFILE_KEY: "0",
+        PROFILE_CONFIG_EX_KEY: "Night",
+        _exposure_key(CHANNEL, 0): "0",
+        _exposure_key(CHANNEL, 1): "1",
+    }
+
+    assert coordinator.get_active_profile_index() == 1
+    assert coordinator.get_exposure_anti_flicker() == "50_hz"
 
 
 @pytest.mark.parametrize(
@@ -146,14 +188,17 @@ class _ProbeClient:
 
 
 class _WriteClient:
-    def __init__(self, mode, exposure, write_error=None):
+    def __init__(self, mode, exposure, write_error=None, mode_error=None):
         self.mode = mode
         self.exposure = exposure
         self.write_error = write_error
+        self.mode_error = mode_error
         self.calls = []
 
-    async def async_get_video_in_mode(self):
-        self.calls.append(("VideoInMode",))
+    async def async_get_video_in_mode(self, fresh=False):
+        self.calls.append(("VideoInMode", fresh))
+        if self.mode_error is not None:
+            raise self.mode_error
         return self.mode
 
     async def async_get_exposure_anti_flicker_config(self):
@@ -166,10 +211,12 @@ class _WriteClient:
             raise self.write_error
 
 
-def _write_coordinator(mode, exposure, channel=CHANNEL, write_error=None):
+def _write_coordinator(
+    mode, exposure, channel=CHANNEL, write_error=None, mode_error=None
+):
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator._channel = channel
-    coordinator.client = _WriteClient(mode, exposure, write_error)
+    coordinator.client = _WriteClient(mode, exposure, write_error, mode_error)
     coordinator.data = {PROFILE_KEY: "2"}
     return coordinator
 
@@ -187,9 +234,24 @@ async def test_write_resolves_the_current_profile_and_channel(option, device_val
     await coordinator.async_set_exposure_anti_flicker(option)
 
     assert coordinator.client.calls == [
-        ("VideoInMode",),
+        ("VideoInMode", True),
         ("getConfig", "VideoInExposure"),
         ("setConfig", CHANNEL, 1, device_value),
+    ]
+
+
+async def test_write_keeps_general_profile_precedence_over_config_ex():
+    coordinator = _write_coordinator(
+        {PROFILE_KEY: "2", PROFILE_CONFIG_EX_KEY: "Night"},
+        {_exposure_key(CHANNEL, 2): "0"},
+    )
+
+    await coordinator.async_set_exposure_anti_flicker("50_hz")
+
+    assert coordinator.client.calls == [
+        ("VideoInMode", True),
+        ("getConfig", "VideoInExposure"),
+        ("setConfig", CHANNEL, 2, 1),
     ]
 
 
@@ -199,7 +261,73 @@ async def test_write_does_not_use_a_cached_profile_when_the_current_read_fails()
     with pytest.raises(ConnectionError):
         await coordinator.async_set_exposure_anti_flicker("50_hz")
 
-    assert coordinator.client.calls == [("VideoInMode",)]
+    assert coordinator.client.calls == [("VideoInMode", True)]
+
+
+async def test_failed_fresh_profile_read_does_not_use_coordinator_state():
+    coordinator = _write_coordinator(
+        {PROFILE_KEY: "0", PROFILE_CONFIG_EX_KEY: "Day"},
+        {_exposure_key(CHANNEL, 0): "0"},
+        mode_error=ConnectionError("fresh read failed"),
+    )
+    coordinator.data = {
+        PROFILE_KEY: "0",
+        PROFILE_CONFIG_EX_KEY: "Day",
+        _exposure_key(CHANNEL, 0): "0",
+    }
+
+    with pytest.raises(ConnectionError, match="fresh read failed"):
+        await coordinator.async_set_exposure_anti_flicker("50_hz")
+
+    assert coordinator.client.calls == [("VideoInMode", True)]
+
+
+async def test_warm_day_cache_is_bypassed_after_device_changes_to_night():
+    device = "anti-flicker-cache-test:80"
+    clear_host_cache(device)
+    client = object.__new__(DahuaClient)
+    client._device = device
+    client._username = "user"
+    client._session = object()
+    client._refuse_if_closing = lambda: None
+    physical_mode = {PROFILE_KEY: "0", PROFILE_CONFIG_EX_KEY: "Day"}
+    mode_urls = []
+    writes = []
+
+    async def request(url, verify_ok=False):
+        mode_urls.append(url)
+        return physical_mode
+
+    async def get_exposure():
+        return {_exposure_key(CHANNEL, 1): "0"}
+
+    async def set_exposure(channel, profile, value):
+        writes.append((channel, profile, value))
+
+    client._request = request
+    client.async_get_exposure_anti_flicker_config = get_exposure
+    client.async_set_exposure_anti_flicker = set_exposure
+
+    try:
+        assert await client.async_get_video_in_mode() == physical_mode
+        physical_mode = {PROFILE_KEY: "0", PROFILE_CONFIG_EX_KEY: "Night"}
+
+        coordinator = object.__new__(DahuaDataUpdateCoordinator)
+        coordinator._channel = CHANNEL
+        coordinator.client = client
+        coordinator.data = {
+            PROFILE_KEY: "0",
+            PROFILE_CONFIG_EX_KEY: "Day",
+            _exposure_key(CHANNEL, 0): "0",
+        }
+
+        await coordinator.async_set_exposure_anti_flicker("50_hz")
+    finally:
+        clear_host_cache(device)
+
+    assert len(mode_urls) == 2
+    assert mode_urls[0] == mode_urls[1]
+    assert writes == [(CHANNEL, 1, 1)]
 
 
 async def test_write_requires_the_exact_current_exposure_field():
@@ -212,7 +340,7 @@ async def test_write_requires_the_exact_current_exposure_field():
         await coordinator.async_set_exposure_anti_flicker("50_hz")
 
     assert coordinator.client.calls == [
-        ("VideoInMode",),
+        ("VideoInMode", True),
         ("getConfig", "VideoInExposure"),
     ]
 

@@ -21,9 +21,10 @@ AST rather than by reading it, so nothing it asks for is missing from the fake b
 oversight.
 """
 
-import pytest
-from aiohttp import ClientConnectionError, ClientResponseError
 from types import SimpleNamespace
+
+import pytest
+from aiohttp import ClientResponseError
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.client import DahuaClient
@@ -37,7 +38,7 @@ PROBES = [
     ("async_get_event_notifications", "_supports_event_notifications", None),
     ("async_get_ptz_position", "_supports_ptz_position", None),
     ("async_get_smart_motion_detection", "_supports_smart_motion_detection", None),
-    ("async_get_video_in_options", "_supports_day_night_color", None),
+    ("async_probe_video_in_options", "_supports_day_night_color", None),
     ("async_get_lighting_v2", "_supports_lighting_v2", None),
     # Gated on a model name whitelist, which is the bug class #570, #676 and
     # #690 were all instances of. Named here so the probe actually runs.
@@ -60,18 +61,18 @@ PROBES = [
     # inherits the three properties this file is about, which is exactly what it
     # did not have.
     ("async_get_video_color", "_video_color_fields", None),
-    ("async_get_video_in_mode", "_supports_exposure_anti_flicker", None),
-    (
-        "async_get_exposure_anti_flicker_config",
-        "_supports_exposure_anti_flicker",
-        None,
-    ),
     # The device's own processor and memory. Both are RPC2 only with no CGI
     # form, so a device with RPC2 switched off refuses them in a way none of the
     # others do -- with a RuntimeError, not a ClientResponseError -- which is
     # why that handler is broader than PROBE_FAILED. Listed here for the three
     # properties this file is about.
     ("async_get_system_load", "_supports_system_load", None),
+    ("async_get_video_in_mode", "_supports_exposure_anti_flicker", None),
+    (
+        "async_get_exposure_anti_flicker_config",
+        "_supports_exposure_anti_flicker",
+        None,
+    ),
 ]
 
 # The probes whose capability is a set of field names rather than a bool, so
@@ -97,7 +98,6 @@ FLAGS = (
     "_supports_day_night_color",
     "_supports_disarming_linkage",
     "_supports_event_notifications",
-    "_supports_exposure_anti_flicker",
     "_supports_intelli_tour",
     "_supports_floodlightmode",
     "_supports_lighting",
@@ -109,6 +109,7 @@ FLAGS = (
     "_supports_smart_motion_detection",
     "_supports_system_load",
     "_video_color_fields",
+    "_supports_exposure_anti_flicker",
 )
 
 
@@ -147,16 +148,18 @@ class _Client:
     SHAPED = {
         "get_max_extra_streams": 1,
         "get_software_version": {"version": "1.0"},
-        "async_get_video_in_mode": {"table.VideoInMode[0].Config[0]": "0"},
+        "async_get_video_in_mode": {
+            "table.VideoInMode[0].Config[0]": "0",
+        },
         "async_get_exposure_anti_flicker_config": {
-            "table.VideoInExposure[0][0].AntiFlicker": "0"
+            "table.VideoInExposure[0][0].AntiFlicker": "0",
         },
     }
 
     def __init__(self, refusing=None, model="IPC-HFW1234"):
         self._refusing = refusing
         self.asked = []
-        self.SHAPED = dict(self.SHAPED, **{"get_device_type": {"type": model}})
+        self.SHAPED = dict(self.SHAPED, get_device_type={"type": model})
 
     def __getattr__(self, name):
         if name.startswith("_"):

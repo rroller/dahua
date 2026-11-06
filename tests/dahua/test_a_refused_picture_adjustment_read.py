@@ -172,6 +172,7 @@ def test_this_channels_row_is_what_counts():
         "table.VideoColor[0][0].Saturation": "50",
         "table.VideoColor[0][0].Hue": "50",
         "table.VideoColor[0][0].Gamma": "37",
+        "table.VideoColor[0][0].ChromaSuppress": "50",
         "table.VideoColor[0][0].Style": "Standard",
     }
 

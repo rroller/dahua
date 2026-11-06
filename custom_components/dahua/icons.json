@@ -31,6 +31,12 @@
             },
             "lighting_scheme": {
                 "default": "mdi:lightbulb-auto"
+            },
+            "image_wide_dynamic_range": {
+                "default": "mdi:contrast-box"
+            },
+            "image_exposure_mode": {
+                "default": "mdi:camera-iris"
             }
         },
         "sensor": {
@@ -82,6 +88,15 @@
             },
             "privacy_mode": {
                 "default": "mdi:shield-lock"
+            },
+            "timestamp_overlay": {
+                "default": "mdi:clock-outline"
+            },
+            "channel_title_overlay": {
+                "default": "mdi:format-title"
+            },
+            "custom_title_overlay": {
+                "default": "mdi:text-box-outline"
             },
             "siren": {
                 "default": "mdi:bullhorn"

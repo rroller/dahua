@@ -530,7 +530,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_SET_TEXT_OVERLAY,
         {
-            vol.Required("group", default=0): int,
+            vol.Required("group", default=1): int,
             vol.Optional("text1", default=""): str,
             vol.Optional("text2", default=""): str,
             vol.Optional("text3", default=""): str,
@@ -651,7 +651,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_GET_OVERLAY_TEXT,
         {
-            vol.Optional("group", default=0): vol.All(
+            vol.Optional("group", default=1): vol.All(
                 vol.Coerce(int), vol.Range(min=0, max=100)
             ),
         },

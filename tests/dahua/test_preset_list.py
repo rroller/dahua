@@ -32,7 +32,6 @@ import pytest
 
 from custom_components.dahua import dahua_utils
 from custom_components.dahua.select import (
-    DahuaCameraPresetPositionSelect,
     _async_preset_ids,
 )
 
@@ -43,9 +42,9 @@ def _reply(*indexes, named=True):
     """A getPresets reply listing the given preset numbers."""
     data = {}
     for row, index in enumerate(indexes):
-        data["presets[{0}].Index".format(row)] = str(index)
+        data[f"presets[{row}].Index"] = str(index)
         if named:
-            data["presets[{0}].Name".format(row)] = "Preset {0}".format(index)
+            data[f"presets[{row}].Name"] = f"Preset {index}"
     return data
 
 
@@ -250,6 +249,8 @@ def _setup_coordinator(
         asked_for_presets=asked,
         supports_video_color=lambda _field: False,
         supports_video_image_control=lambda _field: False,
+        supports_image_option=lambda _field: False,
+        supports_exposure_anti_flicker=lambda: False,
     )
 
 

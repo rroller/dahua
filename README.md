@@ -1011,6 +1011,9 @@ IVS Rule | One switch per IVS rule the camera reports (tripwire, intrusion and s
 Alarm Output | A physical alarm or relay output on the device, switched directly. A recorder with several relays gets one switch per relay, on the recorder's own device rather than on a camera, named by the recorder where it names them distinctly and numbered where it does not. The state is read back from the device rather than assumed from the last write
 Privacy Mode | Covers the lens on cameras with a motorised cover. See `dahua.set_privacy_mode`
 Disarming Linkage | Newer firmwares introduce a "disarming" feature, accessible from the camera web UI under Event → One-click disarm / Disarming. When enabled, the disarm toggle suppresses the linkage actions configured in the Disarming section specifically, while leaving all other alarm linkage actions untouched. Detection remains fully active throughout. This allows one to turn it on/off.
+Timestamp Overlay | Shows or hides the timestamp burned into the video. This is the same field as `dahua.enable_time_overlay`, exposed as a switch so the state can be read as well as set
+Channel Title Overlay | Shows or hides the channel title overlay. The same field as `dahua.enable_channel_title`, with its state read back from the camera
+Custom Title Overlay | Shows or hides the custom text overlay (group 1, which `set_text_overlay` and `get_overlay_text` now default to). The text itself is still set with `dahua.set_text_overlay`
 
 ## Lights
 Light |  Description |
@@ -1045,7 +1048,16 @@ Select |  Description |
 Security Light | On a doorbell, sets the light to off, on, or strobe. A doorbell's light has three states rather than two, which is why it is a select and not a switch
 Preset Position | Moves a PTZ camera to one of its stored preset positions, and reports the one it is at. Only created on cameras that report presets
 Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dahua also calls Brightness). Readable as well as settable, which is what makes it possible to notice a camera that changed mode by itself, such as one reverting to Auto after a power cut and then rendering black and white at night
+Image Wide Dynamic Range | Off, On or mode 2. The camera ignores mode 0 on its own while the level is still 50, so choosing Off clears both; choosing On or mode 2 keeps the camera's level or restores 50. Mode 2 is named rather than called Auto because the vendor's name for it has not been confirmed
+Image Exposure Mode | Auto, Gain Priority or Shutter Priority. Manual exposure is deliberately not offered: it needs shutter and gain values this integration does not expose
 Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
+
+## Picture sliders
+
+**Image brightness**, **contrast**, **saturation**, **hue**, **gamma** and **chroma
+suppression** appear on channels that report the corresponding `VideoColor` fields.
+Each is a 0–100 slider that writes the channel's general picture profile and reads the
+value the camera reports back.
 
 ## Motion region sliders
 
