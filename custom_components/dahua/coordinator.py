@@ -830,6 +830,65 @@ def door_index(event: dict) -> int:
     return max(0, index)
 
 
+# What a call event's `Index` means on a door station with more than one call
+# button, and which button each measured value is.
+#
+# A mapping rather than arithmetic. 999 and 1999 look exactly like
+# `button * 1000 - 1`, and two values from one model cannot tell that apart from
+# a lookup the firmware keeps, or from 999 being a sentinel with 1999 meaning
+# "the second of anything". A three-button station would settle it and nobody on
+# https://github.com/rroller/dahua/issues/175 has one, so an index that is not
+# in here is reported as itself and no button is claimed for it.
+#
+# Measured by @altserg over five calls on a two-button VTO3221D, and the point
+# is that it held still: 999 for the first button when the call was answered,
+# rejected and left ringing, 1999 for the second on both of its. That is what
+# rules out a call counter, which the first two samples could not. A
+# single-button DHI-VTO1201G-P on the same network also reports 999, which is
+# why 999 is the first button rather than "some button".
+CALL_BUTTON_BY_INDEX = {999: 1, 1999: 2}
+
+# The events whose `Index` identifies which call button rang rather than a video
+# channel or a door. `BackKeyLight`, the press itself, carries `Index: -1` on the
+# same device, so it cannot answer this and is not in here.
+CALL_BUTTON_EVENTS = frozenset({"CallNoAnswered"})
+
+
+def call_button_index(event: dict):
+    """Which call button this event reports, or None if it did not say.
+
+    Deliberately not `door_index` above, which answers a different question:
+    that one folds anything missing or negative onto door 0, because a
+    single-door VTO sends nothing and 0 is the honest answer. Here there is no
+    such default. A door station that does not report a button must produce no
+    button attribute at all rather than claim the first one, and `Index: -1`
+    means "not a button" exactly as it means "not a door".
+
+    Read before anything looks the value up, because the index is whatever JSON
+    arrived: `CALL_BUTTON_BY_INDEX.get([])` raises `TypeError` inside the event
+    handler, which is the #475 failure that takes the stream down for every
+    event after it. Nothing reaches the mapping until it is known to be an int.
+
+    Both casings and both types, for the reason `event_payload` gives: DHIP
+    sends `Index` as a number, and the CGI wire format `index=999` parses to the
+    string `"999"`.
+    """
+    index = event.get("Index")
+    if index is None:
+        index = event.get("index")
+    # bool is an int in Python, and `Index: true` is not button 1.
+    if isinstance(index, bool):
+        return None
+    if isinstance(index, int):
+        return index
+    if isinstance(index, str):
+        try:
+            return int(index.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def door_status_is_relay(event: dict) -> bool:
     """Whether a DoorStatus event is about the relay rather than the door.
 
@@ -3897,7 +3956,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._dispatch_event(event, event.get("action", ""))
 
     def _extract_event_details(self, event: dict) -> dict:
-        """The fields of an IVS/smart event an automation wants, or {} if none.
+        """The fields of an event an automation wants, or {} if none.
 
         Which rule tripped (`rule_name`/`rule_id`), which way a line was crossed
         (`direction`), and what was seen (`object_type`). All optional: a plain
@@ -3927,6 +3986,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         object_type = (data.get("Object") or {}).get("ObjectType")
         if object_type and object_type.lower() != "unknown":
             details["object_type"] = object_type
+
+        # Which call button rang, on a door station that has more than one
+        # (#1156). Scoped to the codes whose Index means a button: every
+        # event carries an Index, and on all the others it is a channel.
+        if event.get("Code") in CALL_BUTTON_EVENTS:
+            index = call_button_index(event)
+            if index is not None:
+                details["call_button_index"] = index
+                button = CALL_BUTTON_BY_INDEX.get(index)
+                if button is not None:
+                    details["call_button"] = button
+            # The SIP call slot, kept as the string the device sent. Measured as
+            # 7, 2, 5, 6, 4 across five consecutive calls, so it is a slot and
+            # not a count, and it is what pairs this event with the `Invite`
+            # that follows it two to four milliseconds later.
+            call_id = data.get("CallID")
+            if call_id is not None:
+                details["call_id"] = call_id
         return details
 
     def translate_event_code(self, event: dict):
