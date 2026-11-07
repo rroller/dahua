@@ -1,4 +1,9 @@
 # Home Assistant Dahua Integration
+
+[![GitHub Release](https://img.shields.io/github/v/release/rroller/dahua)](https://github.com/rroller/dahua/releases)
+[![Downloads](https://img.shields.io/github/downloads/rroller/dahua/total.svg)](https://github.com/rroller/dahua/releases)
+[![Active installs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fanalytics.home-assistant.io%2Fcustom_integrations.json&query=%24.dahua.total&label=active%20installs&color=41BDF5&logo=home-assistant&logoColor=white)](https://analytics.home-assistant.io/custom_integrations.json)
+
 The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras, doorbells, NVRs, DVRs in Home Assistant. It's also confirmed to work with some Lorex cameras and Amcrest devices.
 
 Supports motion events, alarm events (and others), enabling/disabling motion detection, switches for infrared, illuminator (white light), security lights (red/blue flashers), sirens, doorbell button press events, and more.
