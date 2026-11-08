@@ -19,6 +19,7 @@ __pycache__
 .coverage
 .vscode
 coverage.xml
+coverage.lcov
 .idea
 
 
