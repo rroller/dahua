@@ -59,6 +59,17 @@ TIMEOUT_SECONDS = 20
 # with the outer deadline, not to be a budget anybody tunes.
 RPC2_FALLBACK_MARGIN_SECONDS = 2
 
+# Config tables a write must not take the RPC2 route for, whatever the CGI
+# answer was.
+#
+# These are addressed by their array index, and the same rule can report a
+# different index between a whole-table and a per-channel read on this firmware
+# (#824). An index resolved from the CGI URL and applied to an RPC2 read could
+# therefore write the wrong rule, and a read back of the row that was asked for
+# would agree that it worked. `_request` pins the READ of VideoAnalyseRule to
+# CGI for the same reason; this is the write half of that pin.
+RPC2_WRITE_PINNED_TO_CGI = ("VideoAnalyseRule", "RemoteVideoAnalyseRule")
+
 # Unsupported table/method responses. LightingScheme returned 268959743 on
 # IPC-Color4K-X, DHI-NVR5464 and VTO2000A; CGI refusals vary between 400 and
 # 500. Decide absence from the RPC2 table read, not the CGI HTTP status.
@@ -7016,10 +7027,11 @@ class DahuaClient:
         through it, because the first version of this was reasoned about rather
         than measured and was wrong.
 
-        One of these wraps a whole fallback rather than each call inside it. The
-        write fallback reads, writes and reads back; a deadline per call would
-        leave the second and the third able to run the outer one out, which is
-        the same hole again.
+        The deadline is absolute, so one of these wrapping a whole fallback and
+        one around each of its calls cut off at the same moment. It wraps the
+        whole sequence because what reopens the hole is a call left OUTSIDE the
+        wrapper, and the write fallback makes three of them: a read, a write and
+        a read back.
 
         A budget with no deadline -- `asyncio.timeout(None)` -- is left alone:
         there is nothing to stay inside. A deadline already past fires at once
@@ -7340,6 +7352,13 @@ class DahuaClient:
                             )
                             else None
                         )
+                        if write_fields and any(
+                            _config_table_of(address) in RPC2_WRITE_PINNED_TO_CGI
+                            for address, _value in write_fields
+                        ):
+                            # An index that means a different row over the other
+                            # transport. See RPC2_WRITE_PINNED_TO_CGI.
+                            write_fields = None
                         if write_fields:
                             try:
                                 return await self._rpc2_fallback_write(

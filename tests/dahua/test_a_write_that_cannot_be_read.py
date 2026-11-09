@@ -343,13 +343,24 @@ async def test_a_table_the_write_replaced_is_reported_as_refused(socket_enabled)
 async def test_a_lost_table_is_named_in_the_warning_by_key_not_by_value(
     socket_enabled, caplog
 ):
-    """These tables carry cloud credentials and server lists. Keys only."""
+    """These tables carry cloud credentials and server lists. Keys only.
+
+    Both halves asserted. "By key" on its own is met by a log line that prints
+    the whole table, which is the shape of mistake that puts a password in
+    somebody's issue report.
+    """
+    secret = "zz-not-for-the-log-zz"
+    device = _Rpc2Device(
+        {"MotionDetect": [{"Enable": False, "Sensitivity": 3, "Token": secret}]},
+        mode="replace",
+    )
     with caplog.at_level("WARNING"):
         async with _serving(OK_THEN_PHANTOM) as server:
-            await _write(server, ENABLE_ALONE, _Rpc2Device(mode="replace"))
+            await _write(server, ENABLE_ALONE, device)
 
-    assert "table.MotionDetect[0].Sensitivity" in caplog.text
+    assert "table.MotionDetect[0].Token" in caplog.text
     assert "missing" in caplog.text
+    assert secret not in caplog.text
 
 
 async def test_a_host_that_lost_a_table_is_not_written_to_again(socket_enabled):
@@ -477,6 +488,26 @@ async def test_a_write_that_is_not_a_config_write_is_not_routed(socket_enabled):
         answer, device = await _write(server, REBOOT, verify_ok=False)
 
     assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert device.writes == []
+
+
+async def test_a_rule_addressed_by_its_index_is_not_routed(socket_enabled):
+    """The write half of the pin `_request` already puts on this table's read.
+
+    The same IVS rule can report a different index between read shapes on this
+    firmware, so an index taken from the CGI URL and applied to an RPC2 read can
+    name a different rule -- and a read back of the row that was asked for would
+    agree it worked. Unreachable on this camera, since the pinned CGI read fails
+    and no rule entity appears, but a write to the wrong rule is not a thing to
+    leave resting on that.
+    """
+    device = _Rpc2Device({"VideoAnalyseRule": [[{"Enable": False}, {"Enable": False}]]})
+    url = SET_CONFIG + "&VideoAnalyseRule[0][1].Enable=true"
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, url, device, verify_ok=False)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert device.reads == []
     assert device.writes == []
 
 
@@ -733,3 +764,36 @@ def test_flatten_can_keep_the_json_types_under_the_same_keys():
 )
 def test_a_field_address_names_its_table(address, name):
     assert _config_table_of(address) == name
+
+
+async def test_the_real_read_can_hand_back_the_nested_table():
+    """`as_table=True`, which every test above replaces with a double.
+
+    The one seam the double hides. It shares `_rpc2_get_config` so the
+    stale-login retry is not reimplemented beside it, which means this flag is
+    the only new thing in a well-tested method and worth one test of its own.
+    """
+
+    class _Rpc2:
+        async def get_config(self, params):
+            assert params == {"name": "MotionDetect"}
+            return {"table": deepcopy(MOTION_TABLE["MotionDetect"])}
+
+    class _Holder:
+        client = _Rpc2()
+        task = None
+
+    async with aiohttp.ClientSession() as session:
+        client = DahuaClient("u", "p", "127.0.0.1", 80, 554, session)
+
+        async def shared():
+            return _Holder()
+
+        client._shared_rpc2 = shared
+
+        nested = await client._rpc2_get_config("MotionDetect", as_table=True)
+        flat = await client._rpc2_get_config("MotionDetect")
+
+    assert nested == MOTION_TABLE["MotionDetect"]
+    assert nested[0]["Enable"] is False
+    assert flat["table.MotionDetect[0].Enable"] == "false"
