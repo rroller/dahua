@@ -474,6 +474,30 @@ Brand | 2 Megapixels | 4 Megapixels | 5 Megapixels | 8 Megapixels
 | *IMOU* |
 | | IMOU C26EP-V2 | IMOU IPC-K46 | IMOU DB61i
 
+### Talking from Home Assistant
+
+From Home Assistant 2026.11 a doorbell's camera entities declare two-way audio, so
+the live view shows a talk button once **Settings > System > Labs > Two-way audio**
+is turned on. The browser's microphone goes over WebRTC to the go2rtc inside Home
+Assistant, which sends it to the doorbell on the RTSP backchannel of the stream.
+Measured on a DHI-VTO2311R-WP with Home Assistant 2026.11.0 (#1162).
+
+- **The browser needs HTTPS** to open the microphone. Over plain `http://` the
+  button is there, but talking does not start. The companion app on a plain HTTP
+  internal URL is the same.
+- **Set the main stream's audio to G.711A at 8 kHz** (`Encode[0].MainFormat[0].Audio`,
+  set over `configManager.cgi`). The doorbell offers the
+  backchannel in the format of the stream's own audio, and go2rtc does not
+  transcode to it. With PCM (L16) at 16 kHz the call connected and nothing was
+  heard at the door; after switching to G.711A it worked.
+- **The doorbell does not cancel echo on this path**, so with the speaker loud
+  the person talking hears themselves back through the doorbell's microphone.
+  A headset, or muting the incoming audio while talking, avoids it.
+- **The option *Don't open the two-way audio channel when streaming*** removes the
+  talk button, because go2rtc is then told not to open the backchannel.
+- Only doorbells declare it. Cameras with a speaker are not included, because the
+  backchannel has only been measured on a doorbell.
+
 ## Indoor monitors (VTH)
 
 Model | Firmware
@@ -623,9 +647,9 @@ What this integration cannot do, as distinct from the bugs and firmware quirks u
 
   and a clip pushed into a go2rtc stream whose source ends in `#backchannel=1` was
   heard at the door, twice, without interrupting anyone watching the camera. That was
-  go2rtc 1.9.14 driven through its own API, not through Home Assistant, and whether
-  the copy of go2rtc inside Home Assistant can be used the same way has not been
-  tried. Note the rate: these speakers want **PCMA at 8 kHz**, and a device that is
+  go2rtc 1.9.14 driven through its own API, not through Home Assistant. Talking
+  through the go2rtc inside Home Assistant has since been measured on a VTO2311R-WP;
+  see [Talking from Home Assistant](#talking-from-home-assistant). Note the rate: these speakers want **PCMA at 8 kHz**, and a device that is
   sent 16 kHz plays noise or nothing.
 - **A large configuration write can be refused on a recorder.** RPC2 answers
   `Request length error!` to a big `setConfig`, and a recorder's IVS rule table can be
