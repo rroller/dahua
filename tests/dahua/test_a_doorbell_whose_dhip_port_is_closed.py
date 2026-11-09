@@ -14,10 +14,11 @@ this a fallback rather than a second stream:
   press as `_DoTalkAction_` Invite and `PhoneCallDetect`
   (@growlocally, #1187).
 
-So a doorbell that runs both would report one press twice on the firmware where
-both work. The loop returns instead, and that is what most of this file pins:
-not only that the CGI stream is joined, but that the DHIP retry stops, and that
-only a refused port causes either.
+So a doorbell that ran both would report one press twice on the firmware where
+both work. The loop hands over and returns instead, and most of this file pins
+the conditions on that handover rather than the handover itself: a refusal is
+also what a doorbell that is **rebooting** answers with, since its TCP stack is
+up before the DHIP service has bound the port.
 
 The connection is scripted by replacing `create_connection` on the running
 loop, the same way `test_the_doorbell_stream_retry.py` does, because patching
@@ -25,6 +26,7 @@ loop, the same way `test_the_doorbell_stream_retry.py` does, because patching
 """
 
 import asyncio
+import errno
 
 import pytest
 
@@ -33,6 +35,27 @@ from custom_components.dahua import coordinator as coordinator_module
 from custom_components.dahua import diagnostics as diagnostics_module
 
 ADDRESS = "10.0.0.241"
+
+
+def refused():
+    """The exception asyncio itself raises when a port is shut.
+
+    Built the way `_sock_connect_cb` builds it, from the errno, rather than by
+    naming `ConnectionRefusedError` directly: what reaches the handler in
+    production is whatever `OSError(errno, message)` returns, and a test that
+    constructs the subclass by hand would pass even if that mapping were not
+    what the code relies on.
+    """
+    return OSError(errno.ECONNREFUSED, "Connect call failed ('%s', 5000)" % ADDRESS)
+
+
+CONNECTS = None  # a scripted attempt that succeeds
+
+
+def test_the_error_asyncio_raises_is_the_one_the_switch_matches():
+    """The whole type check rests on this mapping, so it is pinned once here."""
+    assert isinstance(refused(), ConnectionRefusedError)
+    assert not isinstance(TimeoutError("timed out"), ConnectionRefusedError)
 
 
 class _Protocol:
@@ -105,8 +128,8 @@ def retries(monkeypatch):
     """Record what the delay function is told, and never actually wait.
 
     A real delay here is a minute at the short end, past the suite's nine
-    second timeout. An empty list means the loop never reached the retry
-    arithmetic, which is how "it stopped" is told from "it went round again".
+    second timeout. The length of this list is also how "it went round again"
+    is told from "it stopped".
     """
     asked = []
 
@@ -150,12 +173,12 @@ def _warnings(caplog):
 # --- the switch --------------------------------------------------------------
 
 
-async def test_a_refused_port_5000_moves_the_doorbell_to_the_cgi_stream(
+async def test_a_closed_port_5000_moves_the_doorbell_to_the_cgi_stream(
     connections, registered, retries
 ):
     """The bug in #1187: this doorbell had no event transport at all."""
     coordinator = _coordinator()
-    connections(ConnectionRefusedError(111, "Connect call failed"))
+    connections(refused(), refused(), refused())
 
     await coordinator._async_stream_vto_events()
 
@@ -173,21 +196,23 @@ async def test_the_dhip_retry_stops_rather_than_running_beside_the_cgi_stream(
     de-duplicates them, so the loop has to end.
     """
     attempts = connections(
-        ConnectionRefusedError(111, "Connect call failed"),
-        None,  # would connect, if the loop ever came back round
+        refused(),
+        refused(),
+        refused(),
+        CONNECTS,  # would connect, if the loop ever came back round
     )
 
     await _coordinator()._async_stream_vto_events()
 
-    assert attempts.attempts == 1, "the doorbell kept retrying DHIP as well"
-    assert retries == [], "the loop went round instead of handing over"
+    assert attempts.attempts == 3, "the doorbell kept retrying DHIP as well"
+    assert retries == [False, False], "the loop did not hand over on the third"
 
 
 async def test_the_warning_says_which_transport_took_over(
     connections, registered, retries, caplog
 ):
     """The one line an owner has to find when their events move."""
-    connections(ConnectionRefusedError(111, "Connect call failed"))
+    connections(refused(), refused(), refused())
 
     with caplog.at_level("WARNING"):
         await _coordinator()._async_stream_vto_events()
@@ -198,40 +223,94 @@ async def test_the_warning_says_which_transport_took_over(
     ), _warnings(caplog)
 
 
-# --- what must not switch ----------------------------------------------------
+# --- a doorbell that is only rebooting ---------------------------------------
+
+
+async def test_two_refusals_are_not_yet_a_closed_port(connections, registered, retries):
+    """A device coming up refuses until the DHIP service binds the port. The
+    count is what separates that from a port that is never opened, so the
+    boundary is pinned on both sides: two is not enough, three is."""
+    connections(refused(), refused())
+
+    with pytest.raises(asyncio.CancelledError):
+        await _coordinator()._async_stream_vto_events()
+
+    assert registered == [], "switched while the doorbell was still booting"
+
+
+async def test_a_doorbell_that_comes_up_mid_boot_keeps_its_own_transport(
+    connections, registered, retries
+):
+    """Refused twice and then answers, which is exactly what a reboot looks
+    like. Dahua's own Auto Maintain reboots a doorbell weekly."""
+    attempts = connections(refused(), refused(), CONNECTS)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _coordinator()._async_stream_vto_events()
+
+    assert attempts.attempts == 4, "it stopped trying before the device was up"
+    assert registered == [], "a doorbell that answered was moved off DHIP"
+
+
+async def test_a_doorbell_that_has_answered_before_is_never_moved(
+    connections, registered, retries
+):
+    """The other half of the reboot case: Home Assistant stays up and the
+    doorbell restarts under it. Having had a socket once is proof this device
+    can serve one, so no number of refusals afterwards hands its events away,
+    and the hang-up service keeps its client."""
+    connections(CONNECTS, refused(), refused(), refused(), refused())
+
+    with pytest.raises(asyncio.CancelledError):
+        await _coordinator()._async_stream_vto_events()
+
+    assert registered == [], "a working doorbell was moved onto the CGI stream"
+
+
+async def test_the_refusals_have_to_be_consecutive(connections, registered, retries):
+    """A timeout in the middle is a different fault, and resets the count."""
+    connections(refused(), refused(), TimeoutError("timed out"), refused())
+
+    with pytest.raises(asyncio.CancelledError):
+        await _coordinator()._async_stream_vto_events()
+
+    assert registered == []
+
+
+# --- what must not switch at all ---------------------------------------------
 
 
 async def test_a_doorbell_that_is_merely_unreachable_keeps_the_dhip_listener(
     connections, registered, retries
 ):
-    """A reboot or a dropped network is not a closed port.
-
-    This is the negative control that matters most: a working VTO that happens
-    to be restarting when Home Assistant does must not be moved onto the CGI
-    stream for the rest of the session.
-    """
-    connections(TimeoutError("timed out"))
+    """A dropped network is not a closed port, however often it repeats."""
+    connections(
+        TimeoutError("timed out"), TimeoutError("timed out"), TimeoutError("timed out")
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await _coordinator()._async_stream_vto_events()
 
     assert registered == [], "an unreachable doorbell switched transports"
-    assert retries == [False], "it did not back off and retry"
+    assert retries == [False, False, False], "it did not back off and retry"
 
 
 async def test_a_generic_os_error_keeps_the_dhip_listener(
     connections, registered, retries
 ):
     """`ConnectionRefusedError` derives from `OSError`, and the wider class is
-    everything from no route to host to a bad address. Only the refusal means
-    the port is shut."""
-    connections(OSError("no route to host"))
+    everything from no route to host to a bad address."""
+    connections(
+        OSError("no route to host"),
+        OSError("no route to host"),
+        OSError("no route to host"),
+    )
 
     with pytest.raises(asyncio.CancelledError):
         await _coordinator()._async_stream_vto_events()
 
     assert registered == []
-    assert retries == [False]
+    assert retries == [False, False, False]
 
 
 async def test_a_monitor_with_no_web_server_has_nothing_to_fall_back_to(
@@ -239,13 +318,12 @@ async def test_a_monitor_with_no_web_server_has_nothing_to_fall_back_to(
 ):
     """Its reads are all DHIP logins, so the CGI stream would fail for ever
     against a web server that does not exist (#949)."""
-    connections(ConnectionRefusedError(111, "Connect call failed"))
+    connections(refused(), refused(), refused())
 
     with pytest.raises(asyncio.CancelledError):
         await _coordinator(over_dhip=True)._async_stream_vto_events()
 
     assert registered == []
-    assert retries == [False]
 
 
 async def test_a_doorbell_with_no_codes_selected_keeps_retrying(
@@ -253,13 +331,12 @@ async def test_a_doorbell_with_no_codes_selected_keeps_retrying(
 ):
     """`async_start_event_listener` registers nothing without a selection, so
     switching would abandon one transport without gaining another."""
-    connections(ConnectionRefusedError(111, "Connect call failed"))
+    connections(refused(), refused(), refused())
 
     with pytest.raises(asyncio.CancelledError):
         await _coordinator(events=None)._async_stream_vto_events()
 
     assert registered == []
-    assert retries == [False]
 
 
 # --- the dump has to name the transport that is carrying events --------------

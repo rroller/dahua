@@ -1607,6 +1607,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             else "vto listener"
         )
 
+    # How many refusals in a row mean the port is shut rather than still coming
+    # up. An embedded device brings its TCP stack and web server up before it
+    # binds 5000, so a connect in that window is refused by a doorbell that is
+    # merely rebooting, and Dahua's own Auto Maintain reboots one weekly. With
+    # the backoff `vto_retry_state` applies, three refusals span minutes, which
+    # outlasts a boot. Together with having never connected, that is what keeps
+    # a working doorbell on its own transport.
+    DHIP_REFUSALS_BEFORE_CGI = 3
+
     def _cgi_events_can_replace_dhip(self) -> bool:
         """Whether this doorbell could take its events from the CGI stream.
 
@@ -1629,6 +1638,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
         consecutive_failures = 0
+        # Whether this listener has ever had a socket, and how many refusals it
+        # has met in a row. Both are about handing the events to the CGI stream:
+        # see DHIP_REFUSALS_BEFORE_CGI.
+        ever_connected = False
+        refusals_in_a_row = 0
         while True:
             if getattr(self, "_rpc2_over_dhip", False) and host_auth_budget_exhausted(
                 self._address
@@ -1651,6 +1665,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     port=5000,
                 )
                 self._vto_client = protocol
+                # It bound the port, so this doorbell is not one that cannot.
+                ever_connected = True
+                refusals_in_a_row = 0
                 await protocol.disconnected
             except asyncio.CancelledError:
                 raise
@@ -1676,23 +1693,38 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # `ConnectionRefusedError` rather than the `OSError` it derives
                 # from, because the question is whether the port is shut and not
                 # whether the doorbell is awake. A timeout or an unreachable
-                # host is a doorbell that is rebooting or off the network, and
-                # switching transports on that would move a working VTO onto the
-                # CGI stream for the rest of the session.
+                # host is a doorbell that is off the network.
+                #
+                # A refusal alone is not enough either, and this is the case the
+                # type check does not cover: a doorbell that is rebooting
+                # answers the connect and refuses it, because the TCP stack is
+                # up before the DHIP service has bound the port. So a working
+                # VTO restarting, or Home Assistant restarting beside one, would
+                # otherwise move to the CGI stream for the session and take the
+                # hang-up service with it. Hence both conditions: this listener
+                # has never had a socket, and the refusal has repeated.
                 #
                 # Returning is what keeps one transport running. The loop does
                 # not go on retrying DHIP beside the CGI stream, so a press
                 # cannot arrive down both and be reported twice, and the error
                 # this handler logs every retry stops rather than repeating for
                 # as long as Home Assistant is up.
-                if isinstance(ex, ConnectionRefusedError) and (
-                    self._cgi_events_can_replace_dhip()
+                if isinstance(ex, ConnectionRefusedError):
+                    refusals_in_a_row += 1
+                else:
+                    refusals_in_a_row = 0
+                if (
+                    refusals_in_a_row >= self.DHIP_REFUSALS_BEFORE_CGI
+                    and not ever_connected
+                    and self._cgi_events_can_replace_dhip()
                 ):
                     _LOGGER.warning(
-                        "The doorbell at %s refused a connection on port 5000, so "
-                        "its events are taken from the CGI event stream instead "
-                        "of the DHIP listener: %s",
+                        "The doorbell at %s refused a connection on port 5000 %d "
+                        "times and has never answered there, so its events are "
+                        "taken from the CGI event stream instead of the DHIP "
+                        "listener: %s",
                         self._address,
+                        refusals_in_a_row,
                         ex,
                     )
                     await self.async_start_event_listener()
