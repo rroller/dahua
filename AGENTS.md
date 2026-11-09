@@ -278,7 +278,9 @@ a device that does not answer leaves the numbering alone rather than guessing
   plausible answer for ever. This is why CONTRIBUTING insists tests assert the
   exact key or URL.
 - A whole-table `setConfig` over RPC2 is refused for size on at least one recorder
-  (`Request length error!`), so writes address one field.
+  (`Request length error!`), so writes address one field. Two places break that
+  rule deliberately, because on some firmware a one-field write *replaces* the
+  table: `async_set_video_talk_phone_field` and `_rpc2_fallback_write` below.
 - **An answer can be unreadable rather than wrong**, and the two look nothing alike
   once you know. One firmware appends a whole second HTTP response to every
   authenticated CGI reply (#1176, a DH-IPC-HDW2849TM-S-IL on 3.120). No HTTP parser
@@ -292,11 +294,16 @@ a device that does not answer leaves the numbering alone rather than guessing
 - **A write whose answer cannot be read may already have happened.** The junk
   arrives after a complete, correct 200, so `_rpc2_fallback_write` reads the table
   before it writes anything and sends nothing at all when the value is already
-  there. It then reads the table back and requires that every field asked for
-  holds what was asked and that nothing else moved: a one-field `setConfig` edits
-  the table in place on a DHI-NVR5464 and a VTO2000A and **replaces** it on a
-  VTH5221D, answering `result: true` either way. A host seen to lose a table that
-  way goes into `_HOST_RPC2_WRITES_UNSAFE` and takes no further write over RPC2.
+  there. When it does have to write, it changes the field in the table it just
+  read and sends **the whole table back**, which is the one place the one-field
+  rule above is inverted on purpose: a one-field `setConfig` edits in place on a
+  DHI-NVR5464 and a VTO2000A and *replaces* the table on a VTH5221D, answering
+  `result: true` either way, and which it does cannot be discovered without doing
+  it. Sending the table that was just read cannot lose a setting under either
+  semantics, and the cost is the size refusal, which loses nothing. It then reads
+  the table back and requires that every field asked for holds what was asked and
+  that nothing else moved; a host that drops a setting even from a complete table
+  goes into `_HOST_RPC2_WRITES_UNSAFE` and takes no further write over RPC2.
   Anything the fallback cannot prove reports the original refusal, so it can never
   make a refused write look like one that worked.
 - The siren turns itself off after 10 to 15 seconds. That is the hardware.

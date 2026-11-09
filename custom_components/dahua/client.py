@@ -1198,6 +1198,33 @@ def _as_rpc2_value(held, text: str):
     raise ValueError("%s is not a value this can write" % type(held).__name__)
 
 
+# One step of a field address: an array index, or a name after an optional dot.
+_RPC2_FIELD_STEP = re.compile(r"\[(\d+)\]|\.?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _assign_rpc2_field(table, address: str, value) -> None:
+    """Change one addressed field inside a table the device just gave us.
+
+    `address` is a CGI field address, `Lighting[0][0].MiddleLight[0].Light`, and
+    `table` is what `configManager.getConfig` returned for `Lighting`, so the
+    first step of the address is the table itself and is dropped.
+
+    Changed in place, in the answer that was read, so everything the write puts
+    back is what the device said it held. Raises if the path is not there, which
+    the caller has already ruled out by finding the field in the flat read, and
+    which reaches the caller as the refusal rather than as a half-built table.
+    """
+    steps = [
+        int(index) if index else key for index, key in _RPC2_FIELD_STEP.findall(address)
+    ][1:]
+    if not steps:
+        raise ValueError("%s addresses no field of its table" % address)
+    node = table
+    for step in steps[:-1]:
+        node = node[step]
+    node[steps[-1]] = value
+
+
 def flatten_rpc2_config(
     name: str, node, prefix: str = None, *, stringify: bool = True
 ) -> dict:
@@ -7063,18 +7090,37 @@ class DahuaClient:
         1. read the tables the write addresses, over RPC2;
         2. if every field already holds what was asked, the CGI write landed.
            Say so and send nothing. That costs one read and is the only outcome
-           with no write at all, no typing to get right and nothing to undo;
-        3. otherwise write each field over RPC2, addressed rather than
-           whole-table (`set_config_field`, measured in #824);
-        4. read the tables back and *prove* it: every field asked for has to
-           hold what was asked, and nothing else in the table may have changed.
+           with no write at all and nothing to get right;
+        3. otherwise change the field in the table that was just read and send
+           **the whole table back**;
+        4. read the tables back and prove it: every field asked for has to hold
+           what was asked, and nothing else in the table may have changed.
 
-        Step 4 is not belt and braces. A one-field `setConfig` edits the table
-        in place on a DHI-NVR5464 and a VTO2000A, and on a VTH5221D it replaced
-        the table and answered `result: true`, and these writes are not
-        reversible. So a host that loses keys this way is added to
-        `_HOST_RPC2_WRITES_UNSAFE` and never takes this route again, and the
-        caller is told the write was refused -- which is what it is told today.
+        **Step 3 is a whole table on purpose, which is the opposite of the rule
+        everywhere else here, and @rroller's review of the first version is
+        why.** AGENTS.md says a write addresses one field, because a recorder
+        refuses a whole-table `setConfig` for size. But a one-field `setConfig`
+        edits the table in place on a DHI-NVR5464 and a VTO2000A and *replaces*
+        it on a VTH5221D, answering `result: true` either way -- and which it
+        does cannot be discovered without doing it. The first version wrote one
+        field and reported a refusal once the readback showed the damage, which
+        protects the second write and not the first, and these writes are not
+        reversible. Recovering from the copy was the other option and it is
+        weaker: the restore is itself a write to a device that has just behaved
+        unexpectedly, so the guarantee would rest on it working.
+
+        Sending the table that was just read cannot lose a setting under either
+        semantics: a device that edits gets every value back unchanged, and a
+        device that replaces gets the whole table, which is the shape that
+        firmware handles correctly -- `async_set_video_talk_phone_field` says
+        the same thing about the same hardware. What it costs is the size
+        refusal on a device with large tables, and that failure loses nothing:
+        the device declines, the table is untouched and the caller hears the
+        refusal it hears today.
+
+        Step 4 still stands, because a write can be accepted and ignored, and
+        the latch in `_HOST_RPC2_WRITES_UNSAFE` still stands for a device that
+        loses keys even to this.
 
         Anything this cannot promise raises the original `cgi_error`, so the
         floor is exactly the behaviour before this fallback existed: an entity
@@ -7084,7 +7130,7 @@ class DahuaClient:
         wanted = dict(fields)
         names = list(dict.fromkeys(_config_table_of(address) for address in wanted))
         async with self._inside_request_budget(budget):
-            before, held = await self._rpc2_config_tables(names)
+            before, held, raw = await self._rpc2_config_tables(names)
             if all(
                 _same_setting(before.get("table." + address), value)
                 for address, value in wanted.items()
@@ -7118,12 +7164,14 @@ class DahuaClient:
                         "%s has no %s to write to" % (self._address, address)
                     ) from None
                 values[address] = _as_rpc2_value(current, value)
+            # Changed in the copy that was just read, so what goes back is that
+            # table with this one field different. Nothing is claimed from what
+            # the write answers: a VTH answers `result: true` to a write that
+            # replaced the table it was aimed at. The read back below judges.
             for address, value in values.items():
-                # One field at a time, and nothing is claimed from what these
-                # answer: a VTH answers `result: true` to a write that replaced
-                # the table it was aimed at. The read back below is what judges.
-                await self._rpc2_set_config_field(address, value)
-            after, _ = await self._rpc2_config_tables(names)
+                _assign_rpc2_field(raw[_config_table_of(address)], address, value)
+            await self._rpc2_set_config_tables(raw)
+            after, _, _ = await self._rpc2_config_tables(names)
             untouched = [key for key in before if key[len("table.") :] not in wanted]
             lost = sorted(key for key in untouched if key not in after)
             altered = sorted(
@@ -7131,9 +7179,10 @@ class DahuaClient:
             )
             if lost or altered:
                 if lost:
-                    # Settings that are simply gone is the table having been
-                    # replaced rather than edited, which is a property of the
-                    # firmware and will happen to the next write too.
+                    # The whole table went back, so a setting that is now gone
+                    # is one the device dropped from what it was sent. Nothing
+                    # here can prevent that, and it will do it again, so this
+                    # host takes no further write over RPC2.
                     _HOST_RPC2_WRITES_UNSAFE.add(self._rpc2_key())
                 # Keys, never values: these tables carry things like the
                 # device's cloud credentials and its server list.
@@ -7191,19 +7240,39 @@ class DahuaClient:
         return await self.parse_dahua_api_response(CGI_WRITE_OK_BODY)
 
     async def _rpc2_config_tables(self, names) -> tuple:
-        """Read whole config tables over RPC2, flat as text and flat as typed.
+        """Read whole config tables over RPC2: flat text, flat types, and raw.
 
-        Both shapes come from the one answer, so the types the write is sent
-        with and the text the write is checked against cannot be read from two
-        different states of the device.
+        All three from the one answer, so the table a write puts back, the types
+        it is sent with and the text it is checked against cannot be read from
+        three different states of the device.
         """
         text = {}
         typed = {}
+        raw = {}
         for name in names:
             table = await self._rpc2_get_config(name, as_table=True)
+            raw[name] = table
             text.update(flatten_rpc2_config(name, table))
             typed.update(flatten_rpc2_config(name, table, stringify=False))
-        return text, typed
+        return text, typed, raw
+
+    async def _rpc2_set_config_tables(self, tables: dict) -> dict:
+        """Put whole config tables back, in one call, as `_rpc2_fallback_write` read them.
+
+        One `system.multicall`, so a write naming fields of two tables is one
+        request rather than two the device could accept half of.
+
+        Clears this device's shared reads, as every other write path does: the
+        answers cached under the CGI URLs were read before this changed them,
+        and a switch that refreshes into one of those snaps back to its old
+        state for the rest of the TTL.
+        """
+
+        async def write(client):
+            return await client.set_configs(list(tables.items()))
+
+        clear_host_cache(self._device)
+        return await self._rpc2_shared_call(write)
 
     async def _request(
         self, url: str, verify_ok=False, allow_rpc2=True, reject_declined=False

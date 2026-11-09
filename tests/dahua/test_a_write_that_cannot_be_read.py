@@ -126,21 +126,44 @@ def _assign(table, address: str, value) -> None:
 
 
 def _only(address: str, value):
-    """What is left of a table that a one-field write REPLACED (the VTH shape)."""
+    """What is left of a table a ONE-FIELD write replaced (the VTH5221D shape).
+
+    Only reachable through `set_config_field` below, which the fix no longer
+    calls. Both are kept so that a break reintroducing the one-field write
+    reproduces @rroller's check rather than failing for want of a double.
+    """
     node = value
     for step in reversed(_steps(address)[1:]):
         node = ([None] * step + [node]) if isinstance(step, int) else {step: node}
     return node
 
 
+def _drop(table, address: str) -> None:
+    """Remove an addressed field from a table, modelling a device that discards one."""
+    steps = _steps(address)[1:]
+    node = table
+    for step in steps[:-1]:
+        node = node[step]
+    del node[steps[-1]]
+
+
 class _Rpc2Device:
-    """The tables a device holds, and what a field write does to them.
+    """The tables a device holds, and what a whole-table write does to them.
 
     State, not a prepared answer: the write fix reads, writes and reads back, so
     a double that answered the same table twice could not fail the way firmware
-    does. `mode="edit"` is the DHI-NVR5464 and the VTO2000A. `mode="replace"` is
-    the VTH5221D, where the table becomes only what was written. `applies=False`
-    is the third shape, #647's: the call is accepted and nothing changes.
+    does.
+
+    `mode` is the firmware semantics for a **one-field** `setConfig`: `"edit"` is
+    the DHI-NVR5464 and the VTO2000A, `"replace"` is the VTH5221D, where the
+    table becomes only what was written. The fix sends whole tables, so the two
+    now behave identically here, and that is the point rather than an
+    simplification: under a whole-table write there is no difference to be at
+    the mercy of, which is what @rroller's review asked for.
+
+    `drops` is the harder device, and the only one left that can still lose a
+    setting: it discards that field from whatever it is sent, complete table or
+    not. `applies=False` is #647's shape, the call accepted and nothing changed.
     """
 
     def __init__(
@@ -150,6 +173,7 @@ class _Rpc2Device:
         mode="edit",
         applies=True,
         also_changes=None,
+        drops=None,
         get_raises=None,
         set_raises=None,
         get_delay=0,
@@ -159,12 +183,13 @@ class _Rpc2Device:
         self.mode = mode
         self.applies = applies
         self.also_changes = also_changes
+        self.drops = drops
         self.get_raises = get_raises
         self.set_raises = set_raises
         self.get_delay = get_delay
         self.set_delay = set_delay
         self.reads = []
-        self.writes = []
+        self.sent = []
 
     async def get_config(self, name, *, allow_missing=False, as_table=False):
         self.reads.append(name)
@@ -175,8 +200,31 @@ class _Rpc2Device:
         table = deepcopy(self.tables.get(name))
         return table if as_table else flatten_rpc2_config(name, table)
 
+    async def set_config_tables(self, tables):
+        self.sent.append(deepcopy(tables))
+        if self.set_delay:
+            await asyncio.sleep(self.set_delay)
+        if self.set_raises is not None:
+            raise self.set_raises
+        if not self.applies:
+            return {"result": True}
+        for name, table in deepcopy(tables).items():
+            # A whole-table write replaces the named table under either
+            # semantics, which is why `mode` no longer changes what happens.
+            if self.drops is not None and _config_table_of(self.drops) == name:
+                _drop(table, self.drops)
+            self.tables[name] = table
+            if self.also_changes:
+                _assign(self.tables[name], *self.also_changes)
+        return {"result": True}
+
     async def set_config_field(self, address, value):
-        self.writes.append((address, value))
+        """The one-field write the first version of the fix used.
+
+        Not called by the code any more. Kept so that a break which puts the
+        one-field write back is measured against the firmware that loses a
+        table to it, which is what the preservation tests are about.
+        """
         if self.set_delay:
             await asyncio.sleep(self.set_delay)
         if self.set_raises is not None:
@@ -188,6 +236,7 @@ class _Rpc2Device:
             _assign(self.tables[name], address, value)
             if self.also_changes:
                 _assign(self.tables[name], *self.also_changes)
+        self.sent.append({name: deepcopy(self.tables[name])})
         return {"result": True}
 
     def holds(self, address):
@@ -195,6 +244,15 @@ class _Rpc2Device:
         name = _config_table_of(address)
         flat = flatten_rpc2_config(name, self.tables.get(name))
         return flat.get("table." + address)
+
+    def was_sent(self, address):
+        """The value at one address in the last table the device was sent."""
+        name = _config_table_of(address)
+        table = self.sent[-1][name]
+        node = table
+        for step in _steps(address)[1:]:
+            node = node[step]
+        return node
 
 
 async def _write(server, url=ENABLE_ALONE, device=None, verify_ok=True):
@@ -209,6 +267,7 @@ async def _write(server, url=ENABLE_ALONE, device=None, verify_ok=True):
     async with aiohttp.ClientSession() as session:
         client = DahuaClient("u", "p", "127.0.0.1", server.port, 554, session)
         client._rpc2_get_config = device.get_config
+        client._rpc2_set_config_tables = device.set_config_tables
         client._rpc2_set_config_field = device.set_config_field
         try:
             return await client.get(url, verify_ok), device
@@ -251,7 +310,8 @@ async def test_an_unreadable_write_is_written_over_rpc2(socket_enabled):
 
     assert not isinstance(answer, Exception), answer
     assert "OK" in answer, answer
-    assert device.writes == [("MotionDetect[0].Enable", True)]
+    assert len(device.sent) == 1
+    assert device.was_sent("MotionDetect[0].Enable") is True
     assert device.holds("MotionDetect[0].Enable") == "true"
 
 
@@ -267,7 +327,7 @@ async def test_the_value_goes_out_typed_rather_than_as_the_text_cgi_sent(
     async with _serving(OK_THEN_PHANTOM) as server:
         _, device = await _write(server)
 
-    address, value = device.writes[0]
+    value = device.was_sent("MotionDetect[0].Enable")
     assert value is True, repr(value)
 
 
@@ -278,8 +338,8 @@ async def test_an_integer_field_goes_out_as_an_integer(socket_enabled):
         answer, device = await _write(server, SENSITIVITY, device)
 
     assert "OK" in answer, answer
-    assert device.writes == [("SmartMotionDetect[0].Sensitivity", 4)]
-    assert isinstance(device.writes[0][1], int)
+    assert device.was_sent("SmartMotionDetect[0].Sensitivity") == 4
+    assert isinstance(device.was_sent("SmartMotionDetect[0].Sensitivity"), int)
 
 
 async def test_a_write_that_already_landed_sends_nothing(socket_enabled):
@@ -293,7 +353,7 @@ async def test_a_write_that_already_landed_sends_nothing(socket_enabled):
         answer, device = await _write(server, ENABLE_ALONE, device)
 
     assert "OK" in answer, answer
-    assert device.writes == []
+    assert device.sent == []
     assert device.reads == ["MotionDetect"]
 
 
@@ -322,14 +382,60 @@ async def test_the_two_outcomes_are_logged_in_different_words(socket_enabled, ca
 # ---------------------------------------------------------------------------
 
 
-async def test_a_table_the_write_replaced_is_reported_as_refused(socket_enabled):
-    """The VTH5221D shape: `result: true`, and fifteen keys of sixteen gone.
+async def test_a_table_is_not_lost_on_firmware_that_replaces_rather_than_edits(
+    socket_enabled,
+):
+    """@rroller's finding, as a test: the FIRST write must not cost a setting.
 
-    The field asked for reads back correctly, so checking only that would call
-    this a success. The write is reported as refused instead, and the host is
-    written off for writes because the next one would do the same.
+    The VTH5221D answers `result: true` to a one-field `setConfig` and leaves
+    one key of sixteen. The first version of this fallback wrote one field and
+    reported a refusal once the readback showed the damage, which protects the
+    second write and not the first, and these writes are not reversible.
+
+    Sending the table that was just read cannot lose a setting under either
+    semantics, so this device keeps everything and the write lands. Nothing is
+    latched, because nothing went wrong.
     """
     device = _Rpc2Device(mode="replace")
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, ENABLE_ALONE, device)
+
+    assert "OK" in answer, answer
+    assert device.holds("MotionDetect[0].Enable") == "true"
+    assert device.holds("MotionDetect[0].Sensitivity") == "3"
+    assert device.holds("MotionDetect[0].DetectVersion") == "V3.0"
+    assert device.holds("MotionDetect[0].MotionDetectWindow[0].Threshold") == "5"
+    assert not client_module._HOST_RPC2_WRITES_UNSAFE
+
+
+async def test_the_whole_table_goes_back_exactly_as_it_was_read(socket_enabled):
+    """The preservation guarantee, asserted on what went out rather than on the end state.
+
+    Every key the device reported is in the request, with its own value, and the
+    one field asked for is the only difference. A device cannot drop what it was
+    sent unless it chooses to, and the test below covers the one that does.
+    """
+    async with _serving(OK_THEN_PHANTOM) as server:
+        _, device = await _write(server)
+
+    was_read = flatten_rpc2_config("MotionDetect", MOTION_TABLE["MotionDetect"])
+    went_out = flatten_rpc2_config("MotionDetect", device.sent[-1]["MotionDetect"])
+    assert set(went_out) == set(was_read)
+    assert {
+        key: value for key, value in went_out.items() if was_read[key] != value
+    } == {"table.MotionDetect[0].Enable": "true"}
+
+
+async def test_a_device_that_drops_a_setting_it_was_sent_is_reported_as_refused(
+    socket_enabled,
+):
+    """The one device left that can still lose a setting, and the latch is for it.
+
+    It discards a field from a complete table, so nothing this sends can save
+    it. The field asked for reads back correctly, so checking only that would
+    call it a success.
+    """
+    device = _Rpc2Device(drops="MotionDetect[0].Sensitivity")
     async with _serving(OK_THEN_PHANTOM) as server:
         answer, device = await _write(server, ENABLE_ALONE, device)
 
@@ -352,7 +458,7 @@ async def test_a_lost_table_is_named_in_the_warning_by_key_not_by_value(
     secret = "zz-not-for-the-log-zz"
     device = _Rpc2Device(
         {"MotionDetect": [{"Enable": False, "Sensitivity": 3, "Token": secret}]},
-        mode="replace",
+        drops="MotionDetect[0].Token",
     )
     with caplog.at_level("WARNING"):
         async with _serving(OK_THEN_PHANTOM) as server:
@@ -366,25 +472,26 @@ async def test_a_lost_table_is_named_in_the_warning_by_key_not_by_value(
 async def test_a_host_that_lost_a_table_is_not_written_to_again(socket_enabled):
     """Latched for the life of the process, so the second write never goes out."""
     async with _serving(OK_THEN_PHANTOM, OK_THEN_PHANTOM) as server:
-        device = _Rpc2Device(mode="replace")
+        device = _Rpc2Device(drops="MotionDetect[0].Sensitivity")
         async with aiohttp.ClientSession() as session:
             client = DahuaClient("u", "p", "127.0.0.1", server.port, 554, session)
             client._rpc2_get_config = device.get_config
+            client._rpc2_set_config_tables = device.set_config_tables
             client._rpc2_set_config_field = device.set_config_field
             with pytest.raises(aiohttp.ClientResponseError):
                 await client.get(ENABLE_ALONE, True)
-            after_first = list(device.writes)
+            after_first = list(device.sent)
             with pytest.raises(aiohttp.ClientResponseError):
                 await client.get(ENABLE_ALONE, True)
 
-    assert device.writes == after_first
+    assert device.sent == after_first
     assert len(after_first) == 1
 
 
 async def test_a_neighbour_that_changed_is_reported_without_writing_the_host_off(
     socket_enabled,
 ):
-    """A changed neighbour is not a replaced table, so it must not latch.
+    """A changed neighbour is not a dropped setting, so it must not latch.
 
     It is still not a write this can promise, so the refusal is reported --
     deliberately strict. Nothing asked for that setting to move.
@@ -408,7 +515,8 @@ async def test_a_write_the_device_accepts_and_ignores_is_reported_as_refused(
 
     assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
     assert answer.status == 400
-    assert device.writes == [("MotionDetect[0].Enable", True)]
+    assert len(device.sent) == 1
+    assert device.was_sent("MotionDetect[0].Enable") is True
 
 
 async def test_a_field_the_table_does_not_have_is_declined_rather_than_refused(
@@ -425,7 +533,7 @@ async def test_a_field_the_table_does_not_have_is_declined_rather_than_refused(
 
     assert isinstance(answer, DahuaWriteDeclined), type(answer).__name__
     assert "DetectVersion" in str(answer)
-    assert device.writes == []
+    assert device.sent == []
 
 
 async def test_the_motion_switch_falls_through_to_its_second_shape(socket_enabled):
@@ -441,11 +549,13 @@ async def test_the_motion_switch_falls_through_to_its_second_shape(socket_enable
         async with aiohttp.ClientSession() as session:
             client = DahuaClient("u", "p", "127.0.0.1", server.port, 554, session)
             client._rpc2_get_config = device.get_config
+            client._rpc2_set_config_tables = device.set_config_tables
             client._rpc2_set_config_field = device.set_config_field
             answer = await client.enable_motion_detection(0, True)
 
     assert "OK" in answer, answer
-    assert device.writes == [("MotionDetect[0].Enable", True)]
+    assert len(device.sent) == 1
+    assert device.was_sent("MotionDetect[0].Enable") is True
     assert device.holds("MotionDetect[0].Enable") == "true"
 
 
@@ -461,7 +571,7 @@ async def test_a_correctly_framed_400_is_not_routed(socket_enabled):
 
     assert isinstance(answer, Exception), answer
     assert device.reads == []
-    assert device.writes == []
+    assert device.sent == []
 
 
 async def test_an_absent_config_endpoint_is_left_to_the_callers_that_handle_it(
@@ -479,7 +589,7 @@ async def test_an_absent_config_endpoint_is_left_to_the_callers_that_handle_it(
 
     assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
     assert answer.status == 404
-    assert device.writes == []
+    assert device.sent == []
 
 
 async def test_a_write_that_is_not_a_config_write_is_not_routed(socket_enabled):
@@ -488,7 +598,7 @@ async def test_a_write_that_is_not_a_config_write_is_not_routed(socket_enabled):
         answer, device = await _write(server, REBOOT, verify_ok=False)
 
     assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
-    assert device.writes == []
+    assert device.sent == []
 
 
 async def test_a_rule_addressed_by_its_index_is_not_routed(socket_enabled):
@@ -508,7 +618,7 @@ async def test_a_rule_addressed_by_its_index_is_not_routed(socket_enabled):
 
     assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
     assert device.reads == []
-    assert device.writes == []
+    assert device.sent == []
 
 
 async def test_a_read_is_never_written(socket_enabled):
@@ -516,7 +626,7 @@ async def test_a_read_is_never_written(socket_enabled):
     async with _serving(UNREADABLE) as server:
         answer, device = await _write(server, MOTION_DETECT, verify_ok=False)
 
-    assert device.writes == []
+    assert device.sent == []
     assert device.reads == ["MotionDetect"]
 
 
@@ -527,7 +637,7 @@ async def test_a_host_rpc2_cannot_serve_is_not_routed(socket_enabled):
         answer, device = await _write(server)
 
     assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
-    assert device.writes == []
+    assert device.sent == []
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +661,7 @@ async def test_a_read_that_fails_before_the_write_reports_the_original_refusal(
 
     assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
     assert answer.status == 400
-    assert device.writes == []
+    assert device.sent == []
 
 
 async def test_an_rpc2_write_that_is_refused_reports_the_original_refusal(
@@ -595,7 +705,7 @@ async def test_a_read_that_hangs_before_the_write_reports_the_original_refusal(
 
     assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
     assert answer.status == 400
-    assert device.writes == []
+    assert device.sent == []
 
 
 # ---------------------------------------------------------------------------
@@ -615,14 +725,18 @@ async def test_a_multi_field_write_sends_each_field_as_it_is_held(socket_enabled
         answer, device = await _write(server, url, device)
 
     assert "OK" in answer, answer
-    assert device.writes == [
-        ("Lighting[0][0].Mode", "Auto"),
-        ("Lighting[0][0].MiddleLight[0].Light", 100),
-    ]
+    # One call, both fields, in the table the device itself gave us.
+    assert len(device.sent) == 1
+    assert device.was_sent("Lighting[0][0].Mode") == "Auto"
+    assert device.was_sent("Lighting[0][0].MiddleLight[0].Light") == 100
 
 
-async def test_two_tables_in_one_write_are_both_read_back(socket_enabled):
-    """Each table named is read before and after, and verified the same way."""
+async def test_two_tables_in_one_write_go_back_in_one_call(socket_enabled):
+    """Each table named is read before and after, and both go back together.
+
+    One `system.multicall` rather than two requests, so there is no state where
+    the device has taken one table and not the other.
+    """
     device = _Rpc2Device(
         {"MotionDetect": [{"Enable": False}], "LightGlobal": [{"Enable": False}]}
     )
@@ -638,6 +752,35 @@ async def test_two_tables_in_one_write_are_both_read_back(socket_enabled):
         "LightGlobal",
     ]
     assert device.holds("LightGlobal[0].Enable") == "true"
+    assert len(device.sent) == 1
+    assert sorted(device.sent[0]) == ["LightGlobal", "MotionDetect"]
+
+
+async def test_a_table_too_large_to_write_reports_the_refusal_and_changes_nothing(
+    socket_enabled,
+):
+    """What sending the whole table costs, and the failure is the safe one.
+
+    A DHI-NVR5464 refuses a 9KB to 22KB `setConfig` with `errCode 287638033,
+    "Request length error!"`. On a device with tables that large this fallback
+    declines rather than working, and that is the trade: the device keeps every
+    setting it had, and the caller hears the refusal it hears today. There is no
+    second attempt with one field, because one field is the shape that can lose
+    the table.
+    """
+    refusal = Rpc2MethodRefused(
+        "configManager.setConfig", 287638033, "Request length error!"
+    )
+    device = _Rpc2Device(set_raises=refusal)
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, ENABLE_ALONE, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+    assert len(device.sent) == 1
+    assert device.holds("MotionDetect[0].Enable") == "false"
+    assert device.holds("MotionDetect[0].Sensitivity") == "3"
+    assert not client_module._HOST_RPC2_WRITES_UNSAFE
 
 
 async def test_a_percent_encoded_value_is_written_decoded(socket_enabled):
@@ -648,7 +791,7 @@ async def test_a_percent_encoded_value_is_written_decoded(socket_enabled):
         answer, device = await _write(server, url, device)
 
     assert "OK" in answer, answer
-    assert device.writes == [("ChannelTitle[0].Name", "Front Door")]
+    assert device.was_sent("ChannelTitle[0].Name") == "Front Door"
 
 
 # ---------------------------------------------------------------------------
