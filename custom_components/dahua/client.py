@@ -6,7 +6,7 @@ import logging
 import re
 import socket
 import time
-from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, nullcontext, suppress
 from copy import deepcopy
 
 import aiohttp
@@ -40,7 +40,7 @@ from .rpc2 import RPC2_LOGIN_METHOD, DahuaRpc2Client, Rpc2MethodRefused
 # An indoor monitor's call settings: do not disturb, and the volumes (#949, #998).
 VTH_PHONE_TABLE = "VideoTalkPhoneGeneral"
 from hashlib import md5
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from . import white_light_override as wlo
 
@@ -449,6 +449,18 @@ _RPC2_TABLE_UNAVAILABLE: set = set()
 # picked up by paying one refusal again.
 _HOST_CGI_CONFIG_ABSENT: set = set()
 
+# Hosts where an RPC2 field write has been seen to take the rest of its table
+# with it.
+#
+# A one-field `configManager.setConfig` edits the table in place on a
+# DHI-NVR5464 and on a VTO2000A, and on a VTH5221D it REPLACED the whole table
+# and still answered `result: true`, so which of the two a device does is
+# firmware rather than protocol. `_rpc2_fallback_write` reads the table, writes
+# the field and reads the table back, and a host whose other keys did not
+# survive that is added here: the write it was asked for has already been
+# reported as refused, and a second one would have less left to lose.
+_HOST_RPC2_WRITES_UNSAFE: set = set()
+
 # The device states its own keepalive interval in the login reply. Ask slightly
 # inside it, the way the VTO keepalive already does.
 RPC2_KEEPALIVE_MARGIN_SECONDS = 5
@@ -849,6 +861,10 @@ def _is_read(url: str) -> bool:
 # retract it: I retested with `Mode` alone, which is not what the entity sends.
 WRITE_ERROR_BODY = "error"
 
+# And what it says when it did it. Only the write fallback uses this, to answer
+# the way the CGI path would have for a write it has proved landed over RPC2.
+CGI_WRITE_OK_BODY = "OK"
+
 
 def write_was_declined(body: str) -> bool:
     """Whether a 200 response body is the device declining the write.
@@ -1089,8 +1105,91 @@ def _pop_complete_multipart_part(buffer: bytes, boundary: bytes):
 
 _CONFIG_READ = re.compile(r"configManager\.cgi\?action=getConfig&name=(.+)$")
 
+_CONFIG_WRITE = re.compile(r"configManager\.cgi\?action=setConfig&(.+)$")
 
-def flatten_rpc2_config(name: str, node, prefix: str = None) -> dict:
+# One field of one config table, as a CGI write addresses it: a table name,
+# any number of indexes, and at least one named field after that. Deliberately
+# strict, because what it is deciding is whether every parameter of a URL can
+# be sent over RPC2 one addressed field at a time.
+_ADDRESSED_FIELD = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]*(?:\[\d+\])*(?:\.[A-Za-z][A-Za-z0-9_]*(?:\[\d+\])*)+$"
+)
+
+
+def addressed_config_write(url: str):
+    """The fields a CGI `setConfig` URL is asking to write, or None.
+
+    A list of `(address, value)` in the order the URL named them, with each
+    value percent-decoded: two of the write methods encode theirs, and the
+    device is being sent the value, not its encoding.
+
+    None unless *every* parameter is one addressed field. A URL this cannot
+    read completely is one no fallback should take: writing some of what was
+    asked, or guessing at a shape nothing has measured, is worse than reporting
+    that the write was refused.
+    """
+    match = _CONFIG_WRITE.search(url)
+    if match is None:
+        return None
+    fields = []
+    for parameter in match.group(1).split("&"):
+        address, separator, value = parameter.partition("=")
+        if not separator or not _ADDRESSED_FIELD.match(address):
+            return None
+        fields.append((address, unquote(value)))
+    return fields or None
+
+
+def _as_cgi_text(value) -> str:
+    """One leaf config value, in the text a CGI read would have given for it.
+
+    Pulled out of `flatten_rpc2_config` so that a comparison against a CGI
+    answer and the flattening itself cannot disagree about how a value is
+    spelled. A JSON boolean is CGI's lower-case `true`, which is what
+    `_same_setting` and every accessor in this integration compare against.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _config_table_of(address: str) -> str:
+    """The config table a field address sits in.
+
+    `Lighting_V2[0][0][1].Mode` is a field of `Lighting_V2`, which is the name
+    `configManager.getConfig` and `setConfig` take.
+    """
+    return re.split(r"[\[.]", address, maxsplit=1)[0]
+
+
+def _as_rpc2_value(held, text: str):
+    """A CGI URL's text value, typed the way the device already holds it.
+
+    CGI is text and RPC2 is JSON, so `Enable=true` has to go out as a JSON
+    boolean. A device sent the *string* "true" for a boolean field answers
+    `result: true` and changes nothing, which is the accepted-and-ignored shape
+    #647 is about -- the worst answer available, because it looks like success.
+
+    The type comes from what the device is holding at that address rather than
+    from the spelling of the value, and anything it cannot be read as raises, so
+    the caller reports the refusal instead of guessing.
+    """
+    if isinstance(held, bool):
+        if text.strip().lower() not in ("true", "false"):
+            raise ValueError("%r is not a boolean" % text)
+        return text.strip().lower() == "true"
+    if isinstance(held, int):
+        return int(text)
+    if isinstance(held, float):
+        return float(text)
+    if isinstance(held, str):
+        return text
+    raise ValueError("%s is not a value this can write" % type(held).__name__)
+
+
+def flatten_rpc2_config(
+    name: str, node, prefix: str = None, *, stringify: bool = True
+) -> dict:
     """Turn RPC2's nested JSON into the flat keys the rest of the code reads.
 
     Every accessor in this integration reads CGI's shape --
@@ -1102,20 +1201,31 @@ def flatten_rpc2_config(name: str, node, prefix: str = None) -> dict:
     as JSON null, and keeping those would fabricate rows -- a
     SmartMotionDetect row existing for every channel is exactly the phantom
     the capability check in #635 stopped producing.
+
+    `stringify=False` keeps each leaf as the JSON type the device sent, under
+    exactly the same keys. The write fallback needs that: it has to send a
+    boolean field back as a boolean, and the flat answer every reader wants has
+    already turned it into text.
     """
     out = {}
     if prefix is None:
         prefix = "table." + name
     if isinstance(node, dict):
         for key, value in node.items():
-            out.update(flatten_rpc2_config(name, value, "%s.%s" % (prefix, key)))
+            out.update(
+                flatten_rpc2_config(
+                    name, value, "%s.%s" % (prefix, key), stringify=stringify
+                )
+            )
     elif isinstance(node, list):
         for index, value in enumerate(node):
-            out.update(flatten_rpc2_config(name, value, "%s[%d]" % (prefix, index)))
+            out.update(
+                flatten_rpc2_config(
+                    name, value, "%s[%d]" % (prefix, index), stringify=stringify
+                )
+            )
     elif node is not None:
-        if isinstance(node, bool):
-            node = "true" if node else "false"
-        out[prefix] = str(node)
+        out[prefix] = _as_cgi_text(node) if stringify else node
     return out
 
 
@@ -3759,12 +3869,20 @@ class DahuaClient:
             "set_coaxial_control_state", dahua_type, enabled
         )
 
-    async def _rpc2_get_config(self, name: str, *, allow_missing=False) -> dict:
+    async def _rpc2_get_config(
+        self, name: str, *, allow_missing=False, as_table=False
+    ) -> dict:
         """A config read over the shared session, in CGI's shape.
 
         One retry, because the failure this expects is an expired session and
         the answer to that is to log in again. A second failure means RPC2 is
         not going to work here, so it says so and the caller falls back.
+
+        `as_table=True` hands back the device's nested answer instead of the
+        flat one. Only the write fallback asks for that, because it needs each
+        field's JSON type and the flat shape has already spelled every value as
+        text. It shares this method rather than calling the session itself so
+        that the stale-login retry above is not reimplemented beside it.
         """
         for attempt in (1, 2):
             try:
@@ -3790,7 +3908,8 @@ class DahuaClient:
                     if allow_missing and exc.code in RPC2_TABLE_ABSENT_CODES:
                         return {}
                     raise
-                return flatten_rpc2_config(name, params.get("table"))
+                table = params.get("table")
+                return table if as_table else flatten_rpc2_config(name, table)
             except Rpc2MethodRefused:
                 # The device answered. Logging in again cannot change its mind
                 # about a table it does not serve, and dropping the shared
@@ -6884,18 +7003,23 @@ class DahuaClient:
                 f"{self._address} does not serve the {table} table",
             ) from refused
 
-    async def _rpc2_fallback_read(self, name: str, budget) -> dict:
-        """A fallback config read, bounded inside the request's own deadline.
+    def _inside_request_budget(self, budget):
+        """A deadline a margin inside the request's own, for a fallback.
 
-        `budget` is the `asyncio.timeout` the whole request runs in. Giving the
+        `budget` is the `asyncio.timeout` the whole request runs in. Giving a
         fallback a deadline a little inside that one is what makes the handlers
-        around this call reachable at all: when the OUTER deadline is the one to
+        around it reachable at all: when the OUTER deadline is the one to
         expire, the task is cancelled, `CancelledError` is not an `Exception`,
-        and a slow RPC2 read reached the caller as a `TimeoutError` that
+        and a slow RPC2 call reached the caller as a `TimeoutError` that
         `async_get_config` does not catch and the poll's `gather` does not
         tolerate. There is a test that patches `TIMEOUT_SECONDS` down and sleeps
         through it, because the first version of this was reasoned about rather
         than measured and was wrong.
+
+        One of these wraps a whole fallback rather than each call inside it. The
+        write fallback reads, writes and reads back; a deadline per call would
+        leave the second and the third able to run the outer one out, which is
+        the same hole again.
 
         A budget with no deadline -- `asyncio.timeout(None)` -- is left alone:
         there is nothing to stay inside. A deadline already past fires at once
@@ -6904,9 +7028,170 @@ class DahuaClient:
         """
         deadline = budget.when()
         if deadline is None:
+            return nullcontext()
+        return asyncio.timeout_at(deadline - RPC2_FALLBACK_MARGIN_SECONDS)
+
+    async def _rpc2_fallback_read(self, name: str, budget) -> dict:
+        """A fallback config read, bounded inside the request's own deadline."""
+        async with self._inside_request_budget(budget):
             return await self._rpc2_get_config(name)
-        async with asyncio.timeout_at(deadline - RPC2_FALLBACK_MARGIN_SECONDS):
-            return await self._rpc2_get_config(name)
+
+    async def _rpc2_fallback_write(self, fields, budget, cgi_error) -> dict:
+        """Make a config write land whose CGI answer could not be read, or say so.
+
+        The camera in #1176 answers every authenticated CGI call with a complete
+        200 and then a whole second HTTP response, so a write's answer is
+        unreadable in exactly the way a read's is. The difference is that a read
+        that cannot be read has told us nothing, while a write that cannot be
+        read may already have been carried out: the junk arrives *after* a
+        correct response, so the request reached the device and was answered.
+
+        Hence the order here, which is the whole design:
+
+        1. read the tables the write addresses, over RPC2;
+        2. if every field already holds what was asked, the CGI write landed.
+           Say so and send nothing. That costs one read and is the only outcome
+           with no write at all, no typing to get right and nothing to undo;
+        3. otherwise write each field over RPC2, addressed rather than
+           whole-table (`set_config_field`, measured in #824);
+        4. read the tables back and *prove* it: every field asked for has to
+           hold what was asked, and nothing else in the table may have changed.
+
+        Step 4 is not belt and braces. A one-field `setConfig` edits the table
+        in place on a DHI-NVR5464 and a VTO2000A, and on a VTH5221D it replaced
+        the table and answered `result: true`, and these writes are not
+        reversible. So a host that loses keys this way is added to
+        `_HOST_RPC2_WRITES_UNSAFE` and never takes this route again, and the
+        caller is told the write was refused -- which is what it is told today.
+
+        Anything this cannot promise raises the original `cgi_error`, so the
+        floor is exactly the behaviour before this fallback existed: an entity
+        reporting that the device would not do it. Nothing here can make a
+        refused write look like a successful one.
+        """
+        wanted = dict(fields)
+        names = list(dict.fromkeys(_config_table_of(address) for address in wanted))
+        async with self._inside_request_budget(budget):
+            before, held = await self._rpc2_config_tables(names)
+            if all(
+                _same_setting(before.get("table." + address), value)
+                for address, value in wanted.items()
+            ):
+                # Worth an INFO: this is the answer to "does the camera apply a
+                # write whose answer it then mangles", and it is a question
+                # nobody can answer from this end.
+                _LOGGER.info(
+                    "The CGI write to %s could not be read but did land: %s already "
+                    "holds what was asked, so nothing was sent over RPC2 (#1176)",
+                    self._address,
+                    ", ".join(wanted),
+                )
+                return await self._write_succeeded()
+            values = {}
+            for address, value in wanted.items():
+                current = held.get("table." + address)
+                if current is None:
+                    # The table has no such field, and this is the one place
+                    # that does NOT report the transport refusal. A CGI
+                    # `setConfig` naming a field the device does not have
+                    # answers 200 and the word `Error` -- measured, and what
+                    # `write_was_declined` is for -- so the device has declined
+                    # this write in words we could not read, which is exactly
+                    # what DahuaWriteDeclined says. Saying it is what lets the
+                    # callers that already try a second shape try it: the
+                    # motion detection switch sends `Enable` with
+                    # `DetectVersion` and then `Enable` on its own, and on this
+                    # camera the second one is the one that can land.
+                    raise DahuaWriteDeclined(
+                        "%s has no %s to write to" % (self._address, address)
+                    ) from None
+                values[address] = _as_rpc2_value(current, value)
+            for address, value in values.items():
+                # One field at a time, and nothing is claimed from what these
+                # answer: a VTH answers `result: true` to a write that replaced
+                # the table it was aimed at. The read back below is what judges.
+                await self._rpc2_set_config_field(address, value)
+            after, _ = await self._rpc2_config_tables(names)
+            untouched = [key for key in before if key[len("table.") :] not in wanted]
+            lost = sorted(key for key in untouched if key not in after)
+            altered = sorted(
+                key for key in untouched if key in after and after[key] != before[key]
+            )
+            if lost or altered:
+                if lost:
+                    # Settings that are simply gone is the table having been
+                    # replaced rather than edited, which is a property of the
+                    # firmware and will happen to the next write too.
+                    _HOST_RPC2_WRITES_UNSAFE.add(self._rpc2_key())
+                # Keys, never values: these tables carry things like the
+                # device's cloud credentials and its server list.
+                _LOGGER.warning(
+                    "Writing %s over RPC2 on %s left %d setting(s) of %s missing and "
+                    "%d changed that nothing asked for (%s%s), so the write is being "
+                    "reported as refused%s",
+                    ", ".join(values),
+                    self._address,
+                    len(lost),
+                    ", ".join(names),
+                    len(altered),
+                    ", ".join((lost + altered)[:10]),
+                    ", and more" if len(lost) + len(altered) > 10 else "",
+                    (
+                        ". No further write will take that route on this host"
+                        if lost
+                        else ""
+                    ),
+                )
+                raise cgi_error from None
+            unlanded = [
+                address
+                for address, value in wanted.items()
+                if not _same_setting(after.get("table." + address), value)
+            ]
+            if unlanded:
+                # The device took the call and did not make the change: #647's
+                # shape, and the reason this reads back at all rather than
+                # trusting `result: true`.
+                _LOGGER.debug(
+                    "%s accepted the RPC2 write of %s and did not make it; "
+                    "reporting the unreadable CGI answer",
+                    self._address,
+                    ", ".join(unlanded),
+                )
+                raise cgi_error from None
+            _LOGGER.info(
+                "The CGI write to %s could not be read, so %s was written over RPC2 "
+                "and read back (#1176)",
+                self._address,
+                ", ".join(values),
+            )
+            return await self._write_succeeded()
+
+    async def _write_succeeded(self) -> dict:
+        """What the CGI path returns for a write the device answered `OK`.
+
+        Through the real parser rather than written out, so a fallback and a
+        CGI write cannot come to mean different things to a caller. It matters:
+        `_enable_motion_detection_cgi` reads `"OK" in response` to decide
+        whether to try its second shape, and an RPC2 write answering `{}` sent
+        the second one for no reason.
+        """
+        return await self.parse_dahua_api_response(CGI_WRITE_OK_BODY)
+
+    async def _rpc2_config_tables(self, names) -> tuple:
+        """Read whole config tables over RPC2, flat as text and flat as typed.
+
+        Both shapes come from the one answer, so the types the write is sent
+        with and the text the write is checked against cannot be read from two
+        different states of the device.
+        """
+        text = {}
+        typed = {}
+        for name in names:
+            table = await self._rpc2_get_config(name, as_table=True)
+            text.update(flatten_rpc2_config(name, table))
+            typed.update(flatten_rpc2_config(name, table, stringify=False))
+        return text, typed
 
     async def _request(
         self, url: str, verify_ok=False, allow_rpc2=True, reject_declined=False
@@ -7036,6 +7321,53 @@ class DahuaClient:
                         # (#1176). Either way this device's config has to come from
                         # somewhere else, which is why both land on the one memo.
                         unreadable = refusal_is_mangled_framing(cgi_error)
+                        # A write is the other half of #1176, and it is a
+                        # different question: a read that cannot be read has
+                        # told us nothing, while a write that cannot be read
+                        # may already have happened. Only the unreadable case
+                        # comes here. A device whose config endpoint is simply
+                        # absent has the three method-level fallbacks it has
+                        # today, and changing those would change the behaviour
+                        # of devices where it is measured and working.
+                        write_fields = (
+                            addressed_config_write(url)
+                            if (
+                                unreadable
+                                and allow_rpc2
+                                and not self._rpc2_released
+                                and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE
+                                and self._rpc2_key() not in _HOST_RPC2_WRITES_UNSAFE
+                            )
+                            else None
+                        )
+                        if write_fields:
+                            try:
+                                return await self._rpc2_fallback_write(
+                                    write_fields, budget, cgi_error
+                                )
+                            except (
+                                aiohttp.ClientResponseError,
+                                DahuaWriteDeclined,
+                            ):
+                                # The refusal being reported on purpose, one
+                                # the fallback's own reads met, or the device
+                                # having declined a field it does not have.
+                                # Turning any of those into the original would
+                                # lose what the fallback found out.
+                                raise
+                            except Exception:  # pylint: disable=broad-except
+                                # Same floor as the read fallback below, and for
+                                # the same reason: whatever went wrong, the
+                                # caller hears what it hears today, which is
+                                # that the device refused the write.
+                                _LOGGER.debug(
+                                    "RPC2 could not carry the write to %s either; "
+                                    "reporting the unreadable CGI answer, as before "
+                                    "this fallback existed",
+                                    self._address,
+                                    exc_info=True,
+                                )
+                                raise cgi_error from None
                         if (
                             (
                                 cgi_error.status not in self.CONFIG_CGI_ABSENT

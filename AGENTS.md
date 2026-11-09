@@ -208,7 +208,7 @@ All events reach the bus as `dahua_event_received`.
 | Client | Protocol | Used for |
 |--------|----------|----------|
 | `DahuaClient` | HTTP CGI + Digest | Almost everything: polling, control, snapshots, event stream |
-| `DahuaRpc2Client` | HTTP POST JSON-RPC | Config over one shared session, PTZ presets, privacy mask, recordings, open door, VTO call, and every read on a device whose CGI is absent or unreadable |
+| `DahuaRpc2Client` | HTTP POST JSON-RPC | Config over one shared session, PTZ presets, privacy mask, recordings, open door, VTO call, every read on a device whose CGI is absent or unreadable, and a config write whose CGI answer was unreadable |
 | `DahuaVTOClient` | DHIP TCP :5000 | Doorbell events, hang up a call |
 | `DhipSession` | DHIP TCP :5000 | One-shot ask during the add flow |
 | `discovery.async_probe` | UDP :37810 | Credential-free identity |
@@ -289,6 +289,16 @@ a device that does not answer leaves the numbering alone rather than guessing
   it. **It is raised from the request, not from `raise_for_status`**, so an `except`
   placed around the status check never sees it, which is how the config half of
   #1176 was first written as a no-op.
+- **A write whose answer cannot be read may already have happened.** The junk
+  arrives after a complete, correct 200, so `_rpc2_fallback_write` reads the table
+  before it writes anything and sends nothing at all when the value is already
+  there. It then reads the table back and requires that every field asked for
+  holds what was asked and that nothing else moved: a one-field `setConfig` edits
+  the table in place on a DHI-NVR5464 and a VTO2000A and **replaces** it on a
+  VTH5221D, answering `result: true` either way. A host seen to lose a table that
+  way goes into `_HOST_RPC2_WRITES_UNSAFE` and takes no further write over RPC2.
+  Anything the fallback cannot prove reports the original refusal, so it can never
+  make a refused write look like one that worked.
 - The siren turns itself off after 10 to 15 seconds. That is the hardware.
 
 ## Custom Instructions
