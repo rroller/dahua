@@ -502,21 +502,29 @@ def _finished(value):
     return task
 
 
-async def test_the_search_is_shown_as_a_wait():
+async def test_the_search_is_shown_as_a_wait(monkeypatch):
     """Up to DISCOVERY_TIMEOUT_SECONDS of nothing on screen reads as a hung
     setup. The dialog says what is happening, and quotes the same ceiling the
-    code enforces rather than a number written out by hand."""
+    code enforces rather than a number written out by hand.
+
+    The search has to still be running for there to be anything to show. It
+    returned at once before, which now means no dialog at all and is its own
+    test in test_a_search_that_is_over_gets_no_dialog.py.
+    """
     import custom_components.dahua.config_flow as flow_module
 
+    monkeypatch.setattr(flow_module, "PROGRESS_GRACE_SECONDS", 0.01)
     flow = DahuaFlowHandler()
     flow.hass = SimpleNamespace(
         async_create_task=lambda coro: asyncio.ensure_future(coro)
     )
+    running = asyncio.Event()
 
     async def credentials(*args, **kwargs):
         return {"name": "Front", "serialNumber": "SER1"}, None
 
     async def discover(user_input, exclude):
+        await running.wait()
         return {}
 
     flow._test_credentials = credentials
@@ -535,6 +543,7 @@ async def test_the_search_is_shown_as_a_wait():
     assert result["description_placeholders"]["seconds"] == str(
         flow_module.DISCOVERY_TIMEOUT_SECONDS
     )
+    running.set()
     await flow._discovery_task
 
 
@@ -718,7 +727,12 @@ async def test_a_search_that_finishes_in_time_still_offers_what_it_found(
 
 async def test_the_step_moves_on_after_the_search_expires(monkeypatch):
     """What the user sees: the dialog ends and the naming step arrives, rather
-    than the progress step being shown again for ever."""
+    than the progress step being shown again for ever.
+
+    The grace is held under the ceiling so the dialog is still the thing being
+    tested. With both at their shipped values an expiring search finishes
+    inside the grace, and then there is no dialog to end.
+    """
     import custom_components.dahua.config_flow as flow_module
 
     flow = _flow()
@@ -726,6 +740,7 @@ async def test_the_step_moves_on_after_the_search_expires(monkeypatch):
         async_create_task=lambda coro: asyncio.ensure_future(coro)
     )
     monkeypatch.setattr(flow_module, "DISCOVERY_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(flow_module, "PROGRESS_GRACE_SECONDS", 0.01)
 
     async def never_answers(user_input, exclude):
         await asyncio.sleep(5)

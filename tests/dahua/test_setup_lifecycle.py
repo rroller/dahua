@@ -317,3 +317,103 @@ async def test_a_platform_switched_off_is_not_forwarded(hass):
     assert "select" not in forwarded_platforms
     assert "light" not in forwarded_platforms
     assert "camera" in forwarded_platforms, "the others must still load"
+
+
+async def test_serial_migration_failure_stops_platforms_and_releases_sessions(hass):
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+    with _working(), starts, forward as forward_mock, unload, patch(
+        "custom_components.dahua.migrate.async_adopt_the_real_serial",
+        side_effect=ValueError("registry migration failed"),
+    ):
+        _setting_up(hass, entry)
+        with pytest.raises(ConfigEntryNotReady):
+            await dahua_module.async_setup_entry(hass, entry)
+        forward_mock.assert_not_called()
+    assert _refcount() == 0
+    assert not hasattr(entry, "runtime_data")
+
+
+async def test_reported_serial_policy_survives_monitor_reload(hass):
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    async def refresh(coordinator):
+        coordinator._serial_number = "MONITOR-SERIAL"
+        coordinator.client._vth_identity = {"class": "VTH", "serial": "MONITOR-SERIAL"}
+        return {"serialNumber": "MONITOR-SERIAL"}
+
+    with patch.object(
+        dahua_module.DahuaDataUpdateCoordinator, "_async_update_data", refresh
+    ), starts, forward, unload:
+        assert await _try_setup(hass, entry)
+        assert entry.data["require_reported_serial"] is True
+        await dahua_module.async_unload_entry(hass, entry)
+        assert await _try_setup(hass, entry)
+        assert entry.runtime_data[0].client._require_reported_serial is True
+        await dahua_module.async_unload_entry(hass, entry)
+
+
+async def test_reported_serial_policy_survives_a_camera_reload(hass):
+    """The monitor case above, for a camera that adopted `getSerialNo`.
+
+    @rroller's #1141 finding: the first setup migrates the registry onto the
+    reported serial, and without the requirement the second setup comes up on
+    the old hash and duplicates every entity. Driven through the real entry
+    so the persistence and the reload are both the real ones.
+    """
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    async def refresh(coordinator):
+        coordinator._serial_number = "3E0164EPAN00095"
+        coordinator.client.identity_from_alternate_cgi = True
+        return {"serialNumber": "3E0164EPAN00095"}
+
+    with patch.object(
+        dahua_module.DahuaDataUpdateCoordinator, "_async_update_data", refresh
+    ), starts, forward, unload:
+        assert await _try_setup(hass, entry)
+        assert entry.data["require_reported_serial"] is True
+        await dahua_module.async_unload_entry(hass, entry)
+        assert await _try_setup(hass, entry)
+        assert entry.runtime_data[0].client._require_reported_serial is True
+        await dahua_module.async_unload_entry(hass, entry)
+
+
+async def test_reported_serial_policy_survives_an_rpc2_identified_reload(hass):
+    """The same, for a camera whose CGI answers were unreadable (#1176).
+
+    It adopts the serial RPC2 reported, so it needs the same hold as the two
+    above: without it the next setup falls back to the credential hash and
+    duplicates every entity the migration had just moved.
+    """
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    async def refresh(coordinator):
+        coordinator._serial_number = "NOT-A-REAL-SERIAL"
+        coordinator.client.identity_from_rpc2 = True
+        return {"serialNumber": "NOT-A-REAL-SERIAL"}
+
+    with patch.object(
+        dahua_module.DahuaDataUpdateCoordinator, "_async_update_data", refresh
+    ), starts, forward, unload:
+        assert await _try_setup(hass, entry)
+        assert entry.data["require_reported_serial"] is True
+        await dahua_module.async_unload_entry(hass, entry)
+        assert await _try_setup(hass, entry)
+        assert entry.runtime_data[0].client._require_reported_serial is True
+        await dahua_module.async_unload_entry(hass, entry)
+
+
+async def test_a_camera_that_never_adopted_one_is_not_held_to_it(hass):
+    """The converse. A camera answering `getSystemInfo` normally must not
+    acquire a requirement that would stop it setting up on a bad day."""
+    entry = _entry(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    with _working(), starts, forward, unload:
+        assert await _try_setup(hass, entry)
+        assert entry.data.get("require_reported_serial") is not True
+        await dahua_module.async_unload_entry(hass, entry)

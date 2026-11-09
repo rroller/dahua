@@ -28,7 +28,7 @@ CONTRIBUTING wins.
 
 <!-- tags: navigation, directory-structure -->
 
-36 modules, about 22,500 lines.
+38 modules, about 35,000 lines.
 
 ```
 custom_components/dahua/
@@ -58,6 +58,12 @@ custom_components/dahua/
 ├── diagnostics.py          # The dump. Talks to no device; reports held state only
 ├── media_source.py         # Browse and play the recorder's clips
 ├── flow_preview.py         # Serves one snapshot to the add dialog
+├── audio.py                # Turns "play this" into bytes the speaker takes:
+│                           #   a URL or a file becomes A-law at 8 kHz. Knows
+│                           #   about media sources so client.py does not
+├── late.py                 # Capability probes that timed out at setup, asked
+│                           #   again once the device is idle, so an answer that
+│                           #   arrives late still produces its entities (#1043)
 ├── illuminator_restore.py  # Persistent stores for lighting overrides
 ├── white_light_override.py # Pure table builders for the channel-scoped white light
 ├── infrared.py             # Infrared mode writes, transport routing, refusals
@@ -71,12 +77,12 @@ custom_components/dahua/
 ├── entity.py               # DahuaBaseEntity and DahuaEventDrivenEntity
 ├── <platform>.py           # binary_sensor, button, camera, event, light, number,
 │                           #   select, sensor, switch, update
-├── services.yaml           # 26 services, all registered in camera.py
+├── services.yaml           # 32 services, all registered in camera.py
 ├── icons.json              # Entity icons, keyed by translation key
 └── translations/           # en plus 8 others. English is the per-key fallback
 ```
 
-Other directories: `tests/` (242 files, ~3,000 tests), `scripts/`,
+Other directories: `tests/` (320 files, ~5,700 tests), `scripts/`,
 `.github/workflows/`.
 
 ## Architecture Overview
@@ -163,7 +169,13 @@ learn from what a device refused rather than from what it claims.
 Three transports, chosen in this order:
 
 1. **Doorbells (VTO)** take the DHIP listener on port 5000 (`vto.py`), started by
-   `async_start_vto_event_listener`.
+   `async_start_vto_event_listener`. A doorbell that **refuses** that port hands
+   its events to the CGI stream below and the listener returns, so one transport
+   carries them and a press is not reported twice (#1187). It takes three
+   `ConnectionRefusedError`s in a row on a listener that has never connected: a
+   rebooting doorbell also refuses, because its TCP stack is up before the DHIP
+   service binds the port, so the type of the error alone would move a working
+   VTO. A device serving no HTTP never switches.
 2. **Everything else** joins the one shared `DahuaHostEventStream` per address
    (`host.py`), which long-polls `eventManager.cgi?action=attach`. One stream
    serves every channel on the host: the device sends every channel's events down
@@ -196,7 +208,7 @@ All events reach the bus as `dahua_event_received`.
 | Client | Protocol | Used for |
 |--------|----------|----------|
 | `DahuaClient` | HTTP CGI + Digest | Almost everything: polling, control, snapshots, event stream |
-| `DahuaRpc2Client` | HTTP POST JSON-RPC | Config over one shared session, PTZ presets, privacy mask, recordings, open door, VTO call, and every read on a device with no CGI |
+| `DahuaRpc2Client` | HTTP POST JSON-RPC | Config over one shared session, PTZ presets, privacy mask, recordings, open door, VTO call, and every read on a device whose CGI is absent or unreadable |
 | `DahuaVTOClient` | DHIP TCP :5000 | Doorbell events, hang up a call |
 | `DhipSession` | DHIP TCP :5000 | One-shot ask during the add flow |
 | `discovery.async_probe` | UDP :37810 | Credential-free identity |
@@ -267,6 +279,16 @@ a device that does not answer leaves the numbering alone rather than guessing
   exact key or URL.
 - A whole-table `setConfig` over RPC2 is refused for size on at least one recorder
   (`Request length error!`), so writes address one field.
+- **An answer can be unreadable rather than wrong**, and the two look nothing alike
+  once you know. One firmware appends a whole second HTTP response to every
+  authenticated CGI reply (#1176, a DH-IPC-HDW2849TM-S-IL on 3.120). No HTTP parser
+  accepts that, so aiohttp synthesises a `ClientResponseError` with a status of 400
+  the device never sent, and the `ClientError` guards turn each read into an empty
+  answer: the camera looked healthy and knew nothing. `refusal_is_mangled_framing`
+  tells that 400 from a device's own, and identity and config reads route to RPC2 on
+  it. **It is raised from the request, not from `raise_for_status`**, so an `except`
+  placed around the status check never sees it, which is how the config half of
+  #1176 was first written as a no-op.
 - The siren turns itself off after 10 to 15 seconds. That is the hardware.
 
 ## Custom Instructions

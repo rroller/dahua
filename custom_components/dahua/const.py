@@ -28,6 +28,27 @@ SENSOR = "sensor"
 EVENT = "event"
 NUMBER = "number"
 UPDATE = "update"
+VIDEO_COLOR_STYLE_OPTIONS = ("Soft", "Standard", "Vivid")
+EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION = {"outdoor": 0, "50_hz": 1, "60_hz": 2}
+EXPOSURE_ANTI_FLICKER_OPTIONS = tuple(EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION)
+EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE = {
+    value: option for option, value in EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION.items()
+}
+
+# The three image orientation fields, and the tables that carry them.
+#
+# A camera keeps Flip, Mirror and Rotate90 in `VideoImageControl`. A doorbell
+# has the same hardware and the same three fields, but keeps them among the
+# picture settings in `VideoInOptions` and answers an empty table for
+# `VideoImageControl`, so the mirror switch and the rotation select were never
+# built for it. Measured on a VTO2000A at 3.120.0000.0.R, where its own web
+# page reads and writes `VideoInOptions[0].Mirror` and `.Flip`.
+#
+# Order matters: the first table that reports a field wins, so a camera that
+# serves both is read exactly where it was read before.
+VIDEO_IMAGE_CONTROL_FIELDS = ("Flip", "Rotate90", "Mirror")
+VIDEO_IMAGE_CONTROL_TABLES = ("VideoImageControl", "VideoInOptions")
+VIDEO_IMAGE_CONTROL_TABLE = VIDEO_IMAGE_CONTROL_TABLES[0]
 PLATFORMS = [
     BINARY_SENSOR,
     SWITCH,
@@ -53,6 +74,12 @@ CONF_EVENTS = "events"
 CONF_NAME = "name"
 CONF_CHANNEL = "channel"
 CONF_AUTO_DETECT_CHANNEL = "auto_detect_channel"
+# Numbers the still independently of the stream, for a device that numbers
+# snapshot.cgi and RTSP differently (#1151). Off by default, so the still keeps
+# following the stream's number on every device that has not been measured: the
+# channel-0 probe cannot tell genuine zero-based numbering from channel 0
+# aliasing channel 1, so it must not decide this on its own.
+CONF_SNAPSHOT_CHANNEL_FROM_ZERO = "snapshot_channel_from_zero"
 # Which other channels of a recorder to add alongside the one being set up.
 CONF_EXTRA_CHANNELS = "extra_channels"
 # Take every channel discovery found, without ticking sixteen boxes.
@@ -70,6 +97,8 @@ CONF_USE_RPC2 = "use_rpc2"
 # by the add flow, which is the only place that can tell "no web server" apart
 # from "camera is switched off", since both answer connection-refused.
 CONF_RPC2_OVER_DHIP = "rpc2_over_dhip"
+# Internal identity policy, persisted after a monitor adopts its real serial.
+CONF_REQUIRE_REPORTED_SERIAL = "require_reported_serial"
 # An indoor monitor's call settings (#949, #998), as the device names them.
 # Measured on a VTH5221D (3.000.0012000.0.R), where all five are present.
 # One list, shared by the probe that decides which exist and by the two
@@ -95,6 +124,12 @@ CONF_MANUAL_SECURITY_LIGHT = "manual_security_light"
 # Ask go2rtc not to open the RTSP talk channel. It otherwise holds it for as
 # long as HA streams, which puts doorbells in a call state -- see #595.
 CONF_DISABLE_BACKCHANNEL = "disable_backchannel"
+
+# The user has looked at live view, found H.265 plays fine in the browsers they
+# use, and asked to stop being warned about it (#1138). Per entry, so one
+# recorder's decision does not silence another's, and an option rather than a
+# hidden store so it can be undone in the same place it is seen.
+CONF_ACCEPT_H265 = "accept_h265"
 CONF_AUTHORIZED_PLATES = "authorized_plates"
 CONF_AUTHORIZED_HOLD_TIME = "authorized_hold_time"
 
@@ -127,6 +162,7 @@ CHANNEL_OPTION_KEYS = frozenset(
         CONF_MANUAL_SECURITY_LIGHT,
         CONF_MANUAL_SIREN,
         CONF_NVR_ACTIVE_DETERRENCE,
+        CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
     }
 )
 
@@ -188,6 +224,9 @@ If you have any issues with this you need to open an issue here:
 # put back; diagnostics already reports the rest, and the get_config service
 # reads any table at all.
 BACKED_UP_TABLES = (
+    "AudioInDenoise",
+    "AudioInputVolume",
+    "AudioOutputVolume",
     "ChannelTitle",
     "DisableEventNotify",
     "DisableLinkage",
@@ -216,7 +255,9 @@ BACKED_UP_TABLES = (
     "VSP_PaaS",
     "VideoAnalyseRule",
     "VideoColor",
+    "VideoImageControl",
     "VideoInDayNight",
+    "VideoInExposure",
     "VideoInMode",
     "VideoInOptions",
     "VideoWidget",
@@ -242,6 +283,7 @@ ALL_EVENTS = [
     "AudioMutation",
     "SmartMotionHuman",
     "SmartMotionVehicle",
+    "DoorbellPressed",
     "VideoBlind",
     "AudioAnomaly",
     "VideoMotionInfo",

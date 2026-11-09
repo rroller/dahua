@@ -29,6 +29,7 @@ from . import dahua_utils, entry_coordinators
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
     CONF_CHANNEL,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -178,9 +179,36 @@ def _device_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
         ),
         "channel_index": _safe(coordinator.get_channel),
         "channel_number": _safe(coordinator.get_channel_number),
-        "auto_detect_channel": config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
-        # What the auto-detect actually concluded, which is what decides
-        # channel_number above. True means the device answered a snapshot on
+        # The stream's number is above; this is the still's. They differ on a
+        # device that numbers snapshot.cgi and RTSP differently (#1151), and
+        # "the thumbnail shows a different camera from the live view" is only
+        # answerable with both of them in front of you.
+        # The lambda matters: the dump is built around whatever coordinator it
+        # is handed, and a stand-in that predates this accessor would raise on
+        # the attribute itself, outside _safe, and take the whole dump with it.
+        "snapshot_channel": _safe(lambda: coordinator.get_snapshot_channel()),
+        # Read the way the coordinator reads it. This option is per channel
+        # since #895, so taking it from the entry's options reports the wrong
+        # value for a merged recorder whose channel sets its own -- next to the
+        # two numbers it is here to explain.
+        "auto_detect_channel": _safe(
+            lambda: coordinator.channel_option(CONF_AUTO_DETECT_CHANNEL, True),
+            config_entry.options.get(CONF_AUTO_DETECT_CHANNEL, True),
+        ),
+        # Whether the owner has said this device numbers its stills from zero
+        # while its stream counts from one. Off means the still follows the
+        # stream, which is what every unmeasured device does (#1151). Read the
+        # way the coordinator reads it, per channel, for the reason above.
+        "snapshot_channel_from_zero": _safe(
+            lambda: coordinator.channel_option(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False),
+            config_entry.options.get(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False),
+        ),
+        # What the numbering probe concluded. It decides channel_number where
+        # the auto-detect option above is on. It deliberately does NOT decide
+        # snapshot_channel: a snapshot answering on channel 0 cannot tell
+        # genuine zero-based numbering from channel 0 aliasing channel 1, so
+        # the still is split from the stream only by the option above (#1151).
+        # True means the device answered a snapshot on
         # channel 0, False means it answered with a status saying no, and
         # None means it never answered and the numbering was left alone.
         #
@@ -209,12 +237,12 @@ def _zero_indexed(coordinator):
     value: a device that did not answer the probe leaves the numbering as it
     was rather than guessing.
     """
-    from . import _HOST_CHANNEL_BASE
+    from .host import device_numbers_channels_from_zero
 
     device = _safe(lambda: coordinator.client.device_key)
     if device is None:
         return None
-    return _HOST_CHANNEL_BASE.get(device)
+    return device_numbers_channels_from_zero(device)
 
 
 def _capabilities_block(coordinator) -> dict[str, Any]:
@@ -258,6 +286,17 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
         # my brightness slider go" (#1006).
         "video_color_fields": _safe(
             lambda: sorted(getattr(coordinator, "_video_color_fields", None) or ()), []
+        ),
+        # The same answer for the two families ported from the Intelbras fork.
+        # A refused VideoInOptions read is recorded under `day_night_color`
+        # (the probe that owns the table), and a refused VideoWidget read under
+        # `video_widget`; an empty list here beside one of those entries is the
+        # answer to "where did my WDR/exposure/overlay control go".
+        "image_option_fields": _safe(
+            lambda: sorted(getattr(coordinator, "_image_option_fields", None) or ()), []
+        ),
+        "video_widget_fields": _safe(
+            lambda: sorted(getattr(coordinator, "_video_widget_fields", None) or ()), []
         ),
         # Why each probe that failed did. A status is the device
         # answering, and a 400 for a config table is it saying it does
@@ -309,6 +348,20 @@ def _client_block(coordinator, config_entry: ConfigEntry) -> dict[str, Any]:
     }
 
 
+def _subscribed_as(stream) -> list:
+    """The code list the device was actually asked for.
+
+    Falls back to the selection for anything that is not a real stream: the
+    dump must never raise, and it is collected when something is already wrong.
+    """
+    if getattr(stream, "_using_all_events", False):
+        return ["All"]
+    wire = getattr(stream, "_wire_codes", None)
+    if callable(wire):
+        return wire()
+    return sorted(getattr(stream, "_events", ()) or ())
+
+
 def _stream_block(coordinator) -> dict[str, Any]:
     """The state of the event stream that actually exists.
 
@@ -354,11 +407,14 @@ def _stream_block(coordinator) -> dict[str, Any]:
         # as [All] and filtered again locally. Reporting only the union then
         # described a request the device never received, which is the field
         # somebody would have to reconcile against a packet capture to doubt.
-        "subscribed_as": (
-            ["All"]
-            if getattr(stream, "_using_all_events", False)
-            else sorted(getattr(stream, "_events", ()) or ())
-        ),
+        #
+        # The second way the two diverge is #1121: a selected code that is only
+        # ever derived from another one has its sources added to the request by
+        # `_wire_codes`, so somebody who ticked DoorbellPressed is asked for
+        # four codes. Asked of the stream rather than re-derived here, because
+        # a second copy of that rule would go stale the moment the map gains a
+        # key, and this field exists to be reconciled against a capture.
+        "subscribed_as": _subscribed_as(stream),
         "received_data": bool(getattr(stream, "_received_data", False)),
         "last_attach_failed": bool(getattr(stream, "_failing", False)),
         "consecutive_failures": getattr(stream, "_consecutive_failures", 0),
@@ -371,6 +427,43 @@ def _stream_block(coordinator) -> dict[str, Any]:
     }
 
 
+def _stream_is_carrying_anything(stream) -> bool:
+    """Whether this host stream is a transport or just an object that exists.
+
+    A channel that joined, or a task that is running. Either is enough: the
+    task is what attaches, and a channel registering is what starts it, so a
+    stream between those two states is still this entry's transport.
+    """
+    task = getattr(stream, "_task", None)
+    if task is not None and not task.done():
+        return True
+    return bool(getattr(stream, "_by_channel", None) or {})
+
+
+def _dhip_listener_has_given_up(task) -> bool:
+    """Whether the doorbell listener task has ended rather than being between
+    attempts.
+
+    A doorbell whose port 5000 is refused hands its events to the CGI stream
+    and this task returns (#1187). The task object stays on the coordinator
+    afterwards, so testing that it exists would name the transport the device
+    used to have for the rest of the session, which is what this field was
+    added to stop doing (#813).
+
+    Only an explicit `True` counts as ended. Much of the suite hands this a
+    stand-in whose `done()` answers something truthy that is not a bool, and a
+    listener between two attempts is sleeping rather than finished, so anything
+    short of a clear yes is read as still running.
+    """
+    done = getattr(task, "done", None)
+    if not callable(done):
+        return False
+    try:
+        return done() is True
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
 def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
     """Which transport is carrying this entry's events.
 
@@ -378,17 +471,33 @@ def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
     in: a doorbell takes the VTO listener and never registers a CGI stream, a device
     whose `eventManager.cgi` is absent falls through to the RPC2 poll inside the stream's
     own task, and everything else uses the CGI stream.
+
+    The same listener now also carries a monitor that serves no HTTP (#949), which is
+    not a doorbell and would be misreported as one. Named apart, because the question a
+    dump is asked here is which socket is carrying events and why, and "vto_listener" on
+    a device with no doorbell reads as a bug in the dump rather than as the answer.
     """
     vto_task = getattr(coordinator, "_vto_task", None)
-    if vto_task is not None:
+    if vto_task is not None and not _dhip_listener_has_given_up(vto_task):
+        if getattr(coordinator, "_rpc2_over_dhip", False):
+            return "dhip_listener"
         return "vto_listener"
     if rpc2_poll.get("used"):
         return "rpc2_poll"
     from . import _HOST_STREAMS
 
-    if _HOST_STREAMS.get(getattr(coordinator, "_address", None)) is not None:
+    stream = _HOST_STREAMS.get(getattr(coordinator, "_address", None))
+    if stream is not None and _stream_is_carrying_anything(stream):
         return "cgi_stream"
-    # No events were configured, so nothing was started. Not a fault.
+    # Nothing is carrying events. Not a fault: no codes were selected, or the
+    # device has none to send.
+    #
+    # Judged on whether a channel actually joined rather than on the entry in
+    # `_HOST_STREAMS` existing, because the poll builds that object every time
+    # it asks `async_check_video_motion_is_pushed` a question. An indoor monitor
+    # with no camera subscribes to nothing and starts no task, and reporting it
+    # as `cgi_stream` named a transport that had never attached -- which is the
+    # thing #813 added this field to stop doing.
     return None
 
 
@@ -531,6 +640,13 @@ def _events_block(coordinator) -> dict[str, Any]:
         # almost always the question; a number plate, a card number or a person's
         # name does not.
         "recent": _recent_events_block(coordinator, now),
+        # And the newest of each code, which is the one that survives a flood.
+        # `recent` is chronological, so on a device sending MDResult eight
+        # times a second it holds eight seconds of that and nothing else: a
+        # reporter asked for a dump after pressing a doorbell had no press in
+        # it. Measured on a VTO2000A, where one press was gone within thirty
+        # seconds.
+        "latest_by_code": _latest_by_code_block(coordinator, now),
     }
 
 
@@ -549,6 +665,56 @@ def _recent_events_block(coordinator, now: int) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _latest_by_code_block(coordinator, now: int) -> dict[str, Any]:
+    """The most recent event of each code, redacted and aged like `recent`.
+
+    Same rows and the same redaction, so nothing is published here that
+    `recent` would not publish. The difference is only which events survive:
+    this one keeps the rare code a reporter was asked about instead of the
+    common one that arrived most recently.
+    """
+    latest = getattr(coordinator, "_latest_event_by_code", None) or {}
+    out = {}
+    for code, row in sorted(latest.items()):
+        captured = row.get("seconds_ago_at_capture") or now
+        out[code] = {
+            "seconds_ago": max(0, now - captured),
+            "event": _safe(lambda: dahua_utils.summarise_event(row.get("event")), {}),
+        }
+    return out
+
+
+def _rpc2_key_of(client) -> Any:
+    """The key this client's shared RPC2 state is really filed under.
+
+    Asked of the client, because rebuilding it here is what broke. This block
+    spelled it out as `(address, username)`, and #665 put the port into the
+    device key (`_device_key` gives "address:port") so that two boxes behind one
+    IP are not one device. The writer changed and this reader did not, so the
+    lookup stopped matching anything and five fields have reported the healthy
+    answer for every device since: `rpc2_session_open` False,
+    `rpc2_session_refcount` 0, `rpc2_keepalive_running` False,
+    `rpc2_ruled_out_for_host` False and `rpc2_tables_refused` empty.
+
+    That is the worst way for a dump to fail, because each of those is also what
+    a healthy device reports, so nothing in a dump looked wrong.
+
+    The fallback is for the doubles: most of the suite's clients are a
+    SimpleNamespace with `device_key` and no `_rpc2_key`, and a dump that raises
+    on one is worse than a field that reads empty.
+    """
+    ask = getattr(client, "_rpc2_key", None)
+    if callable(ask):
+        try:
+            return ask()
+        except Exception:  # pragma: no cover - a double that cannot answer
+            pass
+    return (
+        getattr(client, "device_key", None),
+        getattr(client, "_username", None),
+    )
 
 
 def _host_block(
@@ -585,7 +751,7 @@ def _host_block(
         if entry.data.get(CONF_ADDRESS) == address
     ]
 
-    rpc2_key = (client_address, getattr(coordinator.client, "_username", None))
+    rpc2_key = _rpc2_key_of(coordinator.client)
     rpc2 = _HOST_RPC2.get(rpc2_key)
 
     # Absent until something fails, so an empty dict is the healthy answer and

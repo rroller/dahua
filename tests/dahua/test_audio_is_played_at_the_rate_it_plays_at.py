@@ -54,6 +54,7 @@ from contextlib import asynccontextmanager
 
 import aiohttp
 from aiohttp import web
+from multidict import CIMultiDict
 import pytest
 
 from custom_components.dahua import client as client_module
@@ -920,3 +921,156 @@ async def test_a_cancellation_landing_inside_the_cleanup_is_not_swallowed(monkey
     # outlives this block. Wait it out rather than leaving a task behind for
     # the next test to trip over.
     await asyncio.sleep(0.5)
+
+
+# --- a device that challenges the push (#1136) -------------------------------
+#
+# @dayt47's Empiretech Color4M answers `postAudio` with 401 and a digest
+# challenge. The same clip goes up by `curl --digest`, which takes the
+# challenge from that 401 and asks again. This client opened with a cached
+# header and treated the 401 as final, so the service failed on hardware where
+# the shell one-liner works.
+#
+# The comment this replaces said the only audio path measured never challenges.
+# That is still true of the VTO2000A, which is why the no-challenge path below
+# must stay at exactly one push.
+
+_FRESH = 'Digest realm="Device_CGI", nonce="fresh99", qop="auth"'
+
+
+class _ChallengingSession:
+    """Answers each push with the next status given, recording them apart.
+
+    `_RecordingSession` above keeps one set of headers and one body, because
+    until now there was only ever one push. The whole question here is what
+    differs between the first and the second.
+    """
+
+    def __init__(self, statuses, challenge=_FRESH):
+        self._statuses = list(statuses)
+        self._challenge = challenge
+        self.attempts = []
+        self.session = self
+
+    def post(self, url, headers=None, data=None, timeout=None):
+        index = len(self.attempts)
+        status = self._statuses[index] if index < len(self._statuses) else 200
+        attempt = {
+            "url": url,
+            "headers": dict(headers or {}),
+            "body": b"",
+            "status": status,
+        }
+        self.attempts.append(attempt)
+        return _ChallengingRequest(self, attempt, data)
+
+
+class _ChallengingRequest:
+    def __init__(self, session, attempt, data):
+        self._session = session
+        self._attempt = attempt
+        self._data = data
+
+    async def __aenter__(self):
+        headers = CIMultiDict()
+        if self._attempt["status"] == 401:
+            # A 401 lands before the clip is out, which is the case that
+            # matters: the body is left unsent, so the push looks exactly
+            # like a device answering early and refusing.
+            if self._session._challenge is not None:
+                headers["WWW-Authenticate"] = self._session._challenge
+            return _ChallengingResponse(self._attempt["status"], headers)
+        async for piece in self._data:
+            self._attempt["body"] += piece
+        return _ChallengingResponse(self._attempt["status"], headers)
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _ChallengingResponse(_RecordingResponse):
+    def __init__(self, status, headers):
+        super().__init__(status)
+        self.headers = headers
+
+
+async def test_a_challenged_push_is_sent_again_with_the_answer():
+    """The fix: answer the 401 and send the clip, rather than give up."""
+    session = _ChallengingSession([401, 200])
+    client = _client(session)
+
+    await client.async_play_audio(b"\x01" * 320, "Audio/PCM", 32000)
+
+    assert len(session.attempts) == 2, "the challenge was not answered"
+    header = session.attempts[1]["headers"]["AUTHORIZATION"]
+    assert header.startswith("Digest ")
+    assert 'nonce="fresh99"' in header, "answered with the old nonce, not the new one"
+    assert 'realm="Device_CGI"' in header
+
+
+async def test_the_retry_carries_the_whole_clip_and_not_a_tail():
+    """The body is a generator, so a careless retry sends nothing at all."""
+    session = _ChallengingSession([401, 200])
+
+    await _client(session).async_play_audio(b"\x02" * 960, "Audio/PCM", 32000)
+
+    assert session.attempts[1]["body"] == b"\x02" * 960
+
+
+async def test_a_device_that_never_challenges_is_pushed_to_once():
+    """The VTO2000A path. It takes audio unauthenticated and must not change."""
+    session = _ChallengingSession([200])
+
+    await _client(session).async_play_audio(b"\x00" * 320, "Audio/PCM", 32000)
+
+    assert len(session.attempts) == 1
+    assert "AUTHORIZATION" not in session.attempts[0]["headers"]
+
+
+async def test_a_second_401_is_raised_rather_than_asked_again():
+    """One retry, never a loop.
+
+    These devices lock out after a few refused logins and the whole host
+    shares that count, so a wrong password has to cost a bounded number of
+    attempts per clip.
+    """
+    session = _ChallengingSession([401, 401])
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await _client(session).async_play_audio(b"\x00" * 320, "Audio/PCM", 32000)
+
+    assert len(session.attempts) == 2
+
+
+async def test_a_401_with_no_usable_challenge_is_not_retried():
+    """Nothing new to send means the 401 is the honest answer."""
+    session = _ChallengingSession([401, 200], challenge=None)
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await _client(session).async_play_audio(b"\x00" * 320, "Audio/PCM", 32000)
+
+    assert len(session.attempts) == 1
+
+
+async def test_the_answered_challenge_is_kept_for_the_next_call():
+    """A device that reissues leaves the next poll better off than it found it."""
+    session = _ChallengingSession([401, 200])
+    client = _client(session)
+
+    await client.async_play_audio(b"\x00" * 320, "Audio/PCM", 32000)
+
+    assert client._digest_state["challenge"]["nonce"] == "fresh99"
+
+
+async def test_a_challenge_is_not_read_as_the_device_refusing_the_clip():
+    """The guard that makes the retry reachable at all.
+
+    A 401 arrives before the clip has finished, which is exactly the shape of
+    `answered_early`, and that raises `DahuaWriteDeclined`. A challenge is not
+    a refusal: the device has asked to be asked properly.
+    """
+    session = _ChallengingSession([401, 200])
+
+    await _client(session).async_play_audio(b"\x00" * 320, "Audio/PCM", 32000)
+
+    assert len(session.attempts) == 2

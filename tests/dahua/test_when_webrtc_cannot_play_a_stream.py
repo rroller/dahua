@@ -138,7 +138,7 @@ def test_a_stream_the_device_said_nothing_about_is_not_reported():
 # --- the card ----------------------------------------------------------------
 
 
-def _coordinator(streams, monkeypatch, channel=11, address="10.0.0.5"):
+def _coordinator(streams, monkeypatch, channel=11, address="10.0.0.5", port=None):
     from custom_components.dahua import coordinator as coordinator_module
 
     raised, deleted = [], []
@@ -159,6 +159,11 @@ def _coordinator(streams, monkeypatch, channel=11, address="10.0.0.5"):
     coordinator._channel = channel
     coordinator._stream_codecs = streams
     coordinator.get_device_name = lambda: "CCTV in Server Room"
+    if port is not None:
+        # A real coordinator always has a client, and the card is keyed by the
+        # device it names rather than by the address. `port=None` keeps the
+        # older doubles that predate that and exercises the fallback.
+        coordinator.client = SimpleNamespace(device_key="{0}:{1}".format(address, port))
     return coordinator, raised, deleted
 
 
@@ -185,9 +190,66 @@ def test_one_card_names_the_channel(monkeypatch):
     issue_id, kwargs = raised[0]
     assert issue_id == "webrtc_cannot_play_10.0.0.5"
     assert kwargs["translation_key"] == "webrtc_cannot_play"
-    assert kwargs["is_fixable"] is False
     assert kwargs["translation_placeholders"]["channels"] == "11"
     assert kwargs["translation_placeholders"]["count"] == "1"
+
+
+def test_the_card_can_be_acted_on(monkeypatch):
+    """This was `is_fixable=False` while the card could only describe the fix
+    in prose. It now offers to write H.264 to the channels the user picks, so
+    the flag flips and the address has to travel with it: the flow is handed
+    nothing but `data`, and it needs to know which host it is about.
+
+    Only the address. The channel list is deliberately NOT carried, for the
+    reason the leftover-rows card learned the hard way: a list in `data`
+    outlives the evidence for it, and the flow recomputes at the button so a
+    channel somebody fixed on the device is simply not offered."""
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+
+    coordinator._async_report_unplayable_stream()
+
+    _issue_id, kwargs = raised[0]
+    assert kwargs["is_fixable"] is True
+    assert kwargs["data"]["address"] == "10.0.0.5"
+
+
+def test_the_card_names_the_device_not_just_the_address(monkeypatch):
+    """⭐ @rroller on #1127. Two Dahua boxes can sit behind one IP on different
+    ports, and this is encoder state, which belongs to the device rather than
+    to the network path. Keyed by address, the two shared one card and one
+    affected-channel set: he had the repair write H.264 to the box on port
+    8080 and clear the warning of the box on port 80, which was still sending
+    H.265.
+
+    The flow is handed nothing but `data`, so the device has to travel in it.
+    """
+    coordinator, raised, deleted = _coordinator(UNPLAYABLE, monkeypatch, port=80)
+
+    coordinator._async_report_unplayable_stream()
+
+    issue_id, kwargs = raised[0]
+    assert issue_id == "webrtc_cannot_play_10.0.0.5:80"
+    assert kwargs["data"] == {"address": "10.0.0.5", "device": "10.0.0.5:80"}
+    assert "webrtc_cannot_play_10.0.0.5" in deleted, (
+        "and the address-keyed card from #1048 goes, or an install that "
+        "already has one keeps it for ever"
+    )
+
+
+def test_two_boxes_on_one_address_get_their_own_cards(monkeypatch):
+    """The state behind the card, not just its id. One set per device, so one
+    box's affected channels cannot be listed on the other's card."""
+    first, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch, channel=0, port=80)
+    first._async_report_unplayable_stream()
+    second, raised_two, _d = _coordinator(UNPLAYABLE, monkeypatch, channel=5, port=8080)
+    second._async_report_unplayable_stream()
+
+    assert raised[0][0] == "webrtc_cannot_play_10.0.0.5:80"
+    assert raised[0][1]["translation_placeholders"]["channels"] == "0"
+    assert raised_two[-1][0] == "webrtc_cannot_play_10.0.0.5:8080"
+    assert (
+        raised_two[-1][1]["translation_placeholders"]["channels"] == "5"
+    ), "channel 0 belongs to the other box and must not be listed here"
 
 
 def test_eight_affected_channels_are_one_card(monkeypatch):
@@ -330,3 +392,283 @@ def test_a_camera_whose_table_was_refused_grows_nothing():
     assert "video_codec" not in attributes
     assert "audio" not in attributes
     assert attributes["integration"] == "dahua"
+
+
+# --- re-reading after a repair write -----------------------------------------
+#
+# ⭐ @rroller on #1127. The repair flow writes a codec and then has to ask the
+# device what it actually sends now. The setup reader was reused for that, and
+# it assigns whatever came back and re-judges the card from it. But
+# `async_get_config` answers {} for an HTTP refusal, so a read-back that failed
+# erased the known H.265 state and then DELETED the warning, having learned
+# nothing about the write at all.
+#
+# These drive the real coordinator method rather than a flow double, because
+# the first version of this was tested only through a double and three mutants
+# of the real method survived.
+
+
+def _rechecking(monkeypatch, answer, channel=11, raises=False):
+    coordinator, raised, deleted = _coordinator(
+        UNPLAYABLE, monkeypatch, channel=channel
+    )
+
+    async def _get_config(_name):
+        if raises:
+            raise RuntimeError("the device hung up")
+        return answer
+
+    coordinator.client = SimpleNamespace(
+        async_get_config=_get_config, device_key="10.0.0.5:80"
+    )
+    return coordinator, raised, deleted
+
+
+ANSWERED_H264 = {
+    "table.Encode[11].MainFormat[0].Video.Compression": "H.264",
+    "table.Encode[11].MainFormat[0].AudioEnable": "false",
+}
+
+
+async def test_a_real_answer_updates_the_codecs_and_says_so(monkeypatch):
+    coordinator, _raised, deleted = _rechecking(monkeypatch, ANSWERED_H264)
+
+    assert await coordinator.async_recheck_stream_codecs() is True
+    assert coordinator.get_stream_codec(0) == "H.264"
+    assert deleted, "H.264 is playable, so the card goes"
+
+
+async def test_an_empty_answer_keeps_what_is_held(monkeypatch):
+    """⭐ The reported case. {} is what `async_get_config` returns for a
+    refusal, and it is indistinguishable from a device with nothing to say."""
+    coordinator, _raised, deleted = _rechecking(monkeypatch, {})
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265", "not erased"
+    assert deleted == [], "and the warning is not cleared on an erasure"
+
+
+async def test_an_answer_about_another_channel_is_not_this_ones(monkeypatch):
+    """Encode is one table for the whole device. A reply carrying another
+    channel's rows is nonempty and still says nothing about this channel."""
+    coordinator, _raised, deleted = _rechecking(
+        monkeypatch,
+        {"table.Encode[3].MainFormat[0].Video.Compression": "H.264"},
+    )
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265"
+    assert deleted == []
+
+
+async def test_a_read_that_raises_is_not_a_confirmation(monkeypatch):
+    coordinator, _raised, deleted = _rechecking(monkeypatch, None, raises=True)
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265"
+    assert deleted == []
+
+
+def test_the_affected_channels_are_read_per_device(monkeypatch):
+    """`channels_that_cannot_be_played` is what the repair flow asks for the
+    list of channels to offer. Keyed by address it answered with the other
+    box's channels too, which is the same mix-up one layer down."""
+    first, _raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch, channel=0, port=80)
+    first._async_report_unplayable_stream()
+    second, _r, _d = _coordinator(UNPLAYABLE, monkeypatch, channel=5, port=8080)
+    second._async_report_unplayable_stream()
+
+    assert first.channels_that_cannot_be_played() == {0}
+    assert second.channels_that_cannot_be_played() == {5}
+
+
+# --- a partial answer is not an answer about the codec -----------------------
+#
+# ⭐ @rroller on #1127, after the empty-answer guard went in. "Nonempty" is one
+# question short of "said something about this stream's codec".
+# `parse_stream_codecs` seeds every field it did not see with None, so both of
+# the replies below produce a nonempty map whose main stream has codec None.
+# Assigning it erased the H.265 and let the card be re-judged on the erasure,
+# so the warning went while the flow was reporting the write refused.
+#
+# This is the same shape as the partial-answer finding on #997, one level up:
+# there it was the poll, here it is the repair's read back.
+
+
+DEVICE_CARD = "webrtc_cannot_play_10.0.0.5:80"
+
+
+def _card_was_cleared(deleted):
+    """Only the device's own card counts.
+
+    `_async_report_unplayable_stream` also deletes the address-keyed id from
+    #1048 every time it runs, which is the migration cleanup rather than the
+    warning being withdrawn. Counting deletions conflated the two.
+    """
+    return DEVICE_CARD in deleted
+
+
+AUDIO_ONLY = {"table.Encode[11].MainFormat[0].AudioEnable": "false"}
+SUB_STREAM_ONLY = {"table.Encode[11].ExtraFormat[0].Video.Compression": "H.264"}
+
+
+async def test_an_audio_only_answer_does_not_erase_the_codec(monkeypatch):
+    coordinator, _raised, deleted = _rechecking(monkeypatch, AUDIO_ONLY)
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265", "not erased"
+    assert not _card_was_cleared(deleted), "and the warning stands"
+
+
+async def test_a_sub_stream_answer_does_not_erase_the_main_one(monkeypatch):
+    coordinator, _raised, deleted = _rechecking(monkeypatch, SUB_STREAM_ONLY)
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_codec(0) == "H.265"
+    assert not _card_was_cleared(deleted)
+
+
+async def test_a_partial_answer_still_applies_what_it_did_say(monkeypatch):
+    """The merge must not become "ignore partial answers". A sub stream that
+    really did move is how the rest of the integration notices."""
+    coordinator, _raised, _deleted = _rechecking(monkeypatch, SUB_STREAM_ONLY)
+
+    await coordinator.async_recheck_stream_codecs()
+
+    assert coordinator.get_stream_codec(1) == "H.264", "applied where specific"
+    assert coordinator.get_stream_codec(0) == "H.265", "untouched where silent"
+
+
+async def test_an_audio_flag_moving_is_applied_but_not_a_confirmation(monkeypatch):
+    """Both halves in one. The flag lands, because the answer stated it, and
+    the return is still False, because nothing was said about the codec."""
+    coordinator, _raised, _deleted = _rechecking(
+        monkeypatch, {"table.Encode[11].MainFormat[0].AudioEnable": "true"}
+    )
+
+    assert await coordinator.async_recheck_stream_codecs() is False
+    assert coordinator.get_stream_has_audio(0) is True
+    assert coordinator.get_stream_codec(0) == "H.265"
+
+
+async def test_a_full_answer_is_still_a_confirmation(monkeypatch):
+    """The converse, so none of the above degenerates into "never confirm"."""
+    coordinator, _raised, deleted = _rechecking(monkeypatch, ANSWERED_H264)
+
+    assert await coordinator.async_recheck_stream_codecs() is True
+    assert coordinator.get_stream_codec(0) == "H.264"
+    assert _card_was_cleared(deleted)
+
+
+# --- the card has to be dismissible (#1138) ----------------------------------
+#
+# @billjes has five H.265 channels on an Amcrest NV5232E-16P-EI with live view
+# working in Chrome on Windows and in the iOS app, so for him the card
+# describes a failure that does not happen. He had no way to put it down:
+#
+#   - a fixable issue offers its fix flow, not Home Assistant's Ignore
+#   - submitting the picker with nothing ticked changed nothing and the card
+#     came straight back
+#
+# So the choice became explicit, and it is remembered, because deleting the
+# issue alone would last until the next refresh re-raised it.
+
+
+def _entry(options=None):
+    return SimpleNamespace(options=options or {}, entry_id="abc")
+
+
+def test_a_card_is_raised_when_nothing_has_been_chosen(monkeypatch):
+    """The baseline the rest of this section is measured against."""
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    coordinator.config_entry = _entry()
+
+    coordinator._async_report_unplayable_stream()
+
+    assert len(raised) == 1
+
+
+def test_accepting_h265_stops_the_card_being_raised(monkeypatch):
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    coordinator.config_entry = _entry({"accept_h265": True})
+
+    coordinator._async_report_unplayable_stream()
+
+    assert not raised, "the card came back after being dismissed"
+
+
+def test_accepting_h265_also_clears_a_card_already_standing(monkeypatch):
+    """Not raising is not enough. The card is already on their dashboard."""
+    coordinator, _raised, deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    coordinator.config_entry = _entry({"accept_h265": True})
+
+    coordinator._async_report_unplayable_stream()
+
+    assert "webrtc_cannot_play_10.0.0.5" in deleted
+
+
+def test_the_option_being_off_is_not_the_option_being_set(monkeypatch):
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    coordinator.config_entry = _entry({"accept_h265": False})
+
+    coordinator._async_report_unplayable_stream()
+
+    assert len(raised) == 1
+
+
+def test_a_coordinator_with_no_entry_still_raises(monkeypatch):
+    """The doubles here build what each case needs and nothing more.
+
+    A new reader of `config_entry` that demanded it took nine of these down.
+    Showing the card to somebody who never chose is the right way to be wrong.
+    """
+    coordinator, raised, _deleted = _coordinator(UNPLAYABLE, monkeypatch)
+    assert not hasattr(coordinator, "config_entry")
+
+    coordinator._async_report_unplayable_stream()
+
+    assert len(raised) == 1
+
+
+def test_the_decision_is_per_entry_and_not_global():
+    """One recorder's answer must not silence another's."""
+    from custom_components.dahua import h265_was_accepted
+
+    assert h265_was_accepted(_entry({"accept_h265": True}))
+    assert not h265_was_accepted(_entry())
+    assert not h265_was_accepted(None)
+
+
+def test_the_flow_offers_both_ways_out():
+    """Changing nothing has to be reachable, and by choosing it rather than by
+    submitting an empty picker: ticking nothing is what an accidental Submit
+    looks like, and reading that as "never warn me again" would turn a slip
+    into a permanent silent setting."""
+    import asyncio
+
+    from custom_components.dahua.repairs import SwitchStreamToH264RepairFlow
+
+    flow = SwitchStreamToH264RepairFlow({"address": "10.0.0.5", "device": "d"})
+    shown = {}
+    flow.async_show_menu = lambda **kwargs: shown.update(kwargs) or kwargs
+
+    asyncio.run(flow.async_step_init())
+
+    assert shown["menu_options"] == ["confirm", "keep_h265"]
+
+
+def test_every_menu_option_has_a_string():
+    """A menu option with no translation renders as its raw key."""
+    import json
+    from pathlib import Path
+
+    en = json.loads(
+        (
+            Path(__file__).parents[2] / "custom_components/dahua/translations/en.json"
+        ).read_text(encoding="utf-8")
+    )
+    step = en["issues"]["webrtc_cannot_play"]["fix_flow"]["step"]["init"]
+
+    assert set(step["menu_options"]) == {"confirm", "keep_h265"}
+    for key, label in step["menu_options"].items():
+        assert label.strip(), key

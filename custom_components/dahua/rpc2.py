@@ -17,6 +17,11 @@ from custom_components.dahua.ivs import ivs_rule_index
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 _PARAMS_UNSET = object()
 
+# The one method every other call depends on. Named here because a refusal of
+# it has to be told apart from a refusal of whatever the caller asked for, and
+# a handler comparing against its own copy of the string would drift.
+RPC2_LOGIN_METHOD = "global.login"
+
 if sys.version_info > (3, 0):
     unicode = str
 
@@ -28,12 +33,48 @@ class Rpc2MethodRefused(ConnectionError):
     distinct type because it means something quite different: the transport
     reached the device and the device declined this particular method or
     config table. That is evidence RPC2 *works* here, not that it does not.
+
+    The method is carried because the description alone cannot be asked a
+    question. A handler that catches this is almost always a handler that
+    asked for one specific thing, and "the device declined what you asked"
+    and "the device would not let you in to ask" are different answers that
+    arrive as the same type (#1164).
     """
 
-    def __init__(self, description: str, code=None, message=None):
+    # A class default, so a handler may read the attribute off any instance
+    # rather than reaching for getattr at each of the thirteen catch sites.
+    method = None
+
+    def __init__(self, description: str, code=None, message=None, method=None):
         super().__init__(description)
         self.code = code
         self.message = message
+        self.method = method
+
+
+class Rpc2TableAbsent(ValueError):
+    """The device answered, and the table it was asked for was not in the reply.
+
+    **A reply with no table is an answer**, and the distinction is not
+    cosmetic. `_note_probe_refusal` decides whether a device answered by
+    looking for an HTTP `status` or an RPC2 `code` on the exception; a bare
+    `ValueError` carries neither, so it is filed as silence. A probe filed as
+    silent is one that `probes_that_did_not_answer` keeps reporting for ever,
+    and `migrate._entry_is_wholly_healthy` refuses to offer the leftover-rows
+    card while any probe is in that set.
+
+    Measured by @kmich on #1114, across seventeen entries: every one of them,
+    VTH2421F-P, IPC and NVR alike, reported
+    `cloud_upgrade: {"answered": false, "status": null, "error": "ValueError"}`
+    with its retry budget spent, because no device there serves
+    `_DHCloudUpgrade_`. The card could not appear on any of them, and his three
+    monitors really did have leftover rows to offer.
+
+    A ValueError subclass so existing handlers keep working, with `answered`
+    saying what the bare exception could not.
+    """
+
+    answered = True
 
 
 def refusal_reason(response: dict) -> tuple:
@@ -158,7 +199,7 @@ class DahuaRpc2Client:
 
             resp = await self._post(url, data)
             try:
-                resp_json = json.loads(await resp.text())
+                resp_json = json.loads((await resp.text()).lstrip("\ufeff"))
             except ValueError as error:
                 # An HTML error page, a 503 body or a truncated answer is this
                 # read not coming back, not "this device does not speak RPC2".
@@ -181,6 +222,7 @@ class DahuaRpc2Client:
                 "Dahua RPC2 method {0} returned result=false{1}".format(method, suffix),
                 code=code,
                 message=message,
+                method=method,
             )
 
         return resp_json
@@ -205,7 +247,7 @@ class DahuaRpc2Client:
         self._ptz_objects.clear()
         self._id = 0
         url = "{0}/RPC2_Login".format(self._base)
-        method = "global.login"
+        method = RPC2_LOGIN_METHOD
         params = {"userName": self._username, "password": "", "clientType": "Web5.0"}
         r = await self.request(
             method=method, params=params, url=url, verify_result=False
@@ -238,7 +280,8 @@ class DahuaRpc2Client:
         }
         response = await self.request(method=method, params=params, url=url)
         authenticated_session = response.get("session")
-        if not isinstance(authenticated_session, str) or not authenticated_session:
+        # Some firmware returns a JSON number; preserve its type in later requests.
+        if type(authenticated_session) not in (str, int) or not authenticated_session:
             raise ConnectionError(
                 "Dahua RPC2 authenticated login response is missing session"
             )
@@ -401,13 +444,20 @@ class DahuaRpc2Client:
         ``_DHCloudUpgrade_`` config table, so reading it is local: nothing here
         contacts Dahua. A device whose firmware has no such table refuses the
         read, which is how its absence is established.
+
+        ⚠ Two different things end here and only one is a refusal. The read
+        raising is the device declining or not answering. The read SUCCEEDING
+        with no usable table is the device answering that it has none, which
+        is a fact about the model. That used to be a bare `ValueError`, which
+        the probe bookkeeping cannot tell from silence -- see `Rpc2TableAbsent`
+        for what that cost on #1114.
         """
         if not self._session_id:
             await self.login()
         params = await self.get_config({"name": "_DHCloudUpgrade_"})
         table = params.get("table")
         if not isinstance(table, list) or not table or not isinstance(table[0], dict):
-            raise ValueError(
+            raise Rpc2TableAbsent(
                 "Dahua RPC2 response is missing the _DHCloudUpgrade_ table"
             )
         return table[0]

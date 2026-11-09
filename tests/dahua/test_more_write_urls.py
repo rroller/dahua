@@ -15,10 +15,10 @@ Same concept, two tables, two different numbers for "night", and `camera.py` pic
 between them on a model-name whitelist. Swapping the numbers writes a value the table
 accepts and does not mean.
 
-The three overlay writers are the only writes in the client that check the answer and
-raise. They accept `OK` and `ok`, because firmware disagrees about the casing, and a
-check for one spelling would raise on every successful write from the other half of the
-fleet.
+Writes that check the answer and raise -- the overlay writers, the text writers
+and the Day/Night writer -- accept `OK` and `ok`, because firmware disagrees
+about the casing, and a check for one spelling would raise on every successful
+write from the other half of the fleet.
 """
 
 import pytest
@@ -51,6 +51,16 @@ def _client(answer="OK"):
 def _url(client):
     assert len(client._sent.urls) == 1, client._sent.urls
     return client._sent.urls[0][0]
+
+
+async def test_video_image_control_read_targets_its_config_table():
+    client = _client()
+
+    await client.async_get_video_image_control()
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=getConfig&name=VideoImageControl"
+    )
 
 
 # --- the day/night pair, which are not interchangeable ----------------------
@@ -114,6 +124,140 @@ async def test_the_two_day_night_writes_do_not_share_a_table():
     assert "VideoInMode" in _url(profile)
     assert "VideoInOptions" in _url(switch)
     assert _url(profile) != _url(switch)
+
+
+async def test_gamma_write_targets_only_its_channel_and_general_profile():
+    client = _client()
+
+    await client.async_set_video_color(3, "Gamma", 42)
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=setConfig" "&VideoColor[3][0].Gamma=42"
+    )
+
+
+@pytest.mark.parametrize(
+    "channel,field,value,expected",
+    [
+        (0, "Mirror", False, "VideoImageControl[0].Mirror=false"),
+        (0, "Flip", True, "VideoImageControl[0].Flip=true"),
+        (3, "Mirror", False, "VideoImageControl[3].Mirror=false"),
+        (3, "Mirror", True, "VideoImageControl[3].Mirror=true"),
+        (3, "Flip", False, "VideoImageControl[3].Flip=false"),
+        (3, "Flip", True, "VideoImageControl[3].Flip=true"),
+    ],
+)
+async def test_image_control_writes_target_one_supported_field(
+    channel, field, value, expected
+):
+    client = _client()
+
+    await client.async_set_video_image_control(channel, field, value)
+
+    assert _url(client) == ("/cgi-bin/configManager.cgi?action=setConfig&" + expected)
+
+
+async def test_image_control_does_not_write_rotate90():
+    client = _client()
+
+    with pytest.raises(ValueError, match="Unsupported VideoImageControl field"):
+        await client.async_set_video_image_control(3, "Rotate90", True)
+
+    assert client._sent.urls == []
+
+
+@pytest.mark.parametrize("style", ["Soft", "Standard", "Vivid"])
+async def test_style_write_targets_only_its_channel_and_general_profile(style):
+    client = _client()
+
+    await client.async_set_video_color_style(3, style)
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=setConfig"
+        "&VideoColor[3][0].Style={0}".format(style)
+    )
+
+
+async def test_style_write_rejects_an_unsupported_value_before_requesting():
+    client = _client()
+
+    with pytest.raises(ValueError, match="Unsupported VideoColor Style"):
+        await client.async_set_video_color_style(3, "Custom")
+
+    assert client._sent.urls == []
+
+
+async def test_the_strict_video_in_options_read_targets_the_same_table():
+    """The probe's read is the same URL as the poll's, so the shared cache
+    serves both from one request. Only the error handling differs."""
+    client = _client()
+
+    await client.async_probe_video_in_options()
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"
+    )
+
+
+async def test_wdr_writes_the_mode_and_level_in_one_request():
+    """Mode 0 alone is ignored while the level stays at 50, so both fields go
+    together. The rule that picks the level lives in the select, and this pins
+    that the client does not drop it from the URL."""
+    client = _client()
+
+    await client.async_set_wide_dynamic_range(3, 0, 0)
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=setConfig"
+        "&VideoInOptions[3].WideDynamicRangeMode=0"
+        "&VideoInOptions[3].WideDynamicRange=0"
+    )
+
+
+@pytest.mark.parametrize("mode", [0, 1, 2])
+async def test_exposure_mode_writes_its_number(mode):
+    """The select speaks words and the table stores numbers. 0 is not 1 here:
+    Auto is 0 and Gain Priority is 1, which is the opposite of some other
+    Dahua enumerations. The word-to-number map is pinned in
+    test_select_entities.py; this only checks the number reaches the URL."""
+    client = _client()
+
+    await client.async_set_exposure_mode(3, mode)
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=setConfig"
+        "&VideoInOptions[3].ExposureMode={0}".format(mode)
+    )
+
+
+@pytest.mark.parametrize(
+    "field, expected",
+    [
+        ("TimeTitle.EncodeBlend", "VideoWidget[3].TimeTitle.EncodeBlend=true"),
+        ("ChannelTitle.EncodeBlend", "VideoWidget[3].ChannelTitle.EncodeBlend=false"),
+        (
+            "CustomTitle[1].EncodeBlend",
+            "VideoWidget[3].CustomTitle[1].EncodeBlend=true",
+        ),
+    ],
+)
+async def test_overlay_visibility_writes_its_whole_field(field, expected):
+    """The field carries its own group, so the switch does not have to know how
+    CustomTitle is indexed. Sending the wrong group would hide somebody else's
+    overlay while reporting success."""
+    client = _client()
+    enabled = expected.endswith("true")
+
+    await client.async_set_video_widget_overlay(3, field, enabled)
+
+    assert _url(client) == ("/cgi-bin/configManager.cgi?action=setConfig&" + expected)
+
+
+async def test_an_overlay_visibility_write_that_was_refused_raises():
+    client = _client("Error")
+
+    with pytest.raises(Exception):
+        await client.async_set_video_widget_overlay(3, "TimeTitle.EncodeBlend", True)
 
 
 @pytest.mark.parametrize(

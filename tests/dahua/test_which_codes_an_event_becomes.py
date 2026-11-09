@@ -270,3 +270,79 @@ def test_an_event_with_no_code_does_not_raise():
     coordinator = _coordinator()
 
     assert coordinator.translate_event_code({}) == [""]
+
+
+# --- a door station that reports the whole call on one code (#1121) ----------
+#
+# @DrSpaldo captured a single call press on a DHI-ASI7214S and a
+# DHI-ASI6214S-PW. One press is four `_DoTalkAction_` events sharing a CallID:
+#
+#     Action: Invite                                 <- the press
+#     Action: Answer    HangupReason: AnswerByPhone
+#     Action: Hangup    HangupReason: HangupByPhone
+#     Action: Hangup    HangupReason: HangupByVTO
+#
+# A sensor built straight from the code would come on four times for one
+# caller, three of them after the visitor had gone, which is why only Invite
+# is the press and the rest fall through as the raw code nothing subscribes to.
+
+
+def _talk(action=None, key="data"):
+    """A `_DoTalkAction_` event. `key` is the payload casing: the CGI wire
+    format parses to `data`, which is what @DrSpaldo captured, and DHIP sends
+    `Data`. Both have to read the same."""
+    event = {"Code": "_DoTalkAction_", "action": "Pulse", "index": "0"}
+    payload = {"CallID": "20261026124301@838917@", "CallSrcMask": 4}
+    if action is not None:
+        payload["Action"] = action
+    event[key] = payload
+    return event
+
+
+@pytest.mark.parametrize("key", ["data", "Data"])
+def test_an_invite_is_a_doorbell_press(key):
+    coordinator = _coordinator()
+
+    assert coordinator.translate_event_code(_talk("Invite", key)) == ["DoorbellPressed"]
+
+
+@pytest.mark.parametrize("action", ["Answer", "Hangup"])
+def test_the_rest_of_the_call_is_not_a_press(action):
+    """Returned as the raw code, which is not in ALL_EVENTS, so nothing is
+    listening and `_dispatch_event` drops it where it drops every other
+    unselected code."""
+    coordinator = _coordinator()
+
+    assert coordinator.translate_event_code(_talk(action)) == ["_DoTalkAction_"]
+
+
+def test_a_call_event_with_no_action_is_not_a_press():
+    """Only Invite is. Anything this does not recognise must not become one,
+    because the sensor it would raise is somebody's front door."""
+    coordinator = _coordinator()
+
+    assert coordinator.translate_event_code(_talk()) == ["_DoTalkAction_"]
+
+
+def test_an_unreadable_payload_does_not_raise():
+    """A truncated event leaves the payload as a string, and `.get` on a
+    string raises out of the whole stream. #475 is what that costs."""
+    coordinator = _coordinator()
+    event = {"Code": "_DoTalkAction_", "data": '{"Action": "Inv'}
+
+    assert coordinator.translate_event_code(event) == ["_DoTalkAction_"]
+
+
+def test_the_room_number_is_not_read():
+    """RoomNo is the room the station is calling, set per device in its web UI,
+    so it names the destination rather than the press. Two devices calling the
+    same room must give the same answer, and Answer carries no RoomNo at all.
+    """
+    coordinator = _coordinator()
+    front_door = _talk("Invite")
+    front_door["data"]["RoomNo"] = "889"
+    gate = _talk("Invite")
+    gate["data"]["RoomNo"] = "888"
+
+    assert coordinator.translate_event_code(front_door) == ["DoorbellPressed"]
+    assert coordinator.translate_event_code(gate) == ["DoorbellPressed"]

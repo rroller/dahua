@@ -108,6 +108,7 @@
             "user": {
                 "data": {
                     "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
+                    "snapshot_channel_from_zero": "Number stills from zero (tick only if snapshot.cgi?channel=0 shows the FIRST camera and channel=1 shows the SECOND; leave off if both show the first camera)",
                     "use_rpc2": "Read configuration over one RPC2 session per device (fewer logins in the device's log; leave off if unsure)",
                     "poll_video_motion": "Poll ordinary motion state when the recorder does not push VideoMotion events (one request per recorder)",
                     "events": "Events to subscribe to",
@@ -116,12 +117,14 @@
                     "manual_siren": "Manually enable Siren entity",
                     "manual_security_light": "Manually enable Security Light entity",
                     "disable_backchannel": "Don't open the two-way audio channel when streaming (fixes a doorbell stuck in a call, or talkback in the Dahua/Amcrest app; disables talking from Home Assistant)",
+                    "accept_h265": "Keep H.265 and stop warning that live view may not play (turn off to have the check come back)",
                     "authorized_plates": "Authorized license plates (comma-separated, e.g. ABC1234, XYZ5678)",
                     "authorized_hold_time": "Authorized vehicle hold time (seconds to remain ON)",
                     "area": "Area (moves this device to it)",
                     "labels": "Labels (applied to every camera on this device)"
                 },
                 "data_description": {
+                    "accept_h265": "The check reports that a channel sends H.265 with no audio track, which many browsers will not play. It cannot see your browser. Enable this if live view works for you, and the warning is dismissed for this device.",
                     "manual_siren": "Enable this if your camera has a working siren, but the integration did not create the Siren entity.",
                     "manual_security_light": "Enable this if your camera has a working security light, but the integration did not create the Security Light entity."
                 },
@@ -324,17 +327,29 @@
             }
         },
         "number": {
+            "microphone_volume": {
+                "name": "Microphone volume"
+            },
+            "speaker_volume": {
+                "name": "Speaker volume"
+            },
             "image_brightness": {
-                "name": "Brightness"
+                "name": "Image brightness"
             },
             "image_contrast": {
-                "name": "Contrast"
+                "name": "Image contrast"
             },
             "image_saturation": {
-                "name": "Saturation"
+                "name": "Image saturation"
             },
             "image_hue": {
-                "name": "Hue"
+                "name": "Image hue"
+            },
+            "image_gamma": {
+                "name": "Image gamma"
+            },
+            "image_chroma_suppress": {
+                "name": "Image chroma suppress"
             },
             "vth_ring_volume": {
                 "name": "Door station ring volume"
@@ -347,6 +362,15 @@
             },
             "vth_alarm_volume": {
                 "name": "Alarm volume"
+            },
+            "vth_vto_ring_volume": {
+                "name": "Ring volume for {vto} calls"
+            },
+            "motion_region1_sensitivity": {
+                "name": "Motion region 1 sensitivity"
+            },
+            "motion_region1_threshold": {
+                "name": "Motion region 1 threshold"
             }
         },
         "select": {
@@ -361,6 +385,26 @@
             },
             "day_night_mode": {
                 "name": "Day/Night Mode"
+            },
+            "exposure_anti_flicker": {
+                "name": "Image exposure anti-flicker",
+                "state": {
+                    "outdoor": "Outdoor",
+                    "50_hz": "50 Hz",
+                    "60_hz": "60 Hz"
+                }
+            },
+            "video_color_style": {
+                "name": "Image color style"
+            },
+            "image_wide_dynamic_range": {
+                "name": "Image wide dynamic range"
+            },
+            "image_exposure_mode": {
+                "name": "Image exposure mode"
+            },
+            "image_rotation": {
+                "name": "Image rotation"
             },
             "smart_motion_sensitivity": {
                 "name": "Smart Motion Sensitivity"
@@ -412,6 +456,9 @@
             }
         },
         "switch": {
+            "noise_filter": {
+                "name": "Noise filter"
+            },
             "encode_audio": {
                 "name": "{format_type} format {format_index} audio"
             },
@@ -439,6 +486,18 @@
             "privacy_mode": {
                 "name": "Privacy Mode"
             },
+            "mirror": {
+                "name": "Image mirror"
+            },
+            "timestamp_overlay": {
+                "name": "Timestamp Overlay"
+            },
+            "channel_title_overlay": {
+                "name": "Channel Title Overlay"
+            },
+            "custom_title_overlay": {
+                "name": "Custom Title Overlay"
+            },
             "siren": {
                 "name": "Siren"
             },
@@ -456,6 +515,9 @@
         }
     },
     "exceptions": {
+        "image_rotation_unsupported": {
+            "message": "Image rotation cannot be changed because Rotate90 is unsupported or unknown."
+        },
         "lighting_scheme_held_by_illuminator": {
             "message": "The illumination mode cannot be changed while the Illuminator is holding this channel. Turn the Illuminator off first, which puts the camera back to the mode it was in, then choose the mode you want."
         },
@@ -488,6 +550,18 @@
         },
         "audio_stopped": {
             "message": "{device} did not play the whole clip: {reason}. If this keeps happening, try another audio format: the speaker's own format has not been measured on any device yet"
+        },
+        "clock_not_accepted": {
+          "message": "{device} answered the clock change and then still read a different time. {reason}"
+        },
+        "clock_could_not_be_set": {
+          "message": "Could not set the clock on {device}. {reason}"
+        },
+        "ntp_server_not_accepted": {
+          "message": "{device} would not take that NTP server. {reason}"
+        },
+        "ntp_server_could_not_be_set": {
+          "message": "Could not set the NTP server on {device}. {reason}"
         },
         "audio_could_not_be_sent": {
             "message": "Could not play audio on {device}: {reason}"
@@ -548,6 +622,9 @@
         },
         "vto_call_refused": {
             "message": "The doorbell would not call room {room}: {reason}"
+        },
+        "vth_vto_ring_volume_ignored": {
+            "message": "{device} accepted the ring volume for {vto} and did not store it. Some firmware answers a VTOInfo write with OK and ignores it."
         }
     },
     "issues": {
@@ -579,8 +656,34 @@
             "description": "You removed **{removed}**, and {dependents} referred to entities it provided:\n\n{names}\n\nThose entities no longer exist, so anything using them stops working quietly rather than reporting an error. Worth checking each one.\n\nThis is only a notice -- dismiss it once you have looked."
         },
         "webrtc_cannot_play": {
-            "title": "Dahua device at {address} sends video Home Assistant cannot play",
-            "description": "{count} channel(s) on the Dahua device at {address} send their main stream as H.265 with no audio track: channel {channels}. Home Assistant cannot play that combination in a browser, so live view for those channels fails.\n\n**The fix is on the device.** In its web interface, open Video > Encode for each channel listed and set the main stream's compression to H.264. Enabling audio instead does not help, because a browser still cannot decode H.265.\n\nH.264 at a bitrate chosen for H.265 looks a little softer, so consider raising it. This message clears itself once the device reports a stream Home Assistant can play."
+            "title": "Dahua device at {address} sends video some browsers cannot play",
+            "fix_flow": {
+                "step": {
+                    "init": {
+                      "title": "Some channels send H.265 with no audio",
+                      "description": "**Only some browsers are affected.** A browser that cannot decode H.265 asks for the audio-only view instead, and there is no audio, so live view fails for that viewer. A browser that can decode H.265 is fine.\n\nSo look at live view first, in the browsers and apps you actually use. If it works, nothing here needs changing and the second option puts this away for good.",
+                      "menu_options": {
+                        "confirm": "Switch some channels to H.264",
+                        "keep_h265": "Live view works for me, keep H.265 and stop asking"
+                      }
+                    },
+                    "confirm": {
+                        "title": "Set these channels to H.264?",
+                        "description": "**Ticking a channel re-encodes its main stream as H.264 instead of H.265, on the recorder.** Nothing is written until you press Submit.\n\n**Why.** These channels on {address} send H.265 with no audio track: {channels}. A browser that cannot decode H.265 asks for the audio-only view instead, and there is no audio, so live view fails. A browser that can decode H.265 is fine, so open one and look before changing anything.\n\n**Cost.** The main stream is also what the recorder records, and H.264 at a bitrate chosen for H.265 looks a little softer. Switching a channel you never watch live gains nothing.\n\nOnly channels whose encoder offers H.264 are listed, so the picker may be shorter than the list above.",
+                        "data": {
+                            "channels": "Channels to switch to H.264"
+                        },
+                        "data_description": {
+                            "channels": "Each ticked channel is written and read back. One that accepts the write and stays on H.265 anyway is reported, not counted as done."
+                        }
+                    }
+                },
+                "abort": {
+                    "not_configured": "The device at this address is no longer set up.",
+                    "nothing_to_change": "Nothing was changed. Either no channel still needs it, or none of them offers H.264.",
+                    "write_refused": "At least one channel did not change. The device accepted the write and kept its old codec, which some Dahua firmware does. Set those channels in the device's own web interface, under Video > Encode."
+                }
+            }
         },
         "device_unreachable": {
             "title": "Dahua device at {address} is not responding",
@@ -597,6 +700,45 @@
                 },
                 "abort": {
                     "not_configured": "No Dahua configuration entries use {address} any more."
+                }
+            }
+        },
+        "serial_conflict": {
+            "title": "{name} cannot finish moving onto the serial its device reports",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Remove {count} old registry entries for {name}?",
+                        "description": "**{name}** reports the serial `{serial}`, and Home Assistant is trying to file it under that instead of under a value worked out from its address and password. A value worked out that way changes whenever the password or the address does, and takes every entity with it, which is what this move is meant to stop happening again.\n\nIt cannot finish, because {count} of the identities it needs are already taken by other entries in the registry. The device cannot be in two places, so it is not set up at all until one of them goes, and nothing will change on its own.\n\nThese are the ones that would be removed:\n\n{removals}\n\nEach of them is filed under the old worked-out value, and the identity it wants is already held by an entry filed under the serial the device itself states. **This cannot be undone.** Their history goes with them, and anything pointing at them in an automation or a dashboard stops resolving. A copy of the registries is written first.\n\nThese are kept, and are only moved out from under the device being removed. They keep their entity IDs and their history, and each one goes back onto a device when the integration adds it again, which happens straight away for anything that is not disabled:\n\n{kept}\n\nThe device is then set up again straight away."
+                    }
+                },
+                "error": {
+                    "plan_changed": "Something in the registry changed while the copy was being written, so nothing was removed. The list above has been worked out again and is the current one. Press the button to go ahead with it."
+                },
+                "abort": {
+                    "not_configured": "That Dahua configuration entry has been removed, so there is nothing left to tidy up.",
+                    "nothing_to_remove": "Nothing is standing in the way any more, so there is nothing to remove. Nothing was changed, and the device should set up normally.",
+                    "still_blocked": "Nothing here was standing in the way any more, so nothing was removed, and the device was asked to set up again. It still did not. Whatever is stopping it now has its own notification, and this one has been left alone."
+                }
+            }
+        },
+        "serial_conflict_manual": {
+            "title": "{name} cannot move onto the serial its device reports",
+            "description": "**{name}** reports the serial `{serial}`, and Home Assistant files it under that rather than under a value worked out from its address and password, because a value worked out that way changes whenever the password or the address does and takes every entity with it.\n\nIt cannot, and this is not one the notification can clear for you. Either nothing is holding the identity it wants, or something is and removing it would still leave the move blocked by what is named below. What stopped it:\n\n> {reason}\n\nThe device is not set up at all until the two sides named above stop asking for the same identity, and nothing changes that on its own. Once you have separated them, reload this entry from the three dot menu on its card under **Settings > Devices and services** and this notification will go.\n\nTwo things worth knowing first. Removing a device from the registry removes the entities sitting on it as well, along with their history. And which of two duplicates should survive is a decision about your setup rather than one this integration can make for you, which is why it names both sides and stops there."
+        },
+        "leftover_rows": {
+            "title": "{count} Dahua entities for {name} are no longer provided",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Remove {count} leftover entities for {name}?",
+                        "description": "**{name}** has {count} entities in Home Assistant's registry that the Dahua integration no longer creates. They show as unavailable and will stay that way: a device that stops reporting a feature, or a release that stops offering one for your model, leaves the entity behind.\n\nThese are the ones that would be removed:\n\n{entities}\n\n**This cannot be undone.** Their history goes with them, and anything pointing at them in an automation or a dashboard stops resolving. Home Assistant can also remove them one at a time, from each entity's own settings page, if you would rather look at them first.\n\nThis card is only raised when every channel is polling normally and every enabled entity type has loaded successfully. A device that is offline or still loading is not offered for cleanup. The list is rebuilt when you press the button, so anything that has come back in the meantime is left alone."
+                    }
+                },
+                "abort": {
+                    "not_configured": "That Dahua configuration entry has been removed, so there is nothing left to tidy up.",
+                    "nothing_to_remove": "Every one of those entities is being provided again, so there is nothing to remove. Nothing was changed.",
+                    "not_loaded": "This Dahua device is not fully set up at the moment, and while it is not, every one of its entities looks like a leftover. Nothing was removed. The card will come back after the device has started up normally if there is still anything to tidy."
                 }
             }
         }
@@ -626,6 +768,7 @@
                         "area": "Area (moves this device to it)",
                         "events": "Events to subscribe to",
                         "auto_detect_channel": "Auto-detect channel index (disable if HTTP snapshot at channel=0 works but RTSP only streams on channel=1)",
+                        "snapshot_channel_from_zero": "Number stills from zero (tick only if snapshot.cgi?channel=0 shows the FIRST camera and channel=1 shows the SECOND; leave off if both show the first camera)",
                         "nvr_active_deterrence": "Enable NVR active deterrence controls",
                         "manual_siren": "Manually enable Siren entity",
                         "manual_security_light": "Manually enable Security Light entity",

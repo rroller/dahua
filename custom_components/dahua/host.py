@@ -579,6 +579,34 @@ async def async_device_is_zero_indexed(client, device: str):
 
 
 @callback
+def device_numbers_channels_from_zero(device: str):
+    """What the numbering probe concluded for this device, asking nothing.
+
+    True, False, or None where nothing was concluded, which is the same three
+    states `async_device_is_zero_indexed` returns and means the same thing. The
+    difference is that this never probes, so a reader that wants the answer as
+    it stands -- a still about to be fetched, the diagnostics dump -- can have
+    it without a request and without waiting on a lock.
+
+    Read rather than frozen at setup, because the answer can arrive after a
+    channel has already numbered itself: a probe that went unanswered leaves
+    that channel alone (#724) while the next channel on the same host asks
+    again and may get a real answer. A channel that reads this at call time
+    picks that up; one that copied it at setup keeps the gap for ever (#1151).
+    """
+    return _HOST_CHANNEL_BASE.get(device)
+
+
+@callback
+def host_auth_budget_exhausted(address: str) -> bool:
+    """Whether a transport on this host must stop offering credentials."""
+    return (
+        _HOST_FAILURES.get(normalize_address(address), {}).get("auth_refusals", 0)
+        >= MAX_AUTH_REFUSALS
+    )
+
+
+@callback
 def async_record_host_auth_refusal(address: str, source: str = "") -> int:
     """Note that this host refused the credentials, and say how often it has.
 
@@ -660,21 +688,34 @@ async def _release_connector(address: str) -> None:
         await holder[0].close()
 
 
-# Raw IVS event codes that can become Smart Motion events later in
-# DahuaDataUpdateCoordinator.translate_event_code(). The host-level filter runs
-# before that translation, so these raw codes must be allowed through whenever
-# one of their derived events is selected.
+# Raw event codes that become a different code later in
+# DahuaDataUpdateCoordinator.translate_event_code(). A derived code is never
+# sent by any device, so selecting one has to subscribe to its sources, in
+# both of the places a code can be dropped before the translation runs:
 #
-# translate_event_code also turns BackKeyLight and PhoneCallDetect into
-# DoorbellPressed, and those are deliberately absent. The reason is not that
-# doorbells use the VTO listener -- PhoneCallDetect is the Amcrest spelling and
-# an Amcrest device does come through this stream. It is that DoorbellPressed is
-# not in ALL_EVENTS, so it can never appear in a user's selection and can never
-# be the derived code this map exists to rescue. Make it selectable and its two
-# raw codes have to be added here; test_shared_event_stream.py asserts that.
+#   * the request sent to the device, built by `_wire_codes`. The device
+#     filters strictly by the list it is given -- measured on a
+#     DHI-NVR5464-16P-EI, where an unsubscribed InterVideoAccess was withheld
+#     from an explicit nine-code attach while `All` delivered it;
+#   * the local filter in `_dispatch_events`, which runs only when the
+#     subscription was broadened to `All` after the device refused the list.
+#
+# The three door codes are here for the same reason, and the comment that used
+# to sit here predicted it: DoorbellPressed was not in ALL_EVENTS, so it could
+# never appear in a selection and could never be the derived code this map
+# exists to rescue. #1121 made it selectable, so its raw codes join.
+#
+# @DrSpaldo measured _DoTalkAction_ on a DHI-ASI7214S and a DHI-ASI6214S-PW:
+# the call press was reaching the bus only with `All` ticked, at the cost of
+# 22 to 27 events a minute of InterVideoAccess and SIPRegisterResult. The two
+# older spellings were never access-controller specific either -- an Amcrest
+# doorbell sends PhoneCallDetect down this same stream.
 DERIVES_INTO = {
     "CrossLineDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
     "CrossRegionDetection": ("SmartMotionHuman", "SmartMotionVehicle"),
+    "BackKeyLight": ("DoorbellPressed",),
+    "PhoneCallDetect": ("DoorbellPressed",),
+    "_DoTalkAction_": ("DoorbellPressed",),
 }
 
 
@@ -711,6 +752,12 @@ class DahuaHostEventStream:
     # camera that genuinely never sees motion would otherwise be asked for ever.
     _motion_push_checks = 0
     _motion_push_last_check = 0.0
+
+    # The selection, on the class as well as in __init__ for the reason the
+    # flag below carries a default: a stream built with object.__new__ now
+    # reaches `_wire_codes` through the diagnostics dump, and an empty
+    # selection is the right answer there rather than a raise inside a dump.
+    _events: frozenset = frozenset()
 
     _using_all_events = False
     # Bare instances in focused tests predate this optional sidecar. Keeping a
@@ -875,6 +922,23 @@ class DahuaHostEventStream:
         if wanted and self._owner is not None:
             self._task = asyncio.create_task(self._async_run())
         self._sync_video_motion_poller()
+
+    def _wire_codes(self) -> list:
+        """The codes to ask the device for, which is not the selection.
+
+        A selected code that is only ever derived from another one would
+        subscribe to something no device sends, so every source of a selected
+        code goes in the request too. `self._events` stays the selection
+        itself: the `use_all_events` heuristic above compares it against each
+        channel's own list, and widening it there would make a single camera
+        that selected one derived code look like a host whose sharing grew
+        the request.
+        """
+        codes = set(self._events)
+        for raw, derived in DERIVES_INTO.items():
+            if codes.intersection(derived):
+                codes.add(raw)
+        return sorted(codes)
 
     def _alarm_input_coordinator(self):
         """The coordinator carrying this host's alarm terminals, or None (#1090).
@@ -1223,7 +1287,7 @@ class DahuaHostEventStream:
                 await asyncio.wait_for(
                     self._owner.client.stream_events(
                         self.on_receive,
-                        ["All"] if self._using_all_events else sorted(self._events),
+                        ["All"] if self._using_all_events else self._wire_codes(),
                         0,
                     ),
                     timeout=jittered(EVENT_STREAM_MAX_LIFETIME_SECONDS),

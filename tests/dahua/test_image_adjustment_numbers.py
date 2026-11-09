@@ -1,8 +1,10 @@
-"""Picture-adjustment number entities: brightness, contrast, saturation, hue.
+"""Picture-adjustment number entities: brightness, contrast, saturation, hue, gamma
+and chroma suppression.
 
 The controls Reolink and Tapo expose as sliders. Backed by the VideoColor config
-table (0-100, measured on a DHI-NVR5464 and a VTO); the entity reads the poll's
-value and writes the channel's general profile on change.
+table (0-100, measured on a DHI-NVR5464 and a VTO; chroma suppression on the
+Intelbras fork's iME-360-C and VIP-1220); the entity reads the poll's value and
+writes the channel's general profile on change.
 """
 
 from types import SimpleNamespace
@@ -65,6 +67,34 @@ class _Coordinator:
         """Not an indoor monitor, so it has no call settings (#949)."""
         return False
 
+    def is_indoor_monitor(self):
+        """Nor a per-door-station ring volume (#949). The number platform runs
+        four passes over the same coordinators and each asks its own question,
+        so a double that answers only this file's gate fails in somebody
+        else's pass."""
+        return False
+
+    def supports_motion_region(self, field):
+        """This file is about the picture sliders. The motion region sliders
+        (#1115) are built by their own pass over the same coordinators, so the
+        double has to answer the question even though it is not the subject."""
+        return False
+
+    def supports_audio_control(self, key):
+        return False
+
+    def supports_audio_input_volume(self):
+        return False
+
+    def supports_audio_output_volume(self):
+        return False
+
+    def supports_audio_in_denoise(self):
+        return False
+
+    def audio_control_owner(self, key):
+        return None
+
     def supports_video_color(self, field):
         return field in self._fields
 
@@ -87,11 +117,18 @@ def test_native_value_comes_from_the_poll():
     assert _number(c).native_value == 50
 
 
+def test_gamma_native_value_is_numeric():
+    n = _number(_Coordinator(values={"Gamma": 37}), key="image_gamma", field="Gamma")
+
+    assert n.native_value == 37
+
+
 def test_range_is_zero_to_one_hundred():
-    n = _number(_Coordinator(values={"Brightness": 50}))
+    n = _number(_Coordinator(values={"Gamma": 50}), key="image_gamma", field="Gamma")
     assert n.native_min_value == 0
     assert n.native_max_value == 100
     assert n.native_step == 1
+    assert n.entity_category.value == "config"
 
 
 def test_unique_id_is_the_serial_and_key():
@@ -116,6 +153,18 @@ async def test_setting_a_value_writes_the_field_and_refreshes():
     assert c.refreshed == 1
 
 
+@pytest.mark.parametrize("value", [0.0, 42.0, 100.0])
+async def test_setting_gamma_writes_an_integer_and_refreshes(value):
+    c = _Coordinator(channel=3, values={"Gamma": 50})
+    n = _number(c, key="image_gamma", field="Gamma")
+
+    await n.async_set_native_value(value)
+
+    assert c.client.calls == [(3, "Gamma", int(value))]
+    assert isinstance(c.client.calls[0][2], int)
+    assert c.refreshed == 1
+
+
 def _hass():
     """Enough hass for the dispatcher the platform now listens on.
 
@@ -129,7 +178,7 @@ def _hass():
 # --- the platform -----------------------------------------------------------
 
 
-async def test_a_camera_gets_the_four_adjustments():
+async def test_a_camera_gets_the_six_adjustments():
     added = []
     coordinator = _Coordinator()
     entry = type(
@@ -149,7 +198,9 @@ async def test_a_camera_gets_the_four_adjustments():
     keys = sorted(n.unique_id for n in added)
     assert keys == [
         "SERIAL1_image_brightness",
+        "SERIAL1_image_chroma_suppress",
         "SERIAL1_image_contrast",
+        "SERIAL1_image_gamma",
         "SERIAL1_image_hue",
         "SERIAL1_image_saturation",
     ]
@@ -180,7 +231,7 @@ async def test_a_device_that_reports_no_adjustments_gets_no_sliders():
     """#1006. These were created for every device, and VideoColor is not a table
     every account can read: a camera account in the device's `user` group answers
     403 to it, deliberately, and two reporters had every entity of a working
-    camera go unavailable because of the four sliders it was never going to feed.
+    camera go unavailable because of the sliders it was never going to feed.
 
     The read is gated now, and so is the entity. An entity that can only ever
     read unknown is worse than no entity, which is the rule the profile sensor

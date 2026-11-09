@@ -289,10 +289,15 @@ CAMERA_EVENTS = [
 ]
 
 
-def _monitor(device_class="VTH", own_video=False, day_night=True):
+def _monitor(device_class="VTH", own_video=False, day_night=True, lighting=True):
     c = _coordinator(device_class, own_video)
     c.events = list(CAMERA_EVENTS)
     c._supports_day_night_color = day_night
+    # True because that is what the measured monitor answers: the probe reads
+    # `Lighting[0][0]` and a VTH5221D returns one key. See
+    # test_a_vth_without_a_camera_has_no_infrared_light.
+    c._supports_lighting = lighting
+    c.model = ""
     c._address = "10.0.0.17"
     return c
 
@@ -359,6 +364,43 @@ def test_a_camera_that_answered_the_probe_keeps_it():
     assert _monitor("IPC", None).supports_day_night_color()
 
 
+def test_a_vth_without_a_camera_has_no_infrared_light():
+    """Measured on a VTH5221D, from the integration's own diagnostics:
+
+        capabilities/probed/lighting                 True
+        coordinator/data_keys                        table.Lighting[0][0].Mode
+        light.vth5221d_infrared                      mode=Off
+
+    The monitor really does answer `Lighting[0][0]`, and it answers with
+    exactly one key. `async_detect_lighting_support` returns `len(conf) > 0`,
+    so any non-empty answer reads as an emitter, and this device got an
+    Infrared light and an Infrared Mode select for hardware nobody asked it
+    about. A camera on the same recorder returns four keys and a brightness
+    bank.
+
+    This is not a claim that no monitor has an emitter -- `brightness_level`
+    being None is not evidence of that, since a VTO doorbell reports the same
+    shape and #963 is a real emitter with no dimmer. It is the narrower one:
+    the device said it has no camera, so it is not asked to have a camera's
+    light.
+    """
+    assert not _monitor().supports_infrared_light()
+
+
+@pytest.mark.parametrize(
+    "device_class, own_video",
+    [("VTH", True), ("VTH", None), ("IPC", False), ("", False)],
+)
+def test_anything_else_keeps_its_infrared_light(device_class, own_video):
+    """Some indoor monitors do have a camera, and this says nothing about them."""
+    assert _monitor(device_class, own_video).supports_infrared_light()
+
+
+def test_a_monitor_that_answers_no_lighting_table_is_unchanged():
+    """The existing rule still comes first, so the gate cannot mask it."""
+    assert not _monitor("IPC", None, lighting=False).supports_infrared_light()
+
+
 @pytest.mark.parametrize(
     "answer, expected", [("VTO", "VTO"), (" vto ", "VTO"), ("", ""), (None, "")]
 )
@@ -390,3 +432,19 @@ async def test_the_poll_does_not_read_day_night_for_a_vth_without_a_camera():
 
 async def test_but_does_for_a_vth_with_one():
     assert DAY_NIGHT_READ in await _poll_calls(own_video=True)
+
+
+LIGHTING_READ = "async_get_config_lighting"
+
+
+async def test_the_poll_does_not_read_lighting_for_a_vth_without_a_camera():
+    """The entity was the visible half; this is the rest of the cost.
+
+    `Lighting` was fetched on every scan interval for the life of the entry,
+    for a table whose one field drives nothing on this device.
+    """
+    assert LIGHTING_READ not in await _poll_calls(own_video=False)
+
+
+async def test_but_does_for_a_vth_with_one_lighting():
+    assert LIGHTING_READ in await _poll_calls(own_video=True)

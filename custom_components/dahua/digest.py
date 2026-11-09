@@ -166,9 +166,15 @@ class DigestAuth:
         guarantee. Some of these devices refuse a cached challenge on every
         call and reissue the same nonce instead -- measured on a VTO2000A and
         on a DHI-NVR5464-16P-EI, which answered 401 then 200 four times in a
-        row -- so a caller that cannot replay has to be able to live with the
-        401. The one audio path measured so far never challenges at all, so
-        the header is unused there; it exists for firmware that does.
+        row -- so a caller relying on this alone has to be able to live with
+        the 401.
+
+        @dayt47's Empiretech Color4M is the firmware that does challenge
+        (#1136): `dahua.play_audio` failed 401 on it while the same clip went
+        up by `curl --digest`, which gets a fresh challenge from the audio
+        endpoint and answers it. A caller that can rebuild its body should
+        pair this with `absorb_challenge` and send again rather than treat
+        the 401 as final.
 
         Raises `aiohttp.ClientError` for a challenge whose qop this module
         cannot satisfy, the same as building a header for any other request
@@ -179,6 +185,32 @@ class DigestAuth:
         if self.challenge:
             return self._build_digest_header(method.upper(), url)
         return None
+
+    def absorb_challenge(self, response: ClientResponse) -> bool:
+        """Take the challenge out of a 401 and remember it.
+
+        The other half of `cached_authorization`, for the same caller. That
+        one guesses before sending; this one is what to do when the guess was
+        refused and the device has just said what it actually wants. Together
+        they give a caller that cannot go through `request` the same two-step
+        exchange, at the cost of sending its body twice.
+
+        The challenge is written into the shared state, so a device that
+        reissues on every call leaves the next poll better off than it found
+        it rather than only this retry.
+
+        Returns whether a retry now has something new to send. False means the
+        401 carried nothing usable, and then the 401 is the honest answer.
+        """
+        challenge = self._parse_401(response)
+        if challenge is not None:
+            self.challenge = challenge
+            return True
+        # A device that wants Basic says so here, exactly as in `request`.
+        if self._offered_scheme(response) == BASIC and self.scheme != BASIC:
+            self.scheme = BASIC
+            return True
+        return False
 
     async def _send(self, method, url, headers, **kwargs):
         """One request, asked once more if a pooled connection had been closed.

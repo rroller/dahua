@@ -273,3 +273,54 @@ def test_another_table_with_the_same_shape_is_ignored():
     devices = dahua_utils.parse_remote_devices({"table.ChannelTitle[0].Name": "FRONT"})
 
     assert devices == {}
+
+
+def _monitor():
+    """A VTH's own RemoteDevice table, as @kmich read it off a VTH2421F-P.
+
+    36 rows: the monitor itself, the door station it is paired with, and 34
+    slots for IP cameras the monitor can display. Three enabled. None of them
+    is spelled with an index, so none of them is a slot.
+    """
+    data = {}
+    for name in ["Local0", "Vto00"] + ["Ipc{0:02d}".format(n) for n in range(34)]:
+        enabled = name in ("Local0", "Vto00", "Ipc00")
+        data["table.RemoteDevice.{0}.Enable".format(name)] = (
+            "true" if enabled else "false"
+        )
+        data["table.RemoteDevice.{0}.ProtocolType".format(name)] = "Private"
+    return data
+
+
+def test_a_monitors_own_devices_are_not_its_channels():
+    """An indoor monitor answers RemoteDevice with something that is not a
+    channel list, and nothing offered is the right answer.
+
+    An `Ipc` row on a VTH is a camera the monitor *displays*, reached at its
+    own address with its own credentials. Offering it as a channel of the
+    monitor would create an entry that cannot work, which is the failure the
+    whole search exists to avoid.
+
+    It already comes out empty, because the index in the pattern matches
+    neither `Ipc00` nor `Vto00`. That is a side effect of how a recorder spells
+    its slots, so it is pinned here: widening the pattern must not start
+    offering somebody their doorbell as channel 1 of their monitor.
+    """
+    assert dahua_utils.parse_remote_devices(_monitor()) == {}
+
+
+def test_a_monitors_table_is_read_rather_than_refused():
+    """The distinction @kmich corrected, and it is visible in a log.
+
+    A standalone camera has no such table and the read raises, which is logged
+    as "No RemoteDevice table on ...". A monitor answers, and the answer parses
+    to nothing, which is logged as "0 slots". Both end in nothing offered, and
+    only the second says the device had something to say.
+    """
+    rows = _monitor()
+
+    assert len(rows) == 72, "two fields each for 36 rows"
+    assert (
+        dahua_utils.channels_worth_offering(dahua_utils.parse_remote_devices(rows))
+        == []
+    )

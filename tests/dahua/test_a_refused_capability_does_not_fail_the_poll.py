@@ -338,9 +338,53 @@ async def test_the_rpc2_transport_is_the_one_asked():
     assert coordinator._calls == [], "the CGI endpoint was read on an RPC2 device"
 
 
-async def test_a_stale_login_still_raises():
-    """Worth letting out. The session is rebuilt when it propagates, and swallowing
-    it as "this device has no siren" would drop a capability the device does have."""
+async def test_a_stale_login_holds_the_reading_rather_than_failing_the_poll():
+    """This used to assert the opposite, and half of its reasoning was wrong.
+
+    It said: "Worth letting out. The session is rebuilt when it propagates, and
+    swallowing it as 'this device has no siren' would drop a capability the
+    device does have."
+
+    The second half still holds and is still guarded, by the assertions below:
+    nothing here concludes anything about the capability. The first half does
+    not. Measured both ways, two polls cost four login posts whichever branch
+    takes the refusal, because `_shared_rpc2` clears `holder.task` in its own
+    handler before re-raising -- so the session is rebuilt either way and the
+    escape bought nothing but a failed refresh. That failure is the
+    `code=287637505` line in https://github.com/rroller/dahua/issues/1159's log.
+    """
+    coordinator = _coordinator(
+        over_rpc2=True,
+        raises=Rpc2MethodRefused(
+            "refused", code=287637504, message="session is out of date"
+        ),
+    )
+    coordinator.data = {
+        "status.status.Speaker": "On",
+        "status.status.WhiteLight": "Off",
+    }
+
+    held = await coordinator._async_coaxial_status(1)
+
+    assert held == {
+        "status.status.Speaker": "On",
+        "status.status.WhiteLight": "Off",
+    }, "an expired session must not read the siren off"
+    assert (DEVICE, "rpc2") not in dahua._CAPABILITY_REFUSALS_REPORTED, (
+        "an expired session must not spend the slot that the honest 'this "
+        "device does not serve that call' sentence needs"
+    )
+    # The transport verdict and the asked-once flag are asserted in
+    # test_a_failed_login_is_not_a_refused_capability.py, which drives a real
+    # coordinator. The double here is a SimpleNamespace, so reading those
+    # attributes off it would raise, and a getattr default would pass whatever
+    # the code did.
+
+
+async def test_a_stale_login_with_nothing_held_yields_no_data():
+    """The gather skips a None, which is the existing hold-the-last-value path.
+    On the first refresh there is nothing to hold, and that must not become a
+    reading of off."""
     coordinator = _coordinator(
         over_rpc2=True,
         raises=Rpc2MethodRefused(
@@ -348,8 +392,7 @@ async def test_a_stale_login_still_raises():
         ),
     )
 
-    with pytest.raises(Rpc2MethodRefused):
-        await coordinator._async_coaxial_status(1)
+    assert await coordinator._async_coaxial_status(1) is None
 
 
 async def test_an_rpc2_refusal_is_reported_once_per_device():

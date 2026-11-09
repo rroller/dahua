@@ -28,6 +28,16 @@ ISSUE_PLACEHOLDERS = {
     "channel_not_added": {"address", "channel", "reason"},
     "webrtc_cannot_play": {"address", "channels", "count"},
     "motion_not_pushed": {"address", "channels"},
+    # Title only, as siblings_remain above: the flow fills its own form, and it
+    # recomputes the list rather than reading it out of the issue's data.
+    "leftover_rows": {"name", "count"},
+    # Title only again. Its flow recomputes what it would remove when the
+    # button is pressed, so the count on the form is not the count here.
+    "serial_conflict": {"name"},
+    # All three, unlike every fixable issue above: this one has no flow to
+    # fill a form, so its own description is the whole of what is on screen
+    # and each name has to be supplied where the issue is raised.
+    "serial_conflict_manual": {"name", "serial", "reason"},
 }
 FIX_FLOW_PLACEHOLDERS = {"address", "entries", "port"}
 
@@ -68,10 +78,37 @@ def _form_placeholders(class_name: str) -> set:
 
 
 SIBLINGS_FLOW_PLACEHOLDERS = _form_placeholders("RemoveSiblingsRepairFlow")
+LEFTOVER_FLOW_PLACEHOLDERS = _form_placeholders("RemoveLeftoverRowsRepairFlow")
+CONFLICT_FLOW_PLACEHOLDERS = _form_placeholders("ClearSerialConflictRepairFlow")
 
 
 def _placeholders(text: str) -> set:
     return set(re.findall(r"\{(\w+)\}", text))
+
+
+def _validate_issue_translations(translated, english, locale: str) -> None:
+    """Validate translated issue keys and placeholders; missing text uses English."""
+    if translated is None:
+        return
+
+    assert isinstance(translated, dict), f"{locale}: issues must be an object"
+    assert isinstance(english, dict)
+
+    for key, value in translated.items():
+        assert key in english, f"{locale}: unknown issue key {key!r}"
+        english_value = english[key]
+        if isinstance(value, dict):
+            assert isinstance(
+                english_value, dict
+            ), f"{locale}.{key}: expected a translated string"
+            _validate_issue_translations(value, english_value, f"{locale}.{key}")
+            continue
+
+        assert isinstance(value, str), f"{locale}.{key}: expected a string"
+        assert isinstance(english_value, str), f"{locale}.{key}: expected English text"
+        assert _placeholders(value) == _placeholders(
+            english_value
+        ), f"{locale}.{key}: placeholders differ from English"
 
 
 # An issue key is one handed to `async_create_issue`. Read from the call rather
@@ -211,6 +248,31 @@ def test_the_siblings_flow_only_uses_its_own_placeholders():
     ), f"unsupplied: {used - SIBLINGS_FLOW_PLACEHOLDERS}"
 
 
+def test_the_leftover_placeholders_were_really_read_from_the_code():
+    assert {"name", "count", "entities"} <= LEFTOVER_FLOW_PLACEHOLDERS
+
+
+def test_the_leftover_flow_only_uses_its_own_placeholders():
+    """Same trap as the siblings flow, and it matters more here: this card
+    names the entities it is about to delete, so a placeholder that renders
+    literally would ask somebody to confirm a list they cannot see."""
+    step = EN["issues"]["leftover_rows"]["fix_flow"]["step"]["confirm"]
+    used = _placeholders(step["title"]) | _placeholders(step["description"])
+    assert (
+        used <= LEFTOVER_FLOW_PLACEHOLDERS
+    ), f"unsupplied: {used - LEFTOVER_FLOW_PLACEHOLDERS}"
+
+
+def test_the_leftover_card_lists_what_it_will_remove():
+    """Not decoration. The one irreversible action a repair card can take is
+    deleting registry rows, and the #827 merge card did exactly that while
+    describing something else. The entity list has to be on the screen."""
+    step = EN["issues"]["leftover_rows"]["fix_flow"]["step"]["confirm"]
+
+    assert "{entities}" in step["description"]
+    assert "cannot be undone" in step["description"]
+
+
 def test_the_siblings_issue_is_fixable_and_the_notice_is_not():
     """hassfest treats description and fix_flow as mutually exclusive, so an
     issue is either read or acted on -- never both."""
@@ -242,10 +304,122 @@ def test_adding_issues_did_not_disturb_config_or_options():
     assert "reconfigure" in EN["config"]["step"]
 
 
-def test_the_other_locales_fall_back_to_english():
-    """English is the per-key fallback, so copying untranslated text into the
-    other eight files would look identical while silently rotting."""
-    for path in TRANSLATIONS.glob("*.json"):
-        if path.name == "en.json":
-            continue
-        assert "issues" not in json.loads(path.read_text(encoding="utf-8")), path.name
+@pytest.mark.parametrize(
+    "path",
+    sorted(path for path in TRANSLATIONS.glob("*.json") if path.name != "en.json"),
+    ids=lambda path: path.stem,
+)
+def test_localized_issues_match_english_or_use_fallback(path):
+    """Any locale may translate any subset of issues; omitted text falls back."""
+    locale = json.loads(path.read_text(encoding="utf-8"))
+    _validate_issue_translations(locale.get("issues"), EN["issues"], path.stem)
+
+
+def test_translated_issues_with_matching_placeholders_pass():
+    english = {
+        "sample": {
+            "title": "Device {device}",
+            "description": "Problem: {reason}",
+        }
+    }
+    translated = {
+        "sample": {
+            "title": "Dispositivo {device}",
+            "description": "Problema: {reason}",
+        }
+    }
+
+    _validate_issue_translations(translated, english, "synthetic")
+
+
+def test_missing_issue_is_allowed_for_english_fallback():
+    english = {
+        "translated": {"title": "English title {device}"},
+        "omitted": {"title": "English fallback title"},
+    }
+    translated = {"translated": {"title": "Título traducido {device}"}}
+
+    _validate_issue_translations(translated, english, "synthetic")
+    assert "omitted" not in translated
+    assert english["omitted"]["title"] == "English fallback title"
+
+
+def test_unknown_issue_key_is_rejected():
+    with pytest.raises(AssertionError, match="unknown issue key"):
+        _validate_issue_translations(
+            {"not_in_english": {"title": "Unknown"}},
+            {"known": {"title": "Known"}},
+            "synthetic",
+        )
+
+
+def test_placeholder_mismatch_is_rejected():
+    with pytest.raises(AssertionError, match="placeholders differ from English"):
+        _validate_issue_translations(
+            {"sample": {"title": "Device {channel}"}},
+            {"sample": {"title": "Device {device}"}},
+            "synthetic",
+        )
+
+
+def test_missing_placeholder_is_rejected():
+    with pytest.raises(AssertionError, match="placeholders differ from English"):
+        _validate_issue_translations(
+            {"sample": {"title": "Device"}},
+            {"sample": {"title": "Device {device}"}},
+            "synthetic",
+        )
+
+
+SERIAL_CONFLICT_FLOW_PLACEHOLDERS = _form_placeholders("ClearSerialConflictRepairFlow")
+
+
+def test_the_serial_conflict_placeholders_were_really_read_from_the_code():
+    assert {"name", "serial", "count", "removals", "kept"} <= (
+        SERIAL_CONFLICT_FLOW_PLACEHOLDERS
+    )
+
+
+def test_the_serial_conflict_flow_only_uses_its_own_placeholders():
+    """The two flows above have had this guard since each shipped a literal
+    {removed} on screen. This one never did, and it is the card with the
+    widest blast radius: it deletes whole devices."""
+    step = EN["issues"]["serial_conflict"]["fix_flow"]["step"]["confirm"]
+    used = _placeholders(step["title"]) | _placeholders(step["description"])
+    assert (
+        used <= SERIAL_CONFLICT_FLOW_PLACEHOLDERS
+    ), f"unsupplied: {used - SERIAL_CONFLICT_FLOW_PLACEHOLDERS}"
+
+
+def test_the_serial_conflict_card_lists_what_it_will_remove():
+    """Same claim as the leftover card's, and it has to hold for devices too.
+    The count has always included blocked devices while the list was built
+    from entity rows alone, so @pathia's device-only collision asked to
+    remove one thing and printed none (#1143)."""
+    step = EN["issues"]["serial_conflict"]["fix_flow"]["step"]["confirm"]
+    assert "{removals}" in step["description"]
+    assert "{kept}" in step["description"]
+
+
+@pytest.mark.parametrize(
+    "path", sorted(p.name for p in TRANSLATIONS.glob("*.json")), ids=lambda n: n
+)
+def test_no_string_contains_an_escaped_newline(path):
+    """A doubled escape renders as the two characters \n on screen instead of
+    a paragraph break. json.loads cannot see it, black cannot see it, and
+    hassfest cannot see it: the file is valid JSON either way. A scripted
+    edit of en.json put ten of them into the serial conflict card, which is
+    the one that asks to delete things.
+    """
+    strings = json.loads((TRANSLATIONS / path).read_text(encoding="utf-8"))
+    bad = []
+
+    def walk(node, where):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, where + "." + key)
+        elif isinstance(node, str) and chr(92) + "n" in node:
+            bad.append((where, node.count(chr(92) + "n")))
+
+    walk(strings, "")
+    assert not bad, bad

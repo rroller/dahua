@@ -47,7 +47,11 @@ def _coordinator(**kwargs):
     state.update(kwargs)
 
     c = SimpleNamespace(
-        _supports_floodlightmode=state["floodlightmode"],
+        # The attribute is what setup assigns, and only after the coaxial probe.
+        # It deliberately disagrees with the method here, so a rule that reads
+        # the attribute fails the flood light tests below.
+        _supports_floodlightmode=False,
+        supports_floodlightmode=lambda: state["floodlightmode"],
         uses_recorder_deterrence=lambda: state["recorder"],
         supports_nvr_active_deterrence=lambda: state["nvr_deterrence"],
         supports_siren=lambda: state["siren"],
@@ -127,6 +131,17 @@ def test_a_flood_light_still_needs_the_light_platform():
     )
 
     assert coordinator.reads_coaxial_status() is False
+
+
+def test_a_flood_light_is_asked_before_setup_has_assigned_floodlightmode():
+    """Setup asks this rule before it assigns `_supports_floodlightmode`, which is
+    still at its initial False then. Reading the attribute would skip the coaxial
+    probe on every flood light, and the poll would never fetch the status its
+    lamp entity shows."""
+    coordinator = _coordinator(flood_light=True, floodlightmode=True)
+    coordinator._supports_floodlightmode = False
+
+    assert coordinator.reads_coaxial_status() is True
 
 
 # --- a platform switched off means nothing reads it --------------------------
@@ -293,4 +308,43 @@ def test_the_poll_gates_each_coaxial_fetch_on_its_own_rule():
     assert "_wanted_by" not in cgi[0], (
         "the CGI branch spells the platform rule out again instead of delegating to "
         "reads_coaxial_status, which is how the two drifted apart before: %s" % cgi[0]
+    )
+
+
+def test_setup_probes_the_coaxial_status_on_the_same_rule_as_the_poll():
+    """The poll was narrowed to `reads_coaxial_status`, setup was not. On a recorder
+    without the deterrence opt-in, `_wanted_by(LIGHT, SWITCH)` is still True because
+    of the infrared light and the motion switches, so setup went on asking for a
+    status nothing reads. Measured on an NVR whose channels never answer
+    `coaxialControlIO.cgi`: a 20 second timeout and a warning on every setup.
+    """
+    import ast
+
+    from .integration_source import definition
+
+    update = definition("_async_update_data")
+
+    # The setup block is itself inside `if not self.initialized`, so the gate wanted
+    # is the `If` whose own body is the call, not one that merely contains it.
+    gates = [
+        ast.unparse(node.test)
+        for node in ast.walk(update)
+        if isinstance(node, ast.If)
+        and any(
+            ast.unparse(stmt) == "await self._async_probe_coaxial_control()"
+            for stmt in node.body
+        )
+    ]
+
+    assert len(gates) == 1, "expected one gated setup probe: %s" % gates
+    assert "reads_coaxial_status" in gates[0], (
+        "setup probes for a status the poll will never read: %s" % gates[0]
+    )
+    assert "uses_rpc2_deterrence" in gates[0], (
+        "setup probes over CGI on a channel that drives deterrence over RPC2: %s"
+        % gates[0]
+    )
+    assert "_wanted_by" not in gates[0], (
+        "setup spells the platform rule out again instead of delegating to "
+        "reads_coaxial_status: %s" % gates[0]
     )

@@ -7,7 +7,7 @@ light, select and switch were. number, sensor and update join them here.
 
 | capability | what a lost answer costs |
 | --- | --- |
-| `video_color` | four sliders, one per field the channel reports |
+| `video_color` | one entity per field the channel reports |
 | `profile_mode` | the profile sensor, and the poll stops reading VideoInMode |
 | `cloud_upgrade` | the firmware update entity |
 

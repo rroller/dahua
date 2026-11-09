@@ -66,6 +66,24 @@ jobs:
             --durations=10 \
             -n auto \
             --cov custom_components.dahua \
+            --cov-report=term \
+            --cov-report=lcov \
             -o console_output_style=count \
             -p no:sugar \
             tests
+      - name: Report coverage to Coveralls
+        # On a push to main, and only in this repository. Every pull request
+        # here comes from a fork, where the workflow token is read only and
+        # the upload cannot succeed, so running this on pull requests would
+        # fail on contributions rather than report anything. The README badge
+        # reads main. The repository guard keeps a fork that pushes its own
+        # main from reporting itself to Coveralls under its own name.
+        #
+        # A failed upload must not read as a failed test suite: the badge
+        # simply stays at its last value, which is visible on its own.
+        if: github.repository == 'rroller/dahua'
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          file: coverage.lcov
+          fail-on-error: false

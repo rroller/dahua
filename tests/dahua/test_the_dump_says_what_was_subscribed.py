@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 import custom_components.dahua as dahua
-from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua import DahuaDataUpdateCoordinator, DahuaHostEventStream
 from custom_components.dahua.diagnostics import _events_block, _stream_block
 
 ADDRESS = "10.0.0.94"
@@ -41,7 +41,14 @@ class _Task:
 
 
 def _stream(**kwargs):
-    """A stand-in for DahuaHostEventStream, with its real attribute names."""
+    """A real stream with only the attributes the dump reads set on it.
+
+    The real class and not a SimpleNamespace, because `subscribed_as` now asks
+    the stream to build the request rather than re-deriving it here (#1121). A
+    namespace would answer every question with the stand-in's own idea of the
+    answer, which is the thing that cannot be allowed to drift: the field
+    exists to be reconciled against a packet capture.
+    """
     defaults = {
         "_task": _Task(),
         "_events": UNION,
@@ -53,7 +60,10 @@ def _stream(**kwargs):
         "_by_channel": {},
     }
     defaults.update(kwargs)
-    return SimpleNamespace(**defaults)
+    stream = object.__new__(DahuaHostEventStream)
+    for name, value in defaults.items():
+        setattr(stream, name, value)
+    return stream
 
 
 def _reader(address=ADDRESS, **kwargs):
@@ -139,6 +149,48 @@ def test_a_stream_that_never_set_the_flag_reads_as_explicit():
         "CrossRegionDetection",
         "VideoMotion",
     ]
+
+
+def test_a_derived_selection_reports_the_codes_the_device_was_asked_for():
+    """#1121. `DoorbellPressed` is a name no device sends, so selecting it asks
+    for the three raw codes it is translated from as well. Reporting the
+    selection here would name a four code request as one code, which is the
+    same defect this field was created to remove, one layer along."""
+    dahua._HOST_STREAMS[ADDRESS] = _stream(_events=frozenset({"DoorbellPressed"}))
+
+    block = _stream_block(_reader())
+
+    assert block["subscribed_as"] == [
+        "BackKeyLight",
+        "DoorbellPressed",
+        "PhoneCallDetect",
+        "_DoTalkAction_",
+    ]
+
+
+def test_the_selection_is_still_the_selection_when_the_request_was_widened():
+    """Both fields, for the same reason as the `[All]` pair above: the widening
+    happens on the wire and nowhere else, so a code in `subscribed_as` that is
+    absent from `attached_events` is a source being carried, not a selection
+    somebody made. Without this the two fields could be swapped and nothing
+    would notice."""
+    dahua._HOST_STREAMS[ADDRESS] = _stream(_events=frozenset({"DoorbellPressed"}))
+
+    block = _stream_block(_reader())
+
+    assert block["attached_events"] == ["DoorbellPressed"]
+    assert "_DoTalkAction_" in block["subscribed_as"]
+
+
+def test_a_stream_with_no_selection_at_all_does_not_break_the_dump():
+    """`_wire_codes` reads the selection, and the dump reaches it on a stream
+    that may never have been given one. Empty, not a raise: diagnostics is what
+    somebody collects when the integration is already failing."""
+    bare = _stream()
+    del bare._events
+    dahua._HOST_STREAMS[ADDRESS] = bare
+
+    assert _stream_block(_reader())["subscribed_as"] == []
 
 
 # --- an event that arrived and moved nothing --------------------------------

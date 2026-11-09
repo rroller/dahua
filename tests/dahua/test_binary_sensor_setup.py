@@ -314,18 +314,39 @@ async def test_a_camera_gets_none_of_the_doorbell_sensors(setup):
     assert _names(setup.built) == ["VideoMotion"]
 
 
-async def test_a_doorbell_event_already_selected_is_built_twice(setup):
-    """A doorbell whose event list already contains DoorbellPressed has it appended
-    again, because the four are added without checking. Both carry the same unique id,
-    which is derived from the event name, so only one entity can result.
-
-    Pinned as the current behaviour rather than as a bug to fix: what Home Assistant
-    does with two entities sharing a unique id is its business, and changing the
-    construction is a judgement about somebody's existing entities.
+async def test_a_doorbell_event_already_selected_is_built_once(setup):
+    """It used to be built twice, and this test pinned that as current behaviour
+    on the grounds that nobody could reach it: `DoorbellPressed` was not in
+    ALL_EVENTS, so no event list could contain it. #1121 made it selectable, so
+    the unreachable case became a tick box, and two entities sharing a unique id
+    means Home Assistant drops one with a log line most people never read.
     """
     await setup(_Coordinator(events=["DoorbellPressed"], doorbell=True))
 
-    assert _names(setup.built).count("DoorbellPressed") == 2
+    assert _names(setup.built).count("DoorbellPressed") == 1
+
+
+async def test_a_doorbell_that_selected_nothing_still_gets_the_four(setup):
+    """The guard must not take the sensors away from the people who have them.
+    A doorbell gets them without asking, which is the whole point of the block.
+    """
+    await setup(_Coordinator(events=[], doorbell=True))
+
+    assert sorted(_names(setup.built)) == [
+        "CallNoAnswered",
+        "DoorStatus",
+        "DoorbellPressed",
+        "Invite",
+    ]
+
+
+async def test_a_device_that_is_not_a_doorbell_gets_the_press_it_selected(setup):
+    """@DrSpaldo's DHI-ASI7214S: an access controller with a call button, which
+    `is_doorbell()` is false for. Selecting the event is how it gets the sensor,
+    and it gets only that one rather than the other three a VTO reports."""
+    await setup(_Coordinator(events=["DoorbellPressed"], doorbell=False))
+
+    assert _names(setup.built) == ["DoorbellPressed"]
 
 
 # --- the loop over an entry's channels ----------------------------------------

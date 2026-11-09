@@ -68,6 +68,7 @@ CAPABILITY_FLAGS = (
     "_supports_day_night_color",
     "_supports_disarming_linkage",
     "_supports_event_notifications",
+    "_supports_exposure_anti_flicker",
     "_supports_lighting_v2",
     "_supports_privacy_mode",
     "_supports_profile_mode",

@@ -1,10 +1,10 @@
 """What setup asks a device, and what it concludes when the device refuses.
 
-The one-time initialisation asks a camera thirteen separate questions about what it can
-do, each in its own handler, each turning one capability on or off. That block is the
-largest single piece of the integration and almost none of it was executed.
+The one-time initialisation asks a camera separate questions about what it can
+do, each in its own handler, each turning one capability on or off. That block
+is the largest single piece of the integration.
 
-The property that matters is the same for all thirteen: **a refusal is an answer, not a
+The property that matters is the same for all: **a refusal is an answer, not a
 failure.** A camera without a siren, without PTZ, without an illuminator is a perfectly
 good camera, and a probe that took setup down with it would make one missing feature into
 no integration at all. #854 was exactly that, reported by three people: an RPC2 refusal of
@@ -21,9 +21,10 @@ AST rather than by reading it, so nothing it asks for is missing from the fake b
 oversight.
 """
 
-import pytest
-from aiohttp import ClientConnectionError, ClientResponseError
 from types import SimpleNamespace
+
+import pytest
+from aiohttp import ClientResponseError
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.client import DahuaClient
@@ -37,7 +38,8 @@ PROBES = [
     ("async_get_event_notifications", "_supports_event_notifications", None),
     ("async_get_ptz_position", "_supports_ptz_position", None),
     ("async_get_smart_motion_detection", "_supports_smart_motion_detection", None),
-    ("async_get_video_in_options", "_supports_day_night_color", None),
+    ("async_probe_video_in_options", "_supports_day_night_color", None),
+    ("async_get_video_widget", "_video_widget_fields", None),
     ("async_get_lighting_v2", "_supports_lighting_v2", None),
     # Gated on a model name whitelist, which is the bug class #570, #676 and
     # #690 were all instances of. Named here so the probe actually runs.
@@ -60,18 +62,29 @@ PROBES = [
     # inherits the three properties this file is about, which is exactly what it
     # did not have.
     ("async_get_video_color", "_video_color_fields", None),
+    ("async_probe_video_in_options", "_image_option_fields", None),
     # The device's own processor and memory. Both are RPC2 only with no CGI
     # form, so a device with RPC2 switched off refuses them in a way none of the
     # others do -- with a RuntimeError, not a ClientResponseError -- which is
     # why that handler is broader than PROBE_FAILED. Listed here for the three
     # properties this file is about.
     ("async_get_system_load", "_supports_system_load", None),
+    ("async_get_video_in_mode", "_supports_exposure_anti_flicker", None),
+    (
+        "async_get_exposure_anti_flicker_config",
+        "_supports_exposure_anti_flicker",
+        None,
+    ),
 ]
 
 # The probes whose capability is a set of field names rather than a bool, so
-# "off" for them is an empty set. Only the picture adjustments: a device can
-# serve three of the four, and a single yes could not say which.
-PROBE_SETS = {"_video_color_fields"}
+# "off" for them is an empty set. Only the picture controls: a device can
+# serve any subset, and a single yes could not say which.
+PROBE_SETS = {
+    "_video_color_fields",
+    "_image_option_fields",
+    "_video_widget_fields",
+}
 
 
 # What setup asks the coordinator about itself. Off, so the fan-out afterwards is
@@ -102,6 +115,9 @@ FLAGS = (
     "_supports_smart_motion_detection",
     "_supports_system_load",
     "_video_color_fields",
+    "_image_option_fields",
+    "_video_widget_fields",
+    "_supports_exposure_anti_flicker",
 )
 
 
@@ -140,12 +156,18 @@ class _Client:
     SHAPED = {
         "get_max_extra_streams": 1,
         "get_software_version": {"version": "1.0"},
+        "async_get_video_in_mode": {
+            "table.VideoInMode[0].Config[0]": "0",
+        },
+        "async_get_exposure_anti_flicker_config": {
+            "table.VideoInExposure[0][0].AntiFlicker": "0",
+        },
     }
 
     def __init__(self, refusing=None, model="IPC-HFW1234"):
         self._refusing = refusing
         self.asked = []
-        self.SHAPED = dict(self.SHAPED, **{"get_device_type": {"type": model}})
+        self.SHAPED = dict(self.SHAPED, get_device_type={"type": model})
 
     def __getattr__(self, name):
         if name.startswith("_"):
@@ -200,6 +222,9 @@ def _coordinator(hass, refusing=None, model="IPC-HFW1234"):
     # passes because nothing happened. The coaxial one is gated this way and was
     # doing exactly that until a test asserted it had been asked.
     c._wanted_by = lambda *a, **k: True
+    # The coaxial probe is gated on this too, and the model above has no siren,
+    # security light or flood light that would make it True on its own.
+    c.reads_coaxial_status = lambda: True
     c.channel_option = lambda key, default=None: default
     c.get_coaxial_status_channel = lambda: 0
     c.get_rpc2_coaxial_status_channel = lambda: 1
@@ -235,7 +260,7 @@ async def test_setup_finishes(hass):
 
 async def test_setup_only_runs_its_probes_once(hass):
     """`initialized` is what stops the whole block running on every poll. Asking a
-    camera thirteen capability questions every thirty seconds is most of a poll
+    camera every capability question every thirty seconds is most of a poll
     budget spent on answers that do not change."""
     coordinator = _coordinator(hass)
     await coordinator._async_update_data()
@@ -381,3 +406,19 @@ async def test_a_refused_probe_leaves_the_others_alone(hass, method, flag, model
 
     got = {name: getattr(refusing, name) for name in FLAGS if name != flag}
     assert got == expected, "refusing %s also changed another capability" % method
+
+
+async def test_a_coaxial_status_nothing_reads_is_not_asked_at_setup(hass):
+    """A recorder without the deterrence opt-in has no entity that reads this
+    status, and the poll never fetches it. Asking anyway cost a full timeout per
+    setup on an NVR whose channels never answer `coaxialControlIO.cgi`.
+    `test_every_probe_is_actually_asked` is the other half: with the rule True,
+    the same fake is asked."""
+    coordinator = _coordinator(hass)
+    coordinator.reads_coaxial_status = lambda: False
+
+    await coordinator._async_update_data()
+
+    assert coordinator.initialized is True
+    assert "async_get_coaxial_control_io_status" not in coordinator.client.asked
+    assert coordinator._supports_coaxial_control is False

@@ -29,8 +29,17 @@
             "day_night_mode": {
                 "default": "mdi:theme-light-dark"
             },
+            "exposure_anti_flicker": {
+                "default": "mdi:flash"
+            },
             "lighting_scheme": {
                 "default": "mdi:lightbulb-auto"
+            },
+            "image_wide_dynamic_range": {
+                "default": "mdi:contrast-box"
+            },
+            "image_exposure_mode": {
+                "default": "mdi:camera-iris"
             }
         },
         "sensor": {
@@ -47,7 +56,18 @@
                 "default": "mdi:theme-light-dark"
             }
         },
+        "number": {
+            "microphone_volume": {
+                "default": "mdi:microphone"
+            },
+            "speaker_volume": {
+                "default": "mdi:volume-high"
+            }
+        },
         "switch": {
+            "noise_filter": {
+                "default": "mdi:filter"
+            },
             "encode_audio": {
                 "default": "mdi:volume-high"
             },
@@ -74,6 +94,15 @@
             },
             "privacy_mode": {
                 "default": "mdi:shield-lock"
+            },
+            "timestamp_overlay": {
+                "default": "mdi:clock-outline"
+            },
+            "channel_title_overlay": {
+                "default": "mdi:format-title"
+            },
+            "custom_title_overlay": {
+                "default": "mdi:text-box-outline"
             },
             "siren": {
                 "default": "mdi:bullhorn"

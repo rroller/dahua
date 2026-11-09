@@ -277,9 +277,9 @@ get_overlay_text:
   fields:
     group:
       name: Group
-      description: "Which overlay group to read. The default 0 matches the services that set them."
-      example: 0
-      default: 0
+      description: "Which overlay group to read. The default 1 matches the setting services and the Custom Title Overlay switch."
+      example: 1
+      default: 1
       selector:
         number:
           mode: box
@@ -601,6 +601,18 @@ vto_call:
       selector:
         text:
 
+autofocus:
+  name: Autofocus
+  description: >-
+    Asks a camera with a motorized lens to focus itself, so the focus does not
+    have to be set by number. Carries no channel, the same scope as Set the
+    Dahua Focus and Zoom has, and untested against a recorder. A camera with a
+    fixed lens is expected to refuse it.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+
 set_focus_zoom:
   name: Set the Dahua Focus and Zoom
   description: Sets the camera's focus and zoom
@@ -748,3 +760,65 @@ set_privacy_mode:
       default: true
       selector:
         boolean:
+
+set_time:
+  name: Set Device Clock
+  description: >-
+    Sets the device's own clock. Leave the time empty to use Home Assistant's
+    current local time, which is the usual case for a camera with no internet
+    access. This sets the whole device: on a recorder it moves the recorder's
+    clock and every channel with it.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    time:
+      name: Time
+      description: >-
+        The local time to set. Leave empty for Home Assistant's current time.
+      example: "2026-10-25 23:37:56"
+      selector:
+        datetime:
+
+set_ntp_server:
+  name: Set NTP Server
+  description: >-
+    Points the device's clock at an NTP server and enables NTP. A device
+    that has never had one is given the setting rather than refused, which is
+    how a doorbell gets NTP at all. Refused, and said so, where the device
+    will not take it: use Set Device Clock on those. This sets the whole
+    device, not one channel.
+  target:
+    entity:
+      integration: dahua
+      domain: camera
+  fields:
+    address:
+      name: Address
+      description: The NTP server's host name or IP address
+      required: true
+      example: "192.168.0.10"
+      selector:
+        text:
+    port:
+      name: Port
+      description: The NTP server's port
+      example: 123
+      default: 123
+      selector:
+        number:
+          min: 1
+          max: 65535
+          mode: box
+    update_period:
+      name: Update period
+      description: >-
+        How often the device syncs, in minutes. Left empty, the device keeps
+        whatever it already had.
+      example: 60
+      selector:
+        number:
+          min: 1
+          max: 65535
+          mode: box

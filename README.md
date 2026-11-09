@@ -1,4 +1,10 @@
 # Home Assistant Dahua Integration
+
+[![GitHub Release](https://img.shields.io/github/v/release/rroller/dahua)](https://github.com/rroller/dahua/releases)
+[![Downloads](https://img.shields.io/github/downloads/rroller/dahua/total.svg)](https://github.com/rroller/dahua/releases)
+[![Coverage Status](https://coveralls.io/repos/github/rroller/dahua/badge.svg?branch=main)](https://coveralls.io/github/rroller/dahua?branch=main)
+[![Active installs](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fanalytics.home-assistant.io%2Fcustom_integrations.json&query=%24.dahua.total&label=active%20installs&color=41BDF5&logo=home-assistant&logoColor=white)](https://analytics.home-assistant.io/custom_integrations.json)
+
 The `Dahua` [Home Assistant](https://www.home-assistant.io) integration allows you to integrate your [Dahua](https://www.dahuasecurity.com/) cameras, doorbells, NVRs, DVRs in Home Assistant. It's also confirmed to work with some Lorex cameras and Amcrest devices.
 
 Supports motion events, alarm events (and others), enabling/disabling motion detection, switches for infrared, illuminator (white light), security lights (red/blue flashers), sirens, doorbell button press events, and more.
@@ -497,11 +503,22 @@ What it gets:
 A monitor that reports it has no camera of its own (`SupportVideo` false in its
 `RemoteDevice` table, as on the VTH2421F-P) gets no camera entities, no camera event
 sensors, no event stream, no motion detection switch, no Day/Night select, no Preset
-Position, and no License Plate or Authorized Vehicle entities.
+Position, and no License Plate or Authorized Vehicle entities. If the monitor has no
+local row in `RemoteDevice`, an explicit refusal of `VideoInput` also identifies it as
+having no camera. This removes the same nonworking camera-related entities on affected
+monitors; existing registry rows can remain unavailable. Session failures leave the
+capability undecided rather than removing entities.
 
-For monitors added over DHIP, the serial number is read from the monitor itself.
-Existing monitors that serve HTTP keep their current identity, generated from the
-address and login. That generated identity can change when the credentials change.
+The serial number is read from the monitor itself on both HTTP and DHIP.
+Existing HTTP monitors move from the ID generated from their credentials to their real
+serial. **Take a Home Assistant backup before upgrading.** Entity and device registry
+rows are updated in place: entity IDs, dashboards and automations keep their references.
+Copies of all three persisted registries are also made in a private directory named
+`dahua-pre-serial-backup-…` under the Home Assistant configuration directory; the log
+records its location. If a backup cannot be made or an identity conflicts with another
+registry row, setup retries without loading platforms. Resolve the logged conflict or
+backup error rather than removing the existing entities. Once adopted, an unavailable
+serial read causes a retry rather than another generated identity.
 
 To ring a monitor, use [`dahua.vto_call`](#services) on the VTO, not on the monitor.
 
@@ -575,6 +592,41 @@ What this integration cannot do, as distinct from the bugs and firmware quirks u
   NVR passes a siren or white light command through to the camera behind it varies by
   model, and on some it accepts the command and does nothing at all. That is why those
   entities are off by default rather than created automatically.
+- <a name="playing-a-clip-is-silent-on-some-firmware"></a>**`dahua.play_audio` is silent on some firmware, and the audio format is not always
+  the reason.** It posts the clip to `audio.cgi?action=postAudio`, which answers
+  nothing at all -- no status line, no body -- so a device that played the clip and one
+  that threw it away look identical from Home Assistant. Two devices, measured:
+
+  | Device | Firmware | Result |
+  |---|---|---|
+  | VTO2000A | `3.120.0000.0.R` | Plays G.711 A-law and little-endian PCM at 8 kHz, judged by ear |
+  | DHI-VTO2211G-WP-S2 | `4.810.0000000.3.R` | Takes the whole body, plays nothing |
+
+  On the VTO2211G-WP-S2 that was nine pushes over `httptype=multipart` covering
+  A-law, mu-law and 16-bit PCM, with a person standing at the door for each one. Every
+  push was accepted in full and none made a sound, and the device was healthy
+  afterwards. So on that firmware the path itself is dead and a different
+  `audio_format` will not help. Reported by @mcsdodo on
+  [#177](https://github.com/rroller/dahua/issues/177).
+
+- **Where `dahua.play_audio` is silent, the go2rtc RTSP backchannel may still work.**
+  This is not something the integration does, and it is recorded here because it is
+  the route that has been measured working where the service is not. The same
+  DHI-VTO2211G-WP-S2 offers a talk-back track in its RTSP description:
+
+  ```text
+  m=audio 0 RTP/AVP 8
+  a=control:trackID=5
+  a=rtpmap:8 PCMA/8000
+  a=sendonly
+  ```
+
+  and a clip pushed into a go2rtc stream whose source ends in `#backchannel=1` was
+  heard at the door, twice, without interrupting anyone watching the camera. That was
+  go2rtc 1.9.14 driven through its own API, not through Home Assistant, and whether
+  the copy of go2rtc inside Home Assistant can be used the same way has not been
+  tried. Note the rate: these speakers want **PCMA at 8 kHz**, and a device that is
+  sent 16 kHz plays noise or nothing.
 - **A large configuration write can be refused on a recorder.** RPC2 answers
   `Request length error!` to a big `setConfig`, and a recorder's IVS rule table can be
   large enough to hit that, so an IVS rule switch may fail to toggle. Measured on one
@@ -687,7 +739,8 @@ Here's example event data:
             ],
             "SmartMotionEnable": false
         },
-        "DeviceName": "Cam13"
+        "DeviceName": "Cam13",
+        "device_id": "9b1f0e2c4a7d8e3f5061728394a5b6c7"
     },
     "origin": "LOCAL",
     "time_fired": "2021-06-30T04:00:28.605290+00:00",
@@ -708,6 +761,39 @@ event_data:
   Code: VideoMotion
   action: Start
 ```
+
+## Telling two devices apart
+
+`device_id` is the Home Assistant device the event came from, and it is the one
+field here that cannot change underneath an automation. Everything else is
+either the device's own wording or a name you chose: rename a device and
+`name`/`DeviceName` change with it, and a channel of a recorder reports the
+channel's device rather than the recorder's.
+
+Use it when you have more than one of something and the bus has to tell them
+apart, which is the case a doorbell or an access controller runs into first:
+
+```yaml
+platform: event
+event_type: dahua_event_received
+event_data:
+  Code: _DoTalkAction_
+  device_id: 9b1f0e2c4a7d8e3f5061728394a5b6c7
+```
+
+To find a device's id, open the device page and copy it out of the URL, or in
+**Developer tools -> Template** render
+`{{ device_id('binary_sensor.your_doorbell_button_pressed') }}`.
+
+Two things worth knowing before you build on it:
+
+- **It is absent, not empty, until the device exists.** A device is registered
+  when its first entity is added, so a very early event carries no `device_id`
+  at all rather than a null.
+- **An entity is usually the better trigger.** `binary_sensor.<device>_button_pressed`
+  and `event.<device>_doorbell` are already one per device, so they do not have
+  this problem to solve, and the event entity also collapses a doorbell that
+  reports one press as two states into a single ring.
 
 And that's it! You can enable debug logging (See at the end of this readme) to print out events to the Home Assisant log
 as they fire. That can help you understand the events. Or you can HA and open Developer Tools -> Events -> and under
@@ -868,6 +954,7 @@ Service | Parameters | Description
 `dahua.set_infrared_mode` | `target`: camera.cam13_main <br /> `mode`: Auto, On, Off <br /> `brightness`: 0 - 100 inclusive| Sets the infrared mode. Useful to set the mode back to Auto
 `dahua.goto_preset_position` | `target`: camera.cam13_main <br /> `position`: 1 - 10 inclusive| Go to a preset position
 `dahua.set_video_profile_mode` | `target`: camera.cam13_main <br /> `mode`: Day, Night| Sets the video profile mode to day or night
+`dahua.autofocus` | `target`: camera.cam13_main | Asks a camera with a motorized lens to focus itself, so the focus does not have to be set by number. Carries no channel, the same scope as `dahua.set_focus_zoom` has, and untested against a recorder. A camera with a fixed lens is expected to refuse it.
 `dahua.set_focus_zoom` | `target`: camera.cam13_main <br /> `focus`: The focus level, e.g.: 0.81 0 - 1 inclusive <br /> `zoom`: The zoom level, e.g.: 0.72 0 - 1 inclusive | Sets the focus and zoom level
 `dahua.set_channel_title` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `text1`: The text 1<br /> `text2`: The text 2| Sets the channel title
 `dahua.set_text_overlay` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `group`: The group, used to apply multiple of text as an overly, e.g.: 1 <br /> `text1`: The text 1<br /> `text3`: The text 3 <br /> `text4`: The text 4 <br /> `text2`: The text 2 | Sets the custom text overlay on the video. Pass as many lines as the camera accepts; the old four-line limit is gone. Some cameras label this overlay "Location title" rather than "Custom title" in their own web interface
@@ -882,7 +969,7 @@ Service | Parameters | Description
 `dahua.enable_ivs_rule` | `target`: camera.cam13_main <br /> `channel`: The camera channel, e.g.: 0 <br /> `index`: The rule index <br /> enabled`: True to enable the IVS rule, False to disable the IVS rule | Enable or disable an IVS rule
 `dahua.vto_open_door` | `target`: camera.cam13_main <br /> `door_id`: The door ID to open, e.g.: 1 <br /> Opens a door via a VTO
 `dahua.vto_cancel_call` | `target`: camera.cam13_main <br />Cancels a call on a VTO device (Doorbell)
-`dahua.play_audio` | `target`: camera.front_door_main <br /> `media_content_id`: the clip, as a media source, a TTS result, a URL or a file path <br /> `audio_format`: `g711a_8000` (default), `g711u_8000`, `pcm_8000` | Plays a clip through the device's own speaker, for a doorbell announcement or a camera deterrent message. The clip is converted with ffmpeg, so anything it can open works. A VTO2000A has been verified with G.711 A-law and little-endian PCM at 8 kHz. Other devices may need a different supported format; please report results on [#177](https://github.com/rroller/dahua/issues/177)
+`dahua.play_audio` | `target`: camera.front_door_main <br /> `media_content_id`: the clip, as a media source, a TTS result, a URL or a file path <br /> `audio_format`: `g711a_8000` (default), `g711u_8000`, `pcm_8000` | Plays a clip through the device's own speaker, for a doorbell announcement or a camera deterrent message. The clip is converted with ffmpeg, so anything it can open works. A VTO2000A has been verified with G.711 A-law and little-endian PCM at 8 kHz. It does not work on every device, and trying another format is not always the remedy: see [Playing a clip is silent on some firmware](#playing-a-clip-is-silent-on-some-firmware)
 `dahua.vto_call` | `target`: camera.cam13_main <br /> `room`: The room to ring, e.g.: 9901 | Rings an indoor monitor (VTH) from a VTO, as its call button does. `9901#0` is dialled as `9901`, which rings the main monitor and its extensions. Measured on a DHI-VTO2211G-WP-S2
 `dahua.set_video_in_day_night_mode` | `target`: camera.cam13_main <br /> `config_type`: The config type: general, day, night <br /> `mode`: The mode: Auto, Color, BlackWhite. Note Auto is also known as Brightness by Dahua|Set the camera's Day/Night Mode. For example, Color, BlackWhite, or Auto
 `dahua.reboot` | `target`: camera.cam13_main <br />Reboots the device
@@ -901,6 +988,10 @@ This will provide a normal HA camera entity (can take snapshots, etc)
 Recordings on the device's own storage (an SD card, or the NVR's disks) are browsable
 from **Media** in the sidebar, under **Dahua**. Pick a camera, then a day, then a clip,
 and it plays in the dashboard the same way a live view does.
+
+RPC2 login accepts both numeric and string session IDs returned by the device;
+neither requires a different account or authentication setting. Responses with a
+leading UTF-8 byte-order marker are also accepted.
 
 Playback uses the device's RTSP `cam/playback` stream, which Home Assistant's `stream`
 integration turns into HLS, so nothing is downloaded to the Home Assistant host.
@@ -927,6 +1018,9 @@ Alarm Output | A physical alarm or relay output on the device, switched directly
 Privacy Mode | Covers the lens on cameras with a motorised cover. See `dahua.set_privacy_mode`
 Audio | For each encoder format reported by the device, enables or disables audio. The state is polled with the other configuration entities, so changes made in the Dahua UI appear in Home Assistant and can trigger automations
 Disarming Linkage | Newer firmwares introduce a "disarming" feature, accessible from the camera web UI under Event → One-click disarm / Disarming. When enabled, the disarm toggle suppresses the linkage actions configured in the Disarming section specifically, while leaving all other alarm linkage actions untouched. Detection remains fully active throughout. This allows one to turn it on/off.
+Timestamp Overlay | Shows or hides the timestamp burned into the video. This is the same field as `dahua.enable_time_overlay`, exposed as a switch so the state can be read as well as set
+Channel Title Overlay | Shows or hides the channel title overlay. The same field as `dahua.enable_channel_title`, with its state read back from the camera
+Custom Title Overlay | Shows or hides the custom text overlay (group 1, which `set_text_overlay` and `get_overlay_text` now default to). The text itself is still set with `dahua.set_text_overlay`
 
 ## Lights
 Light |  Description |
@@ -941,6 +1035,7 @@ Sensor |  Description |
 Motion | A sensor that turns on when the camera detects motion
 Button Pressed | A sensor that turns on when a doorbell button is pressed
 Authorized Vehicle | Turns on when the camera's ANPR recognises a plate you have listed as authorized, and stays on for the hold time you set. Attributes carry the plate that matched and what the camera reported about the vehicle. Created on every camera and every channel of a recorder, so it existing does not mean that camera can read plates: it stays off unless the camera reports one and it is on your list
+Call No Answered | Turns on when a call starts ringing, on a doorbell or door station. Despite the name the device sends it when the call begins rather than when it goes unanswered, so it fires on answered and rejected calls too. On a station with more than one call button its attributes say which one rang: `call_button_index` is the number the device sends and `call_button` is the button, 1 or 2. `call_button` is absent on an index that has not been measured, so if your station has three or more buttons you will see the raw index and no button number — please [open an issue](https://github.com/rroller/dahua/issues) with the values, since two buttons on one model is all anyone has reported. `call_id` is the SIP call slot, which is what pairs this event with the `Invite` that follows it. The Doorbell event entity still reports an identical `ring` for every button, because the press event itself does not carry the identity
 Alarm-in Port&lt;n&gt; | One per physical alarm input terminal on a recorder's back panel, on the recorder's own device rather than on a camera. Named by the recorder, so a terminal you renamed keeps that name. The attributes carry both numbers: `alarm_input_number` is the one printed on the chassis and `alarm_input_index` is the zero-based one the device sends, which is one lower. Only created on a recorder that reports the terminals. On such a recorder the per-channel Alarm Local sensors are not created, because the only thing that ever fed them was the terminal number being read as a camera channel
 Others | A binary senor is created for evey event type selected when setting up the camera (Such as cross line, and face detection)
 
@@ -961,6 +1056,8 @@ Select |  Description |
 Security Light | On a doorbell, sets the light to off, on, or strobe. A doorbell's light has three states rather than two, which is why it is a select and not a switch
 Preset Position | Moves a PTZ camera to one of its stored preset positions, and reports the one it is at. Only created on cameras that report presets
 Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dahua also calls Brightness). Readable as well as settable, which is what makes it possible to notice a camera that changed mode by itself, such as one reverting to Auto after a power cut and then rendering black and white at night
+Image Wide Dynamic Range | Off, On or mode 2. The camera ignores mode 0 on its own while the level is still 50, so choosing Off clears both; choosing On or mode 2 keeps the camera's level or restores 50. Mode 2 is named rather than called Auto because the vendor's name for it has not been confirmed
+Image Exposure Mode | Auto, Gain Priority or Shutter Priority. Manual exposure is deliberately not offered: it needs shutter and gain values this integration does not expose
 Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
 Audio Source | Selects the source reported by each encoder format (Coaxial or BNC). Only shown when the device exposes that setting
 
@@ -969,6 +1066,21 @@ field. This makes audio changes visible to Home Assistant automations after the
 normal configuration cache expires (up to five minutes), while preserving the
 recorder's other encoding settings. Changes made through these entities clear
 that cache immediately.
+
+## Picture sliders
+
+**Image brightness**, **contrast**, **saturation**, **hue**, **gamma** and **chroma
+suppression** appear on channels that report the corresponding `VideoColor` fields.
+Each is a 0–100 slider that writes the channel's general picture profile and reads the
+value the camera reports back.
+
+## Motion region sliders
+
+**Motion region 1 sensitivity** and **Motion region 1 threshold** appear on channels
+that report the corresponding `MotionDetectWindow[0]` fields. Each is a 0–100 slider
+for Region 1, as shown in the recorder's interface, and writes only that channel's
+selected field. Devices with only the whole-channel `Level` setting do not get these
+sliders; its valid range has not been established.
 
 ## Event entities
 
@@ -1177,6 +1289,7 @@ Name | the channel's name | What this channel is called
 Area | unset | Moves this channel into an area. A channel does not inherit the recorder's area, so channels can be filed by room
 Events to subscribe to | motion and the common smart-detection events | Which of the device's events become binary sensors. Most of the rest do nothing on most cameras, and each one selected adds an entity. An empty selection is honoured, which turns the event connection off for this channel. If you want an event that is not listed, open an issue
 Auto-detect channel index | on | Some firmwares number channels from 0 and others from 1. Turn this off if the detection gets it wrong on your camera
+Number stills from zero | off | For a device that numbers its stills from 0 while its streams are numbered from 1, so every camera's picture is one channel out while its live view is right. **Check it in a browser before ticking this**, against two cameras you can tell apart: open `http://<device>/cgi-bin/snapshot.cgi?channel=0` and then `channel=1`. Tick it only if 0 shows the first camera **and 1 shows the second**. Leave it off if 0 and 1 both show the first camera: that is a device where channel 0 is another name for channel 1 rather than one numbered from zero, and ticking it would move every still one camera backwards. Channel 0 answering with the first camera is true of both kinds and is not on its own a reason to tick it
 Poll ordinary motion state | off | Some recorders and XVRs keep sending smart-detection events normally while never pushing ordinary `VideoMotion`, so the motion sensors never turn on. This reads the motion state from the device instead of waiting to be told. Off by default because it is one extra request per device every two seconds, which buys nothing on a device that does push them. The integration raises a repair card suggesting this when it catches a device detecting motion it is not reporting
 Enable NVR active deterrence controls | off | Adds Warning Light and Alarm entities for a camera behind an NVR. Off by default because whether the NVR relays these commands varies by model: on some it accepts them and does nothing
 Manually enable Siren entity | off | Turn this on if the camera has a working siren and the integration did not create the Siren entity

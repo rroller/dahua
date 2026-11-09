@@ -85,8 +85,12 @@ NOTIFICATIONS = "async_get_event_notifications"
 SMART_MOTION = "async_get_smart_motion_detection"
 PRIVACY = "async_get_privacy_mode"
 DAY_NIGHT = "async_get_video_in_options"
+VIDEO_WIDGET = "async_get_video_widget"
 ALARM_OUT = "async_get_alarm_output_state"
 CLOUD_UPGRADE = "async_get_cloud_upgrade_info"
+VIDEO_IMAGE_CONTROL = "async_get_video_image_control"
+VIDEO_IN_MODE = "async_get_video_in_mode"
+GET_EXPOSURE_CONFIG = "async_get_exposure_anti_flicker_config"
 
 
 async def test_everything_is_fetched_when_every_platform_is_on():
@@ -125,13 +129,51 @@ async def test_the_day_night_read_is_skipped_without_the_select_platform():
 
 
 async def test_the_day_night_read_is_skipped_when_the_device_has_no_mode():
-    """A device that reported no DayNightColor must not be polled for one."""
+    """A device that reported no DayNightColor and no image option must not be
+    polled for a table it does not serve."""
     c = _coordinator()
     c._supports_day_night_color = False
 
     await c._async_update_data()
 
     assert DAY_NIGHT not in c.client.calls
+
+
+async def test_the_day_night_read_is_kept_for_wdr_or_exposure_alone():
+    """The same table carries WDR and ExposureMode, so a camera without
+    DayNightColor but with one of those still has a select reading it. The
+    gate used to be Day/Night only, which left those selects stale for ever."""
+    c = _coordinator()
+    c._supports_day_night_color = False
+    c._image_option_fields = frozenset({"WideDynamicRangeMode"})
+
+    await c._async_update_data()
+
+    assert DAY_NIGHT in c.client.calls
+
+
+async def test_video_widget_is_polled_only_when_a_supported_overlay_has_a_reader():
+    c = _coordinator()
+    c._video_widget_fields = frozenset({"TimeTitle.EncodeBlend"})
+    await c._async_update_data()
+    assert VIDEO_WIDGET in c.client.calls
+
+    c = _coordinator(switch=False)
+    c._video_widget_fields = frozenset({"TimeTitle.EncodeBlend"})
+    await c._async_update_data()
+    assert VIDEO_WIDGET not in c.client.calls
+
+
+async def test_video_widget_is_not_polled_for_a_monitor_without_a_camera():
+    """The probe can answer for a VTH's screen, but no switch is created there,
+    so reading the table every cycle would feed nothing."""
+    c = _coordinator()
+    c._video_widget_fields = frozenset({"TimeTitle.EncodeBlend"})
+    c.is_indoor_monitor_without_video = lambda: True
+
+    await c._async_update_data()
+
+    assert VIDEO_WIDGET not in c.client.calls
 
 
 async def test_switch_reads_are_skipped_without_the_switch_platform():
@@ -156,6 +198,62 @@ async def test_light_reads_are_skipped_without_the_light_platform():
     assert INFRARED not in calls
 
 
+async def test_image_controls_are_polled_only_when_a_supported_control_has_a_reader():
+    c = _coordinator()
+    c._video_image_control_fields = frozenset({"Mirror"})
+    await c._async_update_data()
+    assert VIDEO_IMAGE_CONTROL in c.client.calls
+
+    c = _coordinator(select=False, switch=False)
+    c._video_image_control_fields = frozenset({"Flip", "Rotate90"})
+    await c._async_update_data()
+    assert VIDEO_IMAGE_CONTROL not in c.client.calls
+
+
+async def test_exposure_anti_flicker_polls_only_for_its_select():
+    c = _coordinator()
+    c._supports_exposure_anti_flicker = True
+    await c._async_update_data()
+    assert VIDEO_IN_MODE in c.client.calls
+    assert GET_EXPOSURE_CONFIG in c.client.calls
+
+    c = _coordinator(select=False)
+    c._supports_exposure_anti_flicker = True
+    await c._async_update_data()
+    assert VIDEO_IN_MODE not in c.client.calls
+    assert GET_EXPOSURE_CONFIG not in c.client.calls
+
+
+async def test_failed_profile_read_keeps_config_ex_for_anti_flicker():
+    c = _coordinator()
+    c._supports_exposure_anti_flicker = True
+    c.data = {
+        "table.VideoInMode[0].Config[0]": "0",
+        "table.VideoInMode[0].ConfigEx": "Night",
+        "table.VideoInMode[1].ConfigEx": "Day",
+        "table.VideoInExposure[0][0].AntiFlicker": "1",
+        "table.VideoInExposure[0][1].AntiFlicker": "2",
+    }
+
+    async def failed_mode():
+        raise TimeoutError("profile read timed out")
+
+    async def exposure():
+        return {
+            key: value
+            for key, value in c.data.items()
+            if key.startswith("table.VideoInExposure[")
+        }
+
+    c.client.async_get_video_in_mode = failed_mode
+    c.client.async_get_exposure_anti_flicker_config = exposure
+    c.data = await c._async_update_data()
+
+    assert c.get_exposure_anti_flicker() == "60_hz"
+    assert c.data["table.VideoInMode[0].ConfigEx"] == "Night"
+    assert "table.VideoInMode[1].ConfigEx" not in c.data
+
+
 # --- a request with two readers survives losing one of them ------------------
 
 
@@ -166,11 +264,14 @@ async def test_coaxial_status_survives_either_reader():
     assert COAXIAL not in await _poll(light=False, switch=False)
 
 
-async def test_motion_detection_survives_either_reader():
-    """The camera entity reads this as well as the switch."""
-    assert MOTION in await _poll(switch=False), "the camera entity still needs it"
-    assert MOTION in await _poll(camera=False), "the motion switch still needs it"
-    assert MOTION not in await _poll(camera=False, switch=False)
+async def test_motion_detection_survives_any_of_its_three_readers():
+    """The camera entity and the motion switch read this, and since #1115 so do
+    the motion region sliders on `number`. Three readers, so losing any two of
+    the platforms must not stop the table being fetched for the third."""
+    assert MOTION in await _poll(switch=False, number=False), "the camera needs it"
+    assert MOTION in await _poll(camera=False, number=False), "the switch needs it"
+    assert MOTION in await _poll(camera=False, switch=False), "the sliders need it"
+    assert MOTION not in await _poll(camera=False, switch=False, number=False)
 
 
 async def test_lighting_v2_survives_losing_the_light_platform_on_a_doorbell():
@@ -258,7 +359,7 @@ async def test_a_flood_light_still_gets_the_coaxial_status():
     c.supports_siren = lambda: False
     c.supports_security_light = lambda: False
     c.is_flood_light = lambda: True
-    c._supports_floodlightmode = True
+    c.supports_floodlightmode = lambda: True
 
     await c._async_update_data()
 
@@ -271,7 +372,7 @@ async def test_a_flood_light_without_floodlightmode_is_not_asked():
     c.supports_siren = lambda: False
     c.supports_security_light = lambda: False
     c.is_flood_light = lambda: True
-    c._supports_floodlightmode = False
+    c.supports_floodlightmode = lambda: False
 
     await c._async_update_data()
 

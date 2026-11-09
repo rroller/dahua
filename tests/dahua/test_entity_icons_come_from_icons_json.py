@@ -42,12 +42,20 @@ WAS = {
     ("binary_sensor", "authorized_vehicle"): "mdi:car-check",
     ("switch", "vth_silence"): "mdi:bell-off",
     ("select", "day_night_mode"): "mdi:theme-light-dark",
+    ("select", "exposure_anti_flicker"): "mdi:flash",
     ("select", "lighting_scheme"): "mdi:lightbulb-auto",
+    # New with the two VideoInOptions picture controls ported from the
+    # Intelbras fork; there is no earlier code icon to match.
+    ("select", "image_wide_dynamic_range"): "mdi:contrast-box",
+    ("select", "image_exposure_mode"): "mdi:camera-iris",
     ("select", "encode_audio_source"): "mdi:audio-input-rca",
     ("sensor", "license_plate"): "mdi:car-back",
     ("sensor", "memory_used"): "mdi:memory",
     ("sensor", "processor_usage"): "mdi:cpu-64-bit",
     ("sensor", "profile"): "mdi:theme-light-dark",
+    ("number", "microphone_volume"): "mdi:microphone",
+    ("number", "speaker_volume"): "mdi:volume-high",
+    ("switch", "noise_filter"): "mdi:filter",
     ("switch", "alarm_output"): "mdi:alarm-light",
     ("switch", "cloud_connection"): "mdi:cloud-outline",
     ("switch", "intelli_tour"): "mdi:rotate-360",
@@ -57,6 +65,10 @@ WAS = {
     ("switch", "motion_detection"): "mdi:motion-sensor",
     ("switch", "privacy_mode"): "mdi:shield-lock",
     ("switch", "smart_motion_detection"): "mdi:motion-sensor",
+    # New with the overlay visibility switches ported from the Intelbras fork.
+    ("switch", "timestamp_overlay"): "mdi:clock-outline",
+    ("switch", "channel_title_overlay"): "mdi:format-title",
+    ("switch", "custom_title_overlay"): "mdi:text-box-outline",
     # Moved once #843 gave these three a translation key. The two pairs are one
     # entity each under either of its two keys, because the name is a capability
     # choice: the same glyph has to go under both or half the installs lose it.
@@ -177,6 +189,23 @@ def _keys_in_code():
     for platform in PLATFORMS:
         for key in _keys_passed_in(platform):
             found.setdefault((platform, key), "chosen by %s.py" % platform)
+    audio = ast.parse(io.open(PACKAGE / "audio.py", encoding="utf-8").read())
+    for node in audio.body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(target, ast.Name) and target.id == "AUDIO_CONTROLS"
+            for target in node.targets
+        ):
+            continue
+        for key, spec in zip(node.value.keys, node.value.values):
+            if (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and isinstance(spec, ast.Tuple)
+                and len(spec.elts) > 2
+                and isinstance(spec.elts[2], ast.Constant)
+                and spec.elts[2].value == "percentage"
+            ):
+                found[("number", key.value)] = "AUDIO_CONTROLS in audio.py"
     return found
 
 

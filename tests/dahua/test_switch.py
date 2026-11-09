@@ -2,16 +2,20 @@
 
 import pytest
 
-from custom_components.dahua.client import SECURITY_LIGHT_TYPE, SIREN_TYPE
 from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua.client import SECURITY_LIGHT_TYPE, SIREN_TYPE
 from custom_components.dahua.switch import (
     DahuaAlarmOutputSwitch,
+    DahuaChannelTitleOverlaySwitch,
+    DahuaCustomTitleOverlaySwitch,
     DahuaDisarmingEventNotificationsLinkageBinarySwitch,
     DahuaDisarmingLinkageBinarySwitch,
+    DahuaMirrorSwitch,
     DahuaMotionDetectionBinarySwitch,
     DahuaPrivacyModeBinarySwitch,
     DahuaSirenBinarySwitch,
     DahuaSmartMotionDetectionBinarySwitch,
+    DahuaTimestampOverlaySwitch,
 )
 
 from . import adds_entities
@@ -44,6 +48,21 @@ class _Coordinator:
     # supports_siren below, exactly as production does.
     creates_siren_entity = DahuaDataUpdateCoordinator.creates_siren_entity
 
+    # The real methods rather than copies of them. The platform asks the
+    # coordinator to write, because the table the field lives in is something
+    # only the coordinator learned, and a hand-written forwarder here would
+    # assert this file's idea of that rule instead of production's.
+    # The real coordinator carries this as a class default, so a double that
+    # borrows its methods has to carry it too.
+    _video_image_control_table = "VideoImageControl"
+    video_image_control_table = DahuaDataUpdateCoordinator.video_image_control_table
+    async_set_video_image_control = (
+        DahuaDataUpdateCoordinator.async_set_video_image_control
+    )
+    async_set_video_widget_overlay = (
+        DahuaDataUpdateCoordinator.async_set_video_widget_overlay
+    )
+
     def __init__(self, channel=4, amcrest=False):
         self.client = _Client()
         self._channel = channel
@@ -71,6 +90,21 @@ class _Coordinator:
 
     def supports_nvr_active_deterrence(self):
         return False
+
+    def supports_audio_control(self, key):
+        return False
+
+    def supports_audio_input_volume(self):
+        return False
+
+    def supports_audio_output_volume(self):
+        return False
+
+    def supports_audio_in_denoise(self):
+        return False
+
+    def audio_control_owner(self, key):
+        return None
 
     def uses_rpc2_deterrence(self, dahua_type=None):
         return False
@@ -101,6 +135,15 @@ class _Coordinator:
         Off by default: these are cameras and recorders.
         """
         return field in self.states.get("vth_phone_fields", ())
+
+    def supports_video_image_control(self, field):
+        return field in self.states.get("video_image_control_fields", ())
+
+    def supports_video_widget_overlay(self, field):
+        return field in self.states.get("video_widget_fields", ())
+
+    def is_video_widget_overlay_on(self, field):
+        return self.states.get("video_widget", {}).get(field)
 
     def supports_intelli_tour(self):
         """Whether this channel reports IntelliTour, which the tour switch writes.
@@ -171,6 +214,9 @@ class _Coordinator:
 
     def is_siren_on(self):
         return self.states.get("siren", False)
+
+    def get_video_image_control(self, field):
+        return self.states.get("video_image_control", {}).get(field)
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -624,6 +670,10 @@ async def _added_for(coordinator):
         DahuaDisarmingEventNotificationsLinkageBinarySwitch=lambda *a, **k: "notifications",
         DahuaSmartMotionDetectionBinarySwitch=lambda *a, **k: "smart",
         DahuaPrivacyModeBinarySwitch=lambda *a, **k: "privacy",
+        DahuaMirrorSwitch=lambda *a, **k: "mirror",
+        DahuaTimestampOverlaySwitch=lambda *a, **k: "timestamp",
+        DahuaChannelTitleOverlaySwitch=lambda *a, **k: "channel_title",
+        DahuaCustomTitleOverlaySwitch=lambda *a, **k: "custom_title",
         DahuaAlarmOutputSwitch=lambda *a, **k: "alarm_output",
         # The multi-relay variant is a different class, because an
         # entity that names itself cannot also translate its name.
@@ -731,6 +781,156 @@ async def test_an_indoor_monitor_without_a_camera_gets_no_motion_detection_switc
 
 async def test_a_camera_still_gets_one():
     assert "motion" in await _switches_for(_Coordinator())
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_mirror_switch_writes_one_field_and_refreshes(enabled):
+    coordinator = _Coordinator(channel=3)
+    switch = _switch(DahuaMirrorSwitch, coordinator)
+
+    await (switch.async_turn_on() if enabled else switch.async_turn_off())
+
+    assert coordinator.client.calls == [
+        ("async_set_video_image_control", 3, "Mirror", enabled, "VideoImageControl")
+    ]
+    assert coordinator.refreshed == 1
+
+
+async def test_mirror_switch_reads_the_reported_state():
+    coordinator = _Coordinator()
+    switch = _switch(DahuaMirrorSwitch, coordinator)
+    coordinator.states["video_image_control"] = {"Mirror": True}
+
+    assert switch.is_on is True
+    coordinator.states["video_image_control"]["Mirror"] = False
+    assert switch.is_on is False
+
+
+async def test_mirror_switch_is_created_only_when_the_field_is_reported():
+    unsupported = _Coordinator()
+    assert "mirror" not in await _added_for(unsupported)
+
+    supported = _Coordinator()
+    supported.states["video_image_control_fields"] = {"Mirror"}
+    assert "mirror" in await _added_for(supported)
+
+
+async def test_channel_three_mirror_is_not_created_from_row_zero_state():
+    coordinator = _Coordinator(channel=3)
+    coordinator.states["video_image_control"] = {"Mirror": True}
+
+    assert "mirror" not in await _added_for(coordinator)
+
+
+# --- overlay visibility ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "cls, field",
+    [
+        (DahuaTimestampOverlaySwitch, "TimeTitle.EncodeBlend"),
+        (DahuaChannelTitleOverlaySwitch, "ChannelTitle.EncodeBlend"),
+        (DahuaCustomTitleOverlaySwitch, "CustomTitle[1].EncodeBlend"),
+    ],
+)
+def test_an_overlay_switch_reads_the_reported_state(cls, field):
+    coordinator = _Coordinator()
+    coordinator.states["video_widget"] = {field: True}
+    switch = _switch(cls, coordinator)
+
+    assert switch.is_on is True
+
+    coordinator.states["video_widget"][field] = False
+    assert switch.is_on is False
+
+
+@pytest.mark.parametrize(
+    "cls, field",
+    [
+        (DahuaTimestampOverlaySwitch, "TimeTitle.EncodeBlend"),
+        (DahuaChannelTitleOverlaySwitch, "ChannelTitle.EncodeBlend"),
+        (DahuaCustomTitleOverlaySwitch, "CustomTitle[1].EncodeBlend"),
+    ],
+)
+async def test_an_overlay_switch_writes_its_whole_field(cls, field):
+    coordinator = _Coordinator(channel=3)
+    switch = _switch(cls, coordinator)
+
+    await switch.async_turn_on()
+    await switch.async_turn_off()
+
+    assert coordinator.client.calls == [
+        ("async_set_video_widget_overlay", 3, field, True),
+        ("async_set_video_widget_overlay", 3, field, False),
+    ]
+    assert coordinator.refreshed == 2
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [
+        DahuaTimestampOverlaySwitch,
+        DahuaChannelTitleOverlaySwitch,
+        DahuaCustomTitleOverlaySwitch,
+    ],
+)
+def test_an_overlay_switch_is_unavailable_until_the_poll_has_a_value(cls):
+    """A refused VideoWidget read must not show the overlay as hidden."""
+    coordinator = _Coordinator()
+    coordinator.states["video_widget"] = {}
+    switch = _switch(cls, coordinator)
+
+    assert switch.available is False
+
+
+async def test_only_the_overlay_fields_the_device_reported_get_switches():
+    without = _Coordinator()
+    assert "timestamp" not in await _added_for(without)
+
+    with_overlays = _Coordinator()
+    with_overlays.states["video_widget_fields"] = {
+        "TimeTitle.EncodeBlend",
+        "CustomTitle[1].EncodeBlend",
+    }
+    added = await _added_for(with_overlays)
+
+    assert "timestamp" in added
+    assert "custom_title" in added
+    assert "channel_title" not in added
+
+
+@pytest.mark.parametrize(
+    "field, present, absent",
+    [
+        (
+            "TimeTitle.EncodeBlend",
+            "timestamp",
+            ("channel_title", "custom_title"),
+        ),
+        (
+            "ChannelTitle.EncodeBlend",
+            "channel_title",
+            ("timestamp", "custom_title"),
+        ),
+        (
+            "CustomTitle[1].EncodeBlend",
+            "custom_title",
+            ("timestamp", "channel_title"),
+        ),
+    ],
+)
+async def test_each_overlay_switch_follows_only_its_own_field(field, present, absent):
+    """Isolated per field, so a gate that checks the wrong field is visible. The
+    combined set above cannot see a swap between TimeTitle and CustomTitle:
+    both are present, so either check creates the timestamp switch."""
+    coordinator = _Coordinator()
+    coordinator.states["video_widget_fields"] = {field}
+
+    added = await _added_for(coordinator)
+
+    assert present in added
+    for name in absent:
+        assert name not in added
 
 
 # --- naming several relays ----------------------------------------------------

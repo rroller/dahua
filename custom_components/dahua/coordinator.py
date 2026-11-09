@@ -23,23 +23,31 @@ from aiohttp import ClientError, ClientResponseError, ClientSession
 
 from homeassistant.components.tag import async_scan_tag
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_DEVICE_ID
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from . import dahua_utils
 from . import refusals
+from .audio import (
+    AUDIO_CONTROLS,
+    audio_row_owner,
+    audio_table_prefix,
+)
 from .client import (
     VTH_PHONE_TABLE,
     DahuaClient,
     _describe_client_error,
     parse_alarm_inputs,
     parse_storage_disks,
+    rpc2_refusal_is_a_failed_login,
     rpc2_refusal_is_a_stale_login,
 )
-from .late import async_notify_capability_discovered
+from .late import async_notify_capability_discovered, async_notify_late_work_settled
 from .rpc2 import Rpc2MethodRefused
 from .const import (
     CAMERA,
@@ -47,11 +55,13 @@ from .const import (
     CONF_AUTHORIZED_HOLD_TIME,
     CONF_AUTHORIZED_PLATES,
     CONF_AUTO_DETECT_CHANNEL,
+    CONF_SNAPSHOT_CHANNEL_FROM_ZERO,
     CONF_MANUAL_SECURITY_LIGHT,
     CONF_MANUAL_SIREN,
     CONF_NVR_ACTIVE_DETERRENCE,
     CONF_SCAN_INTERVAL,
     CONF_RPC2_OVER_DHIP,
+    CONF_REQUIRE_REPORTED_SERIAL,
     VTH_PHONE_SETTINGS,
     CONF_USE_RPC2,
     CONF_POLL_VIDEO_MOTION,
@@ -68,6 +78,11 @@ from .const import (
     SENSOR,
     SWITCH,
     UPDATE,
+    EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE,
+    EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION,
+    VIDEO_IMAGE_CONTROL_FIELDS,
+    VIDEO_IMAGE_CONTROL_TABLE,
+    VIDEO_IMAGE_CONTROL_TABLES,
 )
 from .dahua_utils import cloud_upgrade_version, parse_event
 from .deterrence import (
@@ -78,6 +93,7 @@ from .deterrence import (
 )
 from .host import (
     MAX_AUTH_REFUSALS,
+    host_auth_budget_exhausted,
     MAX_BACKOFF_DOUBLINGS,
     _CAPABILITY_REFUSALS_REPORTED,
     _acquire_connector,
@@ -454,9 +470,141 @@ def day_night_color_name(data: dict, channel: int):
     return DAY_NIGHT_NAMES.get(str(value).strip())
 
 
-# The picture adjustments the number platform offers, as the device spells them
-# in its VideoColor table.
-VIDEO_COLOR_FIELDS = ("Brightness", "Contrast", "Saturation", "Hue")
+def resolve_profile_mode(data: dict, channel: int):
+    """Resolve this channel's active VideoInMode profile using supported semantics."""
+    config = data.get(f"table.VideoInMode[{channel}].Config[0]")
+    if config == "2":
+        return "2"
+
+    config_ex = data.get(f"table.VideoInMode[{channel}].ConfigEx")
+    if config_ex is not None:
+        named = str(config_ex).strip().lower()
+        if named == "night":
+            return "1"
+        if named == "day":
+            return "0"
+    return config
+
+
+def active_profile_index(data: dict, channel: int) -> int | None:
+    """Return this channel's resolved and validated active profile index."""
+    raw = resolve_profile_mode(data, channel)
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        index = raw
+    elif isinstance(raw, str):
+        try:
+            index = int(raw.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return index if index >= 0 else None
+
+
+def exposure_anti_flicker_option(
+    data: dict, channel: int, profile_index: int
+) -> str | None:
+    """Read a supported AntiFlicker value from one exact channel/profile row."""
+    raw = data.get(
+        "table.VideoInExposure[{0}][{1}].AntiFlicker".format(channel, profile_index)
+    )
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str):
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE.get(value)
+
+
+# The picture controls exposed from VideoColor, as the device spells them.
+# ChromaSuppress was ported from the Intelbras fork, where it was measured on an
+# iME-360-C and a VIP-1220 (50 -> 55 -> read back 55 -> restored 50).
+VIDEO_COLOR_FIELDS = (
+    "Brightness",
+    "Contrast",
+    "Saturation",
+    "Hue",
+    "Gamma",
+    "ChromaSuppress",
+    "Style",
+)
+
+
+# The VideoInOptions fields exposed as selects beside Day/Night. They are read
+# from the same host-wide table the Day/Night probe already fetches, so adding
+# them costs no extra request. `WideDynamicRange` is the level that must be
+# written with the mode: Intelbras measured that mode 0 alone is ignored while
+# the level stays at 50. It is listed here so the probe sees it too, and the
+# WDR select is only created where both fields came back.
+IMAGE_OPTION_FIELDS = ("WideDynamicRangeMode", "WideDynamicRange", "ExposureMode")
+
+# As the device spells the values, and the words the selects show. WDR mode 2
+# is left as "Mode 2" rather than "Auto": the reference accepted 0/1/2 on two
+# cameras but only Off and On were validated, and the vendor's name for 2 was
+# not confirmed (v1.14.1 renamed it back from "Auto"). Exposure mode 4 is
+# manual and needs shutter and gain values this integration does not expose.
+WIDE_DYNAMIC_RANGE_OPTIONS = {"0": "Off", "1": "On", "2": "Mode 2"}
+EXPOSURE_MODE_OPTIONS = {
+    "0": "Auto",
+    "1": "Gain Priority",
+    "2": "Shutter Priority",
+}
+WIDE_DYNAMIC_RANGE_LEVEL = 50
+
+
+def image_option_fields(data: dict, channel: int) -> frozenset:
+    """Which VideoInOptions controls this channel reports.
+
+    Judged on this channel's own keys for the same reason video_color_fields
+    is: VideoInOptions is host-wide and indexed by channel, so a 200 for the
+    table says nothing about whether this channel is in it. Per field, because
+    a device can serve WDR without an exposure mode.
+    """
+    if not isinstance(data, dict):
+        return frozenset()
+    return frozenset(
+        field
+        for field in IMAGE_OPTION_FIELDS
+        if data.get("table.VideoInOptions[{0}].{1}".format(channel, field)) is not None
+    )
+
+
+# The overlay visibility fields inside VideoWidget, and the group whose custom
+# title the switch follows. Only EncodeBlend is written: Intelbras measured
+# that these cameras accept a PreviewBlend write with `OK` and never read it
+# back, so a switch on that field would control nothing.
+#
+# Group 1 matches the enable_text_overlay service default and set_text_overlay
+# after the group defaults were brought into line with services.yaml; group 0
+# was ignored on the VIP-1220 the reference measured.
+VIDEO_WIDGET_OVERLAY_FIELDS = (
+    "TimeTitle.EncodeBlend",
+    "ChannelTitle.EncodeBlend",
+    "CustomTitle[1].EncodeBlend",
+)
+
+
+def video_widget_fields(data: dict, channel: int) -> frozenset:
+    """Which overlay visibility switches this channel reports.
+
+    VideoWidget is host-wide and indexed by channel, so the same per-channel
+    rule applies as image_option_fields.
+    """
+    if not isinstance(data, dict):
+        return frozenset()
+    return frozenset(
+        field
+        for field in VIDEO_WIDGET_OVERLAY_FIELDS
+        if data.get("table.VideoWidget[{0}].{1}".format(channel, field)) is not None
+    )
 
 
 def video_color_fields(data: dict, channel: int) -> frozenset:
@@ -469,8 +617,8 @@ def video_color_fields(data: dict, channel: int) -> frozenset:
     and taking another channel's row as evidence is how a control comes to
     report a camera it is not attached to.
 
-    Per field rather than a single yes, so a device reporting three of the four
-    gets three sliders instead of a fourth that can only ever read unknown.
+    Per field rather than a single yes, so a device gets entities only for the
+    fields it reports.
 
     Empty when the device named none, which covers both a table it does not
     have and the empty 200 some firmware answers for one -- the same thing
@@ -614,6 +762,17 @@ PULSE_STATE_CODES = frozenset({"DoorbellPressed", "AccessControl"})
 # 9 unlock failed, 11 rebooted. Only a ring should raise the button sensor.
 DOORBELL_RINGING_STATES = frozenset({1, 2})
 
+# The raw codes whose payload really does carry the call state above, so an
+# absent one from them is a device saying something unexpected rather than a
+# code with no such field. Anything else translated into DoorbellPressed was
+# decided to be a press before it got here and has nothing left to test.
+#
+# A list of the codes that DO carry it, rather than of the ones that do not:
+# a new spelling arriving is the common case, and the safe default for one
+# nobody has measured is to trust the translation rather than read a missing
+# field as "not ringing", which is what made @DrSpaldo's press silent (#1121).
+DOORBELL_STATE_SOURCES = frozenset({"BackKeyLight"})
+
 # How many recent events diagnostics keeps per device.
 #
 # Ten rather than fifty: an ANPR event measured about 5 KB, so ten is a diagnostics
@@ -621,6 +780,25 @@ DOORBELL_RINGING_STATES = frozenset({1, 2})
 # the device send and which field carries the state, are answered by the last few
 # rather than by a history.
 RECENT_EVENT_COUNT = 10
+
+# How many distinct codes keep their most recent event alongside the list above.
+#
+# Measured on a live VTO2000A: one doorbell press, and thirty seconds later the
+# press had already gone. `MDResult` arrived 40 times in that window, plus
+# motion and video-blind edges, so the ten slots held nothing but the flood and
+# the thing the reporter had just been asked for was not in the dump. The field
+# exists so a reporter can be asked for diagnostics after pressing a button;
+# on a busy device it could not answer that.
+#
+# One per code rather than a bigger list, because a bigger list loses the same
+# race a little later: a code arriving eight times a second will fill whatever
+# it is given. Keeping the newest of each code bounds the cost by how many
+# different things a device says, which is small, instead of by how often it
+# says them.
+#
+# Capped anyway. The bound is a defence against a device inventing codes, not
+# an expectation: the busiest device here says about a dozen different things.
+RECENT_EVENT_CODES = 25
 
 # BackKeyLight State values that are not about ringing at all, and the event
 # each one deserves. Measured on a VTO2000A: opening the door through the
@@ -707,6 +885,128 @@ def door_index(event: dict) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, index)
+
+
+# What a call event's `Index` means on a door station with more than one call
+# button, and which button each measured value is.
+#
+# A mapping rather than arithmetic. 999 and 1999 look exactly like
+# `button * 1000 - 1`, and two values from one model cannot tell that apart from
+# a lookup the firmware keeps, or from 999 being a sentinel with 1999 meaning
+# "the second of anything". A three-button station would settle it and nobody on
+# https://github.com/rroller/dahua/issues/175 has one, so an index that is not
+# in here is reported as itself and no button is claimed for it.
+#
+# Measured by @altserg over five calls on a two-button VTO3221D, and the point
+# is that it held still: 999 for the first button when the call was answered,
+# rejected and left ringing, 1999 for the second on both of its. That is what
+# rules out a call counter, which the first two samples could not.
+#
+# One device, and the only one. Every CallNoAnswered line in
+# https://github.com/rroller/dahua/issues/175 is from that VTO3221D, so which
+# physical button is "button 1" is that station's own numbering and nothing
+# corroborates it on other hardware yet.
+CALL_BUTTON_BY_INDEX = {999: 1, 1999: 2}
+
+# The events whose `Index` identifies which call button rang rather than a video
+# channel or a door. `BackKeyLight`, the press itself, carries `Index: -1` on the
+# same device, so it cannot answer this and is not in here.
+CALL_BUTTON_EVENTS = frozenset({"CallNoAnswered"})
+
+
+def call_button_index(event: dict):
+    """Which call button this event reports, or None if it did not say.
+
+    Deliberately not `door_index` above, which answers a different question:
+    that one folds anything missing or negative onto door 0, because a
+    single-door VTO sends nothing and 0 is the honest answer. Here there is no
+    such default. A door station that does not report a button must produce no
+    button attribute at all rather than claim the first one, and `Index: -1`
+    means "not a button" exactly as it means "not a door".
+
+    Read before anything looks the value up, because the index is whatever JSON
+    arrived: `CALL_BUTTON_BY_INDEX.get([])` raises `TypeError` inside the event
+    handler, which is the #475 failure that takes the stream down for every
+    event after it. Nothing reaches the mapping until it is known to be an int.
+
+    Both casings and both types, for the reason `event_payload` gives: DHIP
+    sends `Index` as a number, and the CGI wire format `index=999` parses to the
+    string `"999"`.
+    """
+    index = event.get("Index")
+    if index is None:
+        index = event.get("index")
+    # bool is an int in Python, and `Index: true` is not button 1.
+    if isinstance(index, bool):
+        return None
+    if isinstance(index, int):
+        return index
+    if isinstance(index, str):
+        try:
+            return int(index.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def door_status_is_relay(event: dict) -> bool:
+    """Whether a DoorStatus event is about the relay rather than the door.
+
+    A VTO2202F-P-S2 sends two shapes of `DoorStatus` in the same few
+    milliseconds while a gate is opening (#1166):
+
+        {"Relay": true,   "Status": "Close"}      the relay
+        {"DoorIndex": 0,  "Status": "Close"}      the contact
+        {"DoorIndex": 0,  "Status": "Open"}
+
+    Both reach the one Door Status sensor, which exists to report the physical
+    contact, so the relay's `Close` wrote the gate shut while it was still
+    swinging.
+
+    **The key decides, not the value.** Both relay lines in the report carry
+    `Relay: true` while the gate is in opposite states, so that `true` reads as
+    "this event is the relay" rather than as the relay's own position. Nothing
+    has been seen sending `Relay: false`, so nothing here reads the value.
+
+    **Only the shape that was reported.** A payload that also names a
+    `DoorIndex` is left alone: a device that says which door an event is about
+    is telling us something about a door, and no such payload has been
+    measured. Widening this needs a device that sends one.
+    """
+    payload = event_payload(event)
+    return "Relay" in payload and "DoorIndex" not in payload
+
+
+# The two values a DoorStatus payload has ever been seen to carry, and the two
+# the sensor below can act on: it opens on exactly "Open" and closes on
+# anything else. A third spelling would therefore read as closed, so it is not
+# a door status this integration can report and it is not in here.
+#
+# A tuple rather than a set on purpose. `in` on a set hashes the value, and a
+# payload is whatever JSON arrived: `{"Status": []}` would raise TypeError
+# inside the event handler, which is the #475 failure that takes the stream
+# down for every event after it. A tuple compares with `==` instead.
+DOOR_CONTACT_STATUSES = ("Close", "Open")
+
+
+def door_status_is_contact(event: dict) -> bool:
+    """Whether a DoorStatus event reports a door contact this sensor can read.
+
+    The complement of `door_status_is_relay` over the payloads that say
+    something, which is not the same as its negation: an event can be neither.
+    `{}` is what `event_payload` returns for a truncated frame, for `Data:
+    null` and for a payload that is not an object at all, and a payload can
+    arrive with no `Status` or with one this integration does not know.
+
+    None of those is evidence that the device has a door contact. The flag they
+    were setting is permanent, so one unreadable frame used to retire the relay
+    fallback for the rest of the session and leave a relay-only device's sensor
+    stuck wherever it was (rroller's review on #1169, reproduced on both
+    transports). A frame we cannot read tells us nothing about the hardware.
+    """
+    if door_status_is_relay(event):
+        return False
+    return event_payload(event).get("Status") in DOOR_CONTACT_STATUSES
 
 
 def illuminator_light_index(data: dict, channel: int, profile_mode) -> int:
@@ -855,6 +1155,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _coaxial_status_over_rpc2: bool = False
     _coaxial_status_rpc2_asked: bool = False
 
+    # How many times this channel has met a declined RPC2 login while
+    # asking for the coaxial status, so the asking stops rather than
+    # spending a login every poll for the life of the process.
+    _coaxial_status_login_refusals: int = 0
+
     # The recorder's own alarm input terminals (#1090), on the class for the
     # same reason and with the same rule: reassigned, never mutated. Only the
     # one coordinator that probed them has a non-empty list, so these also
@@ -910,6 +1215,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # would pool their counts and the field would name no channel in particular.
     _events_without_listener: dict = None
 
+    # Whether this channel has ever been sent a DoorStatus event that was about
+    # a door contact rather than about the relay. On the class for the reason
+    # the lines above it are: the suite builds coordinators with object.__new__.
+    #
+    # False means every DoorStatus this device has sent so far has been the
+    # relay form, and a device that only ever sends that form must keep driving
+    # its sensor -- there is nothing else for it to report. See the DoorStatus
+    # branch of _dispatch_event.
+    _door_contact_seen: bool = False
+
     # The flood light's pre-force mode, captured by turn_on before it forces the
     # camera to manual so turn_off can put it back. None means nothing was
     # captured this session, and turn_off must then not write a mode at all --
@@ -922,6 +1237,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # and the number platform read this. Only ever reassigned, never mutated, so
     # one shared empty default is safe.
     _video_color_fields: frozenset = frozenset()
+    _video_image_control_fields: frozenset = frozenset()
+    _video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
+    _audio_control_owners: dict = {}
+    # The VideoInOptions controls beyond Day/Night, and the VideoWidget overlay
+    # visibility fields. On the class for the same reason as the three above:
+    # the suite builds coordinators with object.__new__ and both the poll and
+    # the select/switch platforms read them.
+    _image_option_fields: frozenset = frozenset()
+    _video_widget_fields: frozenset = frozenset()
 
     # Whether the device never answered what kind of device it is, as opposed to
     # answering that it does not serve the question. On the class for the reason
@@ -1000,6 +1324,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             connector=_acquire_connector(address), connector_owner=False
         )
 
+        # From entry.data, not options: it is what the device is, settled by
+        # the add flow, and not something to be toggled afterwards. Read before
+        # the client is built because both it and the event transport need it.
+        self._rpc2_over_dhip = entry.data.get(CONF_RPC2_OVER_DHIP, False)
+
         # The client used to communicate with Dahua devices
         self.client: DahuaClient = DahuaClient(
             username,
@@ -1010,10 +1339,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._session,
             use_https,
             use_rpc2=entry.options.get(CONF_USE_RPC2, False),
-            # From entry.data, not options: it is what the device is, settled
-            # by the add flow, and not something to be toggled afterwards. A
-            # monitor with no web server cannot be read any other way (#949).
-            rpc2_over_dhip=entry.data.get(CONF_RPC2_OVER_DHIP, False),
+            rpc2_over_dhip=self._rpc2_over_dhip,
+            require_reported_serial=entry.data.get(CONF_REQUIRE_REPORTED_SERIAL, False),
             illuminator_restore_store=IlluminatorRestoreStore(hass, entry.entry_id),
             channel_snapshot_store=ChannelLightingSnapshotStore(hass, entry.entry_id),
         )
@@ -1071,9 +1398,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_ptz_position = False
         self._supports_lighting = False
         self._supports_day_night_color = False
+        self._supports_exposure_anti_flicker = False
         self._video_color_fields: frozenset = frozenset()
+        self._video_image_control_fields: frozenset = frozenset()
+        self._video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
+        self._image_option_fields: frozenset = frozenset()
+        self._video_widget_fields: frozenset = frozenset()
         # What the device said when a probe failed, keyed by probe name.
         self._probe_refusals: Dict[str, dict] = {}
+        self._audio_control_owners: dict[str, int | None] = {}
         self._channel_model = None
         self._supports_privacy_mode = False
         self._supports_floodlightmode = False
@@ -1167,6 +1500,38 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 self._address,
             )
             return
+        # `getattr` rather than an attribute or a helper method, because the
+        # suite calls this unbound on doubles that are not this class:
+        #
+        #     await DahuaDataUpdateCoordinator.async_start_event_listener(first)
+        #
+        # Neither a class attribute nor a method on the real coordinator is
+        # reached that way, and requiring every double that borrows a method to
+        # model a flag it is not about is the wrong direction. `diagnostics.py`
+        # reads the same attribute the same way.
+        if getattr(self, "_rpc2_over_dhip", False):
+            if not self.events:
+                return
+            # There is no web server to attach to, so the CGI stream cannot be
+            # the answer and neither can the RPC2 poll that stands in for it.
+            # Measured on a VTH5221D on 3.000.0012000.0.R:
+            #
+            #   eventManager.attach {"codes":["All"]}   -> result true, SID 513
+            #   eventManager.getEventIndexes {"code":X} -> refused, 268959743,
+            #                                              for all nine codes
+            #
+            # and the device then pushed `client.notifyEventStream` down the
+            # same socket unprompted, which is the shape vto.py already reads.
+            # So this device takes the DHIP listener. Without this it joined
+            # the host's CGI stream and spent its life failing to connect to a
+            # port nothing is listening on.
+            _LOGGER.debug(
+                "%s serves no HTTP, so its events are taken over DHIP rather "
+                "than from the CGI stream",
+                self._address,
+            )
+            await self.async_start_vto_event_listener()
+            return
         if self.events is not None:
             # Join this host's stream rather than opening another one. The
             # device sends every channel's events down any stream, so one is
@@ -1199,7 +1564,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         and raises ConfigEntryAuthFailed from `_auth_refused`; this is the
         same division of labour DahuaHostEventStream already follows.
         """
-        refusals = async_record_host_auth_refusal(self._address, "vto listener")
+        refusals = async_record_host_auth_refusal(
+            self._address, self._dhip_listener_auth_source()
+        )
         if refusals < MAX_AUTH_REFUSALS:
             _LOGGER.warning(
                 "The doorbell at %s refused these credentials (%d of %d), so the "
@@ -1221,10 +1588,73 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return True
 
+    def _dhip_listener_auth_source(self) -> str:
+        """Whose budget this listener's refused logins come out of.
+
+        `async_record_host_auth_refusal` returns the worst any one source has
+        reached, and `MAX_AUTH_REFUSALS` is 3, so two sources on one device are
+        six attempts before anything stops. A doorbell can afford that: its
+        other transports are CGI, which is counted elsewhere and is not a DHIP
+        login.
+
+        A monitor with no web server cannot. Every read it serves is a DHIP
+        login under "dhip transport", this listener is a second one on the same
+        socket, and the device enforces `LockLoginTimes: 5` within
+        `LoginFailLockTime: 300` (measured on a VTH5221D). Two independent
+        budgets of three would reach six inside that window and lock Home
+        Assistant's address out of the device, which is #729's shape and takes
+        the owner's own correction with it.
+
+        So on such a device the listener spends the transport's budget rather
+        than one of its own, and three refusals stop both.
+        """
+        return (
+            "dhip transport"
+            if getattr(self, "_rpc2_over_dhip", False)
+            else "vto listener"
+        )
+
+    # How many refusals in a row mean the port is shut rather than still coming
+    # up. An embedded device brings its TCP stack and web server up before it
+    # binds 5000, so a connect in that window is refused by a doorbell that is
+    # merely rebooting, and Dahua's own Auto Maintain reboots one weekly. With
+    # the backoff `vto_retry_state` applies, three refusals span minutes, which
+    # outlasts a boot. Together with having never connected, that is what keeps
+    # a working doorbell on its own transport.
+    DHIP_REFUSALS_BEFORE_CGI = 3
+
+    def _cgi_events_can_replace_dhip(self) -> bool:
+        """Whether this doorbell could take its events from the CGI stream.
+
+        Asked only when the DHIP port has been refused, because the answer is
+        not "which transport is better" but "is there another one at all".
+
+        A device that serves no HTTP has nothing to fall back to: every read it
+        serves is a DHIP login, and the CGI stream would spend its life failing
+        to reach a web server that does not exist. That is the shape #949 added
+        `_rpc2_over_dhip` for.
+
+        A selection is required too. `async_start_event_listener` registers
+        nothing when no codes were chosen, so switching on that device would
+        abandon the DHIP retry without putting anything in its place.
+        """
+        if getattr(self, "_rpc2_over_dhip", False):
+            return False
+        return self.events is not None
+
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
         consecutive_failures = 0
+        # Whether this listener has ever had a socket, and how many refusals it
+        # has met in a row. Both are about handing the events to the CGI stream:
+        # see DHIP_REFUSALS_BEFORE_CGI.
+        ever_connected = False
+        refusals_in_a_row = 0
         while True:
+            if getattr(self, "_rpc2_over_dhip", False) and host_auth_budget_exhausted(
+                self._address
+            ):
+                return
             protocol = None
             started = time.monotonic()
             try:
@@ -1242,10 +1672,70 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     port=5000,
                 )
                 self._vto_client = protocol
+                # It bound the port, so this doorbell is not one that cannot.
+                ever_connected = True
+                refusals_in_a_row = 0
                 await protocol.disconnected
             except asyncio.CancelledError:
                 raise
             except Exception as ex:
+                # The doorbell is reachable and port 5000 is shut. Not every
+                # doorbell has that port open, and a doorbell is the one device
+                # that never joins the CGI event stream, so on this firmware it
+                # had no event transport at all.
+                #
+                # Both halves were measured on the same model, a DH-DB6I, which
+                # is why this is a fallback rather than a second stream:
+                #
+                #   fw 1.000.020000000.9.R   DHIP 5000 open, presses arrive
+                #                            (@phabibjr, #1131)
+                #   fw 2.820.010000000.33.R  DHIP 5000 refused, and the CGI
+                #                            attach carries the press as
+                #                            _DoTalkAction_ Invite and
+                #                            PhoneCallDetect (@growlocally, #1187)
+                #
+                # Both of those codes are already translated to DoorbellPressed,
+                # so the press needs no new parsing, only a socket that is open.
+                #
+                # `ConnectionRefusedError` rather than the `OSError` it derives
+                # from, because the question is whether the port is shut and not
+                # whether the doorbell is awake. A timeout or an unreachable
+                # host is a doorbell that is off the network.
+                #
+                # A refusal alone is not enough either, and this is the case the
+                # type check does not cover: a doorbell that is rebooting
+                # answers the connect and refuses it, because the TCP stack is
+                # up before the DHIP service has bound the port. So a working
+                # VTO restarting, or Home Assistant restarting beside one, would
+                # otherwise move to the CGI stream for the session and take the
+                # hang-up service with it. Hence both conditions: this listener
+                # has never had a socket, and the refusal has repeated.
+                #
+                # Returning is what keeps one transport running. The loop does
+                # not go on retrying DHIP beside the CGI stream, so a press
+                # cannot arrive down both and be reported twice, and the error
+                # this handler logs every retry stops rather than repeating for
+                # as long as Home Assistant is up.
+                if isinstance(ex, ConnectionRefusedError):
+                    refusals_in_a_row += 1
+                else:
+                    refusals_in_a_row = 0
+                if (
+                    refusals_in_a_row >= self.DHIP_REFUSALS_BEFORE_CGI
+                    and not ever_connected
+                    and self._cgi_events_can_replace_dhip()
+                ):
+                    _LOGGER.warning(
+                        "The doorbell at %s refused a connection on port 5000 %d "
+                        "times and has never answered there, so its events are "
+                        "taken from the CGI event stream instead of the DHIP "
+                        "listener: %s",
+                        self._address,
+                        refusals_in_a_row,
+                        ex,
+                    )
+                    await self.async_start_event_listener()
+                    return
                 delay, consecutive_failures = vto_retry_state(
                     time.monotonic() - started,
                     consecutive_failures,
@@ -1397,6 +1887,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # An RPC2 refusal carries a code rather than an HTTP status, and a
             # code is still the device answering -- see Rpc2MethodRefused.
             status = getattr(exception, "code", None)
+        # ⚠ And a third shape, which has neither: the call SUCCEEDED and the
+        # table was not in the reply. That is the device answering "I have no
+        # such table", and judging it by the absence of a status filed it as
+        # silence -- #1114, where it kept the leftover-rows card off every one
+        # of seventeen entries. `Rpc2TableAbsent` says so explicitly rather
+        # than being inferred from an exception type, so any future reader of
+        # a table can do the same without this method learning its name.
+        answered = status is not None or bool(getattr(exception, "answered", False))
         # Self-initialising, because a probe must never be the thing that
         # raises. Coordinators are built with object.__new__ in a dozen
         # tests, which skips __init__, and a capability probe is exactly
@@ -1405,7 +1903,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         if refusals is None:
             refusals = self._probe_refusals = {}
         refusals[name] = {
-            "answered": status is not None,
+            "answered": answered,
             "status": status,
             "error": type(exception).__name__,
         }
@@ -1420,6 +1918,55 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         refusals = getattr(self, "_probe_refusals", None) or {}
         if not refusals.get(name, {}).get("answered", True):
             refusals.pop(name, None)
+
+    def probes_that_may_still_answer(self) -> set:
+        """Unanswered questions whose entity could still turn up.
+
+        ⭐ The distinction `probes_that_did_not_answer` cannot make, and what
+        a caller deciding whether to WAIT actually needs. A probe is worth
+        waiting on only while something will ask again:
+
+        - it must be in `RETRYABLE_CAPABILITIES`, because nothing else is
+          ever re-asked, and
+        - it must have retries left, because `_async_retry_capabilities`
+          skips a name once `spent >= MAX_CAPABILITY_RETRIES`,
+        - unless the request is in the air right now, which counts however
+          much of the budget it has already taken.
+
+        ⚠ That last clause is @rroller on #1125, and without it the fix had a
+        hole exactly where it mattered. `_async_retry_unanswered_capabilities`
+        charges the attempt BEFORE awaiting the probe, so on the final attempt
+        this method stopped reporting the name while the request was still
+        running and could still build an entity. He paused that probe, called
+        `async_offer_leftover_rows` against the real registry, and it offered
+        a row that had been withheld a moment earlier. The repair flow
+        confirms removal through the same gate, so it would have accepted
+        deleting a row whose entity was on its way.
+
+        Raised by @kmich on #1114: *"Decide whether a probe that has spent its
+        retry budget should still hold the gate shut. As written, one silent
+        probe blocks the card for good."* He is right, and the gate's own
+        comment is what gives it away -- it says the entity "is still to come:
+        the retry builds it when the device finally replies", which stops
+        being true the moment the last retry is spent. After that the row is
+        not pending, it is absent, and waiting for it is waiting for nothing.
+
+        Derived from the two pieces of state that already exist rather than
+        tracked beside them, so it cannot come to disagree with the loop that
+        does the retrying.
+        """
+        attempts = getattr(self, "_capability_retries", None) or {}
+        in_flight = getattr(self, "_capability_probes_in_flight", None) or set()
+        unanswered = self.probes_that_did_not_answer()
+        return {
+            name
+            for name in unanswered
+            if name in in_flight
+            or (
+                name in RETRYABLE_CAPABILITIES
+                and attempts.get(name, 0) < MAX_CAPABILITY_RETRIES
+            )
+        }
 
     def probes_that_did_not_answer(self) -> set:
         """Capability questions this device has not answered either way.
@@ -1458,10 +2005,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         One judgment, used by setup and by the later retry, because the rule it
         applies is easy to get subtly different in two places: the answer is
         whether *this channel's row* came back, not whether the request raised.
-        `async_get_config` swallows a `ClientResponseError` and returns {}, and
-        a device can answer 200 with an empty body for a table it does not
-        have. Both of those are the device answering, and `_note_probe_answered`
-        is what stops them being asked again.
+        A device can answer 200 with an empty body for a table it does not
+        have, which is the device answering, and `_note_probe_answered` is what
+        stops it being asked again.
+
+        The read is the strict one (`async_probe_video_in_options`), not
+        `async_get_config`: the lenient form turns an HTTP 403 into `{}`, which
+        would record a restricted account as a model without the table and
+        leave the diagnostics dump with an empty capability list and no
+        refusal beside it. A refusal with a status is an answer, so it is not
+        retried; only silence is.
 
         Only silence leaves the question open. Setting the flag False with it
         is what setup always did, and is safe to keep here: the flag starts
@@ -1469,29 +2022,48 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         there is no earlier yes for this to overwrite.
         """
         try:
-            options = await self.client.async_get_video_in_options()
+            options = await self.client.async_probe_video_in_options()
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("day_night_color", probe_error)
             self._supports_day_night_color = False
+            self._image_option_fields = frozenset()
             return False
         self._note_probe_answered("day_night_color")
         self._supports_day_night_color = (
             day_night_color_name(options, self._channel) is not None
         )
+        # The same read carries WDR and ExposureMode. Cached whole table, so
+        # this costs nothing beside the Day/Night answer it was already making.
+        self._image_option_fields = image_option_fields(options, self._channel)
+        _LOGGER.debug(
+            "Channel %s reports image options %s",
+            self._channel,
+            sorted(self._image_option_fields) or "none",
+        )
         return self._supports_day_night_color
 
     async def _async_retry_day_night_color(self) -> bool:
-        """Whether a Day/Night mode turned up that was missed at setup.
+        """Whether either family this probe gates turned up late.
 
-        The Day/Night select is the entity this gates, and the poll decides
-        each cycle whether to read the table, so the control works from the
-        next poll rather than reading unknown until a reload.
+        Setup and the retry share the one probe, which now fills two answers:
+        `_supports_day_night_color` and `_image_option_fields` (WDR and
+        ExposureMode). Both entity families are gated on the retry's result, so
+        the comparison is per family -- not an OR of "was anything there
+        before", which would hide a newly appeared image option on a channel
+        that already had a Day/Night answer.
 
-        What the flag said is read first, because the probe is the thing that
-        writes it: asking afterwards would compare the answer with itself.
+        The poll decides each cycle whether to read the table, so the controls
+        work from the next poll rather than reading unknown until a reload.
         """
-        already = self._supports_day_night_color
-        return await self._async_probe_day_night_color() and not already
+        already = (
+            self._supports_day_night_color,
+            frozenset(self._image_option_fields),
+        )
+        await self._async_probe_day_night_color()
+        return (
+            self._supports_day_night_color,
+            frozenset(self._image_option_fields),
+        ) != already
 
     async def _async_probe_smart_motion_detect(self) -> bool:
         """Ask for the SmartMotionDetect table, and remember what came back.
@@ -1783,9 +2355,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_retry_coaxial_control(self) -> bool:
         """Whether the coaxial status turned up after going unanswered.
 
-        Not asked again where setup never asked: a channel whose light and
-        switch platforms are both switched off, or one that drives deterrence
-        over RPC2, records no refusal, and only a recorded refusal is retried.
+        Not asked again where setup never asked: a channel with no entity that
+        reads the status, or one that drives deterrence over RPC2, records no
+        refusal, and only a recorded refusal is retried.
 
         What the gate said is read first, because the probe is the thing that
         writes it: asking afterwards would compare the answer with itself.
@@ -1825,10 +2397,92 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return bool(self._video_color_fields)
 
+    async def _async_probe_exposure_anti_flicker(self) -> bool:
+        """Check this channel's current profile and its AntiFlicker property."""
+        try:
+            mode_data = await self.client.async_get_video_in_mode()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("exposure_anti_flicker", probe_error)
+            self._supports_exposure_anti_flicker = False
+            return False
+
+        profile_index = active_profile_index(mode_data, self._channel)
+        if profile_index is None:
+            self._note_probe_answered("exposure_anti_flicker")
+            self._supports_exposure_anti_flicker = False
+            return False
+
+        try:
+            exposure_data = await self.client.async_get_exposure_anti_flicker_config()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("exposure_anti_flicker", probe_error)
+            self._supports_exposure_anti_flicker = False
+            return False
+
+        self._note_probe_answered("exposure_anti_flicker")
+        self._supports_exposure_anti_flicker = (
+            exposure_anti_flicker_option(exposure_data, self._channel, profile_index)
+            is not None
+        )
+        return self._supports_exposure_anti_flicker
+
+    async def _async_retry_exposure_anti_flicker(self) -> bool:
+        already = self.supports_exposure_anti_flicker()
+        return await self._async_probe_exposure_anti_flicker() and not already
+
+    async def _async_probe_audio_control(self, config_name: str) -> bool:
+        """Find this channel's exact row for one audio control."""
+        spec = AUDIO_CONTROLS[config_name]
+        capability = spec[3]
+        # AUDIO_CONTROLS supplies these retryable names dynamically; keep the
+        # literals visible to the source-level probe-name guard:
+        # _note_probe_refusal("audio_input_volume")
+        # _note_probe_refusal("audio_output_volume")
+        # _note_probe_refusal("audio_in_denoise")
+        owners = getattr(self, "_audio_control_owners", None)
+        if owners is None or "_audio_control_owners" not in self.__dict__:
+            owners = self._audio_control_owners = {}
+        try:
+            table = await self.client.async_get_audio_config(config_name)
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal(capability, probe_error)
+            owners[config_name] = None
+            return False
+
+        self._note_probe_answered(capability)
+        owner = audio_row_owner(
+            table,
+            config_name,
+            self._channel,
+            recorder=self.is_recorder_host(),
+        )
+        owners[config_name] = owner
+        _LOGGER.debug(
+            "Channel %s audio control %s owner: %s",
+            self._channel,
+            config_name,
+            owner,
+        )
+        return owner is not None
+
+    async def _async_retry_audio_input_volume(self) -> bool:
+        already = self.supports_audio_input_volume()
+        return (
+            await self._async_probe_audio_control("microphone_volume")
+        ) and not already
+
+    async def _async_retry_audio_output_volume(self) -> bool:
+        already = self.supports_audio_output_volume()
+        return (await self._async_probe_audio_control("speaker_volume")) and not already
+
+    async def _async_retry_audio_in_denoise(self) -> bool:
+        already = self.supports_audio_in_denoise()
+        return (await self._async_probe_audio_control("noise_filter")) and not already
+
     async def _async_retry_video_color(self) -> bool:
         """Whether picture adjustments turned up that were missed at setup.
 
-        Four sliders are gated on this, one per field, and the poll decides
+        VideoColor entities are gated on this, one per field, and the poll decides
         each cycle whether to read the table, so they work from the next poll
         rather than reading unknown until a reload.
 
@@ -1837,6 +2491,85 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         already = bool(self._video_color_fields)
         return await self._async_probe_video_color() and not already
+
+    async def _async_probe_video_image_control(self) -> bool:
+        """Ask which image controls this channel reports, and from which table.
+
+        `VideoImageControl` is asked first and, when it reports a field, is the
+        only table read, so nothing changes for a camera. A doorbell answers it
+        empty and keeps the same fields in `VideoInOptions`, which is asked
+        second. An empty answer is what a device sends for a table it does not
+        have, so the next table is tried on an empty answer as well as on a
+        refusal.
+        """
+        answered = False
+        refusal = None
+        for table_name in VIDEO_IMAGE_CONTROL_TABLES:
+            try:
+                table = await self.client.async_get_video_image_control(table_name)
+            except PROBE_FAILED as probe_error:
+                refusal = probe_error
+                continue
+            answered = True
+            fields = frozenset(
+                field
+                for field in VIDEO_IMAGE_CONTROL_FIELDS
+                if table.get(f"table.{table_name}[{self.get_channel()}].{field}")
+                is not None
+            )
+            if fields:
+                self._note_probe_answered("video_image_control")
+                self._video_image_control_table = table_name
+                self._video_image_control_fields = fields
+                return True
+        self._video_image_control_table = VIDEO_IMAGE_CONTROL_TABLE
+        self._video_image_control_fields = frozenset()
+        if answered:
+            self._note_probe_answered("video_image_control")
+        else:
+            self._note_probe_refusal("video_image_control", refusal)
+        return False
+
+    async def _async_retry_video_image_control(self) -> bool:
+        """Whether image controls turned up after an unanswered probe."""
+        already = bool(self._video_image_control_fields)
+        return await self._async_probe_video_image_control() and not already
+
+    async def _async_probe_video_widget(self) -> bool:
+        """Ask which overlay visibility switches this channel reports.
+
+        Judged on this channel's own keys rather than on the request succeeding,
+        the rule `video_widget_fields` applies: VideoWidget is host-wide and
+        indexed by channel, so a 200 for the table says nothing about whether
+        this channel is in it. An empty answer is the device saying it has none,
+        which `_note_probe_answered` keeps from being asked again.
+
+        Only the switch platform reads the answer, so setup asks this only when
+        that platform is enabled.
+        """
+        try:
+            table = await self.client.async_get_video_widget()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("video_widget", probe_error)
+            self._video_widget_fields = frozenset()
+            return False
+        self._note_probe_answered("video_widget")
+        self._video_widget_fields = video_widget_fields(table, self._channel)
+        _LOGGER.debug(
+            "Channel %s reports overlay visibility fields %s",
+            self._channel,
+            sorted(self._video_widget_fields) or "none",
+        )
+        return bool(self._video_widget_fields)
+
+    async def _async_retry_video_widget(self) -> bool:
+        """Whether overlay switches turned up that were missed at setup.
+
+        The poll decides each cycle whether to read the table, so the switches
+        work from the next poll rather than reading unknown until a reload.
+        """
+        already = bool(self._video_widget_fields)
+        return await self._async_probe_video_widget() and not already
 
     async def _async_probe_profile_mode(self) -> bool:
         """Ask whether this channel has selectable day/night/general profiles.
@@ -1919,6 +2652,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         attempts = getattr(self, "_capability_retries", None)
         if attempts is None:
             attempts = self._capability_retries = {}
+        in_flight = getattr(self, "_capability_probes_in_flight", None)
+        if in_flight is None:
+            in_flight = self._capability_probes_in_flight = set()
+
+        # Whether anything was worth waiting for when this pass began, read
+        # before the first attempt is charged. The comparison with the same
+        # question afterwards is what tells the leftover-rows card that the
+        # waiting is over; see the notify at the end.
+        was_waiting = bool(self.probes_that_may_still_answer())
 
         discovered = False
         # Named here rather than counted afterwards, so the line below reports
@@ -1930,12 +2672,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if spent >= MAX_CAPABILITY_RETRIES:
                 continue
             spent = attempts[name] = spent + 1
+            # ⚠ The attempt is charged before the await, so on the last one
+            # the budget reads as spent while the request is still in the air.
+            # `probes_that_may_still_answer` consults this set so that the
+            # name keeps holding the gate until the reply lands (@rroller on
+            # #1125). `finally`, not the success path: a probe raising
+            # something outside PROBE_FAILED must not leave its name pending
+            # for the life of the entry, which is the very fault this change
+            # exists to remove.
+            in_flight.add(name)
             try:
                 answered = await RETRYABLE_CAPABILITIES[name](self)
             except PROBE_FAILED:
                 # Still silent. The attempt is spent and the refusal it
                 # recorded stands; nothing here may fail the poll.
                 answered = False
+            finally:
+                in_flight.discard(name)
 
             _LOGGER.debug(
                 "Channel %s asked %s again about %s (attempt %s of %s): %s",
@@ -1981,6 +2734,55 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             async_notify_capability_discovered(
                 self.hass, self.config_entry.entry_id, self.get_serial_number()
+            )
+
+        if was_waiting and not self.probes_that_may_still_answer():
+            # ⭐ @rroller on #1125: nothing was watching for this. The
+            # leftover-rows card is offered once, in `async_setup_entry`,
+            # when a retryable probe still has its whole budget and so
+            # rightly suppresses it. By the time the budget is spent there is
+            # no second call and no listener, so the card stays absent for
+            # ever -- which is #1114 again, reached by a different road.
+            #
+            # Fired on the transition only, not every poll: a registry scan
+            # per channel per poll is not free on a nineteen channel recorder.
+            # If a probe ANSWERED just now, the entities it gates are being
+            # built by a task this signal does not wait for, so the offer that
+            # follows finds the rebuild outstanding and declines; `late.py`
+            # fires the same signal again when the rebuild is done.
+            self._notify_late_work_settled()
+
+    def _notify_late_work_settled(self) -> None:
+        """Say the waiting is over, unless there is nobody to say it to.
+
+        ⚠ Tolerated rather than demanded, which is the rule every new
+        requirement on a coordinator has had to learn here. A dozen tests
+        build one with `object.__new__` and give it only the attributes the
+        behaviour under test reads, and several drive the whole retry loop
+        with `hass` left as None. A hint for a tidy-up card must not be the
+        thing that turns those into errors.
+        """
+        hass = getattr(self, "hass", None)
+        entry = getattr(self, "config_entry", None)
+        if hass is None or entry is None:
+            return
+        try:
+            async_notify_late_work_settled(hass, entry.entry_id)
+        except Exception:  # pylint: disable=broad-except
+            # Same reasoning as the wrapped offer in `async_setup_entry`, and
+            # the same words: a tidy-up card must never be what stops a camera
+            # working. This runs inside the poll, where a raise is an
+            # UpdateFailed and every entity on the channel goes unavailable,
+            # to deliver a hint that the leftover-rows scan might find
+            # something. Debug, not exception: the real path is covered by a
+            # test against a real `hass` and a real issue registry, so what
+            # reaches here is a stand-in that cannot take a dispatcher send.
+            _LOGGER.debug(
+                "Channel %s of %s could not announce that its capability "
+                "questions had settled",
+                self._channel,
+                self._address,
+                exc_info=True,
             )
 
     def _auth_refused(self, exception) -> Exception:
@@ -2129,12 +2931,21 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # both want it.
                 await self._async_read_stream_codecs()
 
-                # Some Dahua firmwares index channels from 0, others from 1. The default
-                # is to auto-detect: if a snapshot at index 0 succeeds, treat this camera as
-                # 0-indexed and reset channel_number accordingly. Users on cameras where this
-                # heuristic gets it wrong (HTTP snapshot at 0 succeeds but RTSP only streams
-                # on channel=1) can disable it via the integration options.
+                # Some Dahua firmwares index channels from 0, others from 1. The
+                # default is to auto-detect: if a snapshot at index 0 succeeds,
+                # treat this camera as 0-indexed and reset channel_number
+                # accordingly. Users on cameras where this heuristic gets it
+                # wrong (HTTP snapshot at 0 succeeds but RTSP only streams on
+                # channel=1) can disable it via the integration options.
+                #
+                # Only asked when the option is on, because the option is its
+                # only reader. The still is numbered by
+                # CONF_SNAPSHOT_CHANNEL_FROM_ZERO instead and deliberately not
+                # by this answer: a snapshot succeeding on channel 0 cannot tell
+                # genuine zero-based numbering from channel 0 aliasing channel 1
+                # (#1151, and see get_snapshot_channel).
                 auto_detect = self.channel_option(CONF_AUTO_DETECT_CHANNEL, True)
+                zero_indexed = None
                 if auto_detect:
                     # Asked once for the device and shared, and a device that does
                     # not answer leaves this alone rather than renumbering the
@@ -2145,17 +2956,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # A doorbell is excluded because channel 0 does not exist on a VTO.
                     if zero_indexed and not self.is_doorbell():
                         self._channel_number = self._channel
+                # Both numbers, because they can differ and "the thumbnail is
+                # a different camera from the live view" is unreadable with
+                # only one of them in the log (#1151).
                 _LOGGER.debug(
-                    "Using channel number %s (auto_detect=%s)",
+                    "Using channel number %s for the stream and %s for the still"
+                    " (auto_detect=%s, device numbers from zero=%s)",
                     self._channel_number,
+                    self.get_snapshot_channel(),
                     auto_detect,
+                    zero_indexed,
                 )
 
                 await self._async_probe_direct_deterrence()
                 # The same probe a later poll re-asks when this one goes
                 # unanswered, so setup and the retry cannot come to disagree
-                # about what the device said (#1057).
-                if self._wanted_by(LIGHT, SWITCH) and not self.uses_rpc2_deterrence():
+                # about what the device said (#1057). Gated on the rule the poll
+                # uses, because the poll is the only reader of the answer: a
+                # recorder without the deterrence opt-in has nothing that reads
+                # it, and one that never answers costs a full timeout per setup.
+                if self.reads_coaxial_status() and not self.uses_rpc2_deterrence():
                     await self._async_probe_coaxial_control()
                 _LOGGER.debug(
                     "Device supports Coaxial Control=%s", self._supports_coaxial_control
@@ -2254,17 +3074,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     "Device supports day/night mode=%s", self._supports_day_night_color
                 )
 
-                # The picture adjustments, probed rather than read blind on
+                # The picture controls, probed rather than read blind on
                 # every poll. #1006 is a camera account in the device's `user`
                 # group, which answers 403 to this table: the read sat in the
                 # poll's gather with no capability check and no handler, so one
                 # refusal failed the whole refresh, and on the first one that is
                 # ConfigEntryNotReady -- every entity of a working camera
-                # unavailable for four sliders it was never going to serve.
+                # unavailable for controls it was never going to serve.
                 #
                 # Judged on this channel's own row, not on the request
                 # succeeding; see video_color_fields. A device that names none
-                # gets no number entities, which is the rule the profile sensor
+                # gets no VideoColor entities, which is the rule the profile sensor
                 # established (#641): an entity that can only read unknown is
                 # worse than no entity.
                 #
@@ -2272,12 +3092,31 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # URL carries no channel, so the shared read cache answers it
                 # once for every channel setting up and holds it for
                 # CONFIG_CACHE_TTL_SECONDS.
-                # Inside the gate: a device whose number platform is switched
-                # off is never asked, and saying it reports none would read as
-                # the device refusing. The probe itself is shared with the
-                # retry a later poll makes (#1057).
-                if self._wanted_by(NUMBER):
+                # Inside the gate: a device whose number and select platforms
+                # are switched off is never asked. The probe itself is shared
+                # with the retry a later poll makes (#1057).
+                if self._wanted_by(NUMBER, SELECT):
                     await self._async_probe_video_color()
+
+                if self._wanted_by(SWITCH, SELECT):
+                    await self._async_probe_video_image_control()
+
+                if self._wanted_by(SELECT):
+                    await self._async_probe_exposure_anti_flicker()
+
+                # Each setting has its own table, owner, retry, and platform
+                # gate. An answer for one never implies another is available.
+                if self._wanted_by(NUMBER):
+                    await self._async_probe_audio_control("microphone_volume")
+                    await self._async_probe_audio_control("speaker_volume")
+                if self._wanted_by(SWITCH):
+                    await self._async_probe_audio_control("noise_filter")
+                # The overlay visibility switches. Only the switch platform
+                # reads this table, so a device whose switches are turned off
+                # is never asked. The probe is shared with the retry a later
+                # poll makes when this one goes unanswered (#1057).
+                if self._wanted_by(SWITCH):
+                    await self._async_probe_video_widget()
 
                 # Which camera is actually on this channel. Every channel of a
                 # recorder reports the recorder's model, so a doorbell behind an
@@ -2562,7 +3401,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             await self._async_check_video_motion_is_pushed()
 
             # We need the profile mode (0=day, 1=night, 2=scene)
-            if self._supports_profile_mode and not self.is_doorbell():
+            if (self._supports_profile_mode and not self.is_doorbell()) or (
+                self.supports_exposure_anti_flicker() and self._wanted_by(SELECT)
+            ):
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
@@ -2570,7 +3411,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
-                    pass
+                    if self.supports_exposure_anti_flicker():
+                        previous_mode = getattr(self, "data", None) or {}
+                        # Hold the last displayed state for this failed poll.
+                        # Writes resolve the profile from a fresh read.
+                        for field in ("Config[0]", "ConfigEx"):
+                            key = f"table.VideoInMode[{self._channel}].{field}"
+                            if key in previous_mode:
+                                data[key] = previous_mode[key]
 
             # The profile mode above has to be read first because the lighting
             # call below needs it. The PTZ position does not, so it joins the
@@ -2614,7 +3462,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # with no camera whether its motion detection is on.
             # `is_indoor_monitor_without_video` is the same answer #958 used to
             # take the camera entities away from such a device.
-            if self._wanted_by(CAMERA, SWITCH) and not (
+            if self._wanted_by(CAMERA, SWITCH, NUMBER) and not (
                 self.is_indoor_monitor_without_video()
             ):
                 coros.append(
@@ -2622,11 +3470,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self.client.async_get_config_motion_detection()
                     )
                 )
-            # Only the preset position select reads this, and it is one of the
-            # two per-poll calls the config cache does not cover.
-            if self.supports_day_night_color() and self._wanted_by(SELECT):
+            # Read each cycle only while a select is present. It is a getConfig,
+            # so the shared config cache serves most cycles without a request;
+            # the wrapper keeps a refusal from failing the whole refresh, the
+            # same reason its two siblings below are wrapped.
+            if (
+                self.supports_day_night_color() or self.supports_image_options()
+            ) and self._wanted_by(SELECT):
                 coros.append(
-                    asyncio.ensure_future(self.client.async_get_video_in_options())
+                    asyncio.ensure_future(self._async_fetch_video_in_options())
                 )
             if self._supports_ptz_position and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(_ptz_position()))
@@ -2709,14 +3561,36 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # reason every read here is.
             if self._supports_system_load and self._wanted_by(SENSOR):
                 coros.append(asyncio.ensure_future(self._async_fetch_system_load()))
-            # Picture adjustments for the number platform (brightness, contrast,
-            # saturation, hue): one read per poll, and only where the device
-            # actually reported them at setup. Gated on the probe rather than on
-            # the platform alone, so a device that refuses the table is never
-            # asked again, and wrapped, so a permissions change made after setup
-            # cannot take the entry down the way #1006 did.
-            if self._video_color_fields and self._wanted_by(NUMBER):
+            # Picture controls for the number and select platforms: one read per
+            # poll, and only where the device actually reported them at setup.
+            # Gated on the probe rather than on the platform alone, so a device
+            # that refuses the table is never asked again, and wrapped, so a
+            # permissions change made after setup cannot take the entry down
+            # the way #1006 did.
+            if self._video_color_fields and self._wanted_by(NUMBER, SELECT):
                 coros.append(asyncio.ensure_future(self._async_fetch_video_color()))
+            if self._video_image_control_fields and self._wanted_by(SWITCH, SELECT):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_video_image_control())
+                )
+            if self.supports_exposure_anti_flicker() and self._wanted_by(SELECT):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_exposure_anti_flicker())
+                )
+            for config_name, spec in AUDIO_CONTROLS.items():
+                platform = NUMBER if spec[2] == "percentage" else SWITCH
+                if self.supports_audio_control(config_name) and self._wanted_by(
+                    platform
+                ):
+                    coros.append(
+                        asyncio.ensure_future(
+                            self._async_fetch_audio_control(config_name)
+                        )
+                    )
+            # Overlay visibility for the switches. Gated on the probe and the
+            # platform, and wrapped, for the same reasons as the two above.
+            if self.reads_video_widget() and self._wanted_by(SWITCH):
+                coros.append(asyncio.ensure_future(self._async_fetch_video_widget()))
             # Lighting_V2 is the light platform's table -- except that the
             # Amcrest doorbell's "Security Light" is a *select*, and its
             # current_option reads table.Lighting_V2[0][0][1].Mode/.State. A
@@ -2751,8 +3625,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_vth_phone_settings())
                 )
-            # Only the camera-link selects of an indoor monitor read this one.
-            if self.is_indoor_monitor() and self._wanted_by(SELECT):
+            # Only an indoor monitor's own controls read this one.
+            if self.reads_vth_camera_links():
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_vth_camera_links())
                 )
@@ -2923,6 +3797,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # as the device having sent nothing.
         self._remember_event(event)
         event["DeviceName"] = self.get_device_name()
+        self._tag_event_with_device_id(event)
         _LOGGER.debug(f"VTO Data received: {event}")
         self._handle_anpr_plate(event)
         self.hass.bus.fire("dahua_event_received", event)
@@ -3118,7 +3993,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # the sensor can report which rule tripped (#373). Only when the event
             # carried any -- a plain VideoMotion leaves whatever was last there
             # rather than blanking it, matching how the timestamp persists.
-            if details and code not in clear_only:
+            # A new call replaces the previous call's identity even when this
+            # payload has no usable details. A detail-free Stop still keeps
+            # the last call available after ringing ends.
+            if (
+                details
+                or (raw_code in CALL_BUTTON_EVENTS and action in {"Start", "Pulse"})
+            ) and code not in clear_only:
                 self._dahua_event_details[event_key] = details
 
             if action == "Start":
@@ -3136,6 +4017,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # and only door 1 may write to it.
                     if door_index(event) != 0:
                         continue
+                    # And the relay is not the door. A VTO2202F-P-S2 reports
+                    # both down this one code, and the relay's Close landed on
+                    # the contact sensor while the gate was still swinging
+                    # (#1166).
+                    #
+                    # Learned from what the device has actually sent, rather
+                    # than filtered outright: a VTO with no contact wired to it
+                    # may have nothing but the relay form to report, and
+                    # dropping that would leave its sensor unable to move. So
+                    # the relay drives the sensor until a contact event proves
+                    # there is something better, and never again after.
+                    if door_status_is_relay(event):
+                        if self._door_contact_seen:
+                            _LOGGER.debug(
+                                "Ignoring a DoorStatus relay event on %s: the "
+                                "door contact reports this sensor",
+                                self.get_device_name(),
+                            )
+                            continue
+                    elif door_status_is_contact(event):
+                        self._door_contact_seen = True
                     if event_payload(event).get("Status", "") == "Open":
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
@@ -3177,22 +4079,71 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # That project also warns the values vary by model, so this
                     # widens what counts as a ring rather than claiming a
                     # complete mapping.
-                    state = event_payload(event).get("State", 0)
-                    try:
-                        numeric_state = int(state)
-                    except (TypeError, ValueError):
-                        numeric_state = None
-                    pressed = numeric_state in DOORBELL_RINGING_STATES
-                    if pressed:
+                    payload = event_payload(event)
+                    # Absent, not merely unreadable. A `State` that is
+                    # present and cannot be read is a state nobody can
+                    # judge, and that still must not ring.
+                    if (
+                        code == "DoorbellPressed"
+                        and raw_code not in DOORBELL_STATE_SOURCES
+                        and "State" not in payload
+                    ):
+                        # A press derived from a code that carries no call
+                        # state at all. `translate_event_code` has already
+                        # decided it is a press -- `_DoTalkAction_` only on
+                        # `Action: Invite` -- and there is nothing further
+                        # to test.
+                        #
+                        # Measured by @DrSpaldo on #1121: the subscription
+                        # and the translation both worked, the Invite
+                        # reached its listeners, and the sensor still never
+                        # moved, because a missing State read as 0 and 0 is
+                        # not a ring, and 0 is the value for idle so
+                        # the unknown-state note returns without logging.
+                        #
+                        # `BackKeyLight` is excluded above because it does
+                        # carry a state, so a missing one there is a device
+                        # being unexpected and must still not ring.
+                        # `PhoneCallDetect` has no State in the fixture
+                        # this repo has always carried for it, so the same
+                        # silence would follow for any device that sends it
+                        # as a Pulse. Not measured on Amcrest hardware.
                         self._dahua_event_timestamp[event_key] = int(time.time())
                     else:
-                        self._dahua_event_timestamp[event_key] = 0
-                        self._note_unknown_doorbell_state(numeric_state, state)
+                        state = payload.get("State", 0)
+                        try:
+                            numeric_state = int(state)
+                        except (TypeError, ValueError):
+                            numeric_state = None
+                        pressed = numeric_state in DOORBELL_RINGING_STATES
+                        if pressed:
+                            self._dahua_event_timestamp[event_key] = int(time.time())
+                        else:
+                            self._dahua_event_timestamp[event_key] = 0
+                            self._note_unknown_doorbell_state(numeric_state, state)
             else:
                 continue
 
             for listener in listeners:
                 listener()
+
+    @callback
+    def _tag_event_with_device_id(self, event: dict) -> None:
+        """Name the sending device on an event about to reach the bus.
+
+        Called on both transports, after `_remember_event`, for the same reason
+        `DeviceName` is: the diagnostics buffer is meant to hold what the device
+        sent rather than what we added to it, and `_remember_event` takes its own
+        `dict(event)` copy, so anything set after this point stays out of it.
+
+        The key is absent rather than None when the device cannot be resolved.
+        An automation filtering on `event_data` matches on the keys present, so a
+        null would match nothing and read as "sent by no device" instead of "not
+        known yet".
+        """
+        device_id = self.event_device_id()
+        if device_id is not None:
+            event[ATTR_DEVICE_ID] = device_id
 
     def _remember_event(self, event: dict) -> None:
         """Keep the last few events, so diagnostics can show what arrived.
@@ -3208,12 +4159,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Stored before the event is enriched with the device name, because what
         matters for diagnosis is what the device sent.
         """
+        row = {"seconds_ago_at_capture": int(time.time()), "event": dict(event)}
         buffer = getattr(self, "_recent_events", None)
         if buffer is None:
             buffer = self._recent_events = deque(maxlen=RECENT_EVENT_COUNT)
-        buffer.append(
-            {"seconds_ago_at_capture": int(time.time()), "event": dict(event)}
-        )
+        buffer.append(row)
+
+        # And the newest of each code, which is what survives a flood. Same
+        # row object: it is never mutated after this, and two references cost
+        # nothing next to a second copy of an ANPR payload.
+        latest = getattr(self, "_latest_event_by_code", None)
+        if latest is None:
+            latest = self._latest_event_by_code = {}
+        code = event.get("Code")
+        if isinstance(code, str) and code:
+            if code in latest or len(latest) < RECENT_EVENT_CODES:
+                latest[code] = row
 
     def handle_event(self, event: dict):
         """Handle one event the host stream has decided belongs to this channel."""
@@ -3231,6 +4192,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # Put the event on the HA event bus
         event["name"] = self.get_device_name()
         event["DeviceName"] = self.get_device_name()
+        self._tag_event_with_device_id(event)
         self.hass.bus.fire("dahua_event_received", event)
 
         # When there's an event start we'll update the a map x to the current timestamp in seconds for the event.
@@ -3242,7 +4204,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._dispatch_event(event, event.get("action", ""))
 
     def _extract_event_details(self, event: dict) -> dict:
-        """The fields of an IVS/smart event an automation wants, or {} if none.
+        """The fields of an event an automation wants, or {} if none.
 
         Which rule tripped (`rule_name`/`rule_id`), which way a line was crossed
         (`direction`), and what was seen (`object_type`). All optional: a plain
@@ -3272,6 +4234,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         object_type = (data.get("Object") or {}).get("ObjectType")
         if object_type and object_type.lower() != "unknown":
             details["object_type"] = object_type
+
+        # Which call button rang, on a door station that has more than one
+        # (#1156). Scoped to the codes whose Index means a button: every
+        # event carries an Index, and on all the others it is a channel.
+        if event.get("Code") in CALL_BUTTON_EVENTS:
+            index = call_button_index(event)
+            if index is not None:
+                details["call_button_index"] = index
+                button = CALL_BUTTON_BY_INDEX.get(index)
+                if button is not None:
+                    details["call_button"] = button
+            # The SIP call slot, kept as the string the device sent. Measured as
+            # 7, 2, 5, 6, 4 across five consecutive calls, so it is a slot and
+            # not a count, and it is what pairs this event with the `Invite`
+            # that follows it two to four milliseconds later.
+            call_id = data.get("CallID")
+            if call_id is not None:
+                details["call_id"] = call_id
         return details
 
     def translate_event_code(self, event: dict):
@@ -3325,6 +4305,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     codes.append("SmartMotionVehicle")
 
             return codes if codes else [code]
+
+        # A door station that talks SIP reports the whole call on one code,
+        # and only the invitation is a button press (#1121). Measured by
+        # @DrSpaldo on a DHI-ASI7214S and a DHI-ASI6214S-PW: one press sends
+        # four _DoTalkAction_ events, Invite then Answer then two Hangups,
+        # sharing a CallID. A sensor built straight from the code would come
+        # on again when the call was answered and twice more when it ended.
+        #
+        # So only Invite is the press, and it joins the translation that is
+        # already here rather than becoming a code of its own. Everything
+        # else returns the raw code, which nothing subscribes to, so it is
+        # dropped where every other unselected code is dropped.
+        #
+        # RoomNo is deliberately not read: it is the room the station is
+        # calling, set per device in its web UI, so it identifies the
+        # destination rather than the press, and Answer does not carry it.
+        if code == "_DoTalkAction_":
+            if event_payload(event).get("Action") == "Invite":
+                return ["DoorbellPressed"]
+            return [code]
 
         # Convert doorbell pressed related events to common event name, DoorbellPressed.
         # VTO devices will use the event BackKeyLight and the Amcrest devices seem to use PhoneCallDetect
@@ -3983,8 +4983,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Deleted rather than left standing when the condition clears, so somebody
         who changes the codec and reloads sees it go.
         """
-        issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(self._address)
-        affected = _HOST_UNPLAYABLE.setdefault(self._address, set())
+        # ⚠ Per DEVICE, not per address, @rroller on #1127. Two Dahua boxes can
+        # sit behind one IP on different ports, and this is encoder state, which
+        # AGENTS.md puts squarely in the per-device scope. Keyed by address, the
+        # two shared one card and one affected-channel set, so one recorder's
+        # channel 0 stood in for the other's: he configured an H.265 channel 0
+        # on port 80 and an H.264 channel 0 on port 8080 and had the repair
+        # write to the wrong box and clear the warning of the right one.
+        #
+        # The address-keyed card from #1048 is deleted alongside, or an install
+        # that already carries one keeps it for ever: nothing raises that id
+        # again, so nothing ever deletes it either.
+        device = self._unplayable_key()
+        issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(device)
+        legacy_issue_id = ISSUE_WEBRTC_CANNOT_PLAY.format(self._address)
+        if legacy_issue_id != issue_id:
+            ir.async_delete_issue(self.hass, DOMAIN, legacy_issue_id)
+        affected = _HOST_UNPLAYABLE.setdefault(device, set())
 
         if dahua_utils.webrtc_cannot_play(self._stream_codecs):
             affected.add(self._channel)
@@ -3995,19 +5010,152 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             return
 
+        # Asked and answered. The card describes a conditional failure, and
+        # somebody who has looked at live view and found H.265 plays in the
+        # browsers they use has answered the condition for their install
+        # (#1138). Raising it again every refresh is then nagging about a
+        # problem they do not have, and a fixable issue offers its flow rather
+        # than an Ignore, so there was no way to put it down.
+        #
+        # Deleted as well as not raised, so the decision clears a card that is
+        # already standing instead of waiting for the condition to change.
+        #
+        # `getattr`, because this is a new reader of `config_entry` on a path
+        # the test doubles reach with `object.__new__` and only the attributes
+        # each case needs. Demanding it here took nine of them down with an
+        # AttributeError, and a card shown to somebody who never chose is the
+        # right way to be wrong anyway.
+        from . import h265_was_accepted
+
+        if h265_was_accepted(getattr(self, "config_entry", None)):
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+
         ir.async_create_issue(
             self.hass,
             DOMAIN,
             issue_id,
-            is_fixable=False,
+            is_fixable=True,
             severity=ir.IssueSeverity.WARNING,
             translation_key="webrtc_cannot_play",
+            # The device, so the flow reaches exactly the box this is about.
+            # The address as well, because that is what the text shows and a
+            # port is noise to a reader with one recorder.
+            data={"address": self._address, "device": device},
             translation_placeholders={
                 "address": self._address,
                 "channels": ", ".join(str(channel) for channel in sorted(affected)),
                 "count": str(len(affected)),
             },
         )
+
+    async def async_recheck_stream_codecs(self) -> bool:
+        """Read `Encode` again and re-judge the card. True if it really said.
+
+        The codecs are read once, in the one-time init block, because nothing
+        changes them while Home Assistant runs. Something now does: the repair
+        flow writes a codec and the card has to answer for the new state rather
+        than the state at setup. A reload would also do it and costs the user
+        every entity on the device, so this is the narrow version.
+
+        ⚠ Deliberately NOT `_async_read_stream_codecs`, @rroller on #1127.
+        That one assigns whatever came back and re-judges from it, and
+        `async_get_config` answers {} for a refusal, so a read-back that
+        failed erased the known H.265 state and then deleted the warning
+        having learned nothing at all. He reproduced exactly that: a write
+        followed by {}, reported as `write_refused` by the flow and leaving no
+        issue in the registry.
+
+        So an answer with nothing about this channel changes nothing and
+        returns False. The caller treats that as "not confirmed" rather than
+        as success, and the card it was about stays up.
+
+        True means the answer stated this channel's MAIN stream codec, which
+        is the only thing the repair writes and the only thing the card
+        judges. An answer that moved the audio flag, or spoke only about a
+        sub stream, is applied where it was specific and still returns False.
+        """
+        try:
+            encode = await self.client.async_get_config("Encode")
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not re-read Encode on %s", self._address, exc_info=exception
+            )
+            return False
+
+        codecs = dahua_utils.parse_stream_codecs(encode, self._channel)
+        if not codecs:
+            _LOGGER.debug(
+                "Re-read of Encode on %s said nothing about channel %s; keeping "
+                "what is held",
+                self._address,
+                self._channel,
+            )
+            return False
+
+        # ⚠ Merged per FIELD, and "nonempty" was one question short of this,
+        # @rroller on #1127. `parse_stream_codecs` seeds every field it did not
+        # see with None, so a reply carrying only this channel's `AudioEnable`,
+        # or only an `ExtraFormat` row, produces a nonempty map whose main
+        # stream has codec None. Assigning that erased the H.265 this channel
+        # really has and then let the card be re-judged on the erasure, so the
+        # warning went while the flow was reporting the write refused.
+        #
+        # None already means "the answer did not say" in the parser, so the
+        # rule falls out of a convention it already keeps: a field the answer
+        # stated wins, a field it did not keeps what is held, and a stream it
+        # did not mention is untouched.
+        merged = {
+            index: dict(held) for index, held in (self._stream_codecs or {}).items()
+        }
+        for index, stream in codecs.items():
+            into = merged.setdefault(index, {"codec": None, "audio": None})
+            into.update(
+                {field: value for field, value in stream.items() if value is not None}
+            )
+        self._stream_codecs = merged
+
+        # ⚠ And confirmation is about the MAIN stream's codec specifically,
+        # which is the only thing the repair wrote and the only thing the card
+        # judges. An answer that moved the audio flag, or another stream, has
+        # told us nothing about whether the write landed.
+        said_main_codec = (codecs.get(0) or {}).get("codec") is not None
+
+        try:
+            self._async_report_unplayable_stream()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not re-report the unplayable stream on %s",
+                self._address,
+                exc_info=exception,
+            )
+        return said_main_codec
+
+    @callback
+    def _unplayable_key(self) -> str:
+        """The device this card is about, falling back to the address.
+
+        Tolerated rather than demanded: a great many tests here build a
+        coordinator with `object.__new__` and set only the attributes their
+        own subject touches, so insisting on a client would break doubles that
+        have nothing to do with codecs (the pattern that cost a day in #1006).
+        A real coordinator always has one, so the fallback is not a path any
+        device takes.
+        """
+        client = getattr(self, "client", None)
+        return getattr(client, "device_key", None) or self._address
+
+    @callback
+    def channels_that_cannot_be_played(self) -> set:
+        """Which channels on this device are behind the card, by index.
+
+        Per device rather than per channel, because the card is: one box
+        raises one issue naming every channel in the pair, and the repair that
+        fixes it needs the same list. Read from the shared table rather than
+        recomputed, so the flow and the card cannot disagree about who is
+        affected.
+        """
+        return set(_HOST_UNPLAYABLE.get(self._unplayable_key()) or ())
 
     def get_stream_codec(self, stream_index: int):
         """The codec one stream carries, or None if the device did not say."""
@@ -4242,6 +5390,221 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return field in getattr(self, "_video_color_fields", frozenset())
 
+    def supports_exposure_anti_flicker(self) -> bool:
+        return bool(getattr(self, "_supports_exposure_anti_flicker", False))
+
+    def get_active_profile_index(self) -> int | None:
+        return active_profile_index(getattr(self, "data", None) or {}, self._channel)
+
+    def get_exposure_anti_flicker(self) -> str | None:
+        profile_index = self.get_active_profile_index()
+        if profile_index is None:
+            return None
+        return exposure_anti_flicker_option(
+            getattr(self, "data", None) or {}, self._channel, profile_index
+        )
+
+    async def async_set_exposure_anti_flicker(self, option: str) -> None:
+        value = EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION.get(option)
+        if value is None:
+            return
+
+        mode_data = await self.client.async_get_video_in_mode(fresh=True)
+        profile_index = active_profile_index(mode_data, self._channel)
+        if profile_index is None:
+            raise ConnectionError(
+                "The current VideoInMode profile could not be established"
+            )
+        exposure_data = await self.client.async_get_exposure_anti_flicker_config()
+        if (
+            exposure_anti_flicker_option(exposure_data, self._channel, profile_index)
+            is None
+        ):
+            raise ConnectionError(
+                "The current VideoInExposure AntiFlicker value could not be established"
+            )
+        await self.client.async_set_exposure_anti_flicker(
+            self._channel, profile_index, value
+        )
+
+    def supports_audio_control(self, config_name: str) -> bool:
+        """Whether the device reported a verified owner for this control."""
+        return self.audio_control_owner(config_name) is not None
+
+    def audio_control_owner(self, config_name: str) -> int | None:
+        """Return the exact row established by this control's capability probe."""
+        return (getattr(self, "_audio_control_owners", None) or {}).get(config_name)
+
+    def supports_audio_input_volume(self) -> bool:
+        return self.supports_audio_control("microphone_volume")
+
+    def supports_audio_output_volume(self) -> bool:
+        return self.supports_audio_control("speaker_volume")
+
+    def supports_audio_in_denoise(self) -> bool:
+        return self.supports_audio_control("noise_filter")
+
+    def supports_video_image_control(self, field: str) -> bool:
+        """Whether this channel reported the requested image-control field."""
+        return field in getattr(self, "_video_image_control_fields", frozenset())
+
+    def video_image_control_table(self) -> str:
+        """Which table this channel reported its image controls in.
+
+        A plain attribute read, so the class default is the only thing holding
+        the answer for a coordinator built without `__init__` -- which is how
+        much of the suite and every `object.__new__` path builds one. A
+        `getattr` fallback here would answer correctly with the class default
+        deleted, which is a second copy of the same decision and hides the loss
+        of the first.
+        """
+        return self._video_image_control_table
+
+    async def async_set_video_image_control(self, field: str, value: bool):
+        """Write one image control back to the table it was read from."""
+        return await self.client.async_set_video_image_control(
+            self.get_channel(),
+            field,
+            value,
+            self.video_image_control_table(),
+        )
+
+    def supports_image_options(self) -> bool:
+        """Whether this channel reported any VideoInOptions control.
+
+        Not on an indoor monitor without a camera, for the same reason
+        `supports_day_night_color` excludes it: the monitor answers the table
+        for an image it does not have.
+        """
+        return bool(self._image_option_fields) and not (
+            self.is_indoor_monitor_without_video()
+        )
+
+    def supports_image_option(self, field: str) -> bool:
+        """Whether this channel reported this VideoInOptions control."""
+        return field in self._image_option_fields and not (
+            self.is_indoor_monitor_without_video()
+        )
+
+    def reads_video_widget(self) -> bool:
+        """Whether the poll should read VideoWidget for this channel.
+
+        The poll and the switch platform must agree on the monitor rule. The
+        probe can only answer what the table said, and an indoor monitor
+        without a camera answers it for its screen, so the fields alone are not
+        enough: no switch is created there, and reading the table every cycle
+        would feed nothing.
+        """
+        return bool(self._video_widget_fields) and not (
+            self.is_indoor_monitor_without_video()
+        )
+
+    def get_image_option(self, field: str):
+        """One VideoInOptions field for this channel, as the device spells it."""
+        return (getattr(self, "data", None) or {}).get(
+            "table.VideoInOptions[{0}].{1}".format(self.get_channel(), field)
+        )
+
+    def get_wide_dynamic_range_option(self) -> str | None:
+        """The WDR select's current word, or None if the device said something
+        this mapping does not cover."""
+        raw = self.get_image_option("WideDynamicRangeMode")
+        if raw is None:
+            return None
+        return WIDE_DYNAMIC_RANGE_OPTIONS.get(str(raw).strip())
+
+    def get_wide_dynamic_range_level(self) -> int | None:
+        """The WDR level the device holds, or None.
+
+        The caller writes 0 for Off because mode 0 alone is ignored while the
+        level stays at 50 -- Intelbras measured that on both cameras it
+        validated. Reading is all this method does.
+        """
+        try:
+            return int(self.get_image_option("WideDynamicRange"))
+        except (TypeError, ValueError):
+            return None
+
+    def get_exposure_mode_option(self) -> str | None:
+        """The Exposure Mode select's current word, or None when unknown."""
+        raw = self.get_image_option("ExposureMode")
+        if raw is None:
+            return None
+        return EXPOSURE_MODE_OPTIONS.get(str(raw).strip())
+
+    def supports_video_widget_overlay(self, field: str) -> bool:
+        """Whether this channel reported an overlay visibility field.
+
+        Not on an indoor monitor without a camera: it has no video to burn an
+        overlay into, so a VTH that answers the table for its screen would
+        otherwise get controls that change nothing. `reads_video_widget` is the
+        same rule for the poll, so the two cannot drift.
+        """
+        return field in self._video_widget_fields and self.reads_video_widget()
+
+    def is_video_widget_overlay_on(self, field: str) -> bool | None:
+        """Whether an overlay is visible, or None if the poll has no usable value.
+
+        None rather than False so a channel whose table read failed does not
+        report an overlay as hidden; the switch also gates `available` on it.
+        A present value this mapping does not recognise is None for the same
+        reason: `get_video_image_control` reads its booleans the same way, and
+        a guessed "off" is worse than an unavailable switch.
+        """
+        raw = (getattr(self, "data", None) or {}).get(
+            "table.VideoWidget[{0}].{1}".format(self.get_channel(), field)
+        )
+        if raw is None:
+            return None
+        return {"true": True, "false": False}.get(str(raw).strip().lower())
+
+    async def async_set_video_widget_overlay(self, field: str, enabled: bool):
+        """Show or hide one VideoWidget overlay on this channel."""
+        return await self.client.async_set_video_widget_overlay(
+            self.get_channel(), field, enabled
+        )
+
+    # Which region's sensitivity and threshold are exposed, of the four the
+    # recorder's own UI offers.
+    #
+    # One, deliberately. Four regions times two fields times twelve channels is
+    # ninety-six entities on one recorder, for a feature whose evidence is that
+    # five channels have region 1 tuned and none has ever used regions 2 to 4.
+    # Region 1 is also the one every channel has and the one the UI opens on.
+    MOTION_REGION = 0
+
+    def motion_region_key(self, field: str) -> str:
+        """Where this channel's region 1 sensitivity or threshold lives."""
+        return "table.MotionDetect[{0}].MotionDetectWindow[{1}].{2}".format(
+            self._channel, self.MOTION_REGION, field
+        )
+
+    def get_motion_region_value(self, field: str):
+        """This channel's region 1 `Sensitive` or `Threshold`, or None.
+
+        Measured on a DHI-NVR5464-16P-EI, whose own web UI offers both as 0 to
+        100 and writes them straight into these fields: setting Channel 1's
+        sensitivity to 100 in the UI put 100 into
+        `MotionDetect[0].MotionDetectWindow[0].Sensitive`, so the displayed
+        scale and the stored field are the same number.
+        """
+        value = (getattr(self, "data", None) or {}).get(self.motion_region_key(field))
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def supports_motion_region(self, field: str) -> bool:
+        """Whether this device reports region 1 at all.
+
+        Judged on the key rather than on the device class, because the two
+        kinds really differ: a recorder channel carries
+        `MotionDetectWindow[0..3]`, and a VTO2000A carries none at all and has
+        only the whole-channel `Level` (#1115). A slider for a field the device
+        does not have would read unknown for ever.
+        """
+        return self.motion_region_key(field) in (getattr(self, "data", None) or {})
+
     def supports_vth_phone_setting(self, field: str) -> bool:
         """Whether this monitor reported this call setting at setup (#949).
 
@@ -4281,10 +5644,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return {"true": True, "false": False}.get(str(raw).strip().lower())
 
     def get_video_color(self, field: str):
-        """A picture adjustment for this channel's general profile, or None.
+        """A numeric picture adjustment for this channel's general profile.
 
         Read from the poll's VideoColor table by the image-adjustment number
-        entities (brightness, contrast, saturation, hue).
+        entities.
         """
         raw = self.data.get(
             "table.VideoColor[{0}][0].{1}".format(self.get_channel(), field)
@@ -4295,6 +5658,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return int(raw)
         except (TypeError, ValueError):
             return None
+
+    def get_video_image_control(self, field: str) -> bool | int | None:
+        """Read a reported image-control field from this channel's latest poll."""
+        raw = self.data.get(
+            f"table.{self.video_image_control_table()}[{self.get_channel()}].{field}"
+        )
+        if raw is None:
+            return None
+        if field in {"Flip", "Mirror"}:
+            return {"true": True, "false": False}.get(str(raw).strip().lower())
+        if field == "Rotate90":
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def get_video_color_style(self) -> str | None:
+        """The supported Style value for this channel's general profile."""
+        raw = self.data.get("table.VideoColor[{0}][0].Style".format(self.get_channel()))
+        return raw if isinstance(raw, str) else None
 
     async def _async_retry_device_class(self) -> None:
         """Ask again for a device class the device did not answer.
@@ -4508,11 +5892,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         Deliberately additive. A device that answers `VTO` is one, whatever its
         model string says, which is what the list of prefixes below keeps
         failing to cover for rebadges (#690). But a device that answers
-        something else, or does not answer at all, still gets the list: no
-        Amcrest or Imou doorbell has been measured here, and a wrong negative
-        would take every doorbell entity away from people who have them today.
+        something else, or does not answer at all, still gets the list, and a
+        wrong negative would take every doorbell entity away from people who
+        have them today.
+
+        `DB` is the second answer that means doorbell, measured by @phabibjr
+        on a DH-DB6I in #1131: HTTP 200, `class=DB`, not `VTO`. So the Amcrest
+        and Imou family names itself too, and it names itself something the
+        VTO check alone does not recognise. Additive for the same reason as
+        above: it can only make a device a doorbell, never stop one being one.
         """
-        if getattr(self, "_device_class", "") == "VTO":
+        if getattr(self, "_device_class", "") in ("VTO", "DB"):
             return True
         m = self.model.upper()
         return (
@@ -4525,10 +5915,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     def is_amcrest_doorbell(self) -> bool:
-        """Returns true if this is an Amcrest doorbell - IMOU DB61i is identical"""
-        return self.model.upper().startswith("AD") or self.model.upper().startswith(
-            "DB6"
-        )
+        """Returns true if this is an Amcrest doorbell - IMOU DB61i is identical
+
+        The `DB6` family is matched as a prefix and also after a vendor prefix,
+        which is the same shape `is_doorbell` already allows for VTO: a rebadge
+        reports `DH-DB6I` rather than `DB6I`, and a prefix test alone takes
+        every doorbell entity away from it.
+
+        Reported and verified on hardware by @phabibjr in #1131: a DH-DB6I on
+        firmware 1.000.020000000.9.R, where the four doorbell sensors never
+        appeared and the button press was doing nothing, and where making this
+        match brought them back and lit `button_pressed` for about 5 seconds.
+
+        This gates more than those sensors. The illuminator light, the security
+        light select and one poll read are all behind it, so a device that
+        falls through here loses all of them silently. Deliberately not
+        extended to `AD`: two letters that short appear inside unrelated model
+        strings, and nothing has been measured for a vendor-prefixed one.
+        """
+        m = self.model.upper()
+        return m.startswith(("AD", "DB6")) or "-DB6" in m or "_DB6" in m
 
     def is_empiretech_doorbell(self) -> bool:
         """Returns true if this is an EmpireTech doorbell"""
@@ -4555,6 +5961,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         others do. I don't know of a better way to detect this
         """
         if not self._supports_lighting:
+            return False
+        if self.is_indoor_monitor_without_video():
+            # A VTH5221D answers the Lighting table with exactly one key,
+            # `Mode=Off`, and no light bank at all -- so the probe above reads
+            # "this channel has an infrared light" from a table that is there
+            # rather than from an emitter that is there. A camera on the same
+            # recorder returns Mode, Correction, Sensitive and MiddleLight.
+            #
+            # The device has already said it has no camera, in its own
+            # RemoteDevice entry, and every other camera capability is gated on
+            # that answer. These two were the last ones that were not, so an
+            # indoor monitor kept an Infrared light and an Infrared Mode select
+            # and nothing else.
+            #
+            # Here rather than in light.py and select.py because the poll reads
+            # the same rule: this also stops `async_get_config_lighting` being
+            # fetched every scan interval for the life of the entry.
+            #
+            # Judged on `is_indoor_monitor_without_video` and not on the class,
+            # because some indoor monitors do have a camera and this says
+            # nothing about those.
             return False
         return (
             "-AS-PV" not in self.model
@@ -4607,16 +6034,61 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         entity on silence would take the light away from everyone who has one
         working. Only a device that lists its emitters and names no white one
         loses it, which is the only case where we know it was wrong.
+
+        **A named white row is not enough either, and that is #1094.** A row
+        can name `WhiteLight` for an emitter the camera does not have.
+        Measured on a DHI-NVR5464-16P-EI whose owner could say which channels
+        are physically fitted with one, and only two channels of twelve report
+        a white row at all:
+
+            ch 1   no white light fitted     3 fields, no brightness bank
+                     LightType, Mode, PercentOfMaxBrightness
+            ch 11  white light fitted        9 fields, NearLight and FarLight
+
+        The tell is the **brightness bank**, and specifically that rather than
+        any brightness-shaped field: the phantom row carries
+        `PercentOfMaxBrightness` too, so reading that as evidence of an emitter
+        is the same mistake one layer down.
+
+        On the phantom the entity is not merely decorative, it raises.
+        `illuminator_brightness_bank` falls back to `MiddleLight` when a device
+        names none, so turning it on composes a key the row has never had and
+        the recorder refuses the whole write:
+
+            setConfig&Lighting_V2[1][0][1].Mode=Manual
+                     &Lighting_V2[1][0][1].MiddleLight[0].Light=100
+              -> declined the write: Error
+
+        Only a row that names white **and** names a bank is believed. A device
+        that names no emitters at all is still left alone, as above.
         """
         key = "table.Lighting_V2[{0}][0][{1}].LightType"
         declared = [
-            self.data.get(key.format(self._channel, index))
+            (index, self.data.get(key.format(self._channel, index)))
             for index in range(MAX_LIGHTING_V2_LIGHTS)
         ]
-        named = [light for light in declared if light is not None]
+        named = [(index, light) for index, light in declared if light is not None]
         if not named:
             return True
-        return WHITE_LIGHT in named
+        return any(
+            light == WHITE_LIGHT and self._names_a_brightness_bank(index)
+            for index, light in named
+        )
+
+    def _names_a_brightness_bank(self, index: int) -> bool:
+        """Whether this Lighting_V2 row carries a brightness bank at all.
+
+        The same three banks `illuminator_brightness_bank` chooses between, so
+        the question asked here is exactly the one the write will ask: a row
+        with none of them is one whose write cannot be composed.
+        """
+        return any(
+            "table.Lighting_V2[{0}][0][{1}].{2}[0].Light".format(
+                self._channel, index, bank
+            )
+            in self.data
+            for bank in LIGHT_BRIGHTNESS_BANKS
+        )
 
     async def _async_fetch_channel_lighting_scheme(self) -> dict:
         """Keep only this channel's previous scene modes if its read fails."""
@@ -4830,8 +6302,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 return True
             # The flood light only reads the coaxial status on firmware that reports
             # floodlightmode. Without it the same entity reads Lighting_V2 instead, and
-            # fetching this would be pointless for it too.
-            if self.is_flood_light() and self._supports_floodlightmode:
+            # fetching this would be pointless for it too. The method rather than
+            # `_supports_floodlightmode`, which setup only assigns after the
+            # coaxial probe has asked this.
+            if self.is_flood_light() and self.supports_floodlightmode():
                 return True
         return False
 
@@ -4964,6 +6438,59 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # We need a unique identifier. For NVRs we get back the same serial, so add the channel to the end of the sn
             return "{0}_{1}".format(self._serial_number, self._channel)
         return self._serial_number
+
+    @callback
+    def device_identifier(self) -> tuple[str, str]:
+        """The registry identifier of this channel's device.
+
+        The same pair `entity.py` files every entity against, which is the
+        device `event_device_id` has to find. It is not called from there: most
+        of the doubles in the suite are not coordinator instances, so demanding
+        this method of them reddens twenty-two tests that only ever needed
+        `get_serial_number`. The two are held together by a test that registers
+        a device under what `device_info` reports and looks it up with this,
+        which is the coupling that matters rather than the shared expression.
+        """
+        return (DOMAIN, self.get_serial_number())
+
+    @callback
+    def event_device_id(self) -> str | None:
+        """This channel's device registry id, or None if it has none yet.
+
+        What Home Assistant means by "which device sent this", and what core
+        integrations put on a bus event they fire: rfxtrx, deconz, zwave_js, zha
+        and others all carry `device_id`, holding the registry entry id rather
+        than a vendor serial. A device trigger matches on it, so it is also the
+        prerequisite for offering one.
+
+        None rather than an exception for every way this can fail to resolve.
+        The device is registered when the first entity is added, so an event
+        arriving before that has no id to carry, and an entry being removed
+        unregisters it. This runs on the event stream, where an unguarded
+        exception takes every camera on the host down until the stream
+        reconnects (#705, #706), so it is written to be incapable of raising.
+
+        The lookup is not cached. `DeviceRegistryItems.get_entry` is index
+        backed, two dict reads, so caching would buy nothing and cost a stale id
+        after a device is deleted and recreated.
+        """
+        try:
+            device = dr.async_get(self.hass).async_get_device_by_identifier(
+                self.device_identifier(),
+                self.config_entry.entry_id,
+            )
+        except Exception:  # pylint: disable=broad-except
+            return None
+
+        device_id = getattr(device, "id", None)
+
+        # A str and nothing else. Much of the suite hands the coordinator a
+        # MagicMock for `hass`, and a mock registry answers every lookup with a
+        # mock whose `.id` is itself a mock: without this the payload would
+        # carry that object and every assertion about it would still pass.
+        if isinstance(device_id, str) and device_id:
+            return device_id
+        return None
 
     def get_last_plate(self) -> str:
         """Return the last recognized license plate string, or 'unknown'."""
@@ -5394,26 +6921,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         two cameras.
         """
 
-        def field(name):
-            return mode_data.get(
-                "table.VideoInMode[{0}].{1}".format(self._channel, name)
-            )
-
-        config = field("Config[0]")
-        config_ex = field("ConfigEx")
-
-        if config == "2":
-            return "2"
-        if config_ex is not None:
-            # Only act on a value we recognise. Treating anything else as day
-            # would override a Config[0] that is very likely right, for a
-            # string we do not understand.
-            named = str(config_ex).strip().lower()
-            if named == "night":
-                return "1"
-            if named == "day":
-                return "0"
-        return config or "0"
+        return resolve_profile_mode(mode_data, self._channel) or "0"
 
     def describe_video_profile_shape(self) -> str:
         """Which of the three VideoInMode shapes this channel is in, by name.
@@ -5663,6 +7171,52 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """returns the channel number of this camera"""
         return self._channel_number
 
+    def get_snapshot_channel(self) -> int:
+        """The channel number this channel's still is fetched with.
+
+        Separate from get_channel_number, which numbers the stream and the
+        controls, because a device can number the two paths differently. On a
+        Lorex LHV2008 (#1151) `snapshot.cgi` counts from 0 while RTSP counts
+        from 1: its owner read `snapshot.cgi?channel=1` in a browser and got
+        the second camera, and reported that every live view is right when the
+        stream is numbered `index + 1`. One number cannot be right for both
+        paths on that device.
+
+        **It follows the stream unless the owner says otherwise.** The obvious
+        rule -- give the still whatever the channel-0 probe concluded -- is the
+        one thing that cannot be done here, because a successful snapshot on
+        channel 0 has two explanations and the probe cannot tell them apart:
+
+          - the device genuinely numbers from 0, or
+          - channel 0 *aliases* channel 1 and the numbering is one-based.
+
+        On the second kind, unticking auto-detect is the owner's only way to
+        put the stream back on `index + 1`, and letting the probe keep the
+        still on the probe's answer would hand them the first camera's picture
+        under every other camera's name with nothing left to untick. rroller
+        replayed exactly that against the first version of this: responses
+        0=first, 1=first, 2=second, channel index 1, auto-detect off -- the
+        stream stayed correctly on 2 and the still moved to 1.
+
+        So the split is opt-in and the default is what the integration has
+        always done, which is also what every device but the measured one
+        wants. The owner reads `snapshot.cgi?channel=<n>` in a browser, sees
+        which camera comes back, and ticks the box if the stills are numbered
+        from zero. That is a measurement, which is what the probe is not.
+
+        A doorbell keeps its channel number either way: channel 0 does not
+        exist on a VTO.
+        """
+        if self.is_doorbell():
+            return self._channel_number
+        if self.channel_option(CONF_SNAPSHOT_CHANNEL_FROM_ZERO, False):
+            return self._channel
+        # Not `self._channel + 1`: the stream's number is the answer, and on a
+        # genuinely zero-based device with auto-detect on that is `_channel`
+        # already. Deriving it again here would disagree with the stream on the
+        # devices the probe got right.
+        return self._channel_number
+
     def get_event_key(self, event_name: str) -> str:
         """returns the event key we use for listeners. It uses the channel index to support multiple channels"""
         return "{0}-{1}".format(event_name, self._channel)
@@ -5759,10 +7313,45 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             status = await self.client.async_get_coaxial_control_io_status_rpc2(channel)
         except Rpc2MethodRefused as refused:
             if rpc2_refusal_is_a_stale_login(refused):
-                # The session, not the capability. Let it out so the shared
-                # login is rebuilt, and do not record this as an answer.
+                # The client has already discarded the expired session. Keep
+                # the fallback inside this poll's refusal handling and allow
+                # the next poll to ask again with a rebuilt login.
                 self._coaxial_status_rpc2_asked = False
-                raise
+                _LOGGER.debug(
+                    "%s channel %s: the RPC2 second opinion met an expired "
+                    "session (%s); retry on the next poll",
+                    self._address,
+                    channel,
+                    refused,
+                )
+                return None
+            if rpc2_refusal_is_a_failed_login(refused):
+                # The device would not accept a login, so RPC2 was never asked
+                # about the siren and the answer below would be a fabrication.
+                #
+                # Retried, but a bounded number of times. Measured in a double:
+                # seven channels refreshing together cost **one** declined login,
+                # not seven, because `_shared_rpc2` registers the login future
+                # before awaiting it and the poll fans out with `asyncio.gather`.
+                # One per poll is still not free -- at a 30 second scan interval
+                # that is ten inside the 300 second window a device locks out
+                # after five failures in -- so this stops after
+                # MAX_CAPABILITY_RETRIES rather than asking for ever.
+                attempts = self._coaxial_status_login_refusals = (
+                    self._coaxial_status_login_refusals + 1
+                )
+                if attempts < MAX_CAPABILITY_RETRIES:
+                    self._coaxial_status_rpc2_asked = False
+                _LOGGER.debug(
+                    "%s channel %s: RPC2 would not accept a login (%s), so the "
+                    "coaxial status was not asked over it. Attempt %s of %s",
+                    self._address,
+                    channel,
+                    refused,
+                    attempts,
+                    MAX_CAPABILITY_RETRIES,
+                )
+                return None
             _LOGGER.debug(
                 "%s channel %s: RPC2 refuses the coaxial status too (%s)",
                 self._address,
@@ -5823,9 +7412,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         different codes, and a third device answering "Authority:check failure",
         which is measured to mean no such method rather than a permission.
 
-        A stale login is re-raised rather than swallowed. That one is worth
-        recovering from, and treating it as "this device has no siren" would
-        silently drop a capability the device does have.
+        A stale login holds the last reading without deciding the capability
+        is absent. The client discards the session so a later poll can retry.
         """
         try:
             if self.uses_rpc2_deterrence() or getattr(
@@ -5837,9 +7425,64 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return await self.client.async_get_coaxial_control_io_status(channel)
         except Rpc2MethodRefused as refused:
             if rpc2_refusal_is_a_stale_login(refused):
-                # The login, not the capability. Let it out so the session is
-                # rebuilt rather than swallowing it as "no such method".
-                raise
+                # The session, not the capability, and not a reason to fail the
+                # refresh either.
+                #
+                # This used to re-raise, on the stated grounds that letting it
+                # out is what rebuilds the shared login. Measured both ways, that
+                # is not so: two polls cost four login posts whichever branch
+                # takes the refusal, because `_shared_rpc2` clears `holder.task`
+                # in its own handler before re-raising. The session is rebuilt
+                # either way, so the only thing the escape achieved was an
+                # `Error fetching dahua data` for every refresh that met an
+                # expired session -- which is the `code=287637505` line in
+                # https://github.com/rroller/dahua/issues/1159's log.
+                #
+                # Reported on its own key, like the declined login below: an
+                # expired session is not this device saying what it supports.
+                expired = (self.client.device_key, "rpc2-session")
+                if expired not in _CAPABILITY_REFUSALS_REPORTED:
+                    _CAPABILITY_REFUSALS_REPORTED.add(expired)
+                    _LOGGER.warning(
+                        "%s had an expired RPC2 session when the siren and white "
+                        "light state was read (%s). The session is rebuilt for the "
+                        "next poll and those entities hold their last value until "
+                        "then. Reported once per device",
+                        self._address,
+                        refused,
+                    )
+                else:
+                    _LOGGER.debug(
+                        "%s met an expired RPC2 session again (%s)",
+                        self._address,
+                        refused,
+                    )
+                return self._previous_coaxial_status()
+            if rpc2_refusal_is_a_failed_login(refused):
+                # The device would not accept a login, so it was never asked
+                # about the siren at all. Reported on its own key: spending the
+                # capability slot here is what kept the accurate sentence below
+                # from ever being printed on a device that had met this first
+                # (#1164).
+                declined = (self.client.device_key, "rpc2-login")
+                if declined not in _CAPABILITY_REFUSALS_REPORTED:
+                    _CAPABILITY_REFUSALS_REPORTED.add(declined)
+                    _LOGGER.warning(
+                        "%s did not accept an RPC2 login (%s), so the siren and "
+                        "white light state could not be read over RPC2 this cycle. "
+                        "That is not this device saying what it supports, so those "
+                        "entities hold their last value and a later poll asks "
+                        "again. Reported once per device",
+                        self._address,
+                        refused,
+                    )
+                else:
+                    _LOGGER.debug(
+                        "%s still will not accept an RPC2 login (%s)",
+                        self._address,
+                        refused,
+                    )
+                return self._previous_coaxial_status()
             target = (self.client.device_key, "rpc2")
             if target not in _CAPABILITY_REFUSALS_REPORTED:
                 _CAPABILITY_REFUSALS_REPORTED.add(target)
@@ -5922,6 +7565,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_vth_camera_links(self) -> dict | None:
         """The links and cameras vth_camera_links describes, or None before a read."""
         return (getattr(self, "data", None) or {}).get(VTH_CAMERA_LINKS)
+
+    def reads_vth_camera_links(self) -> bool:
+        """Whether anything on this device reads the VTOInfo table.
+
+        ⚠⚠ NAMED, and on the coordinator, because the poll's condition and the
+        entities that need it must not drift apart. This read served one
+        platform until #949: it was gated on `SELECT` alone, for the
+        camera-link select. The per-door-station ring volume is a **number**,
+        and it reads the same table, so with the gate left at `SELECT` a user
+        who turns the select platform off in the entry's options gets sliders
+        that are permanently unavailable, for a read nothing performs. Nothing
+        would log, and the entity would simply never change.
+
+        Found by mutation rather than by review: deleting the platform's own
+        `is_indoor_monitor()` guard killed no test, and asking why led here.
+        That guard is a readability echo of this one -- the data is None for
+        anything that is not a monitor, because of this very method -- so the
+        test that matters is this method's, not the platform's.
+        """
+        return self.is_indoor_monitor() and self._wanted_by(SELECT, NUMBER)
 
     async def _async_probe_vth_phone_settings(self) -> bool:
         """Ask an indoor monitor once which call settings it has (#949, #998).
@@ -6010,6 +7673,111 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 key: value
                 for key, value in previous.items()
                 if key.startswith("table.VideoColor[")
+            }
+            return carried or None
+
+    async def _async_fetch_exposure_anti_flicker(self) -> dict | None:
+        """Poll VideoInExposure, carrying only its prior values on failure."""
+        try:
+            return await self.client.async_get_exposure_anti_flicker_config()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read Exposure Anti-Flicker for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.VideoInExposure[")
+            }
+            return carried or None
+
+    async def _async_fetch_audio_control(self, config_name: str) -> dict | None:
+        """Poll one audio table, carrying only its prior keys on refusal."""
+        try:
+            return await self.client.async_get_audio_config(config_name)
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read audio control %s for channel %s",
+                config_name,
+                self._channel,
+                exc_info=exception,
+            )
+            prefix = audio_table_prefix(config_name)
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value for key, value in previous.items() if key.startswith(prefix)
+            }
+            return carried or None
+
+    async def _async_fetch_video_image_control(self) -> dict | None:
+        """Poll image controls, keeping the last answer on a refusal."""
+        try:
+            return await self.client.async_get_video_image_control(
+                self.video_image_control_table()
+            )
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read image controls for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith(f"table.{self.video_image_control_table()}[")
+            }
+            return carried or None
+
+    async def _async_fetch_video_in_options(self) -> dict | None:
+        """Poll VideoInOptions, keeping the last answer on a refusal.
+
+        The probe at setup means this is only asked of a device that served the
+        table, so a refusal here is a change of mind -- a permissions change
+        made after setup, or a device that stops answering under load. Neither
+        is a reason to fail the refresh and take every entity on the channel
+        with it. Carries only this table's keys, for the reason
+        `_async_fetch_video_color` gives.
+        """
+        try:
+            return await self.client.async_get_video_in_options()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the image options for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.VideoInOptions[")
+            }
+            return carried or None
+
+    async def _async_fetch_video_widget(self) -> dict | None:
+        """Poll overlay visibility, keeping the last answer on a refusal.
+
+        The probe at setup means this is only asked of a device that served the
+        table. A refusal here is a change of mind, which must not fail the
+        refresh and take every entity on the channel with it.
+        """
+        try:
+            return await self.client.async_get_video_widget()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the overlay visibility for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.VideoWidget[")
             }
             return carried or None
 
@@ -6161,6 +7929,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 # together, so a channel that lost that probe lost both of its controls.
 RETRYABLE_CAPABILITIES = {
     "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
+    AUDIO_CONTROLS["microphone_volume"][
+        3
+    ]: DahuaDataUpdateCoordinator._async_retry_audio_input_volume,
+    AUDIO_CONTROLS["speaker_volume"][
+        3
+    ]: DahuaDataUpdateCoordinator._async_retry_audio_output_volume,
+    AUDIO_CONTROLS["noise_filter"][
+        3
+    ]: DahuaDataUpdateCoordinator._async_retry_audio_in_denoise,
     "coaxial_control": DahuaDataUpdateCoordinator._async_retry_coaxial_control,
     "cloud_connection": DahuaDataUpdateCoordinator._async_retry_cloud_connection,
     "intelli_tour": DahuaDataUpdateCoordinator._async_retry_intelli_tour,
@@ -6178,4 +7955,7 @@ RETRYABLE_CAPABILITIES = {
     # also rename the field the diagnostics dump has been reporting.
     "system load": DahuaDataUpdateCoordinator._async_retry_system_load,
     "video_color": DahuaDataUpdateCoordinator._async_retry_video_color,
+    "exposure_anti_flicker": DahuaDataUpdateCoordinator._async_retry_exposure_anti_flicker,
+    "video_image_control": DahuaDataUpdateCoordinator._async_retry_video_image_control,
+    "video_widget": DahuaDataUpdateCoordinator._async_retry_video_widget,
 }

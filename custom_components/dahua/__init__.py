@@ -10,6 +10,7 @@ import logging
 # on this module.
 import time  # noqa: F401  pylint: disable=unused-import
 
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
@@ -34,6 +35,7 @@ from .ivs import (  # noqa: F401  pylint: disable=unused-import
 )
 
 from .const import (
+    CONF_ACCEPT_H265,
     CONF_ADDRESS,
     CONF_CHANNEL,
     CONF_EVENTS,
@@ -42,6 +44,7 @@ from .const import (
     CONF_PASSWORD,
     CONF_PORT,
     CONF_RTSP_PORT,
+    CONF_REQUIRE_REPORTED_SERIAL,
     CONF_USERNAME,
     CONF_USE_HTTPS,
     DEFAULT_EVENTS,
@@ -110,6 +113,7 @@ from .host import (  # noqa: F401  pylint: disable=unused-import
     async_record_host_auth_refusal,
     async_record_host_failure,
     async_record_host_success,
+    device_numbers_channels_from_zero,
     event_stream_retry_delay,
     is_synthesised_identity,
     jittered,
@@ -127,7 +131,10 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     DAY_NIGHT_NAMES,
     DOORBELL_KNOWN_QUIET_STATES,
     DOORBELL_RINGING_STATES,
+    CALL_BUTTON_BY_INDEX,
+    CALL_BUTTON_EVENTS,
     DOORBELL_STATE_EVENTS,
+    DOOR_CONTACT_STATUSES,
     DahuaDataUpdateCoordinator,
     FAILURES_BEFORE_BACKOFF,
     GENERIC_DEVICE_TYPES,
@@ -141,17 +148,23 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     SMART_MOTION_ROW,
     VIDEO_COLOR_FIELDS,
     WHITE_LIGHT,
+    active_profile_index,
     alarm_input_event_code,
     alarm_input_index,
     day_night_color_name,
     describe_update_failure,
+    call_button_index,
     door_index,
+    door_status_is_contact,
+    door_status_is_relay,
     doorbell_state,
     event_payload,
+    exposure_anti_flicker_option,
     failure_backoff,
     get_configured_scan_interval,
     illuminator_brightness_bank,
     illuminator_light_index,
+    image_option_fields,
     infrared_profile,
     is_onvif_channel,
     model_name,
@@ -159,10 +172,63 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     remote_device_protocol,
     smart_motion_row_indices,
     video_color_fields,
+    video_widget_fields,
     vto_retry_state,
 )
 
 WHITE_LIGHT_SCHEME = "WhiteMode"
+
+
+def device_by_identifier(registry, identifier: tuple, entry_id: str):
+    """This config entry's device holding `identifier`, or None.
+
+    `device_registry.async_get_device` is deprecated. Home Assistant reports
+    every call and says it will stop working in 2027.8:
+
+        calls `device_registry.async_get_device`, which is deprecated because
+        device identifiers and connections are no longer unique across config
+        entries; use `async_get_device_by_identifier` ... instead
+
+    Every place this integration asked that question meant "the device of this
+    entry", so the replacement is also the more accurate answer: the old call
+    resolves a shared identifier by preferring a matching domain and then falls
+    back to the first match, which on two entries for one recorder could be the
+    other entry's device.
+
+    One caller does not mean that: `migrate.py` asks whether anybody at all
+    already holds an identifier it is about to write, which is
+    `devices_with_identifier` below. Narrowing that one to this entry would
+    have dropped a check, so it is kept as it was.
+
+    The fallback keeps the 2026.8.0 minimum in `hacs.json` working, and is the
+    behaviour every caller has today. Delete it, and this helper with it, once
+    the minimum is past the release that added the replacement.
+    """
+    by_identifier = getattr(registry, "async_get_device_by_identifier", None)
+    if by_identifier is None:
+        held = registry.async_get_device(identifiers={identifier})
+        return held if held is not None and entry_id in held.config_entries else None
+    return by_identifier(identifier, entry_id)
+
+
+def devices_with_identifier(registry, identifier: tuple) -> list:
+    """Every device holding `identifier`, whichever config entry owns it.
+
+    The other half of the deprecation above, for the one question that really
+    is about every entry: `migrate.py` checks that a serial it is about to
+    write onto a device is not already somebody else's, and an entry scoped
+    answer would say no when the answer is yes.
+
+    A list rather than one device, because that is also what the question
+    needs. `async_get_device` resolved several matches down to one by
+    preferring a matching domain and then taking the first, so a conflict could
+    be hidden behind the device being moved; every match is now seen.
+    """
+    get_devices = getattr(registry, "async_get_devices", None)
+    if get_devices is None:
+        held = registry.async_get_device(identifiers={identifier})
+        return [held] if held is not None else []
+    return list(get_devices(identifiers={identifier}))
 
 
 def scheme_blocking_white_light(data: dict, channel: int, profile_mode):
@@ -251,6 +317,25 @@ def get_configured_events(entry: ConfigEntry) -> list:
     if CONF_EVENTS in entry.data:
         return list(entry.data[CONF_EVENTS] or [])
     return list(DEFAULT_EVENTS)
+
+
+def h265_was_accepted(entry: ConfigEntry | None) -> bool:
+    """Whether this entry's owner said H.265 plays fine for them (#1138).
+
+    @billjes has five channels on H.265 with no audio track and live view
+    working in every browser he uses, so the card was describing a problem he
+    does not have and there was no way to put it down: a fixable issue offers
+    its flow rather than an Ignore, and submitting the flow with nothing
+    ticked changed nothing and left the card standing.
+
+    Deliberately not a channel list. The card is about whether a viewer's
+    browser can decode H.265, which is a property of the browsers rather than
+    of any one channel, so a sixth channel going the same way is not news to
+    somebody who has already said this.
+    """
+    if entry is None:
+        return False
+    return bool(entry.options.get(CONF_ACCEPT_H265))
 
 
 def get_configured_use_https(entry: ConfigEntry):
@@ -518,8 +603,57 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             ", ".join(str(channel) for channel, _ in failures),
         )
 
-    # Home Assistant's own place for per entry runtime state, and it clears the
-    # attribute itself when the entry unloads, so there is nothing to pop.
+    # A new serial must not reach the platforms unless its registry migration
+    # completed. Otherwise an error or unavailable backup creates duplicate
+    # entities and strands automations on the old IDs.
+    try:
+        from .migrate import SerialMigrationConflict, async_adopt_the_real_serial
+
+        moved = await async_adopt_the_real_serial(hass, entry, coordinators)
+        for template in (ISSUE_SERIAL_CONFLICT, ISSUE_SERIAL_CONFLICT_MANUAL):
+            ir.async_delete_issue(hass, DOMAIN, template.format(entry.entry_id))
+        # Anything that has been given a serial the device reported, rather
+        # than one derived from its credentials, is held to it from now on.
+        # Monitors reach this by answering over RPC2; a camera reaches it by
+        # answering `getSerialNo` after `getSystemInfo` refused (#1128), or by
+        # answering over RPC2 when its CGI answers are unreadable (#1176). All
+        # of them have had their registries migrated onto that serial by the
+        # call above, so a later setup that falls back to the hash would build a
+        # second set of entities beside the migrated ones (@rroller, #1141).
+        if any(
+            (getattr(c.client, "_vth_identity", None) or {}).get("class") == "VTH"
+            or getattr(c.client, "identity_from_alternate_cgi", False)
+            or getattr(c.client, "identity_from_rpc2", False)
+            for c in coordinators
+        ) and not entry.data.get(CONF_REQUIRE_REPORTED_SERIAL):
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_REQUIRE_REPORTED_SERIAL: True}
+            )
+        if moved:
+            _LOGGER.warning(
+                "%s: %d entities adopted the reported serial; entity IDs are unchanged",
+                entry.data.get(CONF_ADDRESS),
+                moved,
+            )
+    except BaseException as error:
+        await asyncio.gather(
+            *[c.async_stop() for c in coordinators], return_exceptions=True
+        )
+        if isinstance(error, SerialMigrationConflict):
+            # Permanent, and saying "will retry" about it is the complaint in
+            # #1143. Two rows want one identity and no amount of retrying
+            # changes that, so setup stops and a card offers the one thing
+            # that does change it.
+            _async_offer_to_clear_the_conflict(hass, entry, error)
+            raise ConfigEntryError(
+                "Serial registry migration cannot complete: " + str(error)
+            ) from error
+        if isinstance(error, Exception):
+            raise ConfigEntryNotReady(
+                "Serial registry migration could not complete: " + str(error)
+            ) from error
+        raise
+
     entry.runtime_data = {c.get_channel(): c for c in coordinators}
 
     # https://developers.home-assistant.io/docs/config_entries_index/
@@ -538,6 +672,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         coordinator.platforms.extend(wanted)
     if wanted:
         await hass.config_entries.async_forward_entry_setups(entry, wanted)
+
+    # Registry rows nothing is behind any more, offered together rather than
+    # one at a time (@kmich on #1103). After the platforms, because what they
+    # create is the whole evidence, and wrapped like the other registry jobs:
+    # a tidy-up card must never be what stops a camera working.
+    try:
+        from .migrate import (
+            async_offer_leftover_rows,
+            async_recheck_leftover_rows_when_late_work_settles,
+        )
+
+        # Before the offer, not after. A capability that answers on the very
+        # first poll can settle while this coroutine is still awaiting the
+        # scan below, and a listener registered afterwards would miss the one
+        # signal it exists for.
+        async_recheck_leftover_rows_when_late_work_settles(hass, entry, coordinators)
+        left = await async_offer_leftover_rows(hass, entry, coordinators)
+        if left:
+            _LOGGER.debug(
+                "%s has %d registry rows with no entity behind them",
+                entry.data.get(CONF_ADDRESS),
+                left,
+            )
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not check %s for leftover registry rows. Nothing is wrong "
+            "with the device and the entry is set up normally",
+            entry.data.get(CONF_ADDRESS),
+        )
 
     # Labels the user chose for this entry's devices. Home Assistant has no
     # DeviceInfo field for labels, unlike suggested_area, so they can only be
@@ -581,6 +744,113 @@ ISSUE_SIBLINGS_REMAIN = "siblings_remain_{0}"
 # Raised when the removed entry was referenced by automations or scripts. Those
 # break silently -- the entities simply stop existing and nothing fires.
 ISSUE_REMOVAL_BROKE_THINGS = "removal_broke_things_{0}"
+# Raised when this entry has registry rows no entity is behind any more, so
+# they can be removed together instead of one at a time. Never persistent: it
+# is recomputed from the registry on every start, and the flow recomputes it
+# again before removing anything.
+ISSUE_LEFTOVER_ROWS = "leftover_rows_{0}"
+ISSUE_SERIAL_CONFLICT = "serial_conflict_{0}"
+# Raised for the collisions the card above cannot clear. `_conflict_holders`
+# only finds an identity somebody else is HOLDING, and three of the five
+# things the migration refuses on are not that shape: two of this entry's own
+# rows converging on one target, two of its devices converging, and another
+# config entry already carrying the serial. Nothing is in the way to remove,
+# so there is no list to confirm and no button that would help (@rroller,
+# #1146). Not fixable, and therefore carries its own description.
+ISSUE_SERIAL_CONFLICT_MANUAL = "serial_conflict_manual_{0}"
+
+
+@callback
+def _async_offer_to_clear_the_conflict(hass, entry, conflict) -> None:
+    """Raise whichever of the two cards this collision actually has.
+
+    A button that removes rows is only an answer where there are rows to
+    remove. Asked on a collision of the other shape it finds an empty list,
+    and an empty list used to read as "resolved": the card deleted itself and
+    said nothing was standing in the way, while the entry stayed dead and
+    nothing retried it (@rroller, #1146).
+
+    So the shape is decided here, from the registry, by the same function the
+    flow will use. Something is holding an identity: the card that offers to
+    remove it. Nothing is: a card that explains it instead, which is not
+    fixable because there is no safe automatic answer. Which of two
+    duplicates should win is a decision about somebody's setup, and the
+    refusals in `migrate.py` name both sides and stop there for that reason.
+
+    Quiet about its own failures. A card is what makes a dead entry
+    recoverable, and a card that raised on the way to raising would make the
+    entry no worse but the log a great deal more confusing.
+    """
+    fixable = ISSUE_SERIAL_CONFLICT.format(entry.entry_id)
+    manual = ISSUE_SERIAL_CONFLICT_MANUAL.format(entry.entry_id)
+    try:
+        from .migrate import serial_adoption_blockers, serial_conflicts
+
+        serial = getattr(conflict, "serial", None)
+        rows, devices = serial_conflicts(hass, entry, serial)
+        # Something to remove is not the same as a removal that would help.
+        # The migration reaches three of its five refusals only after the row
+        # and device loops, so one of those two is raised first and hides
+        # them. Offer the button on that and it deletes, reloads, and refuses
+        # again on the condition underneath. So the whole move is replayed
+        # with this removal plan subtracted, and anything still refusing
+        # afterwards is a refusal the button cannot clear.
+        remaining = serial_adoption_blockers(hass, entry, serial)
+        offer = bool(rows or devices) and not remaining
+        # Only ever one of the two on screen. A reload can change which shape
+        # applies, and two cards for one entry is two answers to one question.
+        ir.async_delete_issue(hass, DOMAIN, manual if offer else fixable)
+        if offer:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                fixable,
+                is_fixable=True,
+                is_persistent=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="serial_conflict",
+                translation_placeholders={"name": entry.title or "untitled"},
+                data={"entry_id": entry.entry_id, "serial": serial},
+            )
+            return
+        # The refusal that was raised may be the removable one, because the
+        # conditions underneath it are never reached. Printing only that
+        # would send somebody to delete something and leave them exactly
+        # where they started, so everything that would still be refusing is
+        # named too. These messages name entity IDs, device names and entry
+        # titles, and never a unique ID.
+        reason = str(conflict)
+        underneath = [other for other in remaining if other not in reason]
+        if underneath:
+            reason += (
+                " Clearing that on its own would not finish the move. "
+                + " ".join(underneath)
+            )
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            manual,
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="serial_conflict_manual",
+            translation_placeholders={
+                "name": entry.title or "untitled",
+                "serial": str(serial),
+                # Safe to show: each of these refusals names entity IDs, device
+                # names or an entry title, and `_named` exists so that none of
+                # them prints an identifier. The identifier is an md5 of the
+                # address, RTSP port, username and password, so a card that
+                # printed one would be handing out an offline attack on the
+                # password every time somebody screenshotted it.
+                "reason": reason,
+            },
+        )
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not raise the registry conflict card for %s",
+            entry.data.get(CONF_ADDRESS),
+        )
 
 
 async def async_migrate_synthesised_unique_id(hass, entry) -> None:
@@ -662,8 +932,8 @@ def _async_label_devices(hass: HomeAssistant, entry, coordinators) -> None:
     try:
         registry = dr.async_get(hass)
         for coordinator in coordinators:
-            device = registry.async_get_device(
-                identifiers={(DOMAIN, coordinator.get_serial_number())}
+            device = device_by_identifier(
+                registry, (DOMAIN, coordinator.get_serial_number()), entry.entry_id
             )
             if device is None:
                 continue
@@ -676,6 +946,15 @@ def _async_label_devices(hass: HomeAssistant, entry, coordinators) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bool:
     """Handle removal of an entry."""
+    # Before anything else, and before the early return below, because the
+    # card must not outlive the setup that raised it. Unloading writes every
+    # row of this entry as unavailable with `restored: True`, which is
+    # indistinguishable from a leftover, so a card still on screen through a
+    # reload would offer to delete the entry's whole entity set (@kmich on
+    # #1114). The next successful setup raises it again if the leftovers are
+    # still there.
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_LEFTOVER_ROWS.format(entry.entry_id))
+
     channels = entry_coordinators(entry)
     if not channels:
         # Setup may have failed before the coordinator was registered, or a

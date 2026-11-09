@@ -51,6 +51,7 @@ SERVICE_SET_ILLUMINATOR_MODE = "set_illuminator_mode"
 # This service handles setting the video profile mode to day or night
 SERVICE_SET_VIDEO_PROFILE_MODE = "set_video_profile_mode"
 SERVICE_SET_FOCUS_ZOOM = "set_focus_zoom"
+SERVICE_AUTOFOCUS = "autofocus"
 SERVICE_SET_PRIVACY_MASKING = "set_privacy_masking"
 SERVICE_SET_PRIVACY_MODE = "set_privacy_mode"
 SERVICE_SET_CHANNEL_TITLE = "set_channel_title"
@@ -64,6 +65,8 @@ SERVICE_ENABLE_CUSTOM_OVERLAY = "enable_custom_overlay"
 SERVICE_ENABLE_ALL_IVS_RULES = "enable_all_ivs_rules"
 SERVICE_ENABLE_IVS_RULE = "enable_ivs_rule"
 SERVICE_PLAY_AUDIO = "play_audio"
+SERVICE_SET_TIME = "set_time"
+SERVICE_SET_NTP_SERVER = "set_ntp_server"
 SERVICE_VTO_OPEN_DOOR = "vto_open_door"
 SERVICE_VTO_CANCEL_CALL = "vto_cancel_call"
 SERVICE_VTO_CALL = "vto_call"
@@ -388,6 +391,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
         "async_adjustfocus",
     )
 
+    platform.async_register_entity_service(SERVICE_AUTOFOCUS, {}, "async_autofocus")
+
     platform.async_register_entity_service(
         SERVICE_SET_PRIVACY_MASKING,
         {
@@ -479,6 +484,30 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     )
 
     platform.async_register_entity_service(
+        SERVICE_SET_TIME,
+        {
+            # Left out means "now", which is the whole point of the service:
+            # an automation should not have to template the current time in.
+            vol.Optional("time"): cv.datetime,
+        },
+        "async_set_time",
+    )
+
+    platform.async_register_entity_service(
+        SERVICE_SET_NTP_SERVER,
+        {
+            vol.Required("address"): vol.All(str, vol.Strip, vol.Length(min=1)),
+            vol.Optional("port", default=123): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=65535)
+            ),
+            vol.Optional("update_period"): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=65535)
+            ),
+        },
+        "async_set_ntp_server",
+    )
+
+    platform.async_register_entity_service(
         SERVICE_VTO_CANCEL_CALL, {}, "async_vto_cancel_call"
     )
 
@@ -501,7 +530,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_SET_TEXT_OVERLAY,
         {
-            vol.Required("group", default=0): int,
+            vol.Required("group", default=1): int,
             vol.Optional("text1", default=""): str,
             vol.Optional("text2", default=""): str,
             vol.Optional("text3", default=""): str,
@@ -622,7 +651,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry, async_add_entitie
     platform.async_register_entity_service(
         SERVICE_GET_OVERLAY_TEXT,
         {
-            vol.Optional("group", default=0): vol.All(
+            vol.Optional("group", default=1): vol.All(
                 vol.Coerce(int), vol.Range(min=0, max=100)
             ),
         },
@@ -688,6 +717,11 @@ def rtsp_stream_source(url: str, disable_backchannel: bool) -> str:
 class DahuaCamera(DahuaBaseEntity, Camera):
     """An implementation of a Dahua IP camera."""
 
+    # Named on the class as well as in __init__ because the tests build cameras
+    # with object.__new__ and set only the attributes they care about, so a new
+    # one read by async_camera_image has to have a value without them.
+    _media_channel: int | None = None
+
     @property
     def extra_state_attributes(self):
         """The base attributes, plus what this stream actually carries.
@@ -729,6 +763,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         self._channel_number = (
             coordinator.get_channel_number() if media_channel is None else media_channel
         )
+        # A dual-sensor camera names the media channel for both paths, so its
+        # still stays on the sensor it was built for. Everything else asks the
+        # coordinator when the still is fetched -- see _snapshot_channel.
+        self._media_channel = media_channel
         self._coordinator = coordinator
         self._stream_stills = stream_stills
         self._name = display_name if display_name else stream_name
@@ -790,11 +828,32 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """
         try:
             return await self._coordinator.client.async_get_snapshot(
-                self._channel_number
+                self._snapshot_channel()
             )
         except (ClientError, TimeoutError, asyncio.TimeoutError) as error:
             _LOGGER.debug("%s: could not fetch a snapshot: %s", self._name, error)
             return None
+
+    def _snapshot_channel(self) -> int:
+        """The channel number this still is asked for.
+
+        Not `_channel_number`, which numbers the stream. A device can number
+        the two paths differently, and one did: see
+        DahuaDataUpdateCoordinator.get_snapshot_channel and #1151.
+
+        A dual-sensor camera was built with its media channel named for both
+        paths, so that stands.
+
+        getattr because the stand-in coordinators in the tests predate the
+        question, and a camera built around one should still fetch a still
+        rather than raise.
+        """
+        if self._media_channel is not None:
+            return self._media_channel
+        ask = getattr(self._coordinator, "get_snapshot_channel", None)
+        if ask is None:
+            return self._channel_number
+        return ask()
 
     @property
     def use_stream_for_stills(self) -> bool:
@@ -972,6 +1031,83 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         )
         await self._coordinator.async_refresh()
 
+    async def async_set_time(self, time=None):
+        """Set the device's clock, defaulting to Home Assistant's own (#436).
+
+        **This sets the whole device, not this channel.** A clock belongs to
+        an address, so calling it against one channel of a recorder moves the
+        recorder's clock and every channel on it.
+
+        Local time, measured: a VTO2000A took the value as its own local time
+        and applied no daylight saving shift on top. Home Assistant's local
+        time is what goes out, so a device whose timezone is set to something
+        else will end up reading Home Assistant's wall clock rather than its
+        own. That is the behaviour this service is for, and the alternative
+        is `set_ntp_server` on a device that has the field.
+        """
+        when = time or dt_util.now()
+        # The device takes a naive local stamp, so an aware datetime is
+        # converted rather than having its offset dropped: a caller passing
+        # a UTC time should land on the right wall clock, not 11 hours out.
+        if when.tzinfo is not None:
+            when = when.astimezone(dt_util.DEFAULT_TIME_ZONE).replace(tzinfo=None)
+        try:
+            await self._coordinator.client.async_set_device_time(when)
+        except DahuaWriteDeclined as declined:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="clock_not_accepted",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(declined),
+                },
+            ) from declined
+        except (Rpc2MethodRefused, ClientError, OSError) as error:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="clock_could_not_be_set",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(error),
+                },
+            ) from error
+
+    async def async_set_ntp_server(
+        self, address: str, port: int = 123, update_period: int = None
+    ):
+        """Point the device at an NTP server (#436).
+
+        A device whose NTP table holds no server yet is given the fields
+        rather than refused: a VTO2000A reports only its timezone until
+        something writes a server, and a doorbell is exactly what #436 asked
+        about. A device that will not take them still fails loudly rather
+        than being reported as done.
+
+        Like `set_time`, this is the whole device and not one channel.
+        """
+        try:
+            await self._coordinator.client.async_set_ntp_server(
+                address, port=port, update_period=update_period
+            )
+        except (DahuaWriteDeclined, ValueError) as declined:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="ntp_server_not_accepted",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(declined),
+                },
+            ) from declined
+        except (ClientError, OSError) as error:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="ntp_server_could_not_be_set",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(error),
+                },
+            ) from error
+
     async def async_play_audio(self, media_content_id: str, audio_format: str = None):
         """Play a clip through this channel's own speaker (#177).
 
@@ -1071,6 +1207,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         """Handles the service call from SERVICE_SET_INFRARED_MODE to set zoom and focus"""
         await self._coordinator.client.async_adjustfocus_v1(focus, zoom)
         await self._coordinator.async_refresh()
+
+    async def async_autofocus(self):
+        """Ask the camera to focus without changing its zoom."""
+        await self._coordinator.client.async_autofocus()
 
     async def async_set_privacy_masking(self, index: int, enabled: bool):
         """Handles the service call from SERVICE_SET_PRIVACY_MASKING to control the privacy masking"""
