@@ -276,7 +276,7 @@ def test_the_day_night_judgment_is_made_in_exactly_one_place():
     """
     assert _SOURCE.count('_note_probe_refusal("day_night_color"') == 1
     assert (
-        _SOURCE.count("async_probe_video_in_options(") == 2
+        _SOURCE.count(".async_probe_video_in_options(") == 2
     ), "the strict read belongs to the capability probe and poll-reader delegation"
     assert (
         _SOURCE.count("async_get_video_in_options()") == 1

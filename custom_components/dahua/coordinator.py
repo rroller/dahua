@@ -567,9 +567,7 @@ def legacy_exposure_mode_option(data: dict, channel: int) -> str | None:
     """Read the legacy VideoInOptions value from this channel's own row."""
     if not isinstance(data, dict):
         return None
-    value = _exposure_integer(
-        data.get(f"table.VideoInOptions[{channel}].ExposureMode")
-    )
+    value = _exposure_integer(data.get(f"table.VideoInOptions[{channel}].ExposureMode"))
     return LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE.get(value)
 
 
@@ -1247,6 +1245,10 @@ def alarm_input_event_code(index: int) -> str:
 
 
 class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
+
+    # Poll readers also run on coordinators built with object.__new__.
+    # This flag identifies the profile transport, independently of legacy support.
+    _supports_exposure_mode: bool = False
 
     # Declared on the class, not only assigned in __init__, because a great many
     # tests build a coordinator with object.__new__ and set only the attributes
@@ -5681,9 +5683,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 raise ValueError("Unsupported legacy Exposure Mode option")
             options = await self.client.async_get_video_in_options(fresh=True)
             key = f"table.VideoInOptions[{self._channel}].ExposureMode"
-            if LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE.get(
-                _exposure_integer(options.get(key))
-            ) is None:
+            if (
+                LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE.get(
+                    _exposure_integer(options.get(key))
+                )
+                is None
+            ):
                 raise ConnectionError(
                     "The current VideoInOptions ExposureMode could not be established"
                 )

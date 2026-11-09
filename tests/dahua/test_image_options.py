@@ -63,9 +63,10 @@ def test_image_options_are_per_field():
     assert image_option_fields(
         {"table.VideoInOptions[0].ExposureMode": "0"}, 0
     ) == frozenset({"ExposureMode"})
-    assert image_option_fields(
-        {"table.VideoInOptions[0].ExposureMode": "8"}, 0
-    ) == frozenset()
+    assert (
+        image_option_fields({"table.VideoInOptions[0].ExposureMode": "8"}, 0)
+        == frozenset()
+    )
 
 
 def test_an_empty_video_in_options_table_names_no_controls():
@@ -145,14 +146,13 @@ def test_a_control_is_only_supported_on_the_channel_that_reported_it():
 )
 def test_legacy_exposure_mode_reads_only_its_supported_values(raw, expected):
     assert (
-        legacy_exposure_mode_option(
-            {"table.VideoInOptions[3].ExposureMode": raw}, 3
-        )
+        legacy_exposure_mode_option({"table.VideoInOptions[3].ExposureMode": raw}, 3)
         == expected
     )
-    assert legacy_exposure_mode_option(
-        {"table.VideoInOptions[2].ExposureMode": "0"}, 3
-    ) is None
+    assert (
+        legacy_exposure_mode_option({"table.VideoInOptions[2].ExposureMode": "0"}, 3)
+        is None
+    )
 
 
 def test_a_monitor_without_a_camera_reports_no_picture_controls():

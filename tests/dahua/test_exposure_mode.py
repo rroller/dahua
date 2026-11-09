@@ -414,10 +414,8 @@ async def test_invalid_mode_for_current_antiflicker_is_rejected_without_write(
         {_mode_key(): "0", _anti_flicker_key(): anti_flicker},
     )
 
-    mode_entity = object.__new__(DahuaExposureModeSelect)
-    mode_entity._coordinator = coordinator
     with pytest.raises(ValueError, match="not valid"):
-        await mode_entity.async_select_option(option)
+        await coordinator.async_set_exposure_mode(option)
 
     assert coordinator.client.calls == [
         ("VideoInMode", True),

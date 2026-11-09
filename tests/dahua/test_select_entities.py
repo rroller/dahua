@@ -686,9 +686,7 @@ async def test_exposure_mode_is_offered_independently_of_wdr():
     assert "exposure" in only_exposure
     assert "wdr" not in only_exposure
 
-    legacy_only = await _added_for(
-        _SetupCoordinator(image_options={"ExposureMode"})
-    )
+    legacy_only = await _added_for(_SetupCoordinator(image_options={"ExposureMode"}))
     assert legacy_only.count("exposure") == 1
 
     only_wdr = await _added_for(
