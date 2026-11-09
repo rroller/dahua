@@ -48,6 +48,7 @@ WAS = {
     # Intelbras fork; there is no earlier code icon to match.
     ("select", "image_wide_dynamic_range"): "mdi:contrast-box",
     ("select", "image_exposure_mode"): "mdi:camera-iris",
+    ("select", "encode_audio_source"): "mdi:audio-input-rca",
     ("sensor", "license_plate"): "mdi:car-back",
     ("sensor", "memory_used"): "mdi:memory",
     ("sensor", "processor_usage"): "mdi:cpu-64-bit",
@@ -60,6 +61,7 @@ WAS = {
     ("switch", "cloud_connection"): "mdi:cloud-outline",
     ("switch", "intelli_tour"): "mdi:rotate-360",
     ("switch", "disarming"): "mdi:alarm-check",
+    ("switch", "encode_audio"): "mdi:volume-high",
     ("switch", "event_notifications"): "mdi:bell-ring",
     ("switch", "motion_detection"): "mdi:motion-sensor",
     ("switch", "privacy_mode"): "mdi:shield-lock",
