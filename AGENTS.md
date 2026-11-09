@@ -202,7 +202,7 @@ All events reach the bus as `dahua_event_received`.
 | Client | Protocol | Used for |
 |--------|----------|----------|
 | `DahuaClient` | HTTP CGI + Digest | Almost everything: polling, control, snapshots, event stream |
-| `DahuaRpc2Client` | HTTP POST JSON-RPC | Config over one shared session, PTZ presets, privacy mask, recordings, open door, VTO call, and every read on a device with no CGI |
+| `DahuaRpc2Client` | HTTP POST JSON-RPC | Config over one shared session, PTZ presets, privacy mask, recordings, open door, VTO call, and every read on a device whose CGI is absent or unreadable |
 | `DahuaVTOClient` | DHIP TCP :5000 | Doorbell events, hang up a call |
 | `DhipSession` | DHIP TCP :5000 | One-shot ask during the add flow |
 | `discovery.async_probe` | UDP :37810 | Credential-free identity |
@@ -273,6 +273,16 @@ a device that does not answer leaves the numbering alone rather than guessing
   exact key or URL.
 - A whole-table `setConfig` over RPC2 is refused for size on at least one recorder
   (`Request length error!`), so writes address one field.
+- **An answer can be unreadable rather than wrong**, and the two look nothing alike
+  once you know. One firmware appends a whole second HTTP response to every
+  authenticated CGI reply (#1176, a DH-IPC-HDW2849TM-S-IL on 3.120). No HTTP parser
+  accepts that, so aiohttp synthesises a `ClientResponseError` with a status of 400
+  the device never sent, and the `ClientError` guards turn each read into an empty
+  answer: the camera looked healthy and knew nothing. `refusal_is_mangled_framing`
+  tells that 400 from a device's own, and identity and config reads route to RPC2 on
+  it. **It is raised from the request, not from `raise_for_status`**, so an `except`
+  placed around the status check never sees it, which is how the config half of
+  #1176 was first written as a no-op.
 - The siren turns itself off after 10 to 15 seconds. That is the hardware.
 
 ## Custom Instructions
