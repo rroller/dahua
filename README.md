@@ -1016,6 +1016,7 @@ Smart Motion Detection | If the device supports it, enables or disables smart mo
 IVS Rule | One switch per IVS rule the camera reports (tripwire, intrusion and so on), each keyed on the rule's own stable Dahua ID, so it is named after the rule as the device names it. Configuration entities
 Alarm Output | A physical alarm or relay output on the device, switched directly. A recorder with several relays gets one switch per relay, on the recorder's own device rather than on a camera, named by the recorder where it names them distinctly and numbered where it does not. The state is read back from the device rather than assumed from the last write
 Privacy Mode | Covers the lens on cameras with a motorised cover. See `dahua.set_privacy_mode`
+Audio | For each encoder format reported by the device, enables or disables audio. The state is polled with the other configuration entities, so changes made in the Dahua UI appear in Home Assistant and can trigger automations
 Disarming Linkage | Newer firmwares introduce a "disarming" feature, accessible from the camera web UI under Event → One-click disarm / Disarming. When enabled, the disarm toggle suppresses the linkage actions configured in the Disarming section specifically, while leaving all other alarm linkage actions untouched. Detection remains fully active throughout. This allows one to turn it on/off.
 Timestamp Overlay | Shows or hides the timestamp burned into the video. This is the same field as `dahua.enable_time_overlay`, exposed as a switch so the state can be read as well as set
 Channel Title Overlay | Shows or hides the channel title overlay. The same field as `dahua.enable_channel_title`, with its state read back from the camera
@@ -1058,6 +1059,13 @@ Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dah
 Image Wide Dynamic Range | Off, On or mode 2. The camera ignores mode 0 on its own while the level is still 50, so choosing Off clears both; choosing On or mode 2 keeps the camera's level or restores 50. Mode 2 is named rather than called Auto because the vendor's name for it has not been confirmed
 Image Exposure Mode | Auto, Gain Priority or Shutter Priority. Manual exposure is deliberately not offered: it needs shutter and gain values this integration does not expose
 Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
+Audio Source | Selects the source reported by each encoder format (Coaxial or BNC). Only shown when the device exposes that setting
+
+The audio entities read the device's `Encode` table and write only the selected
+field. This makes audio changes visible to Home Assistant automations after the
+normal configuration cache expires (up to five minutes), while preserving the
+recorder's other encoding settings. Changes made through these entities clear
+that cache immediately.
 
 ## Picture sliders
 
