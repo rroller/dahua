@@ -44,6 +44,17 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 TIMEOUT_SECONDS = 20
 
+# How long before a request's own deadline the RPC2 fallback inside it gives up.
+#
+# The fallback runs inside the request's `asyncio.timeout`, so without a deadline
+# of its own a slow RPC2 read is cut off by that one: the task is cancelled, and
+# `CancelledError` is not an `Exception`, so the handler that is there to report
+# the original refusal never sees it and the caller gets a `TimeoutError` it does
+# not catch. Measured rather than reasoned, by patching TIMEOUT_SECONDS down and
+# sleeping through it. Two seconds because the point is only to lose the race
+# with the outer deadline, not to be a budget anybody tunes.
+RPC2_FALLBACK_MARGIN_SECONDS = 2
+
 # Unsupported table/method responses. LightingScheme returned 268959743 on
 # IPC-Color4K-X, DHI-NVR5464 and VTO2000A; CGI refusals vary between 400 and
 # 500. Decide absence from the RPC2 table read, not the CGI HTTP status.
@@ -6743,6 +6754,30 @@ class DahuaClient:
                 f"{self._address} does not serve the {table} table",
             ) from refused
 
+    async def _rpc2_fallback_read(self, name: str, budget) -> dict:
+        """A fallback config read, bounded inside the request's own deadline.
+
+        `budget` is the `asyncio.timeout` the whole request runs in. Giving the
+        fallback a deadline a little inside that one is what makes the handlers
+        around this call reachable at all: when the OUTER deadline is the one to
+        expire, the task is cancelled, `CancelledError` is not an `Exception`,
+        and a slow RPC2 read reached the caller as a `TimeoutError` that
+        `async_get_config` does not catch and the poll's `gather` does not
+        tolerate. There is a test that patches `TIMEOUT_SECONDS` down and sleeps
+        through it, because the first version of this was reasoned about rather
+        than measured and was wrong.
+
+        A budget with no deadline -- `asyncio.timeout(None)` -- is left alone:
+        there is nothing to stay inside. A deadline already past fires at once
+        and the caller reports the refusal it was holding, which is the right
+        answer when there was never time to ask.
+        """
+        deadline = budget.when()
+        if deadline is None:
+            return await self._rpc2_get_config(name)
+        async with asyncio.timeout_at(deadline - RPC2_FALLBACK_MARGIN_SECONDS):
+            return await self._rpc2_get_config(name)
+
     async def _request(
         self, url: str, verify_ok=False, allow_rpc2=True, reject_declined=False
     ) -> dict:
@@ -6833,7 +6868,10 @@ class DahuaClient:
                         )
         url = self._base + url
         try:
-            async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
+            # One line on purpose: the parenthesised multi-context form bumps
+            # the Python version black infers for this file, and black then
+            # rewrites four unrelated `async with` statements elsewhere in it.
+            async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS) as budget:
                 response = None
                 try:
                     auth = DigestAuth(
@@ -6916,7 +6954,9 @@ class DahuaClient:
                                     self._address,
                                 )
                         try:
-                            return await self._rpc2_get_config(config_read.group(1))
+                            return await self._rpc2_fallback_read(
+                                config_read.group(1), budget
+                            )
                         except Rpc2MethodRefused as rpc2_refusal:
                             # The device serves this table on neither transport. Raising
                             # the RPC2 refusal changed the exception a caller sees for an

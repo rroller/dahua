@@ -572,3 +572,27 @@ async def test_the_device_name_falls_back_to_the_hash_when_rpc2_refuses_it(
 
     assert answer == {"table.General.MachineName": client.credential_hash()}
     assert client.identity_derived_from_credentials is True
+
+
+async def test_an_rpc2_read_that_hangs_reports_the_original_refusal(
+    socket_enabled, monkeypatch
+):
+    """The failure the three above do NOT model, and the one that can happen.
+
+    Those raise from the double, so `except Exception` catches them. A real
+    hang does not raise: the request's own `asyncio.timeout` expires, the task
+    is cancelled, and `CancelledError` is not an `Exception`. Without a
+    deadline of its own the fallback is cut off by the outer one and the caller
+    gets a `TimeoutError`, which `async_get_config` does not catch and the
+    poll's `gather` does not tolerate.
+    """
+    monkeypatch.setattr(client_module, "TIMEOUT_SECONDS", 0.4)
+
+    async def hangs(name):
+        await asyncio.sleep(5)
+
+    async with _serving(UNREADABLE) as server:
+        answer, _ = await _read(server, rpc2=hangs)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
