@@ -1607,9 +1607,42 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             else "vto listener"
         )
 
+    # How many refusals in a row mean the port is shut rather than still coming
+    # up. An embedded device brings its TCP stack and web server up before it
+    # binds 5000, so a connect in that window is refused by a doorbell that is
+    # merely rebooting, and Dahua's own Auto Maintain reboots one weekly. With
+    # the backoff `vto_retry_state` applies, three refusals span minutes, which
+    # outlasts a boot. Together with having never connected, that is what keeps
+    # a working doorbell on its own transport.
+    DHIP_REFUSALS_BEFORE_CGI = 3
+
+    def _cgi_events_can_replace_dhip(self) -> bool:
+        """Whether this doorbell could take its events from the CGI stream.
+
+        Asked only when the DHIP port has been refused, because the answer is
+        not "which transport is better" but "is there another one at all".
+
+        A device that serves no HTTP has nothing to fall back to: every read it
+        serves is a DHIP login, and the CGI stream would spend its life failing
+        to reach a web server that does not exist. That is the shape #949 added
+        `_rpc2_over_dhip` for.
+
+        A selection is required too. `async_start_event_listener` registers
+        nothing when no codes were chosen, so switching on that device would
+        abandon the DHIP retry without putting anything in its place.
+        """
+        if getattr(self, "_rpc2_over_dhip", False):
+            return False
+        return self.events is not None
+
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
         consecutive_failures = 0
+        # Whether this listener has ever had a socket, and how many refusals it
+        # has met in a row. Both are about handing the events to the CGI stream:
+        # see DHIP_REFUSALS_BEFORE_CGI.
+        ever_connected = False
+        refusals_in_a_row = 0
         while True:
             if getattr(self, "_rpc2_over_dhip", False) and host_auth_budget_exhausted(
                 self._address
@@ -1632,10 +1665,70 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     port=5000,
                 )
                 self._vto_client = protocol
+                # It bound the port, so this doorbell is not one that cannot.
+                ever_connected = True
+                refusals_in_a_row = 0
                 await protocol.disconnected
             except asyncio.CancelledError:
                 raise
             except Exception as ex:
+                # The doorbell is reachable and port 5000 is shut. Not every
+                # doorbell has that port open, and a doorbell is the one device
+                # that never joins the CGI event stream, so on this firmware it
+                # had no event transport at all.
+                #
+                # Both halves were measured on the same model, a DH-DB6I, which
+                # is why this is a fallback rather than a second stream:
+                #
+                #   fw 1.000.020000000.9.R   DHIP 5000 open, presses arrive
+                #                            (@phabibjr, #1131)
+                #   fw 2.820.010000000.33.R  DHIP 5000 refused, and the CGI
+                #                            attach carries the press as
+                #                            _DoTalkAction_ Invite and
+                #                            PhoneCallDetect (@growlocally, #1187)
+                #
+                # Both of those codes are already translated to DoorbellPressed,
+                # so the press needs no new parsing, only a socket that is open.
+                #
+                # `ConnectionRefusedError` rather than the `OSError` it derives
+                # from, because the question is whether the port is shut and not
+                # whether the doorbell is awake. A timeout or an unreachable
+                # host is a doorbell that is off the network.
+                #
+                # A refusal alone is not enough either, and this is the case the
+                # type check does not cover: a doorbell that is rebooting
+                # answers the connect and refuses it, because the TCP stack is
+                # up before the DHIP service has bound the port. So a working
+                # VTO restarting, or Home Assistant restarting beside one, would
+                # otherwise move to the CGI stream for the session and take the
+                # hang-up service with it. Hence both conditions: this listener
+                # has never had a socket, and the refusal has repeated.
+                #
+                # Returning is what keeps one transport running. The loop does
+                # not go on retrying DHIP beside the CGI stream, so a press
+                # cannot arrive down both and be reported twice, and the error
+                # this handler logs every retry stops rather than repeating for
+                # as long as Home Assistant is up.
+                if isinstance(ex, ConnectionRefusedError):
+                    refusals_in_a_row += 1
+                else:
+                    refusals_in_a_row = 0
+                if (
+                    refusals_in_a_row >= self.DHIP_REFUSALS_BEFORE_CGI
+                    and not ever_connected
+                    and self._cgi_events_can_replace_dhip()
+                ):
+                    _LOGGER.warning(
+                        "The doorbell at %s refused a connection on port 5000 %d "
+                        "times and has never answered there, so its events are "
+                        "taken from the CGI event stream instead of the DHIP "
+                        "listener: %s",
+                        self._address,
+                        refusals_in_a_row,
+                        ex,
+                    )
+                    await self.async_start_event_listener()
+                    return
                 delay, consecutive_failures = vto_retry_state(
                     time.monotonic() - started,
                     consecutive_failures,

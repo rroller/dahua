@@ -440,6 +440,30 @@ def _stream_is_carrying_anything(stream) -> bool:
     return bool(getattr(stream, "_by_channel", None) or {})
 
 
+def _dhip_listener_has_given_up(task) -> bool:
+    """Whether the doorbell listener task has ended rather than being between
+    attempts.
+
+    A doorbell whose port 5000 is refused hands its events to the CGI stream
+    and this task returns (#1187). The task object stays on the coordinator
+    afterwards, so testing that it exists would name the transport the device
+    used to have for the rest of the session, which is what this field was
+    added to stop doing (#813).
+
+    Only an explicit `True` counts as ended. Much of the suite hands this a
+    stand-in whose `done()` answers something truthy that is not a bool, and a
+    listener between two attempts is sleeping rather than finished, so anything
+    short of a clear yes is read as still running.
+    """
+    done = getattr(task, "done", None)
+    if not callable(done):
+        return False
+    try:
+        return done() is True
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
 def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
     """Which transport is carrying this entry's events.
 
@@ -454,7 +478,7 @@ def _transport(coordinator, rpc2_poll: Mapping[str, Any]) -> str | None:
     a device with no doorbell reads as a bug in the dump rather than as the answer.
     """
     vto_task = getattr(coordinator, "_vto_task", None)
-    if vto_task is not None:
+    if vto_task is not None and not _dhip_listener_has_given_up(vto_task):
         if getattr(coordinator, "_rpc2_over_dhip", False):
             return "dhip_listener"
         return "vto_listener"
