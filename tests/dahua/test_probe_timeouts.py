@@ -38,6 +38,10 @@ PROBES = [
     ("async_get_event_notifications", "_supports_event_notifications"),
     ("async_get_ptz_position", "_supports_ptz_position"),
     ("async_get_smart_motion_detection", "_supports_smart_motion_detection"),
+    ("async_get_video_in_mode", "_supports_exposure_compensation"),
+    ("async_get_exposure_anti_flicker_config", "_supports_exposure_compensation"),
+    ("async_get_video_in_mode", "_supports_exposure_mode"),
+    ("async_get_exposure_anti_flicker_config", "_supports_exposure_mode"),
     ("async_get_lighting_v2", "_supports_lighting_v2"),
     # Asked before anything reads the model name, so a device that is slow to
     # say what it is must still be set up on its model name alone.
@@ -51,6 +55,13 @@ REQUIRED = {
     "async_get_machine_name": {"table.General.MachineName": "Cam"},
     "async_get_system_info": {"deviceType": "IPC-HDW1234", "serialNumber": "SER1"},
     "get_software_version": {"version": "2.800.0"},
+}
+
+# Exposure probes read the current channel's Profile before the shared table.
+SHAPED = {
+    "async_get_video_in_mode": {
+        "table.VideoInMode[0].Config[0]": "0",
+    },
 }
 
 
@@ -69,6 +80,8 @@ class _Client:
                 raise self.error()
             if name in REQUIRED:
                 return REQUIRED[name]
+            if name in SHAPED:
+                return SHAPED[name]
             return {}
 
         return call
@@ -108,6 +121,8 @@ def _coordinator(client):
     c._supports_ptz_position = False
     c._supports_disarming_linkage = False
     c._supports_event_notifications = False
+    c._supports_exposure_compensation = False
+    c._supports_exposure_mode = False
     c._supports_coaxial_control = False
     c._supports_smart_motion_detection = False
     c._supports_lighting = False
@@ -145,6 +160,28 @@ async def test_a_probe_that_errors_still_marks_it_unsupported(method, flag):
     assert coordinator.initialized
     if flag:
         assert getattr(coordinator, flag) is False
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [
+        "_async_probe_exposure_mode",
+        "_async_probe_exposure_compensation",
+    ],
+)
+async def test_exposure_table_timeout_reaches_second_reader(probe):
+    client = _Client(
+        failing=["async_get_exposure_anti_flicker_config"],
+        error=TimeoutError,
+    )
+    coordinator = _coordinator(client)
+    coordinator._note_probe_refusal = lambda *args, **kwargs: None
+
+    assert await getattr(coordinator, probe)() is False
+    assert client.called == [
+        "async_get_video_in_mode",
+        "async_get_exposure_anti_flicker_config",
+    ]
 
 
 def _refused():

@@ -18,7 +18,12 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.dahua import entry_coordinators
 
 from .audio import AUDIO_CONTROLS, audio_config_value
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    EXPOSURE_COMPENSATION_MAX,
+    EXPOSURE_COMPENSATION_MIN,
+    EXPOSURE_COMPENSATION_STEP,
+)
 from .entity import DahuaBaseEntity
 from .late import async_add_and_keep_watching
 
@@ -151,6 +156,12 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             if coordinator.supports_motion_region(field)
         ]
 
+    async def build_exposure_compensation(coordinator):
+        """Compensation slider, only where the device proves it supports it."""
+        if coordinator.supports_exposure_compensation():
+            return [DahuaExposureCompensationNumber(coordinator, entry)]
+        return []
+
     async def build_audio_volumes(coordinator):
         """Microphone and speaker volume, owned by the channel's audio row."""
         return [
@@ -172,6 +183,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     )
     await async_add_and_keep_watching(
         hass, entry, build_motion_region, async_add_devices, entry_coordinators
+    )
+    await async_add_and_keep_watching(
+        hass, entry, build_exposure_compensation, async_add_devices, entry_coordinators
     )
     await async_add_and_keep_watching(
         hass, entry, build_audio_volumes, async_add_devices, entry_coordinators
@@ -224,6 +238,52 @@ class DahuaImageAdjustmentNumber(DahuaBaseEntity, NumberEntity):
         await self._coordinator.client.async_set_video_color(
             self._coordinator.get_channel(), self._field, int(value)
         )
+        await self._coordinator.async_refresh()
+
+
+class DahuaExposureCompensationNumber(DahuaBaseEntity, NumberEntity):
+    """Exposure Compensation, 0-100 on the active VideoInExposure profile."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = EXPOSURE_COMPENSATION_MIN
+    _attr_native_max_value = EXPOSURE_COMPENSATION_MAX
+    _attr_native_step = EXPOSURE_COMPENSATION_STEP
+    _attr_mode = NumberMode.SLIDER
+    _attr_translation_key = "exposure_compensation"
+
+    def __init__(self, coordinator, entry):
+        DahuaBaseEntity.__init__(self, coordinator, entry)
+        NumberEntity.__init__(self)
+        self._coordinator = coordinator
+        self._attr_unique_id = (
+            f"{coordinator.get_serial_number()}_exposure_compensation"
+        )
+
+    @property
+    def unique_id(self):
+        return self._attr_unique_id
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and self._coordinator.supports_exposure_compensation()
+            and self._coordinator.exposure_compensation_available()
+        )
+
+    @property
+    def native_value(self):
+        return self._coordinator.get_exposure_compensation()
+
+    async def async_set_native_value(self, value: float) -> None:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or isinstance(value, float)
+            and not value.is_integer()
+        ):
+            raise ValueError("Exposure Compensation must be an integer")
+        await self._coordinator.async_set_exposure_compensation(int(value))
         await self._coordinator.async_refresh()
 
 

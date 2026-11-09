@@ -247,6 +247,9 @@ class _PlatformCoordinator:
     def supports_video_color(self, field):
         return False
 
+    def supports_exposure_compensation(self):
+        return False
+
     def supports_vth_phone_setting(self, field):
         return False
 

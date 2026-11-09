@@ -105,6 +105,8 @@ FLAGS = (
     "_supports_cloud_upgrade",
     "_supports_coaxial_control",
     "_supports_day_night_color",
+    "_supports_exposure_compensation",
+    "_supports_exposure_mode",
     "_supports_disarming_linkage",
     "_supports_event_notifications",
     "_supports_floodlightmode",

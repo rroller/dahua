@@ -251,6 +251,7 @@ def _setup_coordinator(
         supports_video_image_control=lambda _field: False,
         supports_image_option=lambda _field: False,
         supports_exposure_anti_flicker=lambda: False,
+        supports_exposure_mode=lambda: False,
     )
 
 

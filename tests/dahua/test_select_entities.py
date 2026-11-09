@@ -65,6 +65,7 @@ class _Coordinator:
         self._channel = channel
         self._day_night = day_night
         self.refreshed = 0
+        self.exposure_mode_calls = []
 
     def get_channel(self):
         return self._channel
@@ -89,6 +90,55 @@ class _Coordinator:
 
     def get_exposure_mode_option(self):
         return getattr(self, "exposure_option", None)
+
+    def get_exposure_mode_options(self):
+        return getattr(
+            self,
+            "exposure_mode_options",
+            ("Auto", "Gain Priority", "Shutter Priority", "Manual"),
+        )
+
+    def supports_exposure_mode(self):
+        return getattr(self, "exposure_mode_supported", True)
+
+    def is_amcrest_doorbell(self):
+        return False
+
+    def is_indoor_monitor(self):
+        return False
+
+    def is_indoor_monitor_without_video(self):
+        return False
+
+    def supports_day_night_color(self):
+        return False
+
+    def supports_exposure_anti_flicker(self):
+        return False
+
+    def supports_image_option(self, field):
+        return False
+
+    def supports_infrared_light(self):
+        return False
+
+    def supports_lighting_schemes(self):
+        return False
+
+    def supports_security_light(self):
+        return False
+
+    def supports_smart_motion_detection(self):
+        return False
+
+    def supports_video_color(self, field):
+        return False
+
+    def supports_video_image_control(self, field):
+        return False
+
+    async def async_set_exposure_mode(self, option):
+        self.exposure_mode_calls.append(option)
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -426,14 +476,14 @@ def test_the_exposure_select_reports_the_word_the_coordinator_read():
 
 
 async def test_the_exposure_select_writes_its_number():
-    """Auto is 0, Gain Priority 1 and Shutter Priority 2. Mode 4 is manual and
-    deliberately not an option here."""
+    """Mode selection delegates to the coordinator's fresh Profile-aware path."""
     c = _Coordinator(channel=3)
     s = _select(DahuaExposureModeSelect, c)
 
     await s.async_select_option("Gain Priority")
 
-    assert c.client.calls == [("async_set_exposure_mode", 3, 1)]
+    assert c.exposure_mode_calls == ["Gain Priority"]
+    assert c.client.calls == []
     assert c.refreshed == 1
 
 
@@ -441,10 +491,41 @@ async def test_an_invalid_exposure_option_is_ignored_without_a_write():
     c = _Coordinator(channel=3)
     s = _select(DahuaExposureModeSelect, c)
 
+    await s.async_select_option("Not a Mode")
+
+    assert c.exposure_mode_calls == []
+    assert c.refreshed == 0
+
+
+async def test_exposure_mode_rejects_an_option_not_currently_advertised():
+    c = _Coordinator(channel=3)
+    c.exposure_mode_options = ("Auto",)
+    s = _select(DahuaExposureModeSelect, c)
+
     await s.async_select_option("Manual")
 
+    assert c.exposure_mode_calls == []
     assert c.client.calls == []
     assert c.refreshed == 0
+
+
+def test_exposure_mode_unique_id_does_not_depend_on_transport():
+    legacy = _Coordinator()
+    profile = _Coordinator()
+    assert (
+        _select(DahuaExposureModeSelect, legacy).unique_id
+        == _select(DahuaExposureModeSelect, profile).unique_id
+        == "SERIAL1_image_exposure_mode"
+    )
+
+
+async def test_exposure_mode_options_follow_the_coordinator_without_recreating_entity():
+    c = _Coordinator(channel=3)
+    s = _select(DahuaExposureModeSelect, c)
+
+    assert s.options == ["Auto", "Gain Priority", "Shutter Priority", "Manual"]
+    c.exposure_mode_options = ("Auto", "Manual")
+    assert s.options == ["Auto", "Manual"]
 
 
 # --- which selects an entry creates ------------------------------------------
@@ -500,6 +581,7 @@ class _SetupCoordinator(_Coordinator):
         preset_error=None,
         day_night_supported=False,
         exposure_anti_flicker_supported=False,
+        exposure_mode_supported=False,
         infrared_supported=False,
         style_supported=False,
         image_control_fields=(),
@@ -508,6 +590,7 @@ class _SetupCoordinator(_Coordinator):
         super().__init__()
         self._day_night_supported = day_night_supported
         self._exposure_anti_flicker_supported = exposure_anti_flicker_supported
+        self._exposure_mode_supported = exposure_mode_supported
         self._infrared_supported = infrared_supported
         self._style_supported = style_supported
         self._image_control_fields = frozenset(image_control_fields)
@@ -542,6 +625,9 @@ class _SetupCoordinator(_Coordinator):
 
     def supports_exposure_anti_flicker(self):
         return self._exposure_anti_flicker_supported
+
+    def supports_exposure_mode(self):
+        return self._exposure_mode_supported or "ExposureMode" in self._image_options
 
     def supports_video_color(self, field):
         return field == "Style" and self._style_supported
@@ -595,31 +681,41 @@ async def test_wdr_needs_its_mode_and_level_before_the_select_is_created():
     )
 
 
-async def test_exposure_is_offered_without_wdr_and_wdr_without_exposure():
-    only_exposure = await _added_for(_SetupCoordinator(image_options={"ExposureMode"}))
+async def test_exposure_mode_is_offered_independently_of_wdr():
+    only_exposure = await _added_for(_SetupCoordinator(exposure_mode_supported=True))
     assert "exposure" in only_exposure
     assert "wdr" not in only_exposure
 
+    legacy_only = await _added_for(_SetupCoordinator(image_options={"ExposureMode"}))
+    assert legacy_only.count("exposure") == 1
+
     only_wdr = await _added_for(
-        _SetupCoordinator(image_options={"WideDynamicRangeMode", "WideDynamicRange"})
+        _SetupCoordinator(
+            image_options={
+                "WideDynamicRangeMode",
+                "WideDynamicRange",
+            }
+        )
     )
     assert "wdr" in only_wdr
     assert "exposure" not in only_wdr
 
 
-async def test_a_camera_with_both_image_options_gets_both_selects():
+async def test_exposure_mode_is_not_created_without_either_transport():
+    assert "exposure" not in await _added_for(_SetupCoordinator())
+
+
+async def test_a_camera_with_wdr_and_exposure_mode_gets_both_selects():
     added = await _added_for(
         _SetupCoordinator(
-            image_options={
-                "WideDynamicRangeMode",
-                "WideDynamicRange",
-                "ExposureMode",
-            }
+            image_options={"WideDynamicRangeMode", "WideDynamicRange"},
+            exposure_mode_supported=True,
         )
     )
 
     assert "wdr" in added
     assert "exposure" in added
+    assert added.count("exposure") == 1
 
 
 @pytest.mark.parametrize(

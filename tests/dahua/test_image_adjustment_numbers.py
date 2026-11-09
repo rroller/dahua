@@ -13,8 +13,9 @@ import pytest
 
 from custom_components.dahua import number as number_module
 from custom_components.dahua.number import (
-    DahuaImageAdjustmentNumber,
     IMAGE_ADJUSTMENTS,
+    DahuaExposureCompensationNumber,
+    DahuaImageAdjustmentNumber,
     async_setup_entry,
 )
 
@@ -28,11 +29,22 @@ class _Client:
     async def async_set_video_color(self, channel, field, value):
         self.calls.append((channel, field, value))
 
+    async def async_set_exposure_compensation(self, value):
+        self.calls.append(("exposure_compensation", value))
+
 
 class _Coordinator:
     subentry_id = None
 
-    def __init__(self, *, channel=0, values=None, no_video=False, fields=None):
+    def __init__(
+        self,
+        *,
+        channel=0,
+        values=None,
+        no_video=False,
+        fields=None,
+        compensation_supported=False,
+    ):
         self.client = _Client()
         self._channel = channel
         self._values = values or {}
@@ -47,6 +59,7 @@ class _Coordinator:
             if fields is None
             else frozenset(fields)
         )
+        self._compensation_supported = compensation_supported
         self.data = {"id": 1}
         self.last_update_success = True
         self.refreshed = 0
@@ -97,6 +110,9 @@ class _Coordinator:
 
     def supports_video_color(self, field):
         return field in self._fields
+
+    def supports_exposure_compensation(self):
+        return self._compensation_supported
 
     def is_indoor_monitor_without_video(self):
         return self._no_video
@@ -281,6 +297,79 @@ async def test_only_the_adjustments_the_device_reported_are_created():
         "SERIAL1_image_brightness",
         "SERIAL1_image_hue",
     ]
+
+
+async def test_exposure_compensation_number_is_gated_by_its_capability():
+    added = []
+    coordinator = _Coordinator(compensation_supported=True)
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
+
+    await async_setup_entry(_hass(), entry, adds_entities(added))
+
+    entities = [
+        entity
+        for entity in added
+        if isinstance(entity, DahuaExposureCompensationNumber)
+    ]
+    assert [entity.unique_id for entity in entities] == [
+        "SERIAL1_exposure_compensation"
+    ]
+
+
+async def test_exposure_compensation_number_is_omitted_without_capability():
+    added = []
+    coordinator = _Coordinator(compensation_supported=False)
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
+
+    await async_setup_entry(_hass(), entry, adds_entities(added))
+
+    assert not any(
+        isinstance(entity, DahuaExposureCompensationNumber) for entity in added
+    )
+
+
+async def test_exposure_compensation_number_arrives_late_only_once(hass):
+    from custom_components.dahua import late
+
+    added = []
+    coordinator = _Coordinator(compensation_supported=False)
+    entry = type(
+        "E",
+        (),
+        {
+            "entry_id": "e1",
+            "runtime_data": {0: coordinator},
+            "async_on_unload": staticmethod(lambda unsub: None),
+        },
+    )()
+
+    await async_setup_entry(hass, entry, adds_entities(added))
+    coordinator._compensation_supported = True
+    late.async_notify_capability_discovered(hass, "e1", "SERIAL1")
+    await hass.async_block_till_done()
+    late.async_notify_capability_discovered(hass, "e1", "SERIAL1")
+    await hass.async_block_till_done()
+
+    assert (
+        sum(isinstance(entity, DahuaExposureCompensationNumber) for entity in added)
+        == 1
+    )
 
 
 async def test_sliders_arrive_when_the_table_finally_answers(hass):

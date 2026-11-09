@@ -28,7 +28,7 @@ from aiohttp import ClientResponseError
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
 from custom_components.dahua.client import DahuaClient
-from custom_components.dahua.const import UPDATE
+from custom_components.dahua.const import NUMBER, SELECT, UPDATE
 
 # Every question setup asks, and the capability it decides. Taken from the source:
 # each of these is one try block whose handler sets exactly this attribute.
@@ -75,6 +75,14 @@ PROBES = [
         "_supports_exposure_anti_flicker",
         None,
     ),
+    ("async_get_video_in_mode", "_supports_exposure_mode", None),
+    ("async_get_exposure_anti_flicker_config", "_supports_exposure_mode", None),
+    ("async_get_video_in_mode", "_supports_exposure_compensation", None),
+    (
+        "async_get_exposure_anti_flicker_config",
+        "_supports_exposure_compensation",
+        None,
+    ),
 ]
 
 # The probes whose capability is a set of field names rather than a bool, so
@@ -114,6 +122,8 @@ FLAGS = (
     "_supports_ptz_position",
     "_supports_smart_motion_detection",
     "_supports_system_load",
+    "_supports_exposure_compensation",
+    "_supports_exposure_mode",
     "_video_color_fields",
     "_image_option_fields",
     "_video_widget_fields",
@@ -161,11 +171,15 @@ class _Client:
         },
         "async_get_exposure_anti_flicker_config": {
             "table.VideoInExposure[0][0].AntiFlicker": "0",
+            "table.VideoInExposure[0][0].Mode": "0",
+            "table.VideoInExposure[0][0].Compensation": "50",
         },
     }
 
-    def __init__(self, refusing=None, model="IPC-HFW1234"):
+    def __init__(self, refusing=None, model="IPC-HFW1234", refuse_on_call=None):
         self._refusing = refusing
+        self._refuse_on_call = refuse_on_call
+        self._calls_by_name = {}
         self.asked = []
         self.SHAPED = dict(self.SHAPED, get_device_type={"type": model})
 
@@ -178,21 +192,30 @@ class _Client:
 
         async def call(*args, **kwargs):
             self.asked.append(name)
-            if name == self._refusing:
+            call_number = self._calls_by_name.get(name, 0) + 1
+            self._calls_by_name[name] = call_number
+            if name == self._refusing and (
+                self._refuse_on_call is None or call_number == self._refuse_on_call
+            ):
                 raise _refused()
             return self.SHAPED.get(name, {})
 
         return call
 
 
-def _coordinator(hass, refusing=None, model="IPC-HFW1234"):
+def _coordinator(
+    hass,
+    refusing=None,
+    model="IPC-HFW1234",
+    refuse_on_call=None,
+):
     """A coordinator about to run its one-time initialisation.
 
     `refusing` names the one client call that fails. Everything else answers
     emptily, which is what a device that serves an endpoint and has nothing to
     report looks like.
     """
-    client = _Client(refusing, model)
+    client = _Client(refusing, model, refuse_on_call)
 
     c = object.__new__(DahuaDataUpdateCoordinator)
     c.hass = hass
@@ -276,6 +299,56 @@ async def test_setup_only_runs_its_probes_once(hass):
     await coordinator._async_update_data()
 
     assert asked == [], "the capability probes ran again on the second poll"
+
+
+async def test_exposure_compensation_probe_runs_for_number(hass):
+    coordinator = _coordinator(hass)
+    coordinator.client.SHAPED["async_get_exposure_anti_flicker_config"] = {
+        "table.VideoInExposure[0][0].Compensation": "50",
+    }
+
+    await coordinator._async_update_data()
+
+    assert coordinator.supports_exposure_compensation() is True
+    assert "async_get_video_in_mode" in coordinator.client.asked
+    assert "async_get_exposure_anti_flicker_config" in coordinator.client.asked
+
+
+async def test_exposure_compensation_probe_runs_with_number_enabled(hass):
+    coordinator = _coordinator(hass)
+    coordinator._wanted_by = lambda *platforms: NUMBER in platforms
+    coordinator.client.SHAPED["async_get_exposure_anti_flicker_config"] = {
+        "table.VideoInExposure[0][0].Compensation": "50",
+    }
+
+    await coordinator._async_update_data()
+
+    assert coordinator.supports_exposure_compensation() is True
+    assert coordinator.client.asked.count("async_get_exposure_anti_flicker_config") == 2
+
+
+async def test_exposure_mode_probe_uses_the_profile_aware_field(hass):
+    coordinator = _coordinator(hass)
+    coordinator.client.SHAPED["async_get_exposure_anti_flicker_config"] = {
+        "table.VideoInExposure[0][0].Mode": "7",
+    }
+
+    await coordinator._async_update_data()
+
+    assert coordinator.supports_exposure_mode() is True
+    assert "async_get_video_in_mode" in coordinator.client.asked
+    assert "async_get_exposure_anti_flicker_config" in coordinator.client.asked
+
+
+async def test_exposure_mode_probe_is_gated_by_select(hass):
+    coordinator = _coordinator(hass)
+    coordinator._wanted_by = lambda *platforms: SELECT in platforms
+
+    await coordinator._async_update_data()
+
+    assert coordinator.supports_exposure_mode() is True
+    assert "async_get_video_in_mode" in coordinator.client.asked
+    assert "async_get_exposure_anti_flicker_config" in coordinator.client.asked
 
 
 async def test_the_cloud_upgrade_probe_is_not_asked_without_the_update_platform(hass):
@@ -401,7 +474,26 @@ async def test_a_refused_probe_leaves_the_others_alone(hass, method, flag, model
     await answering._async_update_data()
     expected = {name: getattr(answering, name) for name in FLAGS if name != flag}
 
-    refusing = _coordinator(hass, refusing=method, model=model or "IPC-HFW1234")
+    exposure_probe_order = {
+        "_supports_exposure_anti_flicker": 1,
+        "_supports_exposure_mode": 2,
+        "_supports_exposure_compensation": 3,
+    }
+    refusal_call = (
+        exposure_probe_order.get(flag)
+        if method
+        in {
+            "async_get_video_in_mode",
+            "async_get_exposure_anti_flicker_config",
+        }
+        else None
+    )
+    refusing = _coordinator(
+        hass,
+        refusing=method,
+        model=model or "IPC-HFW1234",
+        refuse_on_call=refusal_call,
+    )
     await refusing._async_update_data()
 
     got = {name: getattr(refusing, name) for name in FLAGS if name != flag}

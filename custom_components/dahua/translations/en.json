@@ -351,6 +351,9 @@
             "image_chroma_suppress": {
                 "name": "Image chroma suppress"
             },
+            "exposure_compensation": {
+                "name": "Image exposure compensation"
+            },
             "vth_ring_volume": {
                 "name": "Door station ring volume"
             },

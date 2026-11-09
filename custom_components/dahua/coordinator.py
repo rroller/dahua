@@ -12,6 +12,7 @@ them.
 
 from collections import deque
 from datetime import timedelta
+from enum import Enum
 from typing import Any, Dict
 import asyncio
 import hashlib
@@ -80,6 +81,15 @@ from .const import (
     UPDATE,
     EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE,
     EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION,
+    EXPOSURE_COMPENSATION_MAX,
+    EXPOSURE_COMPENSATION_MIN,
+    EXPOSURE_MODE_OPTION_BY_VALUE,
+    EXPOSURE_MODE_OPTIONS,
+    EXPOSURE_MODE_OPTIONS_BY_ANTI_FLICKER,
+    EXPOSURE_MODE_VALUE_BY_OPTION,
+    LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE,
+    LEGACY_EXPOSURE_MODE_OPTIONS,
+    LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION,
     VIDEO_IMAGE_CONTROL_FIELDS,
     VIDEO_IMAGE_CONTROL_TABLE,
     VIDEO_IMAGE_CONTROL_TABLES,
@@ -524,6 +534,103 @@ def exposure_anti_flicker_option(
     return EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE.get(value)
 
 
+def _exposure_integer(raw) -> int | None:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return int(raw.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def exposure_mode_value(data: dict, channel: int, profile_index: int) -> int | None:
+    """Read a supported Mode value from one exact channel/profile row."""
+    raw = data.get(f"table.VideoInExposure[{channel}][{profile_index}].Mode")
+    value = _exposure_integer(raw)
+    if value not in EXPOSURE_MODE_OPTION_BY_VALUE:
+        return None
+    return value
+
+
+def exposure_mode_option(data: dict, channel: int, profile_index: int) -> str | None:
+    value = exposure_mode_value(data, channel, profile_index)
+    if value is None:
+        return None
+    return EXPOSURE_MODE_OPTION_BY_VALUE[value]
+
+
+def legacy_exposure_mode_option(data: dict, channel: int) -> str | None:
+    """Read the legacy VideoInOptions value from this channel's own row."""
+    if not isinstance(data, dict):
+        return None
+    value = _exposure_integer(data.get(f"table.VideoInOptions[{channel}].ExposureMode"))
+    return LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE.get(value)
+
+
+def exposure_mode_options(
+    data: dict,
+    channel: int,
+    profile_index: int,
+    anti_flicker_supported: bool = False,
+) -> tuple[str, ...]:
+    """Return Mode options valid for the exact active exposure row."""
+    if exposure_mode_option(data, channel, profile_index) is None:
+        return ()
+
+    if not anti_flicker_supported:
+        return EXPOSURE_MODE_OPTIONS
+
+    anti_flicker_key = f"table.VideoInExposure[{channel}][{profile_index}].AntiFlicker"
+    if anti_flicker_key not in data:
+        return ()
+
+    anti_flicker = exposure_anti_flicker_option(data, channel, profile_index)
+    if anti_flicker is None:
+        return ()
+    value = EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION[anti_flicker]
+    return EXPOSURE_MODE_OPTIONS_BY_ANTI_FLICKER[value]
+
+
+def exposure_compensation_value(
+    data: dict, channel: int, profile_index: int
+) -> int | None:
+    """Read one exact channel/profile Compensation value, if it is usable."""
+    raw = data.get(f"table.VideoInExposure[{channel}][{profile_index}].Compensation")
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        value = raw
+    elif isinstance(raw, str):
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    if value < EXPOSURE_COMPENSATION_MIN or value > EXPOSURE_COMPENSATION_MAX:
+        return None
+    return value
+
+
+def exposure_compensation_is_applicable(
+    data: dict,
+    channel: int,
+    profile_index: int,
+) -> bool:
+    """Whether Compensation is applicable without changing its stored value."""
+    mode_key = f"table.VideoInExposure[{channel}][{profile_index}].Mode"
+    if mode_key not in data:
+        return True
+    mode = exposure_mode_value(data, channel, profile_index)
+    if mode is None:
+        return True
+    return mode != EXPOSURE_MODE_VALUE_BY_OPTION["Manual"]
+
+
 # The picture controls exposed from VideoColor, as the device spells them.
 # ChromaSuppress was ported from the Intelbras fork, where it was measured on an
 # iME-360-C and a VIP-1220 (50 -> 55 -> read back 55 -> restored 50).
@@ -538,25 +645,29 @@ VIDEO_COLOR_FIELDS = (
 )
 
 
-# The VideoInOptions fields exposed as selects beside Day/Night. They are read
-# from the same host-wide table the Day/Night probe already fetches, so adding
-# them costs no extra request. `WideDynamicRange` is the level that must be
-# written with the mode: Intelbras measured that mode 0 alone is ignored while
-# the level stays at 50. It is listed here so the probe sees it too, and the
-# WDR select is only created where both fields came back.
-IMAGE_OPTION_FIELDS = ("WideDynamicRangeMode", "WideDynamicRange", "ExposureMode")
+# The VideoInOptions fields used by the image controls. The table is read with
+# Day/Night, so adding these fields costs no extra request. `WideDynamicRange`
+# is the level that must be written with the mode. ExposureMode is the legacy
+# Exposure Mode transport and remains independently discoverable from WDR.
+IMAGE_OPTION_FIELDS = (
+    "WideDynamicRangeMode",
+    "WideDynamicRange",
+    "ExposureMode",
+)
+
+
+class ExposureModeTransport(Enum):
+    """The one VideoInOptions or Profile-aware owner selected for this channel."""
+
+    PROFILE = "profile"
+    LEGACY = "legacy"
+
 
 # As the device spells the values, and the words the selects show. WDR mode 2
 # is left as "Mode 2" rather than "Auto": the reference accepted 0/1/2 on two
 # cameras but only Off and On were validated, and the vendor's name for 2 was
-# not confirmed (v1.14.1 renamed it back from "Auto"). Exposure mode 4 is
-# manual and needs shutter and gain values this integration does not expose.
+# not confirmed (v1.14.1 renamed it back from "Auto").
 WIDE_DYNAMIC_RANGE_OPTIONS = {"0": "Off", "1": "On", "2": "Mode 2"}
-EXPOSURE_MODE_OPTIONS = {
-    "0": "Auto",
-    "1": "Gain Priority",
-    "2": "Shutter Priority",
-}
 WIDE_DYNAMIC_RANGE_LEVEL = 50
 
 
@@ -566,15 +677,21 @@ def image_option_fields(data: dict, channel: int) -> frozenset:
     Judged on this channel's own keys for the same reason video_color_fields
     is: VideoInOptions is host-wide and indexed by channel, so a 200 for the
     table says nothing about whether this channel is in it. Per field, because
-    a device can serve WDR without an exposure mode.
+    a device can serve either WDR field without the other.
     """
     if not isinstance(data, dict):
         return frozenset()
-    return frozenset(
-        field
-        for field in IMAGE_OPTION_FIELDS
-        if data.get("table.VideoInOptions[{0}].{1}".format(channel, field)) is not None
-    )
+    fields = set()
+    for field in IMAGE_OPTION_FIELDS:
+        if data.get("table.VideoInOptions[{0}].{1}".format(channel, field)) is None:
+            continue
+        if (
+            field == "ExposureMode"
+            and legacy_exposure_mode_option(data, channel) is None
+        ):
+            continue
+        fields.add(field)
+    return frozenset(fields)
 
 
 # The overlay visibility fields inside VideoWidget, and the group whose custom
@@ -1134,6 +1251,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     _encode_audio_keys: tuple[str, ...] = ()
     _encode_audio_last_values: dict[str, str] = {}
 
+    # Poll readers also run on coordinators built with object.__new__.
+    # This flag identifies the profile transport, independently of legacy support.
+    _supports_exposure_mode: bool = False
+
     # Declared on the class, not only assigned in __init__, because a great many
     # tests build a coordinator with object.__new__ and set only the attributes
     # they are about. channel_option reads this, and those tests reach it through
@@ -1399,6 +1520,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_lighting = False
         self._supports_day_night_color = False
         self._supports_exposure_anti_flicker = False
+        self._supports_exposure_mode = False
+        self._supports_exposure_compensation = False
         self._video_color_fields: frozenset = frozenset()
         self._video_image_control_fields: frozenset = frozenset()
         self._video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
@@ -2032,8 +2155,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_day_night_color = (
             day_night_color_name(options, self._channel) is not None
         )
-        # The same read carries WDR and ExposureMode. Cached whole table, so
-        # this costs nothing beside the Day/Night answer it was already making.
+        # The same read carries WDR. Cached whole table, so this costs nothing
+        # beside the Day/Night answer it was already making.
         self._image_option_fields = image_option_fields(options, self._channel)
         _LOGGER.debug(
             "Channel %s reports image options %s",
@@ -2046,11 +2169,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether either family this probe gates turned up late.
 
         Setup and the retry share the one probe, which now fills two answers:
-        `_supports_day_night_color` and `_image_option_fields` (WDR and
-        ExposureMode). Both entity families are gated on the retry's result, so
-        the comparison is per family -- not an OR of "was anything there
-        before", which would hide a newly appeared image option on a channel
-        that already had a Day/Night answer.
+        `_supports_day_night_color` and `_image_option_fields` (WDR). Both
+        entity families are gated on the retry's result, so the comparison is
+        per family rather than an OR of "was anything there before".
 
         The poll decides each cycle whether to read the table, so the controls
         work from the next poll rather than reading unknown until a reload.
@@ -2429,6 +2550,72 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_retry_exposure_anti_flicker(self) -> bool:
         already = self.supports_exposure_anti_flicker()
         return await self._async_probe_exposure_anti_flicker() and not already
+
+    async def _async_probe_exposure_mode(self) -> bool:
+        """Check this channel's active Profile for a supported Mode value."""
+        try:
+            mode_data = await self.client.async_get_video_in_mode()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("exposure_mode", probe_error)
+            self._supports_exposure_mode = False
+            return False
+
+        profile_index = active_profile_index(mode_data, self._channel)
+        if profile_index is None:
+            self._note_probe_answered("exposure_mode")
+            self._supports_exposure_mode = False
+            return False
+
+        try:
+            exposure_data = await self.client.async_get_exposure_anti_flicker_config()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("exposure_mode", probe_error)
+            self._supports_exposure_mode = False
+            return False
+
+        self._note_probe_answered("exposure_mode")
+        self._supports_exposure_mode = (
+            exposure_mode_option(exposure_data, self._channel, profile_index)
+            is not None
+        )
+        return self._supports_exposure_mode
+
+    async def _async_retry_exposure_mode(self) -> bool:
+        already = bool(getattr(self, "_supports_exposure_mode", False))
+        return await self._async_probe_exposure_mode() and not already
+
+    async def _async_probe_exposure_compensation(self) -> bool:
+        """Check this channel's current profile and its Compensation property."""
+        try:
+            mode_data = await self.client.async_get_video_in_mode()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("exposure_compensation", probe_error)
+            self._supports_exposure_compensation = False
+            return False
+
+        profile_index = active_profile_index(mode_data, self._channel)
+        if profile_index is None:
+            self._note_probe_answered("exposure_compensation")
+            self._supports_exposure_compensation = False
+            return False
+
+        try:
+            exposure_data = await self.client.async_get_exposure_anti_flicker_config()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("exposure_compensation", probe_error)
+            self._supports_exposure_compensation = False
+            return False
+
+        self._note_probe_answered("exposure_compensation")
+        self._supports_exposure_compensation = (
+            exposure_compensation_value(exposure_data, self._channel, profile_index)
+            is not None
+        )
+        return self._supports_exposure_compensation
+
+    async def _async_retry_exposure_compensation(self) -> bool:
+        already = self.supports_exposure_compensation()
+        return await self._async_probe_exposure_compensation() and not already
 
     async def _async_probe_audio_control(self, config_name: str) -> bool:
         """Find this channel's exact row for one audio control."""
@@ -3103,6 +3290,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 if self._wanted_by(SELECT):
                     await self._async_probe_exposure_anti_flicker()
+                    await self._async_probe_exposure_mode()
+                if self._wanted_by(NUMBER):
+                    await self._async_probe_exposure_compensation()
 
                 # Each setting has its own table, owner, retry, and platform
                 # gate. An answer for one never implies another is available.
@@ -3401,8 +3591,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             await self._async_check_video_motion_is_pushed()
 
             # We need the profile mode (0=day, 1=night, 2=scene)
-            if (self._supports_profile_mode and not self.is_doorbell()) or (
-                self.supports_exposure_anti_flicker() and self._wanted_by(SELECT)
+            if (
+                (self._supports_profile_mode and not self.is_doorbell())
+                or (self.supports_exposure_anti_flicker() and self._wanted_by(SELECT))
+                or (self._supports_exposure_mode and self._wanted_by(SELECT))
+                or (self.supports_exposure_compensation() and self._wanted_by(NUMBER))
             ):
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
@@ -3411,7 +3604,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
-                    if self.supports_exposure_anti_flicker():
+                    if (
+                        self.supports_exposure_anti_flicker()
+                        or self._supports_exposure_mode
+                        or (
+                            self.supports_exposure_compensation()
+                            and self._wanted_by(NUMBER)
+                        )
+                    ):
                         previous_mode = getattr(self, "data", None) or {}
                         # Hold the last displayed state for this failed poll.
                         # Writes resolve the profile from a fresh read.
@@ -3573,9 +3773,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_video_image_control())
                 )
-            if self.supports_exposure_anti_flicker() and self._wanted_by(SELECT):
+            if (
+                (self.supports_exposure_anti_flicker() and self._wanted_by(SELECT))
+                or (
+                    self.get_exposure_mode_transport() is ExposureModeTransport.PROFILE
+                    and self._wanted_by(SELECT)
+                )
+                or (self.supports_exposure_compensation() and self._wanted_by(NUMBER))
+            ):
                 coros.append(
-                    asyncio.ensure_future(self._async_fetch_exposure_anti_flicker())
+                    asyncio.ensure_future(self._async_fetch_exposure_compensation())
                 )
             for config_name, spec in AUDIO_CONTROLS.items():
                 platform = NUMBER if spec[2] == "percentage" else SWITCH
@@ -5393,6 +5600,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def supports_exposure_anti_flicker(self) -> bool:
         return bool(getattr(self, "_supports_exposure_anti_flicker", False))
 
+    def supports_exposure_mode(self) -> bool:
+        return self.get_exposure_mode_transport() is not None
+
+    def get_exposure_mode_transport(self) -> ExposureModeTransport | None:
+        """Return the established owner, preferring Profile-aware Mode."""
+        if bool(getattr(self, "_supports_exposure_mode", False)):
+            return ExposureModeTransport.PROFILE
+        if self.supports_image_option("ExposureMode"):
+            return ExposureModeTransport.LEGACY
+        return None
+
+    def supports_exposure_compensation(self) -> bool:
+        return bool(getattr(self, "_supports_exposure_compensation", False))
+
     def get_active_profile_index(self) -> int | None:
         return active_profile_index(getattr(self, "data", None) or {}, self._channel)
 
@@ -5402,6 +5623,65 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return None
         return exposure_anti_flicker_option(
             getattr(self, "data", None) or {}, self._channel, profile_index
+        )
+
+    def get_exposure_mode_option(self) -> str | None:
+        transport = self.get_exposure_mode_transport()
+        data = getattr(self, "data", None) or {}
+        if transport is ExposureModeTransport.LEGACY:
+            return legacy_exposure_mode_option(data, self._channel)
+        if transport is not ExposureModeTransport.PROFILE:
+            return None
+        profile_index = self.get_active_profile_index()
+        if profile_index is None:
+            return None
+        return exposure_mode_option(data, self._channel, profile_index)
+
+    def get_exposure_mode_options(self) -> tuple[str, ...]:
+        transport = self.get_exposure_mode_transport()
+        if transport is ExposureModeTransport.LEGACY:
+            return LEGACY_EXPOSURE_MODE_OPTIONS
+        if transport is not ExposureModeTransport.PROFILE:
+            return ()
+        profile_index = self.get_active_profile_index()
+        if profile_index is None:
+            return ()
+        return exposure_mode_options(
+            getattr(self, "data", None) or {},
+            self._channel,
+            profile_index,
+            anti_flicker_supported=self.supports_exposure_anti_flicker(),
+        )
+
+    def get_exposure_compensation(self) -> int | None:
+        profile_index = self.get_active_profile_index()
+        if profile_index is None:
+            return None
+        data = getattr(self, "data", None) or {}
+        if not exposure_compensation_is_applicable(
+            data,
+            self._channel,
+            profile_index,
+        ):
+            return None
+        return exposure_compensation_value(data, self._channel, profile_index)
+
+    def exposure_compensation_available(self) -> bool:
+        """Whether the compensation control is usable for this channel/profile.
+
+        Compensation remains stored while Manual is selected, but is not
+        presented as applicable in that mode.
+        """
+        if not self.supports_exposure_compensation():
+            return False
+        profile_index = self.get_active_profile_index()
+        if profile_index is None:
+            return False
+        data = getattr(self, "data", None) or {}
+        return exposure_compensation_value(
+            data, self._channel, profile_index
+        ) is not None and exposure_compensation_is_applicable(
+            data, self._channel, profile_index
         )
 
     async def async_set_exposure_anti_flicker(self, option: str) -> None:
@@ -5415,7 +5695,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             raise ConnectionError(
                 "The current VideoInMode profile could not be established"
             )
-        exposure_data = await self.client.async_get_exposure_anti_flicker_config()
+        exposure_data = await self.client.async_get_exposure_anti_flicker_config(
+            fresh=True
+        )
         if (
             exposure_anti_flicker_option(exposure_data, self._channel, profile_index)
             is None
@@ -5424,6 +5706,101 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 "The current VideoInExposure AntiFlicker value could not be established"
             )
         await self.client.async_set_exposure_anti_flicker(
+            self._channel, profile_index, value
+        )
+
+    async def async_set_exposure_mode(self, option: str) -> None:
+        transport = self.get_exposure_mode_transport()
+        if transport is ExposureModeTransport.LEGACY:
+            value = LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION.get(option)
+            if value is None:
+                raise ValueError("Unsupported legacy Exposure Mode option")
+            options = await self.client.async_get_video_in_options(fresh=True)
+            key = f"table.VideoInOptions[{self._channel}].ExposureMode"
+            if (
+                LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE.get(
+                    _exposure_integer(options.get(key))
+                )
+                is None
+            ):
+                raise ConnectionError(
+                    "The current VideoInOptions ExposureMode could not be established"
+                )
+            await self.client.async_set_legacy_exposure_mode(self._channel, value)
+            return
+        if transport is not ExposureModeTransport.PROFILE:
+            raise ValueError("Exposure Mode is not supported")
+
+        value = EXPOSURE_MODE_VALUE_BY_OPTION.get(option)
+        if value is None:
+            raise ValueError("Unsupported Exposure Mode option")
+
+        mode_data = await self.client.async_get_video_in_mode(fresh=True)
+        profile_index = active_profile_index(mode_data, self._channel)
+        if profile_index is None:
+            raise ConnectionError(
+                "The current VideoInMode profile could not be established"
+            )
+        exposure_data = await self.client.async_get_exposure_anti_flicker_config(
+            fresh=True
+        )
+        if exposure_mode_option(exposure_data, self._channel, profile_index) is None:
+            raise ConnectionError(
+                "The current VideoInExposure Mode value could not be established"
+            )
+
+        valid_options = exposure_mode_options(
+            exposure_data,
+            self._channel,
+            profile_index,
+            anti_flicker_supported=self.supports_exposure_anti_flicker(),
+        )
+        if option not in valid_options:
+            raise ValueError(
+                "Exposure Mode is not valid for the current Anti-Flicker setting"
+            )
+        await self.client.async_set_exposure_mode(self._channel, profile_index, value)
+
+    async def async_set_exposure_compensation(self, value: int) -> None:
+        """Set Compensation exactly on the channel's active profile."""
+        if type(value) is not int:
+            raise ValueError("Exposure Compensation must be an integer")
+        if value < EXPOSURE_COMPENSATION_MIN or value > EXPOSURE_COMPENSATION_MAX:
+            raise ValueError("Exposure Compensation value out of range")
+
+        mode_data = await self.client.async_get_video_in_mode(fresh=True)
+        profile_index = active_profile_index(mode_data, self._channel)
+        if profile_index is None:
+            raise ConnectionError(
+                "The current VideoInMode profile could not be established"
+            )
+
+        exposure_data = await self.client.async_get_exposure_anti_flicker_config(
+            fresh=True
+        )
+        current = exposure_compensation_value(
+            exposure_data, self._channel, profile_index
+        )
+        if current is None:
+            raise ConnectionError(
+                "The current VideoInExposure Compensation value could not be established"
+            )
+        current_mode = exposure_mode_value(exposure_data, self._channel, profile_index)
+        mode_key = f"table.VideoInExposure[{self._channel}][{profile_index}].Mode"
+        if current_mode is None and (
+            bool(getattr(self, "_supports_exposure_mode", False))
+            or mode_key in exposure_data
+        ):
+            raise ConnectionError(
+                "The current VideoInExposure Mode could not be established"
+            )
+        if not exposure_compensation_is_applicable(
+            exposure_data, self._channel, profile_index
+        ):
+            raise ValueError(
+                "Exposure Compensation is unavailable for the current Exposure Mode"
+            )
+        await self.client.async_set_exposure_compensation(
             self._channel, profile_index, value
         )
 
@@ -5482,7 +5859,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def supports_image_option(self, field: str) -> bool:
         """Whether this channel reported this VideoInOptions control."""
-        return field in self._image_option_fields and not (
+        return field in getattr(self, "_image_option_fields", frozenset()) and not (
             self.is_indoor_monitor_without_video()
         )
 
@@ -5524,13 +5901,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return int(self.get_image_option("WideDynamicRange"))
         except (TypeError, ValueError):
             return None
-
-    def get_exposure_mode_option(self) -> str | None:
-        """The Exposure Mode select's current word, or None when unknown."""
-        raw = self.get_image_option("ExposureMode")
-        if raw is None:
-            return None
-        return EXPOSURE_MODE_OPTIONS.get(str(raw).strip())
 
     def supports_video_widget_overlay(self, field: str) -> bool:
         """Whether this channel reported an overlay visibility field.
@@ -7676,7 +8046,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             }
             return carried or None
 
-    async def _async_fetch_exposure_anti_flicker(self) -> dict | None:
+    async def _async_fetch_exposure_compensation(self) -> dict | None:
         """Poll VideoInExposure, carrying only its prior values on failure."""
         try:
             return await self.client.async_get_exposure_anti_flicker_config()
@@ -7693,6 +8063,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if key.startswith("table.VideoInExposure[")
             }
             return carried or None
+
+    async def _async_fetch_exposure_anti_flicker(self) -> dict | None:
+        """Compatibility name for the shared VideoInExposure poll."""
+        return await self._async_fetch_exposure_compensation()
 
     async def _async_fetch_audio_control(self, config_name: str) -> dict | None:
         """Poll one audio table, carrying only its prior keys on refusal."""
@@ -7956,6 +8330,8 @@ RETRYABLE_CAPABILITIES = {
     "system load": DahuaDataUpdateCoordinator._async_retry_system_load,
     "video_color": DahuaDataUpdateCoordinator._async_retry_video_color,
     "exposure_anti_flicker": DahuaDataUpdateCoordinator._async_retry_exposure_anti_flicker,
+    "exposure_mode": DahuaDataUpdateCoordinator._async_retry_exposure_mode,
+    "exposure_compensation": DahuaDataUpdateCoordinator._async_retry_exposure_compensation,
     "video_image_control": DahuaDataUpdateCoordinator._async_retry_video_image_control,
     "video_widget": DahuaDataUpdateCoordinator._async_retry_video_widget,
 }

@@ -34,6 +34,35 @@ EXPOSURE_ANTI_FLICKER_OPTIONS = tuple(EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION)
 EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE = {
     value: option for option, value in EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION.items()
 }
+# This profile Mode mapping is separate from VideoInOptions.ExposureMode. Keep
+# the accepted values explicit; an unrecognized value is never inferred as Manual.
+EXPOSURE_MODE_VALUE_BY_OPTION = {
+    "Auto": 0,
+    "Gain Priority": 7,
+    "Shutter Priority": 8,
+    "Manual": 4,
+}
+EXPOSURE_MODE_OPTION_BY_VALUE = {
+    value: option for option, value in EXPOSURE_MODE_VALUE_BY_OPTION.items()
+}
+EXPOSURE_MODE_OPTIONS = tuple(EXPOSURE_MODE_VALUE_BY_OPTION)
+LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION = {
+    "Auto": 0,
+    "Gain Priority": 1,
+    "Shutter Priority": 2,
+}
+LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE = {
+    value: option for option, value in LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION.items()
+}
+LEGACY_EXPOSURE_MODE_OPTIONS = tuple(LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION)
+EXPOSURE_MODE_OPTIONS_BY_ANTI_FLICKER = {
+    0: EXPOSURE_MODE_OPTIONS,
+    1: ("Auto", "Manual"),
+    2: ("Auto", "Manual"),
+}
+EXPOSURE_COMPENSATION_MIN = 0
+EXPOSURE_COMPENSATION_MAX = 100
+EXPOSURE_COMPENSATION_STEP = 1
 
 # The three image orientation fields, and the tables that carry them.
 #

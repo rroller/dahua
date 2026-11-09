@@ -60,6 +60,7 @@ LANGUAGES = sorted(path.name for path in TRANSLATIONS.glob("*.json"))
 SINGLETON_CONTROLS = {
     ("select", "video_color_style"),
     ("select", "exposure_anti_flicker"),
+    ("number", "exposure_compensation"),
     ("select", "image_rotation"),
     ("select", "image_wide_dynamic_range"),
     ("select", "image_exposure_mode"),

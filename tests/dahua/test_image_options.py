@@ -22,6 +22,7 @@ from custom_components.dahua.coordinator import (
     DahuaDataUpdateCoordinator,
     WIDE_DYNAMIC_RANGE_OPTIONS,
     image_option_fields,
+    legacy_exposure_mode_option,
     video_widget_fields,
 )
 
@@ -43,8 +44,8 @@ def test_image_options_are_read_from_this_channels_own_row():
     table = {
         "table.VideoInOptions[0].WideDynamicRangeMode": "1",
         "table.VideoInOptions[0].WideDynamicRange": "50",
-        "table.VideoInOptions[0].ExposureMode": "0",
         "table.VideoInOptions[1].WideDynamicRangeMode": "2",
+        "table.VideoInOptions[0].ExposureMode": "0",
         "table.VideoInOptions[1].ExposureMode": "1",
     }
 
@@ -55,11 +56,17 @@ def test_image_options_are_read_from_this_channels_own_row():
 
 
 def test_image_options_are_per_field():
-    """A camera can serve WDR without an exposure mode, and the WDR mode
-    without the level it needs. One yes cannot say which entity it warrants."""
+    """WDR fields and legacy Exposure Mode are independently discovered."""
     table = {"table.VideoInOptions[0].WideDynamicRangeMode": "1"}
 
     assert image_option_fields(table, 0) == frozenset({"WideDynamicRangeMode"})
+    assert image_option_fields(
+        {"table.VideoInOptions[0].ExposureMode": "0"}, 0
+    ) == frozenset({"ExposureMode"})
+    assert (
+        image_option_fields({"table.VideoInOptions[0].ExposureMode": "8"}, 0)
+        == frozenset()
+    )
 
 
 def test_an_empty_video_in_options_table_names_no_controls():
@@ -107,18 +114,6 @@ def test_an_unrecognised_wdr_mode_is_not_given_a_word():
     assert coordinator.get_wide_dynamic_range_option() is None
 
 
-def test_the_exposure_option_is_the_word_the_select_offers():
-    coordinator = _coordinator(data={"table.VideoInOptions[0].ExposureMode": "1"})
-
-    assert coordinator.get_exposure_mode_option() == "Gain Priority"
-
-
-def test_an_unrecognised_exposure_mode_is_not_given_a_word():
-    coordinator = _coordinator(data={"table.VideoInOptions[0].ExposureMode": "9"})
-
-    assert coordinator.get_exposure_mode_option() is None
-
-
 def test_the_wdr_level_is_an_integer_and_none_when_absent():
     assert (
         _coordinator(
@@ -135,6 +130,29 @@ def test_a_control_is_only_supported_on_the_channel_that_reported_it():
     assert coordinator.supports_image_option("WideDynamicRangeMode") is True
     assert coordinator.supports_image_option("ExposureMode") is False
     assert coordinator.supports_image_options() is True
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0", "Auto"),
+        ("1", "Gain Priority"),
+        ("2", "Shutter Priority"),
+        ("3", None),
+        ("bad", None),
+        (True, None),
+        (False, None),
+    ],
+)
+def test_legacy_exposure_mode_reads_only_its_supported_values(raw, expected):
+    assert (
+        legacy_exposure_mode_option({"table.VideoInOptions[3].ExposureMode": raw}, 3)
+        == expected
+    )
+    assert (
+        legacy_exposure_mode_option({"table.VideoInOptions[2].ExposureMode": "0"}, 3)
+        is None
+    )
 
 
 def test_a_monitor_without_a_camera_reports_no_picture_controls():
@@ -238,9 +256,7 @@ def _probe_coordinator(table):
     return coordinator
 
 
-async def test_the_day_night_probe_also_collects_the_image_options():
-    """One read, two answers: the same VideoInOptions table carries both, so the
-    WDR and exposure selects cost no extra request."""
+async def test_the_day_night_probe_does_not_infer_profile_mode_from_image_options():
     coordinator = _probe_coordinator(
         {
             "table.VideoInOptions[0].DayNightColor": "0",
@@ -309,24 +325,6 @@ async def test_the_video_widget_retry_does_not_announce_the_same_answer_twice():
     assert await coordinator._async_retry_video_widget() is False
 
 
-async def test_the_day_night_retry_sees_a_new_image_option_beside_an_old_answer():
-    """The two families share one probe but are compared separately: a channel
-    that already had Day/Night and now reports ExposureMode must still be
-    announced, or its select is never built until a reload."""
-    coordinator = _probe_coordinator(
-        {
-            "table.VideoInOptions[0].DayNightColor": "0",
-            "table.VideoInOptions[0].WideDynamicRangeMode": "1",
-            "table.VideoInOptions[0].WideDynamicRange": "50",
-            "table.VideoInOptions[0].ExposureMode": "0",
-        }
-    )
-    coordinator._supports_day_night_color = True
-    coordinator._image_option_fields = frozenset({"WideDynamicRangeMode"})
-
-    assert await coordinator._async_retry_day_night_color() is True
-
-
 async def test_the_day_night_retry_does_not_announce_an_unchanged_answer():
     coordinator = _probe_coordinator(
         {
@@ -341,6 +339,22 @@ async def test_the_day_night_retry_does_not_announce_an_unchanged_answer():
     )
 
     assert await coordinator._async_retry_day_night_color() is False
+
+
+async def test_video_in_options_refusal_does_not_erase_profile_mode_support():
+    coordinator = _probe_coordinator({})
+    coordinator._supports_exposure_mode = True
+    coordinator._image_option_fields = frozenset({"ExposureMode"})
+
+    async def _refuse():
+        raise TimeoutError()
+
+    coordinator.client.async_probe_video_in_options = _refuse
+
+    await coordinator._async_probe_day_night_color()
+
+    assert coordinator.supports_exposure_mode() is True
+    assert coordinator.supports_image_option("ExposureMode") is False
 
 
 async def test_the_video_in_options_fetch_keeps_the_last_answer_on_a_refusal():
@@ -382,7 +396,7 @@ async def test_image_option_http_refusal_carries_state_through_real_client(statu
     expected = {
         "table.VideoInOptions[3].WideDynamicRangeMode": "1",
         "table.VideoInOptions[3].WideDynamicRange": "50",
-        "table.VideoInOptions[3].ExposureMode": "2",
+        "table.VideoInOptions[3].ExposureMode": "8",
     }
     coordinator.data = {**expected, "unrelated": "not carried"}
 
