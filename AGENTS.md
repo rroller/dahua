@@ -169,7 +169,12 @@ learn from what a device refused rather than from what it claims.
 Three transports, chosen in this order:
 
 1. **Doorbells (VTO)** take the DHIP listener on port 5000 (`vto.py`), started by
-   `async_start_vto_event_listener`.
+   `async_start_vto_event_listener`. A doorbell that **refuses** that port hands
+   its events to the CGI stream below and the listener returns, so one transport
+   carries them and a press is not reported twice (#1187). Only
+   `ConnectionRefusedError` does that: a timeout is a doorbell that is rebooting,
+   not a port that is shut, and a device serving no HTTP has nothing to fall back
+   to.
 2. **Everything else** joins the one shared `DahuaHostEventStream` per address
    (`host.py`), which long-polls `eventManager.cgi?action=attach`. One stream
    serves every channel on the host: the device sends every channel's events down
