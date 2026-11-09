@@ -95,6 +95,7 @@ WAS = {
     ("number", "image_hue"): "Image hue",
     ("number", "image_gamma"): "Image gamma",
     ("number", "image_chroma_suppress"): "Image chroma suppress",
+    ("number", "exposure_compensation"): "Image exposure compensation",
     ("select", "video_color_style"): "Image color style",
     ("select", "image_wide_dynamic_range"): "Image wide dynamic range",
     ("select", "image_exposure_mode"): "Image exposure mode",

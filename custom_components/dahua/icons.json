@@ -54,6 +54,9 @@
             }
         },
         "number": {
+            "exposure_compensation": {
+                "default": "mdi:camera-iris"
+            },
             "microphone_volume": {
                 "default": "mdi:microphone"
             },

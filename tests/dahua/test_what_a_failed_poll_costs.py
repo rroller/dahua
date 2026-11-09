@@ -57,6 +57,7 @@ CLIENT_METHODS = (
     "async_get_video_analyse_rules_for_amcrest",
     "async_get_video_in_mode",
     "async_get_video_color",
+    "async_get_exposure_anti_flicker_config",
     "async_get_video_in_options",
     "async_reconcile_lighting_scheme_restore_modes",
 )
@@ -69,6 +70,8 @@ CAPABILITY_FLAGS = (
     "_supports_disarming_linkage",
     "_supports_event_notifications",
     "_supports_exposure_anti_flicker",
+    "_supports_exposure_mode",
+    "_supports_exposure_compensation",
     "_supports_lighting_v2",
     "_supports_privacy_mode",
     "_supports_profile_mode",

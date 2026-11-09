@@ -91,6 +91,8 @@ FLAGS = (
     "_supports_disarming_linkage",
     "_supports_event_notifications",
     "_supports_exposure_anti_flicker",
+    "_supports_exposure_mode",
+    "_supports_exposure_compensation",
     "_supports_floodlightmode",
     "_supports_lighting",
     "_supports_lighting_scheme_illuminator",

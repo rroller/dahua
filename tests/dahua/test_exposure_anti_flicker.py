@@ -201,8 +201,8 @@ class _WriteClient:
             raise self.mode_error
         return self.mode
 
-    async def async_get_exposure_anti_flicker_config(self):
-        self.calls.append(("getConfig", "VideoInExposure"))
+    async def async_get_exposure_anti_flicker_config(self, fresh=False):
+        self.calls.append(("VideoInExposure", fresh))
         return self.exposure
 
     async def async_set_exposure_anti_flicker(self, channel, profile, value):
@@ -235,7 +235,7 @@ async def test_write_resolves_the_current_profile_and_channel(option, device_val
 
     assert coordinator.client.calls == [
         ("VideoInMode", True),
-        ("getConfig", "VideoInExposure"),
+        ("VideoInExposure", True),
         ("setConfig", CHANNEL, 1, device_value),
     ]
 
@@ -250,7 +250,7 @@ async def test_write_keeps_general_profile_precedence_over_config_ex():
 
     assert coordinator.client.calls == [
         ("VideoInMode", True),
-        ("getConfig", "VideoInExposure"),
+        ("VideoInExposure", True),
         ("setConfig", CHANNEL, 2, 1),
     ]
 
@@ -298,7 +298,7 @@ async def test_warm_day_cache_is_bypassed_after_device_changes_to_night():
         mode_urls.append(url)
         return physical_mode
 
-    async def get_exposure():
+    async def get_exposure(fresh=False):
         return {_exposure_key(CHANNEL, 1): "0"}
 
     async def set_exposure(channel, profile, value):
@@ -341,7 +341,7 @@ async def test_write_requires_the_exact_current_exposure_field():
 
     assert coordinator.client.calls == [
         ("VideoInMode", True),
-        ("getConfig", "VideoInExposure"),
+        ("VideoInExposure", True),
     ]
 
 

@@ -361,6 +361,9 @@
             "motion_region1_threshold": {
                 "name": "Umbral Región Movimiento 1"
             },
+            "exposure_compensation": {
+                "name": "Imagen compensación de exposición"
+            },
             "microphone_volume": {
                 "name": "Volumen del micrófono"
             },

@@ -24,6 +24,9 @@ from .const import (
     ALL_EVENTS,
     DOMAIN,
     EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE,
+    EXPOSURE_COMPENSATION_MAX,
+    EXPOSURE_COMPENSATION_MIN,
+    EXPOSURE_MODE_OPTION_BY_VALUE,
     VIDEO_COLOR_STYLE_OPTIONS,
     VIDEO_IMAGE_CONTROL_TABLE,
     VIDEO_IMAGE_CONTROL_TABLES,
@@ -3315,11 +3318,66 @@ class DahuaClient:
                 value,
             )
 
-    async def async_get_exposure_anti_flicker_config(self) -> dict:
-        """Read VideoInExposure without hiding a refused or unavailable table."""
-        return await self.get(
-            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInExposure"
+    async def async_set_exposure_compensation(
+        self, channel: int, active_profile_index: int, value: int
+    ) -> dict:
+        """Set Compensation on the selected channel's active exposure profile."""
+        if type(channel) is not int or channel < 0:
+            raise ValueError("Unsupported VideoInExposure channel")
+        if type(active_profile_index) is not int or active_profile_index < 0:
+            raise ValueError("Unsupported VideoInExposure profile")
+        if (
+            type(value) is not int
+            or value < EXPOSURE_COMPENSATION_MIN
+            or value > EXPOSURE_COMPENSATION_MAX
+        ):
+            raise ValueError("Unsupported Compensation value")
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&VideoInExposure[{channel}][{active_profile_index}].Compensation={value}"
         )
+        try:
+            return await self.get(url)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            return await self._rpc2_set_config_field(
+                f"VideoInExposure[{channel}][{active_profile_index}].Compensation",
+                value,
+            )
+
+    async def async_set_exposure_mode(
+        self, channel: int, active_profile_index: int, value: int
+    ) -> dict:
+        """Set Mode on the selected channel's active exposure profile."""
+        if type(channel) is not int or channel < 0:
+            raise ValueError("Unsupported VideoInExposure channel")
+        if type(active_profile_index) is not int or active_profile_index < 0:
+            raise ValueError("Unsupported VideoInExposure profile")
+        if type(value) is not int or value not in EXPOSURE_MODE_OPTION_BY_VALUE:
+            raise ValueError("Unsupported Exposure Mode value")
+
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&VideoInExposure[{channel}][{active_profile_index}].Mode={value}"
+        )
+        try:
+            return await self.get(url)
+        except aiohttp.ClientResponseError as cgi_error:
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            return await self._rpc2_set_config_field(
+                f"VideoInExposure[{channel}][{active_profile_index}].Mode",
+                value,
+            )
+
+    async def async_get_exposure_anti_flicker_config(self, fresh: bool = False) -> dict:
+        """Read VideoInExposure without hiding a refused or unavailable table."""
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInExposure"
+        if fresh:
+            _HOST_CACHE.pop((self._device, self._username, url), None)
+        return await self.get(url)
 
     async def async_set_motion_region(
         self, channel: int, region: int, field: str, value: int
@@ -5185,17 +5243,6 @@ class DahuaClient:
             "&VideoInOptions[{0}].WideDynamicRange={2}"
         ).format(channel, int(mode), int(level))
         return await self.get("/cgi-bin/configManager.cgi?action=setConfig&" + query)
-
-    async def async_set_exposure_mode(self, channel: int, mode: int):
-        """Set the exposure mode: 0 Auto, 1 Gain Priority, 2 Shutter Priority.
-
-        Mode 4 is manual and needs shutter and gain values this integration
-        does not expose, so it is deliberately not reachable here.
-        """
-        return await self.get(
-            "/cgi-bin/configManager.cgi?action=setConfig"
-            "&VideoInOptions[{0}].ExposureMode={1}".format(channel, int(mode))
-        )
 
     async def async_get_video_in_options(self) -> dict:
         """The VideoInOptions table, which carries this device's Day/Night mode.

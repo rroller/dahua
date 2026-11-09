@@ -43,20 +43,19 @@ def test_image_options_are_read_from_this_channels_own_row():
     table = {
         "table.VideoInOptions[0].WideDynamicRangeMode": "1",
         "table.VideoInOptions[0].WideDynamicRange": "50",
-        "table.VideoInOptions[0].ExposureMode": "0",
         "table.VideoInOptions[1].WideDynamicRangeMode": "2",
+        "table.VideoInOptions[0].ExposureMode": "0",
         "table.VideoInOptions[1].ExposureMode": "1",
     }
 
     assert image_option_fields(table, 0) == frozenset(
-        {"WideDynamicRangeMode", "WideDynamicRange", "ExposureMode"}
+        {"WideDynamicRangeMode", "WideDynamicRange"}
     )
     assert image_option_fields(table, 2) == frozenset()
 
 
 def test_image_options_are_per_field():
-    """A camera can serve WDR without an exposure mode, and the WDR mode
-    without the level it needs. One yes cannot say which entity it warrants."""
+    """WDR fields are independent; VideoInOptions ExposureMode is not one."""
     table = {"table.VideoInOptions[0].WideDynamicRangeMode": "1"}
 
     assert image_option_fields(table, 0) == frozenset({"WideDynamicRangeMode"})
@@ -105,18 +104,6 @@ def test_an_unrecognised_wdr_mode_is_not_given_a_word():
     )
 
     assert coordinator.get_wide_dynamic_range_option() is None
-
-
-def test_the_exposure_option_is_the_word_the_select_offers():
-    coordinator = _coordinator(data={"table.VideoInOptions[0].ExposureMode": "1"})
-
-    assert coordinator.get_exposure_mode_option() == "Gain Priority"
-
-
-def test_an_unrecognised_exposure_mode_is_not_given_a_word():
-    coordinator = _coordinator(data={"table.VideoInOptions[0].ExposureMode": "9"})
-
-    assert coordinator.get_exposure_mode_option() is None
 
 
 def test_the_wdr_level_is_an_integer_and_none_when_absent():
@@ -238,9 +225,7 @@ def _probe_coordinator(table):
     return coordinator
 
 
-async def test_the_day_night_probe_also_collects_the_image_options():
-    """One read, two answers: the same VideoInOptions table carries both, so the
-    WDR and exposure selects cost no extra request."""
+async def test_the_day_night_probe_does_not_infer_profile_mode_from_image_options():
     coordinator = _probe_coordinator(
         {
             "table.VideoInOptions[0].DayNightColor": "0",
@@ -254,7 +239,7 @@ async def test_the_day_night_probe_also_collects_the_image_options():
 
     assert coordinator._supports_day_night_color is True
     assert coordinator._image_option_fields == frozenset(
-        {"WideDynamicRangeMode", "WideDynamicRange", "ExposureMode"}
+        {"WideDynamicRangeMode", "WideDynamicRange"}
     )
     assert coordinator.client.asked == ["video_in_options"]
 
@@ -307,24 +292,6 @@ async def test_the_video_widget_retry_does_not_announce_the_same_answer_twice():
     coordinator._video_widget_fields = frozenset({"TimeTitle.EncodeBlend"})
 
     assert await coordinator._async_retry_video_widget() is False
-
-
-async def test_the_day_night_retry_sees_a_new_image_option_beside_an_old_answer():
-    """The two families share one probe but are compared separately: a channel
-    that already had Day/Night and now reports ExposureMode must still be
-    announced, or its select is never built until a reload."""
-    coordinator = _probe_coordinator(
-        {
-            "table.VideoInOptions[0].DayNightColor": "0",
-            "table.VideoInOptions[0].WideDynamicRangeMode": "1",
-            "table.VideoInOptions[0].WideDynamicRange": "50",
-            "table.VideoInOptions[0].ExposureMode": "0",
-        }
-    )
-    coordinator._supports_day_night_color = True
-    coordinator._image_option_fields = frozenset({"WideDynamicRangeMode"})
-
-    assert await coordinator._async_retry_day_night_color() is True
 
 
 async def test_the_day_night_retry_does_not_announce_an_unchanged_answer():
@@ -382,7 +349,7 @@ async def test_image_option_http_refusal_carries_state_through_real_client(statu
     expected = {
         "table.VideoInOptions[3].WideDynamicRangeMode": "1",
         "table.VideoInOptions[3].WideDynamicRange": "50",
-        "table.VideoInOptions[3].ExposureMode": "2",
+        "table.VideoInOptions[3].ExposureMode": "8",
     }
     coordinator.data = {**expected, "unrelated": "not carried"}
 

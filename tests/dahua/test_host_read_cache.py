@@ -86,6 +86,19 @@ async def test_eleven_channels_make_one_request_between_them():
     assert all(r == {"key": "value"} for r in results), "a waiter got nothing back"
 
 
+async def test_exposure_compensation_and_antiflicker_share_the_table_read():
+    probe = _Probe(hold=0)
+    client = _client(probe)
+
+    await client.async_get_exposure_anti_flicker_config()
+    await client.async_get_exposure_anti_flicker_config()
+
+    assert probe.calls == 1
+    assert probe.urls == [
+        "http://10.0.0.1:80/cgi-bin/configManager.cgi?action=getConfig&name=VideoInExposure"
+    ]
+
+
 async def test_a_repeat_inside_the_ttl_costs_nothing():
     probe = _Probe(hold=0)
     c = _client(probe)

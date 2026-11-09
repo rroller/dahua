@@ -52,6 +52,7 @@ WAS = {
     ("sensor", "memory_used"): "mdi:memory",
     ("sensor", "processor_usage"): "mdi:cpu-64-bit",
     ("sensor", "profile"): "mdi:theme-light-dark",
+    ("number", "exposure_compensation"): "mdi:camera-iris",
     ("number", "microphone_volume"): "mdi:microphone",
     ("number", "speaker_volume"): "mdi:volume-high",
     ("switch", "noise_filter"): "mdi:filter",

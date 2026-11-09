@@ -140,8 +140,8 @@ async def test_the_day_night_read_is_skipped_when_the_device_has_no_mode():
 
 
 async def test_the_day_night_read_is_kept_for_wdr_or_exposure_alone():
-    """The same table carries WDR and ExposureMode, so a camera without
-    DayNightColor but with one of those still has a select reading it. The
+    """The same table carries WDR, so a camera without DayNightColor but
+    with a WDR field still has a select reading it. The
     gate used to be Day/Night only, which left those selects stale for ever."""
     c = _coordinator()
     c._supports_day_night_color = False
@@ -224,6 +224,55 @@ async def test_exposure_anti_flicker_polls_only_for_its_select():
     assert GET_EXPOSURE_CONFIG not in c.client.calls
 
 
+async def test_exposure_compensation_polls_only_for_its_number_entity():
+    c = _coordinator()
+    c._supports_exposure_compensation = True
+    await c._async_update_data()
+    assert VIDEO_IN_MODE in c.client.calls
+    assert c.client.calls.count(GET_EXPOSURE_CONFIG) == 1
+
+    c = _coordinator(number=False)
+    c._supports_exposure_compensation = True
+    await c._async_update_data()
+    assert VIDEO_IN_MODE not in c.client.calls
+    assert GET_EXPOSURE_CONFIG not in c.client.calls
+
+
+async def test_exposure_mode_polls_only_for_its_select():
+    c = _coordinator()
+    c._supports_exposure_mode = True
+    await c._async_update_data()
+    assert VIDEO_IN_MODE in c.client.calls
+    assert GET_EXPOSURE_CONFIG in c.client.calls
+
+    c = _coordinator(select=False)
+    c._supports_exposure_mode = True
+    await c._async_update_data()
+    assert VIDEO_IN_MODE not in c.client.calls
+    assert GET_EXPOSURE_CONFIG not in c.client.calls
+
+
+async def test_exposure_table_is_fetched_once_for_select_and_number():
+    c = _coordinator()
+    c._supports_exposure_anti_flicker = True
+    c._supports_exposure_mode = True
+    c._supports_exposure_compensation = True
+
+    await c._async_update_data()
+
+    assert c.client.calls.count(GET_EXPOSURE_CONFIG) == 1
+
+
+async def test_exposure_table_is_fetched_once_for_antiflicker_and_mode():
+    c = _coordinator()
+    c._supports_exposure_anti_flicker = True
+    c._supports_exposure_mode = True
+
+    await c._async_update_data()
+
+    assert c.client.calls.count(GET_EXPOSURE_CONFIG) == 1
+
+
 async def test_failed_profile_read_keeps_config_ex_for_anti_flicker():
     c = _coordinator()
     c._supports_exposure_anti_flicker = True
@@ -232,6 +281,8 @@ async def test_failed_profile_read_keeps_config_ex_for_anti_flicker():
         "table.VideoInMode[0].ConfigEx": "Night",
         "table.VideoInMode[1].ConfigEx": "Day",
         "table.VideoInExposure[0][0].AntiFlicker": "1",
+        "table.VideoInExposure[0][0].Mode": "0",
+        "table.VideoInExposure[0][0].Compensation": "45",
         "table.VideoInExposure[0][1].AntiFlicker": "2",
     }
 
