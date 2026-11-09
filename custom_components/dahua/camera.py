@@ -20,6 +20,13 @@ from homeassistant.components.camera import (
 )
 from homeassistant.util import dt as dt_util
 
+# CameraEntityCapabilities arrived in Home Assistant 2026.11. The integration
+# still supports older cores, which simply get no talk button.
+try:
+    from homeassistant.components.camera import CameraEntityCapabilities
+except ImportError:  # pragma: no cover - HA before 2026.11
+    CameraEntityCapabilities = None
+
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 from custom_components.dahua import dahua_utils
 from custom_components.dahua.audio import (
@@ -714,6 +721,17 @@ def rtsp_stream_source(url: str, disable_backchannel: bool) -> str:
     return url
 
 
+def two_way_audio_supported(is_doorbell: bool, disable_backchannel: bool) -> bool:
+    """Whether Home Assistant may offer talking through this stream (#1162).
+
+    Home Assistant 2026.11 sends the browser's microphone over WebRTC to its
+    go2rtc, which forwards it on the RTSP backchannel of the stream source.
+    That needs a device with a speaker, which here means a doorbell, and a
+    stream source without #backchannel=0. Measured on a VTO2311R-WP.
+    """
+    return bool(is_doorbell) and not disable_backchannel
+
+
 class DahuaCamera(DahuaBaseEntity, Camera):
     """An implementation of a Dahua IP camera."""
 
@@ -774,10 +792,21 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         self._unique_id = coordinator.get_serial_number() + "_" + suffix
         self._stream_index = stream_index
         self._motion_status = False
+        disable_backchannel = coordinator.channel_option(
+            CONF_DISABLE_BACKCHANNEL, False
+        )
         self._stream_source = rtsp_stream_source(
             coordinator.client.get_rtsp_stream_url(self._channel_number, stream_index),
-            coordinator.channel_option(CONF_DISABLE_BACKCHANNEL, False),
+            disable_backchannel,
         )
+        if CameraEntityCapabilities is not None:
+            is_doorbell = getattr(coordinator, "is_doorbell", None)
+            self._attr_camera_entity_capabilities = CameraEntityCapabilities(
+                two_way_audio=two_way_audio_supported(
+                    is_doorbell is not None and is_doorbell(),
+                    disable_backchannel,
+                )
+            )
 
     @property
     def unique_id(self):
