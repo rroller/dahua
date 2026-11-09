@@ -15,7 +15,6 @@ from .const import (
     DOMAIN,
     EXPOSURE_ANTI_FLICKER_OPTIONS,
     EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION,
-    EXPOSURE_MODE_OPTIONS,
     VIDEO_COLOR_STYLE_OPTIONS,
 )
 from .coordinator import WIDE_DYNAMIC_RANGE_LEVEL
@@ -529,7 +528,7 @@ class DahuaWideDynamicRangeSelect(DahuaBaseEntity, SelectEntity):
 
 
 class DahuaExposureModeSelect(DahuaBaseEntity, SelectEntity):
-    """Exposure Mode on Dahua's active exposure profile."""
+    """Exposure Mode on the coordinator's selected device transport."""
 
     _attr_translation_key = "image_exposure_mode"
     _attr_entity_category = EntityCategory.CONFIG
@@ -544,10 +543,13 @@ class DahuaExposureModeSelect(DahuaBaseEntity, SelectEntity):
 
     @property
     def available(self):
+        """Require a mapped current value in this transport's current options."""
+        current = self.current_option
         return (
             super().available
             and self._coordinator.supports_exposure_mode()
-            and self.current_option is not None
+            and current is not None
+            and current in self.options
         )
 
     @property
@@ -559,7 +561,7 @@ class DahuaExposureModeSelect(DahuaBaseEntity, SelectEntity):
         return self._coordinator.get_exposure_mode_option()
 
     async def async_select_option(self, option: str) -> None:
-        if option not in EXPOSURE_MODE_OPTIONS:
+        if option not in self.options:
             return
         await self._coordinator.async_set_exposure_mode(option)
         await self._coordinator.async_refresh()

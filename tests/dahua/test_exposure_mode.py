@@ -9,13 +9,17 @@ from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.const import (
     EXPOSURE_MODE_OPTION_BY_VALUE,
     EXPOSURE_MODE_VALUE_BY_OPTION,
+    LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE,
+    LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION,
 )
 from custom_components.dahua.coordinator import (
     RETRYABLE_CAPABILITIES,
     DahuaDataUpdateCoordinator,
+    ExposureModeTransport,
     exposure_mode_option,
     exposure_mode_options,
     exposure_mode_value,
+    legacy_exposure_mode_option,
 )
 from custom_components.dahua.select import (
     DahuaExposureAntiFlickerSelect,
@@ -36,13 +40,26 @@ def _anti_flicker_key(channel=CHANNEL, profile=PROFILE):
     return f"table.VideoInExposure[{channel}][{profile}].AntiFlicker"
 
 
-def _coordinator(mode_data, exposure_data, anti_flicker_supported=True):
+def _coordinator(
+    mode_data,
+    exposure_data,
+    anti_flicker_supported=True,
+    legacy_options=None,
+):
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator._channel = CHANNEL
     coordinator._supports_exposure_mode = True
     coordinator._supports_exposure_anti_flicker = anti_flicker_supported
+    coordinator._image_option_fields = (
+        frozenset({"ExposureMode"}) if legacy_options is not None else frozenset()
+    )
+    coordinator.is_indoor_monitor_without_video = lambda: False
     coordinator.data = {**mode_data, **exposure_data}
+    if legacy_options is not None:
+        coordinator.data.update(legacy_options)
     coordinator.client = _WriteClient(mode_data, exposure_data)
+    if legacy_options is not None:
+        coordinator.client.video_in_options = legacy_options
     coordinator.refreshes = 0
 
     async def refresh():
@@ -60,6 +77,8 @@ class _WriteClient:
         self.calls = []
         self.mode_error = None
         self.exposure_error = None
+        self.video_in_options = {}
+        self.video_in_options_error = None
 
     async def async_get_video_in_mode(self, fresh=False):
         self.calls.append(("VideoInMode", fresh))
@@ -75,6 +94,15 @@ class _WriteClient:
 
     async def async_set_exposure_mode(self, channel, profile, value):
         self.calls.append(("set_Mode", channel, profile, value))
+
+    async def async_get_video_in_options(self, fresh=False):
+        self.calls.append(("VideoInOptions", fresh))
+        if self.video_in_options_error:
+            raise self.video_in_options_error
+        return self.video_in_options
+
+    async def async_set_legacy_exposure_mode(self, channel, value):
+        self.calls.append(("set_legacy_Mode", channel, value))
 
     async def async_set_exposure_anti_flicker(self, channel, profile, value):
         self.calls.append(("set_AntiFlicker", channel, profile, value))
@@ -109,6 +137,137 @@ def test_mode_state_does_not_fall_back_to_another_channel_or_profile():
     }
 
     assert exposure_mode_option(data, CHANNEL, PROFILE) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "option"),
+    [(0, "Auto"), (1, "Gain Priority"), (2, "Shutter Priority")],
+)
+def test_legacy_mode_mapping_is_distinct_from_profile_mode(value, option):
+    data = {f"table.VideoInOptions[{CHANNEL}].ExposureMode": str(value)}
+    assert legacy_exposure_mode_option(data, CHANNEL) == option
+    assert LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE[value] == option
+    assert LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION[option] == value
+    assert option != "Manual"
+
+
+@pytest.mark.parametrize("value", [True, False, "3", "bad", None])
+def test_invalid_legacy_mode_values_are_unknown(value):
+    assert (
+        legacy_exposure_mode_option(
+            {f"table.VideoInOptions[{CHANNEL}].ExposureMode": value}, CHANNEL
+        )
+        is None
+    )
+
+
+def test_profile_transport_precedes_legacy_for_state_and_options():
+    coordinator = _coordinator(
+        {PROFILE_KEY: str(PROFILE)},
+        {_mode_key(): "4"},
+        anti_flicker_supported=False,
+        legacy_options={f"table.VideoInOptions[{CHANNEL}].ExposureMode": "1"},
+    )
+
+    assert coordinator.get_exposure_mode_transport() is ExposureModeTransport.PROFILE
+    assert coordinator.get_exposure_mode_option() == "Manual"
+    assert coordinator.get_exposure_mode_options() == (
+        "Auto",
+        "Gain Priority",
+        "Shutter Priority",
+        "Manual",
+    )
+
+
+def test_legacy_transport_works_without_profile_context_or_video_in_exposure():
+    coordinator = _coordinator(
+        {},
+        {},
+        legacy_options={f"table.VideoInOptions[{CHANNEL}].ExposureMode": "2"},
+    )
+    coordinator._supports_exposure_mode = False
+
+    assert coordinator.get_exposure_mode_transport() is ExposureModeTransport.LEGACY
+    assert coordinator.get_exposure_mode_option() == "Shutter Priority"
+    assert coordinator.get_exposure_mode_options() == (
+        "Auto",
+        "Gain Priority",
+        "Shutter Priority",
+    )
+    assert coordinator.supports_exposure_mode() is True
+
+
+async def test_profile_transport_uses_profile_writer_when_legacy_also_exists():
+    coordinator = _coordinator(
+        {PROFILE_KEY: str(PROFILE)},
+        {_mode_key(): "0"},
+        anti_flicker_supported=False,
+        legacy_options={f"table.VideoInOptions[{CHANNEL}].ExposureMode": "1"},
+    )
+
+    await coordinator.async_set_exposure_mode("Gain Priority")
+
+    assert coordinator.client.calls == [
+        ("VideoInMode", True),
+        ("VideoInExposure", True),
+        ("set_Mode", CHANNEL, PROFILE, 7),
+    ]
+
+
+async def test_profile_write_failure_does_not_fall_back_to_legacy():
+    coordinator = _coordinator(
+        {PROFILE_KEY: str(PROFILE)},
+        {_mode_key(): "0"},
+        legacy_options={f"table.VideoInOptions[{CHANNEL}].ExposureMode": "1"},
+    )
+    coordinator.client.exposure_error = ConnectionError("profile read failed")
+
+    with pytest.raises(ConnectionError, match="profile read failed"):
+        await coordinator.async_set_exposure_mode("Gain Priority")
+
+    assert coordinator.client.calls == [
+        ("VideoInMode", True),
+        ("VideoInExposure", True),
+    ]
+
+
+async def test_legacy_transport_uses_only_fresh_legacy_context_and_writer():
+    coordinator = _coordinator(
+        {},
+        {},
+        legacy_options={f"table.VideoInOptions[{CHANNEL}].ExposureMode": "2"},
+    )
+    coordinator._supports_exposure_mode = False
+
+    await coordinator.async_set_exposure_mode("Gain Priority")
+
+    assert coordinator.client.calls == [
+        ("VideoInOptions", True),
+        ("set_legacy_Mode", CHANNEL, 1),
+    ]
+
+
+async def test_legacy_write_rejects_manual_and_missing_fresh_field():
+    coordinator = _coordinator({}, {}, legacy_options={})
+    coordinator._supports_exposure_mode = False
+
+    with pytest.raises(ValueError, match="Unsupported legacy"):
+        await coordinator.async_set_exposure_mode("Manual")
+    assert coordinator.client.calls == []
+
+    with pytest.raises(ConnectionError, match="VideoInOptions"):
+        await coordinator.async_set_exposure_mode("Auto")
+    assert coordinator.client.calls == [("VideoInOptions", True)]
+
+
+async def test_failed_legacy_write_context_does_not_call_writer():
+    coordinator = _coordinator({}, {}, legacy_options={})
+    coordinator._supports_exposure_mode = False
+    coordinator.client.video_in_options_error = ConnectionError("read failed")
+
+    with pytest.raises(ConnectionError, match="read failed"):
+        await coordinator.async_set_exposure_mode("Auto")
+    assert coordinator.client.calls == [("VideoInOptions", True)]
 
 
 @pytest.mark.parametrize(
@@ -196,6 +355,20 @@ async def test_mode_probe_uses_the_same_channel_and_resolved_profile():
         ("VideoInMode", False),
         ("VideoInExposure", False),
     ]
+
+
+async def test_profile_probe_refusal_preserves_established_legacy_support():
+    coordinator = _coordinator(
+        {},
+        {},
+        legacy_options={f"table.VideoInOptions[{CHANNEL}].ExposureMode": "0"},
+    )
+    coordinator._supports_exposure_mode = False
+    coordinator.client.mode_error = TimeoutError("VideoInMode unavailable")
+
+    assert await coordinator._async_probe_exposure_mode() is False
+    assert coordinator.get_exposure_mode_transport() is ExposureModeTransport.LEGACY
+    assert coordinator.get_exposure_mode_option() == "Auto"
 
 
 async def test_mode_write_uses_fresh_profile_and_exact_mode_owner():

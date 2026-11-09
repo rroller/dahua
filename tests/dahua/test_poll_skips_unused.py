@@ -151,6 +151,12 @@ async def test_the_day_night_read_is_kept_for_wdr_or_exposure_alone():
 
     assert DAY_NIGHT in c.client.calls
 
+    c = _coordinator()
+    c._supports_day_night_color = False
+    c._image_option_fields = frozenset({"ExposureMode"})
+    await c._async_update_data()
+    assert DAY_NIGHT in c.client.calls
+
 
 async def test_video_widget_is_polled_only_when_a_supported_overlay_has_a_reader():
     c = _coordinator()
@@ -248,6 +254,13 @@ async def test_exposure_mode_polls_only_for_its_select():
     c = _coordinator(select=False)
     c._supports_exposure_mode = True
     await c._async_update_data()
+    assert VIDEO_IN_MODE not in c.client.calls
+    assert GET_EXPOSURE_CONFIG not in c.client.calls
+
+    c = _coordinator()
+    c._image_option_fields = frozenset({"ExposureMode"})
+    await c._async_update_data()
+    assert DAY_NIGHT in c.client.calls
     assert VIDEO_IN_MODE not in c.client.calls
     assert GET_EXPOSURE_CONFIG not in c.client.calls
 

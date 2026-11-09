@@ -27,6 +27,7 @@ from .const import (
     EXPOSURE_COMPENSATION_MAX,
     EXPOSURE_COMPENSATION_MIN,
     EXPOSURE_MODE_OPTION_BY_VALUE,
+    LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION,
     VIDEO_COLOR_STYLE_OPTIONS,
     VIDEO_IMAGE_CONTROL_TABLE,
     VIDEO_IMAGE_CONTROL_TABLES,
@@ -46,6 +47,17 @@ from . import white_light_override as wlo
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
 TIMEOUT_SECONDS = 20
+
+# How long before a request's own deadline the RPC2 fallback inside it gives up.
+#
+# The fallback runs inside the request's `asyncio.timeout`, so without a deadline
+# of its own a slow RPC2 read is cut off by that one: the task is cancelled, and
+# `CancelledError` is not an `Exception`, so the handler that is there to report
+# the original refusal never sees it and the caller gets a `TimeoutError` it does
+# not catch. Measured rather than reasoned, by patching TIMEOUT_SECONDS down and
+# sleeping through it. Two seconds because the point is only to lose the race
+# with the outer deadline, not to be a budget anybody tunes.
+RPC2_FALLBACK_MARGIN_SECONDS = 2
 
 # Unsupported table/method responses. LightingScheme returned 268959743 on
 # IPC-Color4K-X, DHI-NVR5464 and VTO2000A; CGI refusals vary between 400 and
@@ -421,12 +433,20 @@ _HOST_RPC2_UNAVAILABLE: set = set()
 # every later read.
 _RPC2_TABLE_UNAVAILABLE: set = set()
 
-# Hosts whose /cgi-bin/ config endpoint is not there at all -- an SL300 answers 404
-# to configManager.cgi as readily as to eventManager.cgi. Reads for these go over
-# RPC2 without waiting for the use_rpc2 option to be turned on, because on such a
-# device that option is not a preference, it is the only transport. Learnt from the
-# first 404 rather than probed at setup, and not remembered across a restart, so a
-# firmware update that restores CGI is picked up by paying one 404 again.
+# Hosts whose /cgi-bin/ config endpoint cannot answer a config read. Two ways in,
+# and the name is about the older one:
+#
+#   * the endpoint is not there at all -- an SL300 answers 404 to
+#     configManager.cgi as readily as to eventManager.cgi;
+#   * the endpoint answers and the answer is unreadable -- #1176's camera appends
+#     a whole second HTTP response to every authenticated reply, and no HTTP
+#     parser accepts that, so nothing of the answer reaches this integration.
+#
+# Reads for these go over RPC2 without waiting for the use_rpc2 option to be
+# turned on, because on such a device that option is not a preference, it is the
+# only transport. Learnt from the first refusal rather than probed at setup, and
+# not remembered across a restart, so a firmware update that fixes either one is
+# picked up by paying one refusal again.
 _HOST_CGI_CONFIG_ABSENT: set = set()
 
 # The device states its own keepalive interval in the login reply. Ask slightly
@@ -3372,6 +3392,21 @@ class DahuaClient:
                 value,
             )
 
+    async def async_set_legacy_exposure_mode(self, channel: int, value: int) -> dict:
+        """Set the legacy VideoInOptions ExposureMode field."""
+        if type(channel) is not int or channel < 0:
+            raise ValueError("Unsupported VideoInOptions channel")
+        if (
+            type(value) is not int
+            or value not in LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION.values()
+        ):
+            raise ValueError("Unsupported legacy Exposure Mode value")
+
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=setConfig"
+            f"&VideoInOptions[{channel}].ExposureMode={value}"
+        )
+
     async def async_get_exposure_anti_flicker_config(self, fresh: bool = False) -> dict:
         """Read VideoInExposure without hiding a refused or unavailable table."""
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInExposure"
@@ -5244,8 +5279,8 @@ class DahuaClient:
         ).format(channel, int(mode), int(level))
         return await self.get("/cgi-bin/configManager.cgi?action=setConfig&" + query)
 
-    async def async_get_video_in_options(self) -> dict:
-        """The VideoInOptions table, which carries this device's Day/Night mode.
+    async def async_get_video_in_options(self, fresh: bool = False) -> dict:
+        """The VideoInOptions table, including Day/Night and image controls.
 
         Read whole, because neither narrower spelling works: measured on a
         DHI-NVR5464-16P-EI and a VTO, both `name=VideoInOptions[0]` and
@@ -5260,9 +5295,9 @@ class DahuaClient:
         Let HTTP failures reach the coordinator's carry-forward wrapper. An
         error converted to an empty table would discard its last known state.
         """
-        return await self.async_probe_video_in_options()
+        return await self.async_probe_video_in_options(fresh=fresh)
 
-    async def async_probe_video_in_options(self) -> dict:
+    async def async_probe_video_in_options(self, fresh: bool = False) -> dict:
         """Read VideoInOptions for a capability probe, letting refusals raise.
 
         `async_get_config` turns an HTTP refusal into `{}`, which loses the
@@ -5271,9 +5306,10 @@ class DahuaClient:
         former records the refusal, and the latter keeps its last known state.
         The shared URL lets both callers use the same cached request.
         """
-        return await self.get(
-            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"
-        )
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInOptions"
+        if fresh:
+            _HOST_CACHE.pop((self._device, self._username, url), None)
+        return await self.get(url)
 
     async def async_get_video_in_mode(self, fresh: bool = False) -> dict:
         """
@@ -6782,6 +6818,30 @@ class DahuaClient:
                 f"{self._address} does not serve the {table} table",
             ) from refused
 
+    async def _rpc2_fallback_read(self, name: str, budget) -> dict:
+        """A fallback config read, bounded inside the request's own deadline.
+
+        `budget` is the `asyncio.timeout` the whole request runs in. Giving the
+        fallback a deadline a little inside that one is what makes the handlers
+        around this call reachable at all: when the OUTER deadline is the one to
+        expire, the task is cancelled, `CancelledError` is not an `Exception`,
+        and a slow RPC2 read reached the caller as a `TimeoutError` that
+        `async_get_config` does not catch and the poll's `gather` does not
+        tolerate. There is a test that patches `TIMEOUT_SECONDS` down and sleeps
+        through it, because the first version of this was reasoned about rather
+        than measured and was wrong.
+
+        A budget with no deadline -- `asyncio.timeout(None)` -- is left alone:
+        there is nothing to stay inside. A deadline already past fires at once
+        and the caller reports the refusal it was holding, which is the right
+        answer when there was never time to ask.
+        """
+        deadline = budget.when()
+        if deadline is None:
+            return await self._rpc2_get_config(name)
+        async with asyncio.timeout_at(deadline - RPC2_FALLBACK_MARGIN_SECONDS):
+            return await self._rpc2_get_config(name)
+
     async def _request(
         self, url: str, verify_ok=False, allow_rpc2=True, reject_declined=False
     ) -> dict:
@@ -6872,7 +6932,10 @@ class DahuaClient:
                         )
         url = self._base + url
         try:
-            async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
+            # One line on purpose: the parenthesised multi-context form bumps
+            # the Python version black infers for this file, and black then
+            # rewrites four unrelated `async with` statements elsewhere in it.
+            async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS) as budget:
                 response = None
                 try:
                     auth = DigestAuth(
@@ -6881,15 +6944,37 @@ class DahuaClient:
                         self._session,
                         self._digest_state,
                     )
-                    response = await auth.request("GET", url)
                     try:
+                        # Both ways this can refuse, caught in one place. The
+                        # camera in #1176 answers every authenticated CGI call
+                        # with a complete 200 and then a whole second HTTP
+                        # response, and aiohttp rejects the exchange while it is
+                        # still parsing, so that refusal arrives out of
+                        # `auth.request` and never out of `raise_for_status`.
+                        # Measured over loopback on aiohttp 3.14.3 across five
+                        # ways those bytes can be split across reads: the three
+                        # that fail all raise from the request, and
+                        # `response.text()` raises in none of them. Catching
+                        # only around `raise_for_status`, as this did, left the
+                        # fallback below unreachable for that camera.
+                        response = await auth.request("GET", url)
                         response.raise_for_status()
                     except aiohttp.ClientResponseError as cgi_error:
                         # A config read whose endpoint is not there is not a failed
                         # read, it is the wrong transport. Remember the host so the
                         # next read goes straight to RPC2, and answer this one.
+                        #
+                        # An answer that cannot be READ is the same decision for a
+                        # different reason: the endpoint is there, the credentials
+                        # are right, and nothing in the reply survives the parser
+                        # (#1176). Either way this device's config has to come from
+                        # somewhere else, which is why both land on the one memo.
+                        unreadable = refusal_is_mangled_framing(cgi_error)
                         if (
-                            cgi_error.status not in self.CONFIG_CGI_ABSENT
+                            (
+                                cgi_error.status not in self.CONFIG_CGI_ABSENT
+                                and not unreadable
+                            )
                             or verify_ok
                             or not allow_rpc2
                             or self._rpc2_key() in _HOST_RPC2_UNAVAILABLE
@@ -6908,15 +6993,34 @@ class DahuaClient:
                             raise
                         if self._rpc2_key() not in _HOST_CGI_CONFIG_ABSENT:
                             _HOST_CGI_CONFIG_ABSENT.add(self._rpc2_key())
-                            _LOGGER.info(
-                                "configManager.cgi answered %s on %s, so this device "
-                                "serves no CGI config; reading config over RPC2 from "
-                                "now on",
-                                cgi_error.status,
-                                self._address,
-                            )
+                            if unreadable:
+                                # Said separately because the other wording is
+                                # false here, and misleadingly so: this device
+                                # does serve CGI config, and a reporter reading
+                                # "serves no CGI config" about a camera whose
+                                # web UI plainly answers would be sent looking
+                                # for the wrong fault.
+                                _LOGGER.info(
+                                    "configManager.cgi on %s answered in a way no HTTP "
+                                    "parser accepts, so this device's config is read "
+                                    "over RPC2 from now on. The endpoint is there and "
+                                    "the credentials are right: this firmware appends a "
+                                    "second HTTP response to every authenticated answer "
+                                    "(#1176)",
+                                    self._address,
+                                )
+                            else:
+                                _LOGGER.info(
+                                    "configManager.cgi answered %s on %s, so this device "
+                                    "serves no CGI config; reading config over RPC2 from "
+                                    "now on",
+                                    cgi_error.status,
+                                    self._address,
+                                )
                         try:
-                            return await self._rpc2_get_config(config_read.group(1))
+                            return await self._rpc2_fallback_read(
+                                config_read.group(1), budget
+                            )
                         except Rpc2MethodRefused as rpc2_refusal:
                             # The device serves this table on neither transport. Raising
                             # the RPC2 refusal changed the exception a caller sees for an
@@ -6937,6 +7041,28 @@ class DahuaClient:
                                 config_read.group(1),
                                 rpc2_refusal,
                                 cgi_error.status,
+                            )
+                            raise cgi_error from None
+                        except Exception:  # pylint: disable=broad-except
+                            # The unreadable case only, and only so that routing
+                            # cannot make this camera worse than it is today.
+                            # Today every one of its reads is swallowed by the
+                            # `ClientResponseError` guard in `async_get_config`,
+                            # which hands back `{}`. An RPC2 timeout or a refused
+                            # login escaping here as something that is NOT a
+                            # `ClientError` would get past that guard, and the
+                            # poll's gather has no `return_exceptions`, so one of
+                            # those would take the whole entry to `setup_retry`.
+                            # Reporting the original refusal keeps the floor at
+                            # the behaviour this change is trying to improve on.
+                            if not unreadable:
+                                raise
+                            _LOGGER.debug(
+                                "RPC2 could not answer %s for %s either; reporting the "
+                                "unreadable CGI answer, as before this fallback existed",
+                                config_read.group(1),
+                                self._address,
+                                exc_info=True,
                             )
                             raise cgi_error from None
                     data = await response.text()

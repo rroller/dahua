@@ -12,6 +12,7 @@ them.
 
 from collections import deque
 from datetime import timedelta
+from enum import Enum
 from typing import Any, Dict
 import asyncio
 import hashlib
@@ -86,6 +87,9 @@ from .const import (
     EXPOSURE_MODE_OPTIONS,
     EXPOSURE_MODE_OPTIONS_BY_ANTI_FLICKER,
     EXPOSURE_MODE_VALUE_BY_OPTION,
+    LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE,
+    LEGACY_EXPOSURE_MODE_OPTIONS,
+    LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION,
     VIDEO_IMAGE_CONTROL_FIELDS,
     VIDEO_IMAGE_CONTROL_TABLE,
     VIDEO_IMAGE_CONTROL_TABLES,
@@ -559,6 +563,16 @@ def exposure_mode_option(data: dict, channel: int, profile_index: int) -> str | 
     return EXPOSURE_MODE_OPTION_BY_VALUE[value]
 
 
+def legacy_exposure_mode_option(data: dict, channel: int) -> str | None:
+    """Read the legacy VideoInOptions value from this channel's own row."""
+    if not isinstance(data, dict):
+        return None
+    value = _exposure_integer(
+        data.get(f"table.VideoInOptions[{channel}].ExposureMode")
+    )
+    return LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE.get(value)
+
+
 def exposure_mode_options(
     data: dict,
     channel: int,
@@ -633,10 +647,23 @@ VIDEO_COLOR_FIELDS = (
 )
 
 
-# The VideoInOptions fields used by the WDR select. The table is read with
+# The VideoInOptions fields used by the image controls. The table is read with
 # Day/Night, so adding these fields costs no extra request. `WideDynamicRange`
-# is the level that must be written with the mode.
-IMAGE_OPTION_FIELDS = ("WideDynamicRangeMode", "WideDynamicRange")
+# is the level that must be written with the mode. ExposureMode is the legacy
+# Exposure Mode transport and remains independently discoverable from WDR.
+IMAGE_OPTION_FIELDS = (
+    "WideDynamicRangeMode",
+    "WideDynamicRange",
+    "ExposureMode",
+)
+
+
+class ExposureModeTransport(Enum):
+    """The one VideoInOptions or Profile-aware owner selected for this channel."""
+
+    PROFILE = "profile"
+    LEGACY = "legacy"
+
 
 # As the device spells the values, and the words the selects show. WDR mode 2
 # is left as "Mode 2" rather than "Auto": the reference accepted 0/1/2 on two
@@ -656,11 +683,17 @@ def image_option_fields(data: dict, channel: int) -> frozenset:
     """
     if not isinstance(data, dict):
         return frozenset()
-    return frozenset(
-        field
-        for field in IMAGE_OPTION_FIELDS
-        if data.get("table.VideoInOptions[{0}].{1}".format(channel, field)) is not None
-    )
+    fields = set()
+    for field in IMAGE_OPTION_FIELDS:
+        if data.get("table.VideoInOptions[{0}].{1}".format(channel, field)) is None:
+            continue
+        if (
+            field == "ExposureMode"
+            and legacy_exposure_mode_option(data, channel) is None
+        ):
+            continue
+        fields.add(field)
+    return frozenset(fields)
 
 
 # The overlay visibility fields inside VideoWidget, and the group whose custom
@@ -1695,9 +1728,42 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             else "vto listener"
         )
 
+    # How many refusals in a row mean the port is shut rather than still coming
+    # up. An embedded device brings its TCP stack and web server up before it
+    # binds 5000, so a connect in that window is refused by a doorbell that is
+    # merely rebooting, and Dahua's own Auto Maintain reboots one weekly. With
+    # the backoff `vto_retry_state` applies, three refusals span minutes, which
+    # outlasts a boot. Together with having never connected, that is what keeps
+    # a working doorbell on its own transport.
+    DHIP_REFUSALS_BEFORE_CGI = 3
+
+    def _cgi_events_can_replace_dhip(self) -> bool:
+        """Whether this doorbell could take its events from the CGI stream.
+
+        Asked only when the DHIP port has been refused, because the answer is
+        not "which transport is better" but "is there another one at all".
+
+        A device that serves no HTTP has nothing to fall back to: every read it
+        serves is a DHIP login, and the CGI stream would spend its life failing
+        to reach a web server that does not exist. That is the shape #949 added
+        `_rpc2_over_dhip` for.
+
+        A selection is required too. `async_start_event_listener` registers
+        nothing when no codes were chosen, so switching on that device would
+        abandon the DHIP retry without putting anything in its place.
+        """
+        if getattr(self, "_rpc2_over_dhip", False):
+            return False
+        return self.events is not None
+
     async def _async_stream_vto_events(self):
         """Continuously stream VTO events from a doorbell, reconnecting on failure."""
         consecutive_failures = 0
+        # Whether this listener has ever had a socket, and how many refusals it
+        # has met in a row. Both are about handing the events to the CGI stream:
+        # see DHIP_REFUSALS_BEFORE_CGI.
+        ever_connected = False
+        refusals_in_a_row = 0
         while True:
             if getattr(self, "_rpc2_over_dhip", False) and host_auth_budget_exhausted(
                 self._address
@@ -1720,10 +1786,70 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     port=5000,
                 )
                 self._vto_client = protocol
+                # It bound the port, so this doorbell is not one that cannot.
+                ever_connected = True
+                refusals_in_a_row = 0
                 await protocol.disconnected
             except asyncio.CancelledError:
                 raise
             except Exception as ex:
+                # The doorbell is reachable and port 5000 is shut. Not every
+                # doorbell has that port open, and a doorbell is the one device
+                # that never joins the CGI event stream, so on this firmware it
+                # had no event transport at all.
+                #
+                # Both halves were measured on the same model, a DH-DB6I, which
+                # is why this is a fallback rather than a second stream:
+                #
+                #   fw 1.000.020000000.9.R   DHIP 5000 open, presses arrive
+                #                            (@phabibjr, #1131)
+                #   fw 2.820.010000000.33.R  DHIP 5000 refused, and the CGI
+                #                            attach carries the press as
+                #                            _DoTalkAction_ Invite and
+                #                            PhoneCallDetect (@growlocally, #1187)
+                #
+                # Both of those codes are already translated to DoorbellPressed,
+                # so the press needs no new parsing, only a socket that is open.
+                #
+                # `ConnectionRefusedError` rather than the `OSError` it derives
+                # from, because the question is whether the port is shut and not
+                # whether the doorbell is awake. A timeout or an unreachable
+                # host is a doorbell that is off the network.
+                #
+                # A refusal alone is not enough either, and this is the case the
+                # type check does not cover: a doorbell that is rebooting
+                # answers the connect and refuses it, because the TCP stack is
+                # up before the DHIP service has bound the port. So a working
+                # VTO restarting, or Home Assistant restarting beside one, would
+                # otherwise move to the CGI stream for the session and take the
+                # hang-up service with it. Hence both conditions: this listener
+                # has never had a socket, and the refusal has repeated.
+                #
+                # Returning is what keeps one transport running. The loop does
+                # not go on retrying DHIP beside the CGI stream, so a press
+                # cannot arrive down both and be reported twice, and the error
+                # this handler logs every retry stops rather than repeating for
+                # as long as Home Assistant is up.
+                if isinstance(ex, ConnectionRefusedError):
+                    refusals_in_a_row += 1
+                else:
+                    refusals_in_a_row = 0
+                if (
+                    refusals_in_a_row >= self.DHIP_REFUSALS_BEFORE_CGI
+                    and not ever_connected
+                    and self._cgi_events_can_replace_dhip()
+                ):
+                    _LOGGER.warning(
+                        "The doorbell at %s refused a connection on port 5000 %d "
+                        "times and has never answered there, so its events are "
+                        "taken from the CGI event stream instead of the DHIP "
+                        "listener: %s",
+                        self._address,
+                        refusals_in_a_row,
+                        ex,
+                    )
+                    await self.async_start_event_listener()
+                    return
                 delay, consecutive_failures = vto_retry_state(
                     time.monotonic() - started,
                     consecutive_failures,
@@ -2446,7 +2572,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self._supports_exposure_mode
 
     async def _async_retry_exposure_mode(self) -> bool:
-        already = self.supports_exposure_mode()
+        already = bool(getattr(self, "_supports_exposure_mode", False))
         return await self._async_probe_exposure_mode() and not already
 
     async def _async_probe_exposure_compensation(self) -> bool:
@@ -3435,7 +3561,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if (
                 (self._supports_profile_mode and not self.is_doorbell())
                 or (self.supports_exposure_anti_flicker() and self._wanted_by(SELECT))
-                or (self.supports_exposure_mode() and self._wanted_by(SELECT))
+                or (self._supports_exposure_mode and self._wanted_by(SELECT))
                 or (self.supports_exposure_compensation() and self._wanted_by(NUMBER))
             ):
                 try:
@@ -3447,7 +3573,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
                     if (
                         self.supports_exposure_anti_flicker()
-                        or self.supports_exposure_mode()
+                        or self._supports_exposure_mode
                         or (
                             self.supports_exposure_compensation()
                             and self._wanted_by(NUMBER)
@@ -3613,7 +3739,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
             if (
                 (self.supports_exposure_anti_flicker() and self._wanted_by(SELECT))
-                or (self.supports_exposure_mode() and self._wanted_by(SELECT))
+                or (
+                    self.get_exposure_mode_transport() is ExposureModeTransport.PROFILE
+                    and self._wanted_by(SELECT)
+                )
                 or (self.supports_exposure_compensation() and self._wanted_by(NUMBER))
             ):
                 coros.append(
@@ -5436,7 +5565,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return bool(getattr(self, "_supports_exposure_anti_flicker", False))
 
     def supports_exposure_mode(self) -> bool:
-        return bool(getattr(self, "_supports_exposure_mode", False))
+        return self.get_exposure_mode_transport() is not None
+
+    def get_exposure_mode_transport(self) -> ExposureModeTransport | None:
+        """Return the established owner, preferring Profile-aware Mode."""
+        if bool(getattr(self, "_supports_exposure_mode", False)):
+            return ExposureModeTransport.PROFILE
+        if self.supports_image_option("ExposureMode"):
+            return ExposureModeTransport.LEGACY
+        return None
 
     def supports_exposure_compensation(self) -> bool:
         return bool(getattr(self, "_supports_exposure_compensation", False))
@@ -5453,15 +5590,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     def get_exposure_mode_option(self) -> str | None:
+        transport = self.get_exposure_mode_transport()
+        data = getattr(self, "data", None) or {}
+        if transport is ExposureModeTransport.LEGACY:
+            return legacy_exposure_mode_option(data, self._channel)
+        if transport is not ExposureModeTransport.PROFILE:
+            return None
         profile_index = self.get_active_profile_index()
         if profile_index is None:
             return None
-        return exposure_mode_option(
-            getattr(self, "data", None) or {}, self._channel, profile_index
-        )
+        return exposure_mode_option(data, self._channel, profile_index)
 
     def get_exposure_mode_options(self) -> tuple[str, ...]:
-        if not self.supports_exposure_mode():
+        transport = self.get_exposure_mode_transport()
+        if transport is ExposureModeTransport.LEGACY:
+            return LEGACY_EXPOSURE_MODE_OPTIONS
+        if transport is not ExposureModeTransport.PROFILE:
             return ()
         profile_index = self.get_active_profile_index()
         if profile_index is None:
@@ -5530,6 +5674,24 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     async def async_set_exposure_mode(self, option: str) -> None:
+        transport = self.get_exposure_mode_transport()
+        if transport is ExposureModeTransport.LEGACY:
+            value = LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION.get(option)
+            if value is None:
+                raise ValueError("Unsupported legacy Exposure Mode option")
+            options = await self.client.async_get_video_in_options(fresh=True)
+            key = f"table.VideoInOptions[{self._channel}].ExposureMode"
+            if LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE.get(
+                _exposure_integer(options.get(key))
+            ) is None:
+                raise ConnectionError(
+                    "The current VideoInOptions ExposureMode could not be established"
+                )
+            await self.client.async_set_legacy_exposure_mode(self._channel, value)
+            return
+        if transport is not ExposureModeTransport.PROFILE:
+            raise ValueError("Exposure Mode is not supported")
+
         value = EXPOSURE_MODE_VALUE_BY_OPTION.get(option)
         if value is None:
             raise ValueError("Unsupported Exposure Mode option")
@@ -5587,7 +5749,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         current_mode = exposure_mode_value(exposure_data, self._channel, profile_index)
         mode_key = f"table.VideoInExposure[{self._channel}][{profile_index}].Mode"
         if current_mode is None and (
-            self.supports_exposure_mode() or mode_key in exposure_data
+            bool(getattr(self, "_supports_exposure_mode", False))
+            or mode_key in exposure_data
         ):
             raise ConnectionError(
                 "The current VideoInExposure Mode could not be established"
@@ -5657,7 +5820,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     def supports_image_option(self, field: str) -> bool:
         """Whether this channel reported this VideoInOptions control."""
-        return field in self._image_option_fields and not (
+        return field in getattr(self, "_image_option_fields", frozenset()) and not (
             self.is_indoor_monitor_without_video()
         )
 

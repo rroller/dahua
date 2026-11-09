@@ -497,6 +497,28 @@ async def test_an_invalid_exposure_option_is_ignored_without_a_write():
     assert c.refreshed == 0
 
 
+async def test_exposure_mode_rejects_an_option_not_currently_advertised():
+    c = _Coordinator(channel=3)
+    c.exposure_mode_options = ("Auto",)
+    s = _select(DahuaExposureModeSelect, c)
+
+    await s.async_select_option("Manual")
+
+    assert c.exposure_mode_calls == []
+    assert c.client.calls == []
+    assert c.refreshed == 0
+
+
+def test_exposure_mode_unique_id_does_not_depend_on_transport():
+    legacy = _Coordinator()
+    profile = _Coordinator()
+    assert (
+        _select(DahuaExposureModeSelect, legacy).unique_id
+        == _select(DahuaExposureModeSelect, profile).unique_id
+        == "SERIAL1_image_exposure_mode"
+    )
+
+
 async def test_exposure_mode_options_follow_the_coordinator_without_recreating_entity():
     c = _Coordinator(channel=3)
     s = _select(DahuaExposureModeSelect, c)
@@ -605,7 +627,7 @@ class _SetupCoordinator(_Coordinator):
         return self._exposure_anti_flicker_supported
 
     def supports_exposure_mode(self):
-        return self._exposure_mode_supported
+        return self._exposure_mode_supported or "ExposureMode" in self._image_options
 
     def supports_video_color(self, field):
         return field == "Style" and self._style_supported
@@ -664,17 +686,25 @@ async def test_exposure_mode_is_offered_independently_of_wdr():
     assert "exposure" in only_exposure
     assert "wdr" not in only_exposure
 
+    legacy_only = await _added_for(
+        _SetupCoordinator(image_options={"ExposureMode"})
+    )
+    assert legacy_only.count("exposure") == 1
+
     only_wdr = await _added_for(
         _SetupCoordinator(
             image_options={
                 "WideDynamicRangeMode",
                 "WideDynamicRange",
-                "ExposureMode",
             }
         )
     )
     assert "wdr" in only_wdr
     assert "exposure" not in only_wdr
+
+
+async def test_exposure_mode_is_not_created_without_either_transport():
+    assert "exposure" not in await _added_for(_SetupCoordinator())
 
 
 async def test_a_camera_with_wdr_and_exposure_mode_gets_both_selects():
@@ -687,6 +717,7 @@ async def test_a_camera_with_wdr_and_exposure_mode_gets_both_selects():
 
     assert "wdr" in added
     assert "exposure" in added
+    assert added.count("exposure") == 1
 
 
 @pytest.mark.parametrize(

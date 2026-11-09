@@ -226,6 +226,28 @@ async def test_exposure_mode_writes_its_profile_aware_field(mode):
     )
 
 
+@pytest.mark.parametrize("mode", [0, 1, 2])
+async def test_legacy_exposure_mode_writes_its_exact_video_in_options_field(mode):
+    client = _client()
+
+    await client.async_set_legacy_exposure_mode(3, mode)
+
+    assert _url(client) == (
+        "/cgi-bin/configManager.cgi?action=setConfig"
+        "&VideoInOptions[3].ExposureMode={0}".format(mode)
+    )
+
+
+@pytest.mark.parametrize("channel,value", [(-1, 0), (True, 0), (3, True), (3, 7)])
+async def test_legacy_exposure_mode_writer_rejects_unsupported_values(channel, value):
+    client = _client()
+
+    with pytest.raises(ValueError, match="Unsupported"):
+        await client.async_set_legacy_exposure_mode(channel, value)
+
+    assert client._sent.urls == []
+
+
 @pytest.mark.parametrize(
     "field, expected",
     [
