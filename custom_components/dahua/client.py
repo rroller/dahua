@@ -1090,6 +1090,48 @@ def _pop_complete_multipart_part(buffer: bytes, boundary: bytes):
 _CONFIG_READ = re.compile(r"configManager\.cgi\?action=getConfig&name=(.+)$")
 
 
+# Which fields of a privacy mask row say where it is. `Rect` is the older
+# four-number box and `Polygon` the newer point list; a row carries one or both,
+# and a row where every one of them is zero describes no area at all.
+PRIVACY_MASK_REGION_FIELDS = ("Rect[", "Polygon[")
+
+
+def privacy_mask_has_a_region(config: dict, prefix: str) -> bool:
+    """Whether one privacy mask row describes an area, or is an empty slot.
+
+    `prefix` is the row, as a flat config read spells it, for example
+    `table.PrivacyMasking[0][2].`. Row 2 cannot match row 21 because the index
+    is bracketed and `[2]` is not a prefix of `[21]`; the trailing dot only
+    makes the boundary explicit, and a break that removed it reddened nothing.
+
+    A row of zeroes is a slot the firmware offers and nobody has drawn in.
+    Enabling one is accepted and does nothing visible, which is #1184: the
+    camera there serves 24 such rows while keeping its real masks elsewhere.
+    """
+    return any(
+        str(value).strip() not in ("", "0")
+        for key, value in config.items()
+        if key.startswith(prefix)
+        and any(field in key[len(prefix) :] for field in PRIVACY_MASK_REGION_FIELDS)
+    )
+
+
+def privacy_mask_row_count(config: dict, pattern: str) -> int:
+    """How many mask rows a table answered with, for a message worth reading.
+
+    Only used to say what was found when there is no mask at the index asked
+    for, because "there is no mask 2" and "this table has no rows at all" send
+    somebody to different places.
+    """
+    matcher = re.compile(pattern)
+    rows = set()
+    for key in config:
+        match = matcher.match(key)
+        if match:
+            rows.add(match.group(1))
+    return len(rows)
+
+
 def flatten_rpc2_config(name: str, node, prefix: str = None) -> dict:
     """Turn RPC2's nested JSON into the flat keys the rest of the code reads.
 
@@ -4755,13 +4797,87 @@ class DahuaClient:
         """Trigger autofocus using the parameter-free camera CGI command."""
         return await self.get("/cgi-bin/devVideoInput.cgi?action=autoFocus", True)
 
-    async def async_setprivacymask(self, index: int, enabled: bool):
-        """
-        async_setprivacymask will enable or disable the privacy mask
-        """
+    async def async_setprivacymask(self, index: int, enabled: bool, channel: int = 0):
+        """Show or hide one privacy mask, in whichever table this camera keeps it.
 
-        url = f"/cgi-bin/configManager.cgi?action=setConfig&PrivacyMasking[0][{index}].Enable={str(enabled).lower()}"
-        return await self.get(url, True)
+        Two tables can hold these, and which one drives the picture is a property
+        of the firmware rather than of the model:
+
+        * `PrivacyMasking[0][index].Enable`, which is all this used to write;
+        * `VideoWidget[channel].Covers[index].EncodeBlend`, the older shape, and
+          the one the camera in #1184 actually renders from.
+
+        **Decided on what the device holds.** A mask row with no coordinates
+        cannot blank any part of the picture, so a `PrivacyMasking` row whose
+        `Rect` and `Polygon` are all zero is an empty slot rather than a mask,
+        and the write goes to the `Covers` row of the same index instead. Where
+        both describe a region `PrivacyMasking` wins, so a camera this already
+        worked on is written exactly where it was written before.
+
+        Measured on @jackouille2's camera for #1184, from the integration's own
+        reads of both tables: `PrivacyMasking` carries 24 rows whose every
+        `Rect` and `Polygon` value is `0`, while `VideoWidget[0].Covers` carries
+        four with real coordinates, of which the one that is visible is the one
+        with `EncodeBlend` true. So the old write was neither refused nor
+        ignored. It enabled a mask covering nothing, and `200 OK` was the honest
+        answer to it, which is why nothing in the integration could tell.
+
+        Raises rather than writing to a slot and reporting success, because a
+        service that answers OK and changes nothing is the whole of #1184.
+        """
+        # Index 0 and not the channel, deliberately: the first index of this
+        # table has never been seen with anything else in it, nobody has
+        # reported a recorder keeping masks here, and the only measurement in
+        # hand is a single-channel camera. Changing it would be a guess at the
+        # expense of the cameras this works on.
+        masking = await self.async_get_config("PrivacyMasking")
+        if privacy_mask_has_a_region(masking, "table.PrivacyMasking[0][%d]." % index):
+            url = (
+                "/cgi-bin/configManager.cgi?action=setConfig"
+                "&PrivacyMasking[0][%d].Enable=%s" % (index, str(enabled).lower())
+            )
+            return await self.get(url, True)
+
+        widget = await self.async_get_config("VideoWidget")
+        prefix = "table.VideoWidget[%d].Covers[%d]." % (channel, index)
+        if privacy_mask_has_a_region(widget, prefix):
+            # `EncodeBlend` and not `PreviewBlend`: the first is burned into the
+            # stream and the recording, the second only into the camera's own
+            # preview. In #1184's dump the visible mask has EncodeBlend true and
+            # PreviewBlend false, and the URL the reporter drove by hand sets
+            # EncodeBlend.
+            url = (
+                "/cgi-bin/configManager.cgi?action=setConfig"
+                "&VideoWidget[%d].Covers[%d].EncodeBlend=%s"
+                % (channel, index, str(enabled).lower())
+            )
+            return await self.get(url, True)
+
+        if not masking and not widget:
+            # Both reads came back empty, which `async_get_config` also returns
+            # for a refusal. Saying "no mask there" would send somebody looking
+            # at their masks instead of at their connection.
+            raise ValueError(
+                "%s answered neither PrivacyMasking nor VideoWidget, so where it "
+                "keeps privacy masks could not be read" % self._address
+            )
+        raise ValueError(
+            "%s has no privacy mask at index %d to show or hide: PrivacyMasking "
+            "has %d row(s) and none at that index describes a region, VideoWidget "
+            "has %d cover(s) on channel %d. Draw the mask on the camera first, and "
+            "count from 0"
+            % (
+                self._address,
+                index,
+                privacy_mask_row_count(
+                    masking, r"table\.PrivacyMasking\[\d+\]\[(\d+)\]\."
+                ),
+                privacy_mask_row_count(
+                    widget, r"table\.VideoWidget\[%d\]\.Covers\[(\d+)\]\." % channel
+                ),
+                channel,
+            )
+        )
 
     async def async_set_night_switch_mode(self, channel: int, mode: str):
         """

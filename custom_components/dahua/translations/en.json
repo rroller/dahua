@@ -548,6 +548,9 @@
         "audio_needs_ffmpeg": {
             "message": "Playing audio needs the ffmpeg integration, which is not set up. Add `ffmpeg:` to configuration.yaml and restart Home Assistant"
         },
+        "privacy_mask_not_found": {
+            "message": "{device} has no privacy mask to show or hide there: {reason}"
+        },
         "audio_declined": {
             "message": "{device} refused the clip: {reason}"
         },

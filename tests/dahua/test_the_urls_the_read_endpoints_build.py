@@ -32,7 +32,6 @@ from custom_components.dahua.client import DahuaClient
 
 CHANNEL = 3
 POSITION = 5
-INDEX = 2
 
 # method, positional arguments, the URL it must build, and whether it asks `get` to
 # check the reply. Taken from the source one at a time, not by pattern.
@@ -130,14 +129,15 @@ ENDPOINTS = [
         "/cgi-bin/devVideoInput.cgi?action=adjustFocus&focus=0.5&zoom=0.7",
         True,
     ),
-    (
-        "async_setprivacymask",
-        (INDEX, True),
-        "/cgi-bin/configManager.cgi?action=setConfig"
-        "&PrivacyMasking[0][2].Enable=true",
-        True,
-    ),
 ]
+
+# `async_setprivacymask` was in this table and is deliberately not any more. It
+# stopped being a method whose entire body builds one URL: as of #1184 it reads
+# both tables that can hold a privacy mask and writes to whichever one actually
+# holds the mask at that index, so "the URL it builds" is not a single answer and
+# the premise of this table does not hold for it. Both URLs, the choice between
+# them, and the refusal when neither table has that mask are asserted in
+# tests/dahua/test_a_privacy_mask_the_camera_keeps_elsewhere.py.
 
 
 class _Sent:
