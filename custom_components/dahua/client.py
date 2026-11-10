@@ -4828,7 +4828,11 @@ class DahuaClient:
             mode = "0"
 
         url = f"/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{channel}].Config[0]={mode}"
-        return await self.get(url, True)
+        # A Profile Management write puts the complete host-wide table back.
+        # Keep this addressed write outside its read/modify/write window too.
+        lock = _HOST_VIDEO_IN_MODE_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+            return await self.get(url, True)
 
     async def async_adjustfocus_v1(self, focus: str, zoom: str):
         """

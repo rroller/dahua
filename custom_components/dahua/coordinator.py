@@ -2524,15 +2524,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return bool(self._video_color_fields)
 
-    def _observe_profile_management(self, mode_data: dict) -> None:
+    def _observe_profile_management(self, mode_data: dict) -> bool:
         """Learn Profile Management from a VideoInMode read already in hand.
 
         Exposure setup already reads this host-wide table. Reusing that answer
         keeps Profile Management from adding a fourth identical setup request.
         """
+        already = self.supports_profile_management()
         option = resolve_profile_management_mode(mode_data, self._channel)
         self._profile_management_mode = option
         self._supports_profile_management = option is not None
+        return self.supports_profile_management() and not already
 
     async def _async_probe_exposure_anti_flicker(self) -> bool:
         """Check this channel's current profile and its AntiFlicker property."""
@@ -2566,7 +2568,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_retry_exposure_anti_flicker(self) -> bool:
         already = self.supports_exposure_anti_flicker()
-        return await self._async_probe_exposure_anti_flicker() and not already
+        had_management = self.supports_profile_management()
+        answered = await self._async_probe_exposure_anti_flicker()
+        return (answered and not already) or (
+            self.supports_profile_management() and not had_management
+        )
 
     async def _async_probe_exposure_mode(self) -> bool:
         """Check this channel's active Profile for a supported Mode value."""
@@ -2600,7 +2606,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_retry_exposure_mode(self) -> bool:
         already = bool(getattr(self, "_supports_exposure_mode", False))
-        return await self._async_probe_exposure_mode() and not already
+        had_management = self.supports_profile_management()
+        answered = await self._async_probe_exposure_mode()
+        return (answered and not already) or (
+            self.supports_profile_management() and not had_management
+        )
 
     async def _async_probe_exposure_compensation(self) -> bool:
         """Check this channel's current profile and its Compensation property."""
@@ -2634,7 +2644,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_retry_exposure_compensation(self) -> bool:
         already = self.supports_exposure_compensation()
-        return await self._async_probe_exposure_compensation() and not already
+        had_management = self.supports_profile_management()
+        answered = await self._async_probe_exposure_compensation()
+        return (answered and not already) or (
+            self.supports_profile_management() and not had_management
+        )
 
     async def _async_probe_audio_control(self, config_name: str) -> bool:
         """Find this channel's exact row for one audio control."""
@@ -3621,7 +3635,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
                     self._profile_mode = self.read_profile_mode(mode_data)
-                    self._observe_profile_management(mode_data)
+                    if self._observe_profile_management(mode_data):
+                        async_notify_capability_discovered(
+                            self.hass,
+                            self.config_entry.entry_id,
+                            self.get_serial_number(),
+                        )
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)

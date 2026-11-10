@@ -42,6 +42,7 @@ class _Sent:
 
 def _client(answer="OK"):
     client = object.__new__(DahuaClient)
+    client._device = "write-url-camera"
     sent = _Sent(answer)
     client.get = sent.get
     client._sent = sent
