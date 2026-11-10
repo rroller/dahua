@@ -35,6 +35,11 @@ from .const import (
 from .dhip import DhipLoginRefused, DhipTransport
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
+from .profile import (
+    PROFILE_MANAGEMENT_VALUES_BY_OPTION,
+    profile_management_table_with_option,
+    resolve_profile_management_table,
+)
 from .rpc2 import RPC2_LOGIN_METHOD, DahuaRpc2Client, Rpc2MethodRefused
 
 # An indoor monitor's call settings: do not disturb, and the volumes (#949, #998).
@@ -164,6 +169,7 @@ _HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 # channel's poll can reconcile that key away in the gap and leave the camera
 # in WhiteMode with nothing to go back to.
 _HOST_LIGHTING_SCHEME_LOCKS: dict[str, asyncio.Lock] = {}
+_HOST_VIDEO_IN_MODE_LOCKS: dict[str, asyncio.Lock] = {}
 
 # One clip at a time per speaker, keyed by device and channel.
 _HOST_SPEAKER_LOCKS: dict[tuple, asyncio.Lock] = {}
@@ -4769,6 +4775,45 @@ class DahuaClient:
             await asyncio.sleep(duration)
         finally:
             await self.get(base.format("stop", channel, code, arg1, speed))
+
+    async def async_set_profile_management(self, channel: int, option: str) -> str:
+        """Set Profile Management by preserving the camera's VideoInMode table."""
+        if option not in PROFILE_MANAGEMENT_VALUES_BY_OPTION:
+            raise ValueError(f"Unknown profile management option: {option}")
+
+        lock = _HOST_VIDEO_IN_MODE_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+
+            async def read_modify_write(client):
+                response = await client.get_config({"name": "VideoInMode"})
+                table = response.get("table")
+                if table is None:
+                    table = (response.get("params") or {}).get("table")
+                if not isinstance(table, list):
+                    raise ConnectionError("VideoInMode did not return a table")
+
+                wanted = profile_management_table_with_option(table, channel, option)
+                await client.set_config("VideoInMode", wanted, channel=channel)
+
+                readback = await client.get_config({"name": "VideoInMode"})
+                back = readback.get("table")
+                if back is None:
+                    back = (readback.get("params") or {}).get("table")
+                got = (
+                    resolve_profile_management_table(back, channel)
+                    if isinstance(back, list)
+                    else None
+                )
+                if got != option:
+                    raise ConnectionError(
+                        f"VideoInMode accepted {option!r} but read back {got!r}"
+                    )
+                return got
+
+            clear_host_cache(self._device)
+            result = await self._rpc2_shared_call(read_modify_write)
+            clear_host_cache(self._device)
+            return result
 
     async def async_set_video_profile_mode(self, channel: int, mode: str):
         """
