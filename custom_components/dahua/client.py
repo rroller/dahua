@@ -495,6 +495,11 @@ _HOST_CGI_CONFIG_ABSENT: set = set()
 # the field and reads the table back, and a host whose other keys did not
 # survive that is added here: the write it was asked for has already been
 # reported as refused, and a second one would have less left to lose.
+#
+# Keyed by DEVICE, not by `_rpc2_key()`, for the same reason the config-write
+# lock is: what a one-field write does to a table is a fact about the firmware,
+# and a second entry signed in as another user would otherwise be told nothing
+# and try the route again on a device already known to lose keys to it.
 _HOST_RPC2_WRITES_UNSAFE: set = set()
 
 # The device states its own keepalive interval in the login reply. Ask slightly
@@ -4136,19 +4141,30 @@ class DahuaClient:
         about anyone else, so the device-wide config-write lock is taken here as
         well, and both are held for the whole read-modify-write.
 
-        **The order is lighting first, then the config lock, and nothing takes
-        them the other way round.** The fallback holds only the config lock, and
-        none of these methods calls `get`, `_rpc2_set_config_field` or
-        `_rpc2_set_config_value` while holding either -- checked, because an
+        **The request slot is taken in the middle, and that ordering is load
+        bearing.** The one rule the config-write lock has to obey is that
+        nothing holds it while waiting for a slot, because `_rpc2_fallback_write`
+        does the opposite: it is already inside a slot when it learns it needs
+        the lock, and it cannot give the slot back. Measured, with the config
+        lock taken before the slot: two fallback writes held both slots waiting
+        for the lock while a lighting writer held the lock waiting for a slot,
+        and nothing released anything. Both writes timed out after the inner
+        budget and the device was never written. So the slot comes first and the
+        config lock after it, and this method is the only place that order is
+        expressed.
+
+        Holding the slot while waiting for the config lock costs a queued read
+        the slot for the length of one RPC2 transaction, bounded by
+        MAX_QUEUE_WAIT_SECONDS as every other slot wait is.
+
+        None of these methods calls `get`, `_rpc2_set_config_field` or
+        `_rpc2_set_config_value` while holding either lock -- checked, because an
         `asyncio.Lock` is not reentrant and a nested write would hang rather
         than fail.
-
-        Both locks are taken before `self._request_slot()` at every call site,
-        which is the house order: a caller waiting for a lock holds no slot, so
-        it cannot be holding the slot that the lock's owner is waiting for.
         """
-        async with self._lighting_scheme_lock, self._config_write_lock:
-            yield
+        async with self._lighting_scheme_lock, self._request_slot():
+            async with self._config_write_lock:
+                yield
 
     async def async_set_lighting_scheme_illuminator(
         self,
@@ -4165,9 +4181,7 @@ class DahuaClient:
         even when RPC2 polling is disabled. Partial CGI writes are accepted but
         do not light the emitter.
         """
-        async with self._lighting_lock(), self._request_slot(), asyncio.timeout(
-            TIMEOUT_SECONDS
-        ):
+        async with self._lighting_lock(), asyncio.timeout(TIMEOUT_SECONDS):
             restore_store = self._illuminator_restore_store
             if restore_store is None:
                 raise RuntimeError("Dahua illuminator recovery storage is unavailable")
@@ -4232,9 +4246,7 @@ class DahuaClient:
         restore_store = self._illuminator_restore_store
         if restore_store is None:
             return
-        async with self._lighting_lock(), self._request_slot(), asyncio.timeout(
-            TIMEOUT_SECONDS
-        ):
+        async with self._lighting_lock(), asyncio.timeout(TIMEOUT_SECONDS):
             keys = await restore_store.async_keys()
             if not keys:
                 return
@@ -4296,9 +4308,7 @@ class DahuaClient:
                 lambda client: client.set_config(name, table, channel=channel)
             )
 
-        async with self._lighting_lock(), self._request_slot(), asyncio.timeout(
-            TIMEOUT_SECONDS
-        ):
+        async with self._lighting_lock(), asyncio.timeout(TIMEOUT_SECONDS):
             if enabled:
                 scheme = (await read("LightingScheme")).get("table")
                 lighting = (await read("Lighting_V2")).get("table")
@@ -4445,9 +4455,7 @@ class DahuaClient:
                 )
             )
 
-        async with self._lighting_lock(), self._request_slot(), asyncio.timeout(
-            TIMEOUT_SECONDS
-        ):
+        async with self._lighting_lock(), asyncio.timeout(TIMEOUT_SECONDS):
             store = self._channel_snapshot_store
             if store is not None and await store.async_get(channel) is not None:
                 raise HomeAssistantError(
@@ -7279,7 +7287,7 @@ class DahuaClient:
                     # is one the device dropped from what it was sent. Nothing
                     # here can prevent that, and it will do it again, so this
                     # host takes no further write over RPC2.
-                    _HOST_RPC2_WRITES_UNSAFE.add(self._rpc2_key())
+                    _HOST_RPC2_WRITES_UNSAFE.add(self._device)
                 # Keys, never values: these tables carry things like the
                 # device's cloud credentials and its server list.
                 _LOGGER.warning(
@@ -7513,7 +7521,7 @@ class DahuaClient:
                                 and allow_rpc2
                                 and not self._rpc2_released
                                 and self._rpc2_key() not in _HOST_RPC2_UNAVAILABLE
-                                and self._rpc2_key() not in _HOST_RPC2_WRITES_UNSAFE
+                                and self._device not in _HOST_RPC2_WRITES_UNSAFE
                             )
                             else None
                         )

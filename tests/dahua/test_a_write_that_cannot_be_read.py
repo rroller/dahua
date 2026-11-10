@@ -1376,21 +1376,186 @@ async def test_the_lighting_paths_take_the_device_config_write_lock_as_well():
     `setConfig` naming a field of either goes through the fallback above. So
     `_lighting_scheme_lock`, which keeps those writers from interleaving with
     each other, is not enough on its own: `_lighting_lock` takes the device's
-    config-write lock behind it, in that order and never the other way round.
+    config-write lock behind it.
 
-    This asserts that it is held, not what holding it prevents. The lost update
-    itself is measured on the paths above, which use the same lock on the same
-    device; what is worth pinning here is that the lighting call sites are
-    inside it at all, since the four of them name one context manager and a
-    change could quietly take this half out.
+    This asserts what is held, and in which order: a request slot is taken
+    before the config lock, never after it, which is what the test below is
+    about. The lost update itself is measured on the paths above, which use the
+    same lock on the same device.
     """
     client = _bare_client()
     client._lighting_scheme_lock = client_module._lighting_scheme_lock(client._device)
+    client._host_limit = client_module._host_limiter(client._address)
     config = client_module._rpc2_config_write_lock(client._device)
 
-    assert not config.locked()
-    async with client._lighting_lock():
-        assert config.locked()
-        assert client._lighting_scheme_lock.locked()
-    assert not config.locked()
-    assert not client._lighting_scheme_lock.locked()
+    # One slot already taken, so this path's own slot exhausts the limiter and
+    # holding one is visible from outside rather than read off a private count.
+    await client._host_limit.acquire()
+    try:
+        assert not client._host_limit.locked()
+        assert not config.locked()
+        async with client._lighting_lock():
+            assert client._host_limit.locked(), "no request slot was taken"
+            assert config.locked()
+            assert client._lighting_scheme_lock.locked()
+        assert not config.locked()
+        assert not client._lighting_scheme_lock.locked()
+        assert not client._host_limit.locked()
+    finally:
+        client._host_limit.release()
+
+
+async def test_a_lighting_writer_cannot_wedge_two_fallback_writes():
+    """Nothing may hold the config-write lock while waiting for a request slot.
+
+    The fallback is the reason. It is already inside a request slot when it
+    learns it needs the lock, because that is when the CGI write failed, and it
+    cannot give the slot back. So anything that holds the lock and queues for a
+    slot closes a cycle: with `MAX_CONCURRENT_REQUESTS_PER_HOST` at 2, two
+    fallback writes hold both slots and wait for the lock, the lighting writer
+    holds the lock and waits for a slot, and nothing releases anything.
+
+    Measured on the first version of this change, where `_lighting_lock` took
+    the lock before the slot: both writes sat there until the inner budget gave
+    up, came back refused, and the device was never written. `_lighting_lock`
+    now takes the slot first, so a holder of the lock always has one already.
+
+    Driven at the lock rather than through the loopback server, because what has
+    to be staged is the moment two writes hold both slots while the lock is
+    somewhere else, and that is the slot each write holds for its CGI attempt.
+    """
+    device = _Rpc2Device()
+    refusal = aiohttp.ClientResponseError(
+        request_info=None,
+        history=(),
+        status=400,
+        message="not enough data for satisfy content length header",
+    )
+    holding_both_slots = asyncio.Event()
+    ask_for_the_lock = asyncio.Event()
+
+    def _fallback_client():
+        client = _bare_client()
+        client._host_limit = client_module._host_limiter(client._address)
+        client._rpc2_get_config = device.get_config
+        client._rpc2_set_config_tables = device.set_config_tables
+        return client
+
+    async def write(fields, last):
+        client = _fallback_client()
+        # The slot and the budget are what `_request` is holding when it reaches
+        # the fallback, so the model has to hold them too.
+        async with client._request_slot(), asyncio.timeout(3) as budget:
+            if last:
+                holding_both_slots.set()
+            await ask_for_the_lock.wait()
+            return await client._rpc2_fallback_write(fields, budget, refusal)
+
+    async def lighting():
+        client = _bare_client()
+        client._host_limit = client_module._host_limiter(client._address)
+        client._lighting_scheme_lock = client_module._lighting_scheme_lock(
+            client._device
+        )
+        await holding_both_slots.wait()
+        async with client._lighting_lock():
+            return "took its turn"
+
+    writes = [
+        asyncio.ensure_future(write([("MotionDetect[0].Enable", "true")], False)),
+        asyncio.ensure_future(write([("MotionDetect[0].Sensitivity", "9")], True)),
+    ]
+    turn = asyncio.ensure_future(lighting())
+    await holding_both_slots.wait()
+    # Long enough for the lighting writer to get as far as it is going to get,
+    # which with the lock before the slot was the lock itself.
+    await asyncio.sleep(0.1)
+    ask_for_the_lock.set()
+
+    answers = await asyncio.gather(*writes)
+    assert await turn == "took its turn"
+
+    assert all("OK" in answer for answer in answers), answers
+    assert device.holds("MotionDetect[0].Enable") == "true"
+    assert device.holds("MotionDetect[0].Sensitivity") == "9"
+
+
+async def test_the_lost_table_latch_is_the_devices_and_not_one_accounts(
+    socket_enabled,
+):
+    """What a write does to a table is firmware, so the verdict is the device's.
+
+    `_HOST_RPC2_WRITES_UNSAFE` used to be keyed the way the RPC2 session is, by
+    device and username, which reads as consistent and is the wrong scope: a
+    second entry signed in as another user would be told nothing and would take
+    the same route on a device already known to lose keys to it, on the way to
+    losing a second table.
+    """
+    async with _serving(OK_THEN_PHANTOM, OK_THEN_PHANTOM) as server:
+        device = _Rpc2Device(drops="MotionDetect[0].Sensitivity")
+        async with aiohttp.ClientSession() as session:
+            admin = DahuaClient("admin", "p", "127.0.0.1", server.port, 554, session)
+            admin._rpc2_get_config = device.get_config
+            admin._rpc2_set_config_tables = device.set_config_tables
+            with pytest.raises(aiohttp.ClientResponseError):
+                await admin.get(ENABLE_ALONE, True)
+
+            assert client_module._HOST_RPC2_WRITES_UNSAFE == {admin._device}
+
+            viewer = DahuaClient("viewer", "p", "127.0.0.1", server.port, 554, session)
+            viewer._rpc2_get_config = device.get_config
+            viewer._rpc2_set_config_tables = device.set_config_tables
+            sent_before = len(device.sent)
+            with pytest.raises(aiohttp.ClientResponseError):
+                await viewer.get(ENABLE_ALONE, True)
+
+    assert len(device.sent) == sent_before, "the other account took the route again"
+
+
+async def test_a_cgi_write_that_landed_inside_another_turn_is_put_back(socket_enabled):
+    """The lock cannot cover the CGI write that started the other transaction.
+
+    On this firmware a write reaches the device and is carried out; it is only
+    the answer that cannot be read. So a second caller's CGI write can land
+    while the first caller is between its read and its put-back, and the
+    put-back then reverts it. Nothing sees that: the first caller's
+    untouched-field check compares the table against its own snapshot, where
+    the old value is exactly what it expects.
+
+    What saves the setting is the second caller's own fallback. It waits for its
+    turn, reads the table the first one left, finds its value gone and sends it
+    again. So the window is real and it heals, by this route and not by the
+    lock, which is worth a test of its own because it is the sequence the camera
+    in #1176 actually produces.
+    """
+    async with _serving(OK_THEN_PHANTOM, OK_THEN_PHANTOM) as server:
+        device = _Rpc2Device()
+        reached = asyncio.Event()
+
+        async with aiohttp.ClientSession() as session:
+            putting_back = DahuaClient("u", "p", "127.0.0.1", server.port, 554, session)
+            putting_back._rpc2_get_config = _widens_the_window(device, reached)
+            putting_back._rpc2_set_config_tables = device.set_config_tables
+
+            second = DahuaClient("u", "p", "127.0.0.1", server.port, 554, session)
+            second._rpc2_get_config = device.get_config
+            second._rpc2_set_config_tables = device.set_config_tables
+
+            async def inside_the_window():
+                await reached.wait()
+                # Its CGI write reaching the device, which is what this firmware
+                # does before mangling the answer to it.
+                _assign(device.tables["MotionDetect"], "MotionDetect[0].Sensitivity", 9)
+                return await second.get(SENSITIVITY_ALONE, True)
+
+            answers = await asyncio.gather(
+                putting_back.get(ENABLE_ALONE, True), inside_the_window()
+            )
+
+    assert all("OK" in answer for answer in answers), answers
+    assert device.holds("MotionDetect[0].Enable") == "true"
+    assert device.holds("MotionDetect[0].Sensitivity") == "9"
+    # Two tables sent: the put-back that reverted it, and the one that put it
+    # back. If the second caller had taken the "it already holds this" early
+    # return it would have sent nothing and the setting would be gone.
+    assert len(device.sent) == 2, device.sent

@@ -315,11 +315,17 @@ a device that does not answer leaves the numbering alone rather than guessing
   `_rpc2_set_config_field` and the lighting paths through `_lighting_lock` all take
   it. **Keyed by device, not by `_rpc2_key()`**: a username belongs to a session,
   not to a config table, and two entries with different credentials write the same
-  rows. Every lock here is taken before `self._request_slot()` so that a caller
-  waiting for a lock holds no slot; the fallback is the one exception, because it
-  only learns it is needed once the CGI write has failed inside the slot, and it
-  takes the lock inside `_inside_request_budget` so a turn that never comes is a
-  `TimeoutError` the handlers catch rather than a `CancelledError` nothing does.
+  rows. The fallback takes the lock inside `_inside_request_budget`, so a turn
+  that never comes is a `TimeoutError` the handlers catch rather than a
+  `CancelledError` nothing does.
+- **Nothing may hold that lock while waiting for a request slot**, because the
+  fallback is already inside a slot when it finds it needs the lock and cannot
+  give the slot back. Measured: with `_lighting_lock` taking the lock before the
+  slot, two fallback writes held both slots waiting for the lock while a lighting
+  writer held the lock waiting for a slot, and both writes timed out with the
+  device never written. So `_lighting_lock` takes the slot in the middle, between
+  its own lock and the config lock, and the four lighting call sites no longer
+  name `self._request_slot()` themselves.
 - The siren turns itself off after 10 to 15 seconds. That is the hardware.
 
 ## Custom Instructions
