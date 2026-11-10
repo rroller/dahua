@@ -49,6 +49,10 @@ from .client import (
     rpc2_refusal_is_a_stale_login,
 )
 from .late import async_notify_capability_discovered, async_notify_late_work_settled
+from .profile import (
+    PROFILE_MANAGEMENT_VALUES_BY_OPTION,
+    resolve_profile_management_mode,
+)
 from .rpc2 import Rpc2MethodRefused
 from .const import (
     CAMERA,
@@ -1522,6 +1526,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_exposure_anti_flicker = False
         self._supports_exposure_mode = False
         self._supports_exposure_compensation = False
+        self._supports_profile_management = False
+        self._profile_management_mode: str | None = None
         self._video_color_fields: frozenset = frozenset()
         self._video_image_control_fields: frozenset = frozenset()
         self._video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
@@ -2518,10 +2524,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return bool(self._video_color_fields)
 
+    def _observe_profile_management(self, mode_data: dict) -> bool:
+        """Learn Profile Management from a VideoInMode read already in hand.
+
+        Exposure setup already reads this host-wide table. Reusing that answer
+        keeps Profile Management from adding a fourth identical setup request.
+        """
+        already = self.supports_profile_management()
+        option = resolve_profile_management_mode(mode_data, self._channel)
+        self._profile_management_mode = option
+        self._supports_profile_management = option is not None
+        return self.supports_profile_management() and not already
+
     async def _async_probe_exposure_anti_flicker(self) -> bool:
         """Check this channel's current profile and its AntiFlicker property."""
         try:
             mode_data = await self.client.async_get_video_in_mode()
+            self._observe_profile_management(mode_data)
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("exposure_anti_flicker", probe_error)
             self._supports_exposure_anti_flicker = False
@@ -2549,12 +2568,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_retry_exposure_anti_flicker(self) -> bool:
         already = self.supports_exposure_anti_flicker()
-        return await self._async_probe_exposure_anti_flicker() and not already
+        had_management = self.supports_profile_management()
+        answered = await self._async_probe_exposure_anti_flicker()
+        return (answered and not already) or (
+            self.supports_profile_management() and not had_management
+        )
 
     async def _async_probe_exposure_mode(self) -> bool:
         """Check this channel's active Profile for a supported Mode value."""
         try:
             mode_data = await self.client.async_get_video_in_mode()
+            self._observe_profile_management(mode_data)
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("exposure_mode", probe_error)
             self._supports_exposure_mode = False
@@ -2582,12 +2606,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_retry_exposure_mode(self) -> bool:
         already = bool(getattr(self, "_supports_exposure_mode", False))
-        return await self._async_probe_exposure_mode() and not already
+        had_management = self.supports_profile_management()
+        answered = await self._async_probe_exposure_mode()
+        return (answered and not already) or (
+            self.supports_profile_management() and not had_management
+        )
 
     async def _async_probe_exposure_compensation(self) -> bool:
         """Check this channel's current profile and its Compensation property."""
         try:
             mode_data = await self.client.async_get_video_in_mode()
+            self._observe_profile_management(mode_data)
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("exposure_compensation", probe_error)
             self._supports_exposure_compensation = False
@@ -2615,7 +2644,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _async_retry_exposure_compensation(self) -> bool:
         already = self.supports_exposure_compensation()
-        return await self._async_probe_exposure_compensation() and not already
+        had_management = self.supports_profile_management()
+        answered = await self._async_probe_exposure_compensation()
+        return (answered and not already) or (
+            self.supports_profile_management() and not had_management
+        )
 
     async def _async_probe_audio_control(self, config_name: str) -> bool:
         """Find this channel's exact row for one audio control."""
@@ -3593,6 +3626,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # We need the profile mode (0=day, 1=night, 2=scene)
             if (
                 (self._supports_profile_mode and not self.is_doorbell())
+                or (self.supports_profile_management() and self._wanted_by(SELECT))
                 or (self.supports_exposure_anti_flicker() and self._wanted_by(SELECT))
                 or (self._supports_exposure_mode and self._wanted_by(SELECT))
                 or (self.supports_exposure_compensation() and self._wanted_by(NUMBER))
@@ -3601,6 +3635,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
                     self._profile_mode = self.read_profile_mode(mode_data)
+                    if self._observe_profile_management(mode_data):
+                        async_notify_capability_discovered(
+                            self.hass,
+                            self.config_entry.entry_id,
+                            self.get_serial_number(),
+                        )
                 except Exception as exception:
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
@@ -5596,6 +5636,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         fetched.
         """
         return field in getattr(self, "_video_color_fields", frozenset())
+
+    def supports_profile_management(self) -> bool:
+        """Whether this channel reported a supported Profile Management shape."""
+        return bool(getattr(self, "_supports_profile_management", False))
+
+    def get_profile_management_mode(self) -> str | None:
+        """Return Normal, Full Time Day/Night or Schedule as reported."""
+        return getattr(self, "_profile_management_mode", None)
+
+    async def async_set_profile_management_mode(self, option: str) -> None:
+        """Set and read back Profile Management for this exact channel."""
+        if not self.supports_profile_management():
+            raise ConnectionError("Profile Management is not supported on this channel")
+        if option not in PROFILE_MANAGEMENT_VALUES_BY_OPTION:
+            raise ValueError(f"Unknown profile management option: {option}")
+        got = await self.client.async_set_profile_management(self._channel, option)
+        if got != option:
+            raise ConnectionError(
+                f"Profile Management requested {option!r} but read back {got!r}"
+            )
+        self._profile_management_mode = got
 
     def supports_exposure_anti_flicker(self) -> bool:
         return bool(getattr(self, "_supports_exposure_anti_flicker", False))

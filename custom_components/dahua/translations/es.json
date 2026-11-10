@@ -422,6 +422,15 @@
                     "white": "Luz Blanca",
                     "smart_dual": "Luz Dual Inteligente"
                 }
+            },
+            "profile_management": {
+                "name": "Administración de perfil",
+                "state": {
+                    "normal": "Normal",
+                    "full_time_day": "Tiempo completo: día",
+                    "full_time_night": "Tiempo completo: noche",
+                    "schedule": "Programado"
+                }
             }
         },
         "sensor": {
@@ -498,6 +507,9 @@
         }
     },
     "exceptions": {
+        "profile_management_write_failed": {
+            "message": "No se pudo cambiar la administración de perfil: {reason}"
+        },
         "image_rotation_unsupported": {
             "message": "No se puede cambiar la rotación de imagen porque Rotate90 no es compatible o su compatibilidad es desconocida."
         },

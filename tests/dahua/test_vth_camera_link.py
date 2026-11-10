@@ -544,6 +544,7 @@ def _setup_double(links, indoor_monitor=True):
         supports_image_option=lambda _field: False,
         supports_exposure_anti_flicker=lambda: False,
         supports_exposure_mode=lambda: False,
+        supports_profile_management=lambda: False,
     )
 
 

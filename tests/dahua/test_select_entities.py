@@ -54,6 +54,10 @@ class _Coordinator:
     # The real coordinator carries this as a class default, so a double that
     # borrows its methods has to carry it too.
     _video_image_control_table = "VideoImageControl"
+
+    def supports_profile_management(self):
+        return False
+
     video_image_control_table = DahuaDataUpdateCoordinator.video_image_control_table
     async_set_video_image_control = (
         DahuaDataUpdateCoordinator.async_set_video_image_control
@@ -582,6 +586,7 @@ class _SetupCoordinator(_Coordinator):
         day_night_supported=False,
         exposure_anti_flicker_supported=False,
         exposure_mode_supported=False,
+        profile_management_supported=False,
         infrared_supported=False,
         style_supported=False,
         image_control_fields=(),
@@ -591,6 +596,7 @@ class _SetupCoordinator(_Coordinator):
         self._day_night_supported = day_night_supported
         self._exposure_anti_flicker_supported = exposure_anti_flicker_supported
         self._exposure_mode_supported = exposure_mode_supported
+        self._profile_management_supported = profile_management_supported
         self._infrared_supported = infrared_supported
         self._style_supported = style_supported
         self._image_control_fields = frozenset(image_control_fields)
@@ -628,6 +634,9 @@ class _SetupCoordinator(_Coordinator):
 
     def supports_exposure_mode(self):
         return self._exposure_mode_supported or "ExposureMode" in self._image_options
+
+    def supports_profile_management(self):
+        return self._profile_management_supported
 
     def supports_video_color(self, field):
         return field == "Style" and self._style_supported
