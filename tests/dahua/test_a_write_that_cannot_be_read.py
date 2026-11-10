@@ -940,3 +940,457 @@ async def test_the_real_read_can_hand_back_the_nested_table():
     assert nested == MOTION_TABLE["MotionDetect"]
     assert nested[0]["Enable"] is False
     assert flat["table.MotionDetect[0].Enable"] == "false"
+
+
+# ---------------------------------------------------------------------------
+# Two writes at once, which is how @rroller broke the first whole-table version
+# ---------------------------------------------------------------------------
+
+# The second half of @rroller's pair. The same table as ENABLE_ALONE, a
+# different field, and a value the held table does not already have.
+SENSITIVITY_ALONE = SET_CONFIG + "&MotionDetect[0].Sensitivity=9"
+
+
+class _Turnstile:
+    """Holds each caller just after its first read until the others arrive.
+
+    Two writes only lose one another's change if both have READ the table before
+    either writes it, so the wait goes between the read and the write rather
+    than in front of the read. The first version waited in front of it and
+    proved nothing: by the time the second caller was released the first had
+    already written, so its read was fresh and nothing was lost -- the test
+    stayed green with the lock taken out, and only the turnstile's own
+    bookkeeping went red.
+
+    The wait cannot be indefinite: with the lock in place the second caller is
+    held at the lock and never reaches the read at all, and that is the passing
+    case, which must not hang.
+
+    So the wait is bounded and `released` records, per caller in arrival order,
+    whether it left because everyone had arrived (`True`) or because it gave up
+    waiting (`False`). That list says which way the run went -- `[True, True]`
+    is two transactions inside one another, `[False, True]` is one and then the
+    next -- but it is never the only assertion in a test, because what matters
+    is the setting that survives.
+    """
+
+    def __init__(self, parties: int, patience: float = 0.25):
+        self.parties = parties
+        self.patience = patience
+        self.arrived = 0
+        self.released = []
+        self._open = asyncio.Event()
+
+    async def wait(self) -> None:
+        self.arrived += 1
+        if self.arrived >= self.parties:
+            self._open.set()
+        try:
+            await asyncio.wait_for(self._open.wait(), self.patience)
+        except (asyncio.TimeoutError, TimeoutError):
+            pass
+        self.released.append(self._open.is_set())
+
+
+def _reads_through(device, turnstile):
+    """`device.get_config`, each caller held at the turnstile after its FIRST read.
+
+    Per task rather than per call, because the read back is a read too: counting
+    calls would hold a caller that had already been through at its own read back
+    and prove nothing about the two of them.
+    """
+    real = device.get_config
+    waited = set()
+
+    async def get_config(name, *, allow_missing=False, as_table=False):
+        answer = await real(name, allow_missing=allow_missing, as_table=as_table)
+        task = asyncio.current_task()
+        if task not in waited:
+            waited.add(task)
+            await turnstile.wait()
+        return answer
+
+    return get_config
+
+
+async def _write_at_once(server, device, urls, turnstile=None, usernames=None):
+    """Drive one write per url at the same moment, each from a client of its own.
+
+    One `DahuaClient` per write and **one port for all of them**, because that
+    is the scope the lock has: two entries on one device, which is what a
+    recorder with two channels or a camera added twice already is. Two clients
+    on two ports are two devices and take two locks, which is the next test.
+
+    `server` therefore answers every one of them, and its script needs an entry
+    per write.
+    """
+    if turnstile is None:
+        turnstile = _Turnstile(len(urls))
+    device.get_config = _reads_through(device, turnstile)
+    async with aiohttp.ClientSession() as session:
+        clients = []
+        for user in usernames or ["u"] * len(urls):
+            client = DahuaClient(user, "p", "127.0.0.1", server.port, 554, session)
+            client._rpc2_get_config = device.get_config
+            client._rpc2_set_config_tables = device.set_config_tables
+            clients.append(client)
+
+        async def one(client, url):
+            try:
+                return await client.get(url, True)
+            except Exception as exception:  # pylint: disable=broad-except
+                return exception
+
+        answers = await asyncio.gather(
+            *[one(client, url) for client, url in zip(clients, urls)]
+        )
+    return answers, turnstile
+
+
+async def test_two_writes_at_once_keep_both_changes(socket_enabled):
+    """@rroller's measurement on the first whole-table version, as a test.
+
+    Both callers were told OK and motion detection ended up off: each read the
+    table, the first wrote and read back its own field, and the second then sent
+    the copy it had taken before that write. A whole-table write makes the
+    second one's stale copy destructive rather than merely useless, which is why
+    this arrived with the fix for the replacement semantics and not before it.
+    """
+    async with _serving(OK_THEN_PHANTOM, OK_THEN_PHANTOM) as server:
+        device = _Rpc2Device()
+        answers, turnstile = await _write_at_once(
+            server, device, [ENABLE_ALONE, SENSITIVITY_ALONE]
+        )
+
+    assert all("OK" in answer for answer in answers), answers
+    # The point of the whole thing: neither write cost the other one.
+    assert device.holds("MotionDetect[0].Enable") == "true"
+    assert device.holds("MotionDetect[0].Sensitivity") == "9"
+    # And they were serialized rather than merely lucky.
+    assert turnstile.released == [False, True]
+
+
+async def test_the_second_write_sends_the_table_the_first_one_left(socket_enabled):
+    """It re-reads inside its turn, so its copy is not the pre-write one.
+
+    `holds` alone cannot tell a fresh read from an ordering that happened to
+    suit: a device that applied the two writes in the other order would also
+    hold both. What the lock buys is that the table the second caller SENDS
+    already carries the first caller's field.
+    """
+    async with _serving(OK_THEN_PHANTOM, OK_THEN_PHANTOM) as server:
+        device = _Rpc2Device()
+        await _write_at_once(server, device, [ENABLE_ALONE, SENSITIVITY_ALONE])
+
+    assert len(device.sent) == 2
+    # Which of the two goes first is the event loop's business, so this reads
+    # the pair rather than naming them: one table carries one change and the
+    # other carries both. Written the other way round -- naming the Enable
+    # caller as the first -- this failed on the order the loop happened to pick.
+    changed = [
+        (
+            table["MotionDetect"][0]["Enable"] is True,
+            table["MotionDetect"][0]["Sensitivity"] == 9,
+        )
+        for table in device.sent
+    ]
+    assert changed[1] == (True, True), changed
+    assert changed[0] in ((True, False), (False, True)), changed
+
+
+async def test_a_write_already_in_flight_elsewhere_does_not_delay_another_device(
+    socket_enabled,
+):
+    """The lock is per device, as every other shared thing here is.
+
+    Two boxes behind one address on different ports are not each other (#1084),
+    and a lock that forgot that would queue every device in the installation
+    behind one slow camera. Two separate devices, so the reads are expected to
+    overlap -- which is the same turnstile reading the opposite way round.
+    """
+    async with _serving(OK_THEN_PHANTOM) as first, _serving(OK_THEN_PHANTOM) as second:
+        turnstile = _Turnstile(2)
+        one = _Rpc2Device()
+        two = _Rpc2Device()
+        async with aiohttp.ClientSession() as session:
+            clients = []
+            for server, device in ((first, one), (second, two)):
+                client = DahuaClient("u", "p", "127.0.0.1", server.port, 554, session)
+                client._rpc2_get_config = _reads_through(device, turnstile)
+                client._rpc2_set_config_tables = device.set_config_tables
+                clients.append(client)
+            answers = await asyncio.gather(
+                clients[0].get(ENABLE_ALONE, True),
+                clients[1].get(SENSITIVITY_ALONE, True),
+            )
+
+    assert all("OK" in answer for answer in answers), answers
+    assert one.holds("MotionDetect[0].Enable") == "true"
+    assert two.holds("MotionDetect[0].Sensitivity") == "9"
+    assert turnstile.released == [True, True]
+
+
+async def test_a_turn_that_does_not_come_reports_the_original_refusal(
+    socket_enabled, monkeypatch
+):
+    """Waiting for the lock cannot be worse than not having the fallback.
+
+    The wait is inside the request's own deadline by a margin, so a turn that
+    never comes raises where the handlers are reachable and the caller reports
+    the refusal it was holding. Outside that margin the request's own timeout
+    would cancel the task instead, and `CancelledError` is not an `Exception`:
+    it would reach the poll's gather, which has no `return_exceptions`.
+
+    The device is asserted untouched as well as the answer, because a version
+    that never took the lock would pass on the answer alone only by writing.
+    """
+    monkeypatch.setattr(
+        client_module,
+        "TIMEOUT_SECONDS",
+        client_module.RPC2_FALLBACK_MARGIN_SECONDS + 0.4,
+    )
+    async with _serving(OK_THEN_PHANTOM) as server:
+        held = client_module._rpc2_config_write_lock(
+            client_module._device_key("127.0.0.1", server.port)
+        )
+        await held.acquire()
+        try:
+            answer, device = await _write(server)
+        finally:
+            held.release()
+
+    assert isinstance(answer, aiohttp.ClientResponseError)
+    assert answer.status == 400
+    assert device.reads == []
+    assert device.sent == []
+
+
+async def test_the_lock_is_released_when_the_write_is_reported_as_refused(
+    socket_enabled,
+):
+    """A refused write must not leave the device's writes blocked for good.
+
+    `asyncio.Lock` releases on the way out of `async with` however the block
+    ends, so this is pinning that the lock really is held that way rather than
+    acquired by hand -- a release left to a success path is the shape that
+    wedges every later write on the host.
+    """
+    async with _serving(OK_THEN_PHANTOM) as first, _serving(OK_THEN_PHANTOM) as second:
+        device = _Rpc2Device(applies=False)
+        refused, _ = await _write(first, device=device)
+        assert isinstance(refused, aiohttp.ClientResponseError)
+
+        lock = client_module._rpc2_config_write_lock(
+            client_module._device_key("127.0.0.1", first.port)
+        )
+        assert not lock.locked()
+
+        landed, _ = await _write(second, device=_Rpc2Device())
+
+    assert "OK" in landed, landed
+
+
+async def test_two_entries_with_different_credentials_still_take_turns(socket_enabled):
+    """The lock is keyed on the device, not on `_rpc2_key()`.
+
+    Everything session-shaped here is keyed by device AND username, because a
+    successful login is not scoped to anyone else. A config table is the
+    opposite: it is the device's, and two entries added with different accounts
+    write the same rows. Keying this lock the way the sessions are keyed would
+    read as consistent and serialize nothing in exactly the case @rroller named,
+    two entries on one device.
+    """
+    async with _serving(OK_THEN_PHANTOM, OK_THEN_PHANTOM) as server:
+        device = _Rpc2Device()
+        answers, turnstile = await _write_at_once(
+            server,
+            device,
+            [ENABLE_ALONE, SENSITIVITY_ALONE],
+            usernames=["admin", "viewer"],
+        )
+
+    assert all("OK" in answer for answer in answers), answers
+    assert device.holds("MotionDetect[0].Enable") == "true"
+    assert device.holds("MotionDetect[0].Sensitivity") == "9"
+    assert turnstile.released == [False, True]
+
+
+async def test_the_lock_spans_the_write_and_the_read_back(socket_enabled):
+    """The turn covers the whole transaction, not only the read.
+
+    Serializing the reads is not enough. A lock given up between the read and
+    the put-back, or before the read back, starts the other caller's turn while
+    this table is half written, and the stale copy lands after the fresh one
+    exactly as before. The fake write suspends here, which is what a real RPC2
+    round trip does and what an in-memory double does not, so a gap anywhere
+    inside the transaction gives the other caller a turn to find.
+    """
+    async with _serving(OK_THEN_PHANTOM, OK_THEN_PHANTOM) as server:
+        device = _Rpc2Device(set_delay=0.05)
+        answers, _ = await _write_at_once(
+            server, device, [ENABLE_ALONE, SENSITIVITY_ALONE]
+        )
+
+    assert all("OK" in answer for answer in answers), answers
+    assert device.holds("MotionDetect[0].Enable") == "true"
+    assert device.holds("MotionDetect[0].Sensitivity") == "9"
+
+
+def _bare_client(device="10.9.9.9:80", username="admin"):
+    """A client with only the attributes an RPC2 write reads, as the suite builds them."""
+    client = object.__new__(DahuaClient)
+    client._address = "10.9.9.9"
+    client._device = device
+    client._username = username
+    return client
+
+
+async def test_the_other_read_modify_write_path_takes_the_same_turn():
+    """`_rpc2_set_config_value` is the same transaction and had the same hole.
+
+    It is the route a device with no `configManager.cgi` at all takes -- a 404,
+    not this camera's unreadable answer -- and it reads a table and puts it back
+    exactly as the fallback does, so two at once lose one of the two changes the
+    same way. Nothing in #1191 put that there. It is named here because the lock
+    the fallback needs is the one that closes it, and a lock on one of two paths
+    into the same table is not a guarantee of anything.
+    """
+    table = {"MotionDetect": [{"Enable": "false", "Sensitivity": "3"}]}
+    turnstile = _Turnstile(2)
+    waited = set()
+
+    class _Session:
+        async def get_config(self, payload):
+            answer = {"table": deepcopy(table[payload["name"]])}
+            task = asyncio.current_task()
+            if task not in waited:
+                waited.add(task)
+                await turnstile.wait()
+            return answer
+
+        async def set_configs(self, pairs):
+            # A real round trip suspends; an in-memory double that does not
+            # gives the other caller no turn to take and proves nothing.
+            await asyncio.sleep(0)
+            for name, value in deepcopy(pairs):
+                table[name] = value
+            return {"result": True}
+
+    class _Holder:
+        client = _Session()
+        task = None
+
+    async def shared():
+        return _Holder()
+
+    clients = []
+    for _ in range(2):
+        client = _bare_client()
+        client._shared_rpc2 = shared
+        clients.append(client)
+
+    await asyncio.gather(
+        clients[0]._rpc2_set_config_value("MotionDetect", 0, "Enable", "true"),
+        clients[1]._rpc2_set_config_value("MotionDetect", 0, "Sensitivity", "9"),
+    )
+
+    assert table["MotionDetect"][0]["Enable"] == "true"
+    assert table["MotionDetect"][0]["Sensitivity"] == "9"
+    assert turnstile.released == [False, True]
+
+
+def _widens_the_window(device, reached, window=0.05):
+    """`device.get_config`, announcing the first read and then pausing in it.
+
+    The turnstile cannot stage this pair: the bare write performs no read, so it
+    has nothing to be held at, and left to the loop it finished before the
+    fallback's first read had even been answered -- which is the harmless order,
+    and the first version of this test passed with the lock taken out because of
+    it. So the fallback says when it has read, and holds the transaction open
+    long enough for the other write to land inside it.
+    """
+    real = device.get_config
+
+    async def get_config(name, *, allow_missing=False, as_table=False):
+        answer = await real(name, allow_missing=allow_missing, as_table=as_table)
+        if not reached.is_set():
+            reached.set()
+            await asyncio.sleep(window)
+        return answer
+
+    return get_config
+
+
+async def test_a_bare_field_write_is_not_undone_by_a_whole_table_put_back(
+    socket_enabled,
+):
+    """The one-field RPC2 write takes the turn too, though it reads nothing.
+
+    `_rpc2_set_config_field` sends one field and never reads the table, so it
+    cannot lose anyone else's change by itself. It can have its own change lost:
+    a whole-table put-back already in flight read this table before this field
+    moved, and sending that copy afterwards puts the old value back. Nothing
+    answers for it -- the put-back's untouched-field check compares the table
+    against its own snapshot, where the old value is what it expects.
+    """
+    async with _serving(OK_THEN_PHANTOM) as server:
+        device = _Rpc2Device()
+        reached = asyncio.Event()
+
+        class _Holder:
+            client = device
+            task = None
+
+        async def shared():
+            return _Holder()
+
+        async def one_field_write(client):
+            # Inside the fallback's transaction, which is the only moment this
+            # write can be lost in.
+            await reached.wait()
+            return await client._rpc2_set_config_field("MotionDetect[0].Sensitivity", 9)
+
+        async with aiohttp.ClientSession() as session:
+            putting_back = DahuaClient("u", "p", "127.0.0.1", server.port, 554, session)
+            putting_back._rpc2_get_config = _widens_the_window(device, reached)
+            putting_back._rpc2_set_config_tables = device.set_config_tables
+
+            one_field = DahuaClient("u", "p", "127.0.0.1", server.port, 554, session)
+            one_field._shared_rpc2 = shared
+
+            answers = await asyncio.gather(
+                putting_back.get(ENABLE_ALONE, True),
+                one_field_write(one_field),
+            )
+
+    assert "OK" in answers[0], answers[0]
+    assert device.holds("MotionDetect[0].Enable") == "true"
+    assert device.holds("MotionDetect[0].Sensitivity") == "9"
+
+
+async def test_the_lighting_paths_take_the_device_config_write_lock_as_well():
+    """The lighting writers are the same transaction on tables CGI also reaches.
+
+    `async_set_lighting_scheme_illuminator` and the white light override read
+    LightingScheme and Lighting_V2 and put them back, and on this camera a CGI
+    `setConfig` naming a field of either goes through the fallback above. So
+    `_lighting_scheme_lock`, which keeps those writers from interleaving with
+    each other, is not enough on its own: `_lighting_lock` takes the device's
+    config-write lock behind it, in that order and never the other way round.
+
+    This asserts that it is held, not what holding it prevents. The lost update
+    itself is measured on the paths above, which use the same lock on the same
+    device; what is worth pinning here is that the lighting call sites are
+    inside it at all, since the four of them name one context manager and a
+    change could quietly take this half out.
+    """
+    client = _bare_client()
+    client._lighting_scheme_lock = client_module._lighting_scheme_lock(client._device)
+    config = client_module._rpc2_config_write_lock(client._device)
+
+    assert not config.locked()
+    async with client._lighting_lock():
+        assert config.locked()
+        assert client._lighting_scheme_lock.locked()
+    assert not config.locked()
+    assert not client._lighting_scheme_lock.locked()

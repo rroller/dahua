@@ -176,6 +176,22 @@ _HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 # in WhiteMode with nothing to go back to.
 _HOST_LIGHTING_SCHEME_LOCKS: dict[str, asyncio.Lock] = {}
 
+# One RPC2 config-write transaction at a time per device. Every write over RPC2
+# here reads a table and puts it back -- the fallback in `_rpc2_fallback_write`
+# sends the whole table, `_rpc2_set_config_value` edits one field of the table
+# it just read -- and two of those at once lose one of the two changes: both
+# read the same table, the second sends a copy taken before the first wrote,
+# and both read back a value they each asked for. Measured by @rroller on
+# #1191, with `MotionDetect[0].Enable` and `Sensitivity` written together:
+# both callers were told OK and motion detection ended up disabled.
+#
+# Keyed by DEVICE, not by `_rpc2_key()`: the username is part of a session, not
+# of a config table, so two entries on one device with different credentials
+# write the same rows and have to take turns. Per device rather than per table
+# because one write may name fields of two tables and nothing here needs the
+# throughput -- an RPC2 config write happens when somebody presses something.
+_HOST_RPC2_CONFIG_WRITE_LOCKS: dict[str, asyncio.Lock] = {}
+
 # One clip at a time per speaker, keyed by device and channel.
 _HOST_SPEAKER_LOCKS: dict[tuple, asyncio.Lock] = {}
 
@@ -340,6 +356,15 @@ def _lighting_scheme_lock(device: str) -> asyncio.Lock:
     if lock is None:
         lock = asyncio.Lock()
         _HOST_LIGHTING_SCHEME_LOCKS[device] = lock
+    return lock
+
+
+def _rpc2_config_write_lock(device: str) -> asyncio.Lock:
+    """This device's RPC2 config writes, shared by every client talking to it."""
+    lock = _HOST_RPC2_CONFIG_WRITE_LOCKS.get(device)
+    if lock is None:
+        lock = asyncio.Lock()
+        _HOST_RPC2_CONFIG_WRITE_LOCKS[device] = lock
     return lock
 
 
@@ -3982,8 +4007,15 @@ class DahuaClient:
         async def write(client):
             return await client.set_config_field(name, value)
 
-        clear_host_cache(self._device)
-        return await self._rpc2_shared_call(write)
+        # Not a read-modify-write itself, and it takes the device's config-write
+        # lock anyway: a whole-table put-back that is already in flight read this
+        # table before this field changed, so without the lock it would send that
+        # copy afterwards and quietly undo this write. Outside
+        # `_rpc2_shared_call`, so the stale-login retry inside it stays in the
+        # same transaction.
+        async with self._config_write_lock:
+            clear_host_cache(self._device)
+            return await self._rpc2_shared_call(write)
 
     async def _rpc2_set_config_value(
         self, name: str, channel: int, key: str, value
@@ -4027,7 +4059,12 @@ class DahuaClient:
                 )
             await client.set_configs([(name, table)])
 
-        await self._rpc2_shared_call(read_modify_write)
+        # One of these at a time per device, like the fallback below. Both read
+        # a table and put it back, so two at once lose one of the two changes
+        # whichever pair of them it is. Outside `_rpc2_shared_call` so that the
+        # re-read its stale-login retry performs is inside the same transaction.
+        async with self._config_write_lock:
+            await self._rpc2_shared_call(read_modify_write)
         _LOGGER.debug(
             "Set %s[%d].%s = %r over RPC2 on %s",
             name,
@@ -4075,6 +4112,44 @@ class DahuaClient:
             pass
         return await self._rpc2_get_config("LightingScheme", allow_missing=True)
 
+    @property
+    def _config_write_lock(self) -> asyncio.Lock:
+        """This device's RPC2 config writes, one transaction at a time.
+
+        Looked up rather than held on the instance, because it is reached from
+        `_rpc2_set_config_field` and `_rpc2_set_config_value`, and much of the
+        suite builds a client with `object.__new__` and sets only the attributes
+        the call under test needs. An attribute assigned in `__init__` would
+        raise on every one of those, and the dict lookup is the same object
+        every time for a given device, which is the whole point of it.
+        """
+        return _rpc2_config_write_lock(self._device)
+
+    @asynccontextmanager
+    async def _lighting_lock(self):
+        """This device's lighting tables, and its RPC2 config writes behind them.
+
+        The lighting paths read LightingScheme and Lighting_V2 and put them
+        back, which is the same transaction `_rpc2_fallback_write` performs, on
+        tables a CGI `setConfig` URL also reaches. `_lighting_scheme_lock` keeps
+        the lighting writers from interleaving with each other and says nothing
+        about anyone else, so the device-wide config-write lock is taken here as
+        well, and both are held for the whole read-modify-write.
+
+        **The order is lighting first, then the config lock, and nothing takes
+        them the other way round.** The fallback holds only the config lock, and
+        none of these methods calls `get`, `_rpc2_set_config_field` or
+        `_rpc2_set_config_value` while holding either -- checked, because an
+        `asyncio.Lock` is not reentrant and a nested write would hang rather
+        than fail.
+
+        Both locks are taken before `self._request_slot()` at every call site,
+        which is the house order: a caller waiting for a lock holds no slot, so
+        it cannot be holding the slot that the lock's owner is waiting for.
+        """
+        async with self._lighting_scheme_lock, self._config_write_lock:
+            yield
+
     async def async_set_lighting_scheme_illuminator(
         self,
         channel: int,
@@ -4090,7 +4165,7 @@ class DahuaClient:
         even when RPC2 polling is disabled. Partial CGI writes are accepted but
         do not light the emitter.
         """
-        async with self._lighting_scheme_lock, self._request_slot(), asyncio.timeout(
+        async with self._lighting_lock(), self._request_slot(), asyncio.timeout(
             TIMEOUT_SECONDS
         ):
             restore_store = self._illuminator_restore_store
@@ -4157,7 +4232,7 @@ class DahuaClient:
         restore_store = self._illuminator_restore_store
         if restore_store is None:
             return
-        async with self._lighting_scheme_lock, self._request_slot(), asyncio.timeout(
+        async with self._lighting_lock(), self._request_slot(), asyncio.timeout(
             TIMEOUT_SECONDS
         ):
             keys = await restore_store.async_keys()
@@ -4221,7 +4296,7 @@ class DahuaClient:
                 lambda client: client.set_config(name, table, channel=channel)
             )
 
-        async with self._lighting_scheme_lock, self._request_slot(), asyncio.timeout(
+        async with self._lighting_lock(), self._request_slot(), asyncio.timeout(
             TIMEOUT_SECONDS
         ):
             if enabled:
@@ -4370,7 +4445,7 @@ class DahuaClient:
                 )
             )
 
-        async with self._lighting_scheme_lock, self._request_slot(), asyncio.timeout(
+        async with self._lighting_lock(), self._request_slot(), asyncio.timeout(
             TIMEOUT_SECONDS
         ):
             store = self._channel_snapshot_store
@@ -7087,6 +7162,27 @@ class DahuaClient:
 
         Hence the order here, which is the whole design:
 
+        0. take this device's config-write lock, and hold it to the end. Every
+           step below reads a table and puts it back, so two of these at once
+           on one device lose one of the two writes: both read the table, the
+           second sends a copy taken before the first wrote, and each reads
+           back the field it asked for and is satisfied. @rroller measured it
+           on the first version of this with `MotionDetect[0].Enable` and
+           `Sensitivity` written together -- both callers were told OK and
+           motion detection ended up off. The untouched-field check in step 4
+           cannot see it, because it compares the table against the snapshot
+           this caller read, which is the stale one.
+
+           The lock is taken INSIDE the budget below, which is the opposite of
+           the house order at the lighting call sites, and deliberately: a wait
+           that outlives the inner deadline raises a `TimeoutError` the caller
+           already handles by reporting `cgi_error`, while a wait cancelled by
+           the request's own outer deadline would reach the poll as a
+           `CancelledError` nothing here catches. The other writers take it
+           before their request slot, so this is the only path that holds a
+           slot while waiting for it, and nothing it does inside needs a second
+           slot -- `_rpc2_shared_call` takes none of its own.
+
         1. read the tables the write addresses, over RPC2;
         2. if every field already holds what was asked, the CGI write landed.
            Say so and send nothing. That costs one read and is the only outcome
@@ -7129,7 +7225,7 @@ class DahuaClient:
         """
         wanted = dict(fields)
         names = list(dict.fromkeys(_config_table_of(address) for address in wanted))
-        async with self._inside_request_budget(budget):
+        async with self._inside_request_budget(budget), self._config_write_lock:
             before, held, raw = await self._rpc2_config_tables(names)
             if all(
                 _same_setting(before.get("table." + address), value)

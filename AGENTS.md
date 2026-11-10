@@ -306,6 +306,20 @@ a device that does not answer leaves the numbering alone rather than guessing
   goes into `_HOST_RPC2_WRITES_UNSAFE` and takes no further write over RPC2.
   Anything the fallback cannot prove reports the original refusal, so it can never
   make a refused write look like one that worked.
+- **Every RPC2 config write takes one turn per device.** A read-modify-write and a
+  whole-table put-back lose one of two concurrent changes: both read the table, the
+  second sends a copy taken before the first wrote, and each reads back the field
+  it asked for and is satisfied, so nothing notices. `MAX_CONCURRENT_REQUESTS_PER_HOST`
+  is 2, so two writes really are in flight at once. `_rpc2_config_write_lock(device)`
+  serialises them, and `_rpc2_fallback_write`, `_rpc2_set_config_value`,
+  `_rpc2_set_config_field` and the lighting paths through `_lighting_lock` all take
+  it. **Keyed by device, not by `_rpc2_key()`**: a username belongs to a session,
+  not to a config table, and two entries with different credentials write the same
+  rows. Every lock here is taken before `self._request_slot()` so that a caller
+  waiting for a lock holds no slot; the fallback is the one exception, because it
+  only learns it is needed once the CGI write has failed inside the slot, and it
+  takes the lock inside `_inside_request_budget` so a turn that never comes is a
+  `TimeoutError` the handlers catch rather than a `CancelledError` nothing does.
 - The siren turns itself off after 10 to 15 seconds. That is the hardware.
 
 ## Custom Instructions
