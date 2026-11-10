@@ -645,6 +645,11 @@ set_privacy_masking:
     everything else. This is the masking configured under Privacy Masking on the
     camera, and it is not the same as Privacy Mode, which physically covers the
     lens.
+
+    The mask has to exist on the camera already: this shows and hides one you
+    have drawn, and cannot create one. Older firmware keeps these in a different
+    table from newer firmware, and the index counts the masks you drew in either
+    case, so index 0 is the first one.
   target:
     entity:
       integration: dahua

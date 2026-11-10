@@ -460,12 +460,22 @@ async def test_autofocus_does_not_hide_a_device_refusal():
     assert coordinator.refreshed == 0
 
 
-async def test_privacy_masking_takes_an_index_and_no_channel():
+async def test_privacy_masking_takes_an_index_and_this_channel():
+    """The channel goes with it as of #1184.
+
+    One of the two tables this can write is `VideoWidget`, which is channel
+    scoped, so a recorder channel's covers are not channel 0's. It used to send
+    the index alone, which this test used to assert.
+    """
     camera = _camera()
 
     await camera.async_set_privacy_masking(2, True)
 
-    assert camera._coordinator.client.only() == ("async_setprivacymask", (2, True), {})
+    assert camera._coordinator.client.only() == (
+        "async_setprivacymask",
+        (2, True, LOGICAL),
+        {},
+    )
 
 
 async def test_the_lens_privacy_mode_is_device_wide():
