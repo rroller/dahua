@@ -508,7 +508,7 @@
     },
     "exceptions": {
         "profile_management_write_failed": {
-            "message": "No se pudo cambiar la administraci?n de perfil: {reason}"
+            "message": "No se pudo cambiar la administración de perfil: {reason}"
         },
         "image_rotation_unsupported": {
             "message": "No se puede cambiar la rotación de imagen porque Rotate90 no es compatible o su compatibilidad es desconocida."
