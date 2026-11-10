@@ -4797,6 +4797,17 @@ class DahuaClient:
         """Trigger autofocus using the parameter-free camera CGI command."""
         return await self.get("/cgi-bin/devVideoInput.cgi?action=autoFocus", True)
 
+    async def _async_get_privacy_mask_config(self, name: str) -> dict:
+        """Resolve mask ownership from a fresh, readable table before a write."""
+        url = f"/cgi-bin/configManager.cgi?action=getConfig&name={name}"
+        _HOST_CACHE.pop((self._device, self._username, url), None)
+        try:
+            return await self.get(url)
+        except aiohttp.ClientResponseError as error:
+            if error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            return {}
+
     async def async_setprivacymask(self, index: int, enabled: bool, channel: int = 0):
         """Show or hide one privacy mask, in whichever table this camera keeps it.
 
@@ -4830,7 +4841,7 @@ class DahuaClient:
         # reported a recorder keeping masks here, and the only measurement in
         # hand is a single-channel camera. Changing it would be a guess at the
         # expense of the cameras this works on.
-        masking = await self.async_get_config("PrivacyMasking")
+        masking = await self._async_get_privacy_mask_config("PrivacyMasking")
         if privacy_mask_has_a_region(masking, "table.PrivacyMasking[0][%d]." % index):
             url = (
                 "/cgi-bin/configManager.cgi?action=setConfig"
@@ -4838,7 +4849,7 @@ class DahuaClient:
             )
             return await self.get(url, True)
 
-        widget = await self.async_get_config("VideoWidget")
+        widget = await self._async_get_privacy_mask_config("VideoWidget")
         prefix = "table.VideoWidget[%d].Covers[%d]." % (channel, index)
         if privacy_mask_has_a_region(widget, prefix):
             # `EncodeBlend` and not `PreviewBlend`: the first is burned into the

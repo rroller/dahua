@@ -114,21 +114,19 @@ SAYS_NOTHING = {"PrivacyMasking": {}, "VideoWidget": {}}
 
 def _client(served, address="192.168.1.223"):
     """A real DahuaClient with its reads and its one write intercepted."""
-    client = object.__new__(DahuaClient)
-    client._address = address
+    client = DahuaClient("u", "p", address, 80, 554, SimpleNamespace(closed=False))
     asked = []
     written = []
 
-    async def read(name):
-        asked.append(name)
-        return dict(served.get(name, {}))
-
-    async def write(url, verify_ok=False):
+    async def request(url, verify_ok=False, **kwargs):
+        for name in ("PrivacyMasking", "VideoWidget"):
+            if url == f"/cgi-bin/configManager.cgi?action=getConfig&name={name}":
+                asked.append(name)
+                return dict(served.get(name, {}))
         written.append((url, verify_ok))
         return {"OK": "OK"}
 
-    client.async_get_config = read
-    client.get = write
+    client._request = request
     client.asked = asked
     client.written = written
     return client
