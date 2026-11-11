@@ -28,6 +28,10 @@ from .infrared import (
 )
 from .late import async_add_and_keep_watching
 from .model_profiles import is_sdt4e425
+from .profile import (
+    PROFILE_MANAGEMENT_OPTIONS,
+    PROFILE_MANAGEMENT_VALUES_BY_OPTION,
+)
 
 _LOGGER = logging.getLogger(__package__)
 _AUDIO_SOURCE_KEY = re.compile(
@@ -117,6 +121,9 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 
         if coordinator.supports_exposure_anti_flicker():
             devices.append(DahuaExposureAntiFlickerSelect(coordinator, entry))
+
+        if coordinator.supports_profile_management():
+            devices.append(DahuaProfileManagementSelect(coordinator, entry))
 
         # WDR lives in VideoInOptions rather than VideoColor. It requires both
         # fields: the mode alone is ignored while the level stays at 50, and a
@@ -659,6 +666,40 @@ class DahuaVideoColorStyleSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.client.async_set_video_color_style(
             self._coordinator.get_channel(), option
         )
+        await self._coordinator.async_refresh()
+
+
+class DahuaProfileManagementSelect(DahuaBaseEntity, SelectEntity):
+    """Select how the camera manages its Day, Night and Normal profiles."""
+
+    _attr_translation_key = "profile_management"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options: ClassVar[list[str]] = list(PROFILE_MANAGEMENT_OPTIONS)
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_profile_management"
+
+    @property
+    def current_option(self):
+        option = self._coordinator.get_profile_management_mode()
+        return option if option in PROFILE_MANAGEMENT_VALUES_BY_OPTION else None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in PROFILE_MANAGEMENT_VALUES_BY_OPTION:
+            return
+        try:
+            await self._coordinator.async_set_profile_management_mode(option)
+        except (ConnectionError, RuntimeError, ValueError) as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="profile_management_write_failed",
+                translation_placeholders={"reason": str(err)},
+            ) from err
         await self._coordinator.async_refresh()
 
 

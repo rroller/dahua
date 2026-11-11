@@ -1080,10 +1080,18 @@ Select |  Description |
 Security Light | On a doorbell, sets the light to off, on, or strobe. A doorbell's light has three states rather than two, which is why it is a select and not a switch
 Preset Position | Moves a PTZ camera to one of its stored preset positions, and reports the one it is at. Only created on cameras that report presets
 Day/Night Mode | The camera's colour mode: Color, BlackWhite, or Auto (which Dahua also calls Brightness). Readable as well as settable, which is what makes it possible to notice a camera that changed mode by itself, such as one reverting to Auto after a power cut and then rendering black and white at night
+Profile Management | Normal, Full Time Day, Full Time Night or Schedule, on channels that report a supported profile-management configuration. Uses the camera's existing schedule; edit transition times in the camera's interface
 Image Wide Dynamic Range | Off, On or mode 2. The camera ignores mode 0 on its own while the level is still 50, so choosing Off clears both; choosing On or mode 2 keeps the camera's level or restores 50. Mode 2 is named rather than called Auto because the vendor's name for it has not been confirmed
 Image Exposure Mode | Auto, Gain Priority or Shutter Priority. Manual exposure is deliberately not offered: it needs shutter and gain values this integration does not expose
 Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
 Audio Source | Selects the source reported by each encoder format (Coaxial or BNC). Only shown when the device exposes that setting
+
+**Profile Management and the Profile sensor describe different settings.** The
+selector controls how profiles are chosen. Under Schedule, the Profile sensor
+may report Day while Night is active, and profile-specific lighting and exposure
+controls may therefore address the Day settings. Use the camera's interface for
+those adjustments while using Schedule. Schedule transition times are preserved
+when changing Profile Management.
 
 The audio entities read the device's `Encode` table and write only the selected
 field. This makes audio changes visible to Home Assistant automations after the

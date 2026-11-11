@@ -35,6 +35,11 @@ from .const import (
 from .dhip import DhipLoginRefused, DhipTransport
 from .digest import DigestAuth
 from .ivs import ivs_rule_index
+from .profile import (
+    PROFILE_MANAGEMENT_VALUES_BY_OPTION,
+    profile_management_table_with_option,
+    resolve_profile_management_table,
+)
 from .rpc2 import RPC2_LOGIN_METHOD, DahuaRpc2Client, Rpc2MethodRefused
 
 # An indoor monitor's call settings: do not disturb, and the volumes (#949, #998).
@@ -175,6 +180,7 @@ _HOST_REMOTE_IVS_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 # channel's poll can reconcile that key away in the gap and leave the camera
 # in WhiteMode with nothing to go back to.
 _HOST_LIGHTING_SCHEME_LOCKS: dict[str, asyncio.Lock] = {}
+_HOST_VIDEO_IN_MODE_LOCKS: dict[str, asyncio.Lock] = {}
 
 # One RPC2 config-write transaction at a time per device. Every write over RPC2
 # here reads a table and puts it back -- the fallback in `_rpc2_fallback_write`
@@ -1147,6 +1153,48 @@ def _pop_complete_multipart_part(buffer: bytes, boundary: bytes):
 _CONFIG_READ = re.compile(r"configManager\.cgi\?action=getConfig&name=(.+)$")
 
 _CONFIG_WRITE = re.compile(r"configManager\.cgi\?action=setConfig&(.+)$")
+
+# Which fields of a privacy mask row say where it is. `Rect` is the older
+# four-number box and `Polygon` the newer point list; a row carries one or both,
+# and a row where every one of them is zero describes no area at all.
+PRIVACY_MASK_REGION_FIELDS = ("Rect[", "Polygon[")
+
+
+def privacy_mask_has_a_region(config: dict, prefix: str) -> bool:
+    """Whether one privacy mask row describes an area, or is an empty slot.
+
+    `prefix` is the row, as a flat config read spells it, for example
+    `table.PrivacyMasking[0][2].`. Row 2 cannot match row 21 because the index
+    is bracketed and `[2]` is not a prefix of `[21]`; the trailing dot only
+    makes the boundary explicit, and a break that removed it reddened nothing.
+
+    A row of zeroes is a slot the firmware offers and nobody has drawn in.
+    Enabling one is accepted and does nothing visible, which is #1184: the
+    camera there serves 24 such rows while keeping its real masks elsewhere.
+    """
+    return any(
+        str(value).strip() not in ("", "0")
+        for key, value in config.items()
+        if key.startswith(prefix)
+        and any(field in key[len(prefix) :] for field in PRIVACY_MASK_REGION_FIELDS)
+    )
+
+
+def privacy_mask_row_count(config: dict, pattern: str) -> int:
+    """How many mask rows a table answered with, for a message worth reading.
+
+    Only used to say what was found when there is no mask at the index asked
+    for, because "there is no mask 2" and "this table has no rows at all" send
+    somebody to different places.
+    """
+    matcher = re.compile(pattern)
+    rows = set()
+    for key in config:
+        match = matcher.match(key)
+        if match:
+            rows.add(match.group(1))
+    return len(rows)
+
 
 # One field of one config table, as a CGI write addresses it: a table name,
 # any number of indexes, and at least one named field after that. Deliberately
@@ -4968,6 +5016,45 @@ class DahuaClient:
         finally:
             await self.get(base.format("stop", channel, code, arg1, speed))
 
+    async def async_set_profile_management(self, channel: int, option: str) -> str:
+        """Set Profile Management by preserving the camera's VideoInMode table."""
+        if option not in PROFILE_MANAGEMENT_VALUES_BY_OPTION:
+            raise ValueError(f"Unknown profile management option: {option}")
+
+        lock = _HOST_VIDEO_IN_MODE_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+
+            async def read_modify_write(client):
+                response = await client.get_config({"name": "VideoInMode"})
+                table = response.get("table")
+                if table is None:
+                    table = (response.get("params") or {}).get("table")
+                if not isinstance(table, list):
+                    raise ConnectionError("VideoInMode did not return a table")
+
+                wanted = profile_management_table_with_option(table, channel, option)
+                await client.set_config("VideoInMode", wanted, channel=channel)
+
+                readback = await client.get_config({"name": "VideoInMode"})
+                back = readback.get("table")
+                if back is None:
+                    back = (readback.get("params") or {}).get("table")
+                got = (
+                    resolve_profile_management_table(back, channel)
+                    if isinstance(back, list)
+                    else None
+                )
+                if got != option:
+                    raise ConnectionError(
+                        f"VideoInMode accepted {option!r} but read back {got!r}"
+                    )
+                return got
+
+            clear_host_cache(self._device)
+            result = await self._rpc2_shared_call(read_modify_write)
+            clear_host_cache(self._device)
+            return result
+
     async def async_set_video_profile_mode(self, channel: int, mode: str):
         """
         async_set_video_profile_mode will set camera's profile mode to day or night
@@ -4981,7 +5068,11 @@ class DahuaClient:
             mode = "0"
 
         url = f"/cgi-bin/configManager.cgi?action=setConfig&VideoInMode[{channel}].Config[0]={mode}"
-        return await self.get(url, True)
+        # A Profile Management write puts the complete host-wide table back.
+        # Keep this addressed write outside its read/modify/write window too.
+        lock = _HOST_VIDEO_IN_MODE_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+            return await self.get(url, True)
 
     async def async_adjustfocus_v1(self, focus: str, zoom: str):
         """
@@ -4995,13 +5086,98 @@ class DahuaClient:
         """Trigger autofocus using the parameter-free camera CGI command."""
         return await self.get("/cgi-bin/devVideoInput.cgi?action=autoFocus", True)
 
-    async def async_setprivacymask(self, index: int, enabled: bool):
-        """
-        async_setprivacymask will enable or disable the privacy mask
-        """
+    async def _async_get_privacy_mask_config(self, name: str) -> dict:
+        """Resolve mask ownership from a fresh, readable table before a write."""
+        url = f"/cgi-bin/configManager.cgi?action=getConfig&name={name}"
+        _HOST_CACHE.pop((self._device, self._username, url), None)
+        try:
+            return await self.get(url)
+        except aiohttp.ClientResponseError as error:
+            if error.status not in self.CONFIG_CGI_ABSENT:
+                raise
+            return {}
 
-        url = f"/cgi-bin/configManager.cgi?action=setConfig&PrivacyMasking[0][{index}].Enable={str(enabled).lower()}"
-        return await self.get(url, True)
+    async def async_setprivacymask(self, index: int, enabled: bool, channel: int = 0):
+        """Show or hide one privacy mask, in whichever table this camera keeps it.
+
+        Two tables can hold these, and which one drives the picture is a property
+        of the firmware rather than of the model:
+
+        * `PrivacyMasking[0][index].Enable`, which is all this used to write;
+        * `VideoWidget[channel].Covers[index].EncodeBlend`, the older shape, and
+          the one the camera in #1184 actually renders from.
+
+        **Decided on what the device holds.** A mask row with no coordinates
+        cannot blank any part of the picture, so a `PrivacyMasking` row whose
+        `Rect` and `Polygon` are all zero is an empty slot rather than a mask,
+        and the write goes to the `Covers` row of the same index instead. Where
+        both describe a region `PrivacyMasking` wins, so a camera this already
+        worked on is written exactly where it was written before.
+
+        Measured on @jackouille2's camera for #1184, from the integration's own
+        reads of both tables: `PrivacyMasking` carries 24 rows whose every
+        `Rect` and `Polygon` value is `0`, while `VideoWidget[0].Covers` carries
+        four with real coordinates, of which the one that is visible is the one
+        with `EncodeBlend` true. So the old write was neither refused nor
+        ignored. It enabled a mask covering nothing, and `200 OK` was the honest
+        answer to it, which is why nothing in the integration could tell.
+
+        Raises rather than writing to a slot and reporting success, because a
+        service that answers OK and changes nothing is the whole of #1184.
+        """
+        # Index 0 and not the channel, deliberately: the first index of this
+        # table has never been seen with anything else in it, nobody has
+        # reported a recorder keeping masks here, and the only measurement in
+        # hand is a single-channel camera. Changing it would be a guess at the
+        # expense of the cameras this works on.
+        masking = await self._async_get_privacy_mask_config("PrivacyMasking")
+        if privacy_mask_has_a_region(masking, "table.PrivacyMasking[0][%d]." % index):
+            url = (
+                "/cgi-bin/configManager.cgi?action=setConfig"
+                "&PrivacyMasking[0][%d].Enable=%s" % (index, str(enabled).lower())
+            )
+            return await self.get(url, True)
+
+        widget = await self._async_get_privacy_mask_config("VideoWidget")
+        prefix = "table.VideoWidget[%d].Covers[%d]." % (channel, index)
+        if privacy_mask_has_a_region(widget, prefix):
+            # `EncodeBlend` and not `PreviewBlend`: the first is burned into the
+            # stream and the recording, the second only into the camera's own
+            # preview. In #1184's dump the visible mask has EncodeBlend true and
+            # PreviewBlend false, and the URL the reporter drove by hand sets
+            # EncodeBlend.
+            url = (
+                "/cgi-bin/configManager.cgi?action=setConfig"
+                "&VideoWidget[%d].Covers[%d].EncodeBlend=%s"
+                % (channel, index, str(enabled).lower())
+            )
+            return await self.get(url, True)
+
+        if not masking and not widget:
+            # Both reads came back empty, which `async_get_config` also returns
+            # for a refusal. Saying "no mask there" would send somebody looking
+            # at their masks instead of at their connection.
+            raise ValueError(
+                "%s answered neither PrivacyMasking nor VideoWidget, so where it "
+                "keeps privacy masks could not be read" % self._address
+            )
+        raise ValueError(
+            "%s has no privacy mask at index %d to show or hide: PrivacyMasking "
+            "has %d row(s) and none at that index describes a region, VideoWidget "
+            "has %d cover(s) on channel %d. Draw the mask on the camera first, and "
+            "count from 0"
+            % (
+                self._address,
+                index,
+                privacy_mask_row_count(
+                    masking, r"table\.PrivacyMasking\[\d+\]\[(\d+)\]\."
+                ),
+                privacy_mask_row_count(
+                    widget, r"table\.VideoWidget\[%d\]\.Covers\[(\d+)\]\." % channel
+                ),
+                channel,
+            )
+        )
 
     async def async_set_night_switch_mode(self, channel: int, mode: str):
         """

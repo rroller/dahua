@@ -1242,8 +1242,27 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         await self._coordinator.client.async_autofocus()
 
     async def async_set_privacy_masking(self, index: int, enabled: bool):
-        """Handles the service call from SERVICE_SET_PRIVACY_MASKING to control the privacy masking"""
-        await self._coordinator.client.async_setprivacymask(index, enabled)
+        """Handles the service call from SERVICE_SET_PRIVACY_MASKING to control the privacy masking
+
+        The channel goes with it because one of the two tables this can write is
+        channel scoped, and a recorder channel's covers are not channel 0's.
+        """
+        try:
+            await self._coordinator.client.async_setprivacymask(
+                index, enabled, self._coordinator.get_channel()
+            )
+        except ValueError as unknown_mask:
+            # The camera has no mask at that index in either table, or would not
+            # say. Raised rather than swallowed: the service used to answer
+            # successfully while changing nothing (#1184).
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="privacy_mask_not_found",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "reason": str(unknown_mask),
+                },
+            ) from unknown_mask
 
     async def async_set_privacy_mode(self, enabled: bool):
         """Handles the service call from SERVICE_SET_PRIVACY_MODE to control the lens privacy mask"""

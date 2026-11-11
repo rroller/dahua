@@ -40,6 +40,9 @@
             },
             "image_exposure_mode": {
                 "default": "mdi:camera-iris"
+            },
+            "profile_management": {
+                "default": "mdi:theme-light-dark"
             }
         },
         "sensor": {
