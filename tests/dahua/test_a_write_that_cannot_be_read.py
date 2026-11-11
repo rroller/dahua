@@ -1684,12 +1684,17 @@ async def test_a_readable_cgi_write_waits_for_the_transaction_it_would_revert(
 async def test_the_transaction_holds_against_a_second_entry_on_the_device(
     socket_enabled,
 ):
-    """Across clients and entries, which is what @rroller asked for in so many words.
+    """Across clients and entries, for the write that is answered readably.
 
-    The lock is looked up per device rather than held on the client, so two
-    entries configured with different accounts on one camera take the same one.
-    A lock that lived on the instance would pass every test above and none of
-    this one.
+    `test_two_entries_with_different_credentials_still_take_turns` already holds
+    this line for two fallback writes. What is new here is the mixed case: the
+    competing write is an ordinary CGI write from a second entry, answered
+    readably, which is the path that took no lock at all before this.
+
+    The lock is looked up per device rather than per session, because a config
+    table is the device's and two entries added with different accounts write
+    the same rows. Measured: keying it on `_rpc2_key()` instead reddens this
+    test and that one, plus the lighting order and the timeout.
     """
     async with _serving(OK_THEN_PHANTOM, OK_ALONE) as server:
         answers, device, held_out, _ = await _readable_write_waits_for(
