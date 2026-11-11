@@ -4191,15 +4191,15 @@ class DahuaClient:
 
         **The request slot is taken in the middle, and that ordering is load
         bearing.** The one rule the config-write lock has to obey is that
-        nothing holds it while waiting for a slot, because `_rpc2_fallback_write`
-        does the opposite: it is already inside a slot when it learns it needs
-        the lock, and it cannot give the slot back. Measured, with the config
-        lock taken before the slot: two fallback writes held both slots waiting
-        for the lock while a lighting writer held the lock waiting for a slot,
-        and nothing released anything. Both writes timed out after the inner
-        budget and the device was never written. So the slot comes first and the
-        config lock after it, and this method is the only place that order is
-        expressed.
+        nothing holds it while waiting for a slot, because every CGI config
+        write does the opposite: `_request` is already inside a slot when it
+        takes the lock, and it cannot give the slot back. Measured, with the
+        config lock taken before the slot: two fallback writes held both slots
+        waiting for the lock while a lighting writer held the lock waiting for
+        a slot, and nothing released anything. Both writes timed out after the
+        inner budget and the device was never written. So the slot comes first
+        and the config lock after it, and this method is the only place that
+        order is expressed the other way round.
 
         Holding the slot while waiting for the config lock costs a queued read
         the slot for the length of one RPC2 transaction, bounded by
@@ -7346,26 +7346,24 @@ class DahuaClient:
 
         Hence the order here, which is the whole design:
 
-        0. take this device's config-write lock, and hold it to the end. Every
-           step below reads a table and puts it back, so two of these at once
-           on one device lose one of the two writes: both read the table, the
-           second sends a copy taken before the first wrote, and each reads
-           back the field it asked for and is satisfied. @rroller measured it
-           on the first version of this with `MotionDetect[0].Enable` and
+        0. this device's config-write lock is already held, by the CGI write
+           in `_request` that fell in here, and is held to the end. Every step
+           below reads a table and puts it back, so two of these at once on one
+           device lose one of the two writes: both read the table, the second
+           sends a copy taken before the first wrote, and each reads back the
+           field it asked for and is satisfied. @rroller measured it on the
+           first version of this with `MotionDetect[0].Enable` and
            `Sensitivity` written together -- both callers were told OK and
            motion detection ended up off. The untouched-field check in step 4
            cannot see it, because it compares the table against the snapshot
            this caller read, which is the stale one.
 
-           The lock is taken INSIDE the budget below, which is the opposite of
-           the house order at the lighting call sites, and deliberately: a wait
-           that outlives the inner deadline raises a `TimeoutError` the caller
-           already handles by reporting `cgi_error`, while a wait cancelled by
-           the request's own outer deadline would reach the poll as a
-           `CancelledError` nothing here catches. The other writers take it
-           before their request slot, so this is the only path that holds a
-           slot while waiting for it, and nothing it does inside needs a second
-           slot -- `_rpc2_shared_call` takes none of its own.
+           It is taken there rather than here because the second version of
+           that measurement is a CGI write whose answer IS readable: it never
+           reaches this method, so a lock taken here could not cover it, and it
+           reverted the same way. `_request` has the ordering rules, and
+           nothing this method does inside needs a request slot of its own --
+           `_rpc2_shared_call` takes none.
 
         1. read the tables the write addresses, over RPC2;
         2. if every field already holds what was asked, the CGI write landed.
@@ -7409,7 +7407,7 @@ class DahuaClient:
         """
         wanted = dict(fields)
         names = list(dict.fromkeys(_config_table_of(address) for address in wanted))
-        async with self._inside_request_budget(budget), self._config_write_lock:
+        async with self._inside_request_budget(budget):
             before, held, raw = await self._rpc2_config_tables(names)
             if all(
                 _same_setting(before.get("table." + address), value)
@@ -7649,6 +7647,43 @@ class DahuaClient:
             # rewrites four unrelated `async with` statements elsewhere in it.
             async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS) as budget:
                 response = None
+                # The device's config writes, one transaction at a time, and the
+                # CGI write that starts one is inside it.
+                #
+                # The fallback below is a read-modify-write that puts a whole
+                # table back, and it used to take this lock itself. That left
+                # the write above it unprotected, which is not a smaller window
+                # but a different one: a CGI write whose answer IS readable
+                # never reaches the fallback, so it took no lock at all. Two
+                # callers on one device then interleave as @rroller measured on
+                # #1191 -- one writes `Enable` and cannot read the answer, so it
+                # snapshots the table; the other writes `Sensitivity` and is
+                # answered 200 OK; the first puts its older copy back. Both are
+                # told OK, both verified their own field, and the second
+                # setting is gone. The untouched-field check cannot see it,
+                # because it compares the table against the snapshot where the
+                # old value is exactly what it expects.
+                #
+                # Taken here, so the write and any fallback it falls into are
+                # one transaction, and only for a config write: a snapshot, a
+                # PTZ move or an event attach shares nothing with this.
+                #
+                # **Inside the request slot, and that ordering is load
+                # bearing.** `_lighting_lock` has the measurement: nothing may
+                # hold this lock while waiting for a slot, or two writes wedge.
+                # Inside the budget as well, so a wait that outlives the inner
+                # deadline raises a `TimeoutError` this method already handles,
+                # rather than a `CancelledError` from the outer one that
+                # nothing here catches.
+                #
+                # What it costs: config writes to one device no longer overlap,
+                # and a write that waits past the budget is reported as a
+                # timeout rather than reaching the device.
+                write_lock = (
+                    self._config_write_lock if _CONFIG_WRITE.search(url) else None
+                )
+                if write_lock is not None:
+                    await write_lock.acquire()
                 try:
                     auth = DigestAuth(
                         self._username,
@@ -7845,6 +7880,8 @@ class DahuaClient:
                         )
                     return await self.parse_dahua_api_response(data)
                 finally:
+                    if write_lock is not None:
+                        write_lock.release()
                     if response is not None:
                         response.close()
         except TimeoutError as exception:

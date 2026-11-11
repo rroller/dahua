@@ -1130,25 +1130,24 @@ async def test_a_write_already_in_flight_elsewhere_does_not_delay_another_device
     assert turnstile.released == [True, True]
 
 
-async def test_a_turn_that_does_not_come_reports_the_original_refusal(
+async def test_a_turn_that_does_not_come_is_a_timeout_and_writes_nothing(
     socket_enabled, monkeypatch
 ):
     """Waiting for the lock cannot be worse than not having the fallback.
 
-    The wait is inside the request's own deadline by a margin, so a turn that
-    never comes raises where the handlers are reachable and the caller reports
-    the refusal it was holding. Outside that margin the request's own timeout
-    would cancel the task instead, and `CancelledError` is not an `Exception`:
-    it would reach the poll's gather, which has no `return_exceptions`.
+    The turn is now waited for BEFORE the CGI write is sent, so a turn that
+    never comes has no refusal to report: the device was never asked. What the
+    caller gets is the request's own `TimeoutError`, and the property this
+    protects is unchanged -- it raises where the handlers are reachable, and a
+    `TimeoutError` is an `Exception`, while the `CancelledError` an outer
+    deadline would raise is not and would reach the poll's gather, which has no
+    `return_exceptions`.
 
-    The device is asserted untouched as well as the answer, because a version
-    that never took the lock would pass on the answer alone only by writing.
+    The device is asserted untouched as well as the answer, because that is the
+    half a caller cares about: a write that waited for a turn it never got must
+    not have half happened.
     """
-    monkeypatch.setattr(
-        client_module,
-        "TIMEOUT_SECONDS",
-        client_module.RPC2_FALLBACK_MARGIN_SECONDS + 0.4,
-    )
+    monkeypatch.setattr(client_module, "TIMEOUT_SECONDS", 0.4)
     async with _serving(OK_THEN_PHANTOM) as server:
         held = client_module._rpc2_config_write_lock(
             client_module._device_key("127.0.0.1", server.port)
@@ -1159,10 +1158,11 @@ async def test_a_turn_that_does_not_come_reports_the_original_refusal(
         finally:
             held.release()
 
-    assert isinstance(answer, aiohttp.ClientResponseError)
-    assert answer.status == 400
+    assert isinstance(answer, TimeoutError)
+    assert not isinstance(answer, asyncio.CancelledError)
     assert device.reads == []
     assert device.sent == []
+    assert server.requests == []
 
 
 async def test_the_lock_is_released_when_the_write_is_reported_as_refused(
@@ -1513,20 +1513,21 @@ async def test_the_lost_table_latch_is_the_devices_and_not_one_accounts(
 
 
 async def test_a_cgi_write_that_landed_inside_another_turn_is_put_back(socket_enabled):
-    """The lock cannot cover the CGI write that started the other transaction.
+    """A write this integration did not make still lands inside the window.
 
-    On this firmware a write reaches the device and is carried out; it is only
-    the answer that cannot be read. So a second caller's CGI write can land
-    while the first caller is between its read and its put-back, and the
-    put-back then reverts it. Nothing sees that: the first caller's
-    untouched-field check compares the table against its own snapshot, where
-    the old value is exactly what it expects.
+    The lock now covers every CGI config write this client sends, so one of
+    *ours* can no longer land between another caller's read and its put-back --
+    that is the test below. Nothing here can lock the camera's own web UI, a
+    second Home Assistant or an installer with a browser open, and on this
+    firmware a write reaches the device and is carried out; it is only the
+    answer that cannot be read. So an outside write can still land in the
+    window and be reverted by the put-back, which is what the bare assignment
+    below stands for.
 
-    What saves the setting is the second caller's own fallback. It waits for its
-    turn, reads the table the first one left, finds its value gone and sends it
-    again. So the window is real and it heals, by this route and not by the
-    lock, which is worth a test of its own because it is the sequence the camera
-    in #1176 actually produces.
+    What saves the setting then is the second caller's own fallback. It waits
+    for its turn, reads the table the first one left, finds its value gone and
+    sends it again. So the window is real for a writer we do not control, and
+    it heals by that route rather than by the lock.
     """
     async with _serving(OK_THEN_PHANTOM, OK_THEN_PHANTOM) as server:
         device = _Rpc2Device()
@@ -1559,3 +1560,143 @@ async def test_a_cgi_write_that_landed_inside_another_turn_is_put_back(socket_en
     # back. If the second caller had taken the "it already holds this" early
     # return it would have sent nothing and the setting would be gone.
     assert len(device.sent) == 2, device.sent
+
+
+# The same answer with the phantom cut off: a write this firmware happens to
+# answer readably. Derived from the bytes above rather than written out again,
+# so there is one copy of @defre92's measurement and this cannot drift from it.
+OK_ALONE = OK_THEN_PHANTOM[: -len(_PHANTOM_400)]
+
+
+def _holds_the_transaction_open(device, reached, release):
+    """`device.get_config`, announcing its first read and waiting to be let go.
+
+    `_widens_the_window` pauses for a fixed time, which is enough to let another
+    write slip in but not enough to prove one was held out: a write that was
+    merely slow would pass it. This one holds the transaction open until the
+    test says so, so "the other write had every chance and did not reach the
+    device" is a statement about the lock rather than about timing.
+    """
+    real = device.get_config
+
+    async def get_config(name, *, allow_missing=False, as_table=False):
+        answer = await real(name, allow_missing=allow_missing, as_table=as_table)
+        if not reached.is_set():
+            reached.set()
+            await release.wait()
+        return answer
+
+    return get_config
+
+
+async def _readable_write_waits_for(server, second_username="u"):
+    """The mixed-transport interleaving @rroller reproduced on #1191.
+
+    One caller writes `Enable`, cannot read the answer and opens a whole-table
+    transaction. The other writes `Sensitivity` and IS answered readably, so it
+    never enters the fallback and, before this, never took the lock: it landed
+    inside the window and the put-back sent the older copy over it. Both callers
+    were told OK and the second setting was gone.
+
+    Returns what both tests assert on, so one drive serves one client and two.
+    """
+    device = _Rpc2Device()
+    reached = asyncio.Event()
+    release = asyncio.Event()
+    read_by_the_second = []
+
+    async with aiohttp.ClientSession() as session:
+        putting_back = DahuaClient("u", "p", "127.0.0.1", server.port, 554, session)
+        putting_back._rpc2_get_config = _holds_the_transaction_open(
+            device, reached, release
+        )
+        putting_back._rpc2_set_config_tables = device.set_config_tables
+
+        second = DahuaClient(
+            second_username, "p", "127.0.0.1", server.port, 554, session
+        )
+
+        async def reads_for_the_second(name, *, allow_missing=False, as_table=False):
+            """The second caller's own reads, so they can be told from the first's.
+
+            Both callers share one device double, so counting on it cannot say
+            who read. What this test needs to know is that the readable write
+            never entered the fallback at all, and the fallback's first act is
+            a read.
+            """
+            read_by_the_second.append(name)
+            return await device.get_config(
+                name, allow_missing=allow_missing, as_table=as_table
+            )
+
+        second._rpc2_get_config = reads_for_the_second
+        second._rpc2_set_config_tables = device.set_config_tables
+
+        first = asyncio.ensure_future(putting_back.get(ENABLE_ALONE, True))
+        await reached.wait()
+
+        # The transaction is open and the table has been read. The second write
+        # starts here, and must not reach the device until the first is done.
+        readable = asyncio.ensure_future(second.get(SENSITIVITY_ALONE, True))
+        await asyncio.sleep(0.05)
+        held_out = not readable.done() and len(server.requests) == 1
+
+        release.set()
+        answers = await asyncio.gather(first, readable)
+
+    # The device carrying out the readable write it has now been sent. Applied
+    # here rather than before the call because the lock is what decides when the
+    # request leaves, and assuming it left earlier would model the bug rather
+    # than the device.
+    _assign(device.tables["MotionDetect"], "MotionDetect[0].Sensitivity", 9)
+    return answers, device, held_out, read_by_the_second
+
+
+async def test_a_readable_cgi_write_waits_for_the_transaction_it_would_revert(
+    socket_enabled,
+):
+    """The half of #1191's finding that the fallback's own lock could not reach.
+
+    A CGI write whose answer is readable never enters `_rpc2_fallback_write`, so
+    a lock taken in there protected the write that could not be read and left
+    the one that could unprotected. Both callers were answered OK and
+    `Sensitivity` went back to 3.
+
+    Asserted on the device's own table rather than on either caller's readback,
+    because each caller's readback was satisfied in the losing version too.
+    """
+    async with _serving(OK_THEN_PHANTOM, OK_ALONE) as server:
+        answers, device, held_out, read_by_the_second = await _readable_write_waits_for(
+            server
+        )
+
+    assert held_out, "the readable write reached the device inside the transaction"
+    assert all("OK" in answer for answer in answers), answers
+    assert device.holds("MotionDetect[0].Enable") == "true"
+    assert device.holds("MotionDetect[0].Sensitivity") == "9"
+    # Answered readably, so it had no reason to enter the fallback, whose first
+    # act is a read. The two reads on the double are the transaction's own
+    # snapshot and its read-back.
+    assert read_by_the_second == [], read_by_the_second
+    assert device.reads == ["MotionDetect", "MotionDetect"], device.reads
+
+
+async def test_the_transaction_holds_against_a_second_entry_on_the_device(
+    socket_enabled,
+):
+    """Across clients and entries, which is what @rroller asked for in so many words.
+
+    The lock is looked up per device rather than held on the client, so two
+    entries configured with different accounts on one camera take the same one.
+    A lock that lived on the instance would pass every test above and none of
+    this one.
+    """
+    async with _serving(OK_THEN_PHANTOM, OK_ALONE) as server:
+        answers, device, held_out, _ = await _readable_write_waits_for(
+            server, second_username="installer"
+        )
+
+    assert held_out, "a second entry's write reached the device inside the transaction"
+    assert all("OK" in answer for answer in answers), answers
+    assert device.holds("MotionDetect[0].Enable") == "true"
+    assert device.holds("MotionDetect[0].Sensitivity") == "9"
