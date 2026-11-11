@@ -8,6 +8,7 @@ import pytest
 
 from custom_components import dahua as dahua_module
 from custom_components.dahua import client as client_module
+from custom_components.dahua import host as host_module
 from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.rpc2 import Rpc2MethodRefused
 
@@ -44,7 +45,7 @@ async def test_same_host_multiple_coordinators_share_one_uptime_read():
     second = _coordinator("10.0.0.1", 500)
 
     with patch.object(
-        dahua_module.time,
+        host_module.time,
         "monotonic",
         side_effect=[100.0, 100.0, 100.1],
     ):
@@ -63,7 +64,7 @@ async def test_different_hosts_do_not_share_uptime_samples():
     second = _coordinator("10.0.0.2", 700)
 
     with patch.object(
-        dahua_module.time,
+        host_module.time,
         "monotonic",
         side_effect=[
             100.0,
@@ -91,7 +92,7 @@ async def test_uptime_rollback_increments_reboot_generation():
     )
 
     with patch.object(
-        dahua_module.time,
+        host_module.time,
         "monotonic",
         side_effect=[
             100.0,
@@ -119,7 +120,7 @@ async def test_normal_uptime_increase_does_not_increment_generation():
     )
 
     with patch.object(
-        dahua_module.time,
+        host_module.time,
         "monotonic",
         side_effect=[
             100.0,
@@ -142,7 +143,7 @@ async def test_failed_uptime_read_is_deduped_for_same_poll_burst():
     )
 
     with patch.object(
-        dahua_module.time,
+        host_module.time,
         "monotonic",
         side_effect=[
             100.0,
@@ -425,7 +426,7 @@ async def test_a_device_that_refuses_the_method_is_not_asked_again():
     )
 
     with patch.object(
-        dahua_module.time,
+        host_module.time,
         "monotonic",
         side_effect=[100.0, 100.0, 1000.0, 1000.0, 2000.0, 2000.0],
     ):
@@ -448,7 +449,7 @@ async def test_a_timeout_does_not_decide_the_device_cannot_do_it():
     coordinator.client.async_get_uptime_last = AsyncMock(side_effect=TimeoutError())
 
     with patch.object(
-        dahua_module.time,
+        host_module.time,
         "monotonic",
         side_effect=[100.0, 100.0, 1000.0, 1000.0],
     ):
@@ -466,7 +467,7 @@ async def test_an_expired_session_does_not_decide_it_either():
     coordinator.client.async_get_uptime_last = AsyncMock(side_effect=SESSION_EXPIRED)
 
     with patch.object(
-        dahua_module.time,
+        host_module.time,
         "monotonic",
         side_effect=[100.0, 100.0, 1000.0, 1000.0],
     ):
@@ -482,7 +483,7 @@ async def test_a_host_that_answers_is_not_latched():
     coordinator = _coordinator("10.0.0.1", [500, 506])
 
     with patch.object(
-        dahua_module.time,
+        host_module.time,
         "monotonic",
         side_effect=[100.0, 100.0, 1000.0, 1000.0],
     ):

@@ -1,7 +1,5 @@
 """Time entities for Dahua Profile Schedule."""
 
-import sys
-import time as standard_library_time
 from datetime import time
 
 from homeassistant.components.time import TimeEntity
@@ -123,11 +121,3 @@ class DahuaProfileNightStartTime(DahuaProfileScheduleTime):
 
     _attr_translation_key = "profile_night_start"
     _endpoint = "night_start"
-
-
-# This package has historically exposed the Python stdlib `time` module as
-# `custom_components.dahua.time`; uptime/reboot detection tests and callers use
-# that public package attribute. Loading Home Assistant's `time` platform would
-# otherwise replace it with this submodule. Keep the historical package-level
-# contract while this platform remains importable through sys.modules.
-sys.modules[__package__].time = standard_library_time
