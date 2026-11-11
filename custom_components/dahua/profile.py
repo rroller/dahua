@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass
+from datetime import time as datetime_time
 from typing import Any
 
 PROFILE_MANAGEMENT_VALUES_BY_OPTION: dict[str, tuple[int, tuple[int, ...]]] = {
@@ -103,3 +106,166 @@ def resolve_profile_management_table(table: Sequence[Any], channel: int) -> str 
     if any(value is None for value in values):
         return None
     return PROFILE_MANAGEMENT_OPTION_BY_VALUES.get((mode, values))
+
+
+@dataclass(frozen=True)
+class ProfileScheduleTimes:
+    """Camera-reported start times for the Day and Night profile periods."""
+
+    day_start: datetime_time
+    night_start: datetime_time
+
+
+_PROFILE_SCHEDULE_INTERVAL = re.compile(
+    r"^(?P<prefix>\d+)\s+"
+    r"(?P<day_start>\d{2}:\d{2}:\d{2})-"
+    r"(?P<night_start>\d{2}:\d{2}:\d{2})$"
+)
+_PROFILE_SCHEDULE_FLAT_KEY = re.compile(
+    r"^table\.VideoInMode\[(?P<channel>\d+)\]\."
+    r"TimeSection\[(?P<row>\d+)\]\[(?P<section>\d+)\]$"
+)
+
+
+def _parse_profile_schedule_time(
+    value: str,
+) -> datetime_time | None:
+    """Parse a camera time without accepting next-day normalization."""
+    components = value.split(":")
+
+    if len(components) != 3:
+        return None
+
+    try:
+        hour, minute, second = (int(component) for component in components)
+    except ValueError:
+        return None
+
+    if not 0 <= hour <= 23:
+        return None
+    if not 0 <= minute <= 59:
+        return None
+    if not 0 <= second <= 59:
+        return None
+
+    return datetime_time(hour, minute, second)
+
+
+def parse_profile_schedule_interval(
+    value: Any,
+) -> ProfileScheduleTimes | None:
+    """Parse one enabled Schedule interval without guessing its shape."""
+    if not isinstance(value, str):
+        return None
+
+    match = _PROFILE_SCHEDULE_INTERVAL.fullmatch(value.strip())
+
+    if match is None or match.group("prefix") != "1":
+        return None
+
+    day_start = _parse_profile_schedule_time(match.group("day_start"))
+    night_start = _parse_profile_schedule_time(match.group("night_start"))
+
+    if day_start is None or night_start is None:
+        return None
+
+    return ProfileScheduleTimes(
+        day_start=day_start,
+        night_start=night_start,
+    )
+
+
+def _single_profile_schedule_interval(
+    intervals: Sequence[tuple[tuple[int, int], Any]],
+) -> tuple[tuple[int, int], ProfileScheduleTimes] | None:
+    """Return the sole enabled, parseable Schedule interval or fail closed."""
+    parsed_intervals = [
+        (location, schedule_times)
+        for location, value in intervals
+        if (schedule_times := parse_profile_schedule_interval(value)) is not None
+    ]
+    return parsed_intervals[0] if len(parsed_intervals) == 1 else None
+
+
+def resolve_profile_schedule_times(
+    data: Mapping[str, Any], channel: int
+) -> ProfileScheduleTimes | None:
+    """Resolve Schedule times from flattened VideoInMode for the exact channel."""
+    channel_intervals = []
+    for key, value in data.items():
+        match = _PROFILE_SCHEDULE_FLAT_KEY.fullmatch(key)
+        if match is None or int(match.group("channel")) != channel:
+            continue
+        channel_intervals.append(
+            ((int(match.group("row")), int(match.group("section"))), value)
+        )
+    resolved_interval = _single_profile_schedule_interval(channel_intervals)
+    return resolved_interval[1] if resolved_interval is not None else None
+
+
+def _profile_schedule_intervals_from_table(
+    table: Sequence[Any], channel: int
+) -> list[tuple[tuple[int, int], Any]] | None:
+    """Return every TimeSection entry owned by one structured channel row."""
+    if channel < 0 or channel >= len(table) or not isinstance(table[channel], Mapping):
+        return None
+    time_sections = table[channel].get("TimeSection")
+    if not isinstance(time_sections, Sequence) or isinstance(
+        time_sections, (str, bytes)
+    ):
+        return None
+    channel_intervals = []
+    for row_index, row in enumerate(time_sections):
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes)):
+            return None
+        channel_intervals.extend(
+            ((row_index, section_index), value)
+            for section_index, value in enumerate(row)
+        )
+    return channel_intervals
+
+
+def resolve_profile_schedule_table(
+    table: Sequence[Any], channel: int
+) -> ProfileScheduleTimes | None:
+    """Resolve Schedule times from a structured RPC2 VideoInMode table."""
+    channel_intervals = _profile_schedule_intervals_from_table(table, channel)
+    if channel_intervals is None:
+        return None
+    resolved_interval = _single_profile_schedule_interval(channel_intervals)
+    return resolved_interval[1] if resolved_interval is not None else None
+
+
+def profile_schedule_table_with_times(
+    table: Sequence[Any],
+    channel: int,
+    day_start: datetime_time,
+    night_start: datetime_time,
+) -> list[Any]:
+    """Copy VideoInMode and replace only one channel's Schedule endpoints."""
+    for value_name, schedule_time in (
+        ("day_start", day_start),
+        ("night_start", night_start),
+    ):
+        if not isinstance(schedule_time, datetime_time):
+            raise TypeError(f"{value_name} must be a datetime.time")
+        if schedule_time.second or schedule_time.microsecond:
+            raise ValueError(f"{value_name} must use whole-minute precision")
+    channel_intervals = _profile_schedule_intervals_from_table(table, channel)
+    if channel_intervals is None:
+        raise ConnectionError(
+            f"VideoInMode has no Schedule table for channel {channel}"
+        )
+    resolved_interval = _single_profile_schedule_interval(channel_intervals)
+    if resolved_interval is None:
+        raise ConnectionError(
+            f"VideoInMode channel {channel} has no unambiguous Schedule interval"
+        )
+    (row_index, section_index), _schedule_times = resolved_interval
+    original_interval = dict(channel_intervals)[(row_index, section_index)]
+    match = _PROFILE_SCHEDULE_INTERVAL.fullmatch(original_interval.strip())
+    updated_table = deepcopy(list(table))
+    updated_table[channel]["TimeSection"][row_index][
+        section_index
+    ] = f"{match.group('prefix')} {day_start:%H:%M:%S}-{night_start:%H:%M:%S}"
+    return updated_table

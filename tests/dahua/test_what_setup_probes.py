@@ -514,3 +514,29 @@ async def test_a_coaxial_status_nothing_reads_is_not_asked_at_setup(hass):
     assert coordinator.initialized is True
     assert "async_get_coaxial_control_io_status" not in coordinator.client.asked
     assert coordinator._supports_coaxial_control is False
+
+
+async def test_profile_schedule_is_learned_from_existing_video_in_mode_probe(hass):
+    coordinator = _coordinator(hass)
+    coordinator.client.SHAPED["async_get_video_in_mode"] = {
+        "table.VideoInMode[0].Config[0]": "0",
+        "table.VideoInMode[0].Config[1]": "1",
+        "table.VideoInMode[0].Mode": "1",
+        "table.VideoInMode[0].TimeSection[0][0]": "1 08:23:00-17:47:00",
+    }
+    await coordinator._async_probe_exposure_anti_flicker()
+    assert coordinator.supports_profile_schedule() is True
+    assert coordinator.client.asked.count("async_get_video_in_mode") == 1
+
+
+async def test_unknown_schedule_shape_does_not_disable_profile_management(hass):
+    coordinator = _coordinator(hass)
+    coordinator.client.SHAPED["async_get_video_in_mode"] = {
+        "table.VideoInMode[0].Config[0]": "0",
+        "table.VideoInMode[0].Config[1]": "1",
+        "table.VideoInMode[0].Mode": "1",
+        "table.VideoInMode[0].TimeSection[0][0]": "7 08:23:00-17:47:00",
+    }
+    await coordinator._async_probe_exposure_anti_flicker()
+    assert coordinator.supports_profile_management() is True
+    assert coordinator.supports_profile_schedule() is False

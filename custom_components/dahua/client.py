@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime
+from datetime import time as datetime_time
 import logging
 import re
 import socket
@@ -37,8 +38,11 @@ from .digest import DigestAuth
 from .ivs import ivs_rule_index
 from .profile import (
     PROFILE_MANAGEMENT_VALUES_BY_OPTION,
+    ProfileScheduleTimes,
     profile_management_table_with_option,
+    profile_schedule_table_with_times,
     resolve_profile_management_table,
+    resolve_profile_schedule_table,
 )
 from .rpc2 import RPC2_LOGIN_METHOD, DahuaRpc2Client, Rpc2MethodRefused
 
@@ -4775,6 +4779,58 @@ class DahuaClient:
             await asyncio.sleep(duration)
         finally:
             await self.get(base.format("stop", channel, code, arg1, speed))
+
+    async def async_set_profile_schedule_times(
+        self, channel: int, day_start: datetime_time, night_start: datetime_time
+    ) -> ProfileScheduleTimes:
+        """Set Profile Schedule times while preserving the complete VideoInMode table."""
+        lock = _HOST_VIDEO_IN_MODE_LOCKS.setdefault(self._device, asyncio.Lock())
+        async with lock:
+
+            async def read_modify_write(client):
+                response = await client.get_config({"name": "VideoInMode"})
+                table = response.get("table")
+                if table is None:
+                    table = (response.get("params") or {}).get("table")
+                if not isinstance(table, list):
+                    raise ConnectionError("VideoInMode did not return a table")
+                if (
+                    channel < 0
+                    or channel >= len(table)
+                    or not isinstance(table[channel], dict)
+                ):
+                    raise ConnectionError(
+                        f"VideoInMode has no configuration row for channel {channel}"
+                    )
+                if resolve_profile_management_table(table, channel) != "schedule":
+                    raise RuntimeError("Profile Management is not in Schedule mode")
+                wanted = profile_schedule_table_with_times(
+                    table, channel, day_start, night_start
+                )
+                await client.set_config("VideoInMode", wanted, channel=channel)
+                readback = await client.get_config({"name": "VideoInMode"})
+                back = readback.get("table")
+                if back is None:
+                    back = (readback.get("params") or {}).get("table")
+                actual = (
+                    resolve_profile_schedule_table(back, channel)
+                    if isinstance(back, list)
+                    else None
+                )
+                if (
+                    actual is None
+                    or actual.day_start != day_start
+                    or actual.night_start != night_start
+                ):
+                    raise RuntimeError(
+                        "The camera did not apply the requested Profile Schedule"
+                    )
+                return actual
+
+            clear_host_cache(self._device)
+            result = await self._rpc2_shared_call(read_modify_write)
+            clear_host_cache(self._device)
+            return result
 
     async def async_set_profile_management(self, channel: int, option: str) -> str:
         """Set Profile Management by preserving the camera's VideoInMode table."""

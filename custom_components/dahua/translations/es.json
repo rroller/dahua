@@ -140,6 +140,7 @@
                             "select": "Selector habilitado",
                             "sensor": "Sensor habilitado",
                             "switch": "Interruptor habilitado",
+                            "time": "Hora habilitada",
                             "update": "Actualización habilitada"
                         }
                     }
@@ -148,6 +149,14 @@
         }
     },
     "entity": {
+        "time": {
+            "profile_day_start": {
+                "name": "Inicio del perfil de día"
+            },
+            "profile_night_start": {
+                "name": "Inicio del perfil de noche"
+            }
+        },
         "binary_sensor": {
             "alarm_local": {
                 "name": "Alarma Local"
@@ -507,6 +516,15 @@
         }
     },
     "exceptions": {
+        "profile_schedule_requires_schedule_mode": {
+            "message": "Requiere el modo Programado"
+        },
+        "profile_schedule_unavailable": {
+            "message": "La cámara no informó un horario de perfiles utilizable."
+        },
+        "profile_schedule_write_failed": {
+            "message": "No se pudo cambiar el horario de perfiles: {reason}"
+        },
         "profile_management_write_failed": {
             "message": "No se pudo cambiar la administración de perfil: {reason}"
         },

@@ -142,6 +142,7 @@
                             "select": "Select enabled",
                             "sensor": "Sensor enabled",
                             "switch": "Switch enabled",
+                            "time": "Time enabled",
                             "update": "Update enabled"
                         }
                     }
@@ -150,6 +151,14 @@
         }
     },
     "entity": {
+        "time": {
+            "profile_day_start": {
+                "name": "Profile day start"
+            },
+            "profile_night_start": {
+                "name": "Profile night start"
+            }
+        },
         "binary_sensor": {
             "alarm_local": {
                 "name": "Alarm Local"
@@ -527,6 +536,15 @@
         }
     },
     "exceptions": {
+        "profile_schedule_requires_schedule_mode": {
+            "message": "Requires Schedule mode"
+        },
+        "profile_schedule_unavailable": {
+            "message": "The camera did not report a usable Profile Schedule."
+        },
+        "profile_schedule_write_failed": {
+            "message": "Could not change Profile Schedule: {reason}"
+        },
         "image_rotation_unsupported": {
             "message": "Image rotation cannot be changed because Rotate90 is unsupported or unknown."
         },
