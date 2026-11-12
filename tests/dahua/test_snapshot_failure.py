@@ -257,29 +257,54 @@ async def test_get_bytes_records_that_the_request_reached_the_device():
     assert REQUEST_REACHED_DEVICE.get() is True
 
 
-async def test_a_request_still_in_the_queue_has_not_reached_the_device():
-    """The neighbouring case, and the one #1197 is about. With both slots held,
-    a third request is cancelled before it is ever sent, and must not claim the
-    device was asked."""
-    REQUEST_REACHED_DEVICE.set(False)
+async def test_a_queued_still_is_reported_as_never_sent(caplog):
+    """End to end, and in this task on purpose.
+
+    An earlier version of this test started the camera call with
+    `ensure_future`. A task runs in a COPY of the context, so the flag the
+    request set never reached the assertion, which then read the value the
+    test itself had set and could not fail. Measured: moving
+    `REQUEST_REACHED_DEVICE.set(True)` above the slot in `get_bytes` left all
+    15 tests green.
+
+    So the call under test runs in the test's own task, which is also what
+    Home Assistant does, and the assertion is the log line rather than the
+    flag.
+    """
     session = _SlowSession(hold=3600)
     client = DahuaClient("u", "p", "10.90.0.2", 80, 554, session)
+    cam = _camera(client.async_get_snapshot)
 
     holders = [
-        asyncio.ensure_future(client.get_bytes("/cgi-bin/snapshot.cgi?channel=1"))
+        asyncio.ensure_future(client.get_bytes("/cgi-bin/snapshot.cgi?channel=9"))
         for _ in range(MAX_CONCURRENT_REQUESTS_PER_HOST)
     ]
     await asyncio.sleep(0.05)
     assert session.calls == MAX_CONCURRENT_REQUESTS_PER_HOST, "the slots are not held"
 
-    queued = asyncio.ensure_future(client.get_bytes("/cgi-bin/snapshot.cgi?channel=2"))
-    await asyncio.sleep(0.05)
-    assert not queued.done(), "the third request was not queued"
-    assert session.calls == MAX_CONCURRENT_REQUESTS_PER_HOST, "it was sent anyway"
+    caplog.set_level(logging.DEBUG, logger="custom_components.dahua")
+    await _cancel_after(cam)
 
-    queued.cancel()
+    assert session.calls == MAX_CONCURRENT_REQUESTS_PER_HOST, "it was sent anyway"
+    assert "without ever being sent" in caplog.text
+    assert "reached the device" not in caplog.text
+
     for task in holders:
         task.cancel()
-    await asyncio.gather(queued, *holders, return_exceptions=True)
+    await asyncio.gather(*holders, return_exceptions=True)
 
-    assert REQUEST_REACHED_DEVICE.get() is False
+
+async def test_a_still_that_got_a_slot_is_reported_against_the_device(caplog):
+    """The other half of the same pair, through the same real client. With the
+    slots free the request is sent and then stalls, so the flag must be set and
+    the message must name the device."""
+    session = _SlowSession(hold=3600)
+    client = DahuaClient("u", "p", "10.90.0.3", 80, 554, session)
+    cam = _camera(client.async_get_snapshot)
+
+    caplog.set_level(logging.DEBUG, logger="custom_components.dahua")
+    await _cancel_after(cam)
+
+    assert session.calls == 1, "the request never reached the session"
+    assert "had reached the device and the device had not answered" in caplog.text
+    assert "without ever being sent" not in caplog.text
