@@ -553,9 +553,13 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         if option not in self._attr_options:
             return
-        await self._coordinator.client.async_set_video_in_day_night_mode(
+        # The table the write landed in is the one to read back, and a
+        # device can serve VideoInDayNight and still refuse the write to
+        # it (#1194).
+        table = await self._coordinator.client.async_set_video_in_day_night_mode(
             self._coordinator.get_channel(), "general", option
         )
+        self._coordinator.note_day_night_write_table(table)
         await self._coordinator.async_refresh()
 
 

@@ -41,6 +41,8 @@ from .audio import (
     audio_table_prefix,
 )
 from .client import (
+    VIDEO_IN_DAY_NIGHT,
+    VIDEO_IN_OPTIONS,
     VTH_PHONE_TABLE,
     DahuaClient,
     _describe_client_error,
@@ -486,6 +488,42 @@ def day_night_color_name(data: dict, channel: int):
     if value is None:
         return None
     return DAY_NIGHT_NAMES.get(str(value).strip())
+
+
+# VideoInDayNight[channel][2].Mode, as that table spells the same setting.
+# `Brightness` is what the device calls the automatic mode, and it is the word
+# `async_set_video_in_day_night_mode` writes for `Auto`.
+DAY_NIGHT_MODE_NAMES = {
+    "brightness": "Auto",
+    "color": "Color",
+    "blackwhite": "BlackWhite",
+}
+
+# Row 2 of VideoInDayNight[channel], and only row 2.
+#
+# The table has a row per condition and the write targets row 2, which
+# @jpeu77's SD1A404DB-GNY names `Normal` (#1194). Measured there: switching the
+# select moved `[0][2].Mode` from Color to BlackWhite and the picture followed,
+# while rows 0, 1 and 3 to 8 stayed on `Brightness` throughout. Reading any
+# other row would therefore report `Auto` on a camera showing black and white,
+# which is the bug this is fixing with a different row number.
+DAY_NIGHT_GENERAL_ROW = 2
+
+
+def day_night_mode_name(data: dict, channel: int):
+    """This channel's Day/Night mode as VideoInDayNight holds it, or None.
+
+    None for a word this mapping does not cover, exactly as
+    `day_night_color_name` does for a value outside 0/1/2. A device naming a
+    mode we do not model is saying something, and showing `Auto` for it would
+    be inventing an answer.
+    """
+    value = data.get(
+        "table.VideoInDayNight[{0}][{1}].Mode".format(channel, DAY_NIGHT_GENERAL_ROW)
+    )
+    if value is None:
+        return None
+    return DAY_NIGHT_MODE_NAMES.get(str(value).strip().lower())
 
 
 def resolve_profile_mode(data: dict, channel: int):
@@ -1375,6 +1413,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # the select/switch platforms read them.
     _image_option_fields: frozenset = frozenset()
     _video_widget_fields: frozenset = frozenset()
+    # Which table this channel's Day/Night select reads. The doubles in the
+    # tests are built with object.__new__, so this needs a class default.
+    _reads_video_in_day_night: bool = False
 
     # Whether the device never answered what kind of device it is, as opposed to
     # answering that it does not serve the question. On the class for the reason
@@ -1527,6 +1568,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_ptz_position = False
         self._supports_lighting = False
         self._supports_day_night_color = False
+        self._reads_video_in_day_night = False
         self._supports_exposure_anti_flicker = False
         self._supports_exposure_mode = False
         self._supports_exposure_compensation = False
@@ -2796,6 +2838,53 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         already = bool(self._video_image_control_fields)
         return await self._async_probe_video_image_control() and not already
 
+    async def _async_probe_video_in_day_night(self) -> bool:
+        """Ask whether this channel keeps its Day/Night mode in VideoInDayNight.
+
+        Judged on the row the write targets carrying a word this mapping
+        understands, not on the request succeeding. Plenty of devices do not
+        have the table at all -- a DHI-NVR5464-16P-EI answers 400, a VTO answers
+        "Unknown error" and the DHI-VTO2311R-WP on #687 answers 400 -- and
+        `async_get_config` turns every one of those into `{}`, which reads as no.
+        Those devices keep the VideoInOptions behaviour unchanged.
+
+        Only asked where the select exists at all, which is still gated on
+        VideoInOptions.DayNightColor, so no entity appears or disappears here.
+        """
+        table = await self.client.async_get_config(VIDEO_IN_DAY_NIGHT)
+        self._reads_video_in_day_night = (
+            day_night_mode_name(table, self._channel) is not None
+        )
+        _LOGGER.debug(
+            "Channel %s reads its Day/Night mode from %s",
+            self._channel,
+            VIDEO_IN_DAY_NIGHT if self._reads_video_in_day_night else VIDEO_IN_OPTIONS,
+        )
+        return self._reads_video_in_day_night
+
+    async def _async_fetch_video_in_day_night(self) -> dict | None:
+        """Poll the Day/Night table, keeping the last answer on a refusal.
+
+        The fan-out has no `return_exceptions`, so an unguarded read failing
+        here would take the whole refresh with it and, on the first one,
+        `setup_retry` with it.
+        """
+        try:
+            return await self.client.async_get_config(VIDEO_IN_DAY_NIGHT)
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the Day/Night table for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.VideoInDayNight[")
+            }
+            return carried or None
+
     async def _async_probe_video_widget(self) -> bool:
         """Ask which overlay visibility switches this channel reports.
 
@@ -3381,6 +3470,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # reads this table, so a device whose switches are turned off
                 # is never asked. The probe is shared with the retry a later
                 # poll makes when this one goes unanswered (#1057).
+                # Which table the Day/Night select should read back. Only
+                # where that select exists, so this costs nothing on a
+                # device without the VideoInOptions key that gates it.
+                if self._supports_day_night_color and self._wanted_by(SELECT):
+                    await self._async_probe_video_in_day_night()
+
                 if self._wanted_by(SWITCH):
                     await self._async_probe_video_widget()
 
@@ -3888,6 +3983,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # platform, and wrapped, for the same reasons as the two above.
             if self.reads_video_widget() and self._wanted_by(SWITCH):
                 coros.append(asyncio.ensure_future(self._async_fetch_video_widget()))
+            if self.reads_video_in_day_night() and self._wanted_by(SELECT):
+                coros.append(
+                    asyncio.ensure_future(self._async_fetch_video_in_day_night())
+                )
             # Lighting_V2 is the light platform's table -- except that the
             # Amcrest doorbell's "Security Light" is a *select*, and its
             # current_option reads table.Lighting_V2[0][0][1].Mode/.State. A
@@ -7131,8 +7230,39 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             and not self.is_indoor_monitor_without_video()
         )
 
+    def reads_video_in_day_night(self) -> bool:
+        """Whether this channel's Day/Night mode is read from VideoInDayNight.
+
+        Set only where that table answered with a row 2 this mapping
+        understands, which is the same condition under which the write lands
+        there. Read and write therefore name one table between them, which is
+        the whole of #1194: the write went to VideoInDayNight, the read came
+        from VideoInOptions, and the select reported `Auto` for ever on a
+        camera that was plainly in black and white.
+        """
+        return self._reads_video_in_day_night
+
+    def note_day_night_write_table(self, table) -> None:
+        """Follow the write if it landed somewhere else than expected.
+
+        The probe decides from what the table holds, and a device can serve
+        VideoInDayNight and still refuse the write to it, which sends
+        `async_set_video_in_day_night_mode` to its VideoInOptions fallback.
+        Without this the select would then read the table the picture no
+        longer follows, which is #1194 again with the two tables swapped.
+        """
+        if table in (VIDEO_IN_DAY_NIGHT, VIDEO_IN_OPTIONS):
+            self._reads_video_in_day_night = table == VIDEO_IN_DAY_NIGHT
+
     def get_day_night_color(self):
-        """This channel's Day/Night mode by name, or None."""
+        """This channel's Day/Night mode by name, or None.
+
+        From whichever table the write goes to. Deliberately no fall back to
+        VideoInOptions when VideoInDayNight is the live one and its value is
+        unrecognised: that stale `1` is exactly what #1194 was reading.
+        """
+        if self._reads_video_in_day_night:
+            return day_night_mode_name(self.data, self._channel)
         return day_night_color_name(self.data, self._channel)
 
     def get_infrared_mode(self) -> str:

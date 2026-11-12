@@ -1552,6 +1552,14 @@ SECURITY_LIGHT_TYPE = 1
 # setting. Verified present on a DHI-NVR5464-16P-EI, a VTO, and the
 # DHI-VTO2311R-WP on #687, none of which carry VideoInDayNight at all.
 DAY_NIGHT_COLOR = {"Color": 0, "Brightness": 1, "BlackWhite": 2}
+
+# The two tables a Day/Night write can land in, named so the caller can read
+# back the one that moved. `async_set_video_in_day_night_mode` prefers the
+# first and falls back to the second, and a camera that carries both leaves
+# the loser untouched for ever (#1194).
+VIDEO_IN_DAY_NIGHT = "VideoInDayNight"
+VIDEO_IN_OPTIONS = "VideoInOptions"
+
 SIREN_TYPE = 2
 
 
@@ -5791,7 +5799,11 @@ class DahuaClient:
         try:
             value = await self.get(url)
             if "OK" in value or "ok" in value:
-                return
+                # Which table took the write, so the caller can read back the
+                # one that moved. A camera carrying both tables writes here and
+                # leaves VideoInOptions untouched, and reading the other one is
+                # #1194: the picture follows and the select says Auto for ever.
+                return VIDEO_IN_DAY_NIGHT
         except (aiohttp.ClientResponseError, DahuaWriteDeclined):
             # The same two shapes as the motion fallback above: a device may
             # refuse this table with a status, or answer 200 with `Error`,
@@ -5815,6 +5827,10 @@ class DahuaClient:
         value = await self.get(url)
         if "OK" not in value and "ok" not in value:
             raise Exception("Could not set Day/Night mode")
+        # The fallback took it, so this device's Day/Night lives here whatever
+        # the other table reports. A caller that had decided otherwise is told,
+        # rather than being left reading a table the write no longer goes to.
+        return VIDEO_IN_OPTIONS
 
     async def async_set_wide_dynamic_range(self, channel: int, mode: int, level: int):
         """Set the WDR mode and level together.
