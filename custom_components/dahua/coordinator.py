@@ -11,6 +11,7 @@ them.
 """
 
 from collections import deque
+from datetime import time as datetime_time
 from datetime import timedelta
 from enum import Enum
 from typing import Any, Dict
@@ -51,7 +52,9 @@ from .client import (
 from .late import async_notify_capability_discovered, async_notify_late_work_settled
 from .profile import (
     PROFILE_MANAGEMENT_VALUES_BY_OPTION,
+    ProfileScheduleTimes,
     resolve_profile_management_mode,
+    resolve_profile_schedule_times,
 )
 from .rpc2 import Rpc2MethodRefused
 from .const import (
@@ -83,6 +86,7 @@ from .const import (
     SENSOR,
     SWITCH,
     UPDATE,
+    TIME,
     EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE,
     EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION,
     EXPOSURE_COMPENSATION_MAX,
@@ -1528,6 +1532,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_exposure_compensation = False
         self._supports_profile_management = False
         self._profile_management_mode: str | None = None
+        self._profile_schedule_times = None
         self._video_color_fields: frozenset = frozenset()
         self._video_image_control_fields: frozenset = frozenset()
         self._video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
@@ -2536,11 +2541,36 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_profile_management = option is not None
         return self.supports_profile_management() and not already
 
+    def _observe_profile_schedule(self, mode_data: dict) -> bool:
+        """Learn Schedule times from a VideoInMode read already in hand."""
+        already = self.supports_profile_schedule()
+        self._profile_schedule_times = resolve_profile_schedule_times(
+            mode_data, self._channel
+        )
+        return self.supports_profile_schedule() and not already
+
+    async def _async_probe_profile_schedule(self) -> bool:
+        """Read Schedule when no enabled exposure platform supplies the table."""
+        try:
+            mode_data = await self.client.async_get_video_in_mode()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("profile_schedule", probe_error)
+            return False
+        self._note_probe_answered("profile_schedule")
+        self._observe_profile_management(mode_data)
+        self._observe_profile_schedule(mode_data)
+        return self.supports_profile_schedule()
+
+    async def _async_retry_profile_schedule(self) -> bool:
+        already = self.supports_profile_schedule()
+        return await self._async_probe_profile_schedule() and not already
+
     async def _async_probe_exposure_anti_flicker(self) -> bool:
         """Check this channel's current profile and its AntiFlicker property."""
         try:
             mode_data = await self.client.async_get_video_in_mode()
             self._observe_profile_management(mode_data)
+            self._observe_profile_schedule(mode_data)
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("exposure_anti_flicker", probe_error)
             self._supports_exposure_anti_flicker = False
@@ -2569,9 +2599,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_retry_exposure_anti_flicker(self) -> bool:
         already = self.supports_exposure_anti_flicker()
         had_management = self.supports_profile_management()
+        had_schedule = self.supports_profile_schedule()
         answered = await self._async_probe_exposure_anti_flicker()
-        return (answered and not already) or (
-            self.supports_profile_management() and not had_management
+        return (
+            (answered and not already)
+            or (self.supports_profile_management() and not had_management)
+            or (self.supports_profile_schedule() and not had_schedule)
         )
 
     async def _async_probe_exposure_mode(self) -> bool:
@@ -2579,6 +2612,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             mode_data = await self.client.async_get_video_in_mode()
             self._observe_profile_management(mode_data)
+            self._observe_profile_schedule(mode_data)
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("exposure_mode", probe_error)
             self._supports_exposure_mode = False
@@ -2607,9 +2641,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_retry_exposure_mode(self) -> bool:
         already = bool(getattr(self, "_supports_exposure_mode", False))
         had_management = self.supports_profile_management()
+        had_schedule = self.supports_profile_schedule()
         answered = await self._async_probe_exposure_mode()
-        return (answered and not already) or (
-            self.supports_profile_management() and not had_management
+        return (
+            (answered and not already)
+            or (self.supports_profile_management() and not had_management)
+            or (self.supports_profile_schedule() and not had_schedule)
         )
 
     async def _async_probe_exposure_compensation(self) -> bool:
@@ -2617,6 +2654,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             mode_data = await self.client.async_get_video_in_mode()
             self._observe_profile_management(mode_data)
+            self._observe_profile_schedule(mode_data)
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("exposure_compensation", probe_error)
             self._supports_exposure_compensation = False
@@ -2645,9 +2683,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_retry_exposure_compensation(self) -> bool:
         already = self.supports_exposure_compensation()
         had_management = self.supports_profile_management()
+        had_schedule = self.supports_profile_schedule()
         answered = await self._async_probe_exposure_compensation()
-        return (answered and not already) or (
-            self.supports_profile_management() and not had_management
+        return (
+            (answered and not already)
+            or (self.supports_profile_management() and not had_management)
+            or (self.supports_profile_schedule() and not had_schedule)
         )
 
     async def _async_probe_audio_control(self, config_name: str) -> bool:
@@ -3326,6 +3367,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await self._async_probe_exposure_mode()
                 if self._wanted_by(NUMBER):
                     await self._async_probe_exposure_compensation()
+                if self._wanted_by(TIME) and not self._wanted_by(SELECT, NUMBER):
+                    await self._async_probe_profile_schedule()
 
                 # Each setting has its own table, owner, retry, and platform
                 # gate. An answer for one never implies another is available.
@@ -3627,6 +3670,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             if (
                 (self._supports_profile_mode and not self.is_doorbell())
                 or (self.supports_profile_management() and self._wanted_by(SELECT))
+                or (self.supports_profile_schedule() and self._wanted_by(TIME))
                 or (self.supports_exposure_anti_flicker() and self._wanted_by(SELECT))
                 or (self._supports_exposure_mode and self._wanted_by(SELECT))
                 or (self.supports_exposure_compensation() and self._wanted_by(NUMBER))
@@ -3635,7 +3679,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
                     self._profile_mode = self.read_profile_mode(mode_data)
-                    if self._observe_profile_management(mode_data):
+                    profile_capability_changed = self._observe_profile_management(
+                        mode_data
+                    )
+                    schedule_capability_changed = self._observe_profile_schedule(
+                        mode_data
+                    )
+                    if profile_capability_changed or schedule_capability_changed:
                         async_notify_capability_discovered(
                             self.hass,
                             self.config_entry.entry_id,
@@ -5641,6 +5691,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether this channel reported a supported Profile Management shape."""
         return bool(getattr(self, "_supports_profile_management", False))
 
+    def supports_profile_schedule(self) -> bool:
+        """Whether this channel reported one unambiguous Schedule interval."""
+        return getattr(self, "_profile_schedule_times", None) is not None
+
+    def get_profile_schedule_times(self) -> ProfileScheduleTimes | None:
+        """Return the last camera-reported Profile Schedule times."""
+        return getattr(self, "_profile_schedule_times", None)
+
     def get_profile_management_mode(self) -> str | None:
         """Return Normal, Full Time Day/Night or Schedule as reported."""
         return getattr(self, "_profile_management_mode", None)
@@ -5657,6 +5715,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 f"Profile Management requested {option!r} but read back {got!r}"
             )
         self._profile_management_mode = got
+
+    async def async_set_profile_schedule_times(
+        self,
+        day_start: datetime_time | None = None,
+        night_start: datetime_time | None = None,
+    ) -> None:
+        """Set and remember both Profile Schedule endpoints atomically."""
+        self._profile_schedule_times = (
+            await self.client.async_set_profile_schedule_times(
+                self._channel, day_start, night_start
+            )
+        )
 
     def supports_exposure_anti_flicker(self) -> bool:
         return bool(getattr(self, "_supports_exposure_anti_flicker", False))
@@ -8383,6 +8453,7 @@ RETRYABLE_CAPABILITIES = {
     "lighting": DahuaDataUpdateCoordinator._async_retry_lighting,
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
     "profile_mode": DahuaDataUpdateCoordinator._async_retry_profile_mode,
+    "profile_schedule": DahuaDataUpdateCoordinator._async_retry_profile_schedule,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
     # Spelled with a space because that is the name `_note_probe_refusal`
     # already records it under, and the registry is keyed by that name so a

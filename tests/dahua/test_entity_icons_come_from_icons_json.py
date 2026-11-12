@@ -32,6 +32,7 @@ PLATFORMS = (
     "select",
     "sensor",
     "switch",
+    "time",
     "update",
 )
 
@@ -43,6 +44,8 @@ WAS = {
     ("switch", "vth_silence"): "mdi:bell-off",
     ("select", "day_night_mode"): "mdi:theme-light-dark",
     ("select", "profile_management"): "mdi:theme-light-dark",
+    ("time", "profile_day_start"): "mdi:weather-sunset-up",
+    ("time", "profile_night_start"): "mdi:weather-sunset-down",
     ("select", "exposure_anti_flicker"): "mdi:flash",
     ("select", "lighting_scheme"): "mdi:lightbulb-auto",
     # New with the two VideoInOptions picture controls ported from the

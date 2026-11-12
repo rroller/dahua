@@ -1,5 +1,13 @@
 {
     "entity": {
+        "time": {
+            "profile_day_start": {
+                "default": "mdi:weather-sunset-up"
+            },
+            "profile_night_start": {
+                "default": "mdi:weather-sunset-down"
+            }
+        },
         "binary_sensor": {
             "audio_anomaly": {
                 "default": "mdi:volume-high"
