@@ -466,3 +466,21 @@ async def test_the_cloud_upgrade_record_is_read_once_and_reused():
     await c._async_update_data()
 
     assert c.client.calls.count(CLOUD_UPGRADE) == 1
+
+
+async def test_profile_schedule_reuses_video_in_mode_when_time_platform_reads_it():
+    coordinator = _coordinator(time=True)
+    coordinator._profile_schedule_times = object()
+
+    await coordinator._async_update_data()
+
+    assert coordinator.client.calls.count(VIDEO_IN_MODE) == 1
+
+
+async def test_profile_schedule_does_not_fetch_when_time_platform_is_off():
+    coordinator = _coordinator(time=False)
+    coordinator._profile_schedule_times = object()
+
+    await coordinator._async_update_data()
+
+    assert VIDEO_IN_MODE not in coordinator.client.calls
