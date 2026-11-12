@@ -208,7 +208,7 @@ All events reach the bus as `dahua_event_received`.
 | Client | Protocol | Used for |
 |--------|----------|----------|
 | `DahuaClient` | HTTP CGI + Digest | Almost everything: polling, control, snapshots, event stream |
-| `DahuaRpc2Client` | HTTP POST JSON-RPC | Config over one shared session, PTZ presets, privacy mask, recordings, open door, VTO call, and every read on a device whose CGI is absent or unreadable |
+| `DahuaRpc2Client` | HTTP POST JSON-RPC | Config over one shared session, PTZ presets, privacy mask, recordings, open door, VTO call, every read on a device whose CGI is absent or unreadable, and a config write whose CGI answer was unreadable |
 | `DahuaVTOClient` | DHIP TCP :5000 | Doorbell events, hang up a call |
 | `DhipSession` | DHIP TCP :5000 | One-shot ask during the add flow |
 | `discovery.async_probe` | UDP :37810 | Credential-free identity |
@@ -278,7 +278,9 @@ a device that does not answer leaves the numbering alone rather than guessing
   plausible answer for ever. This is why CONTRIBUTING insists tests assert the
   exact key or URL.
 - A whole-table `setConfig` over RPC2 is refused for size on at least one recorder
-  (`Request length error!`), so writes address one field.
+  (`Request length error!`), so writes address one field. Two places break that
+  rule deliberately, because on some firmware a one-field write *replaces* the
+  table: `async_set_video_talk_phone_field` and `_rpc2_fallback_write` below.
 - **An answer can be unreadable rather than wrong**, and the two look nothing alike
   once you know. One firmware appends a whole second HTTP response to every
   authenticated CGI reply (#1176, a DH-IPC-HDW2849TM-S-IL on 3.120). No HTTP parser
@@ -289,6 +291,41 @@ a device that does not answer leaves the numbering alone rather than guessing
   it. **It is raised from the request, not from `raise_for_status`**, so an `except`
   placed around the status check never sees it, which is how the config half of
   #1176 was first written as a no-op.
+- **A write whose answer cannot be read may already have happened.** The junk
+  arrives after a complete, correct 200, so `_rpc2_fallback_write` reads the table
+  before it writes anything and sends nothing at all when the value is already
+  there. When it does have to write, it changes the field in the table it just
+  read and sends **the whole table back**, which is the one place the one-field
+  rule above is inverted on purpose: a one-field `setConfig` edits in place on a
+  DHI-NVR5464 and a VTO2000A and *replaces* the table on a VTH5221D, answering
+  `result: true` either way, and which it does cannot be discovered without doing
+  it. Sending the table that was just read cannot lose a setting under either
+  semantics, and the cost is the size refusal, which loses nothing. It then reads
+  the table back and requires that every field asked for holds what was asked and
+  that nothing else moved; a host that drops a setting even from a complete table
+  goes into `_HOST_RPC2_WRITES_UNSAFE` and takes no further write over RPC2.
+  Anything the fallback cannot prove reports the original refusal, so it can never
+  make a refused write look like one that worked.
+- **Every RPC2 config write takes one turn per device.** A read-modify-write and a
+  whole-table put-back lose one of two concurrent changes: both read the table, the
+  second sends a copy taken before the first wrote, and each reads back the field
+  it asked for and is satisfied, so nothing notices. `MAX_CONCURRENT_REQUESTS_PER_HOST`
+  is 2, so two writes really are in flight at once. `_rpc2_config_write_lock(device)`
+  serialises them, and `_rpc2_fallback_write`, `_rpc2_set_config_value`,
+  `_rpc2_set_config_field` and the lighting paths through `_lighting_lock` all take
+  it. **Keyed by device, not by `_rpc2_key()`**: a username belongs to a session,
+  not to a config table, and two entries with different credentials write the same
+  rows. The fallback takes the lock inside `_inside_request_budget`, so a turn
+  that never comes is a `TimeoutError` the handlers catch rather than a
+  `CancelledError` nothing does.
+- **Nothing may hold that lock while waiting for a request slot**, because the
+  fallback is already inside a slot when it finds it needs the lock and cannot
+  give the slot back. Measured: with `_lighting_lock` taking the lock before the
+  slot, two fallback writes held both slots waiting for the lock while a lighting
+  writer held the lock waiting for a slot, and both writes timed out with the
+  device never written. So `_lighting_lock` takes the slot in the middle, between
+  its own lock and the config lock, and the four lighting call sites no longer
+  name `self._request_slot()` themselves.
 - The siren turns itself off after 10 to 15 seconds. That is the hardware.
 
 ## Custom Instructions

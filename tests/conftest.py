@@ -24,6 +24,7 @@ def _clear_shared_host_reads():
     client_module._HOST_REMOTE_IVS_LOCKS.clear()
     client_module._HOST_LIGHTING_SCHEME_LOCKS.clear()
     client_module._HOST_VIDEO_IN_MODE_LOCKS.clear()
+    client_module._HOST_RPC2_CONFIG_WRITE_LOCKS.clear()
     client_module._HOST_SPEAKER_LOCKS.clear()
     client_module._HOST_VTH_PHONE_LOCKS.clear()
     client_module._HOST_VTO_INFO_LOCKS.clear()
@@ -37,6 +38,7 @@ def _clear_shared_host_reads():
     client_module._HOST_REMOTE_IVS_LOCKS.clear()
     client_module._HOST_LIGHTING_SCHEME_LOCKS.clear()
     client_module._HOST_VIDEO_IN_MODE_LOCKS.clear()
+    client_module._HOST_RPC2_CONFIG_WRITE_LOCKS.clear()
     client_module._HOST_SPEAKER_LOCKS.clear()
     client_module._HOST_VTH_PHONE_LOCKS.clear()
     client_module._HOST_VTO_INFO_LOCKS.clear()
@@ -139,6 +141,9 @@ async def _clear_shared_rpc2():
         # refuse a table taught every later test the same thing, so a later read
         # of it skipped RPC2 for a reason that test never set up.
         client_module._RPC2_TABLE_UNAVAILABLE.clear()
+        # And which hosts have been seen to lose a table to an RPC2 field
+        # write, which the write fallback latches for the life of the process.
+        client_module._HOST_RPC2_WRITES_UNSAFE.clear()
         if cancelled:
             await asyncio.gather(*cancelled, return_exceptions=True)
 
