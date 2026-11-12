@@ -1,6 +1,7 @@
 """Dahua API Client."""
 
 import asyncio
+import contextvars
 import datetime
 from datetime import time as datetime_time
 import logging
@@ -170,6 +171,27 @@ _HOST_LIMITS: dict = {}
 # the end of `_async_refresh`), so a slow poll delays the next one rather than
 # stacking up behind it.
 MAX_QUEUE_WAIT_SECONDS = 3 * TIMEOUT_SECONDS
+
+
+# Whether a request got past the per-host queue before the caller gave up.
+#
+# Home Assistant allows a camera CAMERA_IMAGE_TIMEOUT, which is 10 seconds, and
+# then cancels. Our own budget is longer on both legs: MAX_QUEUE_WAIT_SECONDS
+# for a slot and then TIMEOUT_SECONDS for the device. So a still can be
+# abandoned either while it is still queued behind the cap of
+# MAX_CONCURRENT_REQUESTS_PER_HOST, or after it reached the device and the
+# device was slow. Those have opposite fixes and look identical from outside:
+# the cancellation arrives as a CancelledError, which is a BaseException, so
+# none of the usual handlers see it and nothing is logged at all (#1197).
+#
+# A ContextVar rather than an attribute on the client, because one client
+# serves every channel on a host and several requests are in flight at once;
+# an attribute would be written by whichever of them got a slot last. Context
+# follows the task, and each camera request is its own task, so the value a
+# caller reads is the one its own request set.
+REQUEST_REACHED_DEVICE = contextvars.ContextVar(
+    "dahua_request_reached_device", default=False
+)
 
 # A remote IVS write replaces a whole channel table. Entries for the same NVR
 # must serialize the fresh read and write together, even if they use different
@@ -7178,6 +7200,11 @@ class DahuaClient:
         # The slot is taken before the clock starts, so this timeout is the
         # device's and MAX_QUEUE_WAIT_SECONDS is the queue's.
         async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
+            # Past the queue. Recorded for the caller that gets cancelled
+            # before this returns: waiting for a slot and waiting for the
+            # device are different problems, and the two are
+            # indistinguishable from outside. See REQUEST_REACHED_DEVICE.
+            REQUEST_REACHED_DEVICE.set(True)
             response = None
             try:
                 auth = DigestAuth(
