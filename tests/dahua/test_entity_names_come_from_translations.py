@@ -63,7 +63,7 @@ WAS = {
     ("button", "cancel_call"): "Cancel Call",
     ("select", "security_light"): "Security Light",
     ("select", "preset_position"): "Preset Position",
-    ("select", "day_night_mode"): "Day/Night Mode",
+    ("select", "day_night_mode"): "Day & Night: Mode",
     ("select", "profile_management"): "Profile management",
     ("time", "profile_day_start"): "Profile day start",
     ("time", "profile_night_start"): "Profile night start",

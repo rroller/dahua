@@ -43,6 +43,8 @@ WAS = {
     ("binary_sensor", "authorized_vehicle"): "mdi:car-check",
     ("switch", "vth_silence"): "mdi:bell-off",
     ("select", "day_night_mode"): "mdi:theme-light-dark",
+    ("select", "day_night_sensitivity"): "mdi:theme-light-dark",
+    ("select", "day_night_switch_delay"): "mdi:timer-outline",
     ("select", "profile_management"): "mdi:theme-light-dark",
     ("time", "profile_day_start"): "mdi:weather-sunset-up",
     ("time", "profile_night_start"): "mdi:weather-sunset-down",

@@ -37,6 +37,12 @@
             "day_night_mode": {
                 "default": "mdi:theme-light-dark"
             },
+            "day_night_sensitivity": {
+                "default": "mdi:theme-light-dark"
+            },
+            "day_night_switch_delay": {
+                "default": "mdi:timer-outline"
+            },
             "exposure_anti_flicker": {
                 "default": "mdi:flash"
             },

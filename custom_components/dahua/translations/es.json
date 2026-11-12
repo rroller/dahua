@@ -391,7 +391,18 @@
                 "name": "Posición Predefinida"
             },
             "day_night_mode": {
-                "name": "Modo Día/Noche"
+                "name": "Día & Noche: Modo"
+            },
+            "day_night_sensitivity": {
+                "name": "Día & Noche: Sensibilidad",
+                "state": {
+                    "high": "Alta",
+                    "medium": "Media",
+                    "low": "Baja"
+                }
+            },
+            "day_night_switch_delay": {
+                "name": "Día & Noche: Retardo Segundos"
             },
             "exposure_anti_flicker": {
                 "name": "Imagen exposición antiparpadeo",

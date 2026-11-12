@@ -5831,6 +5831,24 @@ class DahuaClient:
         ).format(channel, int(mode), int(level))
         return await self.get("/cgi-bin/configManager.cgi?action=setConfig&" + query)
 
+    async def async_set_video_in_option(
+        self, channel: int, field: str, value: int
+    ) -> None:
+        """Set one validated field in this channel's VideoInOptions row."""
+        if type(channel) is not int or channel < 0:
+            raise ValueError("Invalid VideoInOptions channel")
+        if field not in {"DayNightSensitivity", "DayNightSwitchDelay"}:
+            raise ValueError("Unsupported VideoInOptions field")
+        if type(value) is not int:
+            raise ValueError("Invalid VideoInOptions value")
+        url = (
+            "/cgi-bin/configManager.cgi?action=setConfig&"
+            f"VideoInOptions[{channel}].{field}={value}"
+        )
+        response = await self.get(url)
+        if "OK" not in response and "ok" not in response:
+            raise RuntimeError(f"Could not set VideoInOptions.{field}")
+
     async def async_get_video_in_options(self, fresh: bool = False) -> dict:
         """The VideoInOptions table, including Day/Night and image controls.
 
