@@ -4781,7 +4781,10 @@ class DahuaClient:
             await self.get(base.format("stop", channel, code, arg1, speed))
 
     async def async_set_profile_schedule_times(
-        self, channel: int, day_start: datetime_time, night_start: datetime_time
+        self,
+        channel: int,
+        day_start: datetime_time | None = None,
+        night_start: datetime_time | None = None,
     ) -> ProfileScheduleTimes:
         """Set Profile Schedule times while preserving the complete VideoInMode table."""
         lock = _HOST_VIDEO_IN_MODE_LOCKS.setdefault(self._device, asyncio.Lock())
@@ -4804,8 +4807,19 @@ class DahuaClient:
                     )
                 if resolve_profile_management_table(table, channel) != "schedule":
                     raise RuntimeError("Profile Management is not in Schedule mode")
+                current = resolve_profile_schedule_table(table, channel)
+                if current is None:
+                    raise ConnectionError(
+                        "VideoInMode has no unambiguous Schedule interval"
+                    )
+                # A single time entity owns only its endpoint. Preserve the
+                # peer from this fresh read under the lock, not a cached poll.
+                requested_day = current.day_start if day_start is None else day_start
+                requested_night = (
+                    current.night_start if night_start is None else night_start
+                )
                 wanted = profile_schedule_table_with_times(
-                    table, channel, day_start, night_start
+                    table, channel, requested_day, requested_night
                 )
                 await client.set_config("VideoInMode", wanted, channel=channel)
                 readback = await client.get_config({"name": "VideoInMode"})
@@ -4819,8 +4833,8 @@ class DahuaClient:
                 )
                 if (
                     actual is None
-                    or actual.day_start != day_start
-                    or actual.night_start != night_start
+                    or actual.day_start != requested_day
+                    or actual.night_start != requested_night
                 ):
                     raise RuntimeError(
                         "The camera did not apply the requested Profile Schedule"

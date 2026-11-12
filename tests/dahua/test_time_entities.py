@@ -58,8 +58,7 @@ async def test_one_endpoint_write_preserves_the_peer():
     await entity.async_set_value(time(9, 11))
 
     coordinator.async_set_profile_schedule_times.assert_awaited_once_with(
-        time(9, 11),
-        time(17, 47),
+        day_start=time(9, 11),
     )
     coordinator.async_refresh.assert_awaited_once()
 

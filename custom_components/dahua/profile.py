@@ -179,11 +179,22 @@ def _single_profile_schedule_interval(
     intervals: Sequence[tuple[tuple[int, int], Any]],
 ) -> tuple[tuple[int, int], ProfileScheduleTimes] | None:
     """Return the sole enabled, parseable Schedule interval or fail closed."""
-    parsed_intervals = [
-        (location, schedule_times)
-        for location, value in intervals
-        if (schedule_times := parse_profile_schedule_interval(value)) is not None
-    ]
+    parsed_intervals = []
+    for location, value in intervals:
+        schedule_times = parse_profile_schedule_interval(value)
+        if schedule_times is not None:
+            parsed_intervals.append((location, schedule_times))
+            continue
+        # Only a known disabled entry can safely be left out of the count.
+        # An unknown prefix or malformed enabled neighbor could be another
+        # active interval, so one parseable entry alone is not enough proof.
+        match = (
+            _PROFILE_SCHEDULE_INTERVAL.fullmatch(value.strip())
+            if isinstance(value, str)
+            else None
+        )
+        if match is None or match.group("prefix") != "0":
+            return None
     return parsed_intervals[0] if len(parsed_intervals) == 1 else None
 
 

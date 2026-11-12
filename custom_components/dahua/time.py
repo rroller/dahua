@@ -52,9 +52,10 @@ class DahuaProfileScheduleTime(DahuaBaseEntity, TimeEntity):
     ):
         super().__init__(coordinator, config_entry)
 
-        self._attr_unique_id = (
-            f"{coordinator.get_serial_number()}" f"_profile_{self._endpoint}"
-        )
+    @property
+    def unique_id(self):
+        """Keep both endpoints distinct within this channel's entity registry."""
+        return f"{self._coordinator.get_serial_number()}_profile_{self._endpoint}"
 
     @property
     def native_value(self) -> time | None:
@@ -81,16 +82,9 @@ class DahuaProfileScheduleTime(DahuaBaseEntity, TimeEntity):
                 translation_key="profile_schedule_unavailable",
             )
 
-        day_start = value if self._endpoint == "day_start" else schedule_times.day_start
-
-        night_start = (
-            value if self._endpoint == "night_start" else schedule_times.night_start
-        )
-
         try:
             await self._coordinator.async_set_profile_schedule_times(
-                day_start,
-                night_start,
+                **{self._endpoint: value},
             )
         except (
             ConnectionError,

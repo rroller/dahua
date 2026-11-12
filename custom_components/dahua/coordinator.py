@@ -2549,6 +2549,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return self.supports_profile_schedule() and not already
 
+    async def _async_probe_profile_schedule(self) -> bool:
+        """Read Schedule when no enabled exposure platform supplies the table."""
+        try:
+            mode_data = await self.client.async_get_video_in_mode()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("profile_schedule", probe_error)
+            return False
+        self._note_probe_answered("profile_schedule")
+        self._observe_profile_management(mode_data)
+        self._observe_profile_schedule(mode_data)
+        return self.supports_profile_schedule()
+
+    async def _async_retry_profile_schedule(self) -> bool:
+        already = self.supports_profile_schedule()
+        return await self._async_probe_profile_schedule() and not already
+
     async def _async_probe_exposure_anti_flicker(self) -> bool:
         """Check this channel's current profile and its AntiFlicker property."""
         try:
@@ -3351,6 +3367,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await self._async_probe_exposure_mode()
                 if self._wanted_by(NUMBER):
                     await self._async_probe_exposure_compensation()
+                if self._wanted_by(TIME) and not self._wanted_by(SELECT, NUMBER):
+                    await self._async_probe_profile_schedule()
 
                 # Each setting has its own table, owner, retry, and platform
                 # gate. An answer for one never implies another is available.
@@ -5699,7 +5717,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._profile_management_mode = got
 
     async def async_set_profile_schedule_times(
-        self, day_start: datetime_time, night_start: datetime_time
+        self,
+        day_start: datetime_time | None = None,
+        night_start: datetime_time | None = None,
     ) -> None:
         """Set and remember both Profile Schedule endpoints atomically."""
         self._profile_schedule_times = (
@@ -8433,6 +8453,7 @@ RETRYABLE_CAPABILITIES = {
     "lighting": DahuaDataUpdateCoordinator._async_retry_lighting,
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
     "profile_mode": DahuaDataUpdateCoordinator._async_retry_profile_mode,
+    "profile_schedule": DahuaDataUpdateCoordinator._async_retry_profile_schedule,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
     # Spelled with a space because that is the name `_note_probe_refusal`
     # already records it under, and the registry is keyed by that name so a
