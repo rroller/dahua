@@ -2229,15 +2229,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         already = (
             self._supports_day_night_color,
-            self._supports_day_night_sensitivity,
-            self._supports_day_night_switch_delay,
+            self.supports_day_night_sensitivity(),
+            self.supports_day_night_switch_delay(),
             frozenset(self._image_option_fields),
         )
         await self._async_probe_day_night_color()
         return (
             self._supports_day_night_color,
-            self._supports_day_night_sensitivity,
-            self._supports_day_night_switch_delay,
+            self.supports_day_night_sensitivity(),
+            self.supports_day_night_switch_delay(),
             frozenset(self._image_option_fields),
         ) != already
 
