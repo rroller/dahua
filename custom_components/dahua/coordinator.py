@@ -2850,8 +2850,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         Only asked where the select exists at all, which is still gated on
         VideoInOptions.DayNightColor, so no entity appears or disappears here.
+
+        **A transport failure must not cost the entry.** This is an optional
+        table read, and `async_get_config` only swallows a `ClientResponseError`:
+        a timeout or a dropped connection would come out of here and abort
+        initialization, so a device that set up perfectly well yesterday would
+        stop because a new optional read was slow (@rroller on #1201). It is
+        contained, recorded, and asked again later by the retry table, and the
+        channel keeps the VideoInOptions route until the question is answered.
         """
-        table = await self.client.async_get_config(VIDEO_IN_DAY_NIGHT)
+        try:
+            table = await self.client.async_probe_video_in_day_night()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("video_in_day_night", probe_error)
+            # Unchanged, not False: the existing read route is the one that
+            # works today, and an unanswered probe is not evidence against it.
+            return False
+        self._note_probe_answered("video_in_day_night")
         self._reads_video_in_day_night = (
             day_night_mode_name(table, self._channel) is not None
         )
@@ -2868,9 +2883,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         The fan-out has no `return_exceptions`, so an unguarded read failing
         here would take the whole refresh with it and, on the first one,
         `setup_retry` with it.
+
+        **The strict reader, deliberately.** `async_get_config` turns an HTTP
+        400, 403 or 500 into `{}`, which never reaches the handler below, so
+        this returned an empty table and the next data replacement dropped the
+        row and left the select reading unknown on one bad poll (@rroller on
+        #1201). `async_probe_video_in_day_night` lets the refusal raise, which
+        is what makes carrying the previous answer possible, while a device
+        that genuinely answers an empty table is still distinguishable from one
+        that refused.
         """
         try:
-            return await self.client.async_get_config(VIDEO_IN_DAY_NIGHT)
+            return await self.client.async_probe_video_in_day_night()
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.debug(
                 "Could not read the Day/Night table for channel %s",
@@ -2884,6 +2908,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if key.startswith("table.VideoInDayNight[")
             }
             return carried or None
+
+    async def _async_retry_video_in_day_night(self) -> bool:
+        """Whether the Day/Night table turned up after an unanswered probe.
+
+        A timeout at setup leaves the channel on VideoInOptions, which is the
+        behaviour it had before this existed. Asking again once the device is
+        idle is what stops a slow first read costing the correct source for
+        the rest of the session.
+        """
+        already = self._reads_video_in_day_night
+        return await self._async_probe_video_in_day_night() and not already
 
     async def _async_probe_video_widget(self) -> bool:
         """Ask which overlay visibility switches this channel reports.
@@ -8596,4 +8631,5 @@ RETRYABLE_CAPABILITIES = {
     "exposure_compensation": DahuaDataUpdateCoordinator._async_retry_exposure_compensation,
     "video_image_control": DahuaDataUpdateCoordinator._async_retry_video_image_control,
     "video_widget": DahuaDataUpdateCoordinator._async_retry_video_widget,
+    "video_in_day_night": DahuaDataUpdateCoordinator._async_retry_video_in_day_night,
 }

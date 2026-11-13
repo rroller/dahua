@@ -26,6 +26,9 @@ the picture on this firmware, and reading any other row would report `Auto` on
 a camera showing black and white.
 """
 
+from types import SimpleNamespace
+
+import aiohttp
 import pytest
 
 from custom_components.dahua.client import (
@@ -288,3 +291,88 @@ async def test_a_table_whose_row_two_is_unreadable_does_not_claim_it():
     coordinator.client = client
 
     assert await coordinator._async_probe_video_in_day_night() is False
+
+
+# --- a refused poll keeps the row, through the real client ------------------
+#
+# @rroller's P2 on #1201. `async_get_config` catches ClientResponseError and
+# returns {}, so an HTTP 400, 403 or 500 never reached the poll wrapper's
+# handler. It returned an empty table, the next data replacement dropped the
+# row, and the select went to unknown on one bad read.
+#
+# Driven through the real DahuaClient rather than a stub that raises, because a
+# stub skips the very conversion that caused this.
+
+
+class _Refusing:
+    """A session that answers one status to everything."""
+
+    def __init__(self, status):
+        self.status = status
+        self.calls = 0
+
+    async def request(self, method, url, headers=None, **kwargs):
+        self.calls += 1
+        return _Response(self.status)
+
+
+class _Response:
+    def __init__(self, status):
+        self.status = status
+        self.headers = {}
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise aiohttp.ClientResponseError(
+                request_info=SimpleNamespace(real_url="http://10.0.0.9/x"),
+                history=(),
+                status=self.status,
+            )
+
+    async def text(self):
+        return ""
+
+    async def read(self):
+        return b""
+
+    def close(self):
+        return None
+
+
+@pytest.mark.parametrize("status", [400, 403, 500])
+async def test_a_refused_poll_keeps_the_row_it_had(status):
+    """The held BlackWhite row must survive a refusal, whatever its status."""
+    session = _Refusing(status)
+    coordinator = _coordinator(dict(BLACKWHITE), reads_day_night=True)
+    coordinator.client = DahuaClient("u", "p", "10.0.0.9", 80, 554, session)
+
+    carried = await coordinator._async_fetch_video_in_day_night()
+
+    assert session.calls, "the real client was never reached"
+    assert carried is not None, "a refused read wiped the table"
+    assert carried["table.VideoInDayNight[0][2].Mode"] == "BlackWhite"
+
+
+async def test_the_select_still_reads_blackwhite_after_a_refused_poll():
+    """The consequence, stated as the user sees it. Without the carry the next
+    data replacement leaves the select unknown."""
+    session = _Refusing(500)
+    coordinator = _coordinator(dict(BLACKWHITE), reads_day_night=True)
+    coordinator.client = DahuaClient("u", "p", "10.0.0.10", 80, 554, session)
+
+    carried = await coordinator._async_fetch_video_in_day_night()
+    coordinator.data = carried  # what the coordinator does with the answer
+
+    assert coordinator.get_day_night_color() == "BlackWhite"
+
+
+async def test_a_genuinely_empty_table_is_not_mistaken_for_a_refusal():
+    """The other half: a device that answers an empty table has said something,
+    and that must stay distinguishable from one that refused."""
+    session = _Refusing(200)
+    coordinator = _coordinator(dict(BLACKWHITE), reads_day_night=True)
+    coordinator.client = DahuaClient("u", "p", "10.0.0.11", 80, 554, session)
+
+    answered = await coordinator._async_fetch_video_in_day_night()
+
+    assert answered == {}, "an empty 200 was treated as a refusal"

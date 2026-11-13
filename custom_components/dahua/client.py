@@ -5879,6 +5879,22 @@ class DahuaClient:
             _HOST_CACHE.pop((self._device, self._username, url), None)
         return await self.get(url)
 
+    async def async_probe_video_in_day_night(self, fresh: bool = False) -> dict:
+        """Read VideoInDayNight strictly, letting refusals raise.
+
+        The same reason `async_probe_video_in_options` above exists.
+        `async_get_config` turns an HTTP refusal into `{}`, which loses the
+        difference between "this device refused the table" and "the table
+        came back empty". Both callers here need that difference: the probe
+        records a refusal rather than recording no capability, and the poll
+        keeps the row it already had rather than dropping the select to
+        unknown on one bad read (@rroller on #1201).
+        """
+        url = "/cgi-bin/configManager.cgi?action=getConfig&name=" + VIDEO_IN_DAY_NIGHT
+        if fresh:
+            _HOST_CACHE.pop((self._device, self._username, url), None)
+        return await self.get(url)
+
     async def async_get_video_in_mode(self, fresh: bool = False) -> dict:
         """
         async_get_video_in_mode will return the profile mode (day/night)

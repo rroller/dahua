@@ -540,3 +540,72 @@ async def test_unknown_schedule_shape_does_not_disable_profile_management(hass):
     await coordinator._async_probe_exposure_anti_flicker()
     assert coordinator.supports_profile_management() is True
     assert coordinator.supports_profile_schedule() is False
+
+
+# --- an optional table that is slow must not cost the entry ----------------
+#
+# @rroller's P1 on #1201. The Day/Night source probe reads VideoInDayNight,
+# which is optional. `async_get_config` only swallows a ClientResponseError, so
+# a timeout or a dropped connection came out of the probe and aborted
+# initialisation: a device that set up perfectly well yesterday stopped,
+# because a new optional read was slow, and every probe after it never ran.
+
+
+def _day_night_capable(hass):
+    """A coordinator whose channel has a Day/Night select at all.
+
+    The VideoInDayNight probe is gated on that, so without this the probe
+    under test never runs and the regression would pass vacuously.
+    """
+    coordinator = _coordinator(hass)
+    coordinator.client.SHAPED = dict(
+        coordinator.client.SHAPED,
+        async_probe_video_in_options={"table.VideoInOptions[0].DayNightColor": "1"},
+    )
+    return coordinator
+
+
+async def test_a_slow_day_night_table_does_not_abort_setup(hass):
+    """The exact gate: a valid VideoInOptions answer, a timeout only for
+    VideoInDayNight."""
+    coordinator = _day_night_capable(hass)
+
+    async def _times_out(*args, **kwargs):
+        raise TimeoutError("VideoInDayNight did not answer")
+
+    coordinator.client.async_probe_video_in_day_night = _times_out
+
+    await coordinator._async_update_data()
+
+    assert coordinator.initialized is True, "one slow optional table ended setup"
+
+
+async def test_the_probes_after_the_day_night_table_still_run(hass):
+    """The half a per-probe test would miss. The timeout used to take every
+    later question with it."""
+    coordinator = _day_night_capable(hass)
+
+    async def _times_out(*args, **kwargs):
+        raise TimeoutError("VideoInDayNight did not answer")
+
+    coordinator.client.async_probe_video_in_day_night = _times_out
+
+    await coordinator._async_update_data()
+
+    assert "async_get_video_widget" in coordinator.client.asked
+    assert "async_get_config" in coordinator.client.asked
+
+
+async def test_a_slow_day_night_table_keeps_the_existing_read_route(hass):
+    """Unanswered is not the same as answered no. The channel keeps reading
+    VideoInOptions, which is what worked before this probe existed."""
+    coordinator = _day_night_capable(hass)
+
+    async def _times_out(*args, **kwargs):
+        raise TimeoutError("VideoInDayNight did not answer")
+
+    coordinator.client.async_probe_video_in_day_night = _times_out
+
+    await coordinator._async_update_data()
+
+    assert coordinator.reads_video_in_day_night() is False
