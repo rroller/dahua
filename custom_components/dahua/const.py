@@ -29,7 +29,15 @@ EVENT = "event"
 NUMBER = "number"
 UPDATE = "update"
 TIME = "time"
-VIDEO_COLOR_STYLE_OPTIONS = ("Soft", "Standard", "Vivid")
+VIDEO_COLOR_STYLE_VALUE_BY_OPTION = {
+    "Soft": "Gentle",
+    "Standard": "Standard",
+    "Vivid": "Flamboyant",
+}
+VIDEO_COLOR_STYLE_OPTIONS = tuple(VIDEO_COLOR_STYLE_VALUE_BY_OPTION)
+VIDEO_COLOR_STYLE_OPTION_BY_VALUE = {
+    value: option for option, value in VIDEO_COLOR_STYLE_VALUE_BY_OPTION.items()
+}
 EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION = {"outdoor": 0, "50_hz": 1, "60_hz": 2}
 EXPOSURE_ANTI_FLICKER_OPTIONS = tuple(EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION)
 EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE = {

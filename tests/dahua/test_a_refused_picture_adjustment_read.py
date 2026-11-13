@@ -240,12 +240,14 @@ def test_an_answer_that_names_nothing_is_no_capability(answer):
     assert video_color_fields(answer, 0) == frozenset()
 
 
-def test_gamma_is_read_as_an_integer_and_style_keeps_its_exact_string():
+def test_gamma_keeps_profile_zero_while_style_follows_the_active_profile():
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator._channel = 2
     coordinator.data = {
         "table.VideoColor[2][0].Gamma": "37",
-        "table.VideoColor[2][0].Style": "Standard",
+        "table.VideoColor[2][0].Style": "Flamboyant",
+        "table.VideoColor[2][2].Style": "Standard",
+        "table.VideoInMode[2].Config[0]": "2",
     }
 
     assert coordinator.get_video_color("Gamma") == 37

@@ -30,7 +30,7 @@ from .const import (
     EXPOSURE_COMPENSATION_MIN,
     EXPOSURE_MODE_OPTION_BY_VALUE,
     LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION,
-    VIDEO_COLOR_STYLE_OPTIONS,
+    VIDEO_COLOR_STYLE_VALUE_BY_OPTION,
     VIDEO_IMAGE_CONTROL_TABLE,
     VIDEO_IMAGE_CONTROL_TABLES,
 )
@@ -3571,17 +3571,19 @@ class DahuaClient:
         # recognises the camera model, so a refusal is an ordinary answer here.
         return await self.async_get_config("SmartMotionDetect")
 
-    async def async_get_video_color(self) -> dict:
+    async def async_get_video_color(self, fresh: bool = False) -> dict:
         """The picture adjustments per channel. Example output:
         table.VideoColor[0][0].Brightness=50
         table.VideoColor[0][0].Contrast=50
         table.VideoColor[0][0].Saturation=50
         table.VideoColor[0][0].Hue=50
 
-        Index [channel][profile]; profile 0 is the general one the number
-        entities read and write (#image adjustments, Reolink/Tapo parity).
+        Index [channel][profile]. Picture numbers retain their established
+        profile-0 contract; Style resolves the active Day, Night or General row.
         """
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoColor"
+        if fresh:
+            _HOST_CACHE.pop((self._device, self._username, url), None)
         return await self.get(url)
 
     async def async_get_video_image_control(
@@ -3621,13 +3623,19 @@ class DahuaClient:
         url = f"/cgi-bin/configManager.cgi?action=setConfig&VideoColor[{channel}][0].{field}={int(value)}"
         return await self.get(url)
 
-    async def async_set_video_color_style(self, channel: int, value: str):
-        """Set a supported Style on a channel's general VideoColor profile."""
-        if value not in VIDEO_COLOR_STYLE_OPTIONS:
+    async def async_set_video_color_style(
+        self, channel: int, active_profile_index: int, value: str
+    ):
+        """Set one supported wire Style on the active VideoColor profile."""
+        if type(channel) is not int or channel < 0:
+            raise ValueError("Unsupported VideoColor channel")
+        if type(active_profile_index) is not int or active_profile_index < 0:
+            raise ValueError("Unsupported VideoColor profile")
+        if value not in VIDEO_COLOR_STYLE_VALUE_BY_OPTION.values():
             raise ValueError("Unsupported VideoColor Style")
         url = (
             "/cgi-bin/configManager.cgi?action=setConfig"
-            f"&VideoColor[{channel}][0].Style={value}"
+            f"&VideoColor[{channel}][{active_profile_index}].Style={value}"
         )
         return await self.get(url)
 

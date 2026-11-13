@@ -70,6 +70,7 @@ class _Coordinator:
         self._day_night = day_night
         self.refreshed = 0
         self.exposure_mode_calls = []
+        self.video_color_style_calls = []
 
     def get_channel(self):
         return self._channel
@@ -143,6 +144,9 @@ class _Coordinator:
 
     async def async_set_exposure_mode(self, option):
         self.exposure_mode_calls.append(option)
+
+    async def async_set_video_color_style(self, option):
+        self.video_color_style_calls.append(option)
 
     async def async_refresh(self):
         self.refreshed += 1
@@ -379,7 +383,8 @@ async def test_selecting_a_style_writes_the_exact_value_and_refreshes(style):
 
     await s.async_select_option(style)
 
-    assert c.client.calls == [("async_set_video_color_style", 3, style)]
+    assert c.video_color_style_calls == [style]
+    assert c.client.calls == []
     assert c.refreshed == 1
 
 

@@ -98,6 +98,8 @@ from .const import (
     LEGACY_EXPOSURE_MODE_OPTION_BY_VALUE,
     LEGACY_EXPOSURE_MODE_OPTIONS,
     LEGACY_EXPOSURE_MODE_VALUE_BY_OPTION,
+    VIDEO_COLOR_STYLE_OPTION_BY_VALUE,
+    VIDEO_COLOR_STYLE_VALUE_BY_OPTION,
     VIDEO_IMAGE_CONTROL_FIELDS,
     VIDEO_IMAGE_CONTROL_TABLE,
     VIDEO_IMAGE_CONTROL_TABLES,
@@ -677,6 +679,30 @@ class ExposureModeTransport(Enum):
 # not confirmed (v1.14.1 renamed it back from "Auto").
 WIDE_DYNAMIC_RANGE_OPTIONS = {"0": "Off", "1": "On", "2": "Mode 2"}
 WIDE_DYNAMIC_RANGE_LEVEL = 50
+
+
+def video_color_style_option(
+    data: dict, channel: int, profile_index: int
+) -> str | None:
+    """Map the exact channel/profile wire Style to its Home Assistant option."""
+    if not isinstance(data, dict):
+        return None
+    raw = data.get(f"table.VideoColor[{channel}][{profile_index}].Style")
+    return VIDEO_COLOR_STYLE_OPTION_BY_VALUE.get(raw)
+
+
+def video_color_style_supported(data: dict, channel: int) -> bool:
+    """Whether this channel reports any recognized profile-owned Style."""
+    if not isinstance(data, dict):
+        return False
+    prefix = f"table.VideoColor[{channel}]["
+    suffix = "].Style"
+    return any(
+        key.startswith(prefix)
+        and key.endswith(suffix)
+        and value in VIDEO_COLOR_STYLE_OPTION_BY_VALUE
+        for key, value in data.items()
+    )
 
 
 def image_option_fields(data: dict, channel: int) -> frozenset:
@@ -2521,7 +2547,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._video_color_fields = frozenset()
             return False
         self._note_probe_answered("video_color")
-        self._video_color_fields = video_color_fields(table, self._channel)
+        fields = set(video_color_fields(table, self._channel))
+        if video_color_style_supported(table, self._channel):
+            fields.add("Style")
+        self._video_color_fields = frozenset(fields)
         _LOGGER.debug(
             "Channel %s reports picture adjustments %s",
             self._channel,
@@ -3654,6 +3683,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 (self._supports_profile_mode and not self.is_doorbell())
                 or (self.supports_profile_management() and self._wanted_by(SELECT))
                 or (self.supports_profile_schedule() and self._wanted_by(TIME))
+                or (self.supports_video_color("Style") and self._wanted_by(SELECT))
                 or (self.supports_exposure_anti_flicker() and self._wanted_by(SELECT))
                 or (self._supports_exposure_mode and self._wanted_by(SELECT))
                 or (self.supports_exposure_compensation() and self._wanted_by(NUMBER))
@@ -3678,7 +3708,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     # I believe this API is missing on some cameras so we'll just ignore it and move on
                     _LOGGER.debug("Could not get profile mode", exc_info=exception)
                     if (
-                        self.supports_exposure_anti_flicker()
+                        (self.supports_video_color("Style") and self._wanted_by(SELECT))
+                        or self.supports_exposure_anti_flicker()
                         or self._supports_exposure_mode
                         or (
                             self.supports_exposure_compensation()
@@ -6160,9 +6191,36 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return None
 
     def get_video_color_style(self) -> str | None:
-        """The supported Style value for this channel's general profile."""
-        raw = self.data.get("table.VideoColor[{0}][0].Style".format(self.get_channel()))
-        return raw if isinstance(raw, str) else None
+        """The supported Style option for this channel's active profile."""
+        profile_index = self.get_active_profile_index()
+        if profile_index is None:
+            return None
+        return video_color_style_option(self.data, self._channel, profile_index)
+
+    async def async_set_video_color_style(self, option: str) -> None:
+        """Set Style on the freshly resolved active profile and verify readback."""
+        value = VIDEO_COLOR_STYLE_VALUE_BY_OPTION.get(option)
+        if value is None:
+            return
+
+        mode_data = await self.client.async_get_video_in_mode(fresh=True)
+        profile_index = active_profile_index(mode_data, self._channel)
+        if profile_index is None:
+            raise ConnectionError(
+                "The current VideoInMode profile could not be established"
+            )
+        color_data = await self.client.async_get_video_color(fresh=True)
+        if video_color_style_option(color_data, self._channel, profile_index) is None:
+            raise ConnectionError(
+                "The current VideoColor Style value could not be established"
+            )
+
+        await self.client.async_set_video_color_style(
+            self._channel, profile_index, value
+        )
+        readback = await self.client.async_get_video_color(fresh=True)
+        if video_color_style_option(readback, self._channel, profile_index) != option:
+            raise ConnectionError("VideoColor Style write did not apply")
 
     async def _async_retry_device_class(self) -> None:
         """Ask again for a device class the device did not answer.
