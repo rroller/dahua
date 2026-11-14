@@ -238,7 +238,7 @@ def _coordinator(
     c.model = ""
     c.config_entry = SimpleNamespace(entry_id="e1")
     for flag in FLAGS:
-        setattr(c, flag, False)
+        setattr(c, flag, frozenset() if flag in PROBE_SETS else False)
     for name in SELF_METHODS:
         setattr(c, name, lambda *a, **k: False)
     # True, or the probes gated on it never run and every assertion about them

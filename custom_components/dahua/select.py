@@ -645,11 +645,11 @@ class DahuaExposureModeSelect(DahuaBaseEntity, SelectEntity):
 
 
 class DahuaVideoColorStyleSelect(DahuaBaseEntity, SelectEntity):
-    """Select the camera's picture style on its general VideoColor profile."""
+    """Select the camera's picture style on its active VideoColor profile."""
 
     _attr_translation_key = "video_color_style"
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_options = list(VIDEO_COLOR_STYLE_OPTIONS)
+    _attr_options: ClassVar[list[str]] = list(VIDEO_COLOR_STYLE_OPTIONS)
 
     def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry):
         super().__init__(coordinator, config_entry)
@@ -667,9 +667,7 @@ class DahuaVideoColorStyleSelect(DahuaBaseEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         if option not in VIDEO_COLOR_STYLE_OPTIONS:
             return
-        await self._coordinator.client.async_set_video_color_style(
-            self._coordinator.get_channel(), option
-        )
+        await self._coordinator.async_set_video_color_style(option)
         await self._coordinator.async_refresh()
 
 

@@ -167,15 +167,24 @@ async def test_image_control_does_not_write_rotate90():
     assert client._sent.urls == []
 
 
-@pytest.mark.parametrize("style", ["Soft", "Standard", "Vivid"])
-async def test_style_write_targets_only_its_channel_and_general_profile(style):
+@pytest.mark.parametrize(
+    ("profile", "style"),
+    [
+        (0, "Flamboyant"),
+        (1, "Gentle"),
+        (2, "Standard"),
+    ],
+)
+async def test_style_write_targets_only_its_channel_and_requested_profile(
+    profile, style
+):
     client = _client()
 
-    await client.async_set_video_color_style(3, style)
+    await client.async_set_video_color_style(3, profile, style)
 
     assert _url(client) == (
         "/cgi-bin/configManager.cgi?action=setConfig"
-        "&VideoColor[3][0].Style={0}".format(style)
+        f"&VideoColor[3][{profile}].Style={style}"
     )
 
 
@@ -183,7 +192,7 @@ async def test_style_write_rejects_an_unsupported_value_before_requesting():
     client = _client()
 
     with pytest.raises(ValueError, match="Unsupported VideoColor Style"):
-        await client.async_set_video_color_style(3, "Custom")
+        await client.async_set_video_color_style(3, 1, "Custom")
 
     assert client._sent.urls == []
 

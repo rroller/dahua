@@ -216,6 +216,22 @@ async def test_image_controls_are_polled_only_when_a_supported_control_has_a_rea
     assert VIDEO_IMAGE_CONTROL not in c.client.calls
 
 
+async def test_video_color_style_polls_profile_mode_only_for_its_select():
+    c = _coordinator()
+    c._video_color_fields = frozenset({"Style"})
+
+    await c._async_update_data()
+
+    assert VIDEO_IN_MODE in c.client.calls
+
+    c = _coordinator(select=False)
+    c._video_color_fields = frozenset({"Style"})
+
+    await c._async_update_data()
+
+    assert VIDEO_IN_MODE not in c.client.calls
+
+
 async def test_exposure_anti_flicker_polls_only_for_its_select():
     c = _coordinator()
     c._supports_exposure_anti_flicker = True
@@ -314,6 +330,37 @@ async def test_failed_profile_read_keeps_config_ex_for_anti_flicker():
     c.data = await c._async_update_data()
 
     assert c.get_exposure_anti_flicker() == "60_hz"
+    assert c.data["table.VideoInMode[0].ConfigEx"] == "Night"
+    assert "table.VideoInMode[1].ConfigEx" not in c.data
+
+
+async def test_failed_profile_read_keeps_config_ex_for_video_color_style():
+    c = _coordinator()
+    c._video_color_fields = frozenset({"Style"})
+    c.data = {
+        "table.VideoInMode[0].Config[0]": "0",
+        "table.VideoInMode[0].ConfigEx": "Night",
+        "table.VideoInMode[1].ConfigEx": "Day",
+        "table.VideoColor[0][0].Style": "Flamboyant",
+        "table.VideoColor[0][1].Style": "Gentle",
+    }
+
+    async def failed_mode():
+        raise TimeoutError("profile read timed out")
+
+    async def video_color():
+        return {
+            key: value
+            for key, value in c.data.items()
+            if key.startswith("table.VideoColor[")
+        }
+
+    c.client.async_get_video_in_mode = failed_mode
+    c.client.async_get_video_color = video_color
+
+    c.data = await c._async_update_data()
+
+    assert c.get_video_color_style() == "Soft"
     assert c.data["table.VideoInMode[0].ConfigEx"] == "Night"
     assert "table.VideoInMode[1].ConfigEx" not in c.data
 
