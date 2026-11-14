@@ -2228,12 +2228,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         The poll decides each cycle whether to read the table, so the controls
         work from the next poll rather than reading unknown until a reload.
+
+        A capability arriving here arrives with its question about which table
+        to read still unasked, so this is where that question is put. It costs
+        one extra read, once, on the poll the capability turns up on, and only
+        where the select platform is loaded.
         """
         already = (
             self._supports_day_night_color,
             frozenset(self._image_option_fields),
         )
         await self._async_probe_day_night_color()
+        if self._supports_day_night_color and not already[0]:
+            await self._async_discover_day_night_source()
         return (
             self._supports_day_night_color,
             frozenset(self._image_option_fields),
@@ -2920,6 +2927,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         already = self._reads_video_in_day_night
         return await self._async_probe_video_in_day_night() and not already
 
+    async def _async_discover_day_night_source(self) -> None:
+        """Ask which table the Day/Night select reads, where that select exists.
+
+        One home for the gate, called by setup and by the Day/Night capability's
+        own retry. The question is only meaningful where the select exists,
+        which is gated on VideoInOptions.DayNightColor, and only the select
+        platform reads the answer, so a device without either pays nothing.
+
+        ⚠ The retry is why this has a name rather than living inline at its
+        setup call site. The capability itself can arrive late: a VideoInOptions
+        probe that times out leaves `_supports_day_night_color` False, this
+        question is skipped, and when the retry turns the capability on it
+        creates the select without ever asking which table to read. Nothing
+        asked again either, because a question never asked is never recorded as
+        unanswered, so the select reported Auto for the life of the entry
+        (@rroller on #1201). Two call sites of one gate is how that happened,
+        so there is now one.
+        """
+        if self._supports_day_night_color and self._wanted_by(SELECT):
+            await self._async_probe_video_in_day_night()
+
     async def _async_probe_video_widget(self) -> bool:
         """Ask which overlay visibility switches this channel reports.
 
@@ -3501,16 +3529,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await self._async_probe_audio_control("speaker_volume")
                 if self._wanted_by(SWITCH):
                     await self._async_probe_audio_control("noise_filter")
+                # Which table the Day/Night select should read back.
+                await self._async_discover_day_night_source()
+
                 # The overlay visibility switches. Only the switch platform
                 # reads this table, so a device whose switches are turned off
                 # is never asked. The probe is shared with the retry a later
                 # poll makes when this one goes unanswered (#1057).
-                # Which table the Day/Night select should read back. Only
-                # where that select exists, so this costs nothing on a
-                # device without the VideoInOptions key that gates it.
-                if self._supports_day_night_color and self._wanted_by(SELECT):
-                    await self._async_probe_video_in_day_night()
-
                 if self._wanted_by(SWITCH):
                     await self._async_probe_video_widget()
 

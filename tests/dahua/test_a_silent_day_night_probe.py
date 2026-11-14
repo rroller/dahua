@@ -79,6 +79,7 @@ class _Client:
     def __init__(self, *answers):
         self.answers = list(answers)
         self.reads = 0
+        self.day_night_reads = 0
 
     async def async_probe_video_in_options(self):
         self.reads += 1
@@ -86,6 +87,19 @@ class _Client:
         if isinstance(answer, Exception):
             raise answer
         return dict(answer)
+
+    async def async_probe_video_in_day_night(self):
+        """Which table this channel keeps the setting in, asked once the
+        capability above turns up late.
+
+        A device without the preferred table, which is the case this file is
+        not about: it answers 200 with nothing, so the channel stays on
+        VideoInOptions and every assertion below is unchanged. Modelled rather
+        than left missing because the retry really does ask it now, and a
+        double that does not model a new requirement fails as an AttributeError
+        inside the code under test (#1201)."""
+        self.day_night_reads += 1
+        return {}
 
 
 def _refused(status):
@@ -113,7 +127,9 @@ def _coordinator(*answers):
     coordinator._probe_refusals = {}
     coordinator._capability_retries = {}
     coordinator.hass = None
-    coordinator.config_entry = type("E", (), {"entry_id": "entry-1"})()
+    # `options` because the late retry now asks which table the select should
+    # read, and that question is gated on the select platform being loaded.
+    coordinator.config_entry = type("E", (), {"entry_id": "entry-1", "options": {}})()
     coordinator.get_serial_number = lambda: SERIAL
     # The accessor the select platform reads is allowed to veto on its own
     # grounds, and does for an indoor monitor with no camera. Not one here.
@@ -200,6 +216,10 @@ async def test_the_answer_that_arrives_late_gates_its_select(discoveries):
 
     assert coordinator.supports_day_night_color() is True
     assert coordinator.probes_that_did_not_answer() == set()
+    assert coordinator.client.day_night_reads == 1, (
+        "a capability discovered here arrives with the question of which table "
+        "it reads never asked, and the select reported Auto for ever (#1201)"
+    )
     assert discoveries == [("entry-1", SERIAL)], (
         "the platforms are told which channel answered, so a recorder rebuilds "
         "one channel rather than all nineteen"
