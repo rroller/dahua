@@ -396,7 +396,18 @@
                 "name": "Preset Position"
             },
             "day_night_mode": {
-                "name": "Day/Night Mode"
+                "name": "Day & Night: Mode"
+            },
+            "day_night_sensitivity": {
+                "name": "Day & Night: Sensitivity",
+                "state": {
+                    "high": "High",
+                    "medium": "Medium",
+                    "low": "Low"
+                }
+            },
+            "day_night_switch_delay": {
+                "name": "Day & Night: Delay Seconds"
             },
             "exposure_anti_flicker": {
                 "name": "Image exposure anti-flicker",

@@ -240,6 +240,8 @@ def _setup_coordinator(
         is_amcrest_doorbell=lambda: False,
         supports_security_light=lambda: False,
         supports_day_night_color=lambda: day_night,
+        supports_day_night_sensitivity=lambda: False,
+        supports_day_night_switch_delay=lambda: False,
         supports_infrared_light=lambda: infrared,
         supports_smart_motion_detection=lambda: False,
         supports_lighting_schemes=lambda: False,

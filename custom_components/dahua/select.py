@@ -14,6 +14,8 @@ from custom_components.dahua import DahuaDataUpdateCoordinator
 from . import dahua_utils, entry_coordinators
 from .const import (
     DOMAIN,
+    DAY_NIGHT_SENSITIVITY_OPTIONS,
+    DAY_NIGHT_SWITCH_DELAY_OPTIONS,
     EXPOSURE_ANTI_FLICKER_OPTIONS,
     EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION,
     VIDEO_COLOR_STYLE_OPTIONS,
@@ -118,6 +120,10 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
 
         if coordinator.supports_day_night_color():
             devices.append(DahuaDayNightModeSelect(coordinator, entry))
+        if coordinator.supports_day_night_sensitivity():
+            devices.append(DahuaDayNightSensitivitySelect(coordinator, entry))
+        if coordinator.supports_day_night_switch_delay():
+            devices.append(DahuaDayNightSwitchDelaySelect(coordinator, entry))
 
         if coordinator.supports_exposure_anti_flicker():
             devices.append(DahuaExposureAntiFlickerSelect(coordinator, entry))
@@ -556,6 +562,67 @@ class DahuaDayNightModeSelect(DahuaBaseEntity, SelectEntity):
         await self._coordinator.client.async_set_video_in_day_night_mode(
             self._coordinator.get_channel(), "general", option
         )
+        await self._coordinator.async_refresh()
+
+
+class DahuaDayNightSensitivitySelect(DahuaBaseEntity, SelectEntity):
+    """Control Day/Night sensitivity while automatic mode is active."""
+
+    _attr_translation_key = "day_night_sensitivity"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options: ClassVar[list[str]] = list(DAY_NIGHT_SENSITIVITY_OPTIONS)
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_day_night_sensitivity"
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and self._coordinator.supports_day_night_sensitivity()
+            and self._coordinator.day_night_automatic_mode_is_active()
+        )
+
+    @property
+    def current_option(self):
+        return self._coordinator.get_day_night_sensitivity()
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        await self._coordinator.async_set_day_night_sensitivity(option)
+        await self._coordinator.async_refresh()
+
+
+class DahuaDayNightSwitchDelaySelect(DahuaBaseEntity, SelectEntity):
+    """Control Day/Night switch delay while automatic mode is active."""
+
+    _attr_translation_key = "day_night_switch_delay"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options: ClassVar[list[str]] = list(DAY_NIGHT_SWITCH_DELAY_OPTIONS)
+
+    @property
+    def unique_id(self):
+        return self._coordinator.get_serial_number() + "_day_night_switch_delay"
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and self._coordinator.supports_day_night_switch_delay()
+            and self._coordinator.day_night_automatic_mode_is_active()
+        )
+
+    @property
+    def current_option(self):
+        value = self._coordinator.get_day_night_switch_delay()
+        return str(value) if value is not None else None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            return
+        await self._coordinator.async_set_day_night_switch_delay(int(option))
         await self._coordinator.async_refresh()
 
 

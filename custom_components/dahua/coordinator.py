@@ -75,6 +75,10 @@ from .const import (
     CONF_POLL_VIDEO_MOTION,
     DEFAULT_AUTHORIZED_HOLD_TIME,
     DEFAULT_SCAN_INTERVAL,
+    DAY_NIGHT_SENSITIVITY_OPTION_BY_VALUE,
+    DAY_NIGHT_SENSITIVITY_VALUE_BY_OPTION,
+    DAY_NIGHT_SWITCH_DELAY_MAX,
+    DAY_NIGHT_SWITCH_DELAY_MIN,
     DOMAIN,
     EVENT_DAHUA_ANPR_RECOGNIZED,
     FIRMWARE_UPGRADE_REFRESH_SECONDS,
@@ -486,6 +490,32 @@ def day_night_color_name(data: dict, channel: int):
     if value is None:
         return None
     return DAY_NIGHT_NAMES.get(str(value).strip())
+
+
+def day_night_sensitivity_option(data: dict, channel: int) -> str | None:
+    """Return this channel's supported Day/Night sensitivity, if reported."""
+    value = data.get(f"table.VideoInOptions[{channel}].DayNightSensitivity")
+    try:
+        numeric_value = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, bool):
+        return None
+    return DAY_NIGHT_SENSITIVITY_OPTION_BY_VALUE.get(numeric_value)
+
+
+def day_night_switch_delay(data: dict, channel: int) -> int | None:
+    """Return this channel's supported Day/Night switch delay, if reported."""
+    value = data.get(f"table.VideoInOptions[{channel}].DayNightSwitchDelay")
+    try:
+        numeric_value = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, bool) or not (
+        DAY_NIGHT_SWITCH_DELAY_MIN <= numeric_value <= DAY_NIGHT_SWITCH_DELAY_MAX
+    ):
+        return None
+    return numeric_value
 
 
 def resolve_profile_mode(data: dict, channel: int):
@@ -1527,6 +1557,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_ptz_position = False
         self._supports_lighting = False
         self._supports_day_night_color = False
+        self._supports_day_night_sensitivity = False
+        self._supports_day_night_switch_delay = False
         self._supports_exposure_anti_flicker = False
         self._supports_exposure_mode = False
         self._supports_exposure_compensation = False
@@ -2160,11 +2192,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("day_night_color", probe_error)
             self._supports_day_night_color = False
+            self._supports_day_night_sensitivity = False
+            self._supports_day_night_switch_delay = False
             self._image_option_fields = frozenset()
             return False
         self._note_probe_answered("day_night_color")
         self._supports_day_night_color = (
             day_night_color_name(options, self._channel) is not None
+        )
+        self._supports_day_night_sensitivity = (
+            day_night_sensitivity_option(options, self._channel) is not None
+        )
+        self._supports_day_night_switch_delay = (
+            day_night_switch_delay(options, self._channel) is not None
         )
         # The same read carries WDR. Cached whole table, so this costs nothing
         # beside the Day/Night answer it was already making.
@@ -2189,11 +2229,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         already = (
             self._supports_day_night_color,
+            self.supports_day_night_sensitivity(),
+            self.supports_day_night_switch_delay(),
             frozenset(self._image_option_fields),
         )
         await self._async_probe_day_night_color()
         return (
             self._supports_day_night_color,
+            self.supports_day_night_sensitivity(),
+            self.supports_day_night_switch_delay(),
             frozenset(self._image_option_fields),
         ) != already
 
@@ -7137,6 +7181,60 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def get_day_night_color(self):
         """This channel's Day/Night mode by name, or None."""
         return day_night_color_name(self.data, self._channel)
+
+    def supports_day_night_sensitivity(self) -> bool:
+        return bool(getattr(self, "_supports_day_night_sensitivity", False))
+
+    def supports_day_night_switch_delay(self) -> bool:
+        return bool(getattr(self, "_supports_day_night_switch_delay", False))
+
+    def get_day_night_sensitivity(self) -> str | None:
+        return day_night_sensitivity_option(self.data, self._channel)
+
+    def get_day_night_switch_delay(self) -> int | None:
+        return day_night_switch_delay(self.data, self._channel)
+
+    def day_night_automatic_mode_is_active(self) -> bool:
+        return self.get_day_night_color() == "Auto"
+
+    async def _async_set_day_night_option(
+        self, field: str, value: int, expected_value: int | str
+    ) -> None:
+        """Write one Day/Night option after fresh context and verify readback."""
+        options = await self.client.async_get_video_in_options(fresh=True)
+        if day_night_color_name(options, self._channel) != "Auto":
+            raise ValueError("Day & Night Mode must be Auto")
+        if field == "DayNightSensitivity":
+            current = day_night_sensitivity_option(options, self._channel)
+            supported = self.supports_day_night_sensitivity()
+        elif field == "DayNightSwitchDelay":
+            current = day_night_switch_delay(options, self._channel)
+            supported = self.supports_day_night_switch_delay()
+        else:
+            raise ValueError("Unsupported Day/Night option field")
+        if not supported or current is None:
+            raise ValueError(f"{field} is not supported for this channel")
+        await self.client.async_set_video_in_option(self._channel, field, value)
+        readback = await self.client.async_get_video_in_options(fresh=True)
+        if field == "DayNightSensitivity":
+            applied = day_night_sensitivity_option(readback, self._channel)
+        else:
+            applied = day_night_switch_delay(readback, self._channel)
+        if applied != expected_value:
+            raise RuntimeError(f"Dahua did not apply {field}")
+
+    async def async_set_day_night_sensitivity(self, option: str) -> None:
+        value = DAY_NIGHT_SENSITIVITY_VALUE_BY_OPTION.get(option)
+        if value is None:
+            raise ValueError("Unsupported Day/Night sensitivity")
+        await self._async_set_day_night_option("DayNightSensitivity", value, option)
+
+    async def async_set_day_night_switch_delay(self, seconds: int) -> None:
+        if type(seconds) is not int or not (
+            DAY_NIGHT_SWITCH_DELAY_MIN <= seconds <= DAY_NIGHT_SWITCH_DELAY_MAX
+        ):
+            raise ValueError("Unsupported Day/Night switch delay")
+        await self._async_set_day_night_option("DayNightSwitchDelay", seconds, seconds)
 
     def get_infrared_mode(self) -> str:
         """This channel's infrared lighting mode, exactly as the device reports it.

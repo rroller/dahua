@@ -584,6 +584,8 @@ class _SetupCoordinator(_Coordinator):
         presets=(1, 2),
         preset_error=None,
         day_night_supported=False,
+        day_night_sensitivity_supported=False,
+        day_night_switch_delay_supported=False,
         exposure_anti_flicker_supported=False,
         exposure_mode_supported=False,
         profile_management_supported=False,
@@ -594,6 +596,8 @@ class _SetupCoordinator(_Coordinator):
     ):
         super().__init__()
         self._day_night_supported = day_night_supported
+        self._day_night_sensitivity_supported = day_night_sensitivity_supported
+        self._day_night_switch_delay_supported = day_night_switch_delay_supported
         self._exposure_anti_flicker_supported = exposure_anti_flicker_supported
         self._exposure_mode_supported = exposure_mode_supported
         self._profile_management_supported = profile_management_supported
@@ -628,6 +632,12 @@ class _SetupCoordinator(_Coordinator):
 
     def supports_day_night_color(self):
         return self._day_night_supported
+
+    def supports_day_night_sensitivity(self):
+        return self._day_night_sensitivity_supported
+
+    def supports_day_night_switch_delay(self):
+        return self._day_night_switch_delay_supported
 
     def supports_exposure_anti_flicker(self):
         return self._exposure_anti_flicker_supported
