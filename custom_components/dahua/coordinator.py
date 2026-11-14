@@ -3646,28 +3646,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                         self._supports_channel_scoped_illuminator,
                     )
 
-                # Which illumination modes the camera offers, asked ONLY where
-                # the channel-scoped lighting path is already known to work.
-                # That keeps it to the channels that can act on the answer: on
-                # a twelve channel recorder here, one. Asking every channel
-                # would spend three RPC2 calls apiece at setup to be told no
-                # eleven times.
-                #
-                # Measured on a DHI-NVR5464-16P-EI: the capability is reported
-                # per camera rather than host-wide, and it agreed with whether
-                # LightingScheme could actually be read channel-scoped on all
-                # eight channels tried. Capability and transport are separate
-                # questions in general (#942), so this is gated on both rather
-                # than on the capability alone.
-                if self._supports_channel_scoped_illuminator:
-                    self._lighting_schemes = (
-                        await self.client.async_get_lighting_schemes(self._channel)
-                    )
-                    _LOGGER.debug(
-                        "Channel %s lighting schemes: %s",
-                        self._channel,
-                        self._lighting_schemes,
-                    )
+                # The selector writes only LightingScheme. Its scenes need not
+                # match the Lighting_V2 profile count required by the two-table
+                # white-light override (#1204: nine scenes, three profiles).
+                if self._wanted_by(SELECT):
+                    await self._async_probe_lighting_schemes()
 
                 # Checking privacy mode (LeLensMask) support. This is RPC2 only and many models lack it.
                 # Deliberately broader than PROBE_FAILED: a camera without LeLensMask answers with an
@@ -6725,6 +6708,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             for bank in LIGHT_BRIGHTNESS_BANKS
         )
 
+    async def _async_probe_lighting_schemes(self) -> bool:
+        """Require a readable scene table and the channel's reported mode list."""
+        try:
+            # A successful override probe already established this table's
+            # shape. Otherwise check it independently before the three-call
+            # mode-capability query, so unsupported channels stop after one read.
+            if not self.uses_channel_scoped_illuminator():
+                await self.client.async_get_channel_lighting_scheme(self._channel)
+            schemes = await self.client.async_get_lighting_schemes(self._channel)
+        except Exception as probe_error:  # pylint: disable=broad-except
+            self._note_probe_refusal("lighting_schemes", probe_error)
+            return False
+        self._note_probe_answered("lighting_schemes")
+        self._lighting_schemes = schemes or None
+        return self.supports_lighting_schemes()
+
+    async def _async_retry_lighting_schemes(self) -> bool:
+        already = self.supports_lighting_schemes()
+        return await self._async_probe_lighting_schemes() and not already
+
     async def _async_fetch_channel_lighting_scheme(self) -> dict:
         """Keep only this channel's previous scene modes if its read fails."""
         try:
@@ -8617,6 +8620,7 @@ RETRYABLE_CAPABILITIES = {
     "event_notifications": DahuaDataUpdateCoordinator._async_retry_event_notifications,
     "lighting": DahuaDataUpdateCoordinator._async_retry_lighting,
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
+    "lighting_schemes": DahuaDataUpdateCoordinator._async_retry_lighting_schemes,
     "profile_mode": DahuaDataUpdateCoordinator._async_retry_profile_mode,
     "profile_schedule": DahuaDataUpdateCoordinator._async_retry_profile_schedule,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,

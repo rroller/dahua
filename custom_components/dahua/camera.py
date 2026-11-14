@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import voluptuous as vol
 from aiohttp import ClientError
 
@@ -36,7 +37,11 @@ from custom_components.dahua.audio import (
     async_transcode,
     resolve_format,
 )
-from custom_components.dahua.client import DahuaWriteDeclined
+from custom_components.dahua.client import (
+    MAX_CONCURRENT_REQUESTS_PER_HOST,
+    REQUEST_REACHED_DEVICE,
+    DahuaWriteDeclined,
+)
 from custom_components.dahua.entity import DahuaBaseEntity
 from custom_components.dahua.infrared import MODE_BY_OPTION, async_write_infrared_mode
 from custom_components.dahua.model_profiles import is_sdt4e425
@@ -854,7 +859,23 @@ class DahuaCamera(DahuaBaseEntity, Camera):
 
         Only transport failures are caught. Anything else still comes out,
         because a bug in here should not be quietly turned into a blank frame.
+
+        **A still can also be abandoned rather than refused.** Home Assistant
+        gives a camera 10 seconds and then cancels, while this integration
+        allows up to MAX_QUEUE_WAIT_SECONDS for a request slot and
+        TIMEOUT_SECONDS for the device after that. The caller therefore gives
+        up first, and it arrives here as a CancelledError, which is a
+        BaseException and so passes straight through the handler below. Nothing
+        was logged, Home Assistant answered the dashboard with its own
+        "Unable to get image", and #1197 is what that costs: an HTTP 500 with
+        an empty log and no way to tell a queue from a slow device. So the
+        cancellation is reported on its way past, saying which of the two it
+        was and never swallowing it.
         """
+        # Reset first: this task may have served an earlier still, and a stale
+        # True would describe that one rather than this.
+        REQUEST_REACHED_DEVICE.set(False)
+        started = time.monotonic()
         try:
             return await self._coordinator.client.async_get_snapshot(
                 self._snapshot_channel()
@@ -862,6 +883,27 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         except (ClientError, TimeoutError, asyncio.TimeoutError) as error:
             _LOGGER.debug("%s: could not fetch a snapshot: %s", self._name, error)
             return None
+        except asyncio.CancelledError:
+            # Only ever describes what was measured. Home Assistant giving up,
+            # the entry unloading and Home Assistant shutting down all cancel
+            # here, and naming a cause would be wrong for two of the three.
+            if REQUEST_REACHED_DEVICE.get():
+                _LOGGER.debug(
+                    "%s: the still was given up on after %.1fs; the request had "
+                    "reached the device and the device had not answered",
+                    self._name,
+                    time.monotonic() - started,
+                )
+            else:
+                _LOGGER.debug(
+                    "%s: the still was given up on after %.1fs without ever "
+                    "being sent; it was still waiting for one of this host's "
+                    "%d request slots",
+                    self._name,
+                    time.monotonic() - started,
+                    MAX_CONCURRENT_REQUESTS_PER_HOST,
+                )
+            raise
 
     def _snapshot_channel(self) -> int:
         """The channel number this still is asked for.
