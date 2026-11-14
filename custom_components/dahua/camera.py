@@ -1097,9 +1097,12 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     async def async_set_video_in_day_night_mode(self, config_type: str, mode: str):
         """Handles the service call from SERVICE_SET_DAY_NIGHT_MODE to set the day/night color mode"""
         channel = self._logical_channel
-        await self._coordinator.client.async_set_video_in_day_night_mode(
+        # Same as the select: follow the write to whichever table took
+        # it, so the select beside this service does not go stale (#1194).
+        table = await self._coordinator.client.async_set_video_in_day_night_mode(
             channel, config_type, mode
         )
+        self._coordinator.note_day_night_write_table(table)
         await self._coordinator.async_refresh()
 
     async def async_set_time(self, time=None):

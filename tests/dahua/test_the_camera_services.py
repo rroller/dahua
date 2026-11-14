@@ -77,6 +77,13 @@ class _Coordinator:
         self.profile_is_writable = profile_is_writable
         self.vto_client = vto_client
 
+    # The service follows the Day/Night write to whichever table took it,
+    # so the double has to record that the way the real one does (#1194).
+    _reads_video_in_day_night = False
+
+    def note_day_night_write_table(self, table):
+        self.day_night_write_table = table
+
     def get_model(self):
         return self.model
 

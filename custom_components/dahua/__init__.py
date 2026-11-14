@@ -153,6 +153,7 @@ from .coordinator import (  # noqa: F401  pylint: disable=unused-import
     alarm_input_event_code,
     alarm_input_index,
     day_night_color_name,
+    day_night_mode_name,
     describe_update_failure,
     call_button_index,
     door_index,

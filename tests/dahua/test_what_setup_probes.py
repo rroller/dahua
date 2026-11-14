@@ -540,3 +540,240 @@ async def test_unknown_schedule_shape_does_not_disable_profile_management(hass):
     await coordinator._async_probe_exposure_anti_flicker()
     assert coordinator.supports_profile_management() is True
     assert coordinator.supports_profile_schedule() is False
+
+
+# --- an optional table that is slow must not cost the entry ----------------
+#
+# @rroller's P1 on #1201. The Day/Night source probe reads VideoInDayNight,
+# which is optional. `async_get_config` only swallows a ClientResponseError, so
+# a timeout or a dropped connection came out of the probe and aborted
+# initialisation: a device that set up perfectly well yesterday stopped,
+# because a new optional read was slow, and every probe after it never ran.
+
+
+def _day_night_capable(hass):
+    """A coordinator whose channel has a Day/Night select at all.
+
+    The VideoInDayNight probe is gated on that, so without this the probe
+    under test never runs and the regression would pass vacuously.
+    """
+    coordinator = _coordinator(hass)
+    coordinator.client.SHAPED = dict(
+        coordinator.client.SHAPED,
+        async_probe_video_in_options={"table.VideoInOptions[0].DayNightColor": "1"},
+    )
+    return coordinator
+
+
+async def test_a_slow_day_night_table_does_not_abort_setup(hass):
+    """The exact gate: a valid VideoInOptions answer, a timeout only for
+    VideoInDayNight."""
+    coordinator = _day_night_capable(hass)
+
+    async def _times_out(*args, **kwargs):
+        raise TimeoutError("VideoInDayNight did not answer")
+
+    coordinator.client.async_probe_video_in_day_night = _times_out
+
+    await coordinator._async_update_data()
+
+    assert coordinator.initialized is True, "one slow optional table ended setup"
+
+
+async def test_the_probes_after_the_day_night_table_still_run(hass):
+    """The half a per-probe test would miss. The timeout used to take every
+    later question with it."""
+    coordinator = _day_night_capable(hass)
+
+    async def _times_out(*args, **kwargs):
+        raise TimeoutError("VideoInDayNight did not answer")
+
+    coordinator.client.async_probe_video_in_day_night = _times_out
+
+    await coordinator._async_update_data()
+
+    assert "async_get_video_widget" in coordinator.client.asked
+    assert "async_get_config" in coordinator.client.asked
+
+
+async def test_a_slow_day_night_table_keeps_the_existing_read_route(hass):
+    """Unanswered is not the same as answered no. The channel keeps reading
+    VideoInOptions, which is what worked before this probe existed."""
+    coordinator = _day_night_capable(hass)
+
+    async def _times_out(*args, **kwargs):
+        raise TimeoutError("VideoInDayNight did not answer")
+
+    coordinator.client.async_probe_video_in_day_night = _times_out
+
+    await coordinator._async_update_data()
+
+    assert coordinator.reads_video_in_day_night() is False
+
+
+# --- a Day/Night select whose capability arrives late ----------------------
+#
+# @rroller's second P2 on #1201, and it is the same bug #1194 reported reached
+# by another road. The question of which table the select reads was asked only
+# at setup, and only where the capability was already known. A VideoInOptions
+# probe that times out leaves that capability off, so the question is skipped;
+# the later retry turns the capability on and builds the select without ever
+# asking, and nothing asks again, because a question never put is never
+# recorded as unanswered. The select then reports the stale VideoInOptions
+# `1`, which is Auto, for the life of the entry.
+#
+# Driven through the real poll rather than by calling the retry: the retry
+# running at all depends on the setup timeout having been recorded, and that
+# recording is half of what went wrong.
+
+
+def _slow_then_answering(coordinator, answer):
+    """A VideoInOptions probe that times out once and answers afterwards.
+
+    A timeout, deliberately, not the shared `refusing` hook: that raises a
+    `ClientResponseError`, which carries a status and so is the device
+    answering. Only silence is asked again, which is the path under test.
+    """
+    calls = []
+
+    async def probe(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("VideoInOptions did not answer")
+        return answer
+
+    coordinator.client.async_probe_video_in_options = probe
+    return calls
+
+
+def _recording(coordinator):
+    """The real probe bookkeeping, which the shared harness stubs out.
+
+    `_coordinator` replaces `_note_probe_refusal` with a no-op, so nothing is
+    ever pending and the retry pass has nothing to do. Deleting the instance
+    attribute puts the class's own method back.
+    """
+    del coordinator._note_probe_refusal
+    return coordinator
+
+
+def _late_day_night(hass, mode="BlackWhite"):
+    """A channel whose Day/Night capability turns up on the second poll.
+
+    The device has the preferred table all along and says `BlackWhite` in it.
+    What it does not do is answer the VideoInOptions probe the first time.
+
+    The poll's own VideoInOptions read answers `1` throughout, so the stale
+    Auto is really in the data the select reads. Without that the regression
+    would be "the select says nothing" rather than @jpeu77's "the select says
+    Auto whatever I set", and the fix would be proved against an empty table.
+
+    `mode=None` is the device answering the preferred table without this
+    channel's row in it, which is the device saying no.
+    """
+    coordinator = _recording(_coordinator(hass))
+    coordinator.client.SHAPED = dict(
+        coordinator.client.SHAPED,
+        async_get_video_in_options={"table.VideoInOptions[0].DayNightColor": "1"},
+        async_probe_video_in_day_night=(
+            {"table.VideoInDayNight[1][2].Mode": "Color"}
+            if mode is None
+            else {"table.VideoInDayNight[0][2].Mode": mode}
+        ),
+    )
+    _slow_then_answering(coordinator, {"table.VideoInOptions[0].DayNightColor": "1"})
+    return coordinator
+
+
+async def test_a_late_day_night_capability_is_still_discovered(hass):
+    """The control. Everything below is about a capability that did turn up, so
+    a retry that never ran would make all of it vacuous."""
+    coordinator = _late_day_night(hass)
+
+    await coordinator._async_update_data()
+    assert coordinator._supports_day_night_color is False, "the setup probe answered"
+    assert coordinator.probes_that_did_not_answer() == {"day_night_color"}
+
+    await coordinator._async_update_data()
+
+    assert coordinator._supports_day_night_color is True
+
+
+async def test_a_late_day_night_capability_learns_which_table_it_reads(hass):
+    """⭐ The regression. The select exists from the second poll, and it must
+    read the table the write goes to rather than the stale VideoInOptions row."""
+    coordinator = _late_day_night(hass)
+
+    await coordinator._async_update_data()
+    coordinator.data = await coordinator._async_update_data()
+
+    assert coordinator.reads_video_in_day_night() is True
+    assert coordinator.get_day_night_color() == "BlackWhite", (
+        "the select reports %s, which is the stale VideoInOptions value"
+        % coordinator.get_day_night_color()
+    )
+
+
+async def test_the_late_poll_already_carries_the_table_it_just_chose(hass):
+    """One poll, not two. The retry runs before the fan-out, so the table it
+    chose is read on the same cycle and the select is never briefly unknown."""
+    coordinator = _late_day_night(hass)
+
+    await coordinator._async_update_data()
+    result = await coordinator._async_update_data()
+
+    assert result.get("table.VideoInDayNight[0][2].Mode") == "BlackWhite"
+
+
+async def test_a_late_day_night_capability_asks_nothing_without_the_select(hass):
+    """The question is only meaningful where the select exists. An entry with
+    selects switched off must not pay a read for an entity it will not create."""
+    coordinator = _late_day_night(hass)
+    coordinator._wanted_by = lambda *platforms: SELECT not in platforms
+
+    await coordinator._async_update_data()
+    await coordinator._async_update_data()
+
+    assert coordinator._supports_day_night_color is True, "the retry did not run"
+    assert "async_probe_video_in_day_night" not in coordinator.client.asked
+
+
+async def test_a_table_without_this_channel_leaves_the_late_select_alone(hass):
+    """A device that answers the preferred table without this channel's row has
+    answered no, and the channel keeps the route that works."""
+    coordinator = _late_day_night(hass, mode=None)
+
+    await coordinator._async_update_data()
+    coordinator.data = await coordinator._async_update_data()
+
+    assert "async_probe_video_in_day_night" in coordinator.client.asked
+    assert coordinator.reads_video_in_day_night() is False
+    assert coordinator.get_day_night_color() == "Auto"
+
+
+async def test_a_slow_source_probe_after_a_late_capability_is_asked_again(hass):
+    """Containment, kept. The chained probe is as optional as the setup one: a
+    timeout must cost the poll nothing, must leave the channel on the route that
+    works, and must be asked again under its own name."""
+    coordinator = _late_day_night(hass)
+    answers = []
+
+    async def probe(*args, **kwargs):
+        answers.append(1)
+        if len(answers) == 1:
+            raise TimeoutError("VideoInDayNight did not answer")
+        return {"table.VideoInDayNight[0][2].Mode": "BlackWhite"}
+
+    coordinator.client.async_probe_video_in_day_night = probe
+
+    await coordinator._async_update_data()
+    coordinator.data = await coordinator._async_update_data()
+
+    assert coordinator.reads_video_in_day_night() is False
+    assert coordinator.get_day_night_color() == "Auto"
+    assert coordinator.probes_that_did_not_answer() == {"video_in_day_night"}
+
+    coordinator.data = await coordinator._async_update_data()
+
+    assert coordinator.reads_video_in_day_night() is True
+    assert coordinator.get_day_night_color() == "BlackWhite"

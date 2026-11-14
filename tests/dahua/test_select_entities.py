@@ -58,6 +58,12 @@ class _Coordinator:
     def supports_profile_management(self):
         return False
 
+    # Borrowed for the same reason: the select tells the coordinator which
+    # table took the Day/Night write, and a hand-written stub here would
+    # assert this file's idea of that rule instead of production's (#1194).
+    _reads_video_in_day_night = False
+    note_day_night_write_table = DahuaDataUpdateCoordinator.note_day_night_write_table
+
     video_image_control_table = DahuaDataUpdateCoordinator.video_image_control_table
     async_set_video_image_control = (
         DahuaDataUpdateCoordinator.async_set_video_image_control
