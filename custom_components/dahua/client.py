@@ -4491,6 +4491,7 @@ class DahuaClient:
             or not all(
                 isinstance(profile, dict)
                 and isinstance(profile.get("LightingMode"), str)
+                and bool(profile["LightingMode"])
                 for profile in table
             )
         ):

@@ -1085,6 +1085,13 @@ Image Wide Dynamic Range | Off, On or mode 2. The camera ignores mode 0 on its o
 Image Exposure Mode | Auto, Gain Priority or Shutter Priority. Manual exposure is deliberately not offered: it needs shutter and gain values this integration does not expose
 Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
 Audio Source | Selects the source reported by each encoder format (Coaxial or BNC). Only shown when the device exposes that setting
+Illumination mode | Selects the fill-light modes reported by the camera, such as infrared, white or smart dual light. Applies the chosen mode to every lighting scene
+
+The **Illumination mode** selector is detected independently from the
+**Illuminator** light's white-light override. Cameras can expose the mode selector
+even when their lighting tables have different scene/profile counts and the
+override cannot safely control them. The selector offers only modes reported by
+the camera.
 
 **Profile Management and the Profile sensor describe different settings.** The
 selector controls how profiles are chosen. Under Schedule, the Profile sensor
