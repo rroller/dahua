@@ -2188,6 +2188,63 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return True
         return False
 
+    async def _async_probe_encode_audio(self) -> bool:
+        """Ask which audio fields this channel's encoder has, and remember them.
+
+        One judgment for setup and for the later retry. The capability is the
+        keys this channel's row carries, not that the read worked: a device
+        with no audio answers the table and simply has no `AudioEnable` or
+        `Audio.AudioSource` in it, and that is a settled no.
+
+        The read is the strict one. `async_get_config` turns an HTTP 400, 403
+        or 500 into `{}`, which looks exactly like that settled no, so a
+        refused encoder left the audio switch and the audio source select
+        uncreated with nothing recorded anywhere -- not even in the dump,
+        since no refusal was noted either. A refusal with a status is an
+        answer and is not retried; only silence is.
+
+        Gated here rather than at the call site because the retry has to apply
+        the same gate, and two call sites of one gate is how the two come to
+        disagree (@rroller on #1201).
+
+        The poll reads this table only where these keys were found, so without
+        the retry nothing ever asked again: setup's empty answer closed the
+        loop for the life of the entry.
+        """
+        if not self._wanted_by(SWITCH, SELECT):
+            return False
+        try:
+            encode = await self.client.async_probe_encode()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("encode", probe_error)
+            return False
+        self._note_probe_answered("encode")
+        prefix = f"table.Encode[{self._channel}]."
+        self._encode_audio_keys = tuple(
+            key
+            for key in encode
+            if key.startswith(prefix)
+            and (key.endswith(".AudioEnable") or key.endswith(".Audio.AudioSource"))
+        )
+        self._encode_audio_last_values = {
+            key: encode[key] for key in self._encode_audio_keys
+        }
+        _LOGGER.debug(
+            "Channel %s reports encoder audio fields %s",
+            self._channel,
+            sorted(self._encode_audio_keys) or "none",
+        )
+        return bool(self._encode_audio_keys)
+
+    async def _async_retry_encode(self) -> bool:
+        """Whether an encoder's audio fields turned up after setup missed them.
+
+        What the gate said is read first, because the probe is the thing that
+        writes it: asking afterwards would compare the answer with itself.
+        """
+        already = bool(self._encode_audio_keys)
+        return await self._async_probe_encode_audio() and not already
+
     async def _async_retry_lighting_v2(self) -> bool:
         """Whether an illuminator turned up that was missed at setup."""
         try:
@@ -3763,26 +3820,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # Discover the actual audio fields once, before platforms create
                 # entities. The same host-wide Encode answer is cached for other
                 # recorder channels.
-                if self._wanted_by(SWITCH, SELECT):
-                    try:
-                        encode = await self.client.async_get_config("Encode")
-                    except PROBE_FAILED as probe_error:
-                        self._note_probe_refusal("encode", probe_error)
-                        encode = {}
-                    prefix = f"table.Encode[{self._channel}]."
-                    self._encode_audio_keys = tuple(
-                        key
-                        for key in encode
-                        if key.startswith(prefix)
-                        and (
-                            key.endswith(".AudioEnable")
-                            or key.endswith(".Audio.AudioSource")
-                        )
-                    )
-                    self._encode_audio_last_values = {
-                        key: encode[key] for key in self._encode_audio_keys
-                    }
-                    data.update(self._encode_audio_last_values)
+                await self._async_probe_encode_audio()
+                data.update(self._encode_audio_last_values)
 
                 self.initialized = True
             except ClientResponseError as exception:
@@ -8777,6 +8816,7 @@ RETRYABLE_CAPABILITIES = {
     "cloud_upgrade": DahuaDataUpdateCoordinator._async_retry_cloud_upgrade,
     "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
     "disarming_linkage": DahuaDataUpdateCoordinator._async_retry_disarming_linkage,
+    "encode": DahuaDataUpdateCoordinator._async_retry_encode,
     "event_notifications": DahuaDataUpdateCoordinator._async_retry_event_notifications,
     "lighting": DahuaDataUpdateCoordinator._async_retry_lighting,
     "lighting_v2": DahuaDataUpdateCoordinator._async_retry_lighting_v2,
