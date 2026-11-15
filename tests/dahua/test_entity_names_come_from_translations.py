@@ -38,6 +38,7 @@ PLATFORMS = (
     "select",
     "sensor",
     "switch",
+    "text",
     "time",
     "update",
 )
@@ -67,6 +68,8 @@ WAS = {
     ("select", "profile_management"): "Profile management",
     ("time", "profile_day_start"): "Profile day start",
     ("time", "profile_night_start"): "Profile night start",
+    ("text", "channel_title"): "Channel Title",
+    ("text", "custom_title"): "Custom Title",
     ("select", "exposure_anti_flicker"): "Image exposure anti-flicker",
     (
         "select",

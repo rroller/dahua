@@ -32,6 +32,7 @@ PLATFORMS = (
     "select",
     "sensor",
     "switch",
+    "text",
     "time",
     "update",
 )
@@ -46,6 +47,8 @@ WAS = {
     ("select", "profile_management"): "mdi:theme-light-dark",
     ("time", "profile_day_start"): "mdi:weather-sunset-up",
     ("time", "profile_night_start"): "mdi:weather-sunset-down",
+    ("text", "channel_title"): "mdi:format-title",
+    ("text", "custom_title"): "mdi:text-box-outline",
     ("select", "exposure_anti_flicker"): "mdi:flash",
     ("select", "lighting_scheme"): "mdi:lightbulb-auto",
     # New with the two VideoInOptions picture controls ported from the

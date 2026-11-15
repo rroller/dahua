@@ -78,6 +78,14 @@
                 "default": "mdi:volume-high"
             }
         },
+        "text": {
+            "channel_title": {
+                "default": "mdi:format-title"
+            },
+            "custom_title": {
+                "default": "mdi:text-box-outline"
+            }
+        },
         "switch": {
             "noise_filter": {
                 "default": "mdi:filter"

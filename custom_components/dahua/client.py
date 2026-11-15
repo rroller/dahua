@@ -5429,6 +5429,20 @@ class DahuaClient:
             "/cgi-bin/configManager.cgi?action=getConfig&name=VideoWidget"
         )
 
+    async def async_get_channel_title(self) -> dict:
+        """Read the channel title table, letting refusals raise.
+
+        The title entity's poll and its capability probe share this read. It is
+        strict for the same reason `async_probe_video_in_options` is: a 403 from
+        a restricted account must be recorded as a refusal and must let the
+        poll keep the last value, not look like a device with no such table.
+        The URL carries no channel, so the shared cache answers it once for
+        every channel of a recorder.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=ChannelTitle"
+        )
+
     async def async_set_service_set_channel_title(
         self, channel: int, text1: str, text2: str
     ):

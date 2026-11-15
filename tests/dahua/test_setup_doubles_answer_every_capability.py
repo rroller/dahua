@@ -52,6 +52,7 @@ PLATFORMS = (
     "select",
     "sensor",
     "switch",
+    "text",
     "time",
     "update",
 )

@@ -86,6 +86,7 @@ SMART_MOTION = "async_get_smart_motion_detection"
 PRIVACY = "async_get_privacy_mode"
 DAY_NIGHT = "async_get_video_in_options"
 VIDEO_WIDGET = "async_get_video_widget"
+CHANNEL_TITLE = "async_get_channel_title"
 ALARM_OUT = "async_get_alarm_output_state"
 CLOUD_UPGRADE = "async_get_cloud_upgrade_info"
 VIDEO_IMAGE_CONTROL = "async_get_video_image_control"
@@ -164,10 +165,37 @@ async def test_video_widget_is_polled_only_when_a_supported_overlay_has_a_reader
     await c._async_update_data()
     assert VIDEO_WIDGET in c.client.calls
 
-    c = _coordinator(switch=False)
+    c = _coordinator(switch=False, text=False)
     c._video_widget_fields = frozenset({"TimeTitle.EncodeBlend"})
     await c._async_update_data()
     assert VIDEO_WIDGET not in c.client.calls
+
+
+async def test_video_widget_is_polled_for_the_custom_title_text_alone():
+    """The text field is the second reader of VideoWidget. With the switch
+    platform off, a channel that reported CustomTitle[1].Text still needs the
+    table."""
+    c = _coordinator(switch=False)
+    c._video_widget_fields = frozenset({"CustomTitle[1].Text"})
+    await c._async_update_data()
+    assert VIDEO_WIDGET in c.client.calls
+
+    c = _coordinator(switch=False, text=False)
+    c._video_widget_fields = frozenset({"CustomTitle[1].Text"})
+    await c._async_update_data()
+    assert VIDEO_WIDGET not in c.client.calls
+
+
+async def test_channel_title_is_polled_only_for_the_text_platform():
+    c = _coordinator()
+    c._supports_channel_title = True
+    await c._async_update_data()
+    assert CHANNEL_TITLE in c.client.calls
+
+    c = _coordinator(text=False)
+    c._supports_channel_title = True
+    await c._async_update_data()
+    assert CHANNEL_TITLE not in c.client.calls
 
 
 async def test_video_widget_is_not_polled_for_a_monitor_without_a_camera():

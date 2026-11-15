@@ -143,6 +143,7 @@
                             "sensor": "Sensor enabled",
                             "switch": "Switch enabled",
                             "time": "Time enabled",
+                            "text": "Text enabled",
                             "update": "Update enabled"
                         }
                     }
@@ -151,6 +152,14 @@
         }
     },
     "entity": {
+        "text": {
+            "channel_title": {
+                "name": "Channel Title"
+            },
+            "custom_title": {
+                "name": "Custom Title"
+            }
+        },
         "time": {
             "profile_day_start": {
                 "name": "Profile day start"

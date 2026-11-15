@@ -89,6 +89,7 @@ from .const import (
     SWITCH,
     UPDATE,
     TIME,
+    TEXT,
     EXPOSURE_ANTI_FLICKER_OPTION_BY_VALUE,
     EXPOSURE_ANTI_FLICKER_VALUE_BY_OPTION,
     EXPOSURE_COMPENSATION_MAX,
@@ -780,18 +781,29 @@ VIDEO_WIDGET_OVERLAY_FIELDS = (
     "CustomTitle[1].EncodeBlend",
 )
 
+# The custom title's text, beside its visibility field. The text entity is its
+# only reader, and it shares the VideoWidget read the switches already make.
+CUSTOM_TITLE_TEXT_FIELD = "CustomTitle[1].Text"
+VIDEO_WIDGET_TEXT_FIELDS = (CUSTOM_TITLE_TEXT_FIELD,)
+
+# One channel's row in ChannelTitle, the table the channel-title text entity
+# reads and writes. The title itself is ChannelTitle[ch].Name.
+CHANNEL_TITLE_KEY = "table.ChannelTitle[{0}].Name"
+
 
 def video_widget_fields(data: dict, channel: int) -> frozenset:
-    """Which overlay visibility switches this channel reports.
+    """Which VideoWidget fields this channel reports.
 
-    VideoWidget is host-wide and indexed by channel, so the same per-channel
-    rule applies as image_option_fields.
+    Both the overlay visibility switches and the custom-title text entity read
+    this one table, so the capability is collected once. VideoWidget is
+    host-wide and indexed by channel, so the same per-channel rule applies as
+    image_option_fields.
     """
     if not isinstance(data, dict):
         return frozenset()
     return frozenset(
         field
-        for field in VIDEO_WIDGET_OVERLAY_FIELDS
+        for field in VIDEO_WIDGET_OVERLAY_FIELDS + VIDEO_WIDGET_TEXT_FIELDS
         if data.get("table.VideoWidget[{0}].{1}".format(channel, field)) is not None
     )
 
@@ -1439,6 +1451,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # the select/switch platforms read them.
     _image_option_fields: frozenset = frozenset()
     _video_widget_fields: frozenset = frozenset()
+    # Whether this channel reported ChannelTitle[ch].Name, the table the title
+    # text entity reads and writes.
+    _supports_channel_title: bool = False
     # Which table this channel's Day/Night select reads. The doubles in the
     # tests are built with object.__new__, so this needs a class default.
     _reads_video_in_day_night: bool = False
@@ -1606,6 +1621,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._video_image_control_table: str = VIDEO_IMAGE_CONTROL_TABLE
         self._image_option_fields: frozenset = frozenset()
         self._video_widget_fields: frozenset = frozenset()
+        self._supports_channel_title = False
         # What the device said when a probe failed, keyed by probe name.
         self._probe_refusals: Dict[str, dict] = {}
         self._audio_control_owners: dict[str, int | None] = {}
@@ -3085,8 +3101,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         this channel is in it. An empty answer is the device saying it has none,
         which `_note_probe_answered` keeps from being asked again.
 
-        Only the switch platform reads the answer, so setup asks this only when
-        that platform is enabled.
+        Both the overlay visibility switches and the custom-title text field
+        read this table, so setup asks this when either platform is enabled.
         """
         try:
             table = await self.client.async_get_video_widget()
@@ -3097,20 +3113,55 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._note_probe_answered("video_widget")
         self._video_widget_fields = video_widget_fields(table, self._channel)
         _LOGGER.debug(
-            "Channel %s reports overlay visibility fields %s",
+            "Channel %s reports VideoWidget fields %s",
             self._channel,
             sorted(self._video_widget_fields) or "none",
         )
         return bool(self._video_widget_fields)
 
     async def _async_retry_video_widget(self) -> bool:
-        """Whether overlay switches turned up that were missed at setup.
+        """Whether an overlay switch or a custom title turned up late.
 
-        The poll decides each cycle whether to read the table, so the switches
+        The poll decides each cycle whether to read the table, so the entities
         work from the next poll rather than reading unknown until a reload.
         """
         already = bool(self._video_widget_fields)
         return await self._async_probe_video_widget() and not already
+
+    async def _async_probe_channel_title(self) -> bool:
+        """Ask whether this channel has a ChannelTitle row, and remember it.
+
+        The table is host-wide and indexed by channel, so this channel's own
+        key is the capability. The read is strict for the same reason
+        `_async_probe_video_in_options` is: `async_get_config` turns a 403 into
+        `{}`, which would record a restricted account as a model without the
+        table and leave the diagnostics dump with no refusal beside an empty
+        title field.
+        """
+        try:
+            table = await self.client.async_get_channel_title()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("channel_title", probe_error)
+            self._supports_channel_title = False
+            return False
+        self._note_probe_answered("channel_title")
+        self._supports_channel_title = CHANNEL_TITLE_KEY.format(self._channel) in table
+        _LOGGER.debug(
+            "Channel %s supports a channel title=%s",
+            self._channel,
+            self._supports_channel_title,
+        )
+        return self._supports_channel_title
+
+    async def _async_retry_channel_title(self) -> bool:
+        """Whether a channel title turned up that was missed at setup.
+
+        Only the text entity is gated on this, and the poll decides each cycle
+        whether to read the table, so the field works from the next poll rather
+        than reading unknown until a reload.
+        """
+        already = self._supports_channel_title
+        return await self._async_probe_channel_title() and not already
 
     async def _async_probe_profile_mode(self) -> bool:
         """Ask whether this channel has selectable day/night/general profiles.
@@ -3660,12 +3711,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # Which table the Day/Night select should read back.
                 await self._async_discover_day_night_source()
 
-                # The overlay visibility switches. Only the switch platform
-                # reads this table, so a device whose switches are turned off
-                # is never asked. The probe is shared with the retry a later
-                # poll makes when this one goes unanswered (#1057).
-                if self._wanted_by(SWITCH):
+                # The overlay visibility switches and the custom-title text
+                # field. Both read VideoWidget, so one probe serves them; a
+                # device with neither platform on is never asked. The probe is
+                # shared with the retry a later poll makes when this one goes
+                # unanswered (#1057).
+                if self._wanted_by(SWITCH, TEXT):
                     await self._async_probe_video_widget()
+
+                # The channel-title text field. Only the text platform reads
+                # ChannelTitle, so a device with text off is never asked.
+                if self._wanted_by(TEXT):
+                    await self._async_probe_channel_title()
 
                 # Which camera is actually on this channel. Every channel of a
                 # recorder reports the recorder's model, so a doorbell behind an
@@ -4115,10 +4172,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                             self._async_fetch_audio_control(config_name)
                         )
                     )
-            # Overlay visibility for the switches. Gated on the probe and the
-            # platform, and wrapped, for the same reasons as the two above.
-            if self.reads_video_widget() and self._wanted_by(SWITCH):
+            # Overlay visibility for the switches and the custom-title text
+            # field. Each family has its own reader, so a device with text on
+            # and only an overlay field present does not fetch a table for an
+            # entity that will never exist. Wrapped for the reason the two
+            # above are.
+            if (self._wanted_by(SWITCH) and self.reads_video_widget_overlay()) or (
+                self._wanted_by(TEXT) and self.reads_custom_title()
+            ):
                 coros.append(asyncio.ensure_future(self._async_fetch_video_widget()))
+            if self.supports_channel_title() and self._wanted_by(TEXT):
+                coros.append(asyncio.ensure_future(self._async_fetch_channel_title()))
             if self.reads_video_in_day_night() and self._wanted_by(SELECT):
                 coros.append(
                     asyncio.ensure_future(self._async_fetch_video_in_day_night())
@@ -6243,13 +6307,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def reads_video_widget(self) -> bool:
         """Whether the poll should read VideoWidget for this channel.
 
-        The poll and the switch platform must agree on the monitor rule. The
-        probe can only answer what the table said, and an indoor monitor
-        without a camera answers it for its screen, so the fields alone are not
-        enough: no switch is created there, and reading the table every cycle
-        would feed nothing.
+        Either family that reads it may be the reason: the overlay visibility
+        switches or the custom-title text field. The precise gates below are
+        what the poll uses, so a device with text on and only an overlay field
+        present does not fetch a table for a field no entity reads.
         """
-        return bool(self._video_widget_fields) and not (
+        return self.reads_video_widget_overlay() or self.reads_custom_title()
+
+    def reads_video_widget_overlay(self) -> bool:
+        """Whether a supported overlay visibility switch has a reader."""
+        return bool(
+            self._video_widget_fields.intersection(VIDEO_WIDGET_OVERLAY_FIELDS)
+        ) and not (self.is_indoor_monitor_without_video())
+
+    def reads_custom_title(self) -> bool:
+        """Whether the custom-title text field has a reader."""
+        return CUSTOM_TITLE_TEXT_FIELD in self._video_widget_fields and not (
             self.is_indoor_monitor_without_video()
         )
 
@@ -6284,10 +6357,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         Not on an indoor monitor without a camera: it has no video to burn an
         overlay into, so a VTH that answers the table for its screen would
-        otherwise get controls that change nothing. `reads_video_widget` is the
-        same rule for the poll, so the two cannot drift.
+        otherwise get controls that change nothing. `reads_video_widget_overlay`
+        is the same rule for the poll, so the two cannot drift.
         """
-        return field in self._video_widget_fields and self.reads_video_widget()
+        return field in self._video_widget_fields and self.reads_video_widget_overlay()
 
     def is_video_widget_overlay_on(self, field: str) -> bool | None:
         """Whether an overlay is visible, or None if the poll has no usable value.
@@ -6309,6 +6382,60 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Show or hide one VideoWidget overlay on this channel."""
         return await self.client.async_set_video_widget_overlay(
             self.get_channel(), field, enabled
+        )
+
+    def supports_channel_title(self) -> bool:
+        """Whether this channel reported ChannelTitle[ch].Name.
+
+        Not on an indoor monitor without a camera: it has no picture of its own
+        to label, even where the table names its screen.
+        """
+        return self._supports_channel_title and not (
+            self.is_indoor_monitor_without_video()
+        )
+
+    def get_channel_title(self) -> str | None:
+        """This channel's title, or None when the poll has not read one.
+
+        An empty title is ""; a missing row is None, so the entity can show
+        unavailable rather than an invented blank title.
+        """
+        titles = dahua_utils.parse_channel_titles(getattr(self, "data", None) or {})
+        return titles.get(self.get_channel())
+
+    def supports_custom_title(self) -> bool:
+        """Whether this channel reported the custom title's text field."""
+        return CUSTOM_TITLE_TEXT_FIELD in self._video_widget_fields and (
+            self.reads_custom_title()
+        )
+
+    def get_custom_title(self) -> str | None:
+        """This channel's custom title, or None when the poll has not read one.
+
+        The devices spell an empty title as `none` or `||`, and either means
+        the same thing to the text field: no title. A value that is neither is
+        returned as the camera stores it.
+        """
+        raw = (getattr(self, "data", None) or {}).get(
+            "table.VideoWidget[{0}].{1}".format(
+                self.get_channel(), CUSTOM_TITLE_TEXT_FIELD
+            )
+        )
+        if raw is None:
+            return None
+        text = str(raw)
+        return "" if text.strip().lower() in {"none", "||"} else text
+
+    async def async_set_channel_title(self, title: str):
+        """Write this channel's title (ChannelTitle[ch].Name)."""
+        return await self.client.async_set_service_set_channel_title(
+            self.get_channel(), title, ""
+        )
+
+    async def async_set_custom_title(self, title: str):
+        """Write this channel's custom title (CustomTitle[1].Text)."""
+        return await self.client.async_set_service_set_text_overlay(
+            self.get_channel(), 1, title
         )
 
     # Which region's sensitivity and threshold are exposed, of the four the
@@ -8650,6 +8777,29 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             }
             return carried or None
 
+    async def _async_fetch_channel_title(self) -> dict | None:
+        """Poll ChannelTitle, keeping the last answer on a refusal.
+
+        The probe means this is only asked where this channel reported a row.
+        Carries only the table's keys, so a refusal does not blank the text
+        field or overwrite another coroutine's fresh answer.
+        """
+        try:
+            return await self.client.async_get_channel_title()
+        except Exception as exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read the channel title for channel %s",
+                self._channel,
+                exc_info=exception,
+            )
+            previous = getattr(self, "data", None) or {}
+            carried = {
+                key: value
+                for key, value in previous.items()
+                if key.startswith("table.ChannelTitle[")
+            }
+            return carried or None
+
     async def _async_fetch_ivs_rules(self) -> dict | None:
         """Poll the IVS rules, keeping the last answer on a refusal.
 
@@ -8814,6 +8964,7 @@ RETRYABLE_CAPABILITIES = {
     "cloud_connection": DahuaDataUpdateCoordinator._async_retry_cloud_connection,
     "intelli_tour": DahuaDataUpdateCoordinator._async_retry_intelli_tour,
     "cloud_upgrade": DahuaDataUpdateCoordinator._async_retry_cloud_upgrade,
+    "channel_title": DahuaDataUpdateCoordinator._async_retry_channel_title,
     "day_night_color": DahuaDataUpdateCoordinator._async_retry_day_night_color,
     "disarming_linkage": DahuaDataUpdateCoordinator._async_retry_disarming_linkage,
     "encode": DahuaDataUpdateCoordinator._async_retry_encode,

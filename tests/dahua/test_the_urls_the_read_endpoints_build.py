@@ -86,6 +86,12 @@ ENDPOINTS = [
         False,
     ),
     (
+        "async_get_channel_title",
+        (),
+        "/cgi-bin/configManager.cgi?action=getConfig&name=ChannelTitle",
+        False,
+    ),
+    (
         "async_get_video_in_mode",
         (),
         "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode",

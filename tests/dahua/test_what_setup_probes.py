@@ -40,6 +40,7 @@ PROBES = [
     ("async_get_smart_motion_detection", "_supports_smart_motion_detection", None),
     ("async_probe_video_in_options", "_supports_day_night_color", None),
     ("async_get_video_widget", "_video_widget_fields", None),
+    ("async_get_channel_title", "_supports_channel_title", None),
     ("async_get_lighting_v2", "_supports_lighting_v2", None),
     # Gated on a model name whitelist, which is the bug class #570, #676 and
     # #690 were all instances of. Named here so the probe actually runs.
@@ -127,6 +128,7 @@ FLAGS = (
     "_video_color_fields",
     "_image_option_fields",
     "_video_widget_fields",
+    "_supports_channel_title",
     "_supports_exposure_anti_flicker",
 )
 
