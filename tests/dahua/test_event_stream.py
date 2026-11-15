@@ -1,6 +1,7 @@
 """Tests for the event stream's timeout behaviour."""
 
 import asyncio
+import logging
 
 import aiohttp
 from aiohttp import web
@@ -524,3 +525,156 @@ async def test_a_heartbeat_with_no_blank_line_does_not_truncate_the_next_event()
     assert b"Code=Cros;" not in delivered and not any(
         part.endswith(b"Code=Cros") for part in got
     ), ("the heartbeat's Content-Length was applied to the event: %s" % got)
+
+
+# --- a subscription that cannot be read ---------------------------------------
+#
+# The camera in #1176, a DH-IPC-HDW2849TM-S-IL on 3.120, answers every
+# authenticated CGI call with a complete reply and then a stray header line.
+# aiohttp rejects the exchange over those trailing bytes and raises a
+# `ClientResponseError` with a status of 400 that the device never sent, and
+# **it raises from the request rather than from `raise_for_status`**, which is
+# how the config half of #1176 was first written as a no-op.
+#
+# The fallback above only read `raise_for_status`, and only for 404 and 501, so
+# this camera reached neither half of it: its subscription failed, the host
+# backed off 57 -> 121 -> 226 -> 524s, and it never tried the one transport it
+# had. @defre92 measured that on 3.1.0-rc.4 with RPC2 logging in cleanly and
+# every identity read already coming over RPC2.
+#
+# A device whose CGI cannot be read is in the same position as one that serves
+# no CGI: the events have to come from somewhere else. Where it differs is what
+# the log should say, because the absent-CGI message explains an identity the
+# user should not read as a second fault, and this device's identity is right.
+
+
+def _mangled(status=400, message="Data after `Connection: close` for keep-alive"):
+    """What aiohttp raises for the trailing bytes, as measured in #1176.
+
+    Built through `refusal_is_mangled_framing`'s own discriminator rather than a
+    bare 400, because a real 400 from a device must not take this path and the
+    message is what tells them apart.
+    """
+    return aiohttp.ClientResponseError(None, (), status=status, message=message)
+
+
+class _UnreadableSession:
+    """A device whose answer never survives the parser.
+
+    Raises from `request`, which is the half the previous fallback could not
+    see. `requested` is kept so a test can tell "refused the subscription" from
+    "never asked".
+    """
+
+    def __init__(self, error=None):
+        self.error = error or _mangled()
+        self.requested = False
+
+    async def request(self, method, url, headers=None, **kwargs):
+        self.requested = True
+        raise self.error
+
+
+async def test_an_unreadable_subscription_subscribes_over_rpc2(monkeypatch):
+    """The point of this section. The device has a working RPC2 and events it
+    could deliver; what it does not have is a CGI answer anything can parse."""
+    calls = _polled(monkeypatch)
+    client = DahuaClient("u", "p", "d", 80, 554, _UnreadableSession())
+
+    await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+
+    assert calls == [
+        (["VideoMotion"], 0)
+    ], "the subscription was not made over RPC2: %s" % (calls,)
+
+
+async def test_the_selection_survives_the_change_of_transport(monkeypatch):
+    """Falling back to everything would subscribe a device to codes its owner
+    deliberately turned off, and over a transport that costs one request per
+    code per cycle."""
+    calls = _polled(monkeypatch)
+    client = DahuaClient("u", "p", "d", 80, 554, _UnreadableSession())
+
+    await client.stream_events(
+        lambda data, channel: None, ["VideoMotion", "CrossLineDetection"], 3
+    )
+
+    assert calls == [(["VideoMotion", "CrossLineDetection"], 3)]
+
+
+async def test_a_real_400_is_still_an_error(monkeypatch):
+    """The discriminator has to hold. A recorder answers a genuine 400 to a
+    channel it does not have, and treating that as a transport to abandon would
+    put a device on a polled stream to hide a question it answered."""
+    calls = _polled(monkeypatch)
+    error = aiohttp.ClientResponseError(None, (), status=400, message="Bad Request")
+    client = DahuaClient("u", "p", "d", 80, 554, _UnreadableSession(error=error))
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+
+    assert calls == [], "a device's own 400 was answered by changing transport"
+
+
+async def test_an_unreadable_answer_from_the_status_check_falls_back_too(monkeypatch):
+    """The gate does not care which side the refusal arrived from.
+
+    Not a measured case: every split measured over loopback for the config
+    reads raised from the request, and aiohttp builds this error's message
+    from the response's reason phrase, so a real one probably cannot say "Data
+    after" at all. Kept because the gate is shared, and this is the half that
+    says so: narrowing it back to the status check alone has to be caught on
+    both sides of the call, not only on the one the camera happens to use."""
+    calls = _polled(monkeypatch)
+
+    class _UnreadableResponse(_EndingResponse):
+        def raise_for_status(self):
+            raise _mangled()
+
+    class _Session(_EndingSession):
+        async def request(self, method, url, headers=None, **kwargs):
+            self.requested = True
+            return _UnreadableResponse(200, ())
+
+    client = DahuaClient("u", "p", "d", 80, 554, _Session())
+
+    await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+
+    assert calls == [(["VideoMotion"], 0)]
+
+
+async def test_nothing_is_closed_that_was_never_opened(monkeypatch):
+    """A refusal from the request leaves no response behind. Closing one
+    unconditionally, the way the 404 path can, raises `AttributeError` on None
+    inside an except block, which would lose the fallback and the original
+    refusal together."""
+    _polled(monkeypatch)
+    client = DahuaClient("u", "p", "d", 80, 554, _UnreadableSession())
+
+    await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+
+
+async def test_the_two_callers_do_not_say_the_same_thing(monkeypatch, caplog):
+    """The absent-CGI message tells the reader their device will report as
+    Generic RTSP on firmware 1.0 and that this is one fault rather than two.
+    That is wrong for this camera, whose identity is right because every
+    identity read already goes over RPC2, and a message that sends somebody
+    looking for a second fault they do not have is worse than none.
+
+    Asserted on what is logged rather than on the source carrying both strings:
+    a source scan passes just as well when only one of them can ever be
+    reached, which is how the first version of this test missed exactly that.
+    """
+    _polled(monkeypatch)
+    caplog.set_level(logging.INFO, logger="custom_components.dahua.client")
+
+    client = DahuaClient("u", "p", "d", 80, 554, _UnreadableSession())
+    await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+    unreadable = caplog.text
+    assert "parser will read" in unreadable
+    assert "Generic RTSP" not in unreadable, "sent looking for a second fault"
+
+    caplog.clear()
+    client = DahuaClient("u", "p", "d", 80, 554, _RecordingSession(status=404))
+    await client.stream_events(lambda data, channel: None, ["VideoMotion"], 0)
+    assert "Generic RTSP" in caplog.text, "the absent-CGI message lost its warning"
