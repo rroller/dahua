@@ -676,9 +676,196 @@ async def test_one_platform_is_enough():
     assert found is True
 
 
+async def test_the_generic_retry_asks_and_announces(monkeypatch):
+    """Through `_async_retry_unanswered_capabilities` and the real registry,
+    not by calling the retry directly: calling it directly passes just as
+    happily when the registry entry is deleted, and nothing else reaches it.
+
+    The announcement is what tells the platforms to build. Without it the
+    fields are right and no entity is created until a reload."""
+    from custom_components.dahua import coordinator as coordinator_module
+    from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
+
+    announced = []
+    monkeypatch.setattr(
+        coordinator_module,
+        "async_notify_capability_discovered",
+        lambda hass, entry_id, channel_key: announced.append((entry_id, channel_key)),
+    )
+
+    coordinator = DahuaDataUpdateCoordinator.__new__(DahuaDataUpdateCoordinator)
+    coordinator._address = "10.0.0.230"
+    coordinator._channel = 0
+    coordinator._probe_refusals = {}
+    coordinator._capability_retries = {}
+    coordinator.hass = None
+    coordinator.is_indoor_monitor = lambda: True
+    coordinator.config_entry = SimpleNamespace(entry_id="entry-1", options={})
+    coordinator.get_serial_number = lambda: "VTHSERIAL"
+
+    answers = [TimeoutError(), _flat()]
+
+    async def read():
+        answer = answers.pop(0) if len(answers) > 1 else answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    coordinator.client = SimpleNamespace(
+        async_probe_video_talk_phone_general=read,
+        async_get_video_talk_phone_general=read,
+    )
+
+    await coordinator._async_probe_vth_phone_settings()
+    assert coordinator.probes_that_did_not_answer() == {"vth_phone_settings"}
+
+    await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator._vth_phone_fields == frozenset(VTH_PHONE_SETTINGS)
+    assert coordinator.probes_that_did_not_answer() == set()
+    assert announced == [("entry-1", "VTHSERIAL")], (
+        "the platforms were never told, so the switch and the volumes would "
+        "wait for a reload: %s" % (announced,)
+    )
+
+
 def test_the_retry_registry_carries_the_monitor():
     """The registration itself. Without it the probe records a refusal nothing
     ever reads, which is where this started."""
     from custom_components.dahua.coordinator import RETRYABLE_CAPABILITIES
 
     assert "vth_phone_settings" in RETRYABLE_CAPABILITIES
+
+
+# --- and the platforms build them when it arrives ------------------------------
+#
+# The retry filling `_vth_phone_fields` is only half the claim. What creates
+# the switch and the volumes is `async_notify_capability_discovered`, which
+# re-runs each platform's `build`, and that only reaches these entities if the
+# gate is read **inside** the build rather than once at setup. Everything above
+# this line drives the coordinator and would pass either way.
+
+
+class _No:
+    """No, in every shape a platform build might ask the question."""
+
+    def __call__(self, *args, **kwargs):
+        return False
+
+    def __iter__(self):
+        return iter(())
+
+    def __bool__(self):
+        return False
+
+
+class _AnythingElseIsOff:
+    """A coordinator that answers no to every capability but this one.
+
+    Permissive by `__getattr__` rather than by listing what the two platforms
+    ask, because the list is long, changes often, and is not what is under
+    test here.
+    """
+
+    subentry_id = None
+
+    def __init__(self, fields=frozenset()):
+        self._fields = frozenset(fields)
+        self.data = {}
+        self.model = "VTH5221D"
+
+    def supports_vth_phone_setting(self, field):
+        return field in self._fields
+
+    def get_serial_number(self):
+        return "VTHSERIAL"
+
+    def get_device_name(self):
+        return "Hallway"
+
+    def get_address(self):
+        return "10.0.0.230"
+
+    def get_channel(self):
+        return 0
+
+    def get_event_list(self):
+        return []
+
+    def get_ivs_rules(self):
+        return []
+
+    def __getattr__(self, name):
+        """One answer for anything not spelled out above.
+
+        Callable, iterable, empty and false at once, because a platform's build
+        reads both methods and plain collections off a coordinator and nothing
+        here can tell which this name is.
+        """
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return _No()
+
+
+async def _builds_of(module_name, monkeypatch):
+    """Every `build` the platform hands to `async_add_and_keep_watching`.
+
+    Captured rather than driven through `late`, because what is in question is
+    which callable holds the gate: `late` re-runs exactly these on a discovery,
+    and a gate outside them is a gate a discovery cannot reach.
+    """
+    import importlib
+    from types import SimpleNamespace
+
+    module = importlib.import_module("custom_components.dahua." + module_name)
+    captured = []
+
+    async def _capture(hass, entry, build, add, coordinators, **kwargs):
+        captured.append(build)
+
+    monkeypatch.setattr(module, "async_add_and_keep_watching", _capture)
+    entry = SimpleNamespace(
+        entry_id="e1",
+        options={},
+        data={},
+        subentries={},
+        runtime_data={0: _AnythingElseIsOff()},
+        async_on_unload=lambda unsub: None,
+    )
+    await module.async_setup_entry(
+        SimpleNamespace(data={}), entry, lambda *a, **k: None
+    )
+    return captured, entry
+
+
+async def _entity_names(builds, coordinator):
+    names = []
+    for build in builds:
+        for entity in await build(coordinator) or []:
+            names.append(type(entity).__name__)
+    return names
+
+
+@pytest.mark.parametrize(
+    "module_name, entity_name",
+    [("switch", "DahuaMonitorSilenceSwitch"), ("number", "DahuaMonitorVolumeNumber")],
+)
+async def test_a_late_answer_reaches_the_entities(
+    monkeypatch, module_name, entity_name
+):
+    """The wiring. Build with nothing reported, then with the fields the retry
+    found, and the entities appear from the same callable a discovery re-runs.
+    """
+    builds, _entry = await _builds_of(module_name, monkeypatch)
+    assert builds, "the platform handed nothing to the late watcher"
+
+    before = await _entity_names(builds, _AnythingElseIsOff())
+    assert entity_name not in before
+
+    after = await _entity_names(
+        builds, _AnythingElseIsOff(fields=frozenset(VTH_PHONE_SETTINGS))
+    )
+    assert entity_name in after, (
+        "a capability found on a later poll does not reach this entity, so it "
+        "would need a reload rather than arriving by itself"
+    )
