@@ -37,6 +37,7 @@ PLATFORMS = [
     "select",
     "sensor",
     "switch",
+    "text",
     "update",
 ]
 
@@ -95,6 +96,8 @@ def test_every_entity_class_inherits_the_base():
             # entity naming itself instead of translating.
             # DahuaOverlayVisibilitySwitch is the shared base of the three
             # overlay switches, and is itself a DahuaBaseEntity.
+            # DahuaTitleText is the shared base of the two title text fields,
+            # and is itself a DahuaBaseEntity.
             if not any(
                 base in bases
                 for base in (
@@ -104,6 +107,7 @@ def test_every_entity_class_inherits_the_base():
                     "DahuaHostEntity",
                     "DahuaAlarmOutputSwitch",
                     "DahuaOverlayVisibilitySwitch",
+                    "DahuaTitleText",
                 )
             ):
                 offenders.append("%s.%s" % (name, classname))

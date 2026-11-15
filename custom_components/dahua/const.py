@@ -29,6 +29,7 @@ EVENT = "event"
 NUMBER = "number"
 UPDATE = "update"
 TIME = "time"
+TEXT = "text"
 VIDEO_COLOR_STYLE_VALUE_BY_OPTION = {
     "Soft": "Gentle",
     "Standard": "Standard",
@@ -99,6 +100,7 @@ PLATFORMS = [
     NUMBER,
     UPDATE,
     TIME,
+    TEXT,
 ]
 
 

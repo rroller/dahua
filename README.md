@@ -1113,6 +1113,20 @@ normal configuration cache expires (up to five minutes), while preserving the
 recorder's other encoding settings. Changes made through these entities clear
 that cache immediately.
 
+## Titles
+
+Two editable text fields appear on channels that report them:
+
+Field | Description
+:------------ | :------------
+Channel Title | The channel name shown in the OSD (`ChannelTitle[ch].Name`). Same value as `dahua.set_channel_title` / `dahua.get_channel_title`
+Custom Title | The custom text overlay, group 1 (`VideoWidget[ch].CustomTitle[1].Text`). Same value as `dahua.set_text_overlay` / `dahua.get_overlay_text` with their default group, and the same overlay the Custom Title Overlay switch shows or hides
+
+The Custom Title field replaces the whole overlay with one line. Use
+`dahua.set_text_overlay` when the camera accepts several lines. Clearing either
+field writes an empty title, and a camera that stores its empty marker as `none`
+or `||` reads back as an empty field.
+
 ## Picture sliders
 
 **Image brightness**, **contrast**, **saturation**, **hue**, **gamma** and **chroma
