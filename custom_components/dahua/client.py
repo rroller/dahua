@@ -2742,9 +2742,12 @@ class DahuaClient:
         do not disturb switch and its four volumes go unknown on one refused
         read (the shape @rroller found on #1201).
 
-        The capability probe above keeps the lenient form deliberately, for the
-        reason its own docstring gives: it judges on the keys that came back,
-        and a monitor without the table answers emptily rather than erroring.
+        The capability probe reads through here as well, as of the retry it
+        was enrolled in: it still judges on the keys that came back, because a
+        monitor without the table answers emptily rather than erroring, and
+        what the strict form adds there is the record. A refusal arriving as
+        `{}` leaves nothing in the dump saying the monitor refused or with what
+        status, and both forms leave a refusal un-retried either way (#1213).
         """
         return await self.get(
             "/cgi-bin/configManager.cgi?action=getConfig&name=" + VTH_PHONE_TABLE

@@ -3861,9 +3861,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # of a device that says it is a monitor, so nothing else pays
                 # a request for it, and judged on the keys that came back
                 # rather than on whether the read raised: a device without the
-                # table answers empty.
-                if self.is_indoor_monitor():
-                    await self._async_probe_vth_phone_settings()
+                # table answers empty. Both of those gates are inside the
+                # probe, because the retry has to apply the same ones.
+                await self._async_probe_vth_phone_settings()
 
                 if not is_doorbell:
                     # Start the event listeners for IP cameras
@@ -8571,21 +8571,49 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return self.is_indoor_monitor() and self._wanted_by(SELECT, NUMBER)
 
     async def _async_probe_vth_phone_settings(self) -> bool:
-        """Ask an indoor monitor once which call settings it has (#949, #998).
+        """Ask an indoor monitor which call settings it has (#949, #998).
 
         Judged on the keys the device returned, not on whether the read
-        raised. `async_get_config` answers `{}` for a table a device does not
-        serve, so a probe that only caught an exception would report every
-        monitor as having all of them.
+        raised: a device without the table answers emptily, so a probe that
+        only caught an exception would report every monitor as having all of
+        them.
 
         Measured on a VTH5221D (3.000.0012000.0.R): all five below are
         present. Stored per field rather than as one flag, because a monitor
         reporting four of them should get four entities rather than a fifth
         that can only ever read unknown.
+
+        **Asked again if the monitor does not answer**, which is why this is
+        `"vth_phone_settings"` in `RETRYABLE_CAPABILITIES`. The poll reads this
+        table only where fields were found, so an unanswered probe used to
+        close the loop for the life of the entry: no fields, nothing fetched,
+        nothing to find them later, and the do not disturb switch and the four
+        volumes never existed. A monitor is the device most likely to miss the
+        question, since it is the one answering over DHIP (#949), where one
+        session takes one call at a time.
+
+        The read is strict for the record rather than for the retry, which is
+        the distinction #1213 turned up: a refusal arriving as `{}` is popped
+        by `_note_probe_answered` and leaves nothing in the dump saying the
+        monitor refused, or with what status. Both readers leave a refusal
+        un-retried, which is correct either way. Same URL as the lenient
+        sibling, so this shares its cache entry and costs no extra request.
+
+        Both gates live here rather than at the call site, so that setup and
+        the retry apply the same one. That is @rroller's third finding on
+        #1201.
         """
+        if not self.is_indoor_monitor() or not self._wanted_by(SWITCH, NUMBER):
+            return False
         try:
-            table = await self.client.async_get_video_talk_phone_general()
+            table = await self.client.async_probe_video_talk_phone_general()
         except Exception as exception:  # pylint: disable=broad-except
+            # Deliberately broad, as it was: this reaches a monitor over DHIP
+            # as well as over CGI, and a probe must never be the thing that
+            # fails a setup. `_note_probe_refusal` reads a status or an RPC2
+            # code off whatever it is given, so anything that arrives here is
+            # recorded as answered or as silent without naming its type.
+            self._note_probe_refusal("vth_phone_settings", exception)
             _LOGGER.debug(
                 "No call settings from the monitor at %s",
                 self._address,
@@ -8593,6 +8621,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             self._vth_phone_fields = frozenset()
             return False
+        self._note_probe_answered("vth_phone_settings")
         prefix = "table.{0}.".format(VTH_PHONE_TABLE)
         self._vth_phone_fields = frozenset(
             field
@@ -8605,6 +8634,16 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             sorted(self._vth_phone_fields) or "none",
         )
         return bool(self._vth_phone_fields)
+
+    async def _async_retry_vth_phone_settings(self) -> bool:
+        """Whether a monitor's call settings turned up that setup never got.
+
+        Compared against what was held before the probe ran, not after: a
+        retry that reports a discovery it already had rebuilds the platforms
+        on every poll.
+        """
+        already = bool(self._vth_phone_fields)
+        return await self._async_probe_vth_phone_settings() and not already
 
     async def _async_fetch_vth_phone_settings(self) -> dict | None:
         """Poll a monitor's call settings, keeping the last answer on a refusal.
@@ -8975,6 +9014,7 @@ RETRYABLE_CAPABILITIES = {
     "profile_mode": DahuaDataUpdateCoordinator._async_retry_profile_mode,
     "profile_schedule": DahuaDataUpdateCoordinator._async_retry_profile_schedule,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
+    "vth_phone_settings": DahuaDataUpdateCoordinator._async_retry_vth_phone_settings,
     # Spelled with a space because that is the name `_note_probe_refusal`
     # already records it under, and the registry is keyed by that name so a
     # probe is retried under the name it failed under. Renaming it would
