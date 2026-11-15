@@ -2198,8 +2198,50 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._note_probe_answered("lighting_v2")
         if not self._supports_lighting_v2:
             self._supports_lighting_v2 = True
+            await self._async_discover_illuminator_route()
             return True
         return False
+
+    async def _async_discover_illuminator_route(self) -> None:
+        """Ask which white-light contract this channel's illuminator needs.
+
+        A recorder channel -- a VSIPP on an NVR -- drives its lamp through the
+        channel-scoped two-table shape, and the whole-table write that #959
+        measured does not reach it. So this is not an optional extra once
+        Lighting_V2 is there: an illuminator on the wrong route is an entity
+        that answers and a lamp that stays dark.
+
+        ⚠ The retry is why this has a name rather than living inline at its
+        setup call site. `_supports_lighting_v2` is set in two places and only
+        setup asked this, so a table that turned up late arrived with its
+        routing question unasked (@rroller on #1201). Two call sites of one
+        gate is how that happened, so there is now one.
+
+        Mutually exclusive with the Color4M whole-table path, which setup
+        settles first and which this must not override. getattr, not a bare
+        read: both flags are set in __init__, but the suite builds
+        coordinators with object.__new__ and sets only some attributes, and
+        uses_lighting_scheme_illuminator already reads this one the same way.
+        """
+        if not getattr(self, "_supports_lighting_v2", False) or getattr(
+            self, "_supports_lighting_scheme_illuminator", False
+        ):
+            return
+        # The probe is read-only and self-guards, but keep the call itself from
+        # ever failing setup: a capability question must not be the thing that
+        # stops a device initialising.
+        try:
+            self._supports_channel_scoped_illuminator = (
+                await self.client.async_channel_scoped_white_light_supported(
+                    self._channel
+                )
+            )
+        except Exception:  # pylint: disable=broad-except
+            self._supports_channel_scoped_illuminator = False
+        _LOGGER.debug(
+            "Device supports channel-scoped illuminator=%s",
+            self._supports_channel_scoped_illuminator,
+        )
 
     async def _async_probe_day_night_color(self) -> bool:
         """Ask this channel whether it has a Day/Night mode, and remember it.
@@ -3677,28 +3719,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # white-light contract but in the channel-scoped shape the
                 # whole-table path above cannot consume. Probed by capability,
                 # not model name (#959), and kept a separate flag so routing
-                # never sends these to the whole-table method. Mutually
-                # exclusive with the Color4M path, which is checked first.
-                # getattr, not a bare read: both flags are set in __init__, but
-                # the suite builds coordinators with object.__new__ and sets only
-                # some attributes, and uses_lighting_scheme_illuminator already
-                # reads this one the same way.
-                if getattr(self, "_supports_lighting_v2", False) and not getattr(
-                    self, "_supports_lighting_scheme_illuminator", False
-                ):
-                    # The probe is read-only and self-guards, but keep the call
-                    # itself from ever failing setup: a capability question must
-                    # not be the thing that stops a device initialising.
-                    try:
-                        self._supports_channel_scoped_illuminator = await self.client.async_channel_scoped_white_light_supported(
-                            self._channel
-                        )
-                    except Exception:  # pylint: disable=broad-except
-                        self._supports_channel_scoped_illuminator = False
-                    _LOGGER.debug(
-                        "Device supports channel-scoped illuminator=%s",
-                        self._supports_channel_scoped_illuminator,
-                    )
+                # never sends these to the whole-table method. Named rather
+                # than inline because the retry has to ask it too.
+                await self._async_discover_illuminator_route()
 
                 # The selector writes only LightingScheme. Its scenes need not
                 # match the Lighting_V2 profile count required by the two-table
