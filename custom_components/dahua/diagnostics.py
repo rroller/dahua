@@ -745,6 +745,7 @@ def _host_block(
         _HOST_LIMITS,
         _HOST_RPC2,
         _HOST_RPC2_UNAVAILABLE,
+        _HOST_RPC2_WRITES_UNSAFE,
         _RPC2_TABLE_UNAVAILABLE,
         MAX_CONCURRENT_REQUESTS_PER_HOST,
     )
@@ -782,6 +783,27 @@ def _host_block(
             and not rpc2.keepalive.done()
         ),
         "rpc2_ruled_out_for_host": rpc2_key in _HOST_RPC2_UNAVAILABLE,
+        # Whether this device has been latched out of every config write over
+        # RPC2. `_rpc2_fallback_write` sends a whole table and then reads it
+        # back, and a host that drops a setting even from a complete table is
+        # put here and never written over RPC2 again, because it will do it
+        # again. Right, and silent: it is said once in a warning, at the moment
+        # it happens, and after that every write on that device reports the
+        # refusal the CGI gave, which is the same thing a device that simply
+        # declined the write reports.
+        #
+        # That matters most on exactly the device the fallback was written for.
+        # A camera whose CGI answers cannot be read (#1176) has nowhere else to
+        # write, so this latch is the difference between "writes work" and "no
+        # setting on this camera can ever be changed", and nothing in a dump
+        # said which one you were looking at.
+        #
+        # Keyed by DEVICE, not by `_rpc2_key()`: a username belongs to a
+        # session, not to a config table. Asked of the client for the reason in
+        # `_rpc2_key_of` above, rather than rebuilt here, which is the mistake
+        # that cost five fields in #665.
+        "rpc2_writes_unsafe_for_device": getattr(coordinator.client, "device_key", None)
+        in _HOST_RPC2_WRITES_UNSAFE,
         # Which config tables this device answered and declined. Recorded
         # already, never reported, and it is the more useful half: a refusal
         # names a thing this model will not do, and that is what the
