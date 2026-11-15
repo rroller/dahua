@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from custom_components.dahua import coordinator as coordinator_module
-from custom_components.dahua.client import DahuaClient, _HOST_VIDEO_IN_MODE_LOCKS
+from custom_components.dahua.client import _HOST_VIDEO_IN_MODE_LOCKS, DahuaClient
 from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 from tests.dahua.test_poll_skips_unused import _coordinator
 
@@ -35,6 +35,45 @@ def _table():
         {"Mode": 0, "Config": [0], "TimeSection": [["keep"]]},
         {"Mode": 0, "Config": [2], "FutureField": {"preserve": 7}},
     ]
+
+
+def _wrapped_table():
+    return [
+        [
+            {
+                "Mode": 0,
+                "Config": [2],
+                "TimeSection": [["1 05:30:00-17:00:00"]],
+                "FutureField": {"preserve": 7},
+            }
+        ]
+    ]
+
+
+async def test_actual_writer_preserves_and_reads_back_the_wrapped_shape():
+    before = _wrapped_table()
+    wanted = deepcopy(before)
+    wanted[0][0].update(Mode=1, Config=[0, 1])
+    rpc = SimpleNamespace(
+        get_config=AsyncMock(side_effect=[{"table": before}, {"table": wanted}]),
+        set_config=AsyncMock(),
+    )
+
+    assert await _client(rpc).async_set_profile_management(0, "schedule") == "schedule"
+    rpc.set_config.assert_awaited_once_with("VideoInMode", wanted, channel=0)
+    assert before == _wrapped_table()
+
+
+async def test_wrapped_write_with_wrong_readback_is_not_success():
+    before = _wrapped_table()
+    wrong = deepcopy(before)
+    rpc = SimpleNamespace(
+        get_config=AsyncMock(side_effect=[{"table": before}, {"table": wrong}]),
+        set_config=AsyncMock(),
+    )
+
+    with pytest.raises(ConnectionError, match="read back 'normal'"):
+        await _client(rpc).async_set_profile_management(0, "schedule")
 
 
 async def test_actual_writer_preserves_the_other_channel_and_unknown_fields():

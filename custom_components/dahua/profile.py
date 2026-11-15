@@ -34,20 +34,54 @@ def _integer(value: Any) -> int | None:
     return None
 
 
+def _profile_management_flat_prefix(
+    data: Mapping[str, Any], channel: int
+) -> str | None:
+    """Return the sole complete flattened owner for one VideoInMode channel."""
+    direct = f"table.VideoInMode[{channel}]"
+    wrapped = f"table.VideoInMode[{channel}][0]"
+    complete = [
+        prefix
+        for prefix in (direct, wrapped)
+        if f"{prefix}.Mode" in data and f"{prefix}.Config[0]" in data
+    ]
+    return complete[0] if len(complete) == 1 else None
+
+
+def _profile_management_table_row(
+    table: Sequence[Any], channel: int
+) -> tuple[Mapping[str, Any], tuple[int, ...]] | None:
+    """Return one unambiguous channel row and the indices that own it."""
+    if channel < 0 or channel >= len(table):
+        return None
+    owner = table[channel]
+    if isinstance(owner, Mapping):
+        return owner, (channel,)
+    if (
+        isinstance(owner, Sequence)
+        and not isinstance(owner, (str, bytes))
+        and len(owner) == 1
+        and isinstance(owner[0], Mapping)
+    ):
+        return owner[0], (channel, 0)
+    return None
+
+
 def profile_management_values(
     data: Mapping[str, Any], channel: int
 ) -> tuple[int, tuple[int, ...]] | None:
     """Extract one channel's Profile Management values from flattened config."""
-    mode = _integer(data.get(f"table.VideoInMode[{channel}].Mode"))
-    first = _integer(data.get(f"table.VideoInMode[{channel}].Config[0]"))
+    prefix = _profile_management_flat_prefix(data, channel)
+    if prefix is None:
+        return None
+    mode = _integer(data.get(f"{prefix}.Mode"))
+    first = _integer(data.get(f"{prefix}.Config[0]"))
     if mode is None or first is None:
         return None
 
     values = [first]
     index = 1
-    while (
-        raw := data.get(f"table.VideoInMode[{channel}].Config[{index}]")
-    ) is not None:
+    while (raw := data.get(f"{prefix}.Config[{index}]")) is not None:
         item = _integer(raw)
         if item is None:
             return None
@@ -73,27 +107,32 @@ def profile_management_table_with_option(
     wanted = PROFILE_MANAGEMENT_VALUES_BY_OPTION.get(option)
     if wanted is None:
         raise ValueError(f"Unknown profile management option: {option}")
-    if channel < 0 or channel >= len(table):
+    resolved = _profile_management_table_row(table, channel)
+    if resolved is None:
+        if channel < 0 or channel >= len(table):
+            raise ConnectionError(
+                f"VideoInMode has no channel {channel} ({len(table)} entries)"
+            )
         raise ConnectionError(
-            f"VideoInMode has no channel {channel} ({len(table)} entries)"
+            f"VideoInMode channel {channel} is not an unambiguous configuration row"
         )
-    if not isinstance(table[channel], Mapping):
-        raise ConnectionError(
-            f"VideoInMode channel {channel} is not a configuration row"
-        )
-
+    _row, location = resolved
     result = deepcopy(list(table))
+    target = result[location[0]]
+    if len(location) == 2:
+        target = target[location[1]]
     mode, config = wanted
-    result[channel]["Mode"] = mode
-    result[channel]["Config"] = list(config)
+    target["Mode"] = mode
+    target["Config"] = list(config)
     return result
 
 
 def resolve_profile_management_table(table: Sequence[Any], channel: int) -> str | None:
     """Resolve Profile Management from an RPC2 table without flattening it."""
-    if channel < 0 or channel >= len(table) or not isinstance(table[channel], Mapping):
+    resolved = _profile_management_table_row(table, channel)
+    if resolved is None:
         return None
-    row = table[channel]
+    row, _location = resolved
     mode = _integer(row.get("Mode"))
     config = row.get("Config")
     if (
