@@ -3333,6 +3333,19 @@ class DahuaClient:
         except aiohttp.ClientResponseError:
             return {}
 
+    async def async_probe_encode(self) -> dict:
+        """The encoder table, strictly: a refusal raises rather than reading empty.
+
+        `async_get_config` turns an HTTP 400, 403 or 500 into `{}`, which is
+        indistinguishable from a device that answered and has no audio fields.
+        The first should be asked again and the second should not, so the
+        capability probe needs the refusal to reach it.
+
+        Same URL as `async_get_config("Encode")`, so the two share one entry in
+        the host read cache and this costs no extra request.
+        """
+        return await self.get("/cgi-bin/configManager.cgi?action=getConfig&name=Encode")
+
     async def async_set_encode_audio_value(
         self,
         channel: int,
