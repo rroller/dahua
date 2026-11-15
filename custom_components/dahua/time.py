@@ -21,7 +21,7 @@ async def async_setup_entry(
 ):
     """Set up Profile Schedule times for compatible channels."""
 
-    def build(coordinator):
+    async def build(coordinator):
         if not coordinator.supports_profile_schedule():
             return []
 
