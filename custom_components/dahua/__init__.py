@@ -504,6 +504,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         _STARTUP_LOGGED = True
         _LOGGER.info(STARTUP_MESSAGE)
 
+    # Before the first read, so that a device which never answers still has its
+    # stale duplicate card taken down. Nothing here talks to a device: it reads
+    # the entries Home Assistant already has, and only ever withdraws. This is
+    # the point every reconfiguration passes through, because changing an
+    # address reloads the entry.
+    async_reconcile_duplicate_addresses(hass)
+
     # Before anything reads the entry's identity. Costs nothing unless the id is md5
     # shaped, and never raises: a camera that cannot be identified better keeps the
     # identity it has rather than failing to set up.
@@ -754,8 +761,70 @@ ISSUE_CHANNEL_NOT_ADDED = "channel_not_added_{0}_{1}"
 # than by `_rpc2_key()`, and pre-#827 per-channel setups look the same way. It
 # is a warning because the usual cause is an accident, and the usual accident
 # is a device whose identity could not be read, where the serial-based guard in
-# the add flow never runs.
+# the add flow never runs. Raised in one place, the add flow's
+# `_async_warn_duplicate_address`, and withdrawn in one,
+# `async_reconcile_duplicate_addresses` below.
 ISSUE_DUPLICATE_ADDRESS = "duplicate_address_{0}_{1}"
+
+
+@callback
+def duplicate_address_key(data) -> tuple:
+    """The (address, port) a duplicate warning is keyed on, from entry data or a flow dict.
+
+    One function because the add flow decides a pair *is* a duplicate and
+    `async_reconcile_duplicate_addresses` below decides it no longer is. A card
+    raised under one spelling and withdrawn under another stays up for ever,
+    which is the bug `_async_forget_host`'s docstring describes: everything host
+    scoped goes through `normalize_address`, and the two places that only
+    happened to agree were latent rather than fixed.
+
+    Both halves as strings, because the port arrives as text from the form and
+    as whatever was stored from an entry, and "80" and 80 are not one key.
+    """
+    return (
+        normalize_address(data.get(CONF_ADDRESS)),
+        str(data.get(CONF_PORT) or ""),
+    )
+
+
+@callback
+def async_reconcile_duplicate_addresses(hass: HomeAssistant) -> None:
+    """Withdraw the duplicate warning wherever there is no longer a duplicate.
+
+    The card tells the owner to delete the entry they did not want, so it has
+    to go when they do. It did not: nothing withdrew it, so following the card
+    left it on the Settings page describing a duplicate that no longer existed,
+    deleting both entries left it too, and being persistent it survived a
+    restart (@rroller, #1212).
+
+    **Withdraws, never raises.** Only the add flow decides a pair is a
+    duplicate, and only on the manual step. A recorder whose migration refused
+    legitimately has an entry per channel on one address and port, and so does
+    any setup from before #827; raising from here would put a card on every one
+    of them. Retaining a card that is still true needs nothing, because the
+    issue is persistent and already in the registry.
+
+    Sweeps every pair the entries hold rather than the caller's own pair, which
+    is what makes one function serve both callers. A removal is a pair with one
+    entry left, and that entry is what carries the pair here; the entry that was
+    removed is already out of the registry by then and would not. A
+    reconfiguration is the same shape from the other side: the entry that moved
+    took its pair with it, so its new pair is the one place the stale card
+    cannot be, and the entry that stayed behind is what finds it.
+
+    Takes no argument for the pair with no entries left at all, because nothing
+    reaches that state with a card up: the deletion that took the pair from two
+    entries to one withdrew it already.
+    """
+    held: dict = {}
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        key = duplicate_address_key(entry.data)
+        if key[0]:
+            held[key] = held.get(key, 0) + 1
+    for key in held:
+        if held[key] < 2:
+            ir.async_delete_issue(hass, DOMAIN, ISSUE_DUPLICATE_ADDRESS.format(*key))
+
 
 ISSUE_SIBLINGS_REMAIN = "siblings_remain_{0}"
 # Raised when the removed entry was referenced by automations or scripts. Those
@@ -1205,6 +1274,14 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
             "Last entry for %s removed; forgot its host state and withdrew its repairs",
             address,
         )
+
+    # Outside that block on purpose. The duplicate card is the one case where
+    # something has to be withdrawn while the host still has entries: deleting
+    # the second entry is exactly what the card asked for, `siblings` is then
+    # not empty, and `_async_forget_host` does not run. Its key is address and
+    # port, which `siblings` could not answer either, matching as it does on the
+    # address alone.
+    async_reconcile_duplicate_addresses(hass)
 
     await _async_forget_entry_storage(hass, entry)
 

@@ -29,6 +29,13 @@ the request rate while things work. It doubles the entities, and once a shared
 login fails the cached result is dropped so every read retries, which is when
 two entries push twice as hard.
 
+And it comes down when the duplicate does, which the first version of this did
+not do at all (@rroller, #1212). One function withdraws it, swept over every
+address and port the entries hold, from the removal hook and from setup, which
+is what a reconfiguration reloads through. It never raises: only the add step
+decides a pair is a duplicate, because a recorder whose merge refused has an
+entry per channel on one address and port and is not one.
+
 Reintroduced against the real source, with the tests that failed:
 
 | reintroduced | caught by |
@@ -36,14 +43,30 @@ Reintroduced against the real source, with the tests that failed:
 | the call removed from the add step | `adding_it_again_warns` |
 | matching on address alone | `two_devices_behind_one_address_are_fine` |
 | the card raised for a recorder's channels | `the_channel_path_stays_quiet` |
+| the removal reconciling nothing | 6, from `deleting_the_duplicate...` |
+| that call nested in the last-entry branch | the same 6 |
+| the setup sweep removed | `every_setup_sweeps_for_stale_cards` |
+| withdrawing whether or not a duplicate remains | 4, from `the_card_stays...` |
+| the sweep raising as well as withdrawing | `a_legacy_per_channel_recorder...` |
+| the key dropping the port | 8, from `two_devices_on_one_address...` |
+| the key taking the address as typed | `a_trailing_slash_withdraws_what_it_raised` |
 """
 
 from types import SimpleNamespace
 
 import pytest
 
+from homeassistant.helpers import issue_registry as ir
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components import dahua as dahua_module
+from custom_components.dahua import (
+    ISSUE_DUPLICATE_ADDRESS,
+    async_reconcile_duplicate_addresses,
+)
 from custom_components.dahua import config_flow
 from custom_components.dahua.config_flow import DahuaFlowHandler
+from custom_components.dahua.const import DOMAIN
 
 ADDRESS = "10.0.0.5"
 PORT = "80"
@@ -179,3 +202,242 @@ def test_the_card_has_its_strings():
     card = en["issues"]["duplicate_address"]
     for name in ("address", "port", "existing"):
         assert "{%s}" % name in card["title"] + card["description"]
+
+
+# --- and comes down when the duplicate does -----------------------------------
+#
+# @rroller on #1212: the card told the owner to delete the entry they did not
+# want, and then stayed when they did. Nothing withdrew it, so Repairs went on
+# describing a duplicate that no longer existed, deleting both entries left it
+# up too, and being persistent it survived a restart.
+#
+# These drive the real issue registry, the real add-flow call that raises the
+# card, and Home Assistant's own removal, rather than formatting the issue id
+# here. An id built one way on the way up and another on the way down is the
+# shape of the bug (`_async_forget_host`'s docstring), and a test that formats
+# the id itself cannot see that.
+#
+# `enable_custom_integrations` is load-bearing: `ConfigEntry.async_remove`
+# resolves the integration first and returns early on `IntegrationNotFound`, so
+# without it the removal hook never runs and all of this passes vacuously.
+
+
+def _mock_entry(hass, *, address=ADDRESS, port=PORT, title="Front Door"):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title=title,
+        data={
+            "username": "u",
+            "password": "p",
+            "address": address,
+            "port": port,
+            "rtsp_port": "554",
+            "channel": 0,
+            "name": title,
+        },
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+def _raise_the_card(hass, address=ADDRESS, port=PORT):
+    """Through the add flow's own call, so the id is the one production writes."""
+    handler = object.__new__(DahuaFlowHandler)
+    handler.hass = hass
+    handler._async_current_entries = lambda: list(
+        hass.config_entries.async_entries(DOMAIN)
+    )
+    handler._async_warn_duplicate_address({"address": address, "port": port})
+
+
+def _card_is_up(hass, address=ADDRESS, port=PORT):
+    issue_id = ISSUE_DUPLICATE_ADDRESS.format(address, port)
+    return ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+
+async def test_deleting_the_duplicate_withdraws_the_card(
+    hass, enable_custom_integrations
+):
+    """What the card asks for. Doing it left the card up, which is worse than
+    not having raised it: the owner has resolved the thing it describes and has
+    no way to dismiss it."""
+    _mock_entry(hass, title="Front Door")
+    second = _mock_entry(hass, title="Front Door 2")
+    _raise_the_card(hass)
+    assert _card_is_up(hass)
+
+    await hass.config_entries.async_remove(second.entry_id)
+    await hass.async_block_till_done()
+
+    assert not _card_is_up(hass)
+
+
+async def test_deleting_both_entries_withdraws_the_card(
+    hass, enable_custom_integrations
+):
+    """The other half of @rroller's reproduction. The card is gone by the first
+    of the two deletions, because one entry is no longer a duplicate, and the
+    second finds nothing to do. Worth having as its own test: the reported
+    symptom was the card surviving both, and the first deletion being what takes
+    it down is why the reconciliation needs nothing from the entry that left."""
+    first = _mock_entry(hass, title="Front Door")
+    second = _mock_entry(hass, title="Front Door 2")
+    _raise_the_card(hass)
+
+    await hass.config_entries.async_remove(second.entry_id)
+    await hass.config_entries.async_remove(first.entry_id)
+    await hass.async_block_till_done()
+
+    assert not _card_is_up(hass)
+
+
+async def test_the_card_stays_while_a_duplicate_remains(
+    hass, enable_custom_integrations
+):
+    """Three entries on one device, one deleted. Still a duplicate, and
+    withdrawing on any removal would take the card down while the thing it
+    describes is still true."""
+    _mock_entry(hass, title="Front Door")
+    _mock_entry(hass, title="Front Door 2")
+    third = _mock_entry(hass, title="Front Door 3")
+    _raise_the_card(hass)
+
+    await hass.config_entries.async_remove(third.entry_id)
+    await hass.async_block_till_done()
+
+    assert _card_is_up(hass)
+
+
+async def test_another_devices_card_is_untouched(hass, enable_custom_integrations):
+    _mock_entry(hass, title="Front Door")
+    second = _mock_entry(hass, title="Front Door 2")
+    _mock_entry(hass, address="10.0.0.9", title="Garage")
+    _mock_entry(hass, address="10.0.0.9", title="Garage 2")
+    _raise_the_card(hass)
+    _raise_the_card(hass, address="10.0.0.9")
+
+    await hass.config_entries.async_remove(second.entry_id)
+    await hass.async_block_till_done()
+
+    assert not _card_is_up(hass)
+    assert _card_is_up(hass, address="10.0.0.9"), "the other device still has two"
+
+
+async def test_two_devices_on_one_address_keep_their_own_cards(
+    hass, enable_custom_integrations
+):
+    """The port is half the key on the way down as well as on the way up.
+    Withdrawing by address alone would take the card off the device on 8000,
+    which still has two entries."""
+    _mock_entry(hass, title="Front Door")
+    second = _mock_entry(hass, title="Front Door 2")
+    _mock_entry(hass, port="8000", title="Gate")
+    _mock_entry(hass, port="8000", title="Gate 2")
+    _raise_the_card(hass)
+    _raise_the_card(hass, port="8000")
+
+    await hass.config_entries.async_remove(second.entry_id)
+    await hass.async_block_till_done()
+
+    assert not _card_is_up(hass)
+    assert _card_is_up(hass, port="8000")
+
+
+async def test_a_trailing_slash_withdraws_what_it_raised(
+    hass, enable_custom_integrations
+):
+    """One spelling of one address. `normalize_address` exists because a
+    trailing slash left a single device holding two differently keyed pools;
+    here it would raise a card under one id and withdraw another, which is a
+    card nothing can take down. Both sides go through one key function."""
+    _mock_entry(hass, address=ADDRESS + "/", title="Front Door")
+    second = _mock_entry(hass, title="Front Door 2")
+    _raise_the_card(hass, address=ADDRESS + "/")
+    assert _card_is_up(hass), "raised under the normalised address"
+
+    await hass.config_entries.async_remove(second.entry_id)
+    await hass.async_block_till_done()
+
+    assert not _card_is_up(hass)
+
+
+async def test_moving_one_entry_elsewhere_withdraws_the_card(
+    hass, enable_custom_integrations
+):
+    """Reconfiguration, which @rroller named alongside removal. The entry that
+    moves takes its own pair with it, so the pair the card is on is the one
+    place that entry can no longer be found. The entry that stayed is what
+    finds it, which is why the sweep is over every pair the entries hold."""
+    _mock_entry(hass, title="Front Door")
+    second = _mock_entry(hass, title="Front Door 2")
+    _raise_the_card(hass)
+
+    hass.config_entries.async_update_entry(
+        second, data={**second.data, "address": "10.0.0.6"}
+    )
+    async_reconcile_duplicate_addresses(hass)
+
+    assert not _card_is_up(hass)
+
+
+async def test_a_reload_keeps_a_card_that_is_still_true(
+    hass, enable_custom_integrations
+):
+    """The sweep runs on every setup, so it must not take down a card for a
+    duplicate that is still there."""
+    _mock_entry(hass, title="Front Door")
+    _mock_entry(hass, title="Front Door 2")
+    _raise_the_card(hass)
+
+    async_reconcile_duplicate_addresses(hass)
+
+    assert _card_is_up(hass)
+
+
+async def test_a_legacy_per_channel_recorder_is_not_given_a_card(
+    hass, enable_custom_integrations
+):
+    """The sweep withdraws and never raises. A recorder whose merge refused has
+    an entry per channel on one address and port, and so does any setup from
+    before #827; raising from here would put a card on every one of them, which
+    is what the add step was careful not to do."""
+    _mock_entry(hass, title="Ch1")
+    _mock_entry(hass, title="Ch2")
+
+    async_reconcile_duplicate_addresses(hass)
+
+    assert not _card_is_up(hass)
+
+
+def test_the_withdrawal_runs_outside_the_last_entry_block():
+    """The one case where something must be withdrawn while the host still has
+    entries. Deleting the second entry is what the card asked for, `siblings` is
+    then not empty, and `_async_forget_host` does not run. Pinned on the source
+    because nesting the call inside that block passes every test above: they all
+    leave the host with entries only where the card must stay up."""
+    with open(dahua_module.__file__, encoding="utf-8") as handle:
+        text = handle.read()
+
+    removal = text.split("async def async_remove_entry")[1].split("\nasync def ")[0]
+    called = [
+        line
+        for line in removal.splitlines()
+        if "async_reconcile_duplicate_addresses(hass)" in line
+    ]
+    assert len(called) == 1
+    # Four spaces and no more: the body of the hook, not the branch above it.
+    assert called[0].startswith("    async_reconcile")
+    assert not called[0].startswith("     ")
+
+
+def test_every_setup_sweeps_for_stale_cards():
+    """The sweep's other call site, and the only one reconfiguration reaches:
+    changing an address reloads the entry. Pinned on the source because the
+    sweep is tested here by calling it, which cannot tell whether anything in
+    production ever does.
+    """
+    with open(dahua_module.__file__, encoding="utf-8") as handle:
+        text = handle.read()
+
+    setup = text.split("async def async_setup_entry")[1].split("\nasync def ")[0]
+    assert "async_reconcile_duplicate_addresses(hass)" in setup

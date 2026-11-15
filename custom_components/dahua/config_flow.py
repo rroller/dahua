@@ -30,6 +30,7 @@ from . import (
     _async_probe_tcp,
     _async_probe_tls,
     device_by_identifier,
+    duplicate_address_key,
     entry_coordinators,
     is_synthesised_identity,
 )
@@ -683,16 +684,18 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         once a shared login fails the cached result is dropped and every read
         retries, so two entries push twice as hard at exactly the moment a
         device is refusing.
+
+        Withdrawn by `async_reconcile_duplicate_addresses`, from the removal
+        hook and from every setup. The card asks the owner to delete the entry
+        they did not want, so it has to go when they do.
         """
-        address = str(data.get(CONF_ADDRESS) or "")
-        port = str(data.get(CONF_PORT) or "")
+        address, port = duplicate_address_key(data)
         if not address:
             return
         existing = [
             entry
             for entry in self._async_current_entries()
-            if str(entry.data.get(CONF_ADDRESS) or "") == address
-            and str(entry.data.get(CONF_PORT) or "") == port
+            if duplicate_address_key(entry.data) == (address, port)
         ]
         if not existing:
             return
