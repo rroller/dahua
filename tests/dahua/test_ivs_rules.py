@@ -4,6 +4,8 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
+import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -245,9 +247,14 @@ class TestIVSActions:
         for enabled in (True, False):
             c = _coordinator(switch=enabled)
             c._ivs_rules = ivs_rules_for_channel(row(0, "42"), 2)
-            c.client.async_get_ivs_rules = AsyncMock(return_value=row(5, "42", "false"))
+            # The strict reader, which is what the poll uses: the lenient
+            # `async_get_ivs_rules` turns a refusal into {} and the held rows
+            # were dropped with no exception for the handler to see.
+            c.client.async_probe_ivs_rules = AsyncMock(
+                return_value=row(5, "42", "false")
+            )
             data = await c._async_update_data()
-            self.assertEqual(c.client.async_get_ivs_rules.await_count, int(enabled))
+            self.assertEqual(c.client.async_probe_ivs_rules.await_count, int(enabled))
             if enabled:
                 self.assertEqual(data["table.VideoAnalyseRule[2][5].Id"], "42")
 
@@ -271,3 +278,100 @@ async def test_direct_reads_and_fresh_writes_keep_cgi_when_rpc2_is_enabled():
     assert probe.calls == 2
     client.async_set_ivs_rule.assert_awaited_once_with(2, 0, False)
     client._rpc2_get_config.assert_not_awaited()
+
+
+# --- a refused poll must not drop the rules --------------------------------
+#
+# The same shape @rroller found on #1201, and the comment in
+# `_async_fetch_ivs_rules` used to say this branch was safe because
+# `async_get_config` returns `{}` for a refusal. It does, and that is the bug:
+# `{}` does not fail the refresh, which is what the handler was written to
+# prevent, but it drops the held rows just as completely, so every IVS switch
+# on a direct camera went unknown on one refused read.
+#
+# Driven through the real DahuaClient against a session that answers a status,
+# because a stub that raises skips the conversion that caused this.
+
+
+class _RefusedRead:
+    def __init__(self, status):
+        self.status = status
+        self.headers = {}
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise aiohttp.ClientResponseError(
+                request_info=SimpleNamespace(real_url="http://10.0.0.5/x"),
+                history=(),
+                status=self.status,
+            )
+
+    async def text(self):
+        return ""
+
+    async def read(self):
+        return b""
+
+    def close(self):
+        return None
+
+
+class _RefusingSession:
+    def __init__(self, status):
+        self.status = status
+        self.calls = 0
+        self.url = None
+
+    async def request(self, method, url, headers=None, **kwargs):
+        self.calls += 1
+        self.url = url
+        return _RefusedRead(self.status)
+
+
+def _camera_coordinator(data, address):
+    """A direct camera, which is the branch that reads over CGI."""
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator.data = dict(data)
+    coordinator._channel = 2
+    coordinator._address = address
+    coordinator.is_nvr_channel = lambda: False
+    return coordinator
+
+
+@pytest.mark.parametrize("status", [400, 403, 500])
+async def test_a_refused_poll_keeps_the_rules_it_had(status):
+    held = row(1, "7", enabled="true")
+    session = _RefusingSession(status)
+    coordinator = _camera_coordinator(held, "10.0.0.5")
+    coordinator.client = DahuaClient("u", "p", "10.0.0.5", 80, 554, session)
+
+    carried = await coordinator._async_fetch_ivs_rules()
+
+    assert session.calls, "the real client was never reached"
+    assert carried, "a refused read dropped the IVS rules"
+    assert carried["table.VideoAnalyseRule[2][1].Enable"] == "true"
+
+
+async def test_a_camera_with_no_rules_is_not_given_the_old_ones():
+    """The control, and the reason this is a strict read rather than a check on
+    the keys: a camera whose last rule was deleted answers an empty table, and
+    carrying the previous rows would leave a switch for a rule that is gone."""
+    session = _RefusingSession(200)
+    coordinator = _camera_coordinator(row(1, "7"), "10.0.0.6")
+    coordinator.client = DahuaClient("u", "p", "10.0.0.6", 80, 554, session)
+
+    answered = await coordinator._async_fetch_ivs_rules()
+
+    assert answered == {}, "an empty 200 was treated as a refusal"
+
+
+async def test_the_poll_reads_the_rules_by_table_name():
+    """A getConfig for a name the device does not have answers 200 and empty,
+    so a misspelling here reads as a camera with no rules for ever."""
+    session = _RefusingSession(200)
+    coordinator = _camera_coordinator({}, "10.0.0.7")
+    coordinator.client = DahuaClient("u", "p", "10.0.0.7", 80, 554, session)
+
+    await coordinator._async_fetch_ivs_rules()
+
+    assert "action=getConfig&name=VideoAnalyseRule" in session.url

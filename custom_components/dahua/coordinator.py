@@ -8381,9 +8381,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         gather has no `return_exceptions`, so a device that stops answering
         would take the whole refresh and every entity with it (#1006).
         Carries only this table's own keys, never the whole of the last poll.
+
+        **The strict reader, deliberately.** `async_get_config` turns an HTTP
+        400, 403 or 500 into `{}`, which never reaches the handler below, so
+        this returned an empty table and the next data replacement dropped
+        every key the switch and the four volumes read. Letting the refusal
+        raise is what makes carrying the previous answer possible, while a
+        monitor that genuinely answers an empty table stays distinguishable
+        from one that refused.
         """
         try:
-            return await self.client.async_get_video_talk_phone_general()
+            return await self.client.async_probe_video_talk_phone_general()
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.debug(
                 "Could not read the call settings of the monitor at %s",
@@ -8548,11 +8556,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         table reports a different rule Id depending on how it is read, so this
         is a read that genuinely changes its mind between polls.
 
-        The direct-camera branch goes through `async_get_config`, which already
-        returns {} for a refusal, so it was never the exposed one. It is in here
-        anyway, because which branch runs depends on `is_nvr_channel()` and a
-        guard that covers only one of them is the kind that looks present and
-        is not.
+        The direct-camera branch used to go through `async_get_config`, and the
+        sentence that stood here said that returning `{}` for a refusal made it
+        "never the exposed one". That was wrong, and in a way worth keeping a
+        note of: `{}` does not fail the refresh, which is what the handler was
+        written to prevent, but it drops the held rows just as completely. The
+        switches went unknown on one refused read, with no exception anywhere.
+        It reads strictly now, so a refusal reaches the handler and an empty
+        answer still means the camera has no rules.
 
         Carries only this table's own keys, for the reason
         `_async_fetch_video_color` gives: a whole copy of the last poll would
@@ -8562,7 +8573,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             if self.is_nvr_channel():
                 return await self.client.async_get_remote_ivs_rules(self._channel)
-            return await self.client.async_get_ivs_rules()
+            return await self.client.async_probe_ivs_rules()
         except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.debug(
                 "Could not read the IVS rules for channel %s",

@@ -27,6 +27,7 @@ import io
 from pathlib import Path
 from types import SimpleNamespace
 
+import aiohttp
 import pytest
 
 from custom_components.dahua.client import VTH_PHONE_TABLE, DahuaClient
@@ -382,3 +383,112 @@ async def test_concurrent_settings_writes_preserve_both_changes():
 def test_a_malformed_silence_flag_is_unknown(raw):
     coordinator = _coordinator({"table.VideoTalkPhoneGeneral.SilenceEnable": raw})
     assert coordinator.get_vth_phone_flag(VTH_SILENCE_FIELD) is None
+
+
+# --- a refused poll must not blank the monitor ------------------------------
+#
+# The same shape @rroller found on #1201. `async_get_config` turns an HTTP 400,
+# 403 or 500 into `{}`, so the poll wrapper's handler never ran, it returned an
+# empty table, and the next data replacement dropped every key the switch and
+# the four volumes read. The monitor went unknown on one refused read with no
+# exception anywhere.
+#
+# Driven through the real DahuaClient against a session that answers a status,
+# not a stub that raises, because a stub skips the conversion that caused this.
+
+
+class _Refused:
+    """One status, to everything asked of it."""
+
+    def __init__(self, status):
+        self.status = status
+        self.headers = {}
+
+    def raise_for_status(self):
+        if self.status >= 400:
+            raise aiohttp.ClientResponseError(
+                request_info=SimpleNamespace(real_url="http://10.0.0.230/x"),
+                history=(),
+                status=self.status,
+            )
+
+    async def text(self):
+        return ""
+
+    async def read(self):
+        return b""
+
+    def close(self):
+        return None
+
+
+class _RefusingSession:
+    def __init__(self, status):
+        self.status = status
+        self.calls = 0
+
+    async def request(self, method, url, headers=None, **kwargs):
+        self.calls += 1
+        self.url = url
+        return _Refused(self.status)
+
+
+def _polling_coordinator(flat, address):
+    """A real coordinator, enough of one to run the poll wrapper."""
+    from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
+
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator.data = dict(flat)
+    coordinator._channel = 0
+    coordinator._address = address
+    return coordinator
+
+
+@pytest.mark.parametrize("status", [400, 403, 500])
+async def test_a_refused_poll_keeps_the_call_settings(status):
+    session = _RefusingSession(status)
+    coordinator = _polling_coordinator(_flat(), "10.0.0.230")
+    coordinator.client = DahuaClient("u", "p", "10.0.0.230", 80, 554, session)
+
+    carried = await coordinator._async_fetch_vth_phone_settings()
+
+    assert session.calls, "the real client was never reached"
+    assert carried, "a refused read dropped the monitor's call settings"
+    assert carried["table.VideoTalkPhoneGeneral.RingVolume"] == "70"
+    assert carried["table.VideoTalkPhoneGeneral.SilenceEnable"] == "false"
+
+
+async def test_the_volume_still_reads_after_a_refused_poll():
+    """The consequence as the user sees it: the slider keeps its value."""
+    session = _RefusingSession(500)
+    coordinator = _polling_coordinator(_flat(), "10.0.0.231")
+    coordinator.client = DahuaClient("u", "p", "10.0.0.231", 80, 554, session)
+
+    carried = await coordinator._async_fetch_vth_phone_settings()
+
+    assert _coordinator(carried).get_vth_phone_number("RingVolume") == 70
+
+
+async def test_an_empty_answer_is_not_mistaken_for_a_refusal():
+    """The control. A monitor that answers an empty table has said something,
+    and it must stay distinguishable from one that refused."""
+    session = _RefusingSession(200)
+    coordinator = _polling_coordinator(_flat(), "10.0.0.232")
+    coordinator.client = DahuaClient("u", "p", "10.0.0.232", 80, 554, session)
+
+    answered = await coordinator._async_fetch_vth_phone_settings()
+
+    assert answered == {}, "an empty 200 was treated as a refusal"
+
+
+async def test_the_poll_reads_the_table_by_name():
+    """The URL, because a getConfig for a name the device does not have answers
+    200 with an empty body, so a misspelled table reads as a monitor without
+    the feature for ever."""
+    session = _RefusingSession(200)
+    coordinator = _polling_coordinator({}, "10.0.0.233")
+    coordinator.client = DahuaClient("u", "p", "10.0.0.233", 80, 554, session)
+
+    await coordinator._async_fetch_vth_phone_settings()
+
+    assert "action=getConfig&name=VideoTalkPhoneGeneral" in session.url

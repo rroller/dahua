@@ -2732,6 +2732,24 @@ class DahuaClient:
         """
         return await self.async_get_config(VTH_PHONE_TABLE)
 
+    async def async_probe_video_talk_phone_general(self) -> dict:
+        """Read VideoTalkPhoneGeneral strictly, letting a refusal raise.
+
+        The same read as above, same URL and so the same shared cache entry,
+        without the `ClientResponseError` swallow. For the poll, which carries
+        the previous answer when a read fails: the lenient form turns an HTTP
+        400, 403 or 500 into `{}`, so the handler never runs and a monitor's
+        do not disturb switch and its four volumes go unknown on one refused
+        read (the shape @rroller found on #1201).
+
+        The capability probe above keeps the lenient form deliberately, for the
+        reason its own docstring gives: it judges on the keys that came back,
+        and a monitor without the table answers emptily rather than erroring.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=" + VTH_PHONE_TABLE
+        )
+
     async def async_set_video_talk_phone_field(self, field: str, value) -> None:
         """Change one field of a monitor's call settings, writing the whole table.
 
@@ -3450,6 +3468,24 @@ class DahuaClient:
         table.VideoAnalyseRule[0][1].Name=IVS-1
         """
         return await self.async_get_config("VideoAnalyseRule")
+
+    async def async_probe_ivs_rules(self) -> dict:
+        """Read VideoAnalyseRule strictly, letting a refusal raise.
+
+        The same read as `async_get_ivs_rules`, same URL and so the same shared
+        cache entry, without the `ClientResponseError` swallow. For the poll,
+        which has to tell a device that answered an empty table from one that
+        refused: the lenient form turns an HTTP 400, 403 or 500 into `{}`, the
+        poll wrapper's handler never runs, and the rules it was holding are
+        dropped on one bad read (the shape @rroller found on #1201).
+
+        The capability probe keeps the lenient form deliberately. It judges on
+        the keys that came back, so a device without the table answering
+        emptily is an answer there rather than something to carry.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=VideoAnalyseRule"
+        )
 
     async def async_get_remote_ivs_rules(self, channel: int) -> dict:
         """Read an NVR channel's remote rules in the coordinator's flat shape."""
