@@ -26,6 +26,7 @@ ISSUE_PLACEHOLDERS = {
     "siblings_remain": {"address", "count"},
     "removal_broke_things": {"removed", "dependents", "names"},
     "channel_not_added": {"address", "channel", "reason"},
+    "duplicate_address": {"address", "port", "existing"},
     "webrtc_cannot_play": {"address", "channels", "count"},
     "motion_not_pushed": {"address", "channels"},
     # Title only, as siblings_remain above: the flow fills its own form, and it

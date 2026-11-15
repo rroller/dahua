@@ -748,6 +748,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
 # twelve, and had nothing anywhere telling them which four or why.
 ISSUE_CHANNEL_NOT_ADDED = "channel_not_added_{0}_{1}"
 
+# Raised when an entry is added on an address and port another entry already
+# holds. Not an abort: two entries on one device is legitimate with different
+# credentials, which is why `_rpc2_config_write_lock` is keyed by device rather
+# than by `_rpc2_key()`, and pre-#827 per-channel setups look the same way. It
+# is a warning because the usual cause is an accident, and the usual accident
+# is a device whose identity could not be read, where the serial-based guard in
+# the add flow never runs.
+ISSUE_DUPLICATE_ADDRESS = "duplicate_address_{0}_{1}"
+
 ISSUE_SIBLINGS_REMAIN = "siblings_remain_{0}"
 # Raised when the removed entry was referenced by automations or scripts. Those
 # break silently -- the entities simply stop existing and nothing fires.
