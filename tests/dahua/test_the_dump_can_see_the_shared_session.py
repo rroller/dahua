@@ -62,13 +62,17 @@ def client():
 
 @pytest.fixture(autouse=True)
 def _clean_registries():
-    client_module._HOST_RPC2.clear()
-    client_module._HOST_RPC2_UNAVAILABLE.clear()
-    client_module._RPC2_TABLE_UNAVAILABLE.clear()
+    registries = (
+        client_module._HOST_RPC2,
+        client_module._HOST_RPC2_UNAVAILABLE,
+        client_module._HOST_RPC2_WRITES_UNSAFE,
+        client_module._RPC2_TABLE_UNAVAILABLE,
+    )
+    for registry in registries:
+        registry.clear()
     yield
-    client_module._HOST_RPC2.clear()
-    client_module._HOST_RPC2_UNAVAILABLE.clear()
-    client_module._RPC2_TABLE_UNAVAILABLE.clear()
+    for registry in registries:
+        registry.clear()
 
 
 def _block(hass, client):
@@ -149,3 +153,75 @@ async def test_a_double_that_is_not_a_client_still_produces_a_block(hass):
 
     assert block["rpc2_session_open"] is True
     assert block["rpc2_session_refcount"] == 2
+
+
+# --- the latch that stops every write -----------------------------------------
+#
+# `_rpc2_fallback_write` sends a whole table and reads it back, and a host that
+# drops a setting even from a complete table goes into
+# `_HOST_RPC2_WRITES_UNSAFE` and takes no further write over RPC2. That is the
+# right call and it is said once, in a warning, at the moment it happens. After
+# that every write on the device reports the refusal the CGI gave, which is
+# also what a device that simply declined the write reports, so the two are
+# indistinguishable from a dump and from the log a reporter pastes.
+#
+# It matters most on the device the fallback exists for. A camera whose CGI
+# answers cannot be read (#1176) has nowhere else to write, so this latch is
+# the difference between "writes work" and "nothing on this camera can be
+# changed again until Home Assistant restarts".
+
+
+async def test_a_device_latched_out_of_rpc2_writes_says_so(hass, client):
+    """The field this section is for."""
+    client_module._HOST_RPC2_WRITES_UNSAFE.add(client.device_key)
+
+    assert _block(hass, client)["rpc2_writes_unsafe_for_device"] is True
+
+
+async def test_a_healthy_device_does_not(hass, client):
+    """The negative control, and the state almost every dump is taken in."""
+    assert _block(hass, client)["rpc2_writes_unsafe_for_device"] is False
+
+
+async def test_the_latch_is_read_by_device_not_by_rpc2_key(hass, client):
+    """Keyed by device, because a username belongs to a session and not to a
+    config table. Reading it under `_rpc2_key()` finds nothing and reports the
+    healthy answer, which is the #665 failure this whole file is about."""
+    client_module._HOST_RPC2_WRITES_UNSAFE.add(client._rpc2_key())
+
+    assert _block(hass, client)["rpc2_writes_unsafe_for_device"] is False
+
+
+async def test_the_other_device_on_the_address_is_not_latched(hass):
+    """Two boxes behind one IP on different ports. The port is in the device
+    key, so a reader that dropped it would latch the innocent one as well."""
+    on_80 = DahuaClient(USERNAME, "password", ADDRESS, 80, 554, None)
+    on_81 = DahuaClient(USERNAME, "password", ADDRESS, 81, 555, None)
+    client_module._HOST_RPC2_WRITES_UNSAFE.add(on_80.device_key)
+
+    assert _block(hass, on_80)["rpc2_writes_unsafe_for_device"] is True
+    assert _block(hass, on_81)["rpc2_writes_unsafe_for_device"] is False
+
+
+async def test_two_entries_on_one_device_both_report_it(hass):
+    """Different credentials, one device, one set of config tables. The latch
+    is the device's, so the dump from either entry has to show it."""
+    admin = DahuaClient("admin", "password", ADDRESS, PORT, 554, None)
+    viewer = DahuaClient("viewer", "other", ADDRESS, PORT, 554, None)
+    client_module._HOST_RPC2_WRITES_UNSAFE.add(admin.device_key)
+
+    assert _block(hass, admin)["rpc2_writes_unsafe_for_device"] is True
+    assert _block(hass, viewer)["rpc2_writes_unsafe_for_device"] is True
+
+
+async def test_a_double_with_no_device_key_is_not_reported_as_latched(hass):
+    """Most doubles in the suite are a SimpleNamespace. A missing key reads as
+    None, and None must not be in the set, or every one of those dumps would
+    claim the device cannot be written to."""
+    double = SimpleNamespace(
+        _address=ADDRESS,
+        _username=USERNAME,
+        _host_limit=client_module._host_limiter(ADDRESS),
+    )
+
+    assert _block(hass, double)["rpc2_writes_unsafe_for_device"] is False
