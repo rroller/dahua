@@ -5225,7 +5225,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     "getCaps: SupportControlLight is missing or not true"
                 )
         except Exception as error:
-            reason = f"getCaps: query failed ({type(error).__name__})"
+            # The code, where there is one, is the whole discriminator for
+            # #942. `Rpc2MethodRefused` carries 268894210 when the device has
+            # no such method at all, which is a different fault from a
+            # timeout and from an answer that simply omits the flag.
+            # `getattr`, because only `method` is a class default and a
+            # TimeoutError or ValueError carries neither. The device's own
+            # message string is deliberately left out.
+            code = getattr(error, "code", None)
+            reason = "getCaps: query failed ({0}{1})".format(
+                type(error).__name__,
+                "" if code is None else f", code {code}",
+            )
             self._siren_detection_failures.append(reason)
             self._security_light_detection_failures.append(reason)
             _LOGGER.debug(
@@ -6558,6 +6569,38 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             else "Manual override: disabled"
         )
         return failures
+
+    def get_siren_detection_failures(self) -> list[str]:
+        """Every siren check that did not pass, whether or not one did.
+
+        The sources readers above answer "why has my camera no siren?" and
+        return the failures only when there is no evidence at all. This
+        answers the mirror of that, which #942 is: the AD410 claims a siren
+        through `AudioFileManager.SirenFileManager.Support=true` and then
+        refuses `CoaxialControlIO.control` with "Method not found", so the
+        entity is created and cannot work.
+
+        On that device the ProductDefinition source exists, so the getCaps
+        reason beside it was suppressed for being a failure in a list that had
+        a success. That reason is the one thing that separates a device whose
+        `CoaxialControlIO` is absent from one that answers and simply does not
+        list speaker control, and the two want different fixes. Unconditional
+        here for exactly that reason: a failure matters most when something
+        else succeeded.
+
+        Reasons only, never device data, which is the rule the two
+        `*_failure_reason` parsers in deterrence.py already follow.
+        """
+        return list(getattr(self, "_siren_detection_failures", []))
+
+    def get_security_light_detection_failures(self) -> list[str]:
+        """Every security-light check that did not pass, whether or not one did.
+
+        The siren's twin above. The getCaps handler writes its reason into
+        both lists, so a device that refuses that call is as invisible on this
+        side as on the other.
+        """
+        return list(getattr(self, "_security_light_detection_failures", []))
 
     def supports_siren(self) -> bool:
         """

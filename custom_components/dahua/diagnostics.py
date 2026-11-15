@@ -267,8 +267,17 @@ def _capabilities_block(coordinator) -> dict[str, Any]:
             lambda: coordinator.get_siren_detection_sources(), []
         ),
         "supports_security_light": _safe(coordinator.supports_security_light),
+        # Beside the sources, not inside them. A source and a failure can both
+        # be true at once, and #942 is that case: a siren claimed by
+        # ProductDefinition whose control method the device says it lacks.
+        "supports_siren_failures": _safe(
+            lambda: coordinator.get_siren_detection_failures(), []
+        ),
         "supports_security_light_sources": _safe(
             lambda: coordinator.get_security_light_detection_sources(), []
+        ),
+        "supports_security_light_failures": _safe(
+            lambda: coordinator.get_security_light_detection_failures(), []
         ),
         "supports_infrared_light": _safe(coordinator.supports_infrared_light),
         "supports_illuminator": _safe(coordinator.supports_illuminator),
