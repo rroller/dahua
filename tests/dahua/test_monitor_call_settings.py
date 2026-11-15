@@ -27,6 +27,8 @@ import io
 from pathlib import Path
 from types import SimpleNamespace
 
+from aiohttp import ClientResponseError
+
 import aiohttp
 import pytest
 
@@ -288,19 +290,41 @@ def test_the_flag_is_none_when_it_was_never_read():
 # --- the probe decides which entities exist ---------------------------------
 
 
-async def _probe(answer):
-    """Run the real probe against a client that answers `answer`."""
+async def _probe(answer, options=None, monitor=True):
+    """Run the real probe against a client that answers `answer`.
+
+    The client models **both** readers, the strict one the probe uses and the
+    lenient sibling beside it, because they share a URL and differ only in what
+    a refusal does. Without the lenient one, swapping the probe back to it
+    would fail on a missing attribute, which proves nothing about behaviour --
+    the trap that hid the finding in #1213.
+    """
     from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 
     coordinator = DahuaDataUpdateCoordinator.__new__(DahuaDataUpdateCoordinator)
     coordinator._address = "10.0.0.230"
+    coordinator._probe_refusals = {}
+    coordinator._capability_retries = {}
+    coordinator.is_indoor_monitor = lambda: monitor
+    coordinator.config_entry = SimpleNamespace(
+        entry_id="entry-1", options=options or {}
+    )
 
-    async def read():
+    async def strict():
         if isinstance(answer, Exception):
             raise answer
         return answer
 
-    coordinator.client = SimpleNamespace(async_get_video_talk_phone_general=read)
+    async def lenient():
+        try:
+            return await strict()
+        except ClientResponseError:
+            return {}
+
+    coordinator.client = SimpleNamespace(
+        async_probe_video_talk_phone_general=strict,
+        async_get_video_talk_phone_general=lenient,
+    )
     found = await DahuaDataUpdateCoordinator._async_probe_vth_phone_settings(
         coordinator
     )
@@ -492,3 +516,169 @@ async def test_the_poll_reads_the_table_by_name():
     await coordinator._async_fetch_vth_phone_settings()
 
     assert "action=getConfig&name=VideoTalkPhoneGeneral" in session.url
+
+
+# --- and asked again when the monitor did not answer --------------------------
+#
+# The poll reads this table only where fields were found:
+#
+#     if getattr(self, "_vth_phone_fields", frozenset()) and self._wanted_by(...)
+#
+# so an unanswered probe closed the loop for the life of the entry. Nothing
+# asked again, and the do not disturb switch and the four volumes never
+# existed. The probe recorded nothing either, so even the dump was silent.
+#
+# A monitor is the device most likely to miss the question. It is the one
+# answering over DHIP (#949), where one session takes one call at a time, and
+# setup asks it several things at once.
+
+
+def _refused(status=403):
+    return ClientResponseError(None, (), status=status)
+
+
+async def test_a_monitor_that_did_not_answer_is_asked_again():
+    """The point of this section. The switch and the volumes exist from the
+    next poll rather than never."""
+    from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
+
+    found, fields = await _probe(TimeoutError())
+    assert found is False
+    assert fields == frozenset()
+
+    coordinator = DahuaDataUpdateCoordinator.__new__(DahuaDataUpdateCoordinator)
+    coordinator._address = "10.0.0.230"
+    coordinator._probe_refusals = {"vth_phone_settings": {"answered": False}}
+    coordinator._capability_retries = {}
+    coordinator.is_indoor_monitor = lambda: True
+    coordinator.config_entry = SimpleNamespace(entry_id="entry-1", options={})
+
+    async def answers():
+        return _flat()
+
+    coordinator.client = SimpleNamespace(
+        async_probe_video_talk_phone_general=answers,
+        async_get_video_talk_phone_general=answers,
+    )
+
+    assert await coordinator._async_retry_vth_phone_settings() is True
+    assert coordinator._vth_phone_fields == frozenset(VTH_PHONE_SETTINGS)
+    # And the question is closed. Without this the monitor stays on the
+    # unanswered list, is re-asked until the retry budget runs out, and the
+    # dump goes on saying it never answered after it has. Nothing else here
+    # notices, because the fields are already right by then.
+    assert coordinator.probes_that_did_not_answer() == set()
+
+
+async def test_silence_is_recorded_as_unanswered():
+    """What the retry registry reads. A timeout is the monitor not answering,
+    which is a fact about that moment and generalises to nothing, so it is the
+    shape that earns another question."""
+    from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
+
+    coordinator = DahuaDataUpdateCoordinator.__new__(DahuaDataUpdateCoordinator)
+    coordinator._address = "10.0.0.230"
+    coordinator._probe_refusals = {}
+    coordinator.is_indoor_monitor = lambda: True
+    coordinator.config_entry = SimpleNamespace(entry_id="entry-1", options={})
+
+    async def refuse():
+        raise TimeoutError()
+
+    coordinator.client = SimpleNamespace(
+        async_probe_video_talk_phone_general=refuse,
+        async_get_video_talk_phone_general=refuse,
+    )
+
+    await coordinator._async_probe_vth_phone_settings()
+
+    assert coordinator.probes_that_did_not_answer() == {"vth_phone_settings"}
+
+
+async def test_a_refusal_is_the_monitor_answering():
+    """⭐ The assertion the strict reader is for, and the only one here that
+    separates it from the lenient sibling. Through `async_get_config` a 403
+    came back as `{}`, `_note_probe_answered` popped the record, and nothing
+    anywhere said the monitor refused or with what status. Both readers stop
+    the retry, which is right; only this one says why."""
+    from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
+
+    coordinator = DahuaDataUpdateCoordinator.__new__(DahuaDataUpdateCoordinator)
+    coordinator._address = "10.0.0.230"
+    coordinator._probe_refusals = {}
+    coordinator.is_indoor_monitor = lambda: True
+    coordinator.config_entry = SimpleNamespace(entry_id="entry-1", options={})
+
+    async def refuse():
+        raise _refused()
+
+    async def lenient():
+        try:
+            return await refuse()
+        except ClientResponseError:
+            return {}
+
+    coordinator.client = SimpleNamespace(
+        async_probe_video_talk_phone_general=refuse,
+        async_get_video_talk_phone_general=lenient,
+    )
+
+    await coordinator._async_probe_vth_phone_settings()
+
+    assert coordinator.probes_that_did_not_answer() == set()
+    assert coordinator._probe_refusals["vth_phone_settings"]["status"] == 403
+
+
+async def test_a_monitor_already_known_is_not_announced():
+    """A retry that finds what it already had must not report a discovery, or
+    every poll rebuilds the platforms."""
+    from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
+
+    coordinator = DahuaDataUpdateCoordinator.__new__(DahuaDataUpdateCoordinator)
+    coordinator._address = "10.0.0.230"
+    coordinator._probe_refusals = {}
+    coordinator.is_indoor_monitor = lambda: True
+    coordinator.config_entry = SimpleNamespace(entry_id="entry-1", options={})
+
+    async def answers():
+        return _flat()
+
+    coordinator.client = SimpleNamespace(
+        async_probe_video_talk_phone_general=answers,
+        async_get_video_talk_phone_general=answers,
+    )
+
+    await coordinator._async_probe_vth_phone_settings()
+
+    assert await coordinator._async_retry_vth_phone_settings() is False
+
+
+async def test_a_camera_is_not_asked_for_call_settings():
+    """The identity gate, inside the probe so the retry applies it too. A
+    camera has no call settings and the request buys nothing."""
+    found, fields = await _probe(_flat(), monitor=False)
+
+    assert found is False
+    assert fields == frozenset()
+
+
+async def test_a_monitor_with_neither_platform_is_not_asked():
+    """The platform gate, for the same reason. Neither the switch nor the
+    volumes exist with both off, and the poll already applies this one."""
+    found, _fields = await _probe(_flat(), options={"switch": False, "number": False})
+
+    assert found is False
+
+
+async def test_one_platform_is_enough():
+    found, _fields = await _probe(_flat(), options={"switch": False})
+
+    assert found is True
+
+
+def test_the_retry_registry_carries_the_monitor():
+    """The registration itself. Without it the probe records a refusal nothing
+    ever reads, which is where this started."""
+    from custom_components.dahua.coordinator import RETRYABLE_CAPABILITIES
+
+    assert "vth_phone_settings" in RETRYABLE_CAPABILITIES
