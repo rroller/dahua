@@ -49,7 +49,7 @@ Reintroduced against the real source, with the tests that failed:
 | withdrawing whether or not a duplicate remains | 4, from `the_card_stays...` |
 | the sweep raising as well as withdrawing | `a_legacy_per_channel_recorder...` |
 | the key dropping the port | 8, from `two_devices_on_one_address...` |
-| the key taking the address as typed | `a_trailing_slash_withdraws_what_it_raised` |
+| the key taking the address as typed | `one_device_spelled_two_ways...` |
 """
 
 from types import SimpleNamespace
@@ -343,22 +343,28 @@ async def test_two_devices_on_one_address_keep_their_own_cards(
     assert _card_is_up(hass, port="8000")
 
 
-async def test_a_trailing_slash_withdraws_what_it_raised(
+async def test_one_device_spelled_two_ways_is_one_duplicate(
     hass, enable_custom_integrations
 ):
-    """One spelling of one address. `normalize_address` exists because a
-    trailing slash left a single device holding two differently keyed pools;
-    here it would raise a card under one id and withdraw another, which is a
-    card nothing can take down. Both sides go through one key function."""
+    """A trailing slash is the same device, and `normalize_address` is how
+    everything host scoped says so: one left a single device holding two
+    differently keyed request pools.
+
+    Taking the address as typed counts these two entries as two devices. The
+    card still goes up, because the add step finds the entry spelled the way
+    this one was, but it is then keyed on a pair holding one entry, and
+    deleting that entry leaves the pair holding none, which a sweep of what
+    the entries hold cannot reach. That is the card nothing can take down,
+    and it is the withdrawal that fails rather than the raising."""
     _mock_entry(hass, address=ADDRESS + "/", title="Front Door")
     second = _mock_entry(hass, title="Front Door 2")
-    _raise_the_card(hass, address=ADDRESS + "/")
-    assert _card_is_up(hass), "raised under the normalised address"
+    _raise_the_card(hass)
+    assert _card_is_up(hass)
 
     await hass.config_entries.async_remove(second.entry_id)
     await hass.async_block_till_done()
 
-    assert not _card_is_up(hass)
+    assert not _card_is_up(hass), "the other spelling is the same device"
 
 
 async def test_moving_one_entry_elsewhere_withdraws_the_card(
