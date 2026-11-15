@@ -6871,28 +6871,48 @@ class DahuaClient:
             auth = DigestAuth(
                 self._username, self._password, self._session, self._digest_state
             )
-            response = await auth.request("GET", url, timeout=timeout)
+            # Both refusals this can meet are caught in one place, because the
+            # unreadable one arrives from the request itself rather than from
+            # `raise_for_status` (#1176, and the same note as on `get()` below).
+            # Catching only around the status check, as this did, left the
+            # fallback unreachable for that camera: a subscription it could
+            # never read backed off for ever, on a device whose RPC2 works.
             try:
+                response = await auth.request("GET", url, timeout=timeout)
                 response.raise_for_status()
             except aiohttp.ClientResponseError as cgi_error:
-                if cgi_error.status not in self.EVENT_CGI_ABSENT:
+                unreadable = refusal_is_mangled_framing(cgi_error)
+                if cgi_error.status not in self.EVENT_CGI_ABSENT and not unreadable:
                     raise
-                # No CGI event path on this device. Poll RPC2 instead, which is
-                # the only transport it has. Closing the response here and
-                # returning through the finally below would skip the poller, so
-                # it is closed explicitly and the poll runs in its place.
-                response.close()
-                response = None
-                _LOGGER.info(
-                    "eventManager.cgi answered %s on %s, so this device has no CGI "
-                    "event stream; subscribing over RPC2 instead. The same absent CGI "
-                    "makes the identity and capability probes fall back, so this device "
-                    "will report as Generic RTSP on firmware 1.0 and its CGI-only "
-                    "entities will be missing -- see identity_fallbacks in its "
-                    "diagnostics rather than reading that as a second fault",
-                    cgi_error.status,
-                    self._address,
-                )
+                # No usable CGI event path on this device. Poll RPC2 instead,
+                # which is the only transport it has left. Closing the response
+                # here and returning through the finally below would skip the
+                # poller, so it is closed explicitly and the poll runs in its
+                # place. There is nothing to close when the refusal came from
+                # the request: no response survived it.
+                if response is not None:
+                    response.close()
+                    response = None
+                if unreadable:
+                    _LOGGER.info(
+                        "The event subscription on %s came back as bytes no HTTP "
+                        "parser will read, which is the whole of this device's CGI "
+                        "(#1176); subscribing over RPC2 instead. Its config reads "
+                        "and writes take the same route, so this is one fault "
+                        "rather than three",
+                        self._address,
+                    )
+                else:
+                    _LOGGER.info(
+                        "eventManager.cgi answered %s on %s, so this device has no CGI "
+                        "event stream; subscribing over RPC2 instead. The same absent CGI "
+                        "makes the identity and capability probes fall back, so this device "
+                        "will report as Generic RTSP on firmware 1.0 and its CGI-only "
+                        "entities will be missing -- see identity_fallbacks in its "
+                        "diagnostics rather than reading that as a second fault",
+                        cgi_error.status,
+                        self._address,
+                    )
                 await self._stream_events_rpc2(on_receive, events, channel)
                 return
 
@@ -7010,7 +7030,8 @@ class DahuaClient:
         )
         if cycle > RPC2_EVENT_SLOW_CYCLE_SECONDS:
             _LOGGER.warning(
-                "%s has no CGI event stream, so %d event types are polled over RPC2 "
+                "%s has no usable CGI event stream, so %d event types are polled over "
+                "RPC2 "
                 "one at a time, giving a %.0fs cycle -- %.1f requests a second. An "
                 "event shorter than that cycle can be missed; select fewer event "
                 "types to poll them faster",
