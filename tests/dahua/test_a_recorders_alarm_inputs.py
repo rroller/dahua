@@ -20,6 +20,8 @@ index, the one-based label the device prints, and the bitmask bit positions.
 import asyncio
 import time
 
+import aiohttp
+
 import pytest
 
 from custom_components import dahua as dahua_module
@@ -598,10 +600,16 @@ async def test_the_table_decides_when_the_slot_count_disagrees():
 # under a unique id taken from the box's serial and cannot follow.
 
 
-class _Refused(Exception):
-    """A device answering no, which carries a status."""
+def _refused(status=403):
+    """The refusal a device's 403 actually arrives as.
 
-    status = 403
+    ⚠ `aiohttp.ClientResponseError` and not a plain exception carrying a
+    `status`. `async_get_config` swallows exactly this type and returns `{}`,
+    so a hand-rolled stand-in passes through the lenient reader untouched and
+    a test using one cannot tell the two readers apart. Reverting the strict
+    read survived this harness until this was the real type.
+    """
+    return aiohttp.ClientResponseError(None, (), status=status, message="Forbidden")
 
 
 def _real(client, device_class="NVR", channel=0, hass=None, events=("VideoMotion",)):
@@ -623,21 +631,60 @@ async def test_a_silent_box_leaves_the_question_open():
     assert coordinator.probes_that_did_not_answer() == {"alarm_inputs"}
 
 
-async def test_a_refusal_is_the_box_answering():
+@pytest.mark.parametrize("read", ["async_get_alarm_input_slots", "config"])
+async def test_a_refusal_is_the_box_answering(read):
     """A status is an answer, and it is the half worth keeping: it says this
     model does not serve the table, which generalises, where a timeout says
-    only that this moment was bad."""
+    only that this moment was bad.
+
+    Both reads, and this is the probe's half only: the client is a double, so
+    what it proves is that a refusal reaching the probe is recorded with its
+    status. Whether a refusal reaches it at all is the client's half, and the
+    test below is that one. The table read used to go through
+    `async_get_config`, which turns a 403 into `{}`, so production would have
+    filed the refusal as "this box has no terminals" while this test passed on
+    a double that raises.
+    """
     client = _ProbeClient()
 
-    async def refuse():
-        raise _Refused()
+    async def refuse(*_args):
+        raise _refused()
 
-    client.async_get_alarm_input_config = refuse
+    if read == "config":
+        client.async_get_alarm_input_config = refuse
+    else:
+        client.async_get_alarm_input_slots = refuse
     coordinator = _real(client)
 
     assert await coordinator._async_probe_alarm_inputs() is False
     assert coordinator._probe_refusals["alarm_inputs"]["status"] == 403
     assert coordinator.probes_that_did_not_answer() == set()
+
+
+async def test_the_table_read_names_the_table_and_does_not_swallow():
+    """Both halves of the read the record depends on.
+
+    The URL, because a name the box does not have answers 200 with an empty
+    body and reads back as "no terminals" for ever (#1194). And the refusal,
+    because `async_get_config` would turn it into the same empty answer. Same
+    URL as `async_get_config("Alarm")` would build, so the two share one entry
+    in the read cache.
+    """
+    from custom_components.dahua.client import DahuaClient
+
+    client = object.__new__(DahuaClient)
+    asked = []
+
+    async def get(url):
+        asked.append(url)
+        raise _refused()
+
+    client.get = get
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.async_get_alarm_input_config()
+
+    assert asked == ["/cgi-bin/configManager.cgi?action=getConfig&name=Alarm"]
 
 
 async def test_a_box_with_no_terminals_has_answered():

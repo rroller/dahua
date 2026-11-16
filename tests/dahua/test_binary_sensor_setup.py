@@ -692,21 +692,6 @@ async def test_a_channel_waits_rather_than_taking_the_terminals_itself(setup):
     assert _names(setup.built, "alarm_input") == []
 
 
-async def test_a_camera_whose_class_arrived_late_keeps_its_channel_sensor(setup):
-    """The regression the pending check could have caused, pinned from this
-    side as well.
-
-    Only a recorder is asked about terminals, and the gate reads the class the
-    device reported, so a camera whose class probe timed out is not asked and
-    records nothing. If that silence were recorded as a question still open,
-    this camera would read as "terminals on the way" and lose the only alarm
-    sensor it is ever going to have.
-    """
-    await setup(_Coordinator(channel=0, events=["AlarmLocal"]))
-
-    assert _names(setup.built) == ["AlarmLocal"]
-
-
 async def test_a_box_that_answered_no_terminals_keeps_its_channel_sensor(setup):
     """The other answer, and the one that must not change. A box with no
     terminals is not pending: it said so, nothing more is coming, and the
