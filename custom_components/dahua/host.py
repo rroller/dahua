@@ -770,6 +770,14 @@ class DahuaHostEventStream:
     # double the requests at a device that is already saying no.
     _tried_all_events = False
 
+    # Whether proof of missed motion has moved this stream onto codes=[All]
+    # (#1202): None until it has, "active" while it is on [All] for that reason,
+    # "failed" once [All] did not bring a VideoMotion either. Three states
+    # rather than a flag so a device that never pushes VideoMotion at all is
+    # moved once and put back once, not flipped every hour for a day. See
+    # `async_check_video_motion_is_pushed`.
+    _all_events_for_unpushed_motion: str | None = None
+
     # Which event codes this device's getEventIndexes endpoint has been seen to
     # report as active. Learned, because an empty answer is ambiguous -- see
     # _async_reconcile_latched_events.
@@ -906,6 +914,12 @@ class DahuaHostEventStream:
         # the heuristic alone would drop the stream back onto a list already known
         # to fail, and the only sign would be the events stopping again.
         use_all_events = use_all_events or self._tried_all_events
+        # And the same for a device that has shown it is missing motion on the
+        # explicit list, for the same reason: a channel coming or going must not
+        # put it back on the list it went quiet on.
+        use_all_events = (
+            use_all_events or self._all_events_for_unpushed_motion == "active"
+        )
         if (
             self._task is not None
             and not self._task.done()
@@ -1017,9 +1031,17 @@ class DahuaHostEventStream:
         could have found the option, because nothing in the interface connects
         "motion does not work" to a checkbox in the entry's settings.
 
-        Nothing is enabled here. The card names the setting and the user
+        The poller is not enabled here. The card names the setting and the user
         decides, because the poller is one request per recorder every two
         seconds and that is not a cost to impose on a guess.
+
+        What does change on its own, once, is how the existing stream asks
+        (#1202). On the first proof, a stream on an explicit list is moved to
+        codes=[All] and no card is raised: same one connection, no extra
+        requests, and the events are filtered back to the selection locally
+        exactly as a widened shared union already is. If the next proof comes
+        with [All] in use, it did not help, so the request goes back as it was
+        and the card goes up. Each step happens at most once per stream.
         """
         if self._seen_pushed_video_motion or any(
             getattr(c, "poll_video_motion", False) for c in self.coordinators
@@ -1069,11 +1091,47 @@ class DahuaHostEventStream:
         if not active:
             return
 
+        channels = ", ".join(str(index) for index in sorted(active))
+        # **The free fix before the costly one (#1202).** Some firmware takes an
+        # explicit code list, sends heartbeats on it indefinitely, and never
+        # sends an event: measured on an IP5M-B1186E, where seven codes went
+        # quiet and six did not, and where codes=[All] on the same camera
+        # delivered `VideoMotion;action=Start`. The heartbeats are why the
+        # refusal fallback never fires there -- `_should_try_all_events` treats
+        # a stream that talked as one that took the list -- and they are why
+        # every field in the dump looked healthy. This check is the one place
+        # with positive proof that the list is not working, so it is the place
+        # to act on it.
+        #
+        # Only a stream on an explicit list for no other reason. One already on
+        # [All] (a widened shared union, a refused list, or a user who selected
+        # All) has nothing to gain from asking again.
+        state = self._all_events_for_unpushed_motion
+        if state is None and not self._using_all_events and "All" not in self._events:
+            self._all_events_for_unpushed_motion = "active"
+            _LOGGER.info(
+                "%s reports motion on channel(s) %s but has never pushed a "
+                "VideoMotion event on its list of %d codes; asking it for all "
+                "events instead before suggesting the fallback poller",
+                self._address,
+                channels,
+                len(self._wire_codes()),
+            )
+            self._restart_if_needed()
+            return
+        if state == "active":
+            # [All] did not bring one either, so the device does not push
+            # VideoMotion however it is asked -- #996's XVR shape. Put the
+            # request back the way it was rather than leave it broader for
+            # nothing, and fall through to the card it would have had.
+            self._all_events_for_unpushed_motion = "failed"
+            self._restart_if_needed()
+
         _LOGGER.info(
             "%s reports motion on channel(s) %s but has never pushed a "
             "VideoMotion event; suggesting the fallback poller",
             self._address,
-            ", ".join(str(index) for index in sorted(active)),
+            channels,
         )
         ir.async_create_issue(
             self._hass,
@@ -1084,7 +1142,7 @@ class DahuaHostEventStream:
             translation_key="motion_not_pushed",
             translation_placeholders={
                 "address": self._address,
-                "channels": ", ".join(str(index) for index in sorted(active)),
+                "channels": channels,
             },
         )
 

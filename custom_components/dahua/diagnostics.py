@@ -424,6 +424,17 @@ def _stream_block(coordinator) -> dict[str, Any]:
         # a second copy of that rule would go stale the moment the map gains a
         # key, and this field exists to be reconciled against a capture.
         "subscribed_as": _subscribed_as(stream),
+        # Why a stream with no widened union and no refusal is on [All] (#1202):
+        # "active" when proof of missed motion moved it there, "failed" once
+        # [All] did not bring a VideoMotion either, which is the dump saying the
+        # fallback poller is the remaining answer. "untouched" when neither
+        # happened, as a string because every value in this block is a plain
+        # scalar or list (test_no_coordinator_or_client_object_is_published).
+        # Without it a single camera reporting `subscribed_as: ["All"]` would
+        # have nothing in the dump to account for it.
+        "all_events_for_unpushed_motion": (
+            getattr(stream, "_all_events_for_unpushed_motion", None) or "untouched"
+        ),
         "received_data": bool(getattr(stream, "_received_data", False)),
         "last_attach_failed": bool(getattr(stream, "_failing", False)),
         "consecutive_failures": getattr(stream, "_consecutive_failures", 0),

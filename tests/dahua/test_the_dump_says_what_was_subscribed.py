@@ -305,3 +305,31 @@ def test_the_dump_copies_the_counts_rather_than_publishing_the_live_dict():
     live["FaceDetection-0"] = 99
 
     assert block["arrived_with_no_listener"] == {"FaceDetection-0": 1}
+
+
+# --- why a single camera is on [All] (#1202) ----------------------------------
+
+
+@pytest.mark.parametrize("state", [None, "active", "failed"])
+def test_the_dump_says_whether_missed_motion_moved_the_subscription(state):
+    """`subscribed_as: ["All"]` on one camera with no refusal and no widened
+    union has nothing else in the dump to account for it, and "failed" is the
+    dump saying [All] was tried and the fallback poller is what is left."""
+    dahua._HOST_STREAMS[ADDRESS] = _stream(
+        _using_all_events=state == "active",
+        _all_events_for_unpushed_motion=state,
+    )
+
+    block = _stream_block(_reader())
+
+    assert block["all_events_for_unpushed_motion"] == (state or "untouched")
+
+
+def test_a_stream_built_without_the_field_reads_as_untouched():
+    """A class default, so a stream from object.__new__ does not make the dump
+    raise and reads as the state nothing has happened to."""
+    bare = _stream()
+    assert "_all_events_for_unpushed_motion" not in vars(bare)
+    dahua._HOST_STREAMS[ADDRESS] = bare
+
+    assert _stream_block(_reader())["all_events_for_unpushed_motion"] == "untouched"
