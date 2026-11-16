@@ -25,6 +25,7 @@ and we have never been told once" is a fault.
 
 import asyncio
 
+import aiohttp
 import pytest
 
 from custom_components import dahua as dahua_module
@@ -67,16 +68,36 @@ async def _stop_host_streams(hass):
 
 
 class _Client:
-    def __init__(self, active=(), raises=False):
+    def __init__(self, active=(), raises=False, on_all=None):
         self.active = set(active)
         self.raises = raises
         self.asked = 0
         # Every code list the stream attached with, in order. What the device
         # was asked for is the observable for #1202, not a flag on the stream.
         self.attached_with = []
+        # What this device does when asked for codes=[All]: None serves it,
+        # "refuse" answers 400, "silent" attaches and sends nothing, and
+        # "unauthorised" answers 401, which is credentials and not the request.
+        self.on_all = on_all
 
     async def stream_events(self, on_receive, events, channel):
         self.attached_with.append(list(events))
+        if list(events) == ["All"]:
+            if self.on_all == "refuse":
+                raise aiohttp.ClientResponseError(
+                    None, (), status=400, message="Bad Request"
+                )
+            if self.on_all == "unauthorised":
+                raise aiohttp.ClientResponseError(
+                    None, (), status=401, message="Unauthorized"
+                )
+            if self.on_all == "silent":
+                raise asyncio.TimeoutError()
+            if self.on_all == "talks_then_drops":
+                on_receive(b"--myboundary\nContent-Length:9\n\nHeartbeat\n", 0)
+                raise aiohttp.ClientResponseError(
+                    None, (), status=400, message="Bad Request"
+                )
         await asyncio.Event().wait()
 
     async def async_get_event_indexes_cgi(self, code):
@@ -342,6 +363,85 @@ async def test_a_channel_joining_does_not_put_back_the_list_it_went_quiet_on(has
     await _settle()
 
     assert client.attached_with[-1] == ["All"]
+
+
+async def test_a_device_quiet_after_the_move_stays_on_all_and_gets_no_card(hass):
+    """The check only acts when it catches motion in progress, so a camera
+    that goes quiet after the move is never proved either way. It stays on
+    [All], which the device is serving, and the events are filtered back to
+    the selection locally: nothing is lost by staying, and nothing is raised
+    on silence, which is the rule #728 was built on."""
+    client = _Client(active={0})
+    stream = await _stream_with(hass, _Coordinator(client=client))
+    await stream.async_check_video_motion_is_pushed()
+    await _settle()
+    client.active = set()
+
+    for _ in range(5):
+        await _an_hour_later(stream)
+        await stream.async_check_video_motion_is_pushed()
+
+    assert client.attached_with == [["VideoMotion"], ["All"]]
+    assert stream._all_events_for_unpushed_motion == "active"
+    assert ISSUE_ID not in _issues(hass)
+
+
+@pytest.mark.parametrize("on_all", ["refuse", "silent"])
+async def test_all_events_the_device_will_not_serve_go_straight_back(hass, on_all):
+    """A device that refuses [All], or attaches and sends nothing on it, would
+    otherwise sit on a request that delivers nothing at all -- worse than the
+    list it left, which may have been carrying everything but VideoMotion.
+    Back at once, without waiting an hour for another proof."""
+    client = _Client(active={0}, on_all=on_all)
+    stream = await _stream_with(hass, _Coordinator(client=client))
+
+    await stream.async_check_video_motion_is_pushed()
+    await _settle()
+
+    assert client.attached_with == [["VideoMotion"], ["All"], ["VideoMotion"]]
+    assert stream._all_events_for_unpushed_motion == "failed"
+    assert ISSUE_ID not in _issues(hass), "the card waits for the next proof"
+
+
+async def test_all_events_that_failed_lead_to_the_card_on_the_next_proof(hass):
+    client = _Client(active={0}, on_all="refuse")
+    stream = await _stream_with(hass, _Coordinator(client=client))
+    await stream.async_check_video_motion_is_pushed()
+    await _settle()
+
+    await _an_hour_later(stream)
+    await stream.async_check_video_motion_is_pushed()
+    await _settle()
+
+    assert ISSUE_ID in _issues(hass)
+    assert client.attached_with[-1] == ["VideoMotion"]
+
+
+async def test_all_events_that_talked_and_then_dropped_are_kept(hass):
+    """A stream that attached and delivered something took the request; a
+    socket ending afterwards, status or not, is not [All] being refused. The
+    same rule `_should_try_all_events` applies the other way round."""
+    client = _Client(active={0}, on_all="talks_then_drops")
+    stream = await _stream_with(hass, _Coordinator(client=client))
+
+    await stream.async_check_video_motion_is_pushed()
+    await _settle()
+
+    assert stream._all_events_for_unpushed_motion == "active"
+    assert client.attached_with == [["VideoMotion"], ["All"]]
+
+
+async def test_a_credentials_refusal_on_all_is_not_read_as_all_failing(hass):
+    """401 is the password, with its own budget. Going back to the list would
+    not help and would misreport what happened."""
+    client = _Client(active={0}, on_all="unauthorised")
+    stream = await _stream_with(hass, _Coordinator(client=client))
+
+    await stream.async_check_video_motion_is_pushed()
+    await _settle()
+
+    assert stream._all_events_for_unpushed_motion == "active"
+    assert client.attached_with == [["VideoMotion"], ["All"]]
 
 
 # --- the reasons not to ask ---------------------------------------------------

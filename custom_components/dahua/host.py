@@ -900,6 +900,31 @@ class DahuaHostEventStream:
 
     def _restart_if_needed(self) -> None:
         wanted = self._union()
+        use_all_events = self._wants_all_events(wanted)
+        if (
+            self._task is not None
+            and not self._task.done()
+            and wanted == self._events
+            and use_all_events == self._using_all_events
+        ):
+            self._sync_video_motion_poller()
+            return
+        self._events = wanted
+        self._using_all_events = use_all_events
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        if wanted and self._owner is not None:
+            self._task = asyncio.create_task(self._async_run())
+        self._sync_video_motion_poller()
+
+    def _wants_all_events(self, wanted) -> bool:
+        """Whether this request should go out as codes=[All].
+
+        One answer for `_restart_if_needed` and for the stream loop, which has
+        to make the same decision from inside the running task when [All]
+        itself turns out not to work there (#1202) and cannot restart itself.
+        """
         # Before #615, every channel attached with only its own event list.
         # A shared host stream can make that request strictly broader by taking
         # the union across channels. Some Dahua firmware accepts codes=[All]
@@ -917,25 +942,46 @@ class DahuaHostEventStream:
         # And the same for a device that has shown it is missing motion on the
         # explicit list, for the same reason: a channel coming or going must not
         # put it back on the list it went quiet on.
-        use_all_events = (
-            use_all_events or self._all_events_for_unpushed_motion == "active"
+        return use_all_events or self._all_events_for_unpushed_motion == "active"
+
+    def _all_events_failed_after_missed_motion(self, received: bool, status) -> bool:
+        """Whether [All], asked for because motion was missed, does not work here.
+
+        Two ways to know, both of which would otherwise leave the stream on a
+        request that gets nothing at all, which is worse than the list it left:
+        the device refused [All] with an HTTP status, or it attached and sent
+        nothing, not even the heartbeat. #996's XVRs push smart detection on
+        their explicit list and never push VideoMotion; if one of them also
+        would not serve [All], moving it there would trade a card for every
+        event it was delivering. 401 is credentials, with its own budget.
+        """
+        if self._all_events_for_unpushed_motion != "active":
+            return False
+        if not self._using_all_events or received:
+            return False
+        return status is None or status != 401
+
+    def _go_back_to_the_list(self, why: str) -> bool:
+        """Undo the move to [All] from inside the running stream.
+
+        Returns whether the request actually changed, so the caller knows
+        whether to go straight back round. Something else may want [All] as
+        well -- a widened shared union, or an earlier refusal -- and then
+        nothing changes here and the stream carries on as it would have.
+        """
+        self._all_events_for_unpushed_motion = "failed"
+        self._using_all_events = self._wants_all_events(self._events)
+        if self._using_all_events:
+            return False
+        _LOGGER.warning(
+            "Event stream for %s %s on codes=[All], asked for because the device "
+            "reported motion it never pushed; going back to its own list of %d "
+            "codes. The fallback poller is the remaining option for motion",
+            self._address,
+            why,
+            len(self._wire_codes()),
         )
-        if (
-            self._task is not None
-            and not self._task.done()
-            and wanted == self._events
-            and use_all_events == self._using_all_events
-        ):
-            self._sync_video_motion_poller()
-            return
-        self._events = wanted
-        self._using_all_events = use_all_events
-        if self._task is not None:
-            self._task.cancel()
-            self._task = None
-        if wanted and self._owner is not None:
-            self._task = asyncio.create_task(self._async_run())
-        self._sync_video_motion_poller()
+        return True
 
     def _wire_codes(self) -> list:
         """The codes to ask the device for, which is not the selection.
@@ -1364,6 +1410,10 @@ class DahuaHostEventStream:
                     self._failing = False
                     self._consecutive_failures = 0
                     _LOGGER.debug("Recycling event stream for %s", self._address)
+                elif self._all_events_failed_after_missed_motion(
+                    False, None
+                ) and self._go_back_to_the_list("attached and delivered nothing"):
+                    continue
                 else:
                     self._consecutive_failures += 1
                     if not self._failing:
@@ -1413,6 +1463,20 @@ class DahuaHostEventStream:
                         len(self._events),
                         getattr(ex, "status", "?"),
                     )
+                    continue
+
+                # The reverse of the branch above (#1202): [All] was asked for
+                # because motion went missing on the list, and it is [All] the
+                # device has now refused. Only a refusal with a status counts --
+                # a socket that drops without one says nothing about the request.
+                status = getattr(ex, "status", None)
+                if (
+                    status is not None
+                    and self._all_events_failed_after_missed_motion(
+                        self._received_data, status
+                    )
+                    and self._go_back_to_the_list("was refused with HTTP %s" % status)
+                ):
                     continue
 
                 # Say it once per outage, not once per retry. Silence was the
