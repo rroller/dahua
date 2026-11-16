@@ -765,6 +765,11 @@ ISSUE_CHANNEL_NOT_ADDED = "channel_not_added_{0}_{1}"
 # `_async_warn_duplicate_address`, and withdrawn in one,
 # `async_reconcile_duplicate_addresses` below.
 ISSUE_DUPLICATE_ADDRESS = "duplicate_address_{0}_{1}"
+# What every duplicate card's id begins with, so the sweep below can find the
+# cards that are up without parsing an address back out of one. Derived from the
+# template rather than retyped: a prefix that stopped matching would withdraw
+# nothing and turn the sweep into a no-op.
+DUPLICATE_ADDRESS_PREFIX = ISSUE_DUPLICATE_ADDRESS.split("{", 1)[0]
 
 
 @callback
@@ -804,26 +809,36 @@ def async_reconcile_duplicate_addresses(hass: HomeAssistant) -> None:
     of them. Retaining a card that is still true needs nothing, because the
     issue is persistent and already in the registry.
 
-    Sweeps every pair the entries hold rather than the caller's own pair, which
-    is what makes one function serve both callers. A removal is a pair with one
-    entry left, and that entry is what carries the pair here; the entry that was
-    removed is already out of the registry by then and would not. A
-    reconfiguration is the same shape from the other side: the entry that moved
-    took its pair with it, so its new pair is the one place the stale card
-    cannot be, and the entry that stayed behind is what finds it.
+    Sweeps the cards that are up and keeps the ones the live entries still
+    justify, rather than sweeping the pairs the entries hold. One function
+    serves both callers and neither hands in a pair: a removal's own entry is
+    out of the registry by the time the hook runs, and a reconfiguration
+    reloads through setup, which never sees the address the entry moved off.
 
-    Takes no argument for the pair with no entries left at all, because nothing
-    reaches that state with a card up: the deletion that took the pair from two
-    entries to one withdrew it already.
+    Reading the cards is what reaches a pair with no live entries at all.
+    Removing both entries at once gets there: both are gone before either
+    removal hook runs, so a sweep of live pairs visits that pair not at all,
+    withdraws nothing, and the persistent card survives the restart as well
+    (@rroller, #1212). An earlier version took the removed pair as an argument
+    for that case, and I dropped it as a branch nothing reaches on the strength
+    of the tests I had. Sweeping the cards covers the pair from whatever path
+    empties it, which is the part an argument could not.
     """
     held: dict = {}
     for entry in hass.config_entries.async_entries(DOMAIN):
         key = duplicate_address_key(entry.data)
         if key[0]:
             held[key] = held.get(key, 0) + 1
-    for key in held:
-        if held[key] < 2:
-            ir.async_delete_issue(hass, DOMAIN, ISSUE_DUPLICATE_ADDRESS.format(*key))
+    still_true = {
+        ISSUE_DUPLICATE_ADDRESS.format(*key) for key, count in held.items() if count > 1
+    }
+    # Over a copy of the keys: withdrawing pops from the dict being read, and
+    # one withdrawal is enough to end the iteration in a RuntimeError.
+    for domain, issue_id in list(ir.async_get(hass).issues):
+        if domain != DOMAIN or not issue_id.startswith(DUPLICATE_ADDRESS_PREFIX):
+            continue
+        if issue_id not in still_true:
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
 
 
 ISSUE_SIBLINGS_REMAIN = "siblings_remain_{0}"

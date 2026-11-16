@@ -30,11 +30,14 @@ login fails the cached result is dropped so every read retries, which is when
 two entries push twice as hard.
 
 And it comes down when the duplicate does, which the first version of this did
-not do at all (@rroller, #1212). One function withdraws it, swept over every
-address and port the entries hold, from the removal hook and from setup, which
-is what a reconfiguration reloads through. It never raises: only the add step
-decides a pair is a duplicate, because a recorder whose merge refused has an
-entry per channel on one address and port and is not one.
+not do at all (@rroller, #1212). One function withdraws it, from the removal
+hook and from setup, which is what a reconfiguration reloads through. It sweeps
+the cards that are up and keeps the ones the live entries still justify, rather
+than sweeping the pairs the entries hold: removing both entries at once leaves
+a pair no entry carries in, and @rroller reached that in one `asyncio.gather`
+after the first fix. It never raises: only the add step decides a pair is a
+duplicate, because a recorder whose merge refused has an entry per channel on
+one address and port and is not one.
 
 Reintroduced against the real source, with the tests that failed:
 
@@ -50,8 +53,13 @@ Reintroduced against the real source, with the tests that failed:
 | the sweep raising as well as withdrawing | `a_legacy_per_channel_recorder...` |
 | the key dropping the port | 8, from `two_devices_on_one_address...` |
 | the key taking the address as typed | `one_device_spelled_two_ways...` |
+| the sweep reading live pairs instead of cards | `both_entries_removed_at_once`, `two_stale_cards...` |
+| the prefix filter dropped | `the_sweep_leaves_the_other_repairs_alone` |
+| the still-true check dropped | 4, from `the_card_stays...` |
+| the registry read without a copy | 2, from `the_sweep_leaves_the_other...` |
 """
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -278,8 +286,9 @@ async def test_deleting_both_entries_withdraws_the_card(
     """The other half of @rroller's reproduction. The card is gone by the first
     of the two deletions, because one entry is no longer a duplicate, and the
     second finds nothing to do. Worth having as its own test: the reported
-    symptom was the card surviving both, and the first deletion being what takes
-    it down is why the reconciliation needs nothing from the entry that left."""
+    symptom was the card surviving both, and this order is the one where a
+    sweep of live pairs is enough. Doing the same two deletions at once is not,
+    which is the test below."""
     first = _mock_entry(hass, title="Front Door")
     second = _mock_entry(hass, title="Front Door 2")
     _raise_the_card(hass)
@@ -289,6 +298,102 @@ async def test_deleting_both_entries_withdraws_the_card(
     await hass.async_block_till_done()
 
     assert not _card_is_up(hass)
+
+
+async def test_both_entries_removed_at_once_withdraws_the_card(
+    hass, enable_custom_integrations
+):
+    """@rroller's second reproduction on #1212. Deleting both at once is not the
+    same shape as deleting them one after the other: there, the first removal
+    leaves one entry on the pair and that entry is what carries the pair into
+    the sweep. Here both are out of the registry before either hook runs, so a
+    sweep of what the entries hold visits the pair not at all, finds nothing to
+    withdraw, and the persistent card survives the restart as well."""
+    first = _mock_entry(hass, title="Front Door")
+    second = _mock_entry(hass, title="Front Door 2")
+    _raise_the_card(hass)
+    assert _card_is_up(hass)
+
+    await asyncio.gather(
+        hass.config_entries.async_remove(first.entry_id),
+        hass.config_entries.async_remove(second.entry_id),
+    )
+    await hass.async_block_till_done()
+
+    assert not _card_is_up(hass)
+
+
+async def test_two_stale_cards_both_come_down(hass, enable_custom_integrations):
+    """Two devices, each added twice, each pair then emptied at once. The same
+    shape as the test above with a second card beside it, which is what says
+    the sweep withdraws every stale card rather than the one it happens to
+    reach first.
+
+    Not the test for iterating the registry while withdrawing from it. That
+    raises a `RuntimeError`, and Home Assistant catches whatever the removal
+    hook raises and logs it, so the cards still come down here; the two tests
+    that call the sweep directly are what turn red."""
+    other = "10.0.0.6"
+    entries = [
+        _mock_entry(hass, address=address, title=title)
+        for address, title in (
+            (ADDRESS, "Front Door"),
+            (ADDRESS, "Front Door 2"),
+            (other, "Garage"),
+            (other, "Garage 2"),
+        )
+    ]
+    _raise_the_card(hass)
+    _raise_the_card(hass, address=other)
+    assert _card_is_up(hass) and _card_is_up(hass, address=other)
+
+    await asyncio.gather(
+        *(hass.config_entries.async_remove(entry.entry_id) for entry in entries)
+    )
+    await hass.async_block_till_done()
+
+    assert not _card_is_up(hass)
+    assert not _card_is_up(hass, address=other)
+
+
+async def test_the_sweep_leaves_the_other_repairs_alone(
+    hass, enable_custom_integrations
+):
+    """The sweep reads every issue this integration has raised, not only the
+    duplicate ones. None of the others is its to withdraw: a leftover row, a
+    serial conflict or a channel that would not add describes something the
+    sweep has not looked at and cannot have resolved."""
+    entry = _mock_entry(hass, address="10.0.0.9")
+    bystanders = [
+        (dahua_module.ISSUE_SIBLINGS_REMAIN.format("10.0.0.5"), "siblings_remain"),
+        (dahua_module.ISSUE_LEFTOVER_ROWS.format(entry.entry_id), "leftover_rows"),
+        (dahua_module.ISSUE_SERIAL_CONFLICT.format("ABC123"), "serial_conflict"),
+        (
+            dahua_module.ISSUE_CHANNEL_NOT_ADDED.format(entry.entry_id, 3),
+            "channel_not_added",
+        ),
+    ]
+    for issue_id, translation_key in bystanders:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=translation_key,
+        )
+    _raise_the_card(hass, address="10.0.0.9")
+    assert _card_is_up(hass, address="10.0.0.9")
+
+    async_reconcile_duplicate_addresses(hass)
+
+    assert not _card_is_up(hass, address="10.0.0.9")
+    registry = ir.async_get(hass)
+    assert [
+        issue_id
+        for issue_id, _key in bystanders
+        if registry.async_get_issue(DOMAIN, issue_id) is None
+    ] == []
 
 
 async def test_the_card_stays_while_a_duplicate_remains(
