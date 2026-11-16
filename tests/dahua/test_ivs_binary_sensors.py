@@ -70,8 +70,17 @@ async def test_setup_creates_all_seven_normal_rules_including_stay():
 
     with patch.object(DahuaBaseEntity, "__init__", init):
         await async_setup_entry(
-            SimpleNamespace(data={DOMAIN: {"entry": c}}),
-            SimpleNamespace(entry_id="entry", runtime_data={0: c}),
+            SimpleNamespace(
+                data={DOMAIN: {"entry": c}}, async_create_task=lambda coro: coro
+            ),
+            # `async_on_unload` because the alarm terminals on this platform go
+            # through the late watcher now, which registers a listener at setup
+            # and hands the entry its unsubscribe.
+            SimpleNamespace(
+                entry_id="entry",
+                runtime_data={0: c},
+                async_on_unload=lambda callback: None,
+            ),
             add_devices,
         )
 
@@ -382,7 +391,13 @@ async def test_nvr_setup_adds_rules_for_every_channel_with_distinct_identities()
 
     with patch.object(DahuaBaseEntity, "__init__", init):
         await async_setup_entry(
-            None, SimpleNamespace(runtime_data=channels), add_devices
+            SimpleNamespace(data={}, async_create_task=lambda coro: coro),
+            SimpleNamespace(
+                entry_id="entry",
+                runtime_data=channels,
+                async_on_unload=lambda callback: None,
+            ),
+            add_devices,
         )
     sensors = [s for s in added if isinstance(s, DahuaIVSRuleBinarySensor)]
     assert len(sensors) == 14

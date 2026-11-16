@@ -124,6 +124,7 @@ from .host import (
     _host_stream,
     _release_connector,
     _release_host_stream,
+    async_alarm_input_carrier,
     async_device_is_zero_indexed,
     async_record_host_auth_refusal,
     async_record_host_failure,
@@ -145,6 +146,18 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 # config entry with ConfigEntryNotReady. One slow capability check took the
 # device down and Home Assistant retried it forever. See #594 and #631.
 PROBE_FAILED = (ClientError, TimeoutError)
+
+
+class ProbeNotAsked(Exception):
+    """Recorded when a probe could not be asked, rather than asked and refused.
+
+    Never raised. `_note_probe_refusal` reads a status or an RPC2 code off
+    whatever it is handed and files anything without one as silence, which is
+    what this is: a question held back because another answer it depends on has
+    not arrived. The type name is what the dump shows, so it says which of the
+    two happened rather than leaving a reader to guess at a missing status.
+    """
+
 
 # How many later polls will re-ask a capability question the device never
 # answered. Silence is not an answer (#1057), but it cannot be chased for ever
@@ -3508,7 +3521,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if self.is_recorder_host():
                     await self._async_refresh_storage()
                     await self._async_refresh_remote_devices()
-                    await self._async_probe_alarm_inputs()
+
+                # Outside that block, because the probe applies the same gate
+                # itself and the retry has to apply it too. @rroller's third
+                # finding on #1201: a gate the retry does not share is a
+                # capability the retry cannot find.
+                await self._async_probe_alarm_inputs()
 
                 # The processor and memory describe the box, not the
                 # channel. Every channel probes and polls for them, and the
@@ -5425,13 +5443,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """The recorder's disks, for the diagnostic disk sensors to read (#745)."""
         return list(self._storage_disks)
 
-    async def _async_probe_alarm_inputs(self) -> None:
+    async def _async_probe_alarm_inputs(self, only_if_unclaimed: bool = False) -> bool:
         """Ask once whether this box has alarm input terminals of its own (#1090).
 
         Host level, like the disks: `Alarm` and `alarm.cgi` take no channel, so
-        this runs on whichever coordinator reaches it first and the rest of the
-        host leaves it alone. binary_sensor.py picks the lowest channel that
-        answered, the same arrangement the disk sensors use.
+        every channel asks, the client shares the answer per device, and
+        binary_sensor.py gives the entities to the lowest channel that found
+        terminals. `host.py` routes `AlarmLocal` by the same rule, and the two
+        have to agree.
 
         Judged on what came back, not on whether it raised: `async_get_config`
         swallows a `ClientResponseError` and returns `{}`, and a device answers
@@ -5441,19 +5460,52 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         The current state is read here too. Without it a restart while a door
         is held open shows the sensor off until the next edge, and an edge may
         be hours away.
+
+        Returns whether terminals are held, for the retry below. The two
+        refusals it records are the reason the retry can find them at all: a
+        probe that caught everything into a debug line was neither re-asked
+        nor visible in the dump, which is the last of the three I listed on
+        #1213.
+
+        `only_if_unclaimed` is for that retry, and it is checked here rather
+        than by the caller because here is the one place with no await between
+        the check and the adoption. Every channel adopting at setup is
+        deliberate and harmless, since both the platform and `host.py` then
+        take the lowest of them and agree; adopting after the entities exist is
+        not, because the lowest can change and the entities cannot follow.
         """
+        if not self.is_recorder_host():
+            # Not a camera saying no. A box whose class question has not been
+            # answered has not been asked this one either, and an unasked
+            # question is never recorded as unanswered, so nothing would ever
+            # come back to it. `_async_retry_device_class` can still answer
+            # NVR on a later poll, and this is what makes the terminals follow.
+            if getattr(self, "_device_class_unanswered", False):
+                self._note_probe_refusal("alarm_inputs", ProbeNotAsked())
+            return False
         try:
             slots = await self.client.async_get_alarm_input_slots()
             raw = await self.client.async_get_alarm_input_config()
-        except Exception:  # pylint: disable=broad-except
+        except Exception as exception:  # pylint: disable=broad-except
+            self._note_probe_refusal("alarm_inputs", exception)
             _LOGGER.debug(
                 "Alarm input probe failed on %s", self._address, exc_info=True
             )
-            return
+            return False
 
+        # The box answered. Whether it listed terminals or not, the question is
+        # settled and nothing should keep asking it.
+        self._note_probe_answered("alarm_inputs")
         inputs = parse_alarm_inputs(raw)
         if not inputs:
-            return
+            return False
+        if only_if_unclaimed:
+            carrier = async_alarm_input_carrier(self._address)
+            if carrier is not None and carrier is not self:
+                # Another channel got there while this read was in the air.
+                # Two retries really can be in flight at once, so a check made
+                # before the read is a check both of them pass.
+                return False
 
         # `getInSlots` and the table disagreeing is not fatal: the table is the
         # thing entities are built from, so it decides, and the slot count only
@@ -5461,6 +5513,47 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._alarm_input_slots = slots or (max(entry["index"] for entry in inputs) + 1)
         self._alarm_inputs = inputs
         await self._async_refresh_alarm_input_state()
+        return True
+
+    async def _async_retry_alarm_inputs(self) -> bool:
+        """Whether this box's alarm terminals turned up that setup never got.
+
+        **Only if nobody on the host carries them yet**, which is the one rule
+        that keeps the entities and the events on the same coordinator. The
+        carrier is the lowest channel that found terminals, `host.py` picks it
+        per event, and binary_sensor.py gave the entities to the same one at
+        setup. Let a lower channel adopt them afterwards and the carrier moves
+        while the entities stay where they were created, under a unique id
+        taken from the box's serial: `AlarmLocal` then arrives at a
+        coordinator with no sensors on it and the terminals go quiet for good.
+
+        Recorded as answered in that case rather than left pending. The
+        question this name stands for is whether the box's terminals have been
+        found, and they have; both readers of the unanswered set want that
+        answer, the retry so it stops asking and the leftover-rows card so it
+        stops waiting for an entity that already exists.
+
+        Asked through the host rather than through this entry's coordinators,
+        because that is what `host.py` routes with and one source is what keeps
+        them from disagreeing.
+        """
+        carrier = async_alarm_input_carrier(self._address)
+        if carrier is not None and carrier is not self:
+            self._note_probe_answered("alarm_inputs")
+            return False
+        # Again inside the probe, at the adoption itself. This one saves the
+        # read on the other eleven channels of a recorder; that one is the one
+        # that holds when two of them are reading at the same moment.
+        already = bool(self._alarm_inputs)
+        if not await self._async_probe_alarm_inputs(only_if_unclaimed=True) or already:
+            return False
+        # The subscription is host level too: `_union` adds `AlarmLocal` only
+        # where a carrier exists, so a host where no channel selected it was
+        # not subscribed to the code these sensors are built for. Nudging the
+        # stream re-attaches with it, and the re-attach re-reads the terminal
+        # state on its own. A no-op when the set has not changed.
+        _host_stream(self.hass, self._address)._restart_if_needed()
+        return True
 
     async def _async_refresh_alarm_input_state(self) -> None:
         """Seed the alarm input sensors from the device's current state.
@@ -8989,6 +9082,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 # smart motion detection, which gates a switch and the Sensitivity select
 # together, so a channel that lost that probe lost both of its controls.
 RETRYABLE_CAPABILITIES = {
+    "alarm_inputs": DahuaDataUpdateCoordinator._async_retry_alarm_inputs,
     "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
     AUDIO_CONTROLS["microphone_volume"][
         3

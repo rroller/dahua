@@ -18,6 +18,7 @@ then do. Their own behaviour is covered in test_binary_sensor.py.
 import pytest
 
 from custom_components.dahua import binary_sensor as bs
+from custom_components.dahua import late
 
 from . import adds_entities
 
@@ -38,6 +39,7 @@ class _Coordinator:
         serial="SERIAL1",
         host_device=False,
         alarm_inputs=(),
+        alarm_inputs_pending=False,
     ):
         self._events = list(events)
         self._doorbell = doorbell
@@ -47,6 +49,7 @@ class _Coordinator:
         self._serial = serial
         self._host_device = host_device
         self._alarm_inputs = list(alarm_inputs)
+        self._alarm_inputs_pending = alarm_inputs_pending
 
     def get_event_list(self):
         return self._events
@@ -63,9 +66,31 @@ class _Coordinator:
     def get_alarm_inputs(self):
         return list(self._alarm_inputs)
 
+    def probes_that_did_not_answer(self):
+        """Which capability questions this box has not answered either way.
+
+        Empty for every test that predates the alarm probe being retried, which
+        is what keeps them describing what they always described: a box that
+        said something, so the per-channel AlarmLocal decision is final.
+        """
+        return {"alarm_inputs"} if self._alarm_inputs_pending else set()
+
     def get_device_serial_number(self):
         """The serial without the channel suffix. What a disk is keyed on."""
         return self._serial
+
+    def get_serial_number(self):
+        """With the channel, which is the key a late rebuild is announced
+        under: the watcher re-runs `build` for the channel the signal named."""
+        return (
+            self._serial
+            if not self._channel
+            else "%s_%d"
+            % (
+                self._serial,
+                self._channel,
+            )
+        )
 
     def is_doorbell(self):
         return self._doorbell
@@ -90,6 +115,44 @@ class _Entry:
     def __init__(self, coordinators):
         self.runtime_data = {i: c for i, c in enumerate(coordinators)}
         self.entry_id = "entry"
+        self.unloads = []
+
+    def async_on_unload(self, callback):
+        """Taken by the late watcher, which the alarm terminals now go through.
+
+        They are built by a `build` the watcher re-runs on a late answer, so
+        setup registers a dispatcher listener and hands the entry its
+        unsubscribe. Recorded rather than ignored, so a test can see that one
+        was taken.
+        """
+        self.unloads.append(callback)
+
+
+class _Hass:
+    """Enough Home Assistant for the late watcher to register and build.
+
+    `data` because that is where the watcher stamps the run its registration
+    holds are answered against, and `async_create_task` because a late answer
+    rebuilds in a task. Setup itself builds inline, so nothing here runs
+    unless a test fires a discovery.
+    """
+
+    def __init__(self):
+        self.data = {}
+        self.tasks = []
+
+    def async_create_task(self, coro):
+        self.tasks.append(coro)
+        return coro
+
+    def verify_event_loop_thread(self, _what):
+        """Asked by the real dispatcher before it sends. Tests run on the
+        loop, so there is nothing to check; it only has to exist."""
+
+    async def run_pending(self):
+        pending, self.tasks = self.tasks, []
+        for coro in pending:
+            await coro
 
 
 @pytest.fixture
@@ -112,6 +175,17 @@ def setup(monkeypatch):
     class _AlarmInput:
         def __init__(self, coordinator, entry, alarm_input):
             built.append(("alarm_input", alarm_input["index"], coordinator))
+            # These go through the late watcher, which skips an entity whose
+            # unique id it has already added and adds anything without one.
+            # A marker with no id is therefore added again on every rebuild,
+            # where the real entity is not, so this one carries an id too. Its
+            # shape is the real class's business and is asserted where that
+            # class is; what matters here is that there is one, and that it is
+            # the same across rebuilds.
+            self.unique_id = "%s_alarm_input_%d" % (
+                coordinator.get_device_serial_number(),
+                alarm_input["index"],
+            )
 
     monkeypatch.setattr(bs, "DahuaEventSensor", _Event)
     monkeypatch.setattr(bs, "DahuaAuthorizedVehicleBinarySensor", _Vehicle)
@@ -120,7 +194,9 @@ def setup(monkeypatch):
 
     async def run(*coordinators):
         added = []
-        await bs.async_setup_entry(None, _Entry(coordinators), adds_entities(added))
+        hass, entry = _Hass(), _Entry(coordinators)
+        await bs.async_setup_entry(hass, entry, adds_entities(added))
+        run.hass, run.entry = hass, entry
         return added
 
     run.built = built
@@ -211,7 +287,7 @@ async def _disks_filed_under(coordinator):
         if any(isinstance(entity, _DiskMarker) for entity in new_entities):
             seen.append(config_subentry_id)
 
-    await bs.async_setup_entry(None, _Entry([coordinator]), add)
+    await bs.async_setup_entry(_Hass(), _Entry([coordinator]), add)
     return seen
 
 
@@ -367,7 +443,7 @@ async def test_an_entry_with_nothing_set_up_adds_nothing(setup):
     being torn down, and this platform must not raise on it."""
     added = []
 
-    await bs.async_setup_entry(None, _Entry([]), adds_entities(added))
+    await bs.async_setup_entry(_Hass(), _Entry([]), adds_entities(added))
 
     assert added == []
     assert setup.built == []
@@ -448,7 +524,7 @@ async def _terminals_filed_under(coordinator):
         if any(isinstance(entity, _TerminalMarker) for entity in new_entities):
             seen.append(config_subentry_id)
 
-    await bs.async_setup_entry(None, _Entry([coordinator]), add)
+    await bs.async_setup_entry(_Hass(), _Entry([coordinator]), add)
     return seen
 
 
@@ -542,6 +618,84 @@ async def test_a_recorder_with_no_terminals_keeps_them_too():
         DahuaDiskProblemBinarySensor=lambda *a, **k: object(),
         DahuaAlarmInputBinarySensor=lambda *a, **k: object(),
     ):
-        await _bs.async_setup_entry(None, _Entry(coordinators), adds_entities([]))
+        await _bs.async_setup_entry(_Hass(), _Entry(coordinators), adds_entities([]))
 
     assert built.count("AlarmLocal") == 3
+
+
+# --- terminals the box only mentions later -----------------------------------
+#
+# The probe behind them is retried now, so a box that was silent at setup can
+# answer on a later poll. Nothing on this platform used to be able to act on
+# that: the entity set was decided once, in `async_setup_entry`, and a
+# capability read there is a capability read before the answer existed.
+
+
+async def test_terminals_that_arrive_late_are_still_created(setup):
+    """What the retry is for. The gate has to be read inside `build`, which is
+    what the late watcher re-runs, and these tests are the half that says the
+    entities come back rather than the flag being set."""
+    box = _Coordinator(channel=0, alarm_inputs=(), alarm_inputs_pending=True)
+    await setup(box)
+    assert _names(setup.built, "alarm_input") == []
+
+    box._alarm_inputs = list(TERMINALS)
+    box._alarm_inputs_pending = False
+    late.async_notify_capability_discovered(
+        setup.hass, setup.entry.entry_id, box.get_serial_number()
+    )
+    await setup.hass.run_pending()
+
+    assert _names(setup.built, "alarm_input") == [0, 3], (
+        "a capability the retry found does not reach these entities, so the "
+        "terminals would need a reload rather than arriving by themselves"
+    )
+
+
+async def test_terminals_already_added_are_not_added_twice(setup):
+    """A later discovery on the same entry re-runs the same build, and any
+    other capability's discovery re-runs this one too. The watcher builds them
+    again and then drops the ones it has already added, which it recognises by
+    unique id.
+
+    Asserted on what was added rather than on what was built, because building
+    twice is how the watcher works: `build` constructs and the watcher filters.
+    Adding twice is the part Home Assistant would refuse.
+    """
+    box = _Coordinator(channel=0, alarm_inputs=TERMINALS)
+    added = await setup(box)
+
+    def terminals():
+        return [e for e in added if "alarm_input" in getattr(e, "unique_id", "")]
+
+    assert len(terminals()) == 2
+
+    late.async_notify_capability_discovered(
+        setup.hass, setup.entry.entry_id, box.get_serial_number()
+    )
+    await setup.hass.run_pending()
+
+    assert len(terminals()) == 2
+
+
+async def test_a_channel_waits_rather_than_taking_the_terminals_itself(setup):
+    """The per-channel `AlarmLocal` sensor is decided once, here, and it is the
+    misdelivering one #1090 removed: its index is a terminal number read as a
+    video channel. Creating it while the box has still to answer would leave it
+    beside the host sensors when they arrive, two sensors for one screw
+    terminal and the wrong one of the pair still believed."""
+    await setup(
+        _Coordinator(channel=0, events=["AlarmLocal"], alarm_inputs_pending=True)
+    )
+
+    assert _names(setup.built) == []
+    assert _names(setup.built, "alarm_input") == []
+
+
+async def test_a_box_that_answered_no_terminals_keeps_its_channel_sensor(setup):
+    """The other answer, and the one that must not change. A box with no
+    terminals is not pending: it said so, nothing more is coming, and the
+    per-channel sensor is all there is."""
+    await setup(_Coordinator(channel=0, events=["AlarmLocal"]))
+
+    assert _names(setup.built) == ["AlarmLocal"]

@@ -107,6 +107,7 @@ from .host import (  # noqa: F401  pylint: disable=unused-import
     _host_stream,
     _release_connector,
     _release_host_stream,
+    async_alarm_input_carrier,
     async_device_is_zero_indexed,
     async_host_is_unreachable,
     async_network_identity,

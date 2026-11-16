@@ -1572,6 +1572,28 @@ def _host_stream(hass: HomeAssistant, address: str) -> DahuaHostEventStream:
     return stream
 
 
+@callback
+def async_alarm_input_carrier(address: str):
+    """The coordinator carrying this host's alarm terminals, or None (#1090).
+
+    The same answer `_union` and the `AlarmLocal` dispatch above act on, under
+    a name the rest of the package can use. The retry that asks a silent box
+    about its terminals again has to know whether another channel already found
+    them, because adopting them on a lower channel afterwards moves the carrier
+    away from the coordinator the entities were created on and the events stop
+    reaching them. One function so routing, entity creation and that retry
+    cannot come to disagree.
+
+    None before any channel has registered, which is the add flow and the first
+    moments of setup, and None for every camera and every recorder with no
+    terminals.
+    """
+    stream = _HOST_STREAMS.get(normalize_address(address))
+    if stream is None:
+        return None
+    return stream._alarm_input_coordinator()
+
+
 async def _release_host_stream(coordinator) -> None:
     address = normalize_address(coordinator.get_address())
     stream = _HOST_STREAMS.get(address)

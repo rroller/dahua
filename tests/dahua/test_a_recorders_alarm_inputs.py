@@ -412,6 +412,8 @@ class _ProbeClient:
         self._state = state
         self._raises = raises
         self.state_reads = 0
+        self.table_reads = 0
+        self.attached_with = []
 
     async def async_get_alarm_input_slots(self):
         if self._raises == "slots":
@@ -419,6 +421,14 @@ class _ProbeClient:
         return self._slots
 
     async def async_get_alarm_input_config(self):
+        self.table_reads += 1
+        # ⚠ Suspends, because a coroutine that does not is not a request.
+        # Awaiting one that never yields runs to completion before the next
+        # task starts, so two channels retrying through `asyncio.gather` go one
+        # after the other and the check that decides between them is never
+        # reached. Removing the check inside the probe passed every test here
+        # until this line existed.
+        await asyncio.sleep(0)
         if self._raises == "table":
             raise RuntimeError("no")
         return self._table
@@ -429,16 +439,30 @@ class _ProbeClient:
             raise RuntimeError("no")
         return parse_alarm_state_bitmask({"result": self._state}, slots)
 
+    async def stream_events(self, on_receive, events, channel):
+        """Held open like `_Client`'s, for the tests that register a real
+        coordinator on a real host stream and then read what it attached
+        with."""
+        self.attached_with.append(set(events))
+        await asyncio.Event().wait()
 
-def _coordinator(client):
+
+def _coordinator(client, device_class="NVR"):
     """A coordinator built the way this suite builds them, with only what the
     probe touches set. The class defaults do the rest, which is the point of
-    their being on the class."""
+    their being on the class.
+
+    The class the device reported, because the probe gates on it: terminals are
+    a recorder's, and the gate lives inside the probe so that the retry applies
+    the same one. Set rather than stubbed over `is_recorder_host`, so a test
+    goes through the same reading of the same answer production does.
+    """
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator.client = client
     coordinator._address = ADDRESS
     coordinator._channel = 0
     coordinator._dahua_event_timestamp = {}
+    coordinator._device_class = device_class
     return coordinator
 
 
@@ -558,3 +582,231 @@ async def test_the_table_decides_when_the_slot_count_disagrees():
     assert len(coordinator.get_alarm_inputs()) == 3
     assert coordinator._alarm_input_slots == 4
     assert coordinator._dahua_event_timestamp["AlarmInput_3-0"] > 0
+
+
+# --- asked again, when the box said nothing ---------------------------------
+#
+# The last of the three probes I listed on #1213 as outside the retry. A box
+# that did not answer this one kept no record of it, so the question was
+# neither re-asked nor visible in the dump, and the terminals were gone for the
+# life of the entry.
+#
+# The host scope is what makes it different from the other two. Every channel
+# asks, the lowest that found terminals carries the entities, and `host.py`
+# routes `AlarmLocal` to the same one. A retry that let a lower channel adopt
+# them afterwards would move the carrier away from the entities, which exist
+# under a unique id taken from the box's serial and cannot follow.
+
+
+class _Refused(Exception):
+    """A device answering no, which carries a status."""
+
+    status = 403
+
+
+def _real(client, device_class="NVR", channel=0, hass=None, events=("VideoMotion",)):
+    """A real coordinator, since what is under test is its own methods."""
+    coordinator = _coordinator(client, device_class=device_class)
+    coordinator._channel = channel
+    coordinator.hass = hass
+    coordinator.events = list(events)
+    return coordinator
+
+
+async def test_a_silent_box_leaves_the_question_open():
+    """The bug. The probe caught everything into a debug line, so the capability
+    was neither retried nor in the dump, and five screw terminals went missing
+    for good."""
+    coordinator = _real(_ProbeClient(raises="table"))
+
+    assert await coordinator._async_probe_alarm_inputs() is False
+    assert coordinator.probes_that_did_not_answer() == {"alarm_inputs"}
+
+
+async def test_a_refusal_is_the_box_answering():
+    """A status is an answer, and it is the half worth keeping: it says this
+    model does not serve the table, which generalises, where a timeout says
+    only that this moment was bad."""
+    client = _ProbeClient()
+
+    async def refuse():
+        raise _Refused()
+
+    client.async_get_alarm_input_config = refuse
+    coordinator = _real(client)
+
+    assert await coordinator._async_probe_alarm_inputs() is False
+    assert coordinator._probe_refusals["alarm_inputs"]["status"] == 403
+    assert coordinator.probes_that_did_not_answer() == set()
+
+
+async def test_a_box_with_no_terminals_has_answered():
+    """Answering "no terminals" is answering. Nothing should keep asking, and
+    the leftover-rows card should not wait on it."""
+    coordinator = _real(_ProbeClient(table={}))
+
+    assert await coordinator._async_probe_alarm_inputs() is False
+    assert coordinator.probes_that_did_not_answer() == set()
+
+
+async def test_a_class_that_has_not_answered_leaves_the_question_open():
+    """The gate is `is_recorder_host()`, which reads the class the device
+    reported. A box that has not answered that one has not been asked this
+    one, and an unasked question is recorded nowhere, so nothing would ever
+    come back to it. `_async_retry_device_class` can still answer NVR on a
+    later poll, and this is what lets the terminals follow."""
+    coordinator = _real(_ProbeClient(), device_class=None)
+    coordinator._device_class_unanswered = True
+
+    assert await coordinator._async_probe_alarm_inputs() is False
+    assert coordinator.probes_that_did_not_answer() == {"alarm_inputs"}
+    assert coordinator._probe_refusals["alarm_inputs"]["error"] == "ProbeNotAsked"
+    assert coordinator.client.state_reads == 0
+
+
+async def test_a_camera_is_not_asked_and_not_recorded():
+    """A camera answered the class question, and the answer was not a recorder.
+    That is a settled no rather than a question outstanding, so recording it
+    would have every camera re-asking for a table it does not have."""
+    coordinator = _real(_ProbeClient(), device_class="IPC")
+
+    assert await coordinator._async_probe_alarm_inputs() is False
+    assert coordinator.probes_that_did_not_answer() == set()
+    assert "alarm_inputs" not in (getattr(coordinator, "_probe_refusals", None) or {})
+
+
+def test_the_retry_registry_carries_the_terminals():
+    """Through the registry, because that is the only thing
+    `_async_retry_unanswered_capabilities` reads. A retry method nothing
+    registers is never called."""
+    from custom_components.dahua.coordinator import RETRYABLE_CAPABILITIES
+
+    assert (
+        RETRYABLE_CAPABILITIES["alarm_inputs"]
+        is DahuaDataUpdateCoordinator._async_retry_alarm_inputs
+    )
+
+
+async def test_the_retry_adopts_the_terminals_and_widens_the_subscription(hass):
+    """The whole point, end to end on the host.
+
+    The subscription is host level as well: `_union` adds `AlarmLocal` only
+    where a carrier exists, so a box where no channel selected that code was
+    not subscribed to the one thing these sensors are built from. Without the
+    nudge the entities appear and never move.
+    """
+    stream = _host_stream(hass, ADDRESS)
+    coordinator = _real(_ProbeClient(raises="table"), hass=hass)
+    stream.register(coordinator)
+    await _settle()
+
+    assert await coordinator._async_probe_alarm_inputs() is False
+    assert coordinator.client.attached_with == [{"VideoMotion"}]
+
+    coordinator.client._raises = None
+
+    assert await coordinator._async_retry_alarm_inputs() is True
+    assert [i["index"] for i in coordinator.get_alarm_inputs()] == [0, 1, 3]
+    assert coordinator.probes_that_did_not_answer() == set()
+    await _settle()
+
+    assert "AlarmLocal" in stream._events, (
+        "the stream is still attached without AlarmLocal, so the new sensors "
+        "would sit at whatever the setup state read found"
+    )
+    assert (
+        len(coordinator.client.attached_with) == 2
+    ), "the wanted set changed but the stream was never re-attached: %s" % (
+        coordinator.client.attached_with,
+    )
+    # On the wire that second attach is `[All]`, not the two codes. Widening
+    # the set past what any one channel asked for is what #615's heuristic
+    # reads as sharing, and some firmware goes silent on the expanded explicit
+    # list. Asserted on the set the stream decided it wants, which is the thing
+    # this nudge changes either way.
+    assert coordinator.client.attached_with[-1] == {"All"}
+
+
+async def test_the_retry_reports_nothing_it_already_had(hass):
+    """A retry that announces a discovery it already holds rebuilds every
+    platform on every poll."""
+    stream = _host_stream(hass, ADDRESS)
+    coordinator = _real(_ProbeClient(), hass=hass)
+    stream.register(coordinator)
+    await _settle()
+    assert await coordinator._async_probe_alarm_inputs() is True
+
+    assert await coordinator._async_retry_alarm_inputs() is False
+
+
+async def test_the_retry_leaves_the_carrier_where_it_is(hass):
+    """The case the host scope creates, and the reason this retry is not the
+    same shape as the other two.
+
+    Channel 3 found the terminals at setup, so the entities were created on it,
+    under a unique id taken from the box's serial. Let channel 0 adopt them on
+    a retry and `host.py` routes the next `AlarmLocal` to channel 0, while the
+    entities stay on channel 3 and never change again.
+    """
+    stream = _host_stream(hass, ADDRESS)
+    carrier = _Coordinator(3, alarm_inputs=[{"index": 0, "name": "Port1"}])
+    coordinator = _real(_ProbeClient(raises="table"), hass=hass)
+    for registered in (coordinator, carrier):
+        stream.register(registered)
+    await _settle()
+    assert await coordinator._async_probe_alarm_inputs() is False
+    coordinator.client._raises = None
+    reads_before = coordinator.client.table_reads
+
+    assert await coordinator._async_retry_alarm_inputs() is False
+    assert coordinator.get_alarm_inputs() == [], (
+        "channel 0 adopted terminals channel 3 is already carrying, so the "
+        "events now go to a coordinator with no sensors on it"
+    )
+    assert dahua_module.async_alarm_input_carrier(ADDRESS) is carrier
+    assert coordinator.probes_that_did_not_answer() == set()
+    # And it did not read to find that out. Twelve channels each re-asking a
+    # question the box has already answered is twelve requests a recorder logs
+    # a login for, three times over, for nothing. The check inside the probe
+    # is the one that decides; this one is the one that keeps it cheap.
+    assert coordinator.client.table_reads == reads_before
+
+
+async def test_two_retries_at_once_leave_one_carrier(hass):
+    """Both channels check before reading, so both pass that check. The check
+    that decides is the one inside the probe, at the adoption, with no await
+    between it and the assignment."""
+    stream = _host_stream(hass, ADDRESS)
+    channels = [
+        _real(_ProbeClient(raises="table"), channel=index, hass=hass)
+        for index in (0, 1)
+    ]
+    for coordinator in channels:
+        stream.register(coordinator)
+    await _settle()
+    for coordinator in channels:
+        assert await coordinator._async_probe_alarm_inputs() is False
+        coordinator.client._raises = None
+
+    await asyncio.gather(*(c._async_retry_alarm_inputs() for c in channels))
+
+    holding = [c for c in channels if c.supports_alarm_inputs()]
+    assert len(holding) == 1, (
+        "both channels adopted the box's terminals, so which one carries them "
+        "depends on who is asked and the entities cannot be on both"
+    )
+    assert dahua_module.async_alarm_input_carrier(ADDRESS) is holding[0]
+
+
+async def test_the_carrier_is_read_through_the_host(hass):
+    """One source for who carries them, because `host.py` routes with it and
+    binary_sensor.py builds with it. Two copies of the rule is two rules."""
+    assert dahua_module.async_alarm_input_carrier(ADDRESS) is None
+    stream = _host_stream(hass, ADDRESS)
+    carrier = _Coordinator(3, alarm_inputs=[{"index": 0, "name": "Port1"}])
+    stream.register(_Coordinator(0))
+    stream.register(carrier)
+    await _settle()
+
+    assert dahua_module.async_alarm_input_carrier(ADDRESS) is carrier
+    assert dahua_module.async_alarm_input_carrier("10.9.9.9") is None

@@ -24,6 +24,7 @@ from .const import (
     DOOR_DEVICE_CLASS,
 )
 from .entity import DahuaBaseEntity, DahuaEventDrivenEntity, DahuaHostEntity
+from .late import async_add_and_keep_watching
 
 # Override event names. Otherwise we'll generate the name from the event name for example SmartMotionHuman will
 # become "Smart Motion Human"
@@ -182,6 +183,26 @@ def _alarm_input_reporter(coordinators: list):
     return min(answering, key=lambda c: c.get_channel())
 
 
+def _alarm_inputs_still_pending(coordinators: list) -> bool:
+    """Whether any channel asked the box about its terminals and got silence.
+
+    The per-channel `AlarmLocal` sensor below is decided once, at setup, and
+    the host terminals can arrive later now that the probe is retried. Deciding
+    on "no reporter yet" would create the per-channel sensor and then leave it
+    beside the host ones, two sensors for one screw terminal and the misdelivering
+    one of the pair still believed.
+
+    A box that answered "no terminals" is not pending and keeps the per-channel
+    sensor it has today, which is the only answer that leaves #1090's
+    arrangement alone.
+    """
+    return any(
+        getattr(coordinator, "probes_that_did_not_answer", None)
+        and "alarm_inputs" in coordinator.probes_that_did_not_answer()
+        for coordinator in coordinators
+    )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
     # Once for the device, before the per-channel loop. Disabled by default:
@@ -206,21 +227,41 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     # The recorder's own alarm input terminals, once for the box (#1090).
     # These used to arrive as a per-channel AlarmLocal sensor, which put
     # terminal 4 on whichever camera was channel 4.
+    #
+    # Through the late watcher rather than added straight out, because the
+    # probe behind them is retried now: a box that was silent at setup answers
+    # on a later poll, and a capability gate read once here could not act on
+    # it. The gate has to be read inside `build`, which is the half #1217
+    # spells out, and this is the first thing on this platform to need it.
+    async def build_alarm_inputs(coordinator) -> list:
+        reporter = _alarm_input_reporter(list(entry_coordinators(entry).values()))
+        if reporter is None or reporter is not coordinator:
+            return []
+        return [
+            DahuaAlarmInputBinarySensor(reporter, entry, alarm_input)
+            for alarm_input in reporter.get_alarm_inputs()
+        ]
+
+    await async_add_and_keep_watching(
+        hass,
+        entry,
+        build_alarm_inputs,
+        async_add_devices,
+        entry_coordinators,
+        # The terminals belong to the entry, not to one channel's subentry,
+        # for the reason the disks above give. The default filing is the
+        # channel's, so it has to be overridden here rather than left out.
+        subentry_for=lambda entity, coordinator: (
+            None if coordinator.uses_separate_host_device() else coordinator.subentry_id
+        ),
+    )
+
+    # Read after that call, because it is what creates the reporter's entities,
+    # and the per-channel decision below turns on whether they exist.
     alarm_reporter = _alarm_input_reporter(list(entry_coordinators(entry).values()))
-    if alarm_reporter is not None:
-        async_add_devices(
-            [
-                DahuaAlarmInputBinarySensor(alarm_reporter, entry, alarm_input)
-                for alarm_input in alarm_reporter.get_alarm_inputs()
-            ],
-            # The terminals belong to the entry, not to one channel's
-            # subentry, for the reason the disks above give.
-            config_subentry_id=(
-                None
-                if alarm_reporter.uses_separate_host_device()
-                else alarm_reporter.subentry_id
-            ),
-        )
+    alarm_inputs_pending = _alarm_inputs_still_pending(
+        list(entry_coordinators(entry).values())
+    )
 
     for coordinator in entry_coordinators(entry).values():
         sensors: list[BinarySensorEntity] = []
@@ -234,7 +275,13 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             # stopped providing as unavailable and offers to remove it, which
             # is visible, where a stale "off" is indistinguishable from a
             # quiet alarm and will be believed.
-            if event_name == "AlarmLocal" and alarm_reporter is not None:
+            #
+            # Or while the box has not answered yet, since the probe is
+            # retried and the host sensors can still arrive. Creating this one
+            # meanwhile is what would leave the pair.
+            if event_name == "AlarmLocal" and (
+                alarm_reporter is not None or alarm_inputs_pending
+            ):
                 continue
             sensors.append(DahuaEventSensor(coordinator, entry, event_name))
 
