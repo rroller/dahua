@@ -906,12 +906,20 @@ def _same_setting(held, wanted) -> bool:
 def _mirrors_a_written_field(address: str, held, wanted: dict) -> bool:
     """Whether a field nobody asked to change now holds what its sibling was sent.
 
-    Measured by @defre92 on #1176, a DH-IPC-HDW2849TM-S-IL on 3.120: writing
-    `VideoWidget[0].TimeTitle.EncodeBlend` also sets `TimeTitle.PreviewBlend` to
-    the same value, both ways, and the snapshot confirmed the write itself had
-    landed. The read-back saw a field change that nothing asked for and reported
-    a write that had worked as refused. Reporting it refused undid nothing: the
+    From @defre92 on #1176, a DH-IPC-HDW2849TM-S-IL on 3.120: writing
+    `VideoWidget[0].TimeTitle.EncodeBlend` also changed `TimeTitle.PreviewBlend`,
+    in both directions, and the snapshot confirmed the write itself had landed.
+    The read-back saw a field change that nothing asked for and reported a
+    write that had worked as refused. Reporting it refused undid nothing: the
     device had already made both changes by the time the read-back ran.
+
+    ⚠ That PreviewBlend took the *same* value is inferred, not measured. The
+    read-back warning logs keys and never values, on purpose, so the report
+    shows that it moved on every toggle and not what it moved to. A mirror is
+    the reading consistent with two flags that start in step, which these do by
+    default. If this firmware turns out to invert the pair instead, the second
+    condition below refuses it and the camera gets today's behaviour, so being
+    wrong about this costs the fix and nothing else.
 
     Two conditions, and the second is the one that matters:
 
