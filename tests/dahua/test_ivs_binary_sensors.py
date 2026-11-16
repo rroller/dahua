@@ -73,9 +73,9 @@ async def test_setup_creates_all_seven_normal_rules_including_stay():
             SimpleNamespace(
                 data={DOMAIN: {"entry": c}}, async_create_task=lambda coro: coro
             ),
-            # `async_on_unload` because the alarm terminals on this platform go
-            # through the late watcher now, which registers a listener at setup
-            # and hands the entry its unsubscribe.
+            # `async_on_unload` because the disks and the alarm terminals on
+            # this platform go through the late watcher now, which registers a
+            # listener at setup and hands the entry its unsubscribe.
             SimpleNamespace(
                 entry_id="entry",
                 runtime_data={0: c},

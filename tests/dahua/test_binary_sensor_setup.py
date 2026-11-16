@@ -51,6 +51,19 @@ class _Coordinator:
         self._alarm_inputs = list(alarm_inputs)
         self._alarm_inputs_pending = alarm_inputs_pending
 
+    def get_serial_number(self):
+        """With the channel, which is what a discovery announces itself by.
+
+        The watcher re-runs `build` only for the coordinator whose serial
+        matches the key on the signal, so a double that cannot answer this
+        would have every channel rebuild on any channel's discovery.
+        """
+        return "%s_%d" % (self._serial, self._channel)
+
+    def arrive_with_disks(self, *names):
+        """What the retry does: the disks the setup read did not find."""
+        self._disks = [{"name": name} for name in names]
+
     def get_event_list(self):
         return self._events
 
@@ -118,7 +131,7 @@ class _Entry:
         self.unloads = []
 
     def async_on_unload(self, callback):
-        """Taken by the late watcher, which the alarm terminals now go through.
+        """Taken by the late watcher, which both blocks now go through.
 
         They are built by a `build` the watcher re-runs on a late answer, so
         setup registers a dispatcher listener and hands the entry its
@@ -131,17 +144,21 @@ class _Entry:
 class _Hass:
     """Enough Home Assistant for the late watcher to register and build.
 
-    `data` because that is where the watcher stamps the run its registration
-    holds are answered against, and `async_create_task` because a late answer
-    rebuilds in a task. Setup itself builds inline, so nothing here runs
-    unless a test fires a discovery.
+    `data` because that is where the real dispatcher keeps its listeners and
+    where the watcher stamps the run its registration holds are answered
+    against, and `async_create_task` because a late answer rebuilds in a task.
+    Setup itself builds inline, so nothing here runs unless a test fires a
+    discovery, which it does by calling `run_pending`.
     """
 
     def __init__(self):
         self.data = {}
         self.tasks = []
 
-    def async_create_task(self, coro):
+    def async_create_task(self, coro, name=None, eager_start=True):
+        # The keywords are taken but ignored: Home Assistant passes them and a
+        # double that does not accept them fails on the call rather than on
+        # anything the test is about.
         self.tasks.append(coro)
         return coro
 
@@ -171,6 +188,13 @@ def setup(monkeypatch):
     class _Disk:
         def __init__(self, coordinator, entry, disk_name):
             built.append(("disk", disk_name, coordinator))
+            # The box's serial and the disk's name, which is what the real
+            # entity uses. The watcher dedupes on this, so a double without it
+            # would let a second set through and report nothing wrong.
+            self.unique_id = "%s_disk_%s" % (
+                coordinator.get_device_serial_number(),
+                disk_name.replace("/", "_").strip("_"),
+            )
 
     class _AlarmInput:
         def __init__(self, coordinator, entry, alarm_input):
@@ -196,7 +220,11 @@ def setup(monkeypatch):
         added = []
         hass, entry = _Hass(), _Entry(coordinators)
         await bs.async_setup_entry(hass, entry, adds_entities(added))
+        # Kept so a test can announce a discovery afterwards, which is the half
+        # that says a late answer produces entities rather than only that a
+        # flag was set.
         run.hass, run.entry = hass, entry
+        run.added = added
         return added
 
     run.built = built
@@ -261,6 +289,109 @@ async def test_a_recorder_without_channel_zero_still_gets_them(setup):
     carriers = {c.get_channel() for k, _n, c in setup.built if k == "disk"}
 
     assert carriers == {5}
+
+
+# --- the disks that were not there at setup ----------------------------------
+
+
+async def _announce(run, coordinator):
+    """What a coordinator does when a capability probe finally answers.
+
+    The real dispatcher and the real signal, because the point of these tests
+    is the platform being wired to it. Asserting that a flag was set would say
+    nothing about whether an entity ever appears.
+    """
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+    from custom_components.dahua.late import capability_discovered_signal
+
+    async_dispatcher_send(
+        run.hass,
+        capability_discovered_signal(run.entry.entry_id),
+        coordinator.get_serial_number(),
+    )
+    await run.hass.run_pending()
+
+
+def _added_disks(added):
+    """The disk sensors that were handed to Home Assistant, by name.
+
+    On what was added rather than on what was built: `build` runs again on
+    every discovery and the watcher filters its result, so building twice is
+    how it works and adding twice is the defect.
+    """
+    return sorted(
+        entity.unique_id
+        for entity in added
+        if "_disk_" in getattr(entity, "unique_id", "") or ""
+    )
+
+
+async def test_disks_that_turn_up_after_setup_get_their_sensors(setup):
+    """The whole point of the retry. A recorder whose storage read timed out at
+    setup had no disk sensors for the life of the entry: the hourly refresh is
+    gated on disks already having been found, so nothing asked again."""
+    coordinator = _Coordinator(disks=())
+    added = await setup(coordinator)
+    assert _added_disks(added) == []
+
+    coordinator.arrive_with_disks("/dev/sda", "/dev/sdb")
+    await _announce(setup, coordinator)
+
+    assert _added_disks(setup.added) == [
+        "SERIAL1_disk_dev_sda",
+        "SERIAL1_disk_dev_sdb",
+    ]
+
+
+async def test_disks_that_were_there_at_setup_are_not_added_twice(setup):
+    """A discovery for anything else on the same channel re-runs this build,
+    and the sensors it returns are the ones already on screen."""
+    coordinator = _Coordinator(disks=("/dev/sda",))
+    added = await setup(coordinator)
+    assert _added_disks(added) == ["SERIAL1_disk_dev_sda"]
+
+    await _announce(setup, coordinator)
+
+    assert _added_disks(setup.added) == ["SERIAL1_disk_dev_sda"]
+
+
+async def test_a_camera_that_answers_late_gets_no_disk_sensors(setup):
+    """It has no disks to report, so there is nothing for it to carry."""
+    coordinator = _Coordinator(disks=())
+    await setup(coordinator)
+
+    await _announce(setup, coordinator)
+
+    assert _added_disks(setup.added) == []
+
+
+async def test_a_second_channel_answering_does_not_duplicate_the_disks(setup):
+    """⚠ The channels of a recorder do not answer together, and the carrier is
+    the lowest that HAS answered rather than the lowest that will.
+
+    So channel 7 coming back first carries the disks, and channel 0 coming
+    back on a later poll does not take them over -- the entities exist, and an
+    entity cannot move between coordinators because its id is the box's serial
+    and the disk's name. What that id does do is make the second set the same
+    four ids as the first, which is what the watcher drops. Being on channel 7
+    costs nothing here: the disks are read from the box, so every channel's
+    coordinator reports the same four.
+    """
+    low, high = _Coordinator(channel=0), _Coordinator(channel=7)
+    await setup(low, high)
+
+    high.arrive_with_disks("/dev/sda")
+    await _announce(setup, high)
+    assert _added_disks(setup.added) == ["SERIAL1_disk_dev_sda"]
+    assert {c.get_channel() for k, _n, c in setup.built if k == "disk"} == {7}
+
+    low.arrive_with_disks("/dev/sda")
+    await _announce(setup, low)
+
+    assert _added_disks(setup.added) == [
+        "SERIAL1_disk_dev_sda"
+    ], "channel 0 built a second set and the watcher let it through"
 
 
 class _DiskMarker:

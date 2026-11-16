@@ -205,24 +205,40 @@ def _alarm_inputs_still_pending(coordinators: list) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     """Setup binary_sensor platform."""
+
     # Once for the device, before the per-channel loop. Disabled by default:
     # diagnostic, and the read that feeds it is a login the device logs, so only
     # someone who enables it pays for the refresh (#745).
-    reporter = _disk_reporter(list(entry_coordinators(entry).values()))
-    if reporter is not None:
-        async_add_devices(
-            [
-                DahuaDiskProblemBinarySensor(reporter, entry, disk["name"])
-                for disk in reporter.get_storage_disks()
-            ],
-            # The box's own device belongs to the entry, not to one channel's
-            # subentry: the processor is not channel 0's processor. A camera
-            # reporting its SD card has no separate host device, so its
-            # sensors stay where they are, on its own channel.
-            config_subentry_id=(
-                None if reporter.uses_separate_host_device() else reporter.subentry_id
-            ),
-        )
+    #
+    # Through the watcher rather than added here and done with, because the read
+    # these come from is retried now: a recorder whose storage read timed out at
+    # setup used to have no disk sensors for the life of the entry, since the
+    # hourly refresh is gated on disks already having been found. The reporter
+    # is chosen inside `build`, so a discovery re-runs that choice rather than
+    # keeping the one setup made.
+    async def build_disks(coordinator) -> list:
+        reporter = _disk_reporter(list(entry_coordinators(entry).values()))
+        if reporter is None or reporter is not coordinator:
+            return []
+        return [
+            DahuaDiskProblemBinarySensor(reporter, entry, disk["name"])
+            for disk in reporter.get_storage_disks()
+        ]
+
+    await async_add_and_keep_watching(
+        hass,
+        entry,
+        build_disks,
+        async_add_devices,
+        entry_coordinators,
+        # The box's own device belongs to the entry, not to one channel's
+        # subentry: the processor is not channel 0's processor. A camera
+        # reporting its SD card has no separate host device, so its
+        # sensors stay where they are, on its own channel.
+        subentry_for=lambda entity, coordinator: (
+            None if coordinator.uses_separate_host_device() else coordinator.subentry_id
+        ),
+    )
 
     # The recorder's own alarm input terminals, once for the box (#1090).
     # These used to arrive as a per-channel AlarmLocal sensor, which put

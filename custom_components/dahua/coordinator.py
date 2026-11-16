@@ -3507,9 +3507,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
                 # A recorder has disks worth a health sensor; nothing else does.
                 # Read them once here so the disk sensors can be enumerated, then
-                # refresh slowly in the poll below (#745).
+                # refresh slowly in the poll below (#745). Called unconditionally
+                # because the recorder gate is inside it now, so the retry below
+                # applies the same one.
+                await self._async_refresh_storage()
                 if self.is_recorder_host():
-                    await self._async_refresh_storage()
                     await self._async_refresh_remote_devices()
 
                 # Outside that block, because the probe applies the same gate
@@ -5380,6 +5382,26 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             "HCVR",
         }
 
+    async def _async_retry_storage(self) -> bool:
+        """Whether a recorder's disks turned up that were missed at setup.
+
+        Returns True only on the refresh that first finds them, which is what
+        tells the platform to build the sensors. A recorder that already has
+        them is the hourly refresh's business, not this one's, and asking here
+        would be a second read in the same poll.
+
+        No carrier rule, unlike the alarm terminals next door: a disk sensor's
+        unique id is the box's serial and the disk's name, so two channels
+        finding the same four disks build the same four ids and the watcher
+        drops the second set. What the disks are read from is shared per device
+        for a few seconds as well, so sixteen channels retrying together make
+        one request between them.
+        """
+        if self._storage_disks:
+            return False
+        await self._async_refresh_storage()
+        return bool(self._storage_disks)
+
     async def _async_refresh_storage(self) -> None:
         """Read the recorder's disks, slowly.
 
@@ -5387,14 +5409,41 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         already complain about, so this is called once at setup and then at most
         hourly rather than on every poll (#745). A failure leaves the last known
         disks in place rather than blanking the sensors.
+
+        The recorder gate is in here rather than at the setup call site, which
+        is @rroller's third finding on #1201: setup and the retry then apply
+        one judgment instead of two that can come to disagree.
         """
+        if not self.is_recorder_host():
+            # Nothing recorded, deliberately, and that includes a box whose
+            # class answer has not arrived. `is_recorder_host` is also false
+            # for every camera, and filing a pending question here would chase
+            # each of them for three polls over disks it does not have. The
+            # class arriving late is the device-class retry's scope, and what
+            # it cannot rebuild is in its own log line.
+            return
+
+        # Recorded only while the capability is still undecided. This method is
+        # the hourly refresh as well as the probe, and an hourly timeout on a
+        # recorder whose disks are already on screen is not an unanswered
+        # question: filing it as one would spend the retry budget, report the
+        # probe as unanswered in the dump, and hold the leftover-rows gate shut
+        # (#1114, #1125) over a read whose answer is already an entity.
+        probing = not self._storage_disks
         try:
             raw = await self.client.async_get_storage_device_info()
-        except Exception:  # pylint: disable=broad-except
+        except Exception as exception:  # pylint: disable=broad-except
             _LOGGER.debug(
                 "Storage device probe failed on %s", self._address, exc_info=True
             )
+            if probing:
+                self._note_probe_refusal("storage", exception)
             return
+        if probing:
+            # It came back, so the question is settled whatever it said. A
+            # recorder with no disk in it answers exactly this, and that is an
+            # answer rather than something to keep asking for.
+            self._note_probe_answered("storage")
         self._storage_disks = parse_storage_disks(raw)
         # Stamped here, against the read that the hour is counted for, and not
         # at the end of the method. What follows is optional and raises on a
@@ -9113,6 +9162,7 @@ RETRYABLE_CAPABILITIES = {
     "profile_mode": DahuaDataUpdateCoordinator._async_retry_profile_mode,
     "profile_schedule": DahuaDataUpdateCoordinator._async_retry_profile_schedule,
     "smart_motion_detect": DahuaDataUpdateCoordinator._async_retry_smart_motion_detect,
+    "storage": DahuaDataUpdateCoordinator._async_retry_storage,
     "vth_phone_settings": DahuaDataUpdateCoordinator._async_retry_vth_phone_settings,
     # Spelled with a space because that is the name `_note_probe_refusal`
     # already records it under, and the registry is keyed by that name so a
