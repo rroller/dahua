@@ -5396,6 +5396,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             )
             return
         self._storage_disks = parse_storage_disks(raw)
+        # Stamped here, against the read that the hour is counted for, and not
+        # at the end of the method. What follows is optional and raises on a
+        # device with RPC2 switched off, which is the default, so a `return`
+        # below this line used to leave the stamp at 0.0 for ever: the gate in
+        # the poll is `now - stamp >= 3600`, which is then true on every
+        # refresh, and the one read an hour #745 asked for became one read a
+        # poll. Whether the hardware detail arrived says nothing about when
+        # the disks were last read.
+        self._storage_last_refresh = time.time()
 
         # What those disks are, which only RPC2 answers. Entirely optional: a
         # recorder with RPC2 off keeps the state and capacity it already had.
@@ -5411,7 +5420,6 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             detail = details.get(disk.get("name"))
             if detail:
                 disk.update(detail)
-        self._storage_last_refresh = time.time()
 
     async def _async_check_video_motion_is_pushed(self) -> None:
         """Hand the question to the host stream, which owns the evidence.
