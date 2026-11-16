@@ -323,7 +323,7 @@ def _added_disks(added):
     return sorted(
         entity.unique_id
         for entity in added
-        if "_disk_" in getattr(entity, "unique_id", "") or ""
+        if "_disk_" in (getattr(entity, "unique_id", None) or "")
     )
 
 
