@@ -83,3 +83,12 @@ def test_a_real_shape_round_trips():
         "table.MotionDetect[0].Enable": "true",
         "table.MotionDetect[0].EventHandler.Dejitter": "5",
     }
+
+
+def test_videoinmode_generic_flatten_still_preserves_physical_nesting():
+    out = flatten_rpc2_config("VideoInMode", [[[{"Mode": 1, "Config": [0, 1]}]]])
+    assert out == {
+        "table.VideoInMode[0][0][0].Mode": "1",
+        "table.VideoInMode[0][0][0].Config[0]": "0",
+        "table.VideoInMode[0][0][0].Config[1]": "1",
+    }

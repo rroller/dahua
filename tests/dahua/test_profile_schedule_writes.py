@@ -83,3 +83,54 @@ async def test_missing_channel_fails_before_set_config():
     with pytest.raises(ConnectionError, match="channel 3"):
         await client.async_set_profile_schedule_times(3, time(8, 23), time(17, 47))
     rpc.set_config.assert_not_awaited()
+
+
+async def test_schedule_readback_can_change_physical_nesting():
+    before = [
+        [
+            [
+                {
+                    "Config": [0, 1],
+                    "Mode": 1,
+                    "TimeSection": [["1 05:30:00-15:30:00"]],
+                    "Future": {"keep": True},
+                }
+            ]
+        ]
+    ]
+    written = [
+        [
+            [
+                {
+                    "Config": [0, 1],
+                    "Mode": 1,
+                    "TimeSection": [["1 08:23:00-17:47:00"]],
+                    "Future": {"keep": True},
+                }
+            ]
+        ]
+    ]
+    readback = [
+        {
+            "Config": [0, 1],
+            "Mode": 1,
+            "TimeSection": [["1 08:23:00-17:47:00"]],
+            "Future": {"keep": True},
+        }
+    ]
+
+    client, rpc = _client(before, readback)
+
+    result = await client.async_set_profile_schedule_times(
+        0,
+        time(8, 23),
+        time(17, 47),
+    )
+
+    rpc.set_config.assert_awaited_once_with(
+        "VideoInMode",
+        written,
+        channel=0,
+    )
+    assert result.day_start == time(8, 23)
+    assert result.night_start == time(17, 47)

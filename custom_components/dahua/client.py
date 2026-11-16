@@ -3,13 +3,13 @@
 import asyncio
 import contextvars
 import datetime
-from datetime import time as datetime_time
 import logging
 import re
 import socket
 import time
 from contextlib import AsyncExitStack, asynccontextmanager, nullcontext, suppress
 from copy import deepcopy
+from datetime import time as datetime_time
 
 import aiohttp
 from homeassistant.exceptions import HomeAssistantError
@@ -40,10 +40,12 @@ from .ivs import ivs_rule_index
 from .profile import (
     PROFILE_MANAGEMENT_VALUES_BY_OPTION,
     ProfileScheduleTimes,
+    canonicalize_video_in_mode,
     profile_management_table_with_option,
     profile_schedule_table_with_times,
     resolve_profile_management_table,
     resolve_profile_schedule_table,
+    resolve_video_in_mode_table_owner,
 )
 from .rpc2 import RPC2_LOGIN_METHOD, DahuaRpc2Client, Rpc2MethodRefused
 
@@ -4119,7 +4121,25 @@ class DahuaClient:
                         return {}
                     raise
                 table = params.get("table")
-                return table if as_table else flatten_rpc2_config(name, table)
+                if as_table:
+                    return table
+
+                flat = flatten_rpc2_config(name, table)
+                if name != "VideoInMode" or not isinstance(table, list):
+                    return flat
+
+                resolved_channels = {
+                    channel
+                    for channel in range(len(table))
+                    if resolve_video_in_mode_table_owner(table, channel) is not None
+                }
+                rejected_channels = set(range(len(table))) - resolved_channels
+
+                return canonicalize_video_in_mode(
+                    flat,
+                    resolved_channels=resolved_channels,
+                    rejected_channels=rejected_channels,
+                )
             except Rpc2MethodRefused:
                 # The device answered. Logging in again cannot change its mind
                 # about a table it does not serve, and dropping the shared
@@ -5128,14 +5148,8 @@ class DahuaClient:
                     table = (response.get("params") or {}).get("table")
                 if not isinstance(table, list):
                     raise ConnectionError("VideoInMode did not return a table")
-                if (
-                    channel < 0
-                    or channel >= len(table)
-                    or not isinstance(table[channel], dict)
-                ):
-                    raise ConnectionError(
-                        f"VideoInMode has no configuration row for channel {channel}"
-                    )
+                if channel < 0 or channel >= len(table):
+                    raise ConnectionError(f"VideoInMode has no channel {channel}")
                 if resolve_profile_management_table(table, channel) != "schedule":
                     raise RuntimeError("Profile Management is not in Schedule mode")
                 current = resolve_profile_schedule_table(table, channel)
@@ -6007,7 +6021,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
         if fresh:
             _HOST_CACHE.pop((self._device, self._username, url), None)
-        return await self.get(url)
+        return canonicalize_video_in_mode(await self.get(url))
 
     async def async_set_coaxial_control_state(
         self,

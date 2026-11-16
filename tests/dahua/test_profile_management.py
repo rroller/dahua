@@ -6,9 +6,11 @@ import pytest
 
 from custom_components.dahua.profile import (
     PROFILE_MANAGEMENT_OPTIONS,
+    canonicalize_video_in_mode,
     profile_management_table_with_option,
     resolve_profile_management_mode,
     resolve_profile_management_table,
+    video_in_mode_channel_is_rejected,
 )
 
 
@@ -21,46 +23,41 @@ from custom_components.dahua.profile import (
         (1, [0, 1], "schedule"),
     ],
 )
-def test_resolves_the_four_measured_management_modes(mode, config, expected):
-    data = {"table.VideoInMode[3].Mode": str(mode)}
-    data.update(
-        {
-            f"table.VideoInMode[3].Config[{index}]": str(value)
-            for index, value in enumerate(config)
-        }
-    )
-    assert resolve_profile_management_mode(data, 3) == expected
-
-
 @pytest.mark.parametrize(
-    ("mode", "config", "expected"),
+    "owner",
     [
-        (0, [2], "normal"),
-        (0, [0], "full_time_day"),
-        (0, [1], "full_time_night"),
-        (1, [0, 1], "schedule"),
+        "table.VideoInMode[3]",
+        "table.VideoInMode[3][0]",
+        "table.VideoInMode[3][0][0]",
     ],
 )
-def test_resolves_the_measured_wrapped_flat_shape(mode, config, expected):
-    data = {"table.VideoInMode[3][0].Mode": str(mode)}
-    data.update(
-        {
-            f"table.VideoInMode[3][0].Config[{index}]": str(value)
-            for index, value in enumerate(config)
-        }
+def test_resolves_the_four_measured_management_modes(mode, config, expected, owner):
+    physical = {f"{owner}.Mode": str(mode)}
+    physical.update(
+        {f"{owner}.Config[{index}]": str(value) for index, value in enumerate(config)}
     )
-    assert resolve_profile_management_mode(data, 3) == expected
+
+    canonical = canonicalize_video_in_mode(physical)
+
+    assert resolve_profile_management_mode(canonical, 3) == expected
 
 
-def test_flat_resolver_rejects_ambiguous_direct_and_wrapped_owners():
-    data = {
+def test_profile_management_rejects_multiple_complete_owners():
+    physical = {
         "table.VideoInMode[0].Mode": "0",
         "table.VideoInMode[0].Config[0]": "2",
         "table.VideoInMode[0][0].Mode": "1",
         "table.VideoInMode[0][0].Config[0]": "0",
         "table.VideoInMode[0][0].Config[1]": "1",
     }
-    assert resolve_profile_management_mode(data, 0) is None
+
+    canonical = canonicalize_video_in_mode(physical)
+
+    for key, value in physical.items():
+        assert canonical[key] == value
+
+    assert video_in_mode_channel_is_rejected(canonical, 0)
+    assert resolve_profile_management_mode(canonical, 0) is None
 
 
 def test_does_not_borrow_row_zero_for_another_channel():
@@ -102,56 +99,52 @@ def test_config_ex_does_not_override_management_mode():
 
 
 @pytest.mark.parametrize("option", PROFILE_MANAGEMENT_OPTIONS)
-def test_writer_changes_only_config_and_mode(option):
-    original = [
-        {
-            "Config": [2],
-            "Mode": 0,
-            "TimeSection": [["1 06:00:00-17:00:00"]],
-            "FutureFirmwareField": {"keep": True},
-        },
-        {"Config": [1], "Mode": 0, "OtherChannel": True},
-    ]
+@pytest.mark.parametrize("wrap_depth", [0, 1, 2])
+def test_writer_preserves_the_reported_videoinmode_layout(option, wrap_depth):
+    row = {
+        "Config": [2],
+        "Mode": 0,
+        "TimeSection": [["1 05:30:00-17:00:00"]],
+        "FutureFirmwareField": {"keep": True},
+    }
+
+    owner = row
+    for _ in range(wrap_depth):
+        owner = [owner]
+
+    other_channel = {"Config": [1], "Mode": 0, "OtherChannel": True}
+    original = [owner, other_channel]
     before = deepcopy(original)
+
     wanted = profile_management_table_with_option(original, 0, option)
 
     assert original == before
-    assert wanted[0]["TimeSection"] == before[0]["TimeSection"]
-    assert wanted[0]["FutureFirmwareField"] == before[0]["FutureFirmwareField"]
     assert wanted[1] == before[1]
     assert resolve_profile_management_table(wanted, 0) == option
+
+    target_before = before[0]
+    target_after = wanted[0]
+
+    for _ in range(wrap_depth):
+        assert isinstance(target_after, list)
+        assert len(target_after) == 1
+        target_before = target_before[0]
+        target_after = target_after[0]
+
+    assert target_after["TimeSection"] == target_before["TimeSection"]
+    assert target_after["FutureFirmwareField"] == {"keep": True}
 
 
 def test_writer_rejects_a_missing_channel():
     with pytest.raises(ConnectionError):
-        profile_management_table_with_option([{"Config": [2], "Mode": 0}], 3, "normal")
+        profile_management_table_with_option(
+            [{"Config": [2], "Mode": 0}],
+            3,
+            "normal",
+        )
 
 
-@pytest.mark.parametrize("option", PROFILE_MANAGEMENT_OPTIONS)
-def test_writer_preserves_a_singleton_wrapped_channel_shape(option):
-    original = [
-        [
-            {
-                "Config": [2],
-                "Mode": 0,
-                "TimeSection": [["1 05:30:00-17:00:00"]],
-                "FutureFirmwareField": {"keep": True},
-            }
-        ]
-    ]
-    before = deepcopy(original)
-
-    wanted = profile_management_table_with_option(original, 0, option)
-
-    assert original == before
-    assert isinstance(wanted[0], list)
-    assert len(wanted[0]) == 1
-    assert wanted[0][0]["TimeSection"] == before[0][0]["TimeSection"]
-    assert wanted[0][0]["FutureFirmwareField"] == {"keep": True}
-    assert resolve_profile_management_table(wanted, 0) == option
-
-
-def test_structured_resolvers_reject_an_ambiguous_wrapped_channel():
+def test_structured_resolvers_reject_multiple_branches_before_the_owner():
     table = [
         [
             {"Config": [2], "Mode": 0},

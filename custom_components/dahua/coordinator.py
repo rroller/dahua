@@ -57,6 +57,7 @@ from .profile import (
     ProfileScheduleTimes,
     resolve_profile_management_mode,
     resolve_profile_schedule_times,
+    video_in_mode_channel_is_rejected,
 )
 from .rpc2 import Rpc2MethodRefused
 from .const import (
@@ -531,6 +532,9 @@ def day_night_mode_name(data: dict, channel: int):
 
 def resolve_profile_mode(data: dict, channel: int):
     """Resolve this channel's active VideoInMode profile using supported semantics."""
+    if video_in_mode_channel_is_rejected(data, channel):
+        return None
+
     config = data.get(f"table.VideoInMode[{channel}].Config[0]")
     if config == "2":
         return "2"
@@ -3965,7 +3969,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
-                    self._profile_mode = self.read_profile_mode(mode_data)
+                    if not video_in_mode_channel_is_rejected(
+                        mode_data,
+                        self._channel,
+                    ):
+                        self._profile_mode = self.read_profile_mode(mode_data)
                     profile_capability_changed = self._observe_profile_management(
                         mode_data
                     )
@@ -7927,6 +7935,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         polled yet.
         """
         data = self.data or {}
+        if video_in_mode_channel_is_rejected(data, self._channel):
+            return "ambiguous"
 
         def field(name):
             return data.get("table.VideoInMode[{0}].{1}".format(self._channel, name))
