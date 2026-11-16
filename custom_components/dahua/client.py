@@ -903,6 +903,39 @@ def _same_setting(held, wanted) -> bool:
     return held == wanted
 
 
+def _mirrors_a_written_field(address: str, held, wanted: dict) -> bool:
+    """Whether a field nobody asked to change now holds what its sibling was sent.
+
+    Measured by @defre92 on #1176, a DH-IPC-HDW2849TM-S-IL on 3.120: writing
+    `VideoWidget[0].TimeTitle.EncodeBlend` also sets `TimeTitle.PreviewBlend` to
+    the same value, both ways, and the snapshot confirmed the write itself had
+    landed. The read-back saw a field change that nothing asked for and reported
+    a write that had worked as refused. Reporting it refused undid nothing: the
+    device had already made both changes by the time the read-back ran.
+
+    Two conditions, and the second is the one that matters:
+
+    - the same parent object as a field that was written, so a coupling inside
+      one widget or one rule and nothing further away; and
+    - **exactly the value that sibling was sent.** A sibling that moved to
+      anything else is still refused. `Sensitivity` going to 9 beside a write
+      of `Enable=true` is the test for that, written strict on purpose before
+      this existed, and it must stay a refusal: same parent, but nothing about
+      it says the device applied our write to it.
+
+    A coupling the other way round, one field forced to the opposite of its
+    sibling, fails the second condition and stays a refusal. That is the safe
+    direction to be wrong in: it is today's behaviour.
+    """
+    parent, dot, _leaf = address.rpartition(".")
+    if not dot:
+        return False
+    return any(
+        written.rpartition(".")[0] == parent and _same_setting(held, value)
+        for written, value in wanted.items()
+    )
+
+
 class DahuaWriteDeclined(ConnectionError):
     """The device answered a write with 200 and the word Error.
 
@@ -7680,7 +7713,17 @@ class DahuaClient:
             altered = sorted(
                 key for key in untouched if key in after and after[key] != before[key]
             )
-            if lost or altered:
+            # A neighbour that now holds exactly what its sibling was sent is the
+            # device applying the write to both, not damage from it (#1176). See
+            # `_mirrors_a_written_field` for why the value has to match as well
+            # as the parent. Everything else that moved still refuses.
+            mirrored = [
+                key
+                for key in altered
+                if _mirrors_a_written_field(key[len("table.") :], after[key], wanted)
+            ]
+            unexplained = [key for key in altered if key not in mirrored]
+            if lost or unexplained:
                 if lost:
                     # The whole table went back, so a setting that is now gone
                     # is one the device dropped from what it was sent. Nothing
@@ -7725,9 +7768,15 @@ class DahuaClient:
                 raise cgi_error from None
             _LOGGER.info(
                 "The CGI write to %s could not be read, so %s was written over RPC2 "
-                "and read back (#1176)",
+                "and read back (#1176)%s",
                 self._address,
                 ", ".join(values),
+                (
+                    "; the device also set %s to the same value, which it couples "
+                    "to the field written" % ", ".join(mirrored)
+                    if mirrored
+                    else ""
+                ),
             )
             return await self._write_succeeded()
 
