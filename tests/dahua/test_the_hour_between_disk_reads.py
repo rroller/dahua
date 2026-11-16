@@ -83,16 +83,19 @@ class _StorageClient:
         return {name: dict(d) for name, d in DISK_DETAIL.items()}
 
 
-def _coordinator(client):
+def _coordinator(client, device_class="NVR"):
     """Built the way this suite builds them, with only what the read touches.
 
     The class defaults supply `_storage_disks` and `_storage_last_refresh`,
-    which is what those defaults are on the class for.
+    which is what those defaults are on the class for. The device class is set
+    because the recorder gate is inside the read: a box that never said what
+    it is reads no disks at all.
     """
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator.client = client
     coordinator._address = ADDRESS
     coordinator._channel = 0
+    coordinator._device_class = device_class
     coordinator._storage_disks = []
     coordinator._storage_last_refresh = 0.0
     return coordinator
