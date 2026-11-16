@@ -172,20 +172,44 @@ def test_the_poll_paces_the_disk_read_by_that_stamp():
     for nothing. Driving the real poll needs the whole of Home Assistant, so
     this reads the gate, which is the pattern
     test_a_refused_capability_does_not_fail_the_poll.py already uses.
+
+    ⚠ Read structurally rather than as a substring. `"3600" in gate` is also
+    true of `>= 36000` and of `< 3600`, and `"self._storage_disks" in gate` is
+    true of `not self._storage_disks`: every mutation worth making here
+    survives a check written that way, which is the trap in
+    test_a_substring_assertion_passes_vacuously's name.
     """
     update = definition("_async_update_data")
 
     gates = [
-        ast.unparse(node.test)
+        node.test
         for node in ast.walk(update)
         if isinstance(node, ast.If)
         and "_storage_last_refresh" in ast.unparse(node.test)
     ]
-
-    assert len(gates) == 1, gates
+    assert len(gates) == 1, [ast.unparse(g) for g in gates]
     gate = gates[0]
-    # An hour, measured from the stamp the read sets.
-    assert "self._storage_last_refresh" in gate
-    assert "3600" in gate
-    # And still only on something that found disks, so no camera pays for it.
-    assert "self._storage_disks" in gate
+    shown = ast.unparse(gate)
+
+    # Two conditions, both of which have to hold.
+    assert isinstance(gate, ast.BoolOp) and isinstance(gate.op, ast.And), shown
+    disks = [
+        operand
+        for operand in gate.values
+        if isinstance(operand, ast.Attribute) and operand.attr == "_storage_disks"
+    ]
+    # A bare attribute, so a camera never pays for the read. `not` here would
+    # make it exactly the devices with nothing to refresh.
+    assert len(disks) == 1, shown
+
+    elapsed = [operand for operand in gate.values if isinstance(operand, ast.Compare)]
+    assert len(elapsed) == 1, shown
+    compare = elapsed[0]
+    # An hour or more since the stamp, not less, and an hour rather than ten.
+    assert [type(op) for op in compare.ops] == [ast.GtE], shown
+    assert [getattr(c, "value", None) for c in compare.comparators] == [3600], shown
+    assert isinstance(compare.left, ast.BinOp), shown
+    assert isinstance(compare.left.op, ast.Sub), shown
+    # now - stamp, in that order: the operands reversed is always negative.
+    assert isinstance(compare.left.right, ast.Attribute), shown
+    assert compare.left.right.attr == "_storage_last_refresh", shown
