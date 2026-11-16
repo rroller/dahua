@@ -126,6 +126,7 @@ from .host import (
     _release_host_stream,
     async_alarm_input_carrier,
     async_device_is_zero_indexed,
+    async_refresh_host_subscription,
     async_record_host_auth_refusal,
     async_record_host_failure,
     async_record_host_success,
@@ -146,17 +147,6 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 # config entry with ConfigEntryNotReady. One slow capability check took the
 # device down and Home Assistant retried it forever. See #594 and #631.
 PROBE_FAILED = (ClientError, TimeoutError)
-
-
-class ProbeNotAsked(Exception):
-    """Recorded when a probe could not be asked, rather than asked and refused.
-
-    Never raised. `_note_probe_refusal` reads a status or an RPC2 code off
-    whatever it is handed and files anything without one as silence, which is
-    what this is: a question held back because another answer it depends on has
-    not arrived. The type name is what the dump shows, so it says which of the
-    two happened rather than leaving a reader to guess at a missing status.
-    """
 
 
 # How many later polls will re-ask a capability question the device never
@@ -5475,13 +5465,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         not, because the lowest can change and the entities cannot follow.
         """
         if not self.is_recorder_host():
-            # Not a camera saying no. A box whose class question has not been
-            # answered has not been asked this one either, and an unasked
-            # question is never recorded as unanswered, so nothing would ever
-            # come back to it. `_async_retry_device_class` can still answer
-            # NVR on a later poll, and this is what makes the terminals follow.
-            if getattr(self, "_device_class_unanswered", False):
-                self._note_probe_refusal("alarm_inputs", ProbeNotAsked())
+            # Nothing recorded, deliberately, and that includes a box whose
+            # class answer has not arrived. Recording the question as open
+            # there would have every camera whose class probe timed out chased
+            # for a table it does not have, and would take away the
+            # per-channel AlarmLocal sensor it keeps today, because the
+            # platform reads a pending answer as terminals still to come.
+            #
+            # So a recorder whose class answers late still never asks this.
+            # That is the device-class retry's scope rather than this one's:
+            # the disks, the remote devices and the host device are all
+            # decided in the same block from the same flag and all wait for a
+            # reload (`uses_separate_host_device`).
             return False
         try:
             slots = await self.client.async_get_alarm_input_slots()
@@ -5533,9 +5528,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         answer, the retry so it stops asking and the leftover-rows card so it
         stops waiting for an entity that already exists.
 
-        Asked through the host rather than through this entry's coordinators,
-        because that is what `host.py` routes with and one source is what keeps
-        them from disagreeing.
+        Asked through the host, because that is what routes the event. The
+        platform applies the same rule over the entry's coordinators instead,
+        which is the same set for one entry per device and not for two entries
+        on one address; that gap is older than this and is not closed here.
         """
         carrier = async_alarm_input_carrier(self._address)
         if carrier is not None and carrier is not self:
@@ -5549,10 +5545,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return False
         # The subscription is host level too: `_union` adds `AlarmLocal` only
         # where a carrier exists, so a host where no channel selected it was
-        # not subscribed to the code these sensors are built for. Nudging the
-        # stream re-attaches with it, and the re-attach re-reads the terminal
-        # state on its own. A no-op when the set has not changed.
-        _host_stream(self.hass, self._address)._restart_if_needed()
+        # not subscribed to the code these sensors are built for. Re-attaching
+        # picks it up, and the re-attach re-reads the terminal state on its
+        # own. A no-op when the set has not changed, and when this host has no
+        # stream at all: a channel with no events selected never registers.
+        async_refresh_host_subscription(self._address)
         return True
 
     async def _async_refresh_alarm_input_state(self) -> None:

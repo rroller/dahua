@@ -649,19 +649,30 @@ async def test_a_box_with_no_terminals_has_answered():
     assert coordinator.probes_that_did_not_answer() == set()
 
 
-async def test_a_class_that_has_not_answered_leaves_the_question_open():
-    """The gate is `is_recorder_host()`, which reads the class the device
-    reported. A box that has not answered that one has not been asked this
-    one, and an unasked question is recorded nowhere, so nothing would ever
-    come back to it. `_async_retry_device_class` can still answer NVR on a
-    later poll, and this is what lets the terminals follow."""
+async def test_a_class_that_has_not_answered_is_not_chased():
+    """The limit, stated rather than worked around.
+
+    The gate is `is_recorder_host()`, which reads the class the device
+    reported, so a box that has not answered that question is not asked this
+    one. Nothing is recorded, which means nothing comes back to it either: a
+    recorder whose class answers on a later poll gets its terminals after a
+    reload, the same as its disks, its remote devices and its host device,
+    which are all decided from that flag in the same block.
+
+    Recording it as open instead reaches further than it looks. The flag is
+    true for any device whose class probe timed out, cameras included, and the
+    platform reads a pending answer as terminals still to come: a camera would
+    lose the per-channel AlarmLocal sensor it has today and be re-asked for a
+    table it does not have until the budget ran out, with a give-up line to
+    show for it.
+    """
     coordinator = _real(_ProbeClient(), device_class=None)
     coordinator._device_class_unanswered = True
 
     assert await coordinator._async_probe_alarm_inputs() is False
-    assert coordinator.probes_that_did_not_answer() == {"alarm_inputs"}
-    assert coordinator._probe_refusals["alarm_inputs"]["error"] == "ProbeNotAsked"
-    assert coordinator.client.state_reads == 0
+    assert coordinator.probes_that_did_not_answer() == set()
+    assert "alarm_inputs" not in (getattr(coordinator, "_probe_refusals", None) or {})
+    assert coordinator.client.table_reads == 0
 
 
 async def test_a_camera_is_not_asked_and_not_recorded():
@@ -796,6 +807,15 @@ async def test_two_retries_at_once_leave_one_carrier(hass):
         "depends on who is asked and the entities cannot be on both"
     )
     assert dahua_module.async_alarm_input_carrier(ADDRESS) is holding[0]
+
+
+async def test_the_nudge_does_not_invent_a_stream(hass):
+    """A channel with no events selected never registers one, so the retry can
+    reach for a host that has no stream. Creating it here would leave one with
+    no coordinator to attach for, holding a connector and a retry loop."""
+    dahua_module.async_refresh_host_subscription("10.9.9.9")
+
+    assert dahua_module._HOST_STREAMS == {}
 
 
 async def test_the_carrier_is_read_through_the_host(hass):
