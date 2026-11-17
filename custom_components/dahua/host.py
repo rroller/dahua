@@ -752,6 +752,12 @@ class DahuaHostEventStream:
     # camera that genuinely never sees motion would otherwise be asked for ever.
     _motion_push_checks = 0
     _motion_push_last_check = 0.0
+    # Checks spent judging an [All] trial (#1202), on a budget of their own.
+    # Sharing the one above meant a trial begun on its last check could never be
+    # judged: the stream stayed on [All] and the card a proof used to raise
+    # never came (@rroller on #1222). A trial gets the same window the first
+    # proof had, and no more, so the whole thing is still bounded.
+    _trial_checks = 0
 
     # The selection, on the class as well as in __init__ for the reason the
     # flag below carries a default: a stream built with object.__new__ now
@@ -1039,7 +1045,14 @@ class DahuaHostEventStream:
         """
         if self._seen_pushed_video_motion:
             return False
-        if self._motion_push_checks >= MOTION_PUSH_CHECK_LIMIT:
+        # A trial in progress is judged on its own budget (#1202), so one
+        # begun on the last ordinary check can still be judged.
+        spent = (
+            self._trial_checks
+            if self._all_events_for_unpushed_motion == "active"
+            else self._motion_push_checks
+        )
+        if spent >= MOTION_PUSH_CHECK_LIMIT:
             return False
         coordinators = list(self.coordinators)
         if any(getattr(c, "poll_video_motion", False) for c in coordinators):
@@ -1108,7 +1121,12 @@ class DahuaHostEventStream:
         ):
             return
         self._motion_push_last_check = now
-        self._motion_push_checks += 1
+        # Charged to the trial while one is running, so the ordinary budget is
+        # not what decides whether a trial can be judged.
+        if self._all_events_for_unpushed_motion == "active":
+            self._trial_checks += 1
+        else:
+            self._motion_push_checks += 1
 
         owner = self._owner
         if owner is None:

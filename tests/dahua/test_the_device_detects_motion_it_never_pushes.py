@@ -431,6 +431,47 @@ async def test_all_events_that_talked_and_then_dropped_are_kept(hass):
     assert client.attached_with == [["VideoMotion"], ["All"]]
 
 
+async def test_a_trial_begun_on_the_last_check_can_still_be_judged(hass):
+    """@rroller's reproduction on #1222: start one short of the limit with
+    motion active, take the proof, advance an hour, check again. Sharing the
+    budget, the trial began on the last check and was never judged: the stream
+    stayed on [All] and the card a proof used to raise never came."""
+    client = _Client(active={0})
+    stream = await _stream_with(hass, _Coordinator(client=client))
+    stream._motion_push_checks = MOTION_PUSH_CHECK_LIMIT - 1
+    stream._motion_push_last_check = -MOTION_PUSH_CHECK_INTERVAL_SECONDS
+
+    await stream.async_check_video_motion_is_pushed()
+    await _settle()
+    assert stream._all_events_for_unpushed_motion == "active"
+    assert stream._motion_push_checks == MOTION_PUSH_CHECK_LIMIT
+
+    await _an_hour_later(stream)
+    await stream.async_check_video_motion_is_pushed()
+    await _settle()
+
+    assert ISSUE_ID in _issues(hass)
+    assert client.attached_with[-1] == ["VideoMotion"]
+
+
+async def test_a_trial_gets_one_window_and_no_more(hass):
+    """Its own budget, the same size as the first proof's, so a device that is
+    quiet for the whole of it is not asked for ever either."""
+    client = _Client(active={0})
+    stream = await _stream_with(hass, _Coordinator(client=client))
+    await stream.async_check_video_motion_is_pushed()
+    await _settle()
+    assert client.asked == 1
+    client.active = set()
+
+    for _ in range(MOTION_PUSH_CHECK_LIMIT + 5):
+        await _an_hour_later(stream)
+        await stream.async_check_video_motion_is_pushed()
+
+    assert client.asked == 1 + MOTION_PUSH_CHECK_LIMIT
+    assert stream._all_events_for_unpushed_motion == "active"
+
+
 async def test_a_credentials_refusal_on_all_is_not_read_as_all_failing(hass):
     """401 is the password, with its own budget. Going back to the list would
     not help and would misreport what happened."""
