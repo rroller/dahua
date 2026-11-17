@@ -5598,8 +5598,23 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # read on the other eleven channels of a recorder; that one is the one
         # that holds when two of them are reading at the same moment.
         already = bool(self._alarm_inputs)
-        if not await self._async_probe_alarm_inputs(only_if_unclaimed=True) or already:
+        adopted = await self._async_probe_alarm_inputs(only_if_unclaimed=True)
+        if already:
             return False
+        if not adopted:
+            # ⚠ A late "no" changes the entity set too (@rroller on #1218).
+            # While this channel's question was open, its own `AlarmLocal`
+            # sensor was held back so the host terminals could not arrive
+            # beside it. Now the box has said it has none, or refused the
+            # table with a status, the question is closed and nobody carries
+            # terminals, so that sensor is due -- and only an announcement
+            # makes the platform build it. Returning False here left it absent
+            # until a reload. Still silent, or another channel carrying them,
+            # is not this.
+            return (
+                "alarm_inputs" not in self.probes_that_did_not_answer()
+                and async_alarm_input_carrier(self._address) is None
+            )
         # The subscription is host level too: `_union` adds `AlarmLocal` only
         # where a carrier exists, so a host where no channel selected it was
         # not subscribed to the code these sensors are built for. Re-attaching

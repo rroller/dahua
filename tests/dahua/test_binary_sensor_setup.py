@@ -51,15 +51,6 @@ class _Coordinator:
         self._alarm_inputs = list(alarm_inputs)
         self._alarm_inputs_pending = alarm_inputs_pending
 
-    def get_serial_number(self):
-        """With the channel, which is what a discovery announces itself by.
-
-        The watcher re-runs `build` only for the coordinator whose serial
-        matches the key on the signal, so a double that cannot answer this
-        would have every channel rebuild on any channel's discovery.
-        """
-        return "%s_%d" % (self._serial, self._channel)
-
     def arrive_with_disks(self, *names):
         """What the retry does: the disks the setup read did not find."""
         self._disks = [{"name": name} for name in names]
@@ -180,6 +171,14 @@ def setup(monkeypatch):
     class _Event:
         def __init__(self, coordinator, entry, event_name):
             built.append(("event", event_name, coordinator))
+            # The real sensor's key shape. The per-channel AlarmLocal goes
+            # through the late watcher now, which dedupes on this, so a marker
+            # without it would be added again on every announcement and report
+            # a duplicate the real entity can never produce.
+            self.unique_id = "%s_%s" % (
+                coordinator.get_serial_number(),
+                event_name.lower(),
+            )
 
     class _Vehicle:
         def __init__(self, coordinator, entry):
@@ -565,7 +564,11 @@ async def test_each_channel_gets_its_own_sensors(setup):
         _Coordinator(events=["AlarmLocal"], channel=1),
     )
 
-    assert _names(setup.built) == ["VideoMotion", "AlarmLocal"]
+    # Which channel got which, not the order: AlarmLocal is built through the
+    # late watcher now, ahead of the per-channel loop.
+    assert sorted(
+        (name, c.get_channel()) for k, name, c in setup.built if k == "event"
+    ) == [("AlarmLocal", 1), ("VideoMotion", 0)]
     assert len(_names(setup.built, "vehicle")) == 2
 
 
@@ -810,11 +813,15 @@ async def test_terminals_already_added_are_not_added_twice(setup):
 
 
 async def test_a_channel_waits_rather_than_taking_the_terminals_itself(setup):
-    """The per-channel `AlarmLocal` sensor is decided once, here, and it is the
-    misdelivering one #1090 removed: its index is a terminal number read as a
-    video channel. Creating it while the box has still to answer would leave it
-    beside the host sensors when they arrive, two sensors for one screw
-    terminal and the wrong one of the pair still believed."""
+    """The per-channel `AlarmLocal` sensor is the misdelivering one #1090
+    removed: its index is a terminal number read as a video channel. Creating it
+    while the box has still to answer would leave it beside the host sensors
+    when they arrive, two sensors for one screw terminal and the wrong one of
+    the pair still believed.
+
+    ⚠ The breaking change in this PR: a recorder whose probe never answers
+    keeps waiting, and has no AlarmLocal sensor where every earlier release
+    gave it one."""
     await setup(
         _Coordinator(channel=0, events=["AlarmLocal"], alarm_inputs_pending=True)
     )
@@ -830,3 +837,78 @@ async def test_a_box_that_answered_no_terminals_keeps_its_channel_sensor(setup):
     await setup(_Coordinator(channel=0, events=["AlarmLocal"]))
 
     assert _names(setup.built) == ["AlarmLocal"]
+
+
+def _channel_sensors_added(added):
+    """The per-channel AlarmLocal sensors handed to Home Assistant, by key."""
+    return sorted(
+        e.unique_id
+        for e in added
+        if (getattr(e, "unique_id", None) or "").endswith("_alarmlocal")
+    )
+
+
+async def test_a_late_no_creates_the_channel_sensor_it_was_holding_back(setup):
+    """@rroller's reproduction on #1218, as he described it: AlarmLocal
+    selected, the probe pending at setup, then settled with no terminals and
+    announced through the real dispatcher. The sensor was absent until a
+    reload, because the per-channel loop runs once and only the terminal and
+    disk builds were under the watcher."""
+    box = _Coordinator(channel=0, events=["AlarmLocal"], alarm_inputs_pending=True)
+    added = await setup(box)
+    assert _channel_sensors_added(added) == []
+
+    box._alarm_inputs_pending = False
+    late.async_notify_capability_discovered(
+        setup.hass, setup.entry.entry_id, box.get_serial_number()
+    )
+    await setup.hass.run_pending()
+
+    assert _channel_sensors_added(setup.added) == ["SERIAL1_alarmlocal"]
+    assert _names(setup.built, "alarm_input") == []
+
+
+async def test_a_late_yes_still_keeps_the_channel_sensor_away(setup):
+    """The other late answer. Terminals arrive, so the per-channel sensor is
+    never made, and the pair the wait was for does not happen."""
+    box = _Coordinator(channel=0, events=["AlarmLocal"], alarm_inputs_pending=True)
+    added = await setup(box)
+
+    box._alarm_inputs = list(TERMINALS)
+    box._alarm_inputs_pending = False
+    late.async_notify_capability_discovered(
+        setup.hass, setup.entry.entry_id, box.get_serial_number()
+    )
+    await setup.hass.run_pending()
+
+    assert _channel_sensors_added(added) == []
+    assert _names(setup.built, "alarm_input") == [0, 3]
+
+
+async def test_one_channels_silence_does_not_hold_back_another(setup):
+    """The table is the box's, so a channel that has its answer does not wait
+    on one that does not. It also has to be this way round for the waiting
+    channel to get its sensor at all: a late answer rebuilds only the channel
+    that announced it."""
+    await setup(
+        _Coordinator(channel=0, events=["AlarmLocal"], alarm_inputs_pending=True),
+        _Coordinator(channel=1, events=["AlarmLocal"]),
+    )
+
+    assert [c.get_channel() for k, name, c in setup.built if name == "AlarmLocal"] == [
+        1
+    ]
+
+
+async def test_a_channel_sensor_is_not_added_twice_by_later_announcements(setup):
+    """Built again on every announcement for its channel, added once."""
+    box = _Coordinator(channel=0, events=["AlarmLocal"])
+    added = await setup(box)
+
+    for _ in range(2):
+        late.async_notify_capability_discovered(
+            setup.hass, setup.entry.entry_id, box.get_serial_number()
+        )
+        await setup.hass.run_pending()
+
+    assert _channel_sensors_added(added) == ["SERIAL1_alarmlocal"]

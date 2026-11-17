@@ -830,6 +830,56 @@ async def test_the_retry_leaves_the_carrier_where_it_is(hass):
     assert coordinator.client.table_reads == reads_before
 
 
+# --- a late "no" changes the entity set too (@rroller on #1218) ---------------
+#
+# While a channel's question is open its own AlarmLocal sensor is held back, so
+# a late answer of "no terminals" is what makes that sensor due. Only an
+# announcement makes the platform build it, and the retry used to announce only
+# terminals found, leaving the sensor absent until a reload.
+
+
+async def test_a_late_no_is_announced_so_the_channel_sensor_gets_built():
+    client = _ProbeClient(raises="table")
+    coordinator = _real(client)
+    assert await coordinator._async_probe_alarm_inputs() is False
+    assert "alarm_inputs" in coordinator.probes_that_did_not_answer()
+
+    client._raises = None
+    client._table = {}
+
+    assert await coordinator._async_retry_alarm_inputs() is True
+    assert coordinator.probes_that_did_not_answer() == set()
+    assert coordinator.get_alarm_inputs() == []
+
+
+async def test_a_late_refusal_with_a_status_is_announced_too():
+    """A status is the box answering: it does not serve the table, which
+    closes the question the same way "no terminals" does."""
+    client = _ProbeClient(raises="table")
+    coordinator = _real(client)
+    await coordinator._async_probe_alarm_inputs()
+
+    async def refuse(*_args):
+        raise _refused()
+
+    client._raises = None
+    client.async_get_alarm_input_config = refuse
+
+    assert await coordinator._async_retry_alarm_inputs() is True
+    assert coordinator._probe_refusals["alarm_inputs"]["status"] == 403
+
+
+async def test_a_box_still_silent_is_not_announced():
+    """Nothing has changed, so nothing is rebuilt: the question stays open and
+    the sensor stays held back."""
+    client = _ProbeClient(raises="table")
+    coordinator = _real(client)
+    await coordinator._async_probe_alarm_inputs()
+
+    assert await coordinator._async_retry_alarm_inputs() is False
+    assert "alarm_inputs" in coordinator.probes_that_did_not_answer()
+
+
 async def test_two_retries_at_once_leave_one_carrier(hass):
     """Both channels check before reading, so both pass that check. The check
     that decides is the one inside the probe, at the adoption, with no await
@@ -854,6 +904,29 @@ async def test_two_retries_at_once_leave_one_carrier(hass):
         "depends on who is asked and the entities cannot be on both"
     )
     assert dahua_module.async_alarm_input_carrier(ADDRESS) is holding[0]
+
+
+async def test_the_channel_that_lost_the_race_does_not_announce(hass):
+    """The race above, read from its result. The loser's question is closed --
+    the box answered it -- but closed because another channel took the
+    terminals, so its own AlarmLocal sensor stays away and there is nothing
+    for it to build. Announcing anyway rebuilds every platform for that
+    channel and logs that entities are being created when none are."""
+    stream = _host_stream(hass, ADDRESS)
+    channels = [
+        _real(_ProbeClient(raises="table"), channel=index, hass=hass)
+        for index in (0, 1)
+    ]
+    for coordinator in channels:
+        stream.register(coordinator)
+    await _settle()
+    for coordinator in channels:
+        assert await coordinator._async_probe_alarm_inputs() is False
+        coordinator.client._raises = None
+
+    results = await asyncio.gather(*(c._async_retry_alarm_inputs() for c in channels))
+
+    assert sorted(results) == [False, True], results
 
 
 async def test_the_nudge_does_not_invent_a_stream(hass):

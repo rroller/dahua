@@ -183,23 +183,29 @@ def _alarm_input_reporter(coordinators: list):
     return min(answering, key=lambda c: c.get_channel())
 
 
-def _alarm_inputs_still_pending(coordinators: list) -> bool:
-    """Whether any channel asked the box about its terminals and got silence.
+def _alarm_inputs_still_pending(coordinator) -> bool:
+    """Whether this channel asked the box about its terminals and got silence.
 
-    The per-channel `AlarmLocal` sensor below is decided once, at setup, and
-    the host terminals can arrive later now that the probe is retried. Deciding
-    on "no reporter yet" would create the per-channel sensor and then leave it
-    beside the host ones, two sensors for one screw terminal and the misdelivering
-    one of the pair still believed.
+    The host terminals can arrive later now that the probe is retried, so this
+    channel's own `AlarmLocal` sensor is held back while its question is open:
+    creating it and then adding the host ones would leave two sensors for one
+    screw terminal, with the misdelivering one of the pair still believed.
+
+    This channel's question, not any channel's. The terminal table is the box's,
+    so one channel's answer is every channel's, and holding channel 3 back for
+    channel 5's silence would only delay a sensor the box has already decided.
+    It also has to be this channel's for the sensor ever to arrive: a late
+    answer rebuilds only the channel that announced it (late.py explains why an
+    entry-wide rebuild is not on offer), so a sensor waiting on another
+    channel's question would wait for a rebuild that is never sent.
 
     A box that answered "no terminals" is not pending and keeps the per-channel
     sensor it has today, which is the only answer that leaves #1090's
     arrangement alone.
     """
-    return any(
+    return bool(
         getattr(coordinator, "probes_that_did_not_answer", None)
         and "alarm_inputs" in coordinator.probes_that_did_not_answer()
-        for coordinator in coordinators
     )
 
 
@@ -272,32 +278,44 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         ),
     )
 
-    # Read after that call, because it is what creates the reporter's entities,
-    # and the per-channel decision below turns on whether they exist.
-    alarm_reporter = _alarm_input_reporter(list(entry_coordinators(entry).values()))
-    alarm_inputs_pending = _alarm_inputs_still_pending(
-        list(entry_coordinators(entry).values())
+    # A channel's own AlarmLocal sensor, through the watcher as well, because
+    # whether it is due can change after setup in both directions.
+    #
+    # A recorder's alarm terminals have their own sensors above, so this
+    # channel's AlarmLocal sensor has nothing left to show. What used to feed
+    # it was the misdelivery: the terminal number was read as a channel, and
+    # terminal 4 lit whichever camera was channel 4 (#1090). Not created rather
+    # than left to sit at off for ever -- Home Assistant marks an entity a
+    # platform has stopped providing as unavailable and offers to remove it,
+    # which is visible, where a stale "off" is indistinguishable from a quiet
+    # alarm and will be believed.
+    #
+    # Or while this channel's question is still open, since the host sensors
+    # can still arrive. ⚠ That is a breaking change for a recorder whose probe
+    # never answers: every earlier release gives it this sensor, and this one
+    # does not.
+    #
+    # Built here rather than in the loop below because a late "no" has to
+    # create it (@rroller on #1218): the loop runs once, so a question closed
+    # on a later poll left the sensor absent until a reload.
+    async def build_channel_alarm_local(coordinator) -> list:
+        if "AlarmLocal" not in coordinator.get_event_list():
+            return []
+        if _alarm_input_reporter(list(entry_coordinators(entry).values())):
+            return []
+        if _alarm_inputs_still_pending(coordinator):
+            return []
+        return [DahuaEventSensor(coordinator, entry, "AlarmLocal")]
+
+    await async_add_and_keep_watching(
+        hass, entry, build_channel_alarm_local, async_add_devices, entry_coordinators
     )
 
     for coordinator in entry_coordinators(entry).values():
         sensors: list[BinarySensorEntity] = []
         for event_name in coordinator.get_event_list():
-            # A recorder's alarm terminals have their own sensors above, so
-            # this channel's AlarmLocal sensor has nothing left to show. What
-            # used to feed it was the misdelivery: the terminal number was
-            # read as a channel, and terminal 4 lit whichever camera was
-            # channel 4 (#1090). Not created rather than left to sit at off
-            # for ever -- Home Assistant marks an entity a platform has
-            # stopped providing as unavailable and offers to remove it, which
-            # is visible, where a stale "off" is indistinguishable from a
-            # quiet alarm and will be believed.
-            #
-            # Or while the box has not answered yet, since the probe is
-            # retried and the host sensors can still arrive. Creating this one
-            # meanwhile is what would leave the pair.
-            if event_name == "AlarmLocal" and (
-                alarm_reporter is not None or alarm_inputs_pending
-            ):
+            # Built by `build_channel_alarm_local` above, which can re-decide.
+            if event_name == "AlarmLocal":
                 continue
             sensors.append(DahuaEventSensor(coordinator, entry, event_name))
 
