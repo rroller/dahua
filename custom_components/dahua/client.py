@@ -903,45 +903,75 @@ def _same_setting(held, wanted) -> bool:
     return held == wanted
 
 
-def _mirrors_a_written_field(address: str, held, wanted: dict) -> bool:
-    """Whether a field nobody asked to change now holds what its sibling was sent.
+# Fields a device has been measured setting together when one of them is
+# written: the object both sit in, and the two leaf names. Only what has been
+# read back off real hardware goes here. A pair that merely looks related is
+# not evidence, and excusing it would let a write that damaged a setting
+# report success.
+_MEASURED_COUPLINGS = (
+    # @defre92 on #1176, a DH-IPC-HDW2849TM-S-IL on 3.120, read from
+    # `getConfig&name=VideoWidget` around the Timestamp Overlay switch:
+    #   before        EncodeBlend=true   PreviewBlend=true
+    #   switch off    EncodeBlend=false  PreviewBlend=false
+    #   switch on     EncodeBlend=true   PreviewBlend=true
+    (
+        re.compile(r"VideoWidget\[\d+\]\.TimeTitle"),
+        frozenset({"EncodeBlend", "PreviewBlend"}),
+    ),
+)
 
-    From @defre92 on #1176, a DH-IPC-HDW2849TM-S-IL on 3.120: writing
-    `VideoWidget[0].TimeTitle.EncodeBlend` also changed `TimeTitle.PreviewBlend`,
-    in both directions, and the snapshot confirmed the write itself had landed.
-    The read-back saw a field change that nothing asked for and reported a
-    write that had worked as refused. Reporting it refused undid nothing: the
-    device had already made both changes by the time the read-back ran.
 
-    ⚠ That PreviewBlend took the *same* value is inferred, not measured. The
-    read-back warning logs keys and never values, on purpose, so the report
-    shows that it moved on every toggle and not what it moved to. A mirror is
-    the reading consistent with two flags that start in step, which these do by
-    default. If this firmware turns out to invert the pair instead, the second
-    condition below refuses it and the camera gets today's behaviour, so being
-    wrong about this costs the fix and nothing else.
+def _is_boolean_text(value) -> bool:
+    return str(value).strip().lower() in ("true", "false")
 
-    Two conditions, and the second is the one that matters:
 
-    - the same parent object as a field that was written, so a coupling inside
-      one widget or one rule and nothing further away; and
-    - **exactly the value that sibling was sent.** A sibling that moved to
-      anything else is still refused. `Sensitivity` going to 9 beside a write
-      of `Enable=true` is the test for that, written strict on purpose before
-      this existed, and it must stay a refusal: same parent, but nothing about
-      it says the device applied our write to it.
+def _mirrors_a_written_field(address: str, held, wanted: dict, previous) -> bool:
+    """Whether a field nobody asked to change moved because the device couples it.
 
-    A coupling the other way round, one field forced to the opposite of its
-    sibling, fails the second condition and stays a refusal. That is the safe
-    direction to be wrong in: it is today's behaviour.
+    #1176: writing `VideoWidget[0].TimeTitle.EncodeBlend` also sets
+    `TimeTitle.PreviewBlend` to the same value, both ways, measured. The
+    read-back saw a field change that nothing asked for and reported a write
+    that had worked as refused. Reporting it refused undid nothing: the device
+    had made both changes by the time the read-back ran.
+
+    Every one of these has to hold, and @rroller's review is why there are
+    four rather than two:
+
+    - **a measured relationship**, in `_MEASURED_COUPLINGS`: these two leaf
+      names, in the object they were measured in. Parent and value alone are
+      not enough. Write `MotionDetect[0].Enable=true` and have the device
+      replace `Sensitivity`, a number, with `true`: same object, the value
+      written, and a setting destroyed. That passed as a mirror on the first
+      version of this and must be refused;
+    - the same object as the field that was written;
+    - **a boolean before and after**, as the written value is. A coupled flag
+      is a flag; a field that was a number and is now a boolean was damaged,
+      whatever pair it is in;
+    - exactly the value that field was sent. A coupling the other way round,
+      one flag forced to the opposite of its partner, stays a refusal, which is
+      the safe direction to be wrong in: it is today's behaviour.
     """
-    parent, dot, _leaf = address.rpartition(".")
+    parent, dot, leaf = address.rpartition(".")
     if not dot:
         return False
-    return any(
-        written.rpartition(".")[0] == parent and _same_setting(held, value)
-        for written, value in wanted.items()
-    )
+    for written, value in wanted.items():
+        written_parent, _, written_leaf = written.rpartition(".")
+        if written_parent != parent:
+            continue
+        if not any(
+            pattern.fullmatch(parent) and {leaf, written_leaf} == pair
+            for pattern, pair in _MEASURED_COUPLINGS
+        ):
+            continue
+        if not (
+            _is_boolean_text(previous)
+            and _is_boolean_text(held)
+            and _is_boolean_text(value)
+        ):
+            continue
+        if _same_setting(held, value):
+            return True
+    return False
 
 
 class DahuaWriteDeclined(ConnectionError):
@@ -7721,14 +7751,16 @@ class DahuaClient:
             altered = sorted(
                 key for key in untouched if key in after and after[key] != before[key]
             )
-            # A neighbour that now holds exactly what its sibling was sent is the
-            # device applying the write to both, not damage from it (#1176). See
-            # `_mirrors_a_written_field` for why the value has to match as well
-            # as the parent. Everything else that moved still refuses.
+            # A field the device is measured to set along with the one written is
+            # the device applying the write to both, not damage from it (#1176).
+            # `_mirrors_a_written_field` has the four conditions and why each is
+            # there. Everything else that moved still refuses.
             mirrored = [
                 key
                 for key in altered
-                if _mirrors_a_written_field(key[len("table.") :], after[key], wanted)
+                if _mirrors_a_written_field(
+                    key[len("table.") :], after[key], wanted, before[key]
+                )
             ]
             unexplained = [key for key in altered if key not in mirrored]
             if lost or unexplained:
