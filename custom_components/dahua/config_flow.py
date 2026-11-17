@@ -26,9 +26,11 @@ from homeassistant.helpers import selector
 from . import dahua_utils
 from . import (
     ISSUE_CHANNEL_NOT_ADDED,
+    ISSUE_DUPLICATE_ADDRESS,
     _async_probe_tcp,
     _async_probe_tls,
     device_by_identifier,
+    duplicate_address_key,
     entry_coordinators,
     is_synthesised_identity,
 )
@@ -656,6 +658,69 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     @callback
+    def _async_warn_duplicate_address(self, data) -> None:
+        """Say so when this device already has an entry, rather than silently adding a second.
+
+        The serial based guard above only runs when the device returned one.
+        A device whose identity cannot be read returns none, so nothing stops
+        it being added twice, and that is the device where it is most likely
+        to happen: somebody re-adds it because the first entry came up
+        unidentified. #1176 is one, a camera whose answers are unreadable and
+        which ended up with two entries.
+
+        A warning rather than an abort, because two entries on one address and
+        port is a real configuration. Different credentials is the one the
+        write lock already accommodates, which is why it is keyed by device
+        rather than by `_rpc2_key()`, and a pre-#827 per-channel setup looks
+        the same from here. Blocking would break both.
+
+        Address **and** port, because two devices can sit behind one address
+        on different ports, which is the distinction `device_key` exists for.
+
+        What the duplicate actually costs is worth stating precisely, since it
+        is not what it looks like. Reads, the digest challenge and the RPC2
+        login are shared per device, so a second entry does not double the
+        request rate while things are working. It doubles the entities, and
+        once a shared login fails the cached result is dropped and every read
+        retries, so two entries push twice as hard at exactly the moment a
+        device is refusing.
+
+        Withdrawn by `async_reconcile_duplicate_addresses`, from the removal
+        hook and from every setup. The card asks the owner to delete the entry
+        they did not want, so it has to go when they do.
+        """
+        address, port = duplicate_address_key(data)
+        if not address:
+            return
+        existing = [
+            entry
+            for entry in self._async_current_entries()
+            if duplicate_address_key(entry.data) == (address, port)
+        ]
+        if not existing:
+            return
+        _LOGGER.warning(
+            "%s:%s already has the config entry %s, so this is a second one",
+            address,
+            port,
+            existing[0].title,
+        )
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            ISSUE_DUPLICATE_ADDRESS.format(address, port),
+            is_fixable=False,
+            is_persistent=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="duplicate_address",
+            translation_placeholders={
+                "address": address,
+                "port": port,
+                "existing": str(existing[0].title),
+            },
+        )
+
+    @callback
     def _async_heal_siblings(self, unique_id: str, address: str) -> None:
         """Move a recorder's other channels to the address just confirmed.
 
@@ -1143,6 +1208,10 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
 
+        # Deliberately no duplicate-address warning here. This is the path a
+        # recorder's extra channels arrive on, where sharing an address with
+        # the entry that spawned them is the normal case rather than the
+        # accident. The warning belongs on the manual add step only.
         return self.async_create_entry(title=import_data[CONF_NAME], data=import_data)
 
     async def async_step_name(self, user_input=None):
@@ -1152,6 +1221,7 @@ class DahuaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if self.init_info is not None:
                 self.init_info.update(user_input)
+                self._async_warn_duplicate_address(self.init_info)
                 return self.async_create_entry(
                     title=self.init_info["name"],
                     data=self.init_info,
