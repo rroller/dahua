@@ -209,6 +209,9 @@ CHANNEL_OPTION_KEYS = frozenset(
 
 # Events
 EVENT_DAHUA_ANPR_RECOGNIZED = "dahua_anpr_recognized"
+# Fired for every face the device reports starting to see, recognised or not,
+# with `recognized` saying which (#1089).
+EVENT_DAHUA_FACE_RECOGNITION = "dahua_face_recognition"
 
 # Defaults
 DEFAULT_NAME = "Dahua"

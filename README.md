@@ -36,6 +36,9 @@ Why not use the Amcrest integration already provided by Home Assistant? The Amcr
 - **Open the gate for a car you know.** On cameras with ANPR, the recognised plate is
   a sensor, and naming the plates you trust gives a binary sensor that turns on only
   for those.
+- **Know who is at the door.** On a recorder or camera doing face recognition, the
+  last person it recognised is a sensor, and every face it sees, known or a stranger,
+  goes on the event bus. See [Face recognition](#face-recognition).
 - **Write on the video.** The channel title, the timestamp and free text overlays can
   be set from an automation, which is how a temperature or a zone name gets burned
   into the recording.
@@ -899,6 +902,34 @@ updates the sensor belonging to the channel it came from. If channel 1 has
 `SmartMotionHuman` selected and channel 2 does not, motion on channel 2 appears on the
 bus and updates nothing.
 
+### Face recognition
+
+Select **FaceRecognition** in the entry's event types, and each channel gets a
+**Last recognized face** sensor: its state is the name of the last person the device
+matched, with the database it matched in (`group_name`, `group_type`), how closely
+(`similarity`), and what the device saw (`object_type`, `age`, `sex`) as attributes.
+Only a recognised face changes it.
+
+Every face the device starts seeing also fires `dahua_face_recognition` on the event
+bus, recognised or not:
+
+```yaml
+event_type: dahua_face_recognition
+data:
+  recognized: false        # true when the device matched someone
+  stranger: true           # the device filed it as a passerby
+  name: null               # the person's name when recognized
+  group_name: null
+  group_type: null         # e.g. BlackListDB, as the device reports it
+  similarity: null
+  device_name: Front Door
+  channel: 6
+```
+
+`stranger` is true only when the device's own event says so. Which database is which
+is up to the device and how it was set up, so read `group_type` and `group_name`
+rather than `group_id`. The person's name is not written to Home Assistant's log.
+
 ### A device that will not accept a list of event codes
 
 Some firmware serves the event stream perfectly and refuses a long list of codes. Measured
@@ -1071,6 +1102,7 @@ Sensor |  Description |
 Firmware Version | The firmware the device reports. Also shown on the device page, but as a sensor it can be templated and compared — which is what makes "tell me when a camera is behind" possible
 Serial Number | The serial the device reports. On an NVR every channel reports the recorder's serial, because every channel is the same physical box
 License Plate | The last recognized license plate reported by the camera's ANPR/Traffic AI, including attributes for confidence, vehicle type, vehicle color, brand/logo, model/series, and direction
+Last recognized face | The name of the last person the device's face recognition matched, with the database, similarity and what it saw as attributes. Created only on channels with FaceRecognition selected. See [Face recognition](#face-recognition)
 Profile | Which day/night lighting profile the camera is using right now. Useful because a camera can change profile by itself, and the illuminator and infrared settings are stored per profile
 
 ## Selects

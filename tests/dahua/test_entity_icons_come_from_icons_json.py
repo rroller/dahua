@@ -57,6 +57,7 @@ WAS = {
     ("select", "image_exposure_mode"): "mdi:camera-iris",
     ("select", "encode_audio_source"): "mdi:audio-input-rca",
     ("sensor", "license_plate"): "mdi:car-back",
+    ("sensor", "last_recognized_face"): "mdi:face-recognition",
     ("sensor", "memory_used"): "mdi:memory",
     ("sensor", "processor_usage"): "mdi:cpu-64-bit",
     ("sensor", "profile"): "mdi:theme-light-dark",

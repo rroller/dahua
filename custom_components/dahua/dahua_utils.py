@@ -630,6 +630,122 @@ def first_direction(value):
     return None
 
 
+def _number(value):
+    """An int where the device sent a number, else None. Dahua sends some ints
+    as floats (`PersonID : 20.0`)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _text(value):
+    """A non-empty string, else None."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def extract_face_data(event: dict) -> dict | None:
+    """What a `FaceRecognition` event says about the face it saw (#1089).
+
+    Built from @Mark79864's captures on that issue, the same payload from an
+    NVR5-XI/PRO, an NVR4xxx-EI and a channel whose video was an OBS ONVIF
+    stream, which shows the recorder does the analysis and the shape does not
+    depend on the camera. Four shapes matter:
+
+    - **recognised**: `Candidates` holds a match, with `Person.Name`,
+      `GroupName`, `GroupType`, `GroupID`, `UID` and a `Similarity`;
+    - **a stranger, with passerby recording on**: `Candidates` empty, and a
+      top-level `Passerby` block with the `UID` the device filed it under;
+    - **a face, with stranger mode off**: `Candidates` empty, no `Passerby`;
+    - **`action=Stop`**: the end of a sighting, with `Candidates` empty and the
+      `Passerby` block again.
+
+    Only a Start is a result, so anything else returns None: reading the Stop
+    would overwrite a recognised name with "stranger" a few seconds later.
+
+    ⚠ **Nothing is read from a group's number.** The issue's own body said
+    group 1 is the passerby database and named ones start at 2, and the
+    reporter's capture then showed `GroupID "1"` named `Test` of type
+    `BlackListDB`. `GroupType` carries the meaning and is passed through; the
+    id is only an id. A stranger is a stranger because the event has a
+    `Passerby` block, not because of where it was filed.
+
+    The object type is carried rather than assumed, because a recorder whose
+    `getCaps` reports `SearchObjectTypeMask` 7 recognises more than faces.
+    """
+    if not isinstance(event, dict):
+        return None
+    if _text(event.get("Code")) != "FaceRecognition":
+        return None
+    action = _text(event.get("action") or event.get("Action")) or ""
+    if action.lower() != "start":
+        return None
+
+    data = event.get("data", event.get("Data", {}))
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return None
+    if not isinstance(data, dict):
+        return None
+
+    face = data.get("Face") if isinstance(data.get("Face"), dict) else {}
+    found = data.get("Object") if isinstance(data.get("Object"), dict) else {}
+    result = {
+        "recognized": False,
+        "name": None,
+        "similarity": None,
+        "group_name": None,
+        "group_type": None,
+        "group_id": None,
+        "person_id": None,
+        "stranger": isinstance(data.get("Passerby"), dict),
+        "passerby_id": None,
+        "object_type": _text(face.get("ObjectType")) or _text(found.get("ObjectType")),
+        "age": _number(face.get("Age")),
+        "sex": _text(face.get("Sex")),
+    }
+    if result["stranger"]:
+        result["passerby_id"] = _text(data["Passerby"].get("UID"))
+
+    candidates = [
+        candidate
+        for candidate in (data.get("Candidates") or [])
+        if isinstance(candidate, dict) and isinstance(candidate.get("Person"), dict)
+    ]
+    if not candidates:
+        return result
+
+    # The closest match, if the device offered more than one.
+    best = max(candidates, key=lambda c: _number(c.get("Similarity")) or 0)
+    person = best["Person"]
+    name = _text(person.get("Name"))
+    if name is None:
+        return result
+    result.update(
+        {
+            "recognized": True,
+            "stranger": False,
+            "passerby_id": None,
+            "name": name,
+            "similarity": _number(best.get("Similarity")),
+            "group_name": _text(person.get("GroupName")),
+            "group_type": _text(person.get("GroupType")),
+            "group_id": _text(person.get("GroupID")),
+            "person_id": _text(person.get("UID")),
+        }
+    )
+    return result
+
+
 def extract_plate_data(event: dict) -> dict | None:
     """Extract license plate and vehicle information from a Dahua ANPR/Traffic event dict.
 
