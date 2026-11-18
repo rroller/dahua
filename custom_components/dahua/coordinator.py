@@ -5772,6 +5772,20 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether one stream carries audio, or None if the device did not say."""
         return (self._stream_codecs.get(stream_index) or {}).get("audio")
 
+    def get_stream_audio_codec(self, stream_index: int):
+        """The audio codec one stream is set to, or None if the device did not say.
+
+        Kept current from the same Encode answer the codecs are, at setup and
+        on any poll that reads Encode, so a door station that puts its codec
+        back after a reboot (#1162) shows it without a reload where the poll
+        reads that table.
+        """
+        return (self._stream_codecs.get(stream_index) or {}).get("audio_codec")
+
+    def get_stream_audio_rate(self, stream_index: int):
+        """The audio sample rate in Hz, or None if the device did not say."""
+        return (self._stream_codecs.get(stream_index) or {}).get("audio_rate")
+
     def supports_system_load(self) -> bool:
         """Whether the processor and memory sensors should exist."""
         return self._supports_system_load
