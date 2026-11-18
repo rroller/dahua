@@ -59,6 +59,10 @@ from .profile import (
     resolve_profile_schedule_times,
 )
 from .rpc2 import Rpc2MethodRefused
+
+# What a Dahua RPC2 service answers for a method it does not have. Measured
+# from CoaxialControlIO on an AD410 (#942) and on a DHI-NVR5464-16P-EI.
+RPC2_METHOD_NOT_FOUND = 268894210
 from .const import (
     CAMERA,
     CONF_AREA,
@@ -5346,6 +5350,27 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 "Direct-camera getCaps probe failed; keeping other evidence",
                 exc_info=True,
             )
+            # The siren switch drives the speaker with CoaxialControlIO.control,
+            # and a device that says its CoaxialControlIO has no getCaps method
+            # has, on the one direct camera measured, no control method either:
+            # the AD410 answers both with this code (#942). Its ProductDefinition
+            # still says it has a siren, and it does, but the switch built on
+            # that claim could only ever be refused. So the claim stays in the
+            # sources, where it describes the hardware, and stops choosing the
+            # transport. Only on this code: a timeout or any other refusal says
+            # nothing about whether the method exists, and keeps the claim.
+            # The manual siren option is untouched, so an owner whose camera
+            # does answer control can still turn it on.
+            if (
+                isinstance(error, Rpc2MethodRefused)
+                and code == RPC2_METHOD_NOT_FOUND
+                and self._supports_rpc2_siren
+            ):
+                self._supports_rpc2_siren = False
+                self._siren_detection_failures.append(
+                    "ProductDefinition siren not offered: CoaxialControlIO has no "
+                    f"such method (code {RPC2_METHOD_NOT_FOUND})"
+                )
 
     def uses_rpc2_deterrence(self, dahua_type: int | None = None) -> bool:
         """Select RPC2 for detected or manually enabled direct-camera outputs."""
