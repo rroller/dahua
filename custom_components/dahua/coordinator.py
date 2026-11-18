@@ -1574,7 +1574,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         # Host-wide: DahuaHostEventStream turns this into one request for the
         # recorder, regardless of how many channels are configured.
         self.poll_video_motion = entry.options.get(CONF_POLL_VIDEO_MOTION, False)
-        self._supports_coaxial_control = False
+        # None until the probe runs, and setup does not always run it: a channel
+        # that drives deterrence over RPC2, or has nothing that reads the status,
+        # is never asked. False meant both "the device said no" and "nobody
+        # asked", and a dump could not tell them apart (#942, #1211). Falsy, so
+        # every reader that asks "may I poll it" is unchanged. Set here rather
+        # than left to a class default, because diagnostics lists the probed
+        # flags from vars() and an unset one would vanish from the dump.
+        self._supports_coaxial_control = None
         # Doorbell call states already complained about, so the warning below is
         # one per state rather than one per ring.
         self._unknown_doorbell_states: set = set()
@@ -3570,7 +3577,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 if self.reads_coaxial_status() and not self.uses_rpc2_deterrence():
                     await self._async_probe_coaxial_control()
                 _LOGGER.debug(
-                    "Device supports Coaxial Control=%s", self._supports_coaxial_control
+                    "Device supports Coaxial Control=%s",
+                    (
+                        "not asked"
+                        if self._supports_coaxial_control is None
+                        else self._supports_coaxial_control
+                    ),
                 )
 
                 # The three the switch platform waits on. Each is the same probe
