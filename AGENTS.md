@@ -4,8 +4,8 @@
 
 Custom Home Assistant integration for Dahua IP cameras, doorbells (VTO), indoor
 monitors (VTH), NVRs and DVRs. Also supports Amcrest, Lorex, IMOU, EmpireTech and
-Avaloid Goliath rebrands. Version 1.1.0, HACS-installable, Home Assistant 2026.8.0
-or newer.
+Avaloid Goliath rebrands. HACS-installable, Home Assistant 2026.8.0 or newer. The
+version is the one in `manifest.json`.
 
 **Read `CONTRIBUTING.md` before changing anything.** It is the normative document:
 what tests must assert, and the checklists for the things wired in more than one
@@ -28,7 +28,7 @@ CONTRIBUTING wins.
 
 <!-- tags: navigation, directory-structure -->
 
-38 modules, about 35,000 lines.
+41 modules, about 41,000 lines.
 
 ```
 custom_components/dahua/
@@ -73,16 +73,19 @@ custom_components/dahua/
 ├── dahua_utils.py          # Parsers: events, plates, firmware, overlays, RemoteDevice
 ├── model_profiles.py       # The one hardware-validated model matcher (SDT4E425)
 ├── models.py               # CoaxialControlIOStatus
+├── profile.py              # Profile management modes (normal, full-time day or
+│                           #   night, schedule), shared by coordinator, client and
+│                           #   select
 ├── const.py                # Domain, PLATFORMS, config keys, defaults
 ├── entity.py               # DahuaBaseEntity and DahuaEventDrivenEntity
 ├── <platform>.py           # binary_sensor, button, camera, event, light, number,
-│                           #   select, sensor, switch, update
+│                           #   select, sensor, switch, text, time, update
 ├── services.yaml           # 32 services, all registered in camera.py
 ├── icons.json              # Entity icons, keyed by translation key
 └── translations/           # en plus 8 others. English is the per-key fallback
 ```
 
-Other directories: `tests/` (320 files, ~5,700 tests), `scripts/`,
+Other directories: `tests/` (356 files, ~6,850 tests), `scripts/`,
 `.github/workflows/`.
 
 ## Architecture Overview
@@ -98,7 +101,7 @@ graph LR
     COORD -->|registers with| STREAM[host.py event stream]
     COORD -->|doorbell only| VTO[vto.py]
     STREAM -->|one per host| CLIENT
-    COORD --> ENT[10 platforms]
+    COORD --> ENT[12 platforms]
     CLIENT -->|CGI + digest| DEV[device]
     CLIENT -->|RPC2| DEV
     VTO -->|DHIP :5000| DEV
