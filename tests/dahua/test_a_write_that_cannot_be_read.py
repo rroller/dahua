@@ -214,8 +214,16 @@ class _Rpc2Device:
             if self.drops is not None and _config_table_of(self.drops) == name:
                 _drop(table, self.drops)
             self.tables[name] = table
-            if self.also_changes:
-                _assign(self.tables[name], *self.also_changes)
+            # One `(address, value)` pair, or a list of them for a device that
+            # does more than one thing of its own after a write.
+            pairs = (
+                self.also_changes
+                if isinstance(self.also_changes, list)
+                else [self.also_changes] if self.also_changes else []
+            )
+            for address, value in pairs:
+                if _config_table_of(address) == name:
+                    _assign(self.tables[name], address, value)
         return {"result": True}
 
     async def set_config_field(self, address, value):
@@ -503,6 +511,207 @@ async def test_a_neighbour_that_changed_is_reported_without_writing_the_host_off
     assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
     assert answer.status == 400
     assert not client_module._HOST_RPC2_WRITES_UNSAFE
+
+
+# ---------------------------------------------------------------------------
+# A neighbour the device couples to the field written (#1176)
+# ---------------------------------------------------------------------------
+
+# The shape @defre92's DH-IPC-HDW2849TM-S-IL on 3.120 serves: a widget holding
+# an encode flag and a preview flag side by side, which that firmware moves
+# together. `Rect` is there so a sibling that is not a mirror exists, and
+# `ChannelTitle` so a mirror-shaped change in another object exists.
+WIDGET_TABLE = {
+    "VideoWidget": [
+        {
+            "TimeTitle": {
+                "EncodeBlend": True,
+                "PreviewBlend": True,
+                "Rect": [0, 0, 100, 100],
+            },
+            "ChannelTitle": {"EncodeBlend": True, "PreviewBlend": True},
+        }
+    ]
+}
+TIMESTAMP_OFF = SET_CONFIG + "&VideoWidget[0].TimeTitle.EncodeBlend=false"
+TIMESTAMP_ON = SET_CONFIG + "&VideoWidget[0].TimeTitle.EncodeBlend=true"
+
+
+def _widget(encode=True, preview=True, **kwargs):
+    tables = deepcopy(WIDGET_TABLE)
+    tables["VideoWidget"][0]["TimeTitle"]["EncodeBlend"] = encode
+    tables["VideoWidget"][0]["TimeTitle"]["PreviewBlend"] = preview
+    return _Rpc2Device(tables, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "start, url, sent",
+    [(True, TIMESTAMP_OFF, False), (False, TIMESTAMP_ON, True)],
+    ids=["turning off", "turning on"],
+)
+async def test_a_sibling_the_device_sets_to_the_same_value_is_not_a_refusal(
+    socket_enabled, caplog, start, url, sent
+):
+    """@defre92's reading, both ways: the write landed, the snapshot changed,
+    and the switch was told it had been refused. Reporting it refused undid
+    nothing, since the device had made both changes before the read-back ran.
+    """
+    device = _widget(
+        encode=start,
+        preview=start,
+        also_changes=("VideoWidget[0].TimeTitle.PreviewBlend", sent),
+    )
+    with caplog.at_level("INFO"):
+        async with _serving(OK_THEN_PHANTOM) as server:
+            answer, device = await _write(server, url, device)
+
+    assert not isinstance(answer, Exception), answer
+    assert "OK" in answer
+    assert device.holds("VideoWidget[0].TimeTitle.EncodeBlend") == str(sent).lower()
+    assert not client_module._HOST_RPC2_WRITES_UNSAFE
+    # Named by key, so a reporter's log says what else the device moved.
+    assert "table.VideoWidget[0].TimeTitle.PreviewBlend" in caplog.text
+    assert "couples" in caplog.text
+
+
+async def test_a_coupling_the_other_way_round_is_still_a_refusal(socket_enabled):
+    """A sibling forced to the opposite of what was written is not a mirror.
+
+    It might well be coupling, but nothing here can tell that from damage, so
+    it stays what it was before #1176's reading: reported refused, no latch.
+    """
+    device = _widget(
+        encode=True,
+        preview=False,
+        also_changes=("VideoWidget[0].TimeTitle.PreviewBlend", True),
+    )
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, TIMESTAMP_OFF, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+    assert not client_module._HOST_RPC2_WRITES_UNSAFE
+
+
+async def test_a_sibling_moved_to_something_else_is_still_a_refusal(socket_enabled):
+    """Same parent is not enough. The widget's own rectangle moving beside a
+    timestamp write is the shape a firmware that resets an object would show."""
+    device = _widget(also_changes=("VideoWidget[0].TimeTitle.Rect[0]", 5))
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, TIMESTAMP_OFF, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+
+
+async def test_a_mirror_in_another_object_is_still_a_refusal(socket_enabled):
+    """The same value, in the channel title rather than the time title.
+
+    Matching the value without the parent would accept any boolean anywhere in
+    the table that happened to flip to what was sent.
+    """
+    device = _widget(also_changes=("VideoWidget[0].ChannelTitle.PreviewBlend", False))
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, TIMESTAMP_OFF, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+
+
+async def test_a_mirror_does_not_excuse_a_write_that_did_not_land(socket_enabled):
+    """The sibling took the value and the field asked for did not.
+
+    The mirror only explains a neighbour. Whether the write itself happened is
+    still judged on the field written, which this device put back.
+    """
+    device = _widget(
+        also_changes=[
+            ("VideoWidget[0].TimeTitle.PreviewBlend", False),
+            ("VideoWidget[0].TimeTitle.EncodeBlend", True),
+        ]
+    )
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, TIMESTAMP_OFF, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+
+
+async def test_a_number_overwritten_with_the_value_written_is_still_a_refusal(
+    socket_enabled,
+):
+    """@rroller's case on #1221, which the first version passed. Write
+    `MotionDetect[0].Enable=true` and have the device replace `Sensitivity`, a
+    number, with `true`: same object, exactly the value written, and a setting
+    destroyed. Parent and value are not evidence of coupling."""
+    device = _Rpc2Device(also_changes=("MotionDetect[0].Sensitivity", True))
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, ENABLE_ALONE, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+
+
+async def test_a_pair_that_only_looks_coupled_is_still_a_refusal(socket_enabled):
+    """The same two leaf names under `ChannelTitle`. Very likely the same
+    firmware behaviour, and not measured, so not excused: what a device has
+    been read doing is the only thing that may turn a moved field into a
+    success."""
+    device = _widget(
+        also_changes=("VideoWidget[0].ChannelTitle.PreviewBlend", False),
+    )
+    url = SET_CONFIG + "&VideoWidget[0].ChannelTitle.EncodeBlend=false"
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, url, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+
+
+async def test_a_partner_that_was_not_a_flag_is_still_a_refusal(socket_enabled):
+    """Inside the measured pair, but `PreviewBlend` held as a number before the
+    write. A coupled flag is a flag; one that changed type was damaged."""
+    tables = deepcopy(WIDGET_TABLE)
+    tables["VideoWidget"][0]["TimeTitle"]["PreviewBlend"] = 1
+    device = _Rpc2Device(
+        tables, also_changes=("VideoWidget[0].TimeTitle.PreviewBlend", False)
+    )
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, TIMESTAMP_OFF, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+
+
+async def test_a_partner_in_another_channels_widget_is_still_a_refusal(
+    socket_enabled,
+):
+    """The measured pair, the value written, booleans throughout, but in the
+    next channel's widget. The coupling is between two flags of one widget."""
+    tables = deepcopy(WIDGET_TABLE)
+    tables["VideoWidget"].append(deepcopy(tables["VideoWidget"][0]))
+    device = _Rpc2Device(
+        tables, also_changes=("VideoWidget[1].TimeTitle.PreviewBlend", False)
+    )
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, TIMESTAMP_OFF, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+
+
+async def test_a_mirror_does_not_excuse_a_lost_setting(socket_enabled):
+    """A dropped setting still latches the host, mirror or no mirror."""
+    device = _widget(
+        also_changes=("VideoWidget[0].TimeTitle.PreviewBlend", False),
+        drops="VideoWidget[0].ChannelTitle.EncodeBlend",
+    )
+    async with _serving(OK_THEN_PHANTOM) as server:
+        answer, device = await _write(server, TIMESTAMP_OFF, device)
+
+    assert isinstance(answer, aiohttp.ClientResponseError), type(answer).__name__
+    assert answer.status == 400
+    assert client_module._HOST_RPC2_WRITES_UNSAFE
 
 
 async def test_a_write_the_device_accepts_and_ignores_is_reported_as_refused(

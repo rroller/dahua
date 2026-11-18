@@ -903,6 +903,77 @@ def _same_setting(held, wanted) -> bool:
     return held == wanted
 
 
+# Fields a device has been measured setting together when one of them is
+# written: the object both sit in, and the two leaf names. Only what has been
+# read back off real hardware goes here. A pair that merely looks related is
+# not evidence, and excusing it would let a write that damaged a setting
+# report success.
+_MEASURED_COUPLINGS = (
+    # @defre92 on #1176, a DH-IPC-HDW2849TM-S-IL on 3.120, read from
+    # `getConfig&name=VideoWidget` around the Timestamp Overlay switch:
+    #   before        EncodeBlend=true   PreviewBlend=true
+    #   switch off    EncodeBlend=false  PreviewBlend=false
+    #   switch on     EncodeBlend=true   PreviewBlend=true
+    (
+        re.compile(r"VideoWidget\[\d+\]\.TimeTitle"),
+        frozenset({"EncodeBlend", "PreviewBlend"}),
+    ),
+)
+
+
+def _is_boolean_text(value) -> bool:
+    return str(value).strip().lower() in ("true", "false")
+
+
+def _mirrors_a_written_field(address: str, held, wanted: dict, previous) -> bool:
+    """Whether a field nobody asked to change moved because the device couples it.
+
+    #1176: writing `VideoWidget[0].TimeTitle.EncodeBlend` also sets
+    `TimeTitle.PreviewBlend` to the same value, both ways, measured. The
+    read-back saw a field change that nothing asked for and reported a write
+    that had worked as refused. Reporting it refused undid nothing: the device
+    had made both changes by the time the read-back ran.
+
+    Every one of these has to hold, and @rroller's review is why there are
+    four rather than two:
+
+    - **a measured relationship**, in `_MEASURED_COUPLINGS`: these two leaf
+      names, in the object they were measured in. Parent and value alone are
+      not enough. Write `MotionDetect[0].Enable=true` and have the device
+      replace `Sensitivity`, a number, with `true`: same object, the value
+      written, and a setting destroyed. That passed as a mirror on the first
+      version of this and must be refused;
+    - the same object as the field that was written;
+    - **a boolean before and after**, as the written value is. A coupled flag
+      is a flag; a field that was a number and is now a boolean was damaged,
+      whatever pair it is in;
+    - exactly the value that field was sent. A coupling the other way round,
+      one flag forced to the opposite of its partner, stays a refusal, which is
+      the safe direction to be wrong in: it is today's behaviour.
+    """
+    parent, dot, leaf = address.rpartition(".")
+    if not dot:
+        return False
+    for written, value in wanted.items():
+        written_parent, _, written_leaf = written.rpartition(".")
+        if written_parent != parent:
+            continue
+        if not any(
+            pattern.fullmatch(parent) and {leaf, written_leaf} == pair
+            for pattern, pair in _MEASURED_COUPLINGS
+        ):
+            continue
+        if not (
+            _is_boolean_text(previous)
+            and _is_boolean_text(held)
+            and _is_boolean_text(value)
+        ):
+            continue
+        if _same_setting(held, value):
+            return True
+    return False
+
+
 class DahuaWriteDeclined(ConnectionError):
     """The device answered a write with 200 and the word Error.
 
@@ -7680,7 +7751,19 @@ class DahuaClient:
             altered = sorted(
                 key for key in untouched if key in after and after[key] != before[key]
             )
-            if lost or altered:
+            # A field the device is measured to set along with the one written is
+            # the device applying the write to both, not damage from it (#1176).
+            # `_mirrors_a_written_field` has the four conditions and why each is
+            # there. Everything else that moved still refuses.
+            mirrored = [
+                key
+                for key in altered
+                if _mirrors_a_written_field(
+                    key[len("table.") :], after[key], wanted, before[key]
+                )
+            ]
+            unexplained = [key for key in altered if key not in mirrored]
+            if lost or unexplained:
                 if lost:
                     # The whole table went back, so a setting that is now gone
                     # is one the device dropped from what it was sent. Nothing
@@ -7725,9 +7808,15 @@ class DahuaClient:
                 raise cgi_error from None
             _LOGGER.info(
                 "The CGI write to %s could not be read, so %s was written over RPC2 "
-                "and read back (#1176)",
+                "and read back (#1176)%s",
                 self._address,
                 ", ".join(values),
+                (
+                    "; the device also set %s to the same value, which it couples "
+                    "to the field written" % ", ".join(mirrored)
+                    if mirrored
+                    else ""
+                ),
             )
             return await self._write_succeeded()
 
