@@ -682,6 +682,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # The platform list is per entry, so it is the same for every channel and the
     # forward happens once. Each coordinator still carries its own copy because
     # unload reads it back off them.
+    # A siren the device refused before the restart starts unavailable rather
+    # than being offered for one more refused press (#942). Before the forward,
+    # because `available` reads it as the switch is added.
+    from .refusal_store import async_restore as restore_refusals
+
+    await restore_refusals(hass, entry.entry_id, coordinators)
+
     wanted = [p for p in PLATFORMS if entry.options.get(p, True)]
     for coordinator in coordinators:
         coordinator.platforms.extend(wanted)
@@ -1070,7 +1077,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bo
     from .refusals import forget as forget_refusals
 
     for coordinator in channels.values():
+        # First, so a refusal that arrives from a press still in flight is
+        # dropped rather than learnt again after the forgetting below.
+        coordinator.retired = True
         forget_refusals(coordinator)
+    # And the copy kept for a restart, or a reload would ask nothing again.
+    # Home Assistant does not unload entries when it stops, so this runs on a
+    # reload, a disable or a removal, never on a restart.
+    from .refusal_store import async_remove as remove_stored_refusals
+
+    await remove_stored_refusals(hass, entry.entry_id)
 
     # Every channel is stopped, and all of them are stopped even if one raises.
     # A coordinator that keeps its session and its host pool reference is the
@@ -1272,6 +1288,12 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     Deliberately takes no interest in whether setup ever succeeded. The card is
     most likely to be there precisely when it did not.
     """
+    # An entry whose setup failed was never unloaded, so its stored refusals
+    # are removed here as well.
+    from .refusal_store import async_remove as remove_stored_refusals
+
+    await remove_stored_refusals(hass, entry.entry_id)
+
     address = normalize_address(entry.data.get(CONF_ADDRESS))
     # Read before anything else: Home Assistant clears the registry rows this
     # depends on as soon as this hook returns.
