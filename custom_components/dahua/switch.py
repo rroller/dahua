@@ -11,7 +11,7 @@ from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import entry_coordinators
 
-from . import dahua_utils, refusals
+from . import dahua_utils, refusal_store, refusals
 from .audio import audio_config_value
 from .const import DOMAIN
 from .entity import DahuaBaseEntity, DahuaHostEntity
@@ -739,6 +739,13 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
                     self._coordinator,
                     SIREN_CONTROL,
                     dahua_utils.describe_write_refusal(err),
+                )
+                # Kept across a restart too, under this firmware (#942).
+                await refusal_store.async_save(
+                    self.hass,
+                    self._coordinator.config_entry.entry_id,
+                    self._coordinator,
+                    SIREN_CONTROL,
                 )
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
