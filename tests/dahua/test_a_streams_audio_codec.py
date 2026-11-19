@@ -84,6 +84,27 @@ def test_a_rate_sent_as_a_decimal_is_read():
     assert found[0]["audio_rate"] == 16000
 
 
+@pytest.mark.parametrize(
+    "rate", ["inf", "-inf", "1e309", "nan", "0", "-8000", "8000.5"]
+)
+def test_a_rate_that_is_not_a_whole_positive_number_leaves_the_rest(rate):
+    """rroller on #1223: `inf` and `1e309` got through `float()` and then
+    raised `OverflowError` from `int()`, which nothing caught, so one bad
+    optional field failed setup or the poll. Now only that field is left
+    out, and the codec read beside it survives."""
+    found = parse_stream_codecs(_encode(main=("PCM", rate)), 0)
+
+    assert "audio_rate" not in found[0]
+    assert found[0]["codec"] == "H.264"
+    assert found[0]["audio_codec"] == "PCM"
+
+
+def test_a_rate_of_8000_point_0_is_read():
+    found = parse_stream_codecs(_encode(main=("G.711A", "8000.0")), 0)
+
+    assert found[0]["audio_rate"] == 8000
+
+
 def test_a_blank_codec_is_left_out():
     found = parse_stream_codecs(_encode(main=("  ", "8000")), 0)
 

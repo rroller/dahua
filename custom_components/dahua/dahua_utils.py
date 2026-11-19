@@ -285,11 +285,29 @@ def parse_stream_codecs(encode, channel: int) -> dict:
             if compression:
                 stream["audio_codec"] = compression
         elif field == "Audio.Frequency":
-            try:
-                stream["audio_rate"] = int(float(str(value).strip()))
-            except ValueError:
-                pass
+            rate = _whole_positive_number(value)
+            if rate is not None:
+                stream["audio_rate"] = rate
     return found
+
+
+def _whole_positive_number(value) -> int | None:
+    """A finite, positive whole number, `8000.0` included, or None.
+
+    `float()` accepts `inf`, `nan` and `1e309`, and `int()` of the first and
+    last raises `OverflowError`, not `ValueError`. Every caller of
+    `parse_stream_codecs` runs outside its read's error handling, so an
+    escape here would fail setup or the poll over one optional attribute
+    (rroller on #1223). Anything else is left out instead.
+    """
+    try:
+        number = float(str(value).strip())
+    except ValueError:
+        return None
+    # `is_integer()` is False for inf and nan, so it also rules those out.
+    if number <= 0 or not number.is_integer():
+        return None
+    return int(number)
 
 
 # The same two shapes again, for `encode.cgi?action=getConfigCaps`. That answer
