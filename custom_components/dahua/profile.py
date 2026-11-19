@@ -21,6 +21,22 @@ PROFILE_MANAGEMENT_OPTION_BY_VALUES = {
 }
 
 
+_VIDEO_IN_MODE_REJECTED_PREFIX = "__dahua.VideoInModeRejected"
+
+
+def _video_in_mode_rejected_key(channel: int) -> str:
+    """Return the internal rejection marker for one VideoInMode channel."""
+    return f"{_VIDEO_IN_MODE_REJECTED_PREFIX}[{channel}]"
+
+
+def video_in_mode_channel_is_rejected(
+    data: Mapping[str, Any],
+    channel: int,
+) -> bool:
+    """Whether raw RPC2 ownership rejected this channel as ambiguous."""
+    return data.get(_video_in_mode_rejected_key(channel)) is True
+
+
 def _integer(value: Any) -> int | None:
     """Return an integer-shaped device value without accepting booleans."""
     if isinstance(value, bool):
@@ -34,46 +50,193 @@ def _integer(value: Any) -> int | None:
     return None
 
 
-def _profile_management_flat_prefix(
-    data: Mapping[str, Any], channel: int
-) -> str | None:
-    """Return the sole complete flattened owner for one VideoInMode channel."""
-    direct = f"table.VideoInMode[{channel}]"
-    wrapped = f"table.VideoInMode[{channel}][0]"
-    complete = [
-        prefix
-        for prefix in (direct, wrapped)
-        if f"{prefix}.Mode" in data and f"{prefix}.Config[0]" in data
-    ]
-    return complete[0] if len(complete) == 1 else None
+def _video_in_mode_row_value(value: Any) -> bool:
+    """Whether value is one semantic VideoInMode configuration row."""
+    if not isinstance(value, Mapping):
+        return False
+    mode = _integer(value.get("Mode"))
+    config = value.get("Config")
+    if (
+        mode is None
+        or not isinstance(config, Sequence)
+        or isinstance(config, (str, bytes))
+    ):
+        return False
+    return bool(config) and all(_integer(item) is not None for item in config)
 
 
-def _profile_management_table_row(
+def resolve_video_in_mode_table_owner(
     table: Sequence[Any], channel: int
 ) -> tuple[Mapping[str, Any], tuple[int, ...]] | None:
-    """Return one unambiguous channel row and the indices that own it."""
+    """Resolve one channel's physical owner through singleton RPC2 wrappers."""
     if channel < 0 or channel >= len(table):
         return None
-    owner = table[channel]
-    if isinstance(owner, Mapping):
-        return owner, (channel,)
-    if (
-        isinstance(owner, Sequence)
-        and not isinstance(owner, (str, bytes))
-        and len(owner) == 1
-        and isinstance(owner[0], Mapping)
-    ):
-        return owner[0], (channel, 0)
-    return None
+
+    value: Any = table[channel]
+    path = [channel]
+    while not isinstance(value, Mapping):
+        if (
+            not isinstance(value, Sequence)
+            or isinstance(value, (str, bytes))
+            or len(value) != 1
+        ):
+            return None
+        value = value[0]
+        path.append(0)
+
+    return value, tuple(path)
+
+
+def resolve_video_in_mode_table_row(
+    table: Sequence[Any], channel: int
+) -> tuple[Mapping[str, Any], tuple[int, ...]] | None:
+    """Resolve one complete Profile Management row and its physical path."""
+    resolved = resolve_video_in_mode_table_owner(table, channel)
+    if resolved is None:
+        return None
+
+    row, path = resolved
+    if not _video_in_mode_row_value(row):
+        return None
+
+    return row, path
+
+
+def _video_in_mode_flat_owner(
+    data: Mapping[str, Any],
+    channel: int,
+) -> tuple[str | None, bool]:
+    """Return one physical flat owner and whether its ownership is ambiguous."""
+    channel_prefix = f"table.VideoInMode[{channel}]"
+    physical_paths = set()
+    malformed = False
+
+    for key in data:
+        if not key.startswith(channel_prefix):
+            continue
+
+        remainder = key[len(channel_prefix) :]
+        if not remainder:
+            malformed = True
+            continue
+
+        if remainder.startswith("."):
+            physical_paths.add("")
+            continue
+
+        match = re.match(r"^((?:\[\d+\])+)\.", remainder)
+        if match is None:
+            malformed = True
+            continue
+
+        path = match.group(1)
+        indices = [int(value) for value in re.findall(r"\[(\d+)\]", path)]
+
+        # A singleton sequence can only own index zero at every level.
+        if not indices or any(index != 0 for index in indices):
+            malformed = True
+            continue
+
+        physical_paths.add(path)
+
+    if malformed or len(physical_paths) > 1:
+        return None, True
+
+    if not physical_paths:
+        return None, False
+
+    path = physical_paths.pop()
+    return channel_prefix + path, False
+
+
+def _video_in_mode_flat_owners(data: Mapping[str, Any], channel: int) -> list[str]:
+    """Return one unambiguous owner with Profile Management Config data."""
+    owner, rejected = _video_in_mode_flat_owner(data, channel)
+    if rejected or owner is None:
+        return []
+
+    if f"{owner}.Config[0]" not in data:
+        return []
+
+    return [owner]
+
+
+def canonicalize_video_in_mode(
+    data: Mapping[str, Any],
+    *,
+    resolved_channels: set[int] | None = None,
+    rejected_channels: set[int] | None = None,
+) -> dict[str, Any]:
+    """Canonicalize authoritative channels and mark ambiguous ownership."""
+    result = dict(data)
+
+    for channel in rejected_channels or ():
+        result[_video_in_mode_rejected_key(channel)] = True
+
+    channels = set()
+    table_prefix = "table.VideoInMode["
+
+    for key in data:
+        if not key.startswith(table_prefix):
+            continue
+
+        end = key.find("]", len(table_prefix))
+        if end == -1:
+            continue
+
+        channel = _integer(key[len(table_prefix) : end])
+        if channel is not None and channel >= 0:
+            channels.add(channel)
+
+    for channel in channels:
+        if video_in_mode_channel_is_rejected(result, channel):
+            continue
+
+        owner, flat_rejected = _video_in_mode_flat_owner(data, channel)
+
+        if resolved_channels is None:
+            if flat_rejected:
+                result[_video_in_mode_rejected_key(channel)] = True
+                continue
+        elif channel not in resolved_channels:
+            continue
+
+        if owner is None:
+            continue
+
+        channel_prefix = f"table.VideoInMode[{channel}]"
+        physical_items = [
+            (key, value)
+            for key, value in data.items()
+            if key == owner or key.startswith(owner + ".")
+        ]
+
+        for key in tuple(result):
+            if not key.startswith(channel_prefix):
+                continue
+
+            remainder = key[len(channel_prefix) :]
+            if not remainder or remainder.startswith((".", "[")):
+                del result[key]
+
+        for key, value in physical_items:
+            result[channel_prefix + key[len(owner) :]] = value
+
+    return result
 
 
 def profile_management_values(
     data: Mapping[str, Any], channel: int
 ) -> tuple[int, tuple[int, ...]] | None:
     """Extract one channel's Profile Management values from flattened config."""
-    prefix = _profile_management_flat_prefix(data, channel)
-    if prefix is None:
+    if video_in_mode_channel_is_rejected(data, channel):
         return None
+
+    owners = _video_in_mode_flat_owners(data, channel)
+    if len(owners) != 1:
+        return None
+
+    prefix = owners[0]
     mode = _integer(data.get(f"{prefix}.Mode"))
     first = _integer(data.get(f"{prefix}.Config[0]"))
     if mode is None or first is None:
@@ -107,7 +270,7 @@ def profile_management_table_with_option(
     wanted = PROFILE_MANAGEMENT_VALUES_BY_OPTION.get(option)
     if wanted is None:
         raise ValueError(f"Unknown profile management option: {option}")
-    resolved = _profile_management_table_row(table, channel)
+    resolved = resolve_video_in_mode_table_row(table, channel)
     if resolved is None:
         if channel < 0 or channel >= len(table):
             raise ConnectionError(
@@ -118,9 +281,9 @@ def profile_management_table_with_option(
         )
     _row, location = resolved
     result = deepcopy(list(table))
-    target = result[location[0]]
-    if len(location) == 2:
-        target = target[location[1]]
+    target = result
+    for index in location:
+        target = target[index]
     mode, config = wanted
     target["Mode"] = mode
     target["Config"] = list(config)
@@ -129,7 +292,7 @@ def profile_management_table_with_option(
 
 def resolve_profile_management_table(table: Sequence[Any], channel: int) -> str | None:
     """Resolve Profile Management from an RPC2 table without flattening it."""
-    resolved = _profile_management_table_row(table, channel)
+    resolved = resolve_video_in_mode_table_row(table, channel)
     if resolved is None:
         return None
     row, _location = resolved
@@ -241,6 +404,9 @@ def resolve_profile_schedule_times(
     data: Mapping[str, Any], channel: int
 ) -> ProfileScheduleTimes | None:
     """Resolve Schedule times from flattened VideoInMode for the exact channel."""
+    if video_in_mode_channel_is_rejected(data, channel):
+        return None
+
     channel_intervals = []
     for key, value in data.items():
         match = _PROFILE_SCHEDULE_FLAT_KEY.fullmatch(key)
@@ -257,9 +423,11 @@ def _profile_schedule_intervals_from_table(
     table: Sequence[Any], channel: int
 ) -> list[tuple[tuple[int, int], Any]] | None:
     """Return every TimeSection entry owned by one structured channel row."""
-    if channel < 0 or channel >= len(table) or not isinstance(table[channel], Mapping):
+    resolved = resolve_video_in_mode_table_row(table, channel)
+    if resolved is None:
         return None
-    time_sections = table[channel].get("TimeSection")
+    owner, _path = resolved
+    time_sections = owner.get("TimeSection")
     if not isinstance(time_sections, Sequence) or isinstance(
         time_sections, (str, bytes)
     ):
@@ -314,8 +482,17 @@ def profile_schedule_table_with_times(
     (row_index, section_index), _schedule_times = resolved_interval
     original_interval = dict(channel_intervals)[(row_index, section_index)]
     match = _PROFILE_SCHEDULE_INTERVAL.fullmatch(original_interval.strip())
+    resolved = resolve_video_in_mode_table_row(table, channel)
+    if resolved is None:
+        raise ConnectionError(
+            f"VideoInMode has no Schedule table for channel {channel}"
+        )
+    _owner, path = resolved
     updated_table = deepcopy(list(table))
-    updated_table[channel]["TimeSection"][row_index][
+    target = updated_table[path[0]]
+    for index in path[1:]:
+        target = target[index]
+    target["TimeSection"][row_index][
         section_index
     ] = f"{match.group('prefix')} {day_start:%H:%M:%S}-{night_start:%H:%M:%S}"
     return updated_table

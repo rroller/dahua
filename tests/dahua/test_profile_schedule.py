@@ -1,5 +1,6 @@
 """Profile Schedule parsing is camera-owned, channel-owned and fail-closed."""
 
+from copy import deepcopy
 from datetime import time
 
 import pytest
@@ -84,3 +85,43 @@ def test_structured_schedule_requires_the_exact_channel():
 def test_subminute_write_is_rejected_instead_of_rounded():
     with pytest.raises(ValueError, match="whole-minute"):
         profile_schedule_table_with_times(_table(), 0, time(8, 23, 1), time(17, 47))
+
+
+@pytest.mark.parametrize("wrap_depth", [0, 1, 2])
+def test_schedule_preserves_the_reported_videoinmode_layout(wrap_depth):
+    row = {
+        "Mode": 1,
+        "Config": [0, 1],
+        "TimeSection": [["1 05:30:00-15:30:00"]],
+        "Future": {"keep": True},
+    }
+
+    owner = row
+    for _ in range(wrap_depth):
+        owner = [owner]
+
+    original = [owner]
+    before = deepcopy(original)
+
+    assert resolve_profile_schedule_table(original, 0) == ProfileScheduleTimes(
+        time(5, 30),
+        time(15, 30),
+    )
+
+    updated = profile_schedule_table_with_times(
+        original,
+        0,
+        time(8, 23),
+        time(17, 47),
+    )
+
+    assert original == before
+
+    target = updated[0]
+    for _ in range(wrap_depth):
+        assert isinstance(target, list)
+        assert len(target) == 1
+        target = target[0]
+
+    assert target["TimeSection"][0][0] == "1 08:23:00-17:47:00"
+    assert target["Future"] == {"keep": True}

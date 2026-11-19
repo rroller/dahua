@@ -37,38 +37,72 @@ def _table():
     ]
 
 
-def _wrapped_table():
-    return [
-        [
-            {
-                "Mode": 0,
-                "Config": [2],
-                "TimeSection": [["1 05:30:00-17:00:00"]],
-                "FutureField": {"preserve": 7},
-            }
-        ]
-    ]
+def _table_with_wrap_depth(wrap_depth):
+    row = {
+        "Mode": 0,
+        "Config": [2],
+        "TimeSection": [["1 05:30:00-17:00:00"]],
+        "FutureField": {"preserve": 7},
+    }
+
+    owner = row
+    for _ in range(wrap_depth):
+        owner = [owner]
+
+    return [owner]
 
 
-async def test_actual_writer_preserves_and_reads_back_the_wrapped_shape():
-    before = _wrapped_table()
+def _row_at_wrap_depth(table, wrap_depth):
+    row = table[0]
+
+    for _ in range(wrap_depth):
+        row = row[0]
+
+    return row
+
+
+@pytest.mark.parametrize("wrap_depth", [0, 1, 2])
+async def test_actual_writer_preserves_the_reported_layout(wrap_depth):
+    before = _table_with_wrap_depth(wrap_depth)
     wanted = deepcopy(before)
-    wanted[0][0].update(Mode=1, Config=[0, 1])
+    _row_at_wrap_depth(wanted, wrap_depth).update(
+        Mode=1,
+        Config=[0, 1],
+    )
+
     rpc = SimpleNamespace(
-        get_config=AsyncMock(side_effect=[{"table": before}, {"table": wanted}]),
+        get_config=AsyncMock(
+            side_effect=[
+                {"table": before},
+                {"table": wanted},
+            ]
+        ),
         set_config=AsyncMock(),
     )
 
     assert await _client(rpc).async_set_profile_management(0, "schedule") == "schedule"
-    rpc.set_config.assert_awaited_once_with("VideoInMode", wanted, channel=0)
-    assert before == _wrapped_table()
+    rpc.set_config.assert_awaited_once_with(
+        "VideoInMode",
+        wanted,
+        channel=0,
+    )
+    assert before == _table_with_wrap_depth(wrap_depth)
 
 
-async def test_wrapped_write_with_wrong_readback_is_not_success():
-    before = _wrapped_table()
+@pytest.mark.parametrize("wrap_depth", [0, 1, 2])
+async def test_acknowledged_write_with_wrong_readback_is_not_success(
+    wrap_depth,
+):
+    before = _table_with_wrap_depth(wrap_depth)
     wrong = deepcopy(before)
+
     rpc = SimpleNamespace(
-        get_config=AsyncMock(side_effect=[{"table": before}, {"table": wrong}]),
+        get_config=AsyncMock(
+            side_effect=[
+                {"table": before},
+                {"table": wrong},
+            ]
+        ),
         set_config=AsyncMock(),
     )
 
@@ -207,3 +241,15 @@ async def test_poll_discovers_the_selector_when_the_mode_shape_becomes_supported
     notify.assert_called_once_with(coordinator.hass, "e1", "SER1")
     await coordinator._async_update_data()
     assert notify.call_count == 1
+
+
+async def test_profile_management_readback_can_change_physical_nesting():
+    before = [[[{"Mode": 0, "Config": [2], "Future": {"keep": 7}}]]]
+    written = [[[{"Mode": 1, "Config": [0, 1], "Future": {"keep": 7}}]]]
+    readback = [{"Mode": 1, "Config": [0, 1], "Future": {"keep": 7}}]
+    rpc = SimpleNamespace(
+        get_config=AsyncMock(side_effect=[{"table": before}, {"table": readback}]),
+        set_config=AsyncMock(),
+    )
+    assert await _client(rpc).async_set_profile_management(0, "schedule") == "schedule"
+    rpc.set_config.assert_awaited_once_with("VideoInMode", written, channel=0)
