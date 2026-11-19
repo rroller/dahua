@@ -244,6 +244,19 @@ def parse_stream_codecs(encode, channel: int) -> dict:
     offer returned 500 and the recorded error, and moving that channel to H.264
     turned it into a 200 carrying video with the audio line marked inactive.
 
+    And which audio codec, at what sample rate, when the answer says (#1162):
+
+        {0: {"codec": "H.264", "audio": True, "audio_codec": "G.711A",
+             "audio_rate": 8000}}
+
+    That is the half that decides whether Home Assistant's talk button can
+    play anything. @MrCheng888 measured a VTO3211D shipping PCM at 16000 Hz,
+    which plays as silence, and fixed it by writing
+    `MainFormat[0].Audio.Compression=G.711A` and `Audio.Frequency=8000`; on
+    that firmware it reverts on every reboot of the door station. These two
+    keys are added only when present, rather than seeded with None like the
+    first two, so a stream nothing was said about looks exactly as it did.
+
     Returns {} for anything that is not a table, so a device that refuses Encode
     is told apart from one that answers emptily by the caller, not here.
     """
@@ -267,7 +280,34 @@ def parse_stream_codecs(encode, channel: int) -> dict:
             stream["codec"] = str(value).strip() or None
         elif field == "AudioEnable":
             stream["audio"] = str(value).strip().lower() == "true"
+        elif field == "Audio.Compression":
+            compression = str(value).strip()
+            if compression:
+                stream["audio_codec"] = compression
+        elif field == "Audio.Frequency":
+            rate = _whole_positive_number(value)
+            if rate is not None:
+                stream["audio_rate"] = rate
     return found
+
+
+def _whole_positive_number(value) -> int | None:
+    """A finite, positive whole number, `8000.0` included, or None.
+
+    `float()` accepts `inf`, `nan` and `1e309`, and `int()` of the first and
+    last raises `OverflowError`, not `ValueError`. Every caller of
+    `parse_stream_codecs` runs outside its read's error handling, so an
+    escape here would fail setup or the poll over one optional attribute
+    (rroller on #1223). Anything else is left out instead.
+    """
+    try:
+        number = float(str(value).strip())
+    except ValueError:
+        return None
+    # `is_integer()` is False for inf and nan, so it also rules those out.
+    if number <= 0 or not number.is_integer():
+        return None
+    return int(number)
 
 
 # The same two shapes again, for `encode.cgi?action=getConfigCaps`. That answer

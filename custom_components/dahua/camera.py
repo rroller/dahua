@@ -762,6 +762,16 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         audio = self._coordinator.get_stream_has_audio(self._stream_index)
         if audio is not None:
             attributes["audio"] = audio
+        # Which audio, which is what decides whether the talk button can play
+        # anything (#1162): PCM at 16000 Hz is silence on a VTO3211D and G.711A
+        # at 8000 Hz works. Read from the same Encode answer as the two above,
+        # so no request is added.
+        audio_codec = self._coordinator.get_stream_audio_codec(self._stream_index)
+        if audio_codec:
+            attributes["audio_codec"] = audio_codec
+        audio_rate = self._coordinator.get_stream_audio_rate(self._stream_index)
+        if audio_rate is not None:
+            attributes["audio_sample_rate"] = audio_rate
         return attributes
 
     def __init__(

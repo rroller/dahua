@@ -351,7 +351,7 @@ async def test_a_card_that_cannot_be_raised_does_not_fail_setup(monkeypatch):
 # --- and the camera says what it carries -------------------------------------
 
 
-def _camera(codec, audio, stream_index=0):
+def _camera(codec, audio, stream_index=0, audio_codec=None, audio_rate=None):
     from custom_components.dahua.camera import DahuaCamera
 
     camera = object.__new__(DahuaCamera)
@@ -362,6 +362,8 @@ def _camera(codec, audio, stream_index=0):
         {
             "get_stream_codec": lambda self, index: codec,
             "get_stream_has_audio": lambda self, index: audio,
+            "get_stream_audio_codec": lambda self, index: audio_codec,
+            "get_stream_audio_rate": lambda self, index: audio_rate,
             "data": {"id": "SERIAL1"},
         },
     )()
