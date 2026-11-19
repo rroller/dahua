@@ -7400,9 +7400,11 @@ class DahuaClient:
         async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
             response = None
             try:
-                # A challenge of its own, as a still has (see get_bytes).
-                auth = DigestAuth(self._username, self._password, self._session, {})
-                response = await auth.request("GET", url)
+                # Asks for a challenge first, as a still does (see get_bytes).
+                auth = DigestAuth(
+                    self._username, self._password, self._session, self._digest_state
+                )
+                response = await auth.request("GET", url, preemptive=False)
                 response.raise_for_status()
             finally:
                 if response is not None:
@@ -7415,7 +7417,9 @@ class DahuaClient:
         `fresh_challenge` sends the request with no credentials and answers
         the 401 it gets, instead of signing it up front with the challenge
         every other request shares. Stills take it. That is how stills went
-        out up to 0.9.84 and how curl sends them. Sharing the challenge came
+        out up to 0.9.84 and how curl sends them. The nonce count stays the
+        shared one, so a device that repeats its nonce and refuses a reused
+        count sees it carry on. Sharing the challenge came
         in 0.9.85, the release where a DHI-NVR2108HS-8P-S2 on 3.205 stopped
         setting up, and on 3.x its stills and setup still time out while
         curl's are answered in under a second (#1197). It costs a still one
@@ -7432,12 +7436,11 @@ class DahuaClient:
             response = None
             try:
                 auth = DigestAuth(
-                    self._username,
-                    self._password,
-                    self._session,
-                    {} if fresh_challenge else self._digest_state,
+                    self._username, self._password, self._session, self._digest_state
                 )
-                response = await auth.request("GET", self._base + url)
+                response = await auth.request(
+                    "GET", self._base + url, preemptive=not fresh_challenge
+                )
                 response.raise_for_status()
 
                 return await response.read()
