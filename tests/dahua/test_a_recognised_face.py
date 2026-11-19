@@ -543,3 +543,87 @@ def test_diagnostics_hide_a_list_inside_a_person():
         aliases = dumped["data"]["Candidates"][0]["Person"]["Aliases"]
         assert aliases == ["<redacted>"]
         assert "Mark" not in json.dumps(dumped)
+
+
+# --- a face payload sent as a JSON string (rroller on #1224) --------------------
+
+
+def _compact(event):
+    """`Data` as a compact JSON string, so the name sits inside the first
+    80 characters a truncation would have kept."""
+    return json.dumps(event["data"], separators=(",", ":"))
+
+
+def test_the_doorbell_path_with_string_data_hides_who_in_diagnostics():
+    """rroller's reproduction: a serialized match through the doorbell handler
+    is published as a face, and the dump must still not name anyone."""
+    import time
+
+    from custom_components.dahua import diagnostics
+
+    c = _coordinator(events=["FaceRecognition"])
+    c._tag_event_with_device_id = lambda event: None
+    c._dahua_event_listeners = {}
+    c.on_receive_vto_event(
+        {"Code": "FaceRecognition", "Action": "Start", "Data": _compact(MARK)}
+    )
+    assert [face["name"] for face in _faces(c)] == ["Mark"]
+
+    now = int(time.time())
+    for dumped in (
+        diagnostics._recent_events_block(c, now)[0]["event"],
+        diagnostics._latest_by_code_block(c, now)["FaceRecognition"]["event"],
+    ):
+        assert "Mark" not in json.dumps(dumped)
+        person = dumped["Data"]["Candidates"][0]["Person"]
+        assert person["Name"] == person["UID"] == "<redacted>"
+        assert person["GroupType"] == "BlackListDB"
+        assert dumped["Data"]["Face"]["Age"] == 27
+
+
+@pytest.mark.parametrize("key", ["data", "Data"])
+def test_string_data_of_a_stranger_is_decoded_and_redacted(key):
+    event = {"Code": "FaceRecognition", "action": "Start", key: _compact(STRANGER)}
+
+    for dumped in _dumped(event):
+        assert dumped[key]["Passerby"] == {"GroupID": "1", "UID": "<redacted>"}
+
+
+@pytest.mark.parametrize(
+    "data", ['{"Candidates":[{"Person":{"Name":"Mark"', '"Mark"', "Mark", "42"]
+)
+def test_face_data_that_does_not_decode_to_an_object_is_redacted(data):
+    """Cut off, or a bare value: nothing to keep the shape of, and it may
+    still carry the name."""
+    event = {"Code": "FaceRecognition", "action": "Start", "data": data}
+
+    for dumped in _dumped(event):
+        assert dumped["data"] == "<redacted>"
+
+
+def test_string_data_of_another_event_is_left_as_it_was():
+    """Only a face event is decoded. Any other code keeps the old handling,
+    a long string truncated from its start."""
+    data = json.dumps({"Name": "Rule 1", "Padding": "x" * 100})
+    event = {"Code": "CrossLineDetection", "action": "Start", "data": data}
+
+    from custom_components.dahua.dahua_utils import (
+        EVENT_VALUE_LIMIT,
+        summarise_event,
+    )
+
+    dumped = summarise_event(event)
+    assert dumped["data"] == data[:EVENT_VALUE_LIMIT] + "<truncated>"
+
+
+def test_a_face_string_nested_deeper_is_not_the_event_data():
+    """Only the event's own `Data` is decoded, not a field of that name
+    further in, which keeps the change to the one place the parser reads."""
+    from custom_components.dahua.dahua_utils import summarise_event
+
+    # The real payload repeats `Code` inside `data`, so this is the shape
+    # that would be decoded a second time if the check were not top-level.
+    inner = {"Code": "FaceRecognition", "Data": "abc"}
+    event = {"Code": "FaceRecognition", "action": "Start", "data": inner}
+
+    assert summarise_event(event)["data"] == inner

@@ -1022,6 +1022,15 @@ def _event_key(key) -> str:
     return str(key).strip().lower().replace("_", "")
 
 
+def _decoded_or_none(text: str):
+    """A JSON object or list decoded from text, or None for anything else."""
+    try:
+        decoded = json.loads(text)
+    except ValueError:
+        return None
+    return decoded if isinstance(decoded, (dict, list)) else None
+
+
 def summarise_event(value, _depth: int = 0, _identity: bool = False):
     """An event with its shape intact and its contents cut down to size.
 
@@ -1039,6 +1048,9 @@ def summarise_event(value, _depth: int = 0, _identity: bool = False):
     - a field named in EVENT_PRIVATE_FIELDS becomes `<redacted>`
     - every value inside a face match's `Person` or `Passerby` does too,
       except its group type and id (EVENT_IDENTITY_CONTAINERS)
+    - a face event's `Data` sent as a JSON string is decoded first, so the
+      rule above reaches it, and becomes `<redacted>` if it cannot be
+      decoded into an object or a list
     - any other long value is truncated, keeping its start
     - long lists keep their first few entries and say how many were dropped
 
@@ -1048,9 +1060,18 @@ def summarise_event(value, _depth: int = 0, _identity: bool = False):
     if _depth > EVENT_DEPTH_LIMIT:
         return "<too deep>"
     if isinstance(value, dict):
+        # The face parser accepts `Data` as a JSON string, which is how the
+        # doorbell path can record it, and a string would otherwise only be
+        # truncated, keeping the name at its start (rroller on #1224).
+        face = _depth == 0 and _text(value.get("Code")) == "FaceRecognition"
         out = {}
         for key, item in value.items():
             name = _event_key(key)
+            if face and name == "data" and isinstance(item, str):
+                item = _decoded_or_none(item)
+                if item is None:
+                    out[key] = "<redacted>"
+                    continue
             if name in EVENT_PRIVATE_FIELDS:
                 out[key] = "<redacted>"
             elif _identity and name in EVENT_IDENTITY_KEPT:
