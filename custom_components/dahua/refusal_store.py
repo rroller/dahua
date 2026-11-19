@@ -75,8 +75,22 @@ async def async_restore(hass: HomeAssistant, entry_id: str, coordinators) -> Non
     except Exception:  # pylint: disable=broad-except
         _LOGGER.debug("Could not read stored refusals for %s", entry_id, exc_info=True)
         return
+    # The file can read cleanly and still not be the shape written here, and
+    # a raise from this function stops the entry forwarding any platform. So
+    # anything that is not a mapping is skipped, one channel at a time, and
+    # the valid channels beside it are still restored.
+    if not isinstance(data, dict):
+        _LOGGER.debug("Ignoring stored refusals for %s: not a mapping", entry_id)
+        return
     for coordinator in coordinators:
         stored = data.get(str(coordinator.get_channel())) or {}
+        if not isinstance(stored, dict):
+            _LOGGER.debug(
+                "Ignoring stored refusals for %s channel %s: not a mapping",
+                entry_id,
+                coordinator.get_channel(),
+            )
+            continue
         firmware = _firmware(coordinator)
         for control, refused_under in stored.items():
             if control in PERSISTED and firmware and refused_under == firmware:
@@ -95,8 +109,17 @@ async def async_save(
     store = _store(hass, entry_id)
     try:
         async with _lock(entry_id):
+            if getattr(coordinator, "retired", False):
+                # Its entry is unloading and the file is being removed, so a
+                # press answered now must not write it back (#1228 review).
+                return
             data = await store.async_load() or {}
-            data.setdefault(str(coordinator.get_channel()), {})[control] = firmware
+            if not isinstance(data, dict):
+                data = {}
+            row = data.get(str(coordinator.get_channel()))
+            if not isinstance(row, dict):
+                row = data[str(coordinator.get_channel())] = {}
+            row[control] = firmware
             await store.async_save(data)
     except Exception:  # pylint: disable=broad-except
         # Losing this costs one refused press after the next restart, which is

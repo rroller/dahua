@@ -186,3 +186,116 @@ def test_unload_and_removal_delete_the_store():
         assert "await remove_stored_refusals(hass, entry.entry_id)" in (
             inspect.getsource(hook)
         ), hook.__name__
+
+
+@pytest.mark.parametrize("answered_during", ["removal", "stop"])
+async def test_a_refusal_answered_during_a_reload_is_not_kept(
+    hass, hass_storage, monkeypatch, answered_during
+):
+    """rroller on #1228: a press already waiting on the device when a reload
+    starts. Its refusal arrives inside the real unload hook, after the hook has
+    forgotten the channel and removed the file, and before it stops the
+    coordinator. Neither the coordinator that replaces it nor the next restart
+    may see it, or the reload would not ask again.
+
+    Answered as the file is being removed, and answered while the coordinator
+    stops."""
+    gate = asyncio.Event()
+
+    async def _refuse_when_released(*args, **kwargs):
+        await gate.wait()
+        raise Rpc2MethodRefused(
+            "Method not found!", code=268894210, method="CoaxialControlIO.control"
+        )
+
+    old = _coordinator()
+    old.client.async_set_coaxial_control_state_rpc2.side_effect = _refuse_when_released
+    press = asyncio.ensure_future(_switch(hass, old).async_turn_on())
+    await asyncio.sleep(0)
+    assert not press.done()
+
+    # The hook imports this when it runs, so patching the module reaches it.
+    # Not Store.async_remove: hass_storage mocks that, and a patch over the
+    # mock is restored after it, leaking the mock into later tests.
+    remove = refusal_store.async_remove
+
+    async def _remove_releasing(*args):
+        if answered_during == "removal":
+            gate.set()
+            for _ in range(5):
+                await asyncio.sleep(0)
+        await remove(*args)
+
+    monkeypatch.setattr(refusal_store, "async_remove", _remove_releasing)
+
+    async def _stop():
+        # Inside the hook, after the forgetting and the removal.
+        gate.set()
+        with pytest.raises(HomeAssistantError):
+            await press
+
+    old.async_stop = _stop
+    old.platforms = []
+    entry = SimpleNamespace(entry_id=ENTRY_ID, runtime_data={0: old})
+    assert await integration.async_unload_entry(hass, entry) is True
+    assert press.done()
+
+    replacement = _coordinator()
+    assert not refusals.is_refused(replacement, refusals.SIREN)
+    _restart()
+    await refusal_store.async_restore(hass, ENTRY_ID, [replacement])
+    assert not refusals.is_refused(replacement, refusals.SIREN)
+
+
+def _stored(hass_storage, data):
+    key = refusal_store.storage_key(ENTRY_ID)
+    hass_storage[key] = {
+        "version": refusal_store.STORAGE_VERSION,
+        "minor_version": 1,
+        "key": key,
+        "data": data,
+    }
+
+
+@pytest.mark.parametrize("data", [["siren"], "siren", 7])
+async def test_a_stored_file_of_the_wrong_shape_is_ignored(hass, hass_storage, data):
+    """Valid JSON, wrong shape. A raise here stops the entry forwarding any
+    platform, so it must restore nothing and set up normally."""
+    _stored(hass_storage, data)
+    coordinator = _coordinator()
+
+    await refusal_store.async_restore(hass, ENTRY_ID, [coordinator])
+
+    assert not refusals.is_refused(coordinator, refusals.SIREN)
+
+
+@pytest.mark.parametrize("row", [["siren"], "siren", 7])
+async def test_a_malformed_channel_does_not_cost_its_neighbour(hass, hass_storage, row):
+    """rroller on #1228: a row of ["siren"] beside a valid channel."""
+    _stored(hass_storage, {"0": row, "1": {refusals.SIREN: FIRMWARE}})
+    broken, valid = _coordinator(channel=0), _coordinator(channel=1)
+
+    await refusal_store.async_restore(hass, ENTRY_ID, [broken, valid])
+
+    assert not refusals.is_refused(broken, refusals.SIREN)
+    assert refusals.is_refused(valid, refusals.SIREN)
+
+
+@pytest.mark.parametrize(
+    "data", [["siren"], {"0": ["siren"], "1": {"siren": FIRMWARE}}]
+)
+async def test_a_save_over_a_malformed_file_still_stores(hass, hass_storage, data):
+    """A save replaces what it cannot read rather than failing on it, and keeps
+    a valid neighbour where there is one."""
+    _stored(hass_storage, data)
+    coordinator = _coordinator(channel=0)
+
+    await refusal_store.async_save(hass, ENTRY_ID, coordinator, refusals.SIREN)
+    _restart()
+    await refusal_store.async_restore(hass, ENTRY_ID, [coordinator])
+
+    assert refusals.is_refused(coordinator, refusals.SIREN)
+    if isinstance(data, dict):
+        neighbour = _coordinator(channel=1)
+        await refusal_store.async_restore(hass, ENTRY_ID, [neighbour])
+        assert refusals.is_refused(neighbour, refusals.SIREN)

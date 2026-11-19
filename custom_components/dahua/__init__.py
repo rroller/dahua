@@ -1077,6 +1077,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bo
     from .refusals import forget as forget_refusals
 
     for coordinator in channels.values():
+        # First, so a refusal that arrives from a press still in flight is
+        # dropped rather than learnt again after the forgetting below.
+        coordinator.retired = True
         forget_refusals(coordinator)
     # And the copy kept for a restart, or a reload would ask nothing again.
     # Home Assistant does not unload entries when it stops, so this runs on a

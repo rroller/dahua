@@ -117,6 +117,17 @@ def remember(coordinator, control: str, described: str, instead: str = None) -> 
     a step in a fallback: the control still works, nothing needs reloading, and
     the old wording told a user whose light had just come on that it would not.
     """
+    if getattr(coordinator, "retired", False):
+        # Its entry is unloading and has already forgotten this channel, and
+        # the coordinator that replaces it shares the key. Learning this now
+        # would carry the refusal through the reload that should ask again.
+        _LOGGER.debug(
+            "%s refused %s on channel %s after its entry unloaded; not kept",
+            coordinator.get_address(),
+            control,
+            coordinator.get_channel(),
+        )
+        return
     _REFUSED.add(key_for(coordinator, control))
     if instead is not None:
         _LOGGER.warning(

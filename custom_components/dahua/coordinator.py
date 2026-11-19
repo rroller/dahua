@@ -1346,6 +1346,14 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # they fail on the attribute rather than on anything they are testing.
     _channel_config: dict = {}
 
+    # Set as the entry unloads, before what this channel learnt is forgotten.
+    # A press already waiting on the device when a reload starts is answered
+    # after that, and its refusal must not be remembered or stored again,
+    # or the reload would not ask afresh. The new coordinator has the same
+    # address and channel, so only the old one can tell them apart. On the
+    # class for the object.__new__ tests.
+    retired: bool = False
+
     # The recorder's disks (#745), on the class for the same reason: the poll and
     # the disk sensors read them, and the many object.__new__ tests do not set
     # them. Only ever reassigned, never mutated in place, so one shared default
