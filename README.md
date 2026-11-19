@@ -928,7 +928,16 @@ data:
 
 `stranger` is true only when the device's own event says so. Which database is which
 is up to the device and how it was set up, so read `group_type` and `group_name`
-rather than `group_id`. The person's name is not written to Home Assistant's log.
+rather than `group_id`.
+
+The event fires only on a channel that has **FaceRecognition** (or **All**) selected.
+
+**This is identity data.** The person's name and match details are in this event and
+in the sensor's state and attributes, so anything that reads those can read them,
+including Home Assistant's history and logbook. Diagnostics downloads hide the matched
+person's details. At the default log level the name is not logged, but with debug
+logging turned on for this integration every event is logged as it arrives, names
+included, so read a debug log before posting it anywhere.
 
 ### A device that will not accept a list of event codes
 

@@ -211,9 +211,10 @@ class _Bus:
         self.fired.append((name, data))
 
 
-def _coordinator(channel=6):
+def _coordinator(channel=6, events=("FaceRecognition",)):
     c = object.__new__(DahuaDataUpdateCoordinator)
     c._channel = channel
+    c.events = list(events)
     c._address = "10.0.0.5"
     c.hass = SimpleNamespace(bus=_Bus())
     c.get_device_name = lambda: "Front"
@@ -374,3 +375,171 @@ def test_the_sensor_shows_the_name_and_where_it_matched():
 
 def test_before_any_face_the_sensor_has_no_state():
     assert _sensor({}).native_value is None
+
+
+# --- only on a channel that selected faces (rroller on #1224) ------------------
+
+
+@pytest.mark.parametrize("events", [["FaceRecognition"], ["All"]])
+def test_a_channel_that_selected_faces_gets_them(events):
+    c = _coordinator(events=events)
+
+    c._handle_face_recognition(MARK)
+
+    assert [face["name"] for face in _faces(c)] == ["Mark"]
+    assert c.get_last_face_data()["name"] == "Mark"
+
+
+@pytest.mark.parametrize("events", [["VideoMotion"], []])
+def test_a_channel_that_did_not_select_faces_hears_none(events):
+    """Neither the bus nor the last face, which is what the sensor and any
+    later reader would hand out."""
+    c = _coordinator(events=events)
+    heard = []
+    c.add_face_listener(lambda: heard.append(True))
+
+    c._handle_face_recognition(MARK)
+    c._handle_face_recognition(STRANGER)
+
+    assert _faces(c) == []
+    assert c.get_last_face_data() == {}
+    assert heard == []
+
+
+def test_the_doorbell_path_honours_the_selection_too():
+    """`on_receive_vto_event` calls the same handler with DHIP casing."""
+    unselected = _coordinator(events=["VideoMotion"])
+    selected = _coordinator(events=["FaceRecognition"])
+    for c in (unselected, selected):
+        c._tag_event_with_device_id = lambda event: None
+        c._dahua_event_listeners = {}
+        c.on_receive_vto_event(
+            {"Code": "FaceRecognition", "Action": "Start", "Data": MARK["data"]}
+        )
+
+    assert _faces(unselected) == []
+    assert [face["name"] for face in _faces(selected)] == ["Mark"]
+
+
+async def test_one_recorder_two_channels_only_the_selected_one_hears_a_face(hass):
+    """rroller's reproduction: one shared stream, one channel selected faces,
+    its sibling only motion. The union makes the stream ask for faces; the
+    event for the sibling's index must still not become a face there."""
+    import asyncio
+
+    from custom_components import dahua as dahua_module
+    from custom_components.dahua import _host_stream
+
+    class _Client:
+        async def stream_events(self, on_receive, events, channel):
+            await asyncio.Event().wait()
+
+    def _channel(channel, events):
+        c = _coordinator(channel=channel, events=events)
+        c._address = "10.0.0.5"
+        c.client = _Client()
+        c.poll_video_motion = False
+        c.handled = []
+        real = c.handle_event
+
+        def _handle(event):
+            c.handled.append(event.get("Code"))
+            real(event)
+
+        c.handle_event = _handle
+        c._tag_event_with_device_id = lambda event: None
+        return c
+
+    dahua_module._HOST_STREAMS.clear()
+    stream = _host_stream(hass, "10.0.0.5")
+    selected = _channel(0, ["FaceRecognition"])
+    sibling = _channel(1, ["VideoMotion"])
+    try:
+        stream.register(selected)
+        stream.register(sibling)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        for index in (0, 1):
+            data = json.dumps(MARK["data"])
+            stream.on_receive(
+                f"Code=FaceRecognition;action=Start;index={index};data={data}\r\n".encode(),
+                index,
+            )
+
+        # Both were delivered: the stream is not what keeps the sibling quiet.
+        assert selected.handled == ["FaceRecognition"]
+        assert sibling.handled == ["FaceRecognition"]
+        assert [face["name"] for face in _faces(selected)] == ["Mark"]
+        assert _faces(sibling) == []
+        assert sibling.get_last_face_data() == {}
+    finally:
+        tasks = [
+            task
+            for s in dahua_module._HOST_STREAMS.values()
+            for task in (getattr(s, "_task", None),)
+            if task is not None and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        dahua_module._HOST_STREAMS.clear()
+
+
+# --- diagnostics (rroller on #1224) ---------------------------------------------
+
+
+def _dumped(event):
+    """What a diagnostics download carries for one remembered event."""
+    import time
+
+    from custom_components.dahua import diagnostics
+
+    c = object.__new__(DahuaDataUpdateCoordinator)
+    c._remember_event(json.loads(json.dumps(event)))
+    now = int(time.time())
+    return (
+        diagnostics._recent_events_block(c, now)[0]["event"],
+        diagnostics._latest_by_code_block(c, now)["FaceRecognition"]["event"],
+    )
+
+
+def test_diagnostics_hide_who_was_matched_and_keep_the_shape():
+    for dumped in _dumped(MARK):
+        person = dumped["data"]["Candidates"][0]["Person"]
+        assert set(person) == set(MARK["data"]["Candidates"][0]["Person"])
+        for field in ("Name", "UID", "PersonID", "GroupName", "Sex"):
+            assert person[field] == "<redacted>", field
+        assert person["CustomPasserbyInfo"] == {"OccurrenceNumber": "<redacted>"}
+        # Which database, which names nobody.
+        assert person["GroupType"] == "BlackListDB"
+        assert person["GroupID"] == "2"
+        assert "Mark" not in json.dumps(dumped)
+        # Outside the person, the face analysis is still readable.
+        assert dumped["data"]["Face"]["Age"] == 27
+        assert dumped["Code"] == "FaceRecognition"
+
+
+def test_diagnostics_hide_a_strangers_record():
+    for dumped in _dumped(STRANGER):
+        assert dumped["data"]["Passerby"] == {"GroupID": "1", "UID": "<redacted>"}
+        assert dumped["data"]["Face"]["Age"] == 36
+
+
+def test_diagnostics_hide_a_list_inside_a_person():
+    """Synthetic: no capture has a list inside `Person`, but a face database
+    can hold several aliases or images, and a value in a list is still one.
+    Kept shallow on purpose: deeper than EVENT_DEPTH_LIMIT the dump already
+    writes `<too deep>`, which would pass without the identity rule."""
+    event = _event(
+        [
+            {
+                "Person": {**_person("Mark", "2", "Family"), "Aliases": ["Mark"]},
+                "Similarity": 100,
+            }
+        ]
+    )
+    for dumped in _dumped(event):
+        aliases = dumped["data"]["Candidates"][0]["Person"]["Aliases"]
+        assert aliases == ["<redacted>"]
+        assert "Mark" not in json.dumps(dumped)

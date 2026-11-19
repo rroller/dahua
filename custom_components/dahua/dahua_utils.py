@@ -1005,12 +1005,24 @@ EVENT_PRIVATE_FIELDS = frozenset(
     }
 )
 
+# A face event's `Person` (who the device matched) and `Passerby` (the
+# stranger record it filed) are identity data throughout: name, UID, ID
+# numbers, birthday, and whatever else a face database holds. Field names
+# are kept and every value under them goes, except the two that say which
+# database matched, which are the usual support question and name nobody.
+EVENT_IDENTITY_CONTAINERS = frozenset({"person", "passerby"})
+EVENT_IDENTITY_KEPT = frozenset({"grouptype", "groupid"})
+
 EVENT_VALUE_LIMIT = 80
 EVENT_LIST_LIMIT = 6
 EVENT_DEPTH_LIMIT = 6
 
 
-def summarise_event(value, _depth: int = 0):
+def _event_key(key) -> str:
+    return str(key).strip().lower().replace("_", "")
+
+
+def summarise_event(value, _depth: int = 0, _identity: bool = False):
     """An event with its shape intact and its contents cut down to size.
 
     Written for diagnostics, and worth explaining because it looks like it
@@ -1025,6 +1037,8 @@ def summarise_event(value, _depth: int = 0):
     So field names survive in full, values do not:
 
     - a field named in EVENT_PRIVATE_FIELDS becomes `<redacted>`
+    - every value inside a face match's `Person` or `Passerby` does too,
+      except its group type and id (EVENT_IDENTITY_CONTAINERS)
     - any other long value is truncated, keeping its start
     - long lists keep their first few entries and say how many were dropped
 
@@ -1036,19 +1050,29 @@ def summarise_event(value, _depth: int = 0):
     if isinstance(value, dict):
         out = {}
         for key, item in value.items():
-            if str(key).strip().lower().replace("_", "") in EVENT_PRIVATE_FIELDS:
+            name = _event_key(key)
+            if name in EVENT_PRIVATE_FIELDS:
                 out[key] = "<redacted>"
-            else:
+            elif _identity and name in EVENT_IDENTITY_KEPT:
                 out[key] = summarise_event(item, _depth + 1)
+            else:
+                out[key] = summarise_event(
+                    item,
+                    _depth + 1,
+                    _identity or name in EVENT_IDENTITY_CONTAINERS,
+                )
         return out
     if isinstance(value, (list, tuple)):
         kept = [
-            summarise_event(item, _depth + 1) for item in list(value)[:EVENT_LIST_LIMIT]
+            summarise_event(item, _depth + 1, _identity)
+            for item in list(value)[:EVENT_LIST_LIMIT]
         ]
         dropped = len(value) - len(kept)
         if dropped > 0:
             kept.append("<%d more>" % dropped)
         return kept
+    if _identity:
+        return "<redacted>"
     if isinstance(value, str) and len(value) > EVENT_VALUE_LIMIT:
         return value[:EVENT_VALUE_LIMIT] + "<truncated>"
     return value

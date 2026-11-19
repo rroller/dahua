@@ -4378,6 +4378,15 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return
         if face is None:
             return
+        # After the parse, so only a face event pays for this. A recorder's
+        # shared stream subscribes to what every channel selected together and
+        # hands each event to the channel its index names, so a channel that
+        # selected only VideoMotion still receives FaceRecognition when a
+        # sibling selected it. That channel has no face sensor, and a face
+        # it was never asked about must not reach the bus or the last face
+        # either (rroller on #1224). The DHIP path calls this too.
+        if not self.selects_face_recognition():
+            return
         _LOGGER.debug(
             "FaceRecognition on %s channel %s: recognized=%s stranger=%s",
             self._address,
@@ -4402,6 +4411,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 listener()
             except Exception:  # pylint: disable=broad-except
                 _LOGGER.warning("Error calling a face listener", exc_info=True)
+
+    def selects_face_recognition(self) -> bool:
+        """Whether this channel's own event selection includes faces."""
+        return bool({"FaceRecognition", "All"} & set(self.get_event_list() or ()))
 
     def get_last_face_data(self) -> dict:
         """The last recognised face, or {} before the first."""
