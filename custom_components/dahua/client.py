@@ -2177,7 +2177,9 @@ class DahuaClient:
         """
         url = f"/cgi-bin/snapshot.cgi?channel={channel_number}"
         return repair_dahua_snapshot_header(
-            strip_dahua_snapshot_trailer(await self.get_bytes(url))
+            strip_dahua_snapshot_trailer(
+                await self.get_bytes(url, fresh_challenge=True)
+            )
         )
 
     async def async_get_system_info(self, strict_auth: bool = False) -> dict:
@@ -7398,18 +7400,31 @@ class DahuaClient:
         async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
             response = None
             try:
+                # Asks for a challenge first, as a still does (see get_bytes).
                 auth = DigestAuth(
                     self._username, self._password, self._session, self._digest_state
                 )
-                response = await auth.request("GET", url)
+                response = await auth.request("GET", url, preemptive=False)
                 response.raise_for_status()
             finally:
                 if response is not None:
                     # close() rather than read(): drops the body without transferring it
                     response.close()
 
-    async def get_bytes(self, url: str) -> bytes:
-        """Get information from the API. This will return the raw response and not process it"""
+    async def get_bytes(self, url: str, *, fresh_challenge: bool = False) -> bytes:
+        """Get information from the API. This will return the raw response and not process it
+
+        `fresh_challenge` sends the request with no credentials and answers
+        the 401 it gets, instead of signing it up front with the challenge
+        every other request shares. Stills take it. That is how stills went
+        out up to 0.9.84 and how curl sends them. The nonce count stays the
+        shared one, so a device that repeats its nonce and refuses a reused
+        count sees it carry on. Sharing the challenge came
+        in 0.9.85, the release where a DHI-NVR2108HS-8P-S2 on 3.205 stopped
+        setting up, and on 3.x its stills and setup still time out while
+        curl's are answered in under a second (#1197). It costs a still one
+        extra round trip.
+        """
         # The slot is taken before the clock starts, so this timeout is the
         # device's and MAX_QUEUE_WAIT_SECONDS is the queue's.
         async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
@@ -7423,7 +7438,9 @@ class DahuaClient:
                 auth = DigestAuth(
                     self._username, self._password, self._session, self._digest_state
                 )
-                response = await auth.request("GET", self._base + url)
+                response = await auth.request(
+                    "GET", self._base + url, preemptive=not fresh_challenge
+                )
                 response.raise_for_status()
 
                 return await response.read()
