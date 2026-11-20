@@ -1712,6 +1712,51 @@ def _host_stream(hass: HomeAssistant, address: str) -> DahuaHostEventStream:
     return stream
 
 
+@callback
+def async_alarm_input_carrier(address: str):
+    """The coordinator carrying this host's alarm terminals, or None (#1090).
+
+    The same answer `_union` and the `AlarmLocal` dispatch above act on, under
+    a name the rest of the package can use. The retry that asks a silent box
+    about its terminals again has to know whether another channel already found
+    them, because adopting them on a lower channel afterwards moves the carrier
+    away from the coordinator the entities were created on and the events stop
+    reaching them.
+
+    One function for the two readers that work on the host: the `AlarmLocal`
+    dispatch and that retry. binary_sensor.py applies the same rule over one
+    entry's coordinators, which is the same set unless two entries share an
+    address.
+
+    None before any channel has registered, which is the add flow and the first
+    moments of setup, and None for every camera and every recorder with no
+    terminals.
+    """
+    stream = _HOST_STREAMS.get(normalize_address(address))
+    if stream is None:
+        return None
+    return stream._alarm_input_coordinator()
+
+
+@callback
+def async_refresh_host_subscription(address: str) -> None:
+    """Re-attach this host's event stream if what it should carry has changed.
+
+    `_union` is recomputed on registration and nowhere else, so a capability
+    found on a later poll that widens the subscription does not reach the
+    stream by itself. The alarm terminals are that case: `AlarmLocal` is added
+    for a carrier, and a box where no channel selected the code was not
+    subscribed to the one thing those sensors are built from.
+
+    Nothing at all when this host has no stream. A channel with no events
+    selected never registers one, and creating one here would leave a stream
+    with no coordinator to attach for.
+    """
+    stream = _HOST_STREAMS.get(normalize_address(address))
+    if stream is not None:
+        stream._restart_if_needed()
+
+
 async def _release_host_stream(coordinator) -> None:
     address = normalize_address(coordinator.get_address())
     stream = _HOST_STREAMS.get(address)

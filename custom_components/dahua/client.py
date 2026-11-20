@@ -3903,12 +3903,23 @@ class DahuaClient:
         return await self.get(url)
 
     async def async_get_alarm_input_config(self) -> dict:
-        """The recorder's alarm input terminals (#1090).
+        """The recorder's alarm input terminals (#1090), strictly.
 
         Host level, not per channel: `Alarm` is the box's own table of physical
         terminals and takes no channel. Parsed by parse_alarm_inputs.
+
+        Strict, like `async_probe_encode` and for the same reason: its one
+        caller is a capability probe, and `async_get_config` turns an HTTP 400,
+        403 or 500 into `{}`, which is indistinguishable from a box that
+        answered and has no terminals. Both leave the capability off and
+        neither is re-asked, so what the strictness buys is the record: the
+        dump says the box refused, and with what status, instead of saying it
+        has no terminals. That is the distinction #1213 turned up.
+
+        Same URL as `async_get_config("Alarm")`, so it shares one entry in the
+        host read cache and costs no extra request.
         """
-        return await self.async_get_config("Alarm")
+        return await self.get("/cgi-bin/configManager.cgi?action=getConfig&name=Alarm")
 
     async def async_get_alarm_input_slots(self) -> int:
         """How many alarm input terminals the device has, or 0.
