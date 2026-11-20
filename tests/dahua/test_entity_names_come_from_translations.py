@@ -94,6 +94,7 @@ WAS = {
     ("sensor", "profile"): "Profile",
     ("sensor", "configured_channels"): "Configured Channels",
     ("sensor", "license_plate"): "License Plate",
+    ("sensor", "last_recognized_face"): "Last recognized face",
     # The picture controls, deliberately renamed with a shared "Image " prefix.
     # Home Assistant's device page sorts each card by name and offers no other
     # ordering, so these sorted to B, C, G, H, I, S and V with the reboot

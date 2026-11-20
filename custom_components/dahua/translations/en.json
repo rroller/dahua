@@ -483,6 +483,9 @@
             },
             "license_plate": {
                 "name": "License Plate"
+            },
+            "last_recognized_face": {
+                "name": "Last recognized face"
             }
         },
         "switch": {

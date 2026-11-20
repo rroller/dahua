@@ -96,6 +96,19 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
         # camera does not have.
         if not coordinator.is_indoor_monitor_without_video():
             sensors.append(DahuaLicensePlateSensor(coordinator, entry))
+        # Only where the channel subscribes to FaceRecognition (#1089). Unlike
+        # the plate sensor above, which predates the rule: a sensor whose events
+        # are never asked for can only ever read unknown, and that is worse
+        # than no sensor. The subscription is the user's own statement that
+        # this channel's device does face recognition.
+        #
+        # Read tolerantly: this is the first thing on this platform to need
+        # the event list, and the platform's tests build coordinators as
+        # namespaces holding only what each test is about. A real coordinator
+        # always has it.
+        events = getattr(coordinator, "get_event_list", None)
+        if events is not None and {"FaceRecognition", "All"} & set(events() or ()):
+            sensors.append(DahuaFaceRecognitionSensor(coordinator, entry))
 
         # The profile is only ever read for devices that answered the Lighting
         # probe. Adding the sensor unconditionally would show "Day" forever on a
@@ -299,6 +312,64 @@ class DahuaLicensePlateSensor(DahuaEventDrivenEntity, SensorEntity):
         """
         self.async_on_remove(
             self._coordinator.add_plate_listener(self.schedule_update_ha_state)
+        )
+
+    @property
+    def should_poll(self) -> bool:
+        return False
+
+
+class DahuaFaceRecognitionSensor(DahuaEventDrivenEntity, SensorEntity):
+    """The name of the last person the device recognised (#1089).
+
+    The name is the state; who matched, from which database and how closely
+    are attributes. Only recognised faces change it: a stranger, or a face
+    nobody matched, goes on the bus as `dahua_face_recognition` with
+    `recognized` false and leaves the last name standing, because "who was the
+    last person recognised" is the question this answers.
+    """
+
+    _attr_translation_key = "last_recognized_face"
+
+    # What the attributes carry, in this order. The rest of the parsed face
+    # (the stranger flag and its passerby id) only means something on the bus
+    # event, since this sensor only ever holds a recognised face.
+    _ATTRIBUTES = (
+        "similarity",
+        "group_name",
+        "group_type",
+        "group_id",
+        "person_id",
+        "object_type",
+        "age",
+        "sex",
+        "updated_at",
+    )
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, entry):
+        super().__init__(coordinator, entry)
+        self._unique_id = f"{coordinator.get_serial_number()}_last_recognized_face"
+
+    @property
+    def unique_id(self):
+        return self._unique_id
+
+    @property
+    def native_value(self):
+        return self._coordinator.get_last_face_data().get("name")
+
+    @property
+    def extra_state_attributes(self):
+        face = self._coordinator.get_last_face_data()
+        return {
+            **(super().extra_state_attributes or {}),
+            **{key: face[key] for key in self._ATTRIBUTES if face.get(key) is not None},
+        }
+
+    async def async_added_to_hass(self):
+        """Listen for a recognised face, and stop listening when removed."""
+        self.async_on_remove(
+            self._coordinator.add_face_listener(self.schedule_update_ha_state)
         )
 
     @property

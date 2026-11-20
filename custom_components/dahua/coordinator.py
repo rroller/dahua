@@ -80,6 +80,7 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EVENT_DAHUA_ANPR_RECOGNIZED,
+    EVENT_DAHUA_FACE_RECOGNITION,
     FIRMWARE_UPGRADE_REFRESH_SECONDS,
     ISSUE_URL,
     LIGHT,
@@ -1364,6 +1365,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # is safe, like _channel_config above.
     _storage_disks: list = []
     _storage_last_refresh: float = 0.0
+    # The last face a FaceRecognition event reported (#1089), and who to tell.
+    # Class defaults for the same object.__new__ reason. The dict is only ever
+    # reassigned; the listeners are a tuple replaced on every change rather
+    # than a list appended to, so a shared default cannot collect one
+    # coordinator's callbacks for another.
+    _last_face_data: dict = {}
+    _face_listeners: tuple = ()
 
     # Which transport this channel's coaxial status is read over, and whether
     # the other one has been tried (#555). On the class for the reason above,
@@ -4370,6 +4378,92 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # debug-logging instructions for what is often a one-word answer.
             raise UpdateFailed(detail) from exception
 
+    def _handle_face_recognition(self, event: dict) -> None:
+        """Turn a FaceRecognition Start into a bus event and the last-face sensor.
+
+        Every face the device starts seeing goes on the bus as
+        `dahua_face_recognition`, with `recognized` saying whether it matched
+        someone, so an automation can act on a stranger as well as on a name.
+        Only a recognised face updates what the sensor shows: "the last
+        person recognised" is the question it answers, and an unrecognised
+        face in between would replace a name with nothing.
+
+        ⚠ The name is not logged above debug, and not at all here. A person's
+        name in Home Assistant's log ends up pasted into public issues.
+
+        Wrapped, because this runs on the event stream for every event, and a
+        payload shaped differently from the captures must cost this feature
+        and not the stream.
+        """
+        try:
+            face = dahua_utils.extract_face_data(event)
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.debug(
+                "Could not read a FaceRecognition payload from %s",
+                self._address,
+                exc_info=True,
+            )
+            return
+        if face is None:
+            return
+        # After the parse, so only a face event pays for this. A recorder's
+        # shared stream subscribes to what every channel selected together and
+        # hands each event to the channel its index names, so a channel that
+        # selected only VideoMotion still receives FaceRecognition when a
+        # sibling selected it. That channel has no face sensor, and a face
+        # it was never asked about must not reach the bus or the last face
+        # either (rroller on #1224). The DHIP path calls this too.
+        if not self.selects_face_recognition():
+            return
+        _LOGGER.debug(
+            "FaceRecognition on %s channel %s: recognized=%s stranger=%s",
+            self._address,
+            self._channel,
+            face["recognized"],
+            face["stranger"],
+        )
+        stamped = {**face, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        self.hass.bus.fire(
+            EVENT_DAHUA_FACE_RECOGNITION,
+            {
+                **stamped,
+                "device_name": self.get_device_name(),
+                "channel": self._channel,
+            },
+        )
+        if not face["recognized"]:
+            return
+        self._last_face_data = stamped
+        for listener in self._face_listeners:
+            try:
+                listener()
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.warning("Error calling a face listener", exc_info=True)
+
+    def selects_face_recognition(self) -> bool:
+        """Whether this channel's own event selection includes faces."""
+        return bool({"FaceRecognition", "All"} & set(self.get_event_list() or ()))
+
+    def get_last_face_data(self) -> dict:
+        """The last recognised face, or {} before the first."""
+        return dict(self._last_face_data)
+
+    def add_face_listener(self, listener) -> CALLBACK_TYPE:
+        """Listen for a recognised face, and return how to stop.
+
+        Returns its remover for the reason add_plate_listener does: an entity
+        that cannot let go of its callback leaves a dead one behind on every
+        reload.
+        """
+        self._face_listeners = (*self._face_listeners, listener)
+
+        def remove() -> None:
+            self._face_listeners = tuple(
+                held for held in self._face_listeners if held is not listener
+            )
+
+        return remove
+
     def _handle_anpr_plate(self, event: dict):
         """Extract license plate data from event, fire ANPR events, and notify plate listeners."""
         plate_info = dahua_utils.extract_plate_data(event)
@@ -4424,6 +4518,8 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._tag_event_with_device_id(event)
         _LOGGER.debug(f"VTO Data received: {event}")
         self._handle_anpr_plate(event)
+        # DHIP sends `Action` and `Data`; the parser reads both casings.
+        self._handle_face_recognition(event)
         self.hass.bus.fire("dahua_event_received", event)
 
         # Example events:
@@ -4812,6 +4908,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 
         # Check for license plate data in the event
         self._handle_anpr_plate(event)
+        self._handle_face_recognition(event)
 
         # Put the event on the HA event bus
         event["name"] = self.get_device_name()

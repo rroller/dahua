@@ -57,6 +57,9 @@
             "license_plate": {
                 "default": "mdi:car-back"
             },
+            "last_recognized_face": {
+                "default": "mdi:face-recognition"
+            },
             "memory_used": {
                 "default": "mdi:memory"
             },
