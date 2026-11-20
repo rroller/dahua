@@ -138,6 +138,29 @@ RPC2_EVENT_REFUSALS_BEFORE_DROPPING = 3
 # records transport activity before it parses, and this parses to no event.
 RPC2_EVENT_HEARTBEAT = b"Heartbeat\r\n"
 
+# getEventIndexes can answer more than a channel. A DH-IPC-HDW2849TM-S-IL on
+# 3.120 with three intrusion rules on its one channel answered 131072
+# (0x20000) and 196608 (0x30000) while someone was in a zone, one entry per
+# active rule, and its own event stream reported index=0 for the same events
+# (#1176). The high bits look like the rule; the low 16 are the channel. Read
+# whole, no channel matched and the event was dropped. Every plain channel
+# number seen is below 0x10000, so masking leaves those as they were.
+EVENT_INDEX_CHANNEL_MASK = 0xFFFF
+
+
+def event_index_channel(raw: int) -> int:
+    """The channel an index from getEventIndexes belongs to."""
+    channel = raw & EVENT_INDEX_CHANNEL_MASK
+    if channel != raw:
+        _LOGGER.debug(
+            "getEventIndexes answered %d (0x%X), read as channel %d",
+            raw,
+            raw,
+            channel,
+        )
+    return channel
+
+
 # One NVR carries a config entry per channel, and every entry sets itself up at
 # the same moment. Dahua's HTTP server is small: a dozen simultaneous CGI calls
 # can wedge it, and because the entries then fail together they retry together,
@@ -7280,7 +7303,7 @@ class DahuaClient:
                     indexes = set()
                     for raw in (response.get("params") or {}).get("indexes") or []:
                         try:
-                            indexes.add(int(raw))
+                            indexes.add(event_index_channel(int(raw)))
                         except (TypeError, ValueError):
                             continue
 
@@ -7464,7 +7487,7 @@ class DahuaClient:
         for line in data.decode("utf-8", errors="ignore").splitlines():
             match = re.fullmatch(r"channels\[\d+\]=(\d+)", line.strip())
             if match:
-                indexes.add(int(match.group(1)))
+                indexes.add(event_index_channel(int(match.group(1))))
         return indexes
 
     @asynccontextmanager
