@@ -143,21 +143,27 @@ RPC2_EVENT_HEARTBEAT = b"Heartbeat\r\n"
 # (0x20000) and 196608 (0x30000) while someone was in a zone, one entry per
 # active rule, and its own event stream reported index=0 for the same events
 # (#1176). The high bits look like the rule; the low 16 are the channel. Read
-# whole, no channel matched and the event was dropped. Every plain channel
-# number seen is below 0x10000, so masking leaves those as they were.
+# whole, no channel matched and the event was dropped.
+#
+# Decoded for the measured code only. Another code's index is not known to
+# be packed this way, and some carry something else entirely: AlarmLocal's
+# is a terminal, and can be -1. Those are passed through untouched.
 EVENT_INDEX_CHANNEL_MASK = 0xFFFF
+EVENT_INDEX_PACKED_CODES = frozenset({"CrossRegionDetection"})
 
 
-def event_index_channel(raw: int) -> int:
-    """The channel an index from getEventIndexes belongs to."""
+def event_index_channel(code: str, raw: int) -> int:
+    """The channel an index from getEventIndexes for `code` belongs to."""
+    if code not in EVENT_INDEX_PACKED_CODES or raw <= EVENT_INDEX_CHANNEL_MASK:
+        return raw
     channel = raw & EVENT_INDEX_CHANNEL_MASK
-    if channel != raw:
-        _LOGGER.debug(
-            "getEventIndexes answered %d (0x%X), read as channel %d",
-            raw,
-            raw,
-            channel,
-        )
+    _LOGGER.debug(
+        "getEventIndexes answered %d (0x%X) for %s, read as channel %d",
+        raw,
+        raw,
+        code,
+        channel,
+    )
     return channel
 
 
@@ -7303,7 +7309,7 @@ class DahuaClient:
                     indexes = set()
                     for raw in (response.get("params") or {}).get("indexes") or []:
                         try:
-                            indexes.add(event_index_channel(int(raw)))
+                            indexes.add(event_index_channel(code, int(raw)))
                         except (TypeError, ValueError):
                             continue
 
@@ -7487,7 +7493,7 @@ class DahuaClient:
         for line in data.decode("utf-8", errors="ignore").splitlines():
             match = re.fullmatch(r"channels\[\d+\]=(\d+)", line.strip())
             if match:
-                indexes.add(event_index_channel(int(match.group(1))))
+                indexes.add(event_index_channel(code, int(match.group(1))))
         return indexes
 
     @asynccontextmanager

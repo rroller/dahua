@@ -26,13 +26,11 @@ def _edges(received):
     ]
 
 
-async def _poll(monkeypatch, script):
-    fake = _FakeRpc2Client([{"CrossRegionDetection": s} for s in script])
+async def _poll(monkeypatch, script, code="CrossRegionDetection"):
+    fake = _FakeRpc2Client([{code: s} for s in script])
     received, on_receive = _collect()
     with pytest.raises(_StopPoll):
-        await _client(monkeypatch, fake)._stream_events_rpc2(
-            on_receive, ["CrossRegionDetection"], 0
-        )
+        await _client(monkeypatch, fake)._stream_events_rpc2(on_receive, [code], 0)
     return _edges(received)
 
 
@@ -91,11 +89,70 @@ async def test_the_cgi_reader_gives_the_channel(monkeypatch):
 
 @pytest.mark.parametrize(
     "raw, channel",
-    [(0, 0), (63, 63), (0xFFFF, 0xFFFF), (0x10000, 0), (RULE_3 | 0x1234, 0x1234)],
+    [
+        (0, 0),
+        (63, 63),
+        (0xFFFF, 0xFFFF),
+        (0x10000, 0),
+        (RULE_3 | 0x1234, 0x1234),
+        (-1, -1),
+    ],
 )
 def test_the_channel_is_the_low_16_bits(raw, channel):
     """Exactly 16: a narrower mask passes every realistic channel above and
     still changes the meaning of a larger one."""
     from custom_components.dahua.client import event_index_channel
 
-    assert event_index_channel(raw) == channel
+    assert event_index_channel("CrossRegionDetection", raw) == channel
+
+
+# --- other codes keep their index (rroller on #1231) ----------------------------
+#
+# Only CrossRegionDetection was measured packed. Another code's large index is
+# not known to mean the same thing, and AlarmLocal's is a terminal that can be
+# -1, so decoding it would move an event to a channel the device never named.
+
+
+@pytest.mark.parametrize(
+    "code, raw",
+    [
+        ("VideoMotion", 0x20005),
+        ("CrossLineDetection", RULE_2),
+        ("AlarmLocal", -1),
+        ("AlarmLocal", 0xFFFFFFFF),
+    ],
+)
+def test_another_codes_index_is_passed_through(code, raw):
+    from custom_components.dahua.client import event_index_channel
+
+    assert event_index_channel(code, raw) == raw
+
+
+async def test_the_poll_leaves_another_codes_large_index_alone(monkeypatch):
+    """rroller's control: 131077 for VideoMotion used to land on channel 5."""
+    edges = await _poll(monkeypatch, [[0x20005], []], code="VideoMotion")
+
+    assert edges == [
+        ("VideoMotion", "Start", "131077"),
+        ("VideoMotion", "Stop", "131077"),
+    ]
+
+
+async def test_the_poll_leaves_an_alarm_terminal_of_minus_one_alone(monkeypatch):
+    edges = await _poll(monkeypatch, [[-1], []], code="AlarmLocal")
+
+    assert edges == [
+        ("AlarmLocal", "Start", "-1"),
+        ("AlarmLocal", "Stop", "-1"),
+    ]
+
+
+async def test_the_cgi_reader_leaves_another_codes_large_index_alone(monkeypatch):
+    client = DahuaClient("u", "p", "cam", 80, 554, object())
+
+    async def get_bytes(_url):
+        return b"channels[0]=131077\r\n"
+
+    monkeypatch.setattr(client, "get_bytes", get_bytes)
+
+    assert await client.async_get_event_indexes_cgi("VideoMotion") == {131077}
