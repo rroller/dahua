@@ -253,6 +253,78 @@ def profile_management_values(
     return mode, tuple(values)
 
 
+def resolve_active_profile_index(
+    data: Mapping[str, Any],
+    channel: int,
+    current_time: datetime_time | None = None,
+) -> int | None:
+    """Return the active image-profile bank reported for one channel.
+
+    Schedule has one fixed configuration: profile 0 during its Day period and
+    profile 1 during its Night period. Every other complete Profile Management
+    row uses the single profile selected in Config[0]. Incomplete legacy rows
+    retain the measured ConfigEx behavior used by IL-series cameras.
+    """
+    profile_management_configuration = profile_management_values(data, channel)
+    if profile_management_configuration is not None:
+        profile_management_mode, configured_profiles = profile_management_configuration
+        if profile_management_mode == 1:
+            if configured_profiles != (0, 1):
+                return None
+
+            current_period = data.get(f"table.VideoInMode[{channel}].ConfigEx")
+            if isinstance(current_period, str):
+                normalized_period = current_period.strip().lower()
+                if normalized_period == "day":
+                    return 0
+                if normalized_period == "night":
+                    return 1
+                if normalized_period:
+                    return None
+
+            schedule_times = resolve_profile_schedule_times(data, channel)
+            if schedule_times is None or current_time is None:
+                return None
+            if schedule_times.day_start == schedule_times.night_start:
+                return None
+
+            if schedule_times.day_start < schedule_times.night_start:
+                is_day = (
+                    schedule_times.day_start
+                    <= current_time
+                    < schedule_times.night_start
+                )
+            else:
+                is_day = (
+                    current_time >= schedule_times.day_start
+                    or current_time < schedule_times.night_start
+                )
+
+            return 0 if is_day else 1
+
+        if len(configured_profiles) != 1:
+            return None
+        configured_profile = configured_profiles[0]
+        return configured_profile if configured_profile in (0, 1, 2) else None
+
+    if video_in_mode_channel_is_rejected(data, channel):
+        return None
+
+    configured_profile = _integer(data.get(f"table.VideoInMode[{channel}].Config[0]"))
+    if configured_profile == 2:
+        return 2
+
+    current_period = data.get(f"table.VideoInMode[{channel}].ConfigEx")
+    if isinstance(current_period, str):
+        normalized_period = current_period.strip().lower()
+        if normalized_period == "day":
+            return 0
+        if normalized_period == "night":
+            return 1
+
+    return configured_profile if configured_profile in (0, 1) else None
+
+
 def resolve_profile_management_mode(
     data: Mapping[str, Any], channel: int
 ) -> str | None:

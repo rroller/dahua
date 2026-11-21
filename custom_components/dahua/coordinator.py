@@ -32,6 +32,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from . import dahua_utils
 from . import refusals
@@ -55,6 +56,7 @@ from .late import async_notify_capability_discovered, async_notify_late_work_set
 from .profile import (
     PROFILE_MANAGEMENT_VALUES_BY_OPTION,
     ProfileScheduleTimes,
+    resolve_active_profile_index,
     resolve_profile_management_mode,
     resolve_profile_schedule_times,
     video_in_mode_channel_is_rejected,
@@ -531,40 +533,26 @@ def day_night_mode_name(data: dict, channel: int):
     return DAY_NIGHT_MODE_NAMES.get(str(value).strip().lower())
 
 
-def resolve_profile_mode(data: dict, channel: int):
-    """Resolve this channel's active VideoInMode profile using supported semantics."""
-    if video_in_mode_channel_is_rejected(data, channel):
-        return None
-
-    config = data.get(f"table.VideoInMode[{channel}].Config[0]")
-    if config == "2":
-        return "2"
-
-    config_ex = data.get(f"table.VideoInMode[{channel}].ConfigEx")
-    if config_ex is not None:
-        named = str(config_ex).strip().lower()
-        if named == "night":
-            return "1"
-        if named == "day":
-            return "0"
-    return config
+def resolve_profile_mode(data: dict, channel: int) -> str | None:
+    """Return the active image-profile bank as its legacy string value."""
+    profile_index = active_profile_index(data, channel)
+    return str(profile_index) if profile_index is not None else None
 
 
-def active_profile_index(data: dict, channel: int) -> int | None:
-    """Return this channel's resolved and validated active profile index."""
-    raw = resolve_profile_mode(data, channel)
-    if isinstance(raw, bool):
-        return None
-    if isinstance(raw, int):
-        index = raw
-    elif isinstance(raw, str):
-        try:
-            index = int(raw.strip())
-        except ValueError:
-            return None
-    else:
-        return None
-    return index if index >= 0 else None
+def active_profile_index(
+    data: dict,
+    channel: int,
+    current_time: datetime_time | None = None,
+) -> int | None:
+    """Return the active image-profile bank for profile-aware features."""
+    if current_time is None:
+        current_time = dt_util.now().time()
+
+    return resolve_active_profile_index(
+        data,
+        channel,
+        current_time=current_time,
+    )
 
 
 def exposure_anti_flicker_option(
