@@ -6215,7 +6215,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return active_profile_index(
             data,
             self._channel,
-            current_time=self._camera_current_time,
+            current_time=getattr(self, "_camera_current_time", None),
         )
 
     async def _async_active_profile_index(self, data: dict) -> int | None:
@@ -8082,7 +8082,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         profile_index = active_profile_index(
             mode_data,
             self._channel,
-            current_time=self._camera_current_time,
+            current_time=getattr(self, "_camera_current_time", None),
         )
         return str(profile_index) if profile_index is not None else "0"
 

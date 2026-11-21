@@ -685,11 +685,13 @@ async def test_camera_time_is_shared_across_channel_clients():
     second_client._session = object()
 
     requested_times = 0
+    read_started = asyncio.Event()
     release_read = asyncio.Event()
 
     async def current_time():
         nonlocal requested_times
         requested_times += 1
+        read_started.set()
         await release_read.wait()
         return "2026-11-21 21:00:00"
 
@@ -698,7 +700,7 @@ async def test_camera_time_is_shared_across_channel_clients():
     second_client._rpc2 = shared_rpc2
 
     async def shared_call(read):
-        return await read()
+        return await read(shared_rpc2)
 
     first_client._rpc2_shared_call = shared_call
     second_client._rpc2_shared_call = shared_call
@@ -706,7 +708,7 @@ async def test_camera_time_is_shared_across_channel_clients():
     second_client._refuse_if_closing = lambda: None
 
     first_read = asyncio.create_task(first_client.async_get_current_time())
-    await asyncio.sleep(0)
+    await asyncio.wait_for(read_started.wait(), timeout=1)
 
     second_read = asyncio.create_task(second_client.async_get_current_time())
     await asyncio.sleep(0)
