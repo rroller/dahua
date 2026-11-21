@@ -28,7 +28,7 @@ def _clear_shared_host_reads():
     client_module._HOST_SPEAKER_LOCKS.clear()
     client_module._HOST_VTH_PHONE_LOCKS.clear()
     client_module._HOST_VTO_INFO_LOCKS.clear()
-    client_module._HOST_SYSTEM_LOAD.clear()
+    client_module._HOST_RPC2_READS.clear()
     from custom_components.dahua import coordinator as coordinator_module
 
     coordinator_module._HOST_UNPLAYABLE.clear()
@@ -42,7 +42,7 @@ def _clear_shared_host_reads():
     client_module._HOST_SPEAKER_LOCKS.clear()
     client_module._HOST_VTH_PHONE_LOCKS.clear()
     client_module._HOST_VTO_INFO_LOCKS.clear()
-    client_module._HOST_SYSTEM_LOAD.clear()
+    client_module._HOST_RPC2_READS.clear()
     coordinator_module._HOST_UNPLAYABLE.clear()
 
 
