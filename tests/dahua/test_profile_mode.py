@@ -670,3 +670,60 @@ def test_schedule_without_a_known_current_period_fails_closed(
         )
 
     assert active_profile_index(schedule_data, channel) is None
+
+
+@pytest.mark.parametrize(
+    ("mode", "configured_profiles", "current_period", "expected_profile"),
+    [
+        (4, (0, 1), "Day", 0),
+        (4, (0, 1), "Night", 1),
+        (0, (0,), "Night", 1),
+        (0, (2,), "Day", 2),
+    ],
+)
+def test_non_schedule_configex_contract_remains_compatible(
+    mode,
+    configured_profiles,
+    current_period,
+    expected_profile,
+):
+    channel = 3
+    profile_data = {
+        f"table.VideoInMode[{channel}].Mode": str(mode),
+        f"table.VideoInMode[{channel}].ConfigEx": current_period,
+    }
+    profile_data.update(
+        {
+            f"table.VideoInMode[{channel}].Config[{position}]": str(profile)
+            for position, profile in enumerate(configured_profiles)
+        }
+    )
+
+    assert active_profile_index(profile_data, channel) == expected_profile
+
+
+@pytest.mark.asyncio
+async def test_schedule_without_configex_fails_closed_when_camera_time_is_unavailable():
+    channel = 0
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = channel
+    coordinator._camera_current_time = None
+
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+        f"table.VideoInMode[{channel}].TimeSection[0][0]": ("1 05:30:00-17:45:00"),
+    }
+
+    coordinator.client = SimpleNamespace(
+        async_get_current_time=AsyncMock(
+            side_effect=RuntimeError("camera clock unavailable")
+        )
+    )
+
+    profile_index = await coordinator._async_active_profile_index(schedule_data)
+
+    assert profile_index is None
+    assert coordinator._camera_current_time is None
+    coordinator.client.async_get_current_time.assert_awaited_once_with()

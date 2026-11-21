@@ -201,7 +201,7 @@ async def test_the_system_load_read_is_refused_too():
     with pytest.raises(asyncio.CancelledError):
         await client.async_get_system_load()
 
-    assert client_module._HOST_SYSTEM_LOAD == {}
+    assert client_module._HOST_RPC2_READS == {}
 
 
 # --- the ordering this now depends on ---------------------------------------

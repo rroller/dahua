@@ -11,7 +11,7 @@ them.
 """
 
 from collections import deque
-from datetime import time as datetime_time
+from datetime import datetime, time as datetime_time
 from datetime import timedelta
 from enum import Enum
 from typing import Any, Dict
@@ -32,7 +32,6 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from homeassistant.util import dt as dt_util
 
 from . import dahua_utils
 from . import refusals
@@ -545,9 +544,6 @@ def active_profile_index(
     current_time: datetime_time | None = None,
 ) -> int | None:
     """Return the active image-profile bank for profile-aware features."""
-    if current_time is None:
-        current_time = dt_util.now().time()
-
     return resolve_active_profile_index(
         data,
         channel,
@@ -1645,6 +1641,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_floodlightmode = False
         self._serial_number: str
         self._profile_mode = "0"
+        self._camera_current_time: datetime_time | None = None
         self._preset_position = "0"
         self._supports_profile_mode = False
         self._channel = channel
@@ -2784,7 +2781,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._supports_exposure_anti_flicker = False
             return False
 
-        profile_index = active_profile_index(mode_data, self._channel)
+        profile_index = await self._async_active_profile_index(mode_data)
         if profile_index is None:
             self._note_probe_answered("exposure_anti_flicker")
             self._supports_exposure_anti_flicker = False
@@ -2826,7 +2823,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._supports_exposure_mode = False
             return False
 
-        profile_index = active_profile_index(mode_data, self._channel)
+        profile_index = await self._async_active_profile_index(mode_data)
         if profile_index is None:
             self._note_probe_answered("exposure_mode")
             self._supports_exposure_mode = False
@@ -2868,7 +2865,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._supports_exposure_compensation = False
             return False
 
-        profile_index = active_profile_index(mode_data, self._channel)
+        profile_index = await self._async_active_profile_index(mode_data)
         if profile_index is None:
             self._note_probe_answered("exposure_compensation")
             self._supports_exposure_compensation = False
@@ -3985,6 +3982,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 try:
                     mode_data = await self.client.async_get_video_in_mode()
                     data.update(mode_data)
+                    self._camera_current_time = await self._async_camera_current_time(
+                        mode_data
+                    )
                     if not video_in_mode_channel_is_rejected(
                         mode_data,
                         self._channel,
@@ -6182,8 +6182,55 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     def supports_exposure_compensation(self) -> bool:
         return bool(getattr(self, "_supports_exposure_compensation", False))
 
+    @staticmethod
+    def _schedule_requires_camera_time(mode_data: dict, channel: int) -> bool:
+        """Return whether exact Schedule lacks an authoritative ConfigEx value."""
+        prefix = f"table.VideoInMode[{channel}]"
+        return (
+            mode_data.get(f"{prefix}.Mode") == "1"
+            and mode_data.get(f"{prefix}.Config[0]") == "0"
+            and mode_data.get(f"{prefix}.Config[1]") == "1"
+            and mode_data.get(f"{prefix}.ConfigEx") is None
+        )
+
+    async def _async_camera_current_time(self, mode_data: dict) -> datetime_time | None:
+        """Read device-local time only when Schedule needs it."""
+        if not self._schedule_requires_camera_time(mode_data, self._channel):
+            return None
+
+        try:
+            device_time = await self.client.async_get_current_time()
+        except PROBE_FAILED:
+            return None
+        except RuntimeError:
+            return None
+
+        try:
+            return datetime.fromisoformat(device_time).time()
+        except (TypeError, ValueError):
+            return None
+
+    def _active_profile_index(self, data: dict) -> int | None:
+        """Resolve this channel with the latest device-local clock."""
+        return active_profile_index(
+            data,
+            self._channel,
+            current_time=self._camera_current_time,
+        )
+
+    async def _async_active_profile_index(self, data: dict) -> int | None:
+        """Resolve fresh VideoInMode using a fresh/shared device clock."""
+        camera_current_time = await self._async_camera_current_time(data)
+        if camera_current_time is not None:
+            self._camera_current_time = camera_current_time
+        return active_profile_index(
+            data,
+            self._channel,
+            current_time=camera_current_time,
+        )
+
     def get_active_profile_index(self) -> int | None:
-        return active_profile_index(getattr(self, "data", None) or {}, self._channel)
+        return self._active_profile_index(getattr(self, "data", None) or {})
 
     def get_exposure_anti_flicker(self) -> str | None:
         profile_index = self.get_active_profile_index()
@@ -6258,7 +6305,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return
 
         mode_data = await self.client.async_get_video_in_mode(fresh=True)
-        profile_index = active_profile_index(mode_data, self._channel)
+        profile_index = await self._async_active_profile_index(mode_data)
         if profile_index is None:
             raise ConnectionError(
                 "The current VideoInMode profile could not be established"
@@ -6304,7 +6351,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             raise ValueError("Unsupported Exposure Mode option")
 
         mode_data = await self.client.async_get_video_in_mode(fresh=True)
-        profile_index = active_profile_index(mode_data, self._channel)
+        profile_index = await self._async_active_profile_index(mode_data)
         if profile_index is None:
             raise ConnectionError(
                 "The current VideoInMode profile could not be established"
@@ -6337,7 +6384,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             raise ValueError("Exposure Compensation value out of range")
 
         mode_data = await self.client.async_get_video_in_mode(fresh=True)
-        profile_index = active_profile_index(mode_data, self._channel)
+        profile_index = await self._async_active_profile_index(mode_data)
         if profile_index is None:
             raise ConnectionError(
                 "The current VideoInMode profile could not be established"
@@ -6690,7 +6737,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             return
 
         mode_data = await self.client.async_get_video_in_mode(fresh=True)
-        profile_index = active_profile_index(mode_data, self._channel)
+        profile_index = await self._async_active_profile_index(mode_data)
         if profile_index is None:
             raise ConnectionError(
                 "The current VideoInMode profile could not be established"
@@ -8032,7 +8079,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         two cameras.
         """
 
-        return resolve_profile_mode(mode_data, self._channel) or "0"
+        profile_index = active_profile_index(
+            mode_data,
+            self._channel,
+            current_time=self._camera_current_time,
+        )
+        return str(profile_index) if profile_index is not None else "0"
 
     def describe_video_profile_shape(self) -> str:
         """Which of the three VideoInMode shapes this channel is in, by name.

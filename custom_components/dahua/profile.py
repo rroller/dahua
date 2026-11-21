@@ -302,9 +302,18 @@ def resolve_active_profile_index(
 
             return 0 if is_day else 1
 
-        if len(configured_profiles) != 1:
-            return None
         configured_profile = configured_profiles[0]
+        if configured_profile == 2:
+            return 2
+
+        current_period = data.get(f"table.VideoInMode[{channel}].ConfigEx")
+        if isinstance(current_period, str):
+            normalized_period = current_period.strip().lower()
+            if normalized_period == "day":
+                return 0
+            if normalized_period == "night":
+                return 1
+
         return configured_profile if configured_profile in (0, 1, 2) else None
 
     if video_in_mode_channel_is_rejected(data, channel):

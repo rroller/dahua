@@ -861,7 +861,7 @@ _HOST_CACHE: dict = {}
 # so they are shared the way the config reads are -- including while the request
 # is still in flight, which is the case that matters here. Cleared by
 # clear_host_cache.
-_HOST_SYSTEM_LOAD: dict = {}
+_HOST_RPC2_READS: dict = {}
 
 # Short enough that a diagnostic sensor still moves, long enough that channels
 # whose polls have drifted apart still share one request. The poll interval
@@ -1074,9 +1074,11 @@ def clear_host_cache(scope: str) -> None:
     # two ways. A write is not a reason to distrust it, but a connector
     # teardown is, and this helper serves both.
     for key in [
-        k for k in _HOST_SYSTEM_LOAD if k == scope or str(k).startswith(scope + ":")
+        key
+        for key in _HOST_RPC2_READS
+        if key[0] == scope or str(key[0]).startswith(scope + ":")
     ]:
-        _HOST_SYSTEM_LOAD.pop(key, None)
+        _HOST_RPC2_READS.pop(key, None)
     stale = [k for k in _HOST_CACHE if k[0] == scope or k[0].startswith(scope + ":")]
     for key in stale:
         del _HOST_CACHE[key]
@@ -1114,7 +1116,7 @@ async def cancel_reads_issued_on(session) -> None:
 
     cancelled = []
 
-    for store in (_HOST_SYSTEM_LOAD, _HOST_CACHE):
+    for store in (_HOST_RPC2_READS, _HOST_CACHE):
         for key, entry in list(store.items()):
             owner = getattr(entry, "owner", None)
             if owner is None or owner is not session:
@@ -5776,50 +5778,56 @@ class DahuaClient:
 
         return await self._rpc2_shared_call(ask)
 
-    async def async_get_system_load(self) -> dict:
-        """The device's processor and memory: {"usage": %, "free": b, "total": b}.
-
-        Shared per device the way `get` shares a config read, and for a
-        stronger reason than those have. A recorder is one entry with a
-        coordinator per channel (#827) and they refresh *concurrently* -- setup
-        gathers them all -- so "answer, then remember it for a while" would
-        collapse nothing on the cycle that matters: twelve channels would each
-        find nothing remembered and ask, twenty-four requests for two numbers
-        that describe the box. Registering the task before awaiting it is what
-        makes the other eleven wait on the first one's answer instead.
-
-        The CGI reads get this from `get` for nothing, which is why the disk
-        read (`storageDevice.cgi`, one `self.get`) needs none of this. These two
-        are RPC2 calls and do not pass through there at all.
-
-        Keyed on the device rather than the address, for the reason every shared
-        read here is: two boxes behind one IP on different ports are not each
-        other (#664).
-        """
+    async def _async_shared_rpc2_read(
+        self,
+        operation: str,
+        read,
+        time_to_live_seconds: int,
+    ):
+        """Share one live RPC2 reading across the device's channel clients."""
         self._refuse_if_closing()
 
-        now = time.monotonic()
-        entry = _HOST_SYSTEM_LOAD.get(self._device)
-        if entry is None or not entry.is_usable(now):
-            # Registered before it is awaited, which is the whole point: the
-            # other eleven channels reach this line while the first one's
-            # request is still in flight and wait on it rather than asking.
-            entry = _SharedRead(
-                asyncio.ensure_future(self._async_read_system_load()), self._session
+        cache_key = (self._device, operation)
+        monotonic_time = time.monotonic()
+        shared_read = _HOST_RPC2_READS.get(cache_key)
+        if shared_read is None or not shared_read.is_usable(monotonic_time):
+            shared_read = _SharedRead(
+                asyncio.ensure_future(read()),
+                self._session,
             )
-            _HOST_SYSTEM_LOAD[self._device] = entry
+            _HOST_RPC2_READS[cache_key] = shared_read
 
-        # Shielded so that one channel's cancelled refresh -- a reload, a
-        # timeout -- does not take the reading away from the others.
-        answer = await asyncio.shield(entry.task)
+        result = await asyncio.shield(shared_read.task)
+        if (
+            _HOST_RPC2_READS.get(cache_key) is shared_read
+            and shared_read.expires_at is None
+        ):
+            shared_read.expires_at = time.monotonic() + time_to_live_seconds
+        return result
 
-        # Stamped only once it lands. A refusal leaves the expiry unset, so
-        # is_usable rejects it and the next poll asks the device again rather
-        # than being told no for the rest of the TTL.
-        if _HOST_SYSTEM_LOAD.get(self._device) is entry and entry.expires_at is None:
-            entry.expires_at = time.monotonic() + SYSTEM_LOAD_TTL_SECONDS
+    async def async_get_system_load(self) -> dict:
+        """Return one host-wide processor and memory reading."""
+        result = await self._async_shared_rpc2_read(
+            "system_load",
+            self._async_read_system_load,
+            SYSTEM_LOAD_TTL_SECONDS,
+        )
+        return dict(result)
 
-        return dict(answer)
+    async def async_get_current_time(self) -> str:
+        """Return the device-local clock, shared across channel clients."""
+
+        async def read_current_time() -> str:
+            async def read(rpc2_client) -> str:
+                return await rpc2_client.current_time()
+
+            return await self._rpc2_shared_call(read)
+
+        return await self._async_shared_rpc2_read(
+            "current_time",
+            read_current_time,
+            HOST_CACHE_TTL_SECONDS,
+        )
 
     async def _async_read_system_load(self) -> dict:
         """The two reads behind async_get_system_load.

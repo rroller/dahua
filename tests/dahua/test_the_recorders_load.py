@@ -50,9 +50,9 @@ from custom_components.dahua.coordinator import DahuaDataUpdateCoordinator
 @pytest.fixture(autouse=True)
 def _clear_shared_load():
     """Module global, and the suite runs under -n auto."""
-    client_module._HOST_SYSTEM_LOAD.clear()
+    client_module._HOST_RPC2_READS.clear()
     yield
-    client_module._HOST_SYSTEM_LOAD.clear()
+    client_module._HOST_RPC2_READS.clear()
 
 
 MEASURED = {"usage": 28, "free": 540459008, "total": 1239031808}
@@ -172,7 +172,7 @@ async def test_a_write_clears_it():
 
     client_module.clear_host_cache("10.0.0.1:80")
 
-    assert client_module._HOST_SYSTEM_LOAD == {}
+    assert client_module._HOST_RPC2_READS == {}
 
 
 # --- the probe --------------------------------------------------------------
@@ -671,3 +671,55 @@ async def test_a_lower_channel_answering_late_keeps_the_existing_pair(
     late.async_notify_capability_discovered(hass, entry.entry_id, "SERIAL1_1")
     await hass.async_block_till_done()
     assert added == expected
+
+
+@pytest.mark.asyncio
+async def test_camera_time_is_shared_across_channel_clients():
+    device = "10.0.0.1:80"
+    first_client = object.__new__(DahuaClient)
+    second_client = object.__new__(DahuaClient)
+
+    first_client._device = device
+    first_client._session = object()
+    second_client._device = device
+    second_client._session = object()
+
+    requested_times = 0
+    release_read = asyncio.Event()
+
+    async def current_time():
+        nonlocal requested_times
+        requested_times += 1
+        await release_read.wait()
+        return "2026-11-21 21:00:00"
+
+    shared_rpc2 = SimpleNamespace(current_time=current_time)
+    first_client._rpc2 = shared_rpc2
+    second_client._rpc2 = shared_rpc2
+
+    async def shared_call(read):
+        return await read()
+
+    first_client._rpc2_shared_call = shared_call
+    second_client._rpc2_shared_call = shared_call
+    first_client._refuse_if_closing = lambda: None
+    second_client._refuse_if_closing = lambda: None
+
+    first_read = asyncio.create_task(first_client.async_get_current_time())
+    await asyncio.sleep(0)
+
+    second_read = asyncio.create_task(second_client.async_get_current_time())
+    await asyncio.sleep(0)
+
+    assert requested_times == 1
+
+    release_read.set()
+
+    first_result, second_result = await asyncio.gather(
+        first_read,
+        second_read,
+    )
+
+    assert first_result == "2026-11-21 21:00:00"
+    assert second_result == "2026-11-21 21:00:00"
+    assert requested_times == 1
