@@ -1,5 +1,6 @@
 """VideoInMode is one host-wide read with a row per channel."""
 
+from datetime import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -497,3 +498,175 @@ async def test_rpc2_singleton_deep_owner_remains_authoritative():
     }
     assert active_profile_index(result, 0) == 1
     assert resolve_profile_management_mode(result, 0) == "full_time_night"
+
+
+@pytest.mark.parametrize("configured_profile", [0, 1, 2])
+def test_non_schedule_management_uses_the_profile_selected_by_the_user(
+    configured_profile,
+):
+    channel = 3
+    profile_management_data = {
+        f"table.VideoInMode[{channel}].Mode": "0",
+        f"table.VideoInMode[{channel}].Config[0]": str(configured_profile),
+    }
+
+    assert active_profile_index(profile_management_data, channel) == configured_profile
+
+
+@pytest.mark.parametrize(
+    ("current_schedule_period", "expected_profile"),
+    [("Day", 0), ("Night", 1)],
+)
+def test_schedule_selects_the_profile_for_its_current_period(
+    current_schedule_period, expected_profile
+):
+    channel = 3
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+        f"table.VideoInMode[{channel}].ConfigEx": current_schedule_period,
+    }
+
+    assert active_profile_index(schedule_data, channel) == expected_profile
+
+
+@pytest.mark.parametrize(
+    "configured_profiles",
+    [(2, 1), (0, 2), (0, 1, 2)],
+)
+def test_schedule_rejects_profiles_outside_its_fixed_day_night_contract(
+    configured_profiles,
+):
+    channel = 3
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].ConfigEx": "Day",
+    }
+    schedule_data.update(
+        {
+            f"table.VideoInMode[{channel}].Config[{position}]": str(profile)
+            for position, profile in enumerate(configured_profiles)
+        }
+    )
+
+    assert active_profile_index(schedule_data, channel) is None
+
+
+@pytest.mark.parametrize(
+    ("current_time", "expected_profile"),
+    [
+        (time(5, 29), 1),
+        (time(5, 30), 0),
+        (time(12, 0), 0),
+        (time(17, 44), 0),
+        (time(17, 45), 1),
+        (time(21, 0), 1),
+    ],
+)
+def test_schedule_without_configex_uses_its_camera_reported_times(
+    current_time, expected_profile
+):
+    channel = 3
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+        f"table.VideoInMode[{channel}].TimeSection[0][0]": ("1 05:30:00-17:45:00"),
+    }
+
+    assert (
+        active_profile_index(
+            schedule_data,
+            channel,
+            current_time=current_time,
+        )
+        == expected_profile
+    )
+
+
+@pytest.mark.parametrize(
+    ("current_time", "expected_profile"),
+    [
+        (time(21, 59), 1),
+        (time(22, 0), 0),
+        (time(23, 59), 0),
+        (time(0, 0), 0),
+        (time(5, 59), 0),
+        (time(6, 0), 1),
+    ],
+)
+def test_schedule_day_period_may_cross_midnight(current_time, expected_profile):
+    channel = 3
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+        f"table.VideoInMode[{channel}].TimeSection[0][0]": ("1 22:00:00-06:00:00"),
+    }
+
+    assert (
+        active_profile_index(
+            schedule_data,
+            channel,
+            current_time=current_time,
+        )
+        == expected_profile
+    )
+
+
+def test_schedule_equal_endpoints_fail_closed():
+    channel = 3
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+        f"table.VideoInMode[{channel}].TimeSection[0][0]": ("1 05:30:00-05:30:00"),
+    }
+
+    assert (
+        active_profile_index(
+            schedule_data,
+            channel,
+            current_time=time(12, 0),
+        )
+        is None
+    )
+
+
+def test_schedule_configex_remains_authoritative_over_the_clock():
+    channel = 3
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+        f"table.VideoInMode[{channel}].ConfigEx": "Night",
+        f"table.VideoInMode[{channel}].TimeSection[0][0]": ("1 05:30:00-17:45:00"),
+    }
+
+    assert (
+        active_profile_index(
+            schedule_data,
+            channel,
+            current_time=time(12, 0),
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize("current_schedule_period", [None, "", "Auto"])
+def test_schedule_without_a_known_current_period_fails_closed(
+    current_schedule_period,
+):
+    channel = 3
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+    }
+    if current_schedule_period is not None:
+        schedule_data[f"table.VideoInMode[{channel}].ConfigEx"] = (
+            current_schedule_period
+        )
+
+    assert active_profile_index(schedule_data, channel) is None
