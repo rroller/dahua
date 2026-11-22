@@ -314,7 +314,7 @@ def resolve_active_profile_index(
             if normalized_period == "night":
                 return 1
 
-        return configured_profile if configured_profile in (0, 1, 2) else None
+        return configured_profile if configured_profile >= 0 else None
 
     if video_in_mode_channel_is_rejected(data, channel):
         return None
@@ -331,7 +331,11 @@ def resolve_active_profile_index(
         if normalized_period == "night":
             return 1
 
-    return configured_profile if configured_profile in (0, 1) else None
+    return (
+        configured_profile
+        if configured_profile is not None and configured_profile >= 0
+        else None
+    )
 
 
 def resolve_profile_management_mode(

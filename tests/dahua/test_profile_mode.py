@@ -727,3 +727,116 @@ async def test_schedule_without_configex_fails_closed_when_camera_time_is_unavai
     assert profile_index is None
     assert coordinator._camera_current_time is None
     coordinator.client.async_get_current_time.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("mode", [None, "0"])
+def test_non_schedule_preserves_profile_indexes_above_two(mode):
+    channel = 3
+    profile_data = {
+        f"table.VideoInMode[{channel}].Config[0]": "4",
+    }
+    if mode is not None:
+        profile_data[f"table.VideoInMode[{channel}].Mode"] = mode
+
+    assert active_profile_index(profile_data, channel) == 4
+
+
+@pytest.mark.parametrize(
+    "clock_error",
+    [ConnectionError("clock refused"), KeyError("time")],
+)
+@pytest.mark.asyncio
+async def test_optional_camera_clock_errors_leave_schedule_unresolved(clock_error):
+    channel = 0
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = channel
+    coordinator._camera_current_time = None
+    coordinator.client = SimpleNamespace(
+        async_get_current_time=AsyncMock(side_effect=clock_error)
+    )
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+        f"table.VideoInMode[{channel}].TimeSection[0][0]": ("1 05:30:00-17:45:00"),
+    }
+
+    assert await coordinator._async_active_profile_index(schedule_data) is None
+
+
+@pytest.mark.parametrize(
+    "schedule_data",
+    [
+        {
+            "table.VideoInMode[0].Mode": "1",
+            "table.VideoInMode[0].Config[0]": "0",
+            "table.VideoInMode[0].Config[1]": "1",
+            "table.VideoInMode[0].TimeSection[0][0]": ("1 05:30:00-17:45:00"),
+        },
+        {
+            "table.VideoInMode[0].Mode": "1",
+            "table.VideoInMode[0].Config[0]": "0",
+            "table.VideoInMode[0].Config[1]": "1",
+            "table.VideoInMode[0].ConfigEx": "Auto",
+        },
+        {
+            "table.VideoInMode[0].Mode": "1",
+            "table.VideoInMode[0].Config[0]": "0",
+            "table.VideoInMode[0].Config[1]": "2",
+        },
+        {
+            "table.VideoInMode[0].Mode": "1",
+            "table.VideoInMode[0].Config[0]": "0",
+            "table.VideoInMode[0].Config[1]": "1",
+            "table.VideoInMode[0].Config[2]": "3",
+            "table.VideoInMode[0].Config[3]": "4",
+        },
+    ],
+)
+def test_read_profile_mode_preserves_every_unresolved_schedule(schedule_data):
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = 0
+    coordinator._camera_current_time = None
+
+    assert coordinator.read_profile_mode(schedule_data) is None
+
+
+@pytest.mark.asyncio
+async def test_schedule_resolution_crosses_night_start_with_a_fresh_camera_clock():
+    channel = 0
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = channel
+    coordinator._camera_current_time = None
+    coordinator.client = SimpleNamespace(
+        async_get_current_time=AsyncMock(
+            side_effect=[
+                "2026-11-21 17:44:59",
+                "2026-11-21 17:45:01",
+            ]
+        )
+    )
+    schedule_data = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+        f"table.VideoInMode[{channel}].TimeSection[0][0]": ("1 05:30:00-17:45:00"),
+    }
+
+    assert await coordinator._async_active_profile_index(schedule_data) == 0
+    assert await coordinator._async_active_profile_index(schedule_data) == 1
+    assert coordinator.client.async_get_current_time.await_count == 2
+
+
+def test_unresolved_schedule_never_becomes_the_legacy_day_profile():
+    channel = 0
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = channel
+    coordinator._camera_current_time = None
+    unresolved_schedule = {
+        f"table.VideoInMode[{channel}].Mode": "1",
+        f"table.VideoInMode[{channel}].Config[0]": "0",
+        f"table.VideoInMode[{channel}].Config[1]": "1",
+        f"table.VideoInMode[{channel}].TimeSection[0][0]": ("1 05:30:00-17:45:00"),
+    }
+
+    assert coordinator.read_profile_mode(unresolved_schedule) is None

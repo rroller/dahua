@@ -725,3 +725,32 @@ async def test_camera_time_is_shared_across_channel_clients():
     assert first_result == "2026-11-21 21:00:00"
     assert second_result == "2026-11-21 21:00:00"
     assert requested_times == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_camera_time_is_not_reused():
+    client = object.__new__(DahuaClient)
+    client._device = "10.0.0.1:80"
+    client._session = object()
+    client._refuse_if_closing = lambda: None
+
+    requested_times = 0
+
+    async def current_time():
+        nonlocal requested_times
+        requested_times += 1
+        return f"2026-11-21 17:45:0{requested_times}"
+
+    rpc2_client = SimpleNamespace(current_time=current_time)
+
+    async def shared_call(read):
+        return await read(rpc2_client)
+
+    client._rpc2_shared_call = shared_call
+
+    first_time = await client.async_get_current_time()
+    second_time = await client.async_get_current_time()
+
+    assert first_time == "2026-11-21 17:45:01"
+    assert second_time == "2026-11-21 17:45:02"
+    assert requested_times == 2

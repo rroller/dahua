@@ -6183,11 +6183,17 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         return bool(getattr(self, "_supports_exposure_compensation", False))
 
     @staticmethod
-    def _schedule_requires_camera_time(mode_data: dict, channel: int) -> bool:
+    def _profile_management_is_schedule(mode_data: dict, channel: int) -> bool:
+        """Return whether Profile Management reports a Schedule row."""
+        mode = mode_data.get(f"table.VideoInMode[{channel}].Mode")
+        return str(mode).strip() == "1"
+
+    @classmethod
+    def _schedule_requires_camera_time(cls, mode_data: dict, channel: int) -> bool:
         """Return whether exact Schedule lacks an authoritative ConfigEx value."""
         prefix = f"table.VideoInMode[{channel}]"
         return (
-            mode_data.get(f"{prefix}.Mode") == "1"
+            cls._profile_management_is_schedule(mode_data, channel)
             and mode_data.get(f"{prefix}.Config[0]") == "0"
             and mode_data.get(f"{prefix}.Config[1]") == "1"
             and mode_data.get(f"{prefix}.ConfigEx") is None
@@ -6202,7 +6208,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             device_time = await self.client.async_get_current_time()
         except PROBE_FAILED:
             return None
-        except RuntimeError:
+        except (ConnectionError, KeyError, RuntimeError):
             return None
 
         try:
@@ -8045,7 +8051,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return true if the security light is on. This is the red/blue flashing light"""
         return self.get_status_value("WhiteLight").lower() == "on"
 
-    def read_profile_mode(self, mode_data: dict) -> str:
+    def read_profile_mode(self, mode_data: dict) -> str | None:
         """Picks this channel's day/night profile out of the VideoInMode table.
 
         The profile chooses which Lighting[channel][profile] the light is read
@@ -8084,7 +8090,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._channel,
             current_time=getattr(self, "_camera_current_time", None),
         )
-        return str(profile_index) if profile_index is not None else "0"
+        if profile_index is not None:
+            return str(profile_index)
+        if self._profile_management_is_schedule(mode_data, self._channel):
+            return None
+        return "0"
 
     def describe_video_profile_shape(self) -> str:
         """Which of the three VideoInMode shapes this channel is in, by name.

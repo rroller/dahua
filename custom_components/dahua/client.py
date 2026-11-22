@@ -5782,7 +5782,7 @@ class DahuaClient:
         self,
         operation: str,
         read,
-        time_to_live_seconds: int,
+        time_to_live_seconds: int | None,
     ):
         """Share one live RPC2 reading across the device's channel clients."""
         self._refuse_if_closing()
@@ -5799,7 +5799,8 @@ class DahuaClient:
 
         result = await asyncio.shield(shared_read.task)
         if (
-            _HOST_RPC2_READS.get(cache_key) is shared_read
+            time_to_live_seconds is not None
+            and _HOST_RPC2_READS.get(cache_key) is shared_read
             and shared_read.expires_at is None
         ):
             shared_read.expires_at = time.monotonic() + time_to_live_seconds
@@ -5826,7 +5827,7 @@ class DahuaClient:
         return await self._async_shared_rpc2_read(
             "current_time",
             read_current_time,
-            HOST_CACHE_TTL_SECONDS,
+            None,
         )
 
     async def _async_read_system_load(self) -> dict:
