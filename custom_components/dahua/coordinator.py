@@ -5153,15 +5153,22 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         `event_is_momentary` is how the sensor knows to expire one, and a Pulse
         has no Stop coming by design.
         """
+        return [(code, self._channel) for code in self.latched_event_starts()]
+
+    def latched_event_starts(self) -> dict:
+        """The same events as `latched_events`, each with the time its Start
+        arrived, so the host can tell one latch from the next (#1235). A new
+        Start for the same code is a new latch even if no Stop came between.
+        """
         suffix = "-{0}".format(self._channel)
-        latched = []
+        latched = {}
         for key, started in self._dahua_event_timestamp.items():
             if not started or not key.endswith(suffix):
                 continue
             code = key[: -len(suffix)]
             if not code or self.event_is_momentary(code):
                 continue
-            latched.append((code, self._channel))
+            latched[code] = started
         return latched
 
     def get_event_details(self, event_name: str) -> dict:

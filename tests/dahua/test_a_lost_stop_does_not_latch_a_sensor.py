@@ -270,3 +270,96 @@ def test_the_stream_loop_calls_the_reconcile():
         "the stream was down stays lost and its sensor stays on. If the call "
         "moved, point this at where it went rather than deleting it."
     )
+
+
+# --- one latch, one question (#1235) -----------------------------------------
+
+
+async def test_the_same_unproven_latch_is_asked_about_once():
+    """#1235: a camera dropping its stream every 30 seconds kept one lost
+    CrossLineDetection Stop latched for hours, and every reconnect asked the
+    device about it again. For a code the endpoint has never reported, the
+    answer cannot change anything, so the second question is pure load on a
+    device that is already struggling."""
+    stream = _stream(
+        [_coordinator(0, {"CrossLineDetection-0": 1760000000})],
+        {"CrossLineDetection": set()},
+    )
+
+    for _ in range(50):
+        await stream._async_reconcile_latched_events()
+
+    assert stream._owner.client.asked == ["CrossLineDetection"]
+    assert stream.dispatched == []
+
+
+async def test_a_new_start_is_a_new_latch_and_is_asked_about():
+    coordinator = _coordinator(0, {"CrossLineDetection-0": 1760000000})
+    stream = _stream([coordinator], {"CrossLineDetection": set()})
+    await stream._async_reconcile_latched_events()
+    await stream._async_reconcile_latched_events()
+
+    coordinator._dahua_event_timestamp["CrossLineDetection-0"] = 1760000099
+    await stream._async_reconcile_latched_events()
+
+    assert stream._owner.client.asked == ["CrossLineDetection"] * 2
+
+
+async def test_a_new_channel_latching_the_same_code_is_asked_about():
+    first = _coordinator(0, {"CrossLineDetection-0": 1760000000})
+    second = _coordinator(1, {})
+    stream = _stream([first, second], {"CrossLineDetection": set()})
+    await stream._async_reconcile_latched_events()
+
+    second._dahua_event_timestamp["CrossLineDetection-1"] = 1760000050
+    await stream._async_reconcile_latched_events()
+
+    assert stream._owner.client.asked == ["CrossLineDetection"] * 2
+
+
+async def test_a_proven_code_is_still_asked_about_every_time():
+    """The memo is only for answers that cannot matter. A code the endpoint
+    reports is the one whose lost Stop can be closed, so it keeps being asked:
+    the event may have ended between two reconnects."""
+    stream = _stream(
+        [_coordinator(2, {"VideoMotion-2": 1760000000})],
+        {"VideoMotion": {2}},
+        learned={"VideoMotion"},
+    )
+    await stream._async_reconcile_latched_events()
+    await stream._async_reconcile_latched_events()
+    stream._owner.client.answers["VideoMotion"] = set()
+    await stream._async_reconcile_latched_events()
+
+    assert stream._owner.client.asked == ["VideoMotion"] * 3
+    assert stream.dispatched == ["Code=VideoMotion;action=Stop;index=2\r\n"]
+
+
+async def test_a_device_that_did_not_answer_is_asked_again():
+    """A failed request learned nothing, so it is not remembered as asked."""
+    stream = _stream(
+        [_coordinator(0, {"CrossLineDetection-0": 1760000000})],
+        {"CrossLineDetection": OSError("device is down")},
+    )
+    await stream._async_reconcile_latched_events()
+    stream._owner.client.answers["CrossLineDetection"] = set()
+    await stream._async_reconcile_latched_events()
+    await stream._async_reconcile_latched_events()
+
+    assert stream._owner.client.asked == ["CrossLineDetection"] * 2
+
+
+async def test_one_hosts_memo_does_not_leak_into_another():
+    first = _stream(
+        [_coordinator(0, {"CrossLineDetection-0": 1760000000})],
+        {"CrossLineDetection": set()},
+    )
+    await first._async_reconcile_latched_events()
+
+    second = _stream(
+        [_coordinator(0, {"CrossLineDetection-0": 1760000000})],
+        {"CrossLineDetection": set()},
+    )
+    await second._async_reconcile_latched_events()
+
+    assert second._owner.client.asked == ["CrossLineDetection"]

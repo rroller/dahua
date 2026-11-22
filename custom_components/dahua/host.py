@@ -794,6 +794,13 @@ class DahuaHostEventStream:
     # still correct.
     _codes_the_device_reports: set | None = None
 
+    # code -> the latches (channel, Start time) already asked about and answered
+    # with nothing, for a code the device has never reported. Asking again about
+    # the same latch cannot learn anything, and on a device that hangs up every
+    # 30 seconds it was two requests per reconnect for hours (#1235). None on
+    # the class for the same reason as above.
+    _latches_asked_about: dict | None = None
+
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         self._hass = hass
         self._address = address
@@ -1264,6 +1271,16 @@ class DahuaHostEventStream:
         because a failing stream retries often, and this must not add load to a
         device that is already struggling.
 
+        **And asks about one latch once, unless the code is proven.** A lost
+        Stop for a code this endpoint has never reported stays latched until
+        the next Start, and the answer cannot change it: an empty answer is
+        not evidence, and a non-empty one would have come the first time if
+        the event were still on. Measured in #1235, on a camera dropping its
+        stream about every 30 seconds: two lost CrossLineDetection Stops, with
+        IVSRule_2 latched beside them, were asked about 238 times each in under
+        three hours, two requests on every reconnect. A new Start is a new latch
+        and is asked about again.
+
         The hard part is that `getEventIndexes` cannot be taken at face value.
         Measured on a DHI-NVR5464-16P-EI:
 
@@ -1290,17 +1307,33 @@ class DahuaHostEventStream:
         if self._codes_the_device_reports is None:
             self._codes_the_device_reports = set()
 
+        if self._latches_asked_about is None:
+            self._latches_asked_about = {}
+
         latched: dict = {}
+        starts: dict = {}
         for coordinator in self.coordinators:
-            events = getattr(coordinator, "latched_events", None)
+            events = getattr(coordinator, "latched_event_starts", None)
             if events is None:
                 continue
-            for code, channel in events():
-                latched.setdefault(code, set()).add(channel)
+            for code, started in events().items():
+                latched.setdefault(code, set()).add(coordinator._channel)
+                starts.setdefault(code, set()).add((coordinator._channel, started))
+
+        # Forget what is no longer latched, so this cannot grow without bound.
+        for code in list(self._latches_asked_about):
+            if code not in latched:
+                del self._latches_asked_about[code]
         if not latched:
             return
 
         for code, channels in sorted(latched.items()):
+            this_latch = frozenset(starts[code])
+            if (
+                code not in self._codes_the_device_reports
+                and self._latches_asked_about.get(code) == this_latch
+            ):
+                continue
             try:
                 observed = await self._owner.client.async_get_event_indexes_cgi(code)
             except Exception as ex:  # pylint: disable=broad-except
@@ -1328,6 +1361,7 @@ class DahuaHostEventStream:
                     self._address,
                     code,
                 )
+                self._latches_asked_about[code] = this_latch
                 continue
 
             for channel in sorted(channels - observed):
