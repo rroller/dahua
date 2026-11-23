@@ -67,6 +67,7 @@ from .const import (
     CHANNEL_OPTION_KEYS,
     CONF_ADDRESS,
     CONF_CHANNEL,
+    CONF_LABELS,
     CONF_NAME,
     CONF_PORT,
     DOMAIN,
@@ -1636,6 +1637,9 @@ def async_adopt_stranded_primary(hass: HomeAssistant, entry) -> str | None:
 
     settings = _channel_settings(entry)
     settings[CONF_CHANNEL] = primary
+    # Entry wide, and `_channel_subentries` leaves it out of every channel for
+    # that reason.
+    settings.pop(CONF_LABELS, None)
     subentry = ConfigSubentry(
         data=settings,
         subentry_type=CHANNEL_SUBENTRY,
@@ -1658,15 +1662,25 @@ def async_adopt_stranded_primary(hass: HomeAssistant, entry) -> str | None:
         if row.config_subentry_id is None and row.device_id in stranded_ids
     ]
     if behind:
+        # Undone rather than left half done. Leaving the subentry in place
+        # would let setup bring the channel up on it, its platforms would
+        # re-file the device there, and Home Assistant would then delete the
+        # entities that did not move. Entities go back first: removing a
+        # subentry also removes every entity still filed on it.
+        for row in list(er.async_entries_for_config_entry(entities, entry.entry_id)):
+            if row.config_subentry_id == new_id:
+                entities.async_update_entity(row.entity_id, config_subentry_id=None)
+        hass.config_entries.async_remove_subentry(entry, new_id)
         _LOGGER.error(
-            "Not moving channel %d of %s onto its own subentry: %d of its "
-            "entities did not move, and moving the device would delete them. "
-            "Please report this",
+            "Could not move channel %d of %s onto its own subentry: %d of its "
+            "entities did not move. Nothing was changed; the channel stays "
+            "unavailable until the entry is removed and added again. Please "
+            "report this",
             primary,
             address,
             len(behind),
         )
-        return new_id
+        return None
 
     for device in stranded:
         devices.async_update_device(device.id, new_config_subentry_id=new_id)

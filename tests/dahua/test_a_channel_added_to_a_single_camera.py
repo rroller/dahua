@@ -182,6 +182,47 @@ async def test_the_first_channels_own_settings_go_with_it(hass):
     assert entry.subentries[new_id].data["events"] == ["SmartMotionHuman"]
 
 
+async def test_entry_wide_labels_stay_on_the_entry(hass):
+    """`_channel_subentries` keeps labels out of every channel's data, so the
+    repaired entry has the shape setup would have built."""
+    entry, _, _ = _single_camera(hass)
+    hass.config_entries.async_update_entry(
+        entry, data={**entry.data, "labels": ["outside"]}
+    )
+    _add_channel(hass, entry, 1)
+
+    new_id = async_adopt_stranded_primary(hass, entry)
+
+    assert "labels" not in entry.subentries[new_id].data
+
+
+async def test_entities_that_will_not_move_leave_everything_as_it_was(hass):
+    """Moving the device with an entity left behind would delete that entity,
+    and so would leaving the new subentry for setup to file the device on. So
+    a move that does not take is undone, rows first."""
+    entry, device, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    entities = er.async_get(hass)
+    real_update = entities.async_update_entity
+    stuck = rows[0].entity_id
+
+    def update(entity_id, **kwargs):
+        if entity_id == stuck and kwargs.get("config_subentry_id") is not None:
+            return entities.async_get(entity_id)
+        return real_update(entity_id, **kwargs)
+
+    with patch.object(entities, "async_update_entity", side_effect=update):
+        result = async_adopt_stranded_primary(hass, entry)
+
+    assert result is None
+    assert len(entry.subentries) == 1
+    assert dr.async_get(hass).async_get(device.id).config_subentry_id is None
+    for row in rows:
+        kept = entities.async_get(row.entity_id)
+        assert kept is not None, "%s was deleted" % row.entity_id
+        assert kept.config_subentry_id is None
+
+
 # --- what it must leave alone -----------------------------------------------
 
 
@@ -282,3 +323,6 @@ async def test_add_a_channel_end_to_end(hass, enable_custom_integrations):
         assert len(first) == 1
         assert dr.async_get(hass).async_get(device.id).config_subentry_id == first[0]
         assert er.async_get(hass).async_get(rows[0].entity_id) is not None
+        # The coordinator is what the platforms file entities under. Carrying
+        # None here would put channel 0's entities back on no subentry.
+        assert entry.runtime_data[0].subentry_id == first[0]
