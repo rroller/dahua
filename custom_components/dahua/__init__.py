@@ -539,6 +539,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             entry.data.get(CONF_ADDRESS),
         )
 
+    # A single camera that had a channel added through "Add a channel" has its
+    # first channel in the entry's data and the rest in subentries, and
+    # channel_configs reads only the subentries (#1236). Before that read, and
+    # never allowed to stop setup: it only ever adds a subentry and re-files rows.
+    try:
+        from .migrate import async_adopt_stranded_primary
+
+        async_adopt_stranded_primary(hass, entry)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not give the first channel of %s its own subentry",
+            entry.data.get(CONF_ADDRESS),
+        )
+
     # One coordinator per channel. A single camera has one, a merged recorder has
     # one per subentry (#827), and channel_configs hands back the same shape for
     # both so there is a single path here.

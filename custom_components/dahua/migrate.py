@@ -67,6 +67,7 @@ from .const import (
     CHANNEL_OPTION_KEYS,
     CONF_ADDRESS,
     CONF_CHANNEL,
+    CONF_NAME,
     CONF_PORT,
     DOMAIN,
     PLATFORMS,
@@ -1565,3 +1566,115 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
     if new_entry_id != entry.unique_id:
         hass.config_entries.async_update_entry(entry, unique_id=new_entry_id)
     return len(moving)
+
+
+@callback
+def async_adopt_stranded_primary(hass: HomeAssistant, entry) -> str | None:
+    """Give a single camera's own channel a subentry once it has a second (#1236).
+
+    A single camera, or a recorder added with one channel, is a flat entry: no
+    subentries, and its one channel lives in the entry's own `data` (#940).
+    "Add a channel" (#969) adds a subentry for the new channel and nothing for
+    the first one, and `channel_configs()` reads channels from the subentries
+    whenever there are any. So the first channel stopped being set up at all:
+    no coordinator, every one of its entities unavailable, from the reload the
+    add triggers. Setup builds a recorder with every channel as a subentry,
+    primary included (`_channel_subentries`), and this puts an entry that grew
+    one channel at a time into that same shape.
+
+    Runs at the start of setup, so it covers both the reload "Add a channel"
+    triggers and an entry that was already broken before this existed. The
+    update listener is not registered yet at that point, so adding the subentry
+    here does not schedule another reload.
+
+    **What proves an entry is in this state**, because a recorder whose primary
+    subentry the user deleted looks the same from the entry alone: a device of
+    this entry on no subentry that is not the recorder's own host device.
+    Setup files exactly one kind of device on no subentry, the `<serial>_host`
+    box, and removing a subentry clears that subentry's devices with it, so a
+    deleted channel leaves nothing behind to adopt.
+
+    **Entities move before devices.** Moving a device to another subentry makes
+    Home Assistant delete every entity of it still on the old one, which is
+    the same trap the #827 merge documents.
+
+    Returns the new subentry's id, or None when there was nothing to do.
+    """
+    if not entry.subentries:
+        return None
+
+    def channel_of(data) -> int:
+        try:
+            return int(data.get(CONF_CHANNEL, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    primary = channel_of(entry.data)
+    if any(channel_of(sub.data) == primary for sub in entry.subentries.values()):
+        return None
+
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    stranded = [
+        device
+        for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
+        if device.config_subentry_id is None
+        and any(
+            domain == DOMAIN and not str(identifier).endswith("_host")
+            for domain, identifier in device.identifiers
+        )
+    ]
+    if not stranded:
+        return None
+
+    address = entry.data.get(CONF_ADDRESS)
+    unique_id = _subentry_unique_id(address, primary)
+    if any(sub.unique_id == unique_id for sub in entry.subentries.values()):
+        # Claimed by a subentry for some other channel number. Nothing sensible
+        # to do, and adding a second would raise.
+        return None
+
+    settings = _channel_settings(entry)
+    settings[CONF_CHANNEL] = primary
+    subentry = ConfigSubentry(
+        data=settings,
+        subentry_type=CHANNEL_SUBENTRY,
+        title=entry.data.get(CONF_NAME) or entry.title or "Channel %d" % (primary + 1),
+        unique_id=unique_id,
+    )
+    hass.config_entries.async_add_subentry(entry, subentry)
+    new_id = subentry.subentry_id
+
+    stranded_ids = {device.id for device in stranded}
+    for row in list(er.async_entries_for_config_entry(entities, entry.entry_id)):
+        if row.config_subentry_id is None and row.device_id in stranded_ids:
+            entities.async_update_entity(row.entity_id, config_subentry_id=new_id)
+
+    # Checked against the registry before any device moves, because moving a
+    # device is what deletes entities left behind on its old subentry.
+    behind = [
+        row.entity_id
+        for row in er.async_entries_for_config_entry(entities, entry.entry_id)
+        if row.config_subentry_id is None and row.device_id in stranded_ids
+    ]
+    if behind:
+        _LOGGER.error(
+            "Not moving channel %d of %s onto its own subentry: %d of its "
+            "entities did not move, and moving the device would delete them. "
+            "Please report this",
+            primary,
+            address,
+            len(behind),
+        )
+        return new_id
+
+    for device in stranded:
+        devices.async_update_device(device.id, new_config_subentry_id=new_id)
+
+    _LOGGER.info(
+        "Channel %d of %s had no subentry once another channel was added, so it "
+        "was not being set up. It has one now",
+        primary,
+        address,
+    )
+    return new_id
