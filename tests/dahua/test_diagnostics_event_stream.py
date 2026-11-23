@@ -165,6 +165,31 @@ def test_the_device_refusing_the_attach_is_visible():
     assert block["consecutive_failures"] == 4
 
 
+def test_a_stream_waiting_for_its_credentials_says_so():
+    """#1235: the task is still running while it waits, so task_running alone
+    would read as a working stream."""
+    coordinator = _coordinator()
+    dahua._HOST_STREAMS[ADDRESS] = _stream(
+        _task=_Task(done=False),
+        _received_data=False,
+        _failing=True,
+        _consecutive_failures=31,
+        _waiting_for_credentials=True,
+    )
+
+    block = _stream_block(coordinator)
+
+    assert block["task_running"] is True
+    assert block["waiting_for_credentials"] is True
+
+
+def test_a_working_stream_is_not_waiting_for_credentials():
+    coordinator = _coordinator()
+    dahua._HOST_STREAMS[ADDRESS] = _stream(_task=_Task(done=False))
+
+    assert _stream_block(coordinator)["waiting_for_credentials"] is False
+
+
 def test_events_arriving_while_dispatch_drops_them_is_visible():
     """alpha520098's symptom, and the one no data has ever shown: the stream is up and
     the device is talking, and not one event has reached a sensor."""

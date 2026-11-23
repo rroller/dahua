@@ -198,15 +198,16 @@ def test_a_different_host_keeps_its_own_count():
 # --- the event stream stops too ---------------------------------------------
 
 
-async def test_the_event_stream_stops_once_the_budget_is_gone():
-    """It backs off to ten minutes at most, well inside the half hour lock.
+def _stream_refused_at_the_budget(monkeypatch, after_recheck):
+    """A stream whose host has spent its budget, and the attaches it makes.
 
-    The budget is spent here by a channel's polls, which is how it happens: the polls
-    run every interval and the stream only notices when its socket next fails. The
-    count is per source and shared per host, so a stream stops because of refusals it
-    never saw itself. That is the whole point of keeping it per host.
+    `after_recheck(n)` runs each time the stream looks at the budget while it
+    waits, n counting from 1. The recheck interval is zero so the test runs in
+    no time, and the wait is ended by cancelling it: CancelledError is what an
+    unload delivers, and the run loop re-raises it.
     """
-    _clean()
+    import custom_components.dahua.host as host
+
     for _ in range(MAX_AUTH_REFUSALS):
         async_record_host_auth_refusal("10.0.0.5", "a channel")
 
@@ -215,17 +216,114 @@ async def test_the_event_stream_stops_once_the_budget_is_gone():
     stream._events = frozenset({"VideoMotion"})
     stream._received_data = False
     stream._failing = False
-    stream._consecutive_failures = 0
+    stream._consecutive_failures = 7
+    attaches = []
+    stream.calls = []
 
-    async def _refuse(*_args, **_kwargs):
-        raise _401()
+    async def _reconcile_latched():
+        stream.calls.append("reconcile latched events")
+
+    async def _reconcile_alarms():
+        stream.calls.append("reconcile alarm inputs")
+
+    stream._async_reconcile_latched_events = _reconcile_latched
+    stream._async_reconcile_alarm_inputs = _reconcile_alarms
+
+    async def _attach(*_args, **_kwargs):
+        stream.calls.append("attach")
+        attaches.append((stream._consecutive_failures, stream._waiting_for_credentials))
+        if len(attaches) == 1:
+            raise _401()
+        raise __import__("asyncio").CancelledError()
 
     stream._owner = type(
-        "O", (), {"client": type("C", (), {"stream_events": staticmethod(_refuse)})()}
+        "O", (), {"client": type("C", (), {"stream_events": staticmethod(_attach)})()}
     )()
 
-    # Returns rather than sleeping and re-attaching. If it looped, this hangs.
-    await stream._async_run()
+    checks = []
+    real = host.host_auth_budget_exhausted
+
+    def _counting(address):
+        checks.append(stream._waiting_for_credentials)
+        after_recheck(len(checks))
+        return real(address)
+
+    monkeypatch.setattr(host, "host_auth_budget_exhausted", _counting)
+    monkeypatch.setattr(host, "EVENT_STREAM_AUTH_RECHECK_SECONDS", 0)
+    return stream, attaches, checks
+
+
+async def test_the_event_stream_sends_nothing_while_the_budget_is_spent(
+    monkeypatch,
+):
+    """#729: it backs off to ten minutes at most, well inside the half hour lock.
+
+    The budget is spent here by a channel's polls, which is how it happens: the polls
+    run every interval and the stream only notices when its socket next fails. The
+    count is per source and shared per host, so a stream stops because of refusals it
+    never saw itself. That is the whole point of keeping it per host.
+
+    It waits rather than ending (#1235), and while it waits it attaches nothing.
+    """
+    import asyncio
+
+    _clean()
+
+    def _cancel_after_many(n):
+        if n == 25:
+            raise asyncio.CancelledError()
+
+    stream, attaches, checks = _stream_refused_at_the_budget(
+        monkeypatch, _cancel_after_many
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await stream._async_run()
+
+    assert len(attaches) == 1, "attached again while the budget was spent"
+    # Nor reads anything else: the reconciles are requests too.
+    assert stream.calls == ["attach"]
+    assert len(checks) == 25
+    assert all(checks), "not marked as waiting while it waited"
+    assert stream._waiting_for_credentials is False
+
+
+async def test_the_event_stream_resumes_once_a_poll_is_let_in(monkeypatch):
+    """#1235: a DH-C4K-P with a full user table answered 401 with no challenge.
+
+    The stream counted three of those and ended for good. The credentials were
+    right, so no reauth was raised; the camera recovered and its polls
+    succeeded, and the stream stayed gone, more than a day of it with the
+    camera answering every poll, until the integration was reloaded. A poll
+    succeeding is what clears the count, and the stream must come back on it.
+    """
+    import asyncio
+
+    _clean()
+
+    def _poll_succeeds_on_the_third_look(n):
+        if n == 3:
+            async_record_host_success(None, "10.0.0.5")
+
+    stream, attaches, checks = _stream_refused_at_the_budget(
+        monkeypatch, _poll_succeeds_on_the_third_look
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await stream._async_run()
+
+    assert len(attaches) == 2, "did not attach again once the host let a poll in"
+    # Not reset by the wait: refused again on that attach, it goes straight to
+    # the longest backoff instead of every ten seconds into a full device.
+    assert attaches[1] == (7, False)
+    # A Stop lost while the host refused us left its sensor on; the reads that
+    # close it run once the host lets us in, before the stream attaches again.
+    assert stream.calls == [
+        "attach",
+        "reconcile latched events",
+        "reconcile alarm inputs",
+        "attach",
+    ]
 
 
 async def test_the_stream_keeps_trying_while_the_budget_holds():
