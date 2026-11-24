@@ -395,11 +395,17 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         return self._coordinator.get_serial_number() + "_motion_detection"
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool | None:
         """
         Return true if the switch is on.
         Value is fetched from api.get_motion_detection_config
+
+        None, which Home Assistant shows as unknown, when the device didn't
+        answer with this channel's setting. Reading that as "off" told a user
+        whose account the camera refused that motion detection was off (#1235).
         """
+        if not self._coordinator.motion_detection_was_read():
+            return None
         return self._coordinator.is_motion_detection_enabled()
 
 

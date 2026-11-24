@@ -3564,11 +3564,17 @@ class DahuaClient:
         Example response:
         table.MotionDetect[0].DetectVersion=V3.0
         table.MotionDetect[0].Enable=true
+
+        A refused or absent table reads as no keys at all, which the motion
+        switch reports as unknown (#1235). `async_get_config` already turns a
+        refusal into `{}`; the guard here is kept so one can never escape into
+        the poll's gather, which has no `return_exceptions`. It used to answer
+        `Enable=false` for channel 0 instead, which was a made-up "off".
         """
         try:
             return await self.async_get_config("MotionDetect")
         except aiohttp.ClientResponseError:
-            return {"table.MotionDetect[0].Enable": "false"}
+            return {}
 
     async def async_get_video_analyse_rules_for_amcrest(self):
         """

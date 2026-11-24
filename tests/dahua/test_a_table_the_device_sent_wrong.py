@@ -59,22 +59,22 @@ def _client(answer):
 # --- a table the device will not serve -------------------------------------
 
 
-async def test_a_refused_motion_detect_table_reads_as_disabled():
-    """Not an error. A device that will not serve the table does not have the feature,
-    so the switch shows off rather than the whole device going unavailable."""
-    assert await _client(_refused()).async_get_config_motion_detection() == {
-        "table.MotionDetect[0].Enable": "false"
-    }
+async def test_a_refused_motion_detect_table_reads_as_nothing():
+    """Not an error, so the device doesn't go unavailable. But not "off" either: it
+    used to answer `Enable=false`, and in #1235 an account the camera refused saw
+    the switch read off while the camera pushed motion events. No keys is what the
+    switch reports as unknown."""
+    assert await _client(_refused()).async_get_config_motion_detection() == {}
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404, 500])
-async def test_any_refusal_reads_as_disabled(status):
+async def test_any_refusal_reads_as_nothing(status):
     """Every status, deliberately. This one is unlike `async_get_config_lighting`, which
     singles out 400 and re-raises the rest; pinned as measured so the difference between
     the two is visible rather than looking like an oversight in one of them."""
     answer = await _client(_refused(status)).async_get_config_motion_detection()
 
-    assert answer == {"table.MotionDetect[0].Enable": "false"}
+    assert answer == {}
 
 
 async def test_a_table_the_device_does_serve_is_returned_untouched():

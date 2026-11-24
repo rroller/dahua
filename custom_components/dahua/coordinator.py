@@ -7245,6 +7245,18 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """
         return getattr(self, "_supports_channel_scoped_illuminator", False)
 
+    def motion_detection_was_read(self) -> bool:
+        """Whether the last poll carried this channel's motion detection setting.
+
+        It doesn't when the device refused `MotionDetect`. In #1235 an account
+        got 403 on that table on every poll, and the switch showed "off"
+        because the reader below treats a missing key as false, while the
+        camera kept pushing motion events. The switch asks this first so it
+        can say unknown instead. The reader itself stays a bool: the camera
+        entity and the event stream use it as a plain yes or no.
+        """
+        return "table.MotionDetect[{0}].Enable".format(self._channel) in self.data
+
     def is_motion_detection_enabled(self) -> bool:
         """Returns true if motion detection is enabled for the camera"""
         return (
