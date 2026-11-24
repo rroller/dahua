@@ -669,6 +669,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             ) from error
         raise
 
+    from .migrate import async_adopt_flat_channel_rows
+
+    try:
+        async_adopt_flat_channel_rows(hass, entry, coordinators)
+    except BaseException:
+        await asyncio.gather(
+            *[c.async_stop() for c in coordinators], return_exceptions=True
+        )
+        raise
+
     entry.runtime_data = {c.get_channel(): c for c in coordinators}
 
     # https://developers.home-assistant.io/docs/config_entries_index/

@@ -62,7 +62,12 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_call_later
 
-from . import ISSUE_LEFTOVER_ROWS, ISSUE_SIBLINGS_REMAIN, devices_with_identifier
+from . import (
+    ISSUE_LEFTOVER_ROWS,
+    ISSUE_SIBLINGS_REMAIN,
+    device_by_identifier,
+    devices_with_identifier,
+)
 from .const import (
     CHANNEL_OPTION_KEYS,
     CONF_ADDRESS,
@@ -1565,3 +1570,79 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
     if new_entry_id != entry.unique_id:
         hass.config_entries.async_update_entry(entry, unique_id=new_entry_id)
     return len(moving)
+
+
+def _device_belongs_to_flat_entry(device, entry_id: str) -> bool:
+    """Whether ``device`` currently lives on ``entry_id`` without a subentry."""
+    if getattr(device, "config_entry_id", None) is not None:
+        return (
+            device.config_entry_id == entry_id
+            and getattr(device, "config_subentry_id", None) is None
+        )
+    if hasattr(device, "config_entries_subentries"):
+        subs = device.config_entries_subentries.get(entry_id)
+        if subs is not None:
+            return None in subs
+    return False
+
+
+@callback
+def async_adopt_flat_channel_rows(hass: HomeAssistant, entry, coordinators) -> int:
+    """Move a flat channel's registry rows onto its new subentry (#1236).
+
+    When a single-camera entry (`entry.subentries` empty) gains another channel
+    via "Add a channel", the existing channel is promoted to a subentry while
+    its device and entities in Home Assistant's registries still carry
+    ``config_subentry_id=None``. Re-registering entities under the new subentry
+    without moving them first triggers Home Assistant's deprecation warning for
+    implicitly moving a device across subentries.
+
+    Must run before ``async_forward_entry_setups`` while entities are not loaded,
+    and moves entities before their device for the same reason as the #827 merge.
+    Separate recorder host devices (``<serial>_host``) are not matched by
+    ``coordinator.get_serial_number()`` and stay at ``config_subentry_id=None``.
+    """
+    if not entry.subentries:
+        return 0
+
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    entry_entities = list(er.async_entries_for_config_entry(entities, entry.entry_id))
+
+    moved_entities = 0
+    moved_devices = 0
+    for coordinator in coordinators:
+        subentry_id = getattr(coordinator, "subentry_id", None)
+        serial = coordinator.get_serial_number()
+        if subentry_id is None or not serial:
+            continue
+        device = device_by_identifier(devices, (DOMAIN, serial), entry.entry_id)
+        if device is None or not _device_belongs_to_flat_entry(device, entry.entry_id):
+            continue
+
+        # Entities first: moving a device before its entities deletes them.
+        for row in entry_entities:
+            if row.config_subentry_id is None and row.device_id == device.id:
+                entities.async_update_entity_platform(
+                    row.entity_id,
+                    DOMAIN,
+                    new_config_entry_id=entry.entry_id,
+                    new_config_subentry_id=subentry_id,
+                )
+                moved_entities += 1
+
+        devices.async_update_device(
+            device.id,
+            new_config_entry_id=entry.entry_id,
+            new_config_subentry_id=subentry_id,
+        )
+        moved_devices += 1
+
+    if moved_entities or moved_devices:
+        _LOGGER.debug(
+            "%s: adopted %d flat-entry entities and %d devices into channel subentries",
+            entry.data.get(CONF_ADDRESS),
+            moved_entities,
+            moved_devices,
+        )
+    return moved_entities
