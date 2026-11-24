@@ -72,6 +72,8 @@ from .vto import DahuaVTOClient  # noqa: F401  pylint: disable=unused-import
 from .host import (  # noqa: F401  pylint: disable=unused-import
     DERIVES_INTO,
     DahuaHostEventStream,
+    EVENT_RECONCILE_MAX_RECHECK_SECONDS,
+    EVENT_RECONCILE_RECHECK_SECONDS,
     EVENT_STREAM_HEALTHY_SECONDS,
     EVENT_STREAM_JITTER,
     EVENT_STREAM_MAX_LIFETIME_SECONDS,
