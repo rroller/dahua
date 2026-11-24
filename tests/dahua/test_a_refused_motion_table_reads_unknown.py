@@ -145,7 +145,15 @@ async def test_the_refusal_is_said_once(caplog):
 # --- SmartMotionDetect: a refused table is not taken as support ---------------------
 
 
-def _probing(answer, channel=0):
+SMART_URL = "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
+
+
+def _probing(*answers, channel=0):
+    """The real probe over the real client; only the request is scripted.
+
+    `answers` are consumed in order and the last repeats. An exception is
+    raised, as `get` raises it.
+    """
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator._channel = channel
     coordinator._address = "10.0.0.5"
@@ -155,28 +163,92 @@ def _probing(answer, channel=0):
     coordinator.data = {}
     coordinator.model = "DH-C4K-P"
 
-    async def async_get_smart_motion_detection():
+    client = object.__new__(DahuaClient)
+    client._address = "10.0.0.5"
+    client.urls = []
+    script = list(answers)
+
+    async def get(url, *args, **kwargs):
+        client.urls.append(url)
+        answer = script[0] if len(script) == 1 else script.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
         return dict(answer)
 
-    coordinator.client = SimpleNamespace(
-        async_get_smart_motion_detection=async_get_smart_motion_detection
-    )
+    client.get = get
+    coordinator.client = client
+    coordinator.hass = None
+    coordinator.config_entry = SimpleNamespace(entry_id="entry-1")
+    coordinator.get_serial_number = lambda: "SER"
     return coordinator
 
 
-async def test_a_refused_smart_motion_table_is_not_polled():
-    """The refusal reaches the probe as {}. It used to set the flag the poll is
-    gated on anyway, so the table was asked for every poll in #1235."""
-    coordinator = _probing({})
+@pytest.mark.parametrize("answer", [{}, _refused(403), _refused(400)])
+async def test_a_refused_smart_motion_table_is_not_polled(answer):
+    """It used to set the flag the poll is gated on anyway, so the table was
+    asked for every poll in #1235. Nor is it asked again by the retry."""
+    coordinator = _probing(answer)
 
     assert await coordinator._async_probe_smart_motion_detect() is False
     assert coordinator._supports_smart_motion_detection is False
+
+    for _ in range(4):
+        await coordinator._async_retry_unanswered_capabilities()
+    assert coordinator.client.urls == [SMART_URL]
+
+
+async def test_a_500_at_setup_and_then_a_row_is_found(monkeypatch):
+    """rroller's review of #1243, through the real client: the 500 gates the
+    poll off, so the bounded retry must still be able to ask. It was not, and
+    the row was never requested again."""
+    announced = []
+    monkeypatch.setattr(
+        "custom_components.dahua.coordinator.async_notify_capability_discovered",
+        lambda *args: announced.append(args),
+    )
+    row = {"table.SmartMotionDetect[0].Enable": "true"}
+    coordinator = _probing(_refused(500), row)
+
+    assert await coordinator._async_probe_smart_motion_detect() is False
+    assert coordinator._supports_smart_motion_detection is False
+    assert coordinator.probes_that_did_not_answer() == {"smart_motion_detect"}
+
+    await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator.client.urls == [SMART_URL, SMART_URL]
+    assert coordinator._supports_smart_motion_detection is True
+    assert coordinator.supports_smart_motion_detection() is True
+    assert coordinator.data == row
+    assert len(announced) == 1
+
+
+async def test_a_500_that_never_clears_is_asked_three_more_times():
+    coordinator = _probing(_refused(500))
+    await coordinator._async_probe_smart_motion_detect()
+
+    for _ in range(8):
+        await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator.client.urls == [SMART_URL] * 4
+    assert coordinator._supports_smart_motion_detection is False
+
+
+async def test_the_polls_own_read_still_never_raises():
+    """The poll's gather has no `return_exceptions`, so its read stays the
+    lenient one whatever the probe's does."""
+    coordinator = _probing(_refused(500))
+
+    assert await coordinator.client.async_get_smart_motion_detection() == {}
+    with pytest.raises(aiohttp.ClientResponseError):
+        await coordinator.client.async_probe_smart_motion_detection()
+    assert coordinator.client.urls == [SMART_URL, SMART_URL]
 
 
 async def test_a_table_with_another_channels_row_is_still_polled():
     """Unchanged: a recorder's table is host-wide and sparse, and whether this
     channel's row is there is decided per channel."""
     coordinator = _probing({"table.SmartMotionDetect[3].Enable": "true"}, channel=0)
+    assert coordinator.client.urls == []
 
     assert await coordinator._async_probe_smart_motion_detect() is False
     assert coordinator._supports_smart_motion_detection is True

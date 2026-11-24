@@ -37,7 +37,7 @@ PROBES = [
     ("async_get_disarming_linkage", "_supports_disarming_linkage", None),
     ("async_get_event_notifications", "_supports_event_notifications", None),
     ("async_get_ptz_position", "_supports_ptz_position", None),
-    ("async_get_smart_motion_detection", "_supports_smart_motion_detection", None),
+    ("async_probe_smart_motion_detection", "_supports_smart_motion_detection", None),
     ("async_probe_video_in_options", "_supports_day_night_color", None),
     ("async_get_video_widget", "_video_widget_fields", None),
     ("async_get_channel_title", "_supports_channel_title", None),

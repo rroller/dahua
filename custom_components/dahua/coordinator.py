@@ -148,6 +148,27 @@ _LOGGER: logging.Logger = logging.getLogger(__package__)
 # device down and Home Assistant retried it forever. See #594 and #631.
 PROBE_FAILED = (ClientError, TimeoutError)
 
+
+def probe_failure_is_temporary(exception) -> bool:
+    """Whether a failed probe is the device failing, not the device saying no.
+
+    A timeout or a dropped connection has no status and always was. A 5xx is
+    the same thing with a status on it: the device took the question and broke
+    answering it, which says nothing about whether it has the table. 501 is
+    the exception, because that is how a device says an endpoint is not there
+    (`CONFIG_CGI_ABSENT`). 408 and 429 are it asking to be asked later.
+
+    Everything else with a status is an answer: 403 is the account's rights,
+    400 and 404 are a table or a path the device does not serve.
+    """
+    status = getattr(exception, "status", None)
+    if status is None:
+        return not getattr(exception, "answered", False) and (
+            getattr(exception, "code", None) is None
+        )
+    return status in (408, 429) or (status >= 500 and status != 501)
+
+
 # How many later polls will re-ask a capability question the device never
 # answered. Silence is not an answer (#1057), but it cannot be chased for ever
 # either: on the recorder in #1043 twelve probes went unanswered, and asking all
@@ -2429,23 +2450,39 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         table has landed. A switch and a select that found no row then would
         never be created, and nothing would ask a second time.
 
-        Judged on what came back, not on whether it raised. `async_get_config`
-        turns a `ClientResponseError` into {}, and a 200 carrying rows for
-        other channels is the device answering about this one as well. Both are
-        the device saying no and `_note_probe_answered` stops them being asked
-        again. Only silence leaves the question open.
+        Three answers, and the read is the strict one so they can be told
+        apart (`async_get_config` would hand all of them back as {}):
+
+        - **The device said no.** A 403 is the account's rights and a 400 is a
+          table it does not serve; a 200 carrying no rows, or rows only for
+          other channels, is the same. Recorded as answered and not asked
+          again, and the poll does not read the table.
+        - **The device failed to answer.** A timeout, or a 5xx: see
+          `probe_failure_is_temporary`. The question stays open, and
+          `_async_retry_unanswered_capabilities` asks again on later polls, up
+          to `MAX_CAPABILITY_RETRIES`. Until one of those is answered the poll
+          does not read the table either.
+        - **Rows.** Supported, and the poll reads it.
+
+        The middle one is rroller's review of #1243: a 500 at setup followed by
+        a good table left neither the poll nor the retry able to ask for it,
+        because the 500 had been filed with the refusals.
         """
         try:
-            table = await self.client.async_get_smart_motion_detection()
+            table = await self.client.async_probe_smart_motion_detection()
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("smart_motion_detect", probe_error)
+            if probe_failure_is_temporary(probe_error):
+                # A status makes `_note_probe_refusal` call it an answer. This
+                # one is not, so it stays among the questions still open.
+                self._probe_refusals["smart_motion_detect"]["answered"] = False
             self._supports_smart_motion_detection = False
             return False
         self._note_probe_answered("smart_motion_detect")
-        # Only a table with rows in it. A refusal reads as {} too, and taking
-        # that as support meant the poll asked for a table it had been refused,
-        # every poll, for days (#1235). A row for any channel still counts, as
-        # before: which channel's row is this one's is decided per channel by
+        # Only a table with rows in it. Taking an empty answer as support
+        # meant the poll asked for a table it had been refused, every poll,
+        # for days (#1235). A row for any channel still counts, as before:
+        # which channel's row is this one's is decided per channel by
         # `supports_smart_motion_detection`.
         self._supports_smart_motion_detection = bool(smart_motion_row_indices(table))
         if getattr(self, "data", None) is None:

@@ -3766,6 +3766,23 @@ class DahuaClient:
         # recognises the camera model, so a refusal is an ordinary answer here.
         return await self.async_get_config("SmartMotionDetect")
 
+    async def async_probe_smart_motion_detection(self) -> dict:
+        """The SmartMotionDetect table, strictly: a refusal raises.
+
+        For the capability probe, which has to tell three answers apart and
+        cannot from `{}`: a 403 or a 400 is the device saying no, a 200 with
+        no rows is the table not being there, and a 500 is the device failing
+        to answer this once (#1243 review). `async_probe_encode` is the same
+        idea for the encoder table.
+
+        Same URL as `async_get_smart_motion_detection`, so the two share one
+        entry in the host read cache. The poll keeps the lenient read: its
+        gather has no `return_exceptions`.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
+        )
+
     async def async_get_video_color(self, fresh: bool = False) -> dict:
         """The picture adjustments per channel. Example output:
         table.VideoColor[0][0].Brightness=50
