@@ -633,3 +633,20 @@ async def test_a_channel_reporting_no_lighting_at_all_raises_nothing():
     await async_write_infrared_mode(coordinator, "Manual", 100)
 
     assert device.v1_writes == [(0, "Manual", 100, "0", None)]
+
+
+async def test_unknown_profile_performs_no_infrared_write():
+    device = _Device(_rows())
+    coordinator = _coordinator(
+        device,
+        profile=None,
+    )
+
+    await async_write_infrared_mode(
+        coordinator,
+        "Manual",
+        100,
+    )
+
+    assert device.v1_writes == []
+    assert device.v2_writes == []

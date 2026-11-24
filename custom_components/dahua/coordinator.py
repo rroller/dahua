@@ -359,6 +359,9 @@ def infrared_v2_row(data: dict, channel: int, profile_mode):
     `infrared_profile` uses, because a device can serve nine profiles (channel 11
     reports 0 through 8) and the poll only holds the one it reads.
     """
+    if profile_mode is None:
+        return None
+
     for profile in dict.fromkeys([str(profile_mode), "0"]):
         for index in range(MAX_LIGHTING_V2_LIGHTS):
             base = "table.Lighting_V2[{0}][{1}][{2}].".format(channel, profile, index)
@@ -471,6 +474,9 @@ def infrared_profile(data: dict, channel: int, profile_mode) -> str:
     Unlike the row 0 fallbacks removed in #679 and #683, this one stays inside
     the same channel -- it can only ever return this camera's own row.
     """
+    if profile_mode is None:
+        return None
+
     live = str(profile_mode)
     if "table.Lighting[{0}][{1}].Mode".format(channel, live) in data:
         return live
@@ -4084,7 +4090,11 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 )
             if self._supports_ptz_position and self._wanted_by(SELECT):
                 coros.append(asyncio.ensure_future(_ptz_position()))
-            if self.supports_infrared_light() and self._wanted_by(LIGHT):
+            if (
+                self.supports_infrared_light()
+                and self._wanted_by(LIGHT)
+                and self._profile_mode is not None
+            ):
                 coros.append(
                     asyncio.ensure_future(
                         self.client.async_get_config_lighting(
@@ -6208,7 +6218,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             device_time = await self.client.async_get_current_time()
         except PROBE_FAILED:
             return None
-        except (ConnectionError, KeyError, RuntimeError):
+        except (ConnectionError, KeyError, RuntimeError, ValueError):
             return None
 
         try:

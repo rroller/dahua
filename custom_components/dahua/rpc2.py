@@ -422,10 +422,13 @@ class DahuaRpc2Client:
         )
         return presets
 
-    async def current_time(self):
-        """Get the current time on the device."""
+    async def current_time(self) -> str:
+        """Get the device-local time from a structurally valid RPC2 reply."""
         response = await self.request(method="global.getCurrentTime")
-        return response["params"]["time"]
+        params = response.get("params")
+        if not isinstance(params, dict) or not isinstance(params.get("time"), str):
+            raise ValueError("Dahua RPC2 response is missing params.time")
+        return params["time"]
 
     async def get_serial_number(self) -> str:
         """Gets the serial number of the device."""

@@ -5929,6 +5929,8 @@ class DahuaClient:
         brightness=None,
     ) -> dict:
         """Write an exact Lighting_V2 mode and optional brightness."""
+        if profile_mode is None:
+            raise ValueError("Lighting_V2 requires an established profile")
 
         url = (
             "/cgi-bin/configManager.cgi?action=setConfig"

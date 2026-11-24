@@ -43,7 +43,7 @@ Three details the device forced, each with a test here:
 
 import pytest
 
-from custom_components.dahua.coordinator import infrared_v2_row
+from custom_components.dahua.coordinator import infrared_profile, infrared_v2_row
 
 
 def _v2(channel, profile, index, light_type, banks=("MiddleLight",), mode="Auto"):
@@ -154,3 +154,16 @@ def test_the_live_profile_is_not_searched_twice_when_it_is_zero():
 
     assert infrared_v2_row(data, 11, "0") == ("0", 0, "NearLight")
     assert infrared_v2_row(data, 11, 0) == ("0", 0, "NearLight")
+
+
+def test_unknown_profile_does_not_fall_back_to_profile_zero():
+    data = _v2(
+        11,
+        "0",
+        0,
+        "InfraredLight",
+        ("NearLight",),
+    )
+
+    assert infrared_profile(data, 11, None) is None
+    assert infrared_v2_row(data, 11, None) is None

@@ -292,3 +292,22 @@ async def test_the_device_name_comes_from_the_general_table():
     client.get_config = _get_config
 
     assert await client.get_device_name() == "Front Door"
+
+
+async def test_current_time_rejects_null_params():
+    client = _rpc2(
+        {
+            "global.getCurrentTime": {
+                "params": None,
+                "result": True,
+            }
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="params.time",
+    ):
+        await client.current_time()
+
+    assert client.calls == ["global.getCurrentTime"]
