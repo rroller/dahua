@@ -104,6 +104,10 @@ class _Coordinator:
     async def async_refresh(self):
         self.refreshed += 1
 
+    def get_profile_mode(self):
+        """Return the known profile used by these legacy write tests."""
+        return "0"
+
 
 def _mode_select(coordinator):
     entity = object.__new__(DahuaInfraredModeSelect)
