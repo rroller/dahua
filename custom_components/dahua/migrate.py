@@ -66,6 +66,7 @@ from . import ISSUE_LEFTOVER_ROWS, ISSUE_SIBLINGS_REMAIN, devices_with_identifie
 from .const import (
     CHANNEL_OPTION_KEYS,
     CONF_ADDRESS,
+    CONF_ADOPTION_PENDING,
     CONF_CHANNEL,
     CONF_LABELS,
     CONF_NAME,
@@ -1599,7 +1600,22 @@ def async_adopt_stranded_primary(hass: HomeAssistant, entry) -> str | None:
     Home Assistant delete every entity of it still on the old one, which is
     the same trap the #827 merge documents.
 
-    Returns the new subentry's id, or None when there was nothing to do.
+    **A move that fails is undone, whether it raised or did nothing.** Rows
+    back first, then the subentry removed, so the entry is as it was. A
+    registry update that raises after one row has moved is the case rroller
+    reproduced on #1239: the exception left the new subentry in place with one
+    row on it, setup carried on, filed the device there, and Home Assistant
+    deleted the rows that had not moved.
+
+    **And setup cannot use the subentry until the move has finished.** It is
+    created carrying `CONF_ADOPTION_PENDING`, and `channel_configs` skips a
+    subentry that carries it. The mark comes off as the last step. So whatever
+    goes wrong in between, including the undo itself failing, the channel is
+    not set up on a subentry its rows are not all on: it stays unavailable, as
+    it was, and nothing is deleted. A subentry left pending is picked up and
+    finished by the next setup.
+
+    Returns the subentry's id once the channel is on it, or None.
     """
     if not entry.subentries:
         return None
@@ -1611,79 +1627,117 @@ def async_adopt_stranded_primary(hass: HomeAssistant, entry) -> str | None:
             return 0
 
     primary = channel_of(entry.data)
-    if any(channel_of(sub.data) == primary for sub in entry.subentries.values()):
-        return None
-
+    address = entry.data.get(CONF_ADDRESS)
     devices = dr.async_get(hass)
     entities = er.async_get(hass)
-    stranded = [
-        device
-        for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
-        if device.config_subentry_id is None
-        and any(
-            domain == DOMAIN and not str(identifier).endswith("_host")
-            for domain, identifier in device.identifiers
-        )
-    ]
-    if not stranded:
-        return None
 
-    address = entry.data.get(CONF_ADDRESS)
-    unique_id = _subentry_unique_id(address, primary)
-    if any(sub.unique_id == unique_id for sub in entry.subentries.values()):
-        # Claimed by a subentry for some other channel number. Nothing sensible
-        # to do, and adding a second would raise.
-        return None
+    def stranded_devices() -> list:
+        return [
+            device
+            for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
+            if device.config_subentry_id is None
+            and any(
+                domain == DOMAIN and not str(identifier).endswith("_host")
+                for domain, identifier in device.identifiers
+            )
+        ]
 
-    settings = _channel_settings(entry)
-    settings[CONF_CHANNEL] = primary
-    # Entry wide, and `_channel_subentries` leaves it out of every channel for
-    # that reason.
-    settings.pop(CONF_LABELS, None)
-    subentry = ConfigSubentry(
-        data=settings,
-        subentry_type=CHANNEL_SUBENTRY,
-        title=entry.data.get(CONF_NAME) or entry.title or "Channel %d" % (primary + 1),
-        unique_id=unique_id,
+    # An earlier attempt that could neither finish nor be undone. It is
+    # finished here rather than started again.
+    subentry = next(
+        (
+            sub
+            for sub in entry.subentries.values()
+            if sub.data.get(CONF_ADOPTION_PENDING)
+        ),
+        None,
     )
-    hass.config_entries.async_add_subentry(entry, subentry)
+    if subentry is None:
+        if any(channel_of(sub.data) == primary for sub in entry.subentries.values()):
+            return None
+        if not stranded_devices():
+            return None
+        unique_id = _subentry_unique_id(address, primary)
+        if any(sub.unique_id == unique_id for sub in entry.subentries.values()):
+            # Claimed by a subentry for some other channel number. Nothing
+            # sensible to do, and adding a second would raise.
+            return None
+
+        settings = _channel_settings(entry)
+        settings[CONF_CHANNEL] = primary
+        # Entry wide, and `_channel_subentries` leaves it out of every channel
+        # for that reason.
+        settings.pop(CONF_LABELS, None)
+        settings[CONF_ADOPTION_PENDING] = True
+        subentry = ConfigSubentry(
+            data=settings,
+            subentry_type=CHANNEL_SUBENTRY,
+            title=entry.data.get(CONF_NAME)
+            or entry.title
+            or "Channel %d" % (primary + 1),
+            unique_id=unique_id,
+        )
+        hass.config_entries.async_add_subentry(entry, subentry)
     new_id = subentry.subentry_id
 
-    stranded_ids = {device.id for device in stranded}
-    for row in list(er.async_entries_for_config_entry(entities, entry.entry_id)):
-        if row.config_subentry_id is None and row.device_id in stranded_ids:
+    def rows_of(device_ids, subentry_id) -> list:
+        return [
+            row
+            for row in er.async_entries_for_config_entry(entities, entry.entry_id)
+            if row.config_subentry_id == subentry_id and row.device_id in device_ids
+        ]
+
+    try:
+        stranded_ids = {device.id for device in stranded_devices()}
+        # A device an earlier attempt already moved still counts: an undo that
+        # could not finish leaves it on the subentry with some of its rows put
+        # back, and those rows have to follow it.
+        adopting = stranded_ids | {
+            device.id
+            for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
+            if device.config_subentry_id == new_id
+        }
+        for row in rows_of(adopting, None):
             entities.async_update_entity(row.entity_id, config_subentry_id=new_id)
 
-    # Checked against the registry before any device moves, because moving a
-    # device is what deletes entities left behind on its old subentry.
-    behind = [
-        row.entity_id
-        for row in er.async_entries_for_config_entry(entities, entry.entry_id)
-        if row.config_subentry_id is None and row.device_id in stranded_ids
-    ]
-    if behind:
-        # Undone rather than left half done. Leaving the subentry in place
-        # would let setup bring the channel up on it, its platforms would
-        # re-file the device there, and Home Assistant would then delete the
-        # entities that did not move. Entities go back first: removing a
-        # subentry also removes every entity still filed on it.
-        for row in list(er.async_entries_for_config_entry(entities, entry.entry_id)):
-            if row.config_subentry_id == new_id:
-                entities.async_update_entity(row.entity_id, config_subentry_id=None)
-        hass.config_entries.async_remove_subentry(entry, new_id)
+        # Checked against the registry before any device moves, because moving
+        # a device is what deletes entities left behind on its old subentry.
+        behind = rows_of(adopting, None)
+        if behind:
+            raise _AdoptionFailed("%d of its entities did not move" % len(behind))
+
+        for device_id in sorted(stranded_ids):
+            devices.async_update_device(device_id, new_config_subentry_id=new_id)
+        if stranded_devices():
+            raise _AdoptionFailed("its device did not move")
+
+        # Last, and only now: this is what lets setup use the subentry.
+        hass.config_entries.async_update_subentry(
+            entry,
+            subentry,
+            data={
+                key: value
+                for key, value in subentry.data.items()
+                if key != CONF_ADOPTION_PENDING
+            },
+        )
+    except Exception as error:  # pylint: disable=broad-except
+        undone = _undo_adoption(hass, entry, new_id)
         _LOGGER.error(
-            "Could not move channel %d of %s onto its own subentry: %d of its "
-            "entities did not move. Nothing was changed; the channel stays "
-            "unavailable until the entry is removed and added again. Please "
-            "report this",
+            "Could not move channel %d of %s onto its own subentry: %s. %s The "
+            "channel stays unavailable. Please report this",
             primary,
             address,
-            len(behind),
+            error if isinstance(error, _AdoptionFailed) else repr(error),
+            (
+                "Nothing was changed."
+                if undone
+                else "It could not be undone either, so the subentry is kept, "
+                "not used, and finished the next time the entry is set up."
+            ),
+            exc_info=not isinstance(error, _AdoptionFailed),
         )
         return None
-
-    for device in stranded:
-        devices.async_update_device(device.id, new_config_subentry_id=new_id)
 
     _LOGGER.info(
         "Channel %d of %s had no subentry once another channel was added, so it "
@@ -1692,3 +1746,63 @@ def async_adopt_stranded_primary(hass: HomeAssistant, entry) -> str | None:
         address,
     )
     return new_id
+
+
+class _AdoptionFailed(Exception):
+    """A registry update that returned and did not do what was asked."""
+
+
+def _undo_adoption(hass: HomeAssistant, entry, subentry_id: str) -> bool:
+    """Put a first channel's rows back and remove the subentry. True if it did.
+
+    In the one order that deletes nothing. Entities go back first, because
+    moving a device makes Home Assistant delete every entity of it left on the
+    subentry it is leaving. A device goes back only once none of its entities
+    are still on the subentry. The subentry is removed only once nothing at
+    all is filed on it, because removing one removes every device and entity
+    that is.
+
+    Each step is tried on its own: one row that will not go back must not stop
+    the others. Anything that is left keeps the subentry, still pending, which
+    setup does not use.
+    """
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+
+    def rows_here() -> list:
+        return [
+            row
+            for row in er.async_entries_for_config_entry(entities, entry.entry_id)
+            if row.config_subentry_id == subentry_id
+        ]
+
+    def devices_here() -> list:
+        return [
+            device
+            for device in dr.async_entries_for_config_entry(devices, entry.entry_id)
+            if device.config_subentry_id == subentry_id
+        ]
+
+    for row in rows_here():
+        try:
+            entities.async_update_entity(row.entity_id, config_subentry_id=None)
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Could not put %s back", row.entity_id)
+
+    still_here = {row.device_id for row in rows_here()}
+    for device in devices_here():
+        if device.id in still_here:
+            continue
+        try:
+            devices.async_update_device(device.id, new_config_subentry_id=None)
+        except Exception:  # pylint: disable=broad-except
+            _LOGGER.exception("Could not put device %s back", device.id)
+
+    if rows_here() or devices_here():
+        return False
+    try:
+        hass.config_entries.async_remove_subentry(entry, subentry_id)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("Could not remove subentry %s", subentry_id)
+        return False
+    return True

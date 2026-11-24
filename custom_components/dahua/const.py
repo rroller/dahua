@@ -191,6 +191,9 @@ CONF_AUTHORIZED_HOLD_TIME = "authorized_hold_time"
 # is for settings that differ per channel -- the area is one of those, this is
 # not.
 CONF_LABELS = "labels"
+# On a channel subentry whose device and entities are still being moved
+# onto it (#1236). `channel_configs` does not set a channel up from one.
+CONF_ADOPTION_PENDING = "adoption_pending"
 
 CHANNEL_OPTION_KEYS = frozenset(
     {

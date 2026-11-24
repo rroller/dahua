@@ -37,6 +37,7 @@ from .ivs import (  # noqa: F401  pylint: disable=unused-import
 from .const import (
     CONF_ACCEPT_H265,
     CONF_ADDRESS,
+    CONF_ADOPTION_PENDING,
     CONF_CHANNEL,
     CONF_EVENTS,
     CONF_LABELS,
@@ -416,6 +417,11 @@ def channel_configs(entry: DahuaConfigEntry) -> list:
         subentries = [
             (subentry_id, dict(subentry.data))
             for subentry_id, subentry in entry.subentries.items()
+            # A first channel whose rows are not all on its subentry yet is not
+            # set up from it. Setting it up would file its device there, and
+            # Home Assistant deletes every entity of a device left behind on
+            # the old subentry. See `async_adopt_stranded_primary` (#1236).
+            if not subentry.data.get(CONF_ADOPTION_PENDING)
         ]
         # The entry's connection is only authoritative when its channels agree
         # about what they are connected to. An entry the old address-only
@@ -542,7 +548,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # A single camera that had a channel added through "Add a channel" has its
     # first channel in the entry's data and the rest in subentries, and
     # channel_configs reads only the subentries (#1236). Before that read, and
-    # never allowed to stop setup: it only ever adds a subentry and re-files rows.
+    # never allowed to stop setup. It handles its own failures; if something
+    # still escapes, the subentry it was filling is marked pending, and
+    # channel_configs does not set a channel up from a pending one.
     try:
         from .migrate import async_adopt_stranded_primary
 

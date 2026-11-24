@@ -24,7 +24,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import dahua as dahua_module
 from custom_components.dahua import channel_configs
-from custom_components.dahua.const import DOMAIN
+from custom_components.dahua.const import CONF_ADOPTION_PENDING, DOMAIN
 from custom_components.dahua.migrate import async_adopt_stranded_primary
 
 ADDRESS = "10.9.9.8"
@@ -221,6 +221,296 @@ async def test_entities_that_will_not_move_leave_everything_as_it_was(hass):
         kept = entities.async_get(row.entity_id)
         assert kept is not None, "%s was deleted" % row.entity_id
         assert kept.config_subentry_id is None
+
+
+# --- a move that raises (rroller's review of #1239) ---------------------------
+
+
+def _as_it_was(hass, entry, device, rows):
+    """Nothing added, nothing moved, nothing deleted."""
+    entities = er.async_get(hass)
+    assert len(entry.subentries) == 1
+    assert _channels(entry) == [1]
+    assert dr.async_get(hass).async_get(device.id).config_subentry_id is None
+    for row in rows:
+        kept = entities.async_get(row.entity_id)
+        assert kept is not None, "%s was deleted" % row.entity_id
+        assert kept.config_subentry_id is None
+
+
+def _raising_on(entities, entity_id, when=lambda kwargs: True):
+    real_update = entities.async_update_entity
+
+    def update(updated, **kwargs):
+        if updated == entity_id and when(kwargs):
+            raise ValueError("injected")
+        return real_update(updated, **kwargs)
+
+    return patch.object(entities, "async_update_entity", side_effect=update)
+
+
+async def test_an_entity_update_that_raises_after_one_row_moved_is_undone(hass):
+    """The exception used to leave the new subentry in place with one row on
+    it. Setup carried on from there."""
+    entry, device, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    entities = er.async_get(hass)
+    moved = []
+    real_update = entities.async_update_entity
+
+    def update(entity_id, **kwargs):
+        if kwargs.get("config_subentry_id") is not None:
+            if moved:
+                raise ValueError("injected")
+            moved.append(entity_id)
+        return real_update(entity_id, **kwargs)
+
+    with patch.object(entities, "async_update_entity", side_effect=update):
+        result = async_adopt_stranded_primary(hass, entry)
+
+    assert len(moved) == 1, "one row had already moved when the next raised"
+    assert result is None
+    _as_it_was(hass, entry, device, rows)
+
+
+async def test_setup_after_a_move_that_raised_deletes_nothing(
+    hass, enable_custom_integrations
+):
+    """The whole of what rroller reproduced: with the subentry left behind,
+    setup brought channel 0 up on it, the device was filed there, and Home
+    Assistant deleted the rows still on the old subentry."""
+    entry, device, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    entities = er.async_get(hass)
+    starts, forward, unload = _no_platforms(hass)
+
+    with _working(), starts, forward, unload, _raising_on(
+        entities,
+        rows[1].entity_id,
+        when=lambda kwargs: kwargs.get("config_subentry_id") is not None,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert sorted(entry.runtime_data) == [1]
+    _as_it_was(hass, entry, device, rows)
+
+
+async def test_a_device_update_that_raises_is_undone(hass):
+    """Every row is on the new subentry by then, so they go back first."""
+    entry, device, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    devices = dr.async_get(hass)
+    real_update = devices.async_update_device
+
+    def update(device_id, **kwargs):
+        if kwargs.get("new_config_subentry_id") is not None:
+            raise ValueError("injected")
+        return real_update(device_id, **kwargs)
+
+    with patch.object(devices, "async_update_device", side_effect=update):
+        result = async_adopt_stranded_primary(hass, entry)
+
+    assert result is None
+    _as_it_was(hass, entry, device, rows)
+
+
+async def test_a_device_that_will_not_move_is_undone(hass):
+    entry, device, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    devices = dr.async_get(hass)
+    real_update = devices.async_update_device
+
+    def update(device_id, **kwargs):
+        if kwargs.get("new_config_subentry_id") is not None:
+            return devices.async_get(device_id)
+        return real_update(device_id, **kwargs)
+
+    with patch.object(devices, "async_update_device", side_effect=update):
+        result = async_adopt_stranded_primary(hass, entry)
+
+    assert result is None
+    _as_it_was(hass, entry, device, rows)
+
+
+async def test_a_failure_at_the_very_last_step_is_undone(hass):
+    """Rows and device are all on the subentry; only the mark is left."""
+    entry, device, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+
+    with patch.object(
+        hass.config_entries, "async_update_subentry", side_effect=ValueError("no")
+    ):
+        result = async_adopt_stranded_primary(hass, entry)
+
+    assert result is None
+    _as_it_was(hass, entry, device, rows)
+
+
+# --- setup cannot use the subentry before the move has finished ---------------
+
+
+async def test_a_finished_move_leaves_no_mark(hass):
+    entry, _, _ = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+
+    new_id = async_adopt_stranded_primary(hass, entry)
+
+    assert CONF_ADOPTION_PENDING not in entry.subentries[new_id].data
+    assert all(
+        CONF_ADOPTION_PENDING not in config for _, config in channel_configs(entry)
+    )
+
+
+async def test_a_pending_subentry_is_not_set_up(hass):
+    entry, _, _ = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    pending = ConfigSubentry(
+        data={**DATA, "channel": 0, CONF_ADOPTION_PENDING: True},
+        subentry_type="channel",
+        title="Front",
+        unique_id="%s_0" % ADDRESS,
+    )
+    hass.config_entries.async_add_subentry(entry, pending)
+
+    assert _channels(entry) == [1]
+
+
+async def test_the_subentry_is_pending_while_rows_are_moving(hass):
+    """So a failure at any point in between finds setup already shut out."""
+    entry, _, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    entities = er.async_get(hass)
+    devices = dr.async_get(hass)
+    seen = []
+    real_entity = entities.async_update_entity
+    real_device = devices.async_update_device
+
+    def entity_update(entity_id, **kwargs):
+        seen.append(_channels(entry))
+        return real_entity(entity_id, **kwargs)
+
+    def device_update(device_id, **kwargs):
+        seen.append(_channels(entry))
+        return real_device(device_id, **kwargs)
+
+    with patch.object(
+        entities, "async_update_entity", side_effect=entity_update
+    ), patch.object(devices, "async_update_device", side_effect=device_update):
+        async_adopt_stranded_primary(hass, entry)
+
+    assert seen == [[1]] * (len(rows) + 1)
+    assert _channels(entry) == [0, 1]
+
+
+async def test_a_move_that_cannot_be_undone_is_kept_out_of_setup_and_finished_later(
+    hass,
+):
+    """Both directions fail: the second row will not move, and the first will
+    not go back. Removing the subentry would delete the first row, and letting
+    setup use it would delete the other two. So it is kept, pending, and the
+    next setup finishes it."""
+    entry, device, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    entities = er.async_get(hass)
+    real_update = entities.async_update_entity
+    first, second = rows[0].entity_id, rows[1].entity_id
+
+    def update(entity_id, **kwargs):
+        target = kwargs.get("config_subentry_id", "absent")
+        if entity_id == second and target not in (None, "absent"):
+            raise ValueError("will not move")
+        if entity_id == first and target is None:
+            raise ValueError("will not go back")
+        return real_update(entity_id, **kwargs)
+
+    with patch.object(entities, "async_update_entity", side_effect=update):
+        assert async_adopt_stranded_primary(hass, entry) is None
+
+    assert len(entry.subentries) == 2
+    pending = [
+        sub for sub in entry.subentries.values() if sub.data.get(CONF_ADOPTION_PENDING)
+    ]
+    assert len(pending) == 1
+    assert _channels(entry) == [1], "setup must not bring channel 0 up on it"
+    assert dr.async_get(hass).async_get(device.id).config_subentry_id is None
+    for row in rows:
+        assert entities.async_get(row.entity_id) is not None, "a row was deleted"
+
+    result = async_adopt_stranded_primary(hass, entry)
+
+    assert result == pending[0].subentry_id
+    assert len(entry.subentries) == 2, "finished, not started a second time"
+    assert _channels(entry) == [0, 1]
+    assert dr.async_get(hass).async_get(device.id).config_subentry_id == result
+    for row in rows:
+        assert entities.async_get(row.entity_id).config_subentry_id == result
+
+
+async def test_the_undo_does_not_move_a_device_away_from_a_row_it_could_not_move(
+    hass,
+):
+    """The last step fails with everything on the new subentry, and in the
+    undo one row will not go back. Moving its device back anyway would make
+    Home Assistant delete that row. So the device stays, the subentry is kept
+    pending, and the next setup finishes it."""
+    entry, device, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    entities = er.async_get(hass)
+    real_update = entities.async_update_entity
+    stuck = rows[0].entity_id
+
+    def update(entity_id, **kwargs):
+        if entity_id == stuck and kwargs.get("config_subentry_id", "absent") is None:
+            raise ValueError("will not go back")
+        return real_update(entity_id, **kwargs)
+
+    with patch.object(
+        hass.config_entries, "async_update_subentry", side_effect=ValueError("no")
+    ), patch.object(entities, "async_update_entity", side_effect=update):
+        assert async_adopt_stranded_primary(hass, entry) is None
+
+    pending = [
+        sub for sub in entry.subentries.values() if sub.data.get(CONF_ADOPTION_PENDING)
+    ]
+    assert len(pending) == 1
+    assert _channels(entry) == [1]
+    for row in rows:
+        assert entities.async_get(row.entity_id) is not None, (
+            "%s was deleted" % row.entity_id
+        )
+    assert (
+        dr.async_get(hass).async_get(device.id).config_subentry_id
+        == pending[0].subentry_id
+    ), "the device left a row behind on the subentry"
+
+    result = async_adopt_stranded_primary(hass, entry)
+
+    assert result == pending[0].subentry_id
+    assert _channels(entry) == [0, 1]
+    for row in rows:
+        assert entities.async_get(row.entity_id).config_subentry_id == result
+
+
+async def test_a_pending_subentry_whose_rows_all_arrived_is_finished(hass):
+    """Stopped between the device moving and the mark coming off."""
+    entry, device, rows = _single_camera(hass)
+    _add_channel(hass, entry, 1)
+    with patch.object(
+        hass.config_entries, "async_update_subentry", side_effect=ValueError("no")
+    ), patch("custom_components.dahua.migrate._undo_adoption", return_value=False):
+        assert async_adopt_stranded_primary(hass, entry) is None
+    assert _channels(entry) == [1]
+    assert all(
+        er.async_get(hass).async_get(row.entity_id).config_subentry_id is not None
+        for row in rows
+    ), "every row had arrived before it stopped"
+
+    result = async_adopt_stranded_primary(hass, entry)
+
+    assert _channels(entry) == [0, 1]
+    assert dr.async_get(hass).async_get(device.id).config_subentry_id == result
+    assert len(entry.subentries) == 2
 
 
 # --- what it must leave alone -----------------------------------------------
