@@ -119,6 +119,12 @@ class DigestAuth:
         # the next. Callers passing nothing keep the old per-request behaviour.
         self._state = previous
         self.session = session
+        # Called, if set, each time the device answers 2xx to a request that
+        # carried these credentials. That is the only thing here that shows
+        # the device accepted this username and this password: a 2xx to a
+        # request sent without them shows nothing, and neither does an answer
+        # that never left a cache (#1241).
+        self.on_accepted = None
 
     @property
     def scheme(self):
@@ -274,6 +280,12 @@ class DigestAuth:
             response = await self._send(method, url, attempt_headers, **kwargs)
 
             if response.status != 401:
+                if (
+                    self.on_accepted is not None
+                    and "AUTHORIZATION" in attempt_headers
+                    and 200 <= response.status < 300
+                ):
+                    self.on_accepted()
                 return response
 
             challenge = self._parse_401(response)

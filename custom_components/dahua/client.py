@@ -3,7 +3,9 @@
 import asyncio
 import contextvars
 import datetime
+import hashlib
 import logging
+import os
 import re
 import socket
 import time
@@ -665,6 +667,64 @@ async def _release_rpc2(key) -> None:
     finally:
         if not holder.session.closed:
             await holder.session.close()
+
+
+# (device, username, password digest) -> the number of the latest request the
+# device answered 2xx to while it carried those credentials, counted across
+# everything. A number and not a time, so "since the stream began waiting"
+# needs no clock: the stream notes the count and looks for a larger one.
+#
+# Recorded by the digest exchange itself and by nothing else. A poll finishing
+# is not evidence: one whose reads were all answered from the cache, or that
+# had nothing due, sends the device nothing, and the read cache is keyed by
+# user and not by password, so an answer in it may have been fetched by an
+# entry holding a different password (rroller on #1241).
+_CREDENTIALS_ACCEPTED: dict = {}
+_ACCEPTANCES = {"count": 0}
+# The password is only ever compared, so it is kept as a digest, salted per
+# process so that the value means nothing anywhere else.
+_ACCEPTANCE_SALT = os.urandom(16)
+
+
+def credentials_identity(client):
+    """The device and the account a client logs in with, or None.
+
+    Address and port, because two devices can sit behind one address on two
+    ports. Username and password, because two entries on one device can hold
+    two accounts, or one account with an old password in one of them.
+
+    None for a client that does not say, and nothing is ever taken as proof
+    about a None.
+    """
+    device = getattr(client, "_device", None)
+    username = getattr(client, "_username", None)
+    password = getattr(client, "_password", None)
+    if device is None or username is None or password is None:
+        return None
+    digest = hashlib.sha256(
+        _ACCEPTANCE_SALT + str(password).encode("utf-8")
+    ).hexdigest()
+    return (device, username, digest)
+
+
+def credentials_acceptance_mark() -> int:
+    """Where the count of accepted requests stands now."""
+    return _ACCEPTANCES["count"]
+
+
+def note_credentials_accepted(client) -> None:
+    """The device has just answered 2xx to a request carrying these credentials."""
+    identity = credentials_identity(client)
+    if identity is None:
+        return
+    _ACCEPTANCES["count"] += 1
+    _CREDENTIALS_ACCEPTED[identity] = _ACCEPTANCES["count"]
+
+
+def credentials_accepted_since(client, mark: int) -> bool:
+    """Whether the device accepted this client's own credentials after `mark`."""
+    identity = credentials_identity(client)
+    return identity is not None and _CREDENTIALS_ACCEPTED.get(identity, 0) > mark
 
 
 def _digest_state(device: str, username: str) -> dict:
@@ -6450,9 +6510,7 @@ class DahuaClient:
         duration = len(audio) / byte_rate
         chunk = max(1, int(byte_rate // AUDIO_WRITES_PER_SECOND))
 
-        auth = DigestAuth(
-            self._username, self._password, self._session, self._digest_state
-        )
+        auth = self._digest_auth()
 
         def authorization():
             """The header to open with, or None to go without one."""
@@ -7001,9 +7059,7 @@ class DahuaClient:
             timeout = aiohttp.ClientTimeout(
                 total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS
             )
-            auth = DigestAuth(
-                self._username, self._password, self._session, self._digest_state
-            )
+            auth = self._digest_auth()
             # Both refusals this can meet are caught in one place, because the
             # unreadable one arrives from the request itself rather than from
             # `raise_for_status` (#1176, and the same note as on `get()` below).
@@ -7430,9 +7486,7 @@ class DahuaClient:
             response = None
             try:
                 # Asks for a challenge first, as a still does (see get_bytes).
-                auth = DigestAuth(
-                    self._username, self._password, self._session, self._digest_state
-                )
+                auth = self._digest_auth()
                 response = await auth.request("GET", url, preemptive=False)
                 response.raise_for_status()
             finally:
@@ -7464,9 +7518,7 @@ class DahuaClient:
             REQUEST_REACHED_DEVICE.set(True)
             response = None
             try:
-                auth = DigestAuth(
-                    self._username, self._password, self._session, self._digest_state
-                )
+                auth = self._digest_auth()
                 response = await auth.request(
                     "GET", self._base + url, preemptive=not fresh_challenge
                 )
@@ -7476,6 +7528,19 @@ class DahuaClient:
             finally:
                 if response is not None:
                     response.close()
+
+    def _digest_auth(self) -> DigestAuth:
+        """The digest exchange for one request, reporting back when it is accepted.
+
+        Every request this client signs is built here, so a 2xx to any of them
+        is recorded as the device accepting this client's credentials. See
+        `_CREDENTIALS_ACCEPTED`.
+        """
+        auth = DigestAuth(
+            self._username, self._password, self._session, self._digest_state
+        )
+        auth.on_accepted = lambda: note_credentials_accepted(self)
+        return auth
 
     async def async_get_event_indexes_cgi(self, code: str) -> set[int]:
         """Return active channel indexes from the CGI event state endpoint.
@@ -8059,12 +8124,7 @@ class DahuaClient:
                 if write_lock is not None:
                     await write_lock.acquire()
                 try:
-                    auth = DigestAuth(
-                        self._username,
-                        self._password,
-                        self._session,
-                        self._digest_state,
-                    )
+                    auth = self._digest_auth()
                     try:
                         # Both ways this can refuse, caught in one place. The
                         # camera in #1176 answers every authenticated CGI call

@@ -4351,7 +4351,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                     await _async_get_host_uptime_generation(self)
                 )
 
-            async_record_host_success(self.hass, self._address, self.client)
+            async_record_host_success(self.hass, self._address)
             self._restore_poll_interval()
             return data
         except Exception as exception:

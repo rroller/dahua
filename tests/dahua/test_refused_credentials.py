@@ -23,6 +23,8 @@ import pytest
 from aiohttp import ClientResponseError
 
 import custom_components.dahua as dahua
+from custom_components.dahua import client as client_module
+from custom_components.dahua.client import note_credentials_accepted
 from custom_components.dahua import (
     DahuaDataUpdateCoordinator,
     DahuaHostEventStream,
@@ -70,7 +72,7 @@ def _coordinator(address="10.0.0.5", entry_id="e1"):
 def _clean():
     """These counters are module level and shared, so every test starts empty."""
     dahua._HOST_FAILURES.clear()
-    dahua.host._CREDENTIALS_ACCEPTED.clear()
+    client_module._CREDENTIALS_ACCEPTED.clear()
 
 
 def _401():
@@ -211,6 +213,14 @@ def _client(username="admin", password="right", port=80):
     )
 
 
+def _let_in(client):
+    """The device answers 2xx to a request this client signed, and the poll
+    that made it finishes. A client that names nothing, or None, is only the
+    poll finishing."""
+    note_credentials_accepted(client)
+    async_record_host_success(None, ADDRESS)
+
+
 def _spend_the_budget():
     for _ in range(MAX_AUTH_REFUSALS):
         async_record_host_auth_refusal(ADDRESS, "a channel")
@@ -343,7 +353,7 @@ async def test_the_event_stream_resumes_once_its_own_poll_is_let_in(no_wait):
 
     def _the_owners_poll_succeeds_on_the_third_look(n):
         if n == 3:
-            async_record_host_success(None, ADDRESS, stream._owner.client)
+            _let_in(stream._owner.client)
 
     stream = _stream(_the_owners_poll_succeeds_on_the_third_look)
 
@@ -384,7 +394,7 @@ async def test_another_entrys_poll_on_the_address_is_not_evidence(no_wait, anoth
 
     def _the_other_entry_polls(n):
         if n in (3, 20, 60):
-            async_record_host_success(None, ADDRESS, another())
+            _let_in(another())
 
     stream = _stream(_the_other_entry_polls)
 
@@ -401,9 +411,9 @@ async def test_another_entrys_poll_on_the_address_is_not_evidence(no_wait, anoth
 async def test_the_owners_poll_after_another_entrys_is_evidence(no_wait):
     def _polls(n):
         if n == 3:
-            async_record_host_success(None, ADDRESS, _client(username="viewer"))
+            _let_in(_client(username="viewer"))
         if n == 9:
-            async_record_host_success(None, ADDRESS, _client())
+            _let_in(_client())
 
     stream = _stream(_polls)
 
@@ -418,11 +428,11 @@ async def test_a_poll_that_succeeded_before_the_refusal_is_not_evidence(no_wait)
     host's count is cleared by another entry here, so only the order of the
     owner's poll and the refusal is holding the stream back."""
     client = _client()
-    async_record_host_success(None, ADDRESS, client)
+    _let_in(client)
 
     def _another_entry_polls(n):
         if n == 3:
-            async_record_host_success(None, ADDRESS, _client(username="viewer"))
+            _let_in(_client(username="viewer"))
 
     stream = _stream(_another_entry_polls, client=client)
 
@@ -438,7 +448,7 @@ async def test_the_hosts_budget_still_has_to_be_clear(no_wait):
 
     def _let_in_and_refused_again(n):
         if n == 3:
-            async_record_host_success(None, ADDRESS, stream._owner.client)
+            _let_in(stream._owner.client)
             _spend_the_budget()
 
     stream = _stream(_let_in_and_refused_again)
@@ -457,7 +467,7 @@ async def test_an_owner_replaced_by_a_verified_one_resumes_with_it(no_wait):
         if n == 3:
             stream.owned_by(viewer)
         if n == 6:
-            async_record_host_success(None, ADDRESS, viewer)
+            _let_in(viewer)
 
     stream = _stream(_handed_over_then_verified)
 
@@ -471,13 +481,13 @@ async def test_an_owner_replaced_by_an_unverified_one_keeps_waiting(no_wait):
     """The new owner's poll succeeded before the wait, and the old owner's
     succeeds during it. Neither is the new owner being let in since."""
     viewer = _client(username="viewer")
-    async_record_host_success(None, ADDRESS, viewer)
+    _let_in(viewer)
 
     def _handed_over(n):
         if n == 3:
             stream.owned_by(viewer)
         if n == 6:
-            async_record_host_success(None, ADDRESS, _client())
+            _let_in(_client())
 
     stream = _stream(_handed_over)
 
@@ -501,7 +511,7 @@ async def test_a_restarted_task_does_not_offer_what_the_old_one_stopped_offering
     stream = _stream(_cancelled_on_the_fifth_look)
     await _run(stream)
     assert stream._refused_since is not None
-    async_record_host_success(None, ADDRESS, _client(username="viewer"))
+    _let_in(_client(username="viewer"))
     assert not dahua.host.host_auth_budget_exhausted(ADDRESS)
 
     await _run(stream)
@@ -517,7 +527,7 @@ async def test_a_restarted_task_resumes_on_its_owners_poll(no_wait):
         if n == 5:
             raise asyncio.CancelledError()
         if n == 8:
-            async_record_host_success(None, ADDRESS, stream._owner.client)
+            _let_in(stream._owner.client)
 
     stream = _stream(_cancelled_then_let_in)
     await _run(stream)
@@ -544,7 +554,7 @@ async def test_the_owners_poll_between_two_tasks_still_counts(no_wait):
 
     stream = _stream(_cancelled_on_the_fifth_look)
     await _run(stream)
-    async_record_host_success(None, ADDRESS, stream._owner.client)
+    _let_in(stream._owner.client)
 
     await _run(stream)
 
@@ -559,7 +569,7 @@ async def test_a_stream_started_on_a_host_whose_budget_is_spent_waits_first(no_w
 
     def _first_poll_finishes(n):
         if n == 4:
-            async_record_host_success(None, ADDRESS, stream._owner.client)
+            _let_in(stream._owner.client)
 
     stream = _stream(_first_poll_finishes, refuse_first_attach=False)
 
@@ -594,7 +604,7 @@ async def test_stopping_the_stream_forgets_the_refusal(no_wait):
 
 
 def test_what_identifies_an_account():
-    from custom_components.dahua.host import credentials_identity
+    from custom_components.dahua.client import credentials_identity
 
     one = credentials_identity(_client())
     assert one == credentials_identity(_client())
@@ -606,14 +616,47 @@ def test_what_identifies_an_account():
     assert credentials_identity(SimpleNamespace(_device="d", _username="u")) is None
 
 
-def test_the_poll_says_whose_it_was():
-    """The one place a successful poll is recorded. Without the client there
-    the stream would wait for ever, which is safe and useless."""
+async def test_the_owners_poll_finishing_is_not_evidence(no_wait):
+    """rroller's second review of #1241. A coordinator with nothing due, or
+    whose reads were all answered from the cache, finishes a poll without
+    sending the device anything. That clears the host's count and proves
+    nothing about the account, and it used to resume the stream."""
+
+    def _a_poll_finishes_having_asked_nothing(n):
+        if n in (3, 20, 60):
+            async_record_host_success(None, ADDRESS)
+
+    stream = _stream(_a_poll_finishes_having_asked_nothing)
+
+    await _run(stream)
+
+    assert not dahua.host.host_auth_budget_exhausted(ADDRESS)
+    assert len(stream.attaches) == 1
+    assert stream.calls == ["attach"]
+
+
+def test_a_finished_poll_records_nothing_about_an_account():
+    _clean()
+    mark = client_module.credentials_acceptance_mark()
+
+    async_record_host_success(None, ADDRESS)
+
+    assert client_module.credentials_acceptance_mark() == mark
+    assert client_module._CREDENTIALS_ACCEPTED == {}
+
+
+def test_only_the_digest_exchange_records_an_account_as_accepted():
+    """The poll's last line names the host and nothing else, and the one
+    caller of `note_credentials_accepted` is the constructor every signed
+    request goes through."""
     from .integration_source import source
 
     text = source()
-    assert text.count("async_record_host_success(") == 2, "the call and its definition"
-    assert "async_record_host_success(self.hass, self._address, self.client)" in text
+    assert "async_record_host_success(self.hass, self._address)\n" in text
+    assert text.count("note_credentials_accepted(") == 2, "its definition and one call"
+    assert (
+        text.count("DigestAuth(") == 1
+    ), "a second place that builds one is a signed request nothing hears about"
 
 
 async def test_the_stream_keeps_trying_while_the_budget_holds():

@@ -15,7 +15,6 @@ neither.
 
 from typing import Any, Dict
 import asyncio
-import hashlib
 import logging
 import random
 import re
@@ -27,7 +26,12 @@ from aiohttp import ClientError, ClientResponseError, TCPConnector
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
-from .client import clear_host_cache, rpc2_refusal_is_a_stale_login
+from .client import (
+    clear_host_cache,
+    credentials_acceptance_mark,
+    credentials_accepted_since,
+    rpc2_refusal_is_a_stale_login,
+)
 from .const import CONF_ADDRESS, CONF_PORT, CONF_USE_HTTPS, DOMAIN
 from .dahua_utils import parse_event
 from .rpc2 import Rpc2MethodRefused
@@ -657,70 +661,15 @@ def async_record_host_auth_refusal(address: str, source: str = "") -> int:
     return state["auth_refusals"]
 
 
-# (endpoint, username, password digest) -> the number of the latest
-# successful poll made with it, counted across everything. A number and not a
-# time, so "after the stream began waiting" needs no clock: the stream notes
-# the count when it starts to wait and looks for a larger one.
-_CREDENTIALS_ACCEPTED: dict = {}
-_ACCEPTANCES = {"count": 0}
-
-
-def credentials_identity(client):
-    """The endpoint and the account a client logs in with, or None.
-
-    Address and port, because two devices can sit behind one address on two
-    ports. Username and password, because two entries on one device can hold
-    two accounts, or one account with an old password and a new one. The
-    password is kept as a digest: this is only ever compared.
-
-    None for a client that does not say, and nothing is ever taken as proof
-    about a None.
-    """
-    device = getattr(client, "_device", None)
-    username = getattr(client, "_username", None)
-    password = getattr(client, "_password", None)
-    if device is None or username is None or password is None:
-        return None
-    digest = hashlib.sha256(str(password).encode("utf-8")).hexdigest()
-    return (device, username, digest)
-
-
 @callback
-def credentials_acceptance_mark() -> int:
-    """Where the count of successful polls stands now."""
-    return _ACCEPTANCES["count"]
-
-
-@callback
-def async_record_credentials_accepted(client) -> None:
-    """Note that a poll made with this client's credentials succeeded."""
-    identity = credentials_identity(client)
-    if identity is None:
-        return
-    _ACCEPTANCES["count"] += 1
-    _CREDENTIALS_ACCEPTED[identity] = _ACCEPTANCES["count"]
-
-
-@callback
-def credentials_accepted_since(client, mark: int) -> bool:
-    """Whether a poll with this client's own credentials succeeded after `mark`."""
-    identity = credentials_identity(client)
-    return identity is not None and _CREDENTIALS_ACCEPTED.get(identity, 0) > mark
-
-
-@callback
-def async_record_host_success(hass: HomeAssistant, address: str, client=None) -> None:
+def async_record_host_success(hass: HomeAssistant, address: str) -> None:
     """The device answered, so withdraw anything we said about it.
 
     Keyed by host: if any channel of an NVR replies, the box is up.
 
-    `client` is whose poll it was. The host-wide count below is cleared by any
-    of them, which is right for "is the box up". It is not proof that some
-    other account on the same address works, so that is recorded per account
-    (#1241 review).
+    That is all it says. It is not proof that any particular account works:
+    see `_CREDENTIALS_ACCEPTED` in client.py for what is.
     """
-    if client is not None:
-        async_record_credentials_accepted(client)
     address = normalize_address(address)
     if _HOST_FAILURES.pop(address, None) is None:
         return
@@ -1655,26 +1604,33 @@ class DahuaHostEventStream:
         with the camera answering every poll.
 
         So it waits instead, for two things. The host's refusal count must be
-        clear, and a poll must have succeeded **with the account this stream
-        attaches with**, since the stream began to wait.
+        clear, and the device must have answered 2xx to a request carrying
+        **the credentials this stream attaches with**, since the stream began
+        to wait.
 
-        The second is rroller's review of #1241. The count is per address, and
-        any entry's successful poll clears it. Two entries on one address can
-        hold different accounts, or the same account with an old password in
-        one of them, and the other's poll succeeding says nothing about this
-        one. Waiting on the count alone, the stream attached again with the
-        refused account every time the other entry polled, which is the
+        The second is rroller's review of #1241, in two rounds. The count is
+        per address, and any entry's successful poll clears it. Two entries on
+        one address can hold different accounts, or the same account with an
+        old password in one of them, and the other's poll says nothing about
+        this one. Waiting on the count alone, the stream attached again with
+        the refused account every time the other entry polled, which is the
         lockout #729 exists to stop being renewed.
 
-        So the owner's own poll is the evidence: `async_record_host_success`
-        records which client's poll succeeded, by address, port, username and
-        password. If the owner changes while the stream waits, because its
-        entry was unloaded or reloaded with new credentials, the new owner is
-        held to the same test: a poll of its own since the wait began.
+        Nor is the owner's own poll finishing the evidence. A poll with
+        nothing due, or one answered from the read cache, sends the device
+        nothing, and the cache is keyed by user and not by password. So the
+        evidence is taken where it happens: the digest exchange records each
+        2xx to a request it signed, by device, username and password
+        (`_CREDENTIALS_ACCEPTED` in client.py). If the owner changes while the
+        stream waits, the new owner is held to the same test.
 
-        #729 is kept whole: with a wrong password that entry's poll never
-        succeeds, and nothing is sent from here. The wait reads dictionaries;
-        it never asks the device.
+        An owner that sends the device nothing therefore waits until it does,
+        or until its entry is reloaded, which is where a stopped stream was
+        left before this.
+
+        #729 is kept whole: with a wrong password no request of that entry's
+        is ever answered 2xx, and nothing is sent from here. The wait reads
+        dictionaries; it never asks the device.
 
         `_consecutive_failures` is left as it was, so a stream that is refused
         again on its first attach goes straight back to the longest backoff
