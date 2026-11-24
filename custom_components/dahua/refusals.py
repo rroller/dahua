@@ -57,10 +57,13 @@ REFUSED_RPC2_CODES = frozenset({285278249, 268894210})
 # being operated -- "infrared", "siren" -- so refusing one does not silence
 # another on the same channel.
 #
-# Not persisted, and dropped as an entry unloads: a permissions or firmware change
-# on the device should cost one refusal to discover rather than being invisible
-# until somebody thinks to reload. Same reasoning as `_HOST_CGI_CONFIG_ABSENT` in
-# client.py.
+# Dropped as an entry unloads: a permissions or firmware change on the device
+# should cost one refusal to discover rather than being invisible until somebody
+# thinks to reload. Same reasoning as `_HOST_CGI_CONFIG_ABSENT` in client.py.
+#
+# A siren refusal is also kept across a restart, which does not unload anything,
+# under the firmware that gave it (#942). That lives in refusal_store.py, so this
+# module stays free of Home Assistant.
 _REFUSED: set = set()
 
 
@@ -114,6 +117,17 @@ def remember(coordinator, control: str, described: str, instead: str = None) -> 
     a step in a fallback: the control still works, nothing needs reloading, and
     the old wording told a user whose light had just come on that it would not.
     """
+    if getattr(coordinator, "retired", False):
+        # Its entry is unloading and has already forgotten this channel, and
+        # the coordinator that replaces it shares the key. Learning this now
+        # would carry the refusal through the reload that should ask again.
+        _LOGGER.debug(
+            "%s refused %s on channel %s after its entry unloaded; not kept",
+            coordinator.get_address(),
+            control,
+            coordinator.get_channel(),
+        )
+        return
     _REFUSED.add(key_for(coordinator, control))
     if instead is not None:
         _LOGGER.warning(
@@ -135,6 +149,15 @@ def remember(coordinator, control: str, described: str, instead: str = None) -> 
         coordinator.get_channel(),
         described,
     )
+
+
+def recall(coordinator, control: str) -> None:
+    """Restore a refusal stored before a restart, without warning again.
+
+    The warning was logged when the device refused; repeating it on every
+    start would report a new refusal that never happened.
+    """
+    _REFUSED.add(key_for(coordinator, control))
 
 
 def forget(coordinator=None, control: str | None = None) -> None:

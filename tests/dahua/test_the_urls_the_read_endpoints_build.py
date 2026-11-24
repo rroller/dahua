@@ -155,7 +155,7 @@ class _Sent:
         self.calls.append((url, verify_response))
         return self.answer
 
-    async def get_bytes(self, url):
+    async def get_bytes(self, url, *, fresh_challenge=False):
         self.calls.append((url, None))
         return self.answer
 

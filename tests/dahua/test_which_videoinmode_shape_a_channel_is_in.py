@@ -27,6 +27,7 @@ devices this has never been measured on may answer it perfectly well.
 import pytest
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua.profile import canonicalize_video_in_mode
 
 CHANNEL = 4
 
@@ -117,6 +118,55 @@ def test_the_shape_is_read_from_this_channels_row():
 )
 def test_whether_writing_config_zero_can_select_the_profile(fields, writable):
     assert _coordinator(fields).video_profile_mode_is_writable() is writable
+
+
+@pytest.mark.parametrize(
+    ("physical", "expected_shape", "expected_writable"),
+    [
+        (
+            {
+                "table.VideoInMode[4].ConfigEx": "Night",
+            },
+            "configex",
+            False,
+        ),
+        (
+            {
+                "table.VideoInMode[4].Config[0]": "2",
+                "table.VideoInMode[4][0].Config[0]": "0",
+                "table.VideoInMode[4][0].Config[1]": "1",
+            },
+            "ambiguous",
+            False,
+        ),
+        (
+            {
+                "table.VideoInMode[4][0].Config[0]": "0",
+                "table.VideoInMode[4][0].ConfigEx": "Day",
+            },
+            "configex",
+            False,
+        ),
+        (
+            {
+                "table.VideoInMode[4][0][0].Config[0]": "1",
+            },
+            "ordinary",
+            True,
+        ),
+    ],
+)
+def test_canonicalization_preserves_the_profile_write_guard(
+    physical,
+    expected_shape,
+    expected_writable,
+):
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = CHANNEL
+    coordinator.data = canonicalize_video_in_mode(physical)
+
+    assert coordinator.describe_video_profile_shape() == expected_shape
+    assert coordinator.video_profile_mode_is_writable() is expected_writable
 
 
 def test_an_unpolled_channel_is_still_attempted():

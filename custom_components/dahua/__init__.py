@@ -72,12 +72,16 @@ from .vto import DahuaVTOClient  # noqa: F401  pylint: disable=unused-import
 from .host import (  # noqa: F401  pylint: disable=unused-import
     DERIVES_INTO,
     DahuaHostEventStream,
+    EVENT_RECONCILE_MAX_RECHECK_SECONDS,
+    EVENT_RECONCILE_RECHECK_SECONDS,
     EVENT_STREAM_HEALTHY_SECONDS,
     EVENT_STREAM_JITTER,
     EVENT_STREAM_MAX_LIFETIME_SECONDS,
     EVENT_STREAM_MAX_RETRY_SECONDS,
     EVENT_STREAM_RETRY_SECONDS,
     EVENT_STREAM_SHORT_RETRY_SECONDS,
+    EVENT_STREAM_SHORT_STREAMS_BEFORE_BACKOFF,
+    EVENT_STREAM_MAX_SHORT_RETRY_SECONDS,
     HOST_UPTIME_DEDUPE_SECONDS,
     HTTPS_PROBE_MIN_INTERVAL,
     ISSUE_HTTP_DEAD_HTTPS_AVAILABLE,
@@ -506,6 +510,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
         _STARTUP_LOGGED = True
         _LOGGER.info(STARTUP_MESSAGE)
 
+    # Before the first read, so that a device which never answers still has its
+    # stale duplicate card taken down. Nothing here talks to a device: it reads
+    # the entries Home Assistant already has, and only ever withdraws. This is
+    # the point every reconfiguration passes through, because changing an
+    # address reloads the entry.
+    async_reconcile_duplicate_addresses(hass)
+
     # Before anything reads the entry's identity. Costs nothing unless the id is md5
     # shaped, and never raises: a camera that cannot be identified better keeps the
     # identity it has rather than failing to set up.
@@ -531,6 +542,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             "Could not tidy up the duplicate Dahua disk sensors for %s. They are "
             "disabled by default and harmless, and the integration will set up "
             "normally",
+            entry.data.get(CONF_ADDRESS),
+        )
+
+    # Earlier builds of #1236 added secondary channel subentries to a flat entry
+    # without first promoting channel 0, stranding its device and entities at
+    # config_subentry_id=None. Recreate the missing primary subentry before
+    # channel_configs builds coordinators.
+    try:
+        from .migrate import async_recover_stranded_primary_subentry
+
+        async_recover_stranded_primary_subentry(hass, entry)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not recover the missing primary channel subentry for %s; "
+            "continuing with existing subentries",
             entry.data.get(CONF_ADDRESS),
         )
 
@@ -664,6 +690,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             ) from error
         raise
 
+    from .migrate import async_adopt_flat_channel_rows
+
+    try:
+        async_adopt_flat_channel_rows(hass, entry, coordinators)
+    except BaseException:
+        await asyncio.gather(
+            *[c.async_stop() for c in coordinators], return_exceptions=True
+        )
+        raise
+
     entry.runtime_data = {c.get_channel(): c for c in coordinators}
 
     # https://developers.home-assistant.io/docs/config_entries_index/
@@ -677,6 +713,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
     # The platform list is per entry, so it is the same for every channel and the
     # forward happens once. Each coordinator still carries its own copy because
     # unload reads it back off them.
+    # A siren the device refused before the restart starts unavailable rather
+    # than being offered for one more refused press (#942). Before the forward,
+    # because `available` reads it as the switch is added.
+    from .refusal_store import async_restore as restore_refusals
+
+    await restore_refusals(hass, entry.entry_id, coordinators)
+
     wanted = [p for p in PLATFORMS if entry.options.get(p, True)]
     for coordinator in coordinators:
         coordinator.platforms.extend(wanted)
@@ -749,6 +792,92 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
 # no card at all, so its abort was invisible: somebody ticked sixteen channels, got
 # twelve, and had nothing anywhere telling them which four or why.
 ISSUE_CHANNEL_NOT_ADDED = "channel_not_added_{0}_{1}"
+
+# Raised when an entry is added on an address and port another entry already
+# holds. Not an abort: two entries on one device is legitimate with different
+# credentials, which is why `_rpc2_config_write_lock` is keyed by device rather
+# than by `_rpc2_key()`, and pre-#827 per-channel setups look the same way. It
+# is a warning because the usual cause is an accident, and the usual accident
+# is a device whose identity could not be read, where the serial-based guard in
+# the add flow never runs. Raised in one place, the add flow's
+# `_async_warn_duplicate_address`, and withdrawn in one,
+# `async_reconcile_duplicate_addresses` below.
+ISSUE_DUPLICATE_ADDRESS = "duplicate_address_{0}_{1}"
+# What every duplicate card's id begins with, so the sweep below can find the
+# cards that are up without parsing an address back out of one. Derived from the
+# template rather than retyped: a prefix that stopped matching would withdraw
+# nothing and turn the sweep into a no-op.
+DUPLICATE_ADDRESS_PREFIX = ISSUE_DUPLICATE_ADDRESS.split("{", 1)[0]
+
+
+@callback
+def duplicate_address_key(data) -> tuple:
+    """The (address, port) a duplicate warning is keyed on, from entry data or a flow dict.
+
+    One function because the add flow decides a pair *is* a duplicate and
+    `async_reconcile_duplicate_addresses` below decides it no longer is. A card
+    raised under one spelling and withdrawn under another stays up for ever,
+    which is the bug `_async_forget_host`'s docstring describes: everything host
+    scoped goes through `normalize_address`, and the two places that only
+    happened to agree were latent rather than fixed.
+
+    Both halves as strings, because the port arrives as text from the form and
+    as whatever was stored from an entry, and "80" and 80 are not one key.
+    """
+    return (
+        normalize_address(data.get(CONF_ADDRESS)),
+        str(data.get(CONF_PORT) or ""),
+    )
+
+
+@callback
+def async_reconcile_duplicate_addresses(hass: HomeAssistant) -> None:
+    """Withdraw the duplicate warning wherever there is no longer a duplicate.
+
+    The card tells the owner to delete the entry they did not want, so it has
+    to go when they do. It did not: nothing withdrew it, so following the card
+    left it on the Settings page describing a duplicate that no longer existed,
+    deleting both entries left it too, and being persistent it survived a
+    restart (@rroller, #1212).
+
+    **Withdraws, never raises.** Only the add flow decides a pair is a
+    duplicate, and only on the manual step. A recorder whose migration refused
+    legitimately has an entry per channel on one address and port, and so does
+    any setup from before #827; raising from here would put a card on every one
+    of them. Retaining a card that is still true needs nothing, because the
+    issue is persistent and already in the registry.
+
+    Sweeps the cards that are up and keeps the ones the live entries still
+    justify, rather than sweeping the pairs the entries hold. One function
+    serves both callers and neither hands in a pair: a removal's own entry is
+    out of the registry by the time the hook runs, and a reconfiguration
+    reloads through setup, which never sees the address the entry moved off.
+
+    Reading the cards is what reaches a pair with no live entries at all.
+    Removing both entries at once gets there: both are gone before either
+    removal hook runs, so a sweep of live pairs visits that pair not at all,
+    withdraws nothing, and the persistent card survives the restart as well
+    (@rroller, #1212). An earlier version took the removed pair as an argument
+    for that case, and I dropped it as a branch nothing reaches on the strength
+    of the tests I had. Sweeping the cards covers the pair from whatever path
+    empties it, which is the part an argument could not.
+    """
+    held: dict = {}
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        key = duplicate_address_key(entry.data)
+        if key[0]:
+            held[key] = held.get(key, 0) + 1
+    still_true = {
+        ISSUE_DUPLICATE_ADDRESS.format(*key) for key, count in held.items() if count > 1
+    }
+    # Over a copy of the keys: withdrawing pops from the dict being read, and
+    # one withdrawal is enough to end the iteration in a RuntimeError.
+    for domain, issue_id in list(ir.async_get(hass).issues):
+        if domain != DOMAIN or not issue_id.startswith(DUPLICATE_ADDRESS_PREFIX):
+            continue
+        if issue_id not in still_true:
+            ir.async_delete_issue(hass, DOMAIN, issue_id)
+
 
 ISSUE_SIBLINGS_REMAIN = "siblings_remain_{0}"
 # Raised when the removed entry was referenced by automations or scripts. Those
@@ -979,7 +1108,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: DahuaConfigEntry) -> bo
     from .refusals import forget as forget_refusals
 
     for coordinator in channels.values():
+        # First, so a refusal that arrives from a press still in flight is
+        # dropped rather than learnt again after the forgetting below.
+        coordinator.retired = True
         forget_refusals(coordinator)
+    # And the copy kept for a restart, or a reload would ask nothing again.
+    # Home Assistant does not unload entries when it stops, so this runs on a
+    # reload, a disable or a removal, never on a restart.
+    from .refusal_store import async_remove as remove_stored_refusals
+
+    await remove_stored_refusals(hass, entry.entry_id)
 
     # Every channel is stopped, and all of them are stopped even if one raises.
     # A coordinator that keeps its session and its host pool reference is the
@@ -1181,6 +1319,12 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     Deliberately takes no interest in whether setup ever succeeded. The card is
     most likely to be there precisely when it did not.
     """
+    # An entry whose setup failed was never unloaded, so its stored refusals
+    # are removed here as well.
+    from .refusal_store import async_remove as remove_stored_refusals
+
+    await remove_stored_refusals(hass, entry.entry_id)
+
     address = normalize_address(entry.data.get(CONF_ADDRESS))
     # Read before anything else: Home Assistant clears the registry rows this
     # depends on as soon as this hook returns.
@@ -1198,6 +1342,14 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
             "Last entry for %s removed; forgot its host state and withdrew its repairs",
             address,
         )
+
+    # Outside that block on purpose. The duplicate card is the one case where
+    # something has to be withdrawn while the host still has entries: deleting
+    # the second entry is exactly what the card asked for, `siblings` is then
+    # not empty, and `_async_forget_host` does not run. Its key is address and
+    # port, which `siblings` could not answer either, matching as it does on the
+    # address alone.
+    async_reconcile_duplicate_addresses(hass)
 
     await _async_forget_entry_storage(hass, entry)
 
@@ -1339,6 +1491,17 @@ def _async_report_removal(
         )
 
 
+DATA_PENDING_RELOADS = f"{DOMAIN}_pending_reloads"
+
+
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry."""
+    """Reload config entry, coalescing back-to-back updates in the same turn."""
+    pending: set[str] = hass.data.setdefault(DATA_PENDING_RELOADS, set())
+    if entry.entry_id in pending:
+        return
+    pending.add(entry.entry_id)
+    try:
+        await asyncio.sleep(0)
+    finally:
+        pending.discard(entry.entry_id)
     await hass.config_entries.async_reload(entry.entry_id)

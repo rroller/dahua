@@ -3,13 +3,13 @@
 import asyncio
 import contextvars
 import datetime
-from datetime import time as datetime_time
 import logging
 import re
 import socket
 import time
 from contextlib import AsyncExitStack, asynccontextmanager, nullcontext, suppress
 from copy import deepcopy
+from datetime import time as datetime_time
 
 import aiohttp
 from homeassistant.exceptions import HomeAssistantError
@@ -40,10 +40,12 @@ from .ivs import ivs_rule_index
 from .profile import (
     PROFILE_MANAGEMENT_VALUES_BY_OPTION,
     ProfileScheduleTimes,
+    canonicalize_video_in_mode,
     profile_management_table_with_option,
     profile_schedule_table_with_times,
     resolve_profile_management_table,
     resolve_profile_schedule_table,
+    resolve_video_in_mode_table_owner,
 )
 from .rpc2 import RPC2_LOGIN_METHOD, DahuaRpc2Client, Rpc2MethodRefused
 
@@ -135,6 +137,35 @@ RPC2_EVENT_REFUSALS_BEFORE_DROPPING = 3
 # for up to ten minutes. So a successful cycle sends this instead. on_receive
 # records transport activity before it parses, and this parses to no event.
 RPC2_EVENT_HEARTBEAT = b"Heartbeat\r\n"
+
+# getEventIndexes can answer more than a channel. A DH-IPC-HDW2849TM-S-IL on
+# 3.120 with three intrusion rules on its one channel answered 131072
+# (0x20000) and 196608 (0x30000) while someone was in a zone, one entry per
+# active rule, and its own event stream reported index=0 for the same events
+# (#1176). The high bits look like the rule; the low 16 are the channel. Read
+# whole, no channel matched and the event was dropped.
+#
+# Decoded for the measured code only. Another code's index is not known to
+# be packed this way, and some carry something else entirely: AlarmLocal's
+# is a terminal, and can be -1. Those are passed through untouched.
+EVENT_INDEX_CHANNEL_MASK = 0xFFFF
+EVENT_INDEX_PACKED_CODES = frozenset({"CrossRegionDetection"})
+
+
+def event_index_channel(code: str, raw: int) -> int:
+    """The channel an index from getEventIndexes for `code` belongs to."""
+    if code not in EVENT_INDEX_PACKED_CODES or raw <= EVENT_INDEX_CHANNEL_MASK:
+        return raw
+    channel = raw & EVENT_INDEX_CHANNEL_MASK
+    _LOGGER.debug(
+        "getEventIndexes answered %d (0x%X) for %s, read as channel %d",
+        raw,
+        raw,
+        code,
+        channel,
+    )
+    return channel
+
 
 # One NVR carries a config entry per channel, and every entry sets itself up at
 # the same moment. Dahua's HTTP server is small: a dozen simultaneous CGI calls
@@ -901,6 +932,77 @@ def _same_setting(held, wanted) -> bool:
     if wanted.lower() in ("true", "false"):
         return held.lower() == wanted.lower()
     return held == wanted
+
+
+# Fields a device has been measured setting together when one of them is
+# written: the object both sit in, and the two leaf names. Only what has been
+# read back off real hardware goes here. A pair that merely looks related is
+# not evidence, and excusing it would let a write that damaged a setting
+# report success.
+_MEASURED_COUPLINGS = (
+    # @defre92 on #1176, a DH-IPC-HDW2849TM-S-IL on 3.120, read from
+    # `getConfig&name=VideoWidget` around the Timestamp Overlay switch:
+    #   before        EncodeBlend=true   PreviewBlend=true
+    #   switch off    EncodeBlend=false  PreviewBlend=false
+    #   switch on     EncodeBlend=true   PreviewBlend=true
+    (
+        re.compile(r"VideoWidget\[\d+\]\.TimeTitle"),
+        frozenset({"EncodeBlend", "PreviewBlend"}),
+    ),
+)
+
+
+def _is_boolean_text(value) -> bool:
+    return str(value).strip().lower() in ("true", "false")
+
+
+def _mirrors_a_written_field(address: str, held, wanted: dict, previous) -> bool:
+    """Whether a field nobody asked to change moved because the device couples it.
+
+    #1176: writing `VideoWidget[0].TimeTitle.EncodeBlend` also sets
+    `TimeTitle.PreviewBlend` to the same value, both ways, measured. The
+    read-back saw a field change that nothing asked for and reported a write
+    that had worked as refused. Reporting it refused undid nothing: the device
+    had made both changes by the time the read-back ran.
+
+    Every one of these has to hold, and @rroller's review is why there are
+    four rather than two:
+
+    - **a measured relationship**, in `_MEASURED_COUPLINGS`: these two leaf
+      names, in the object they were measured in. Parent and value alone are
+      not enough. Write `MotionDetect[0].Enable=true` and have the device
+      replace `Sensitivity`, a number, with `true`: same object, the value
+      written, and a setting destroyed. That passed as a mirror on the first
+      version of this and must be refused;
+    - the same object as the field that was written;
+    - **a boolean before and after**, as the written value is. A coupled flag
+      is a flag; a field that was a number and is now a boolean was damaged,
+      whatever pair it is in;
+    - exactly the value that field was sent. A coupling the other way round,
+      one flag forced to the opposite of its partner, stays a refusal, which is
+      the safe direction to be wrong in: it is today's behaviour.
+    """
+    parent, dot, leaf = address.rpartition(".")
+    if not dot:
+        return False
+    for written, value in wanted.items():
+        written_parent, _, written_leaf = written.rpartition(".")
+        if written_parent != parent:
+            continue
+        if not any(
+            pattern.fullmatch(parent) and {leaf, written_leaf} == pair
+            for pattern, pair in _MEASURED_COUPLINGS
+        ):
+            continue
+        if not (
+            _is_boolean_text(previous)
+            and _is_boolean_text(held)
+            and _is_boolean_text(value)
+        ):
+            continue
+        if _same_setting(held, value):
+            return True
+    return False
 
 
 class DahuaWriteDeclined(ConnectionError):
@@ -1964,6 +2066,12 @@ class DahuaClient:
     _rpc2_identity_asked = False
     _rpc2_identity = None
 
+    # Whether this account has been refused MotionDetect with HTTP 403, so the
+    # poll stops asking (#1235). On the client because each channel builds its
+    # own client and a reload builds new ones, so a reload asks again: an
+    # account given more rights gets its setting back without a restart.
+    _motion_detect_refused = False
+
     def __init__(
         self,
         username: str,
@@ -2104,7 +2212,9 @@ class DahuaClient:
         """
         url = f"/cgi-bin/snapshot.cgi?channel={channel_number}"
         return repair_dahua_snapshot_header(
-            strip_dahua_snapshot_trailer(await self.get_bytes(url))
+            strip_dahua_snapshot_trailer(
+                await self.get_bytes(url, fresh_challenge=True)
+            )
         )
 
     async def async_get_system_info(self, strict_auth: bool = False) -> dict:
@@ -3460,11 +3570,36 @@ class DahuaClient:
         Example response:
         table.MotionDetect[0].DetectVersion=V3.0
         table.MotionDetect[0].Enable=true
+
+        A refused or absent table reads as no keys at all, which the motion
+        switch reports as unknown (#1235). No refusal escapes into the poll's
+        gather, which has no `return_exceptions`. It used to answer
+        `Enable=false` for channel 0 instead, which was a made-up "off".
+
+        A 403 is remembered for this client, so it is not asked again until a
+        reload. In #1235 an account without the rights was refused on every
+        poll, on both cameras, for days. Any other refusal is asked again next
+        time, as before. The URL is the one `async_get_config` builds, so it
+        shares that read's cache entry.
         """
+        if self._motion_detect_refused:
+            return {}
         try:
-            return await self.async_get_config("MotionDetect")
-        except aiohttp.ClientResponseError:
-            return {"table.MotionDetect[0].Enable": "false"}
+            return await self.get(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"
+            )
+        except aiohttp.ClientResponseError as error:
+            if error.status == 403:
+                self._motion_detect_refused = True
+                _LOGGER.info(
+                    "%s refused this account its motion detection setting "
+                    "(HTTP 403), so it is not asked again until the integration "
+                    "is reloaded, and the Motion Detection switch shows unknown. "
+                    "An account in a group without config rights is the usual "
+                    "cause",
+                    self._address,
+                )
+            return {}
 
     async def async_get_video_analyse_rules_for_amcrest(self):
         """
@@ -3630,6 +3765,23 @@ class DahuaClient:
         # one also answers for a table that only exists where the recorder
         # recognises the camera model, so a refusal is an ordinary answer here.
         return await self.async_get_config("SmartMotionDetect")
+
+    async def async_probe_smart_motion_detection(self) -> dict:
+        """The SmartMotionDetect table, strictly: a refusal raises.
+
+        For the capability probe, which has to tell three answers apart and
+        cannot from `{}`: a 403 or a 400 is the device saying no, a 200 with
+        no rows is the table not being there, and a 500 is the device failing
+        to answer this once (#1243 review). `async_probe_encode` is the same
+        idea for the encoder table.
+
+        Same URL as `async_get_smart_motion_detection`, so the two share one
+        entry in the host read cache. The poll keeps the lenient read: its
+        gather has no `return_exceptions`.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
+        )
 
     async def async_get_video_color(self, fresh: bool = False) -> dict:
         """The picture adjustments per channel. Example output:
@@ -4130,7 +4282,25 @@ class DahuaClient:
                         return {}
                     raise
                 table = params.get("table")
-                return table if as_table else flatten_rpc2_config(name, table)
+                if as_table:
+                    return table
+
+                flat = flatten_rpc2_config(name, table)
+                if name != "VideoInMode" or not isinstance(table, list):
+                    return flat
+
+                resolved_channels = {
+                    channel
+                    for channel in range(len(table))
+                    if resolve_video_in_mode_table_owner(table, channel) is not None
+                }
+                rejected_channels = set(range(len(table))) - resolved_channels
+
+                return canonicalize_video_in_mode(
+                    flat,
+                    resolved_channels=resolved_channels,
+                    rejected_channels=rejected_channels,
+                )
             except Rpc2MethodRefused:
                 # The device answered. Logging in again cannot change its mind
                 # about a table it does not serve, and dropping the shared
@@ -5139,14 +5309,8 @@ class DahuaClient:
                     table = (response.get("params") or {}).get("table")
                 if not isinstance(table, list):
                     raise ConnectionError("VideoInMode did not return a table")
-                if (
-                    channel < 0
-                    or channel >= len(table)
-                    or not isinstance(table[channel], dict)
-                ):
-                    raise ConnectionError(
-                        f"VideoInMode has no configuration row for channel {channel}"
-                    )
+                if channel < 0 or channel >= len(table):
+                    raise ConnectionError(f"VideoInMode has no channel {channel}")
                 if resolve_profile_management_table(table, channel) != "schedule":
                     raise RuntimeError("Profile Management is not in Schedule mode")
                 current = resolve_profile_schedule_table(table, channel)
@@ -6018,7 +6182,7 @@ class DahuaClient:
         url = "/cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode"
         if fresh:
             _HOST_CACHE.pop((self._device, self._username, url), None)
-        return await self.get(url)
+        return canonicalize_video_in_mode(await self.get(url))
 
     async def async_set_coaxial_control_state(
         self,
@@ -7204,7 +7368,7 @@ class DahuaClient:
                     indexes = set()
                     for raw in (response.get("params") or {}).get("indexes") or []:
                         try:
-                            indexes.add(int(raw))
+                            indexes.add(event_index_channel(code, int(raw)))
                         except (TypeError, ValueError):
                             continue
 
@@ -7324,18 +7488,31 @@ class DahuaClient:
         async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
             response = None
             try:
+                # Asks for a challenge first, as a still does (see get_bytes).
                 auth = DigestAuth(
                     self._username, self._password, self._session, self._digest_state
                 )
-                response = await auth.request("GET", url)
+                response = await auth.request("GET", url, preemptive=False)
                 response.raise_for_status()
             finally:
                 if response is not None:
                     # close() rather than read(): drops the body without transferring it
                     response.close()
 
-    async def get_bytes(self, url: str) -> bytes:
-        """Get information from the API. This will return the raw response and not process it"""
+    async def get_bytes(self, url: str, *, fresh_challenge: bool = False) -> bytes:
+        """Get information from the API. This will return the raw response and not process it
+
+        `fresh_challenge` sends the request with no credentials and answers
+        the 401 it gets, instead of signing it up front with the challenge
+        every other request shares. Stills take it. That is how stills went
+        out up to 0.9.84 and how curl sends them. The nonce count stays the
+        shared one, so a device that repeats its nonce and refuses a reused
+        count sees it carry on. Sharing the challenge came
+        in 0.9.85, the release where a DHI-NVR2108HS-8P-S2 on 3.205 stopped
+        setting up, and on 3.x its stills and setup still time out while
+        curl's are answered in under a second (#1197). It costs a still one
+        extra round trip.
+        """
         # The slot is taken before the clock starts, so this timeout is the
         # device's and MAX_QUEUE_WAIT_SECONDS is the queue's.
         async with self._request_slot(), asyncio.timeout(TIMEOUT_SECONDS):
@@ -7349,7 +7526,9 @@ class DahuaClient:
                 auth = DigestAuth(
                     self._username, self._password, self._session, self._digest_state
                 )
-                response = await auth.request("GET", self._base + url)
+                response = await auth.request(
+                    "GET", self._base + url, preemptive=not fresh_challenge
+                )
                 response.raise_for_status()
 
                 return await response.read()
@@ -7373,7 +7552,7 @@ class DahuaClient:
         for line in data.decode("utf-8", errors="ignore").splitlines():
             match = re.fullmatch(r"channels\[\d+\]=(\d+)", line.strip())
             if match:
-                indexes.add(int(match.group(1)))
+                indexes.add(event_index_channel(code, int(match.group(1))))
         return indexes
 
     @asynccontextmanager
@@ -7691,7 +7870,19 @@ class DahuaClient:
             altered = sorted(
                 key for key in untouched if key in after and after[key] != before[key]
             )
-            if lost or altered:
+            # A field the device is measured to set along with the one written is
+            # the device applying the write to both, not damage from it (#1176).
+            # `_mirrors_a_written_field` has the four conditions and why each is
+            # there. Everything else that moved still refuses.
+            mirrored = [
+                key
+                for key in altered
+                if _mirrors_a_written_field(
+                    key[len("table.") :], after[key], wanted, before[key]
+                )
+            ]
+            unexplained = [key for key in altered if key not in mirrored]
+            if lost or unexplained:
                 if lost:
                     # The whole table went back, so a setting that is now gone
                     # is one the device dropped from what it was sent. Nothing
@@ -7736,9 +7927,15 @@ class DahuaClient:
                 raise cgi_error from None
             _LOGGER.info(
                 "The CGI write to %s could not be read, so %s was written over RPC2 "
-                "and read back (#1176)",
+                "and read back (#1176)%s",
                 self._address,
                 ", ".join(values),
+                (
+                    "; the device also set %s to the same value, which it couples "
+                    "to the field written" % ", ".join(mirrored)
+                    if mirrored
+                    else ""
+                ),
             )
             return await self._write_succeeded()
 

@@ -236,21 +236,32 @@ class DigestAuth:
             )
         return await self.session.request(method, url, headers=headers, **kwargs)
 
-    async def request(self, method, url, *, headers=None, **kwargs):
-        """Makes a request, absorbing digest challenges up to a fixed budget."""
+    async def request(self, method, url, *, headers=None, preemptive=True, **kwargs):
+        """Makes a request, absorbing digest challenges up to a fixed budget.
+
+        `preemptive=False` sends the first attempt with no credentials and
+        signs only after the device's 401, the way curl does. The challenge
+        it gets still goes into the shared state, so when the device hands
+        out the nonce it already gave, the count carries on from the other
+        requests' instead of starting again at 1, which a device that
+        rejects a reused count would refuse.
+        """
         if headers is None:
             headers = {}
 
         refused = 0
         response = None
 
-        for _ in range(MAX_AUTH_ATTEMPTS):
+        for attempt in range(MAX_AUTH_ATTEMPTS):
             attempt_headers = dict(headers)
             sent_nonce = None
 
             if self.scheme == BASIC:
+                # Up front even when not preemptive: there is no challenge
+                # to reuse, and a 401 asking for Basic again would read as
+                # a refusal, since the scheme is already Basic.
                 attempt_headers["AUTHORIZATION"] = self._build_basic_header()
-            elif self.challenge:
+            elif self.challenge and (preemptive or attempt > 0):
                 authorization = self._build_digest_header(method.upper(), url)
                 if authorization:
                     attempt_headers["AUTHORIZATION"] = authorization

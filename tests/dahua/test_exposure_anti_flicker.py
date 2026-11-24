@@ -479,3 +479,28 @@ def test_option_state_translations_cover_every_option():
         )
         states = translation["entity"]["select"]["exposure_anti_flicker"]["state"]
         assert states == labels
+
+
+async def test_client_canonicalizes_nested_videoinmode_before_profile_consumers():
+    client = object.__new__(DahuaClient)
+    client._device = "nested-videoinmode:80"
+    client._username = "user"
+    client._session = object()
+    client._refuse_if_closing = lambda: None
+    physical = {
+        "table.VideoInMode[3][0][0].Mode": "0",
+        "table.VideoInMode[3][0][0].Config[0]": "2",
+    }
+
+    async def request(url, verify_ok=False):
+        return physical
+
+    client._request = request
+    clear_host_cache(client._device)
+    try:
+        assert await client.async_get_video_in_mode() == {
+            "table.VideoInMode[3].Mode": "0",
+            "table.VideoInMode[3].Config[0]": "2",
+        }
+    finally:
+        clear_host_cache(client._device)

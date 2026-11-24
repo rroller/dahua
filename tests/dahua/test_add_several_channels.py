@@ -64,6 +64,12 @@ def _flow():
     # reached for over the network; "" is the value that means "asked, and there was
     # none". test_flow_preview.py is where the picture itself is tested.
     flow._preview_markdown = ""
+    # The naming step also checks whether this address already has an entry, so
+    # that adding one device twice raises a repair card rather than going quiet.
+    # No entries here, which is the ordinary first add.
+    flow.hass = SimpleNamespace(
+        config_entries=SimpleNamespace(async_entries=lambda *args, **kwargs: [])
+    )
     return flow
 
 

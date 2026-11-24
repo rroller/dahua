@@ -1,8 +1,19 @@
 """VideoInMode is one host-wide read with a row per channel."""
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua.client import DahuaClient
+from custom_components.dahua.coordinator import active_profile_index
+from custom_components.dahua.profile import (
+    canonicalize_video_in_mode,
+    resolve_profile_management_mode,
+    resolve_profile_schedule_times,
+    video_in_mode_channel_is_rejected,
+)
 
 # What an eleven channel NVR returns. Channel 0 is on the day profile, most of
 # the rest are on night, and channel 4 has been put on the scene profile.
@@ -135,3 +146,354 @@ def test_the_profile_is_always_a_string():
     for table in (NVR_TABLE, SINGLE_CAMERA_TABLE, {}):
         for channel in (0, 4, 10):
             assert isinstance(_coordinator(channel).read_profile_mode(table), str)
+
+
+def test_videoinmode_nested_layouts_canonicalize_to_the_same_channel_row():
+    expected = {
+        "table.VideoInMode[0].Mode": "1",
+        "table.VideoInMode[0].Config[0]": "0",
+        "table.VideoInMode[0].Config[1]": "1",
+        "table.VideoInMode[0].TimeSection[0][0]": "1 05:30:00-17:00:00",
+    }
+    for owner in (
+        "table.VideoInMode[0]",
+        "table.VideoInMode[0][0]",
+        "table.VideoInMode[0][0][0]",
+    ):
+        physical = {
+            owner + key[len("table.VideoInMode[0]") :]: value
+            for key, value in expected.items()
+        }
+        assert canonicalize_video_in_mode(physical) == expected
+
+
+def test_videoinmode_ambiguous_flat_owners_preserve_physical_evidence():
+    data = {
+        "table.VideoInMode[0].Mode": "0",
+        "table.VideoInMode[0].Config[0]": "2",
+        "table.VideoInMode[0][0].Mode": "1",
+        "table.VideoInMode[0][0].Config[0]": "0",
+    }
+
+    canonical = canonicalize_video_in_mode(data)
+
+    for key, value in data.items():
+        assert canonical[key] == value
+
+    assert video_in_mode_channel_is_rejected(canonical, 0)
+
+
+def test_videoinmode_configex_only_preserves_physical_evidence():
+    data = {
+        "table.VideoInMode[0].ConfigEx": "Night",
+    }
+
+    canonical = canonicalize_video_in_mode(data)
+
+    assert canonical == data
+    assert not video_in_mode_channel_is_rejected(canonical, 0)
+
+
+def test_videoinmode_nonzero_child_owner_is_not_promoted_over_its_sibling():
+    data = {
+        "table.VideoInMode[0][0].Mode": "0",
+        "table.VideoInMode[0][1].Mode": "0",
+        "table.VideoInMode[0][1].Config[0]": "1",
+    }
+
+    canonical = canonicalize_video_in_mode(data)
+
+    for key, value in data.items():
+        assert canonical[key] == value
+
+    assert video_in_mode_channel_is_rejected(canonical, 0)
+
+
+def test_videoinmode_complete_owner_is_not_promoted_over_incomplete_sibling():
+    data = {
+        "table.VideoInMode[0][0].Mode": "0",
+        "table.VideoInMode[0][0].Config[0]": "1",
+        "table.VideoInMode[0][1].Mode": "0",
+    }
+
+    canonical = canonicalize_video_in_mode(data)
+
+    for key, value in data.items():
+        assert canonical[key] == value
+
+    assert video_in_mode_channel_is_rejected(canonical, 0)
+
+
+@pytest.mark.parametrize(
+    ("physical", "expected"),
+    [
+        (
+            {
+                "table.VideoInMode[3].Config[0]": "1",
+            },
+            {
+                "table.VideoInMode[3].Config[0]": "1",
+            },
+        ),
+        (
+            {
+                "table.VideoInMode[3][0].Config[0]": "1",
+            },
+            {
+                "table.VideoInMode[3].Config[0]": "1",
+            },
+        ),
+        (
+            {
+                "table.VideoInMode[3][0][0].Config[0]": "1",
+            },
+            {
+                "table.VideoInMode[3].Config[0]": "1",
+            },
+        ),
+        (
+            {
+                "table.VideoInMode[3][0].ConfigEx": "Night",
+            },
+            {
+                "table.VideoInMode[3].ConfigEx": "Night",
+            },
+        ),
+    ],
+)
+def test_cgi_flat_single_owner_paths_are_canonicalized(physical, expected):
+    result = canonicalize_video_in_mode(physical)
+
+    assert result == expected
+    assert not video_in_mode_channel_is_rejected(result, 3)
+
+
+@pytest.mark.parametrize(
+    "physical",
+    [
+        {
+            "table.VideoInMode[3][1].Config[0]": "0",
+        },
+        {
+            "table.VideoInMode[3][0][1].Config[0]": "0",
+        },
+        {
+            "table.VideoInMode[3].ConfigEx": "Night",
+            "table.VideoInMode[3][0].Config[0]": "0",
+        },
+        {
+            "table.VideoInMode[3].Config[0]": "1",
+            "table.VideoInMode[3][0].Config[0]": "0",
+        },
+        {
+            "table.VideoInMode[3][0].Config[0]": "0",
+            "table.VideoInMode[3][1].Config[0]": "1",
+        },
+        {
+            "table.VideoInMode[3][0].Mode": "0",
+            "table.VideoInMode[3][1].Config[0]": "1",
+        },
+    ],
+)
+def test_cgi_flat_ambiguous_paths_are_rejected_for_all_consumers(physical):
+    unrelated = {
+        "table.VideoInMode[7].Config[0]": "1",
+    }
+    result = canonicalize_video_in_mode({**physical, **unrelated})
+
+    for key, value in physical.items():
+        assert result[key] == value
+
+    assert video_in_mode_channel_is_rejected(result, 3)
+    assert active_profile_index(result, 3) is None
+    assert resolve_profile_management_mode(result, 3) is None
+    assert resolve_profile_schedule_times(result, 3) is None
+
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = 3
+    coordinator._profile_mode = "2"
+    coordinator.data = {}
+    coordinator.data.update(result)
+
+    assert coordinator.describe_video_profile_shape() == "ambiguous"
+    assert coordinator.video_profile_mode_is_writable() is False
+    assert coordinator.get_profile_mode() == "2"
+
+    assert not video_in_mode_channel_is_rejected(result, 7)
+    assert active_profile_index(result, 7) == 1
+
+
+def _rpc2_video_in_mode_client(table):
+    client = object.__new__(DahuaClient)
+    rpc2 = SimpleNamespace(
+        get_config=AsyncMock(
+            return_value={
+                "table": table,
+            }
+        )
+    )
+    holder = SimpleNamespace(
+        client=rpc2,
+        task=None,
+    )
+
+    async def shared_rpc2():
+        return holder
+
+    async def get(_url):
+        return await client._rpc2_get_config("VideoInMode")
+
+    client._shared_rpc2 = shared_rpc2
+    client.get = get
+    client._device = "rpc2-video-in-mode"
+    client._username = "test"
+    return client, rpc2
+
+
+async def _read_rpc2_video_in_mode(table):
+    client, rpc2 = _rpc2_video_in_mode_client(table)
+    result = await client.async_get_video_in_mode()
+    rpc2.get_config.assert_awaited_once_with({"name": "VideoInMode"})
+    return result
+
+
+async def test_rpc2_empty_sibling_before_owner_rejects_all_semantic_consumers():
+    table = [
+        [
+            {},
+            {
+                "Mode": 0,
+                "Config": [1],
+                "TimeSection": [["1 05:30:00-17:00:00"]],
+            },
+        ]
+    ]
+
+    result = await _read_rpc2_video_in_mode(table)
+
+    assert result["table.VideoInMode[0][1].Config[0]"] == "1"
+    assert video_in_mode_channel_is_rejected(result, 0)
+    assert active_profile_index(result, 0) is None
+    assert resolve_profile_management_mode(result, 0) is None
+    assert resolve_profile_schedule_times(result, 0) is None
+
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = 0
+    coordinator._profile_mode = "2"
+    coordinator.data = {}
+    coordinator.data.update(result)
+
+    assert coordinator.describe_video_profile_shape() == "ambiguous"
+    assert coordinator.video_profile_mode_is_writable() is False
+    assert coordinator.get_profile_mode() == "2"
+
+
+async def test_rpc2_empty_sibling_after_owner_rejects_all_semantic_consumers():
+    table = [
+        [
+            {
+                "Mode": 0,
+                "Config": [1],
+                "TimeSection": [["1 05:30:00-17:00:00"]],
+            },
+            {},
+        ]
+    ]
+
+    result = await _read_rpc2_video_in_mode(table)
+
+    assert result["table.VideoInMode[0][0].Config[0]"] == "1"
+    assert video_in_mode_channel_is_rejected(result, 0)
+    assert active_profile_index(result, 0) is None
+    assert resolve_profile_management_mode(result, 0) is None
+    assert resolve_profile_schedule_times(result, 0) is None
+
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = 0
+    coordinator._profile_mode = "2"
+    coordinator.data = {}
+    coordinator.data.update(result)
+
+    assert coordinator.describe_video_profile_shape() == "ambiguous"
+    assert coordinator.video_profile_mode_is_writable() is False
+    assert coordinator.get_profile_mode() == "2"
+
+
+def test_rejected_videoinmode_preserves_the_last_confirmed_profile():
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = 0
+    coordinator._profile_mode = "2"
+
+    rejected = canonicalize_video_in_mode(
+        {
+            "table.VideoInMode[0][1].Mode": "0",
+            "table.VideoInMode[0][1].Config[0]": "1",
+        },
+        resolved_channels=set(),
+        rejected_channels={0},
+    )
+
+    if not video_in_mode_channel_is_rejected(
+        rejected,
+        coordinator._channel,
+    ):
+        coordinator._profile_mode = coordinator.read_profile_mode(rejected)
+
+    assert coordinator.get_profile_mode() == "2"
+
+
+@pytest.mark.parametrize(
+    ("row", "expected_profile", "expected_shape"),
+    [
+        ({"Config": [1]}, 1, "ordinary"),
+        ({"ConfigEx": "Night"}, 1, "configex"),
+    ],
+)
+async def test_rpc2_direct_owner_without_profile_management_fields_remains_readable(
+    row,
+    expected_profile,
+    expected_shape,
+):
+    table = [
+        {
+            "Mode": 0,
+            "Config": [2],
+        },
+        row,
+    ]
+
+    result = await _read_rpc2_video_in_mode(table)
+
+    assert not video_in_mode_channel_is_rejected(result, 1)
+    assert active_profile_index(result, 0) == 2
+    assert active_profile_index(result, 1) == expected_profile
+    assert resolve_profile_management_mode(result, 1) is None
+
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = 1
+    coordinator.data = result
+
+    assert coordinator.describe_video_profile_shape() == expected_shape
+
+
+async def test_rpc2_singleton_deep_owner_remains_authoritative():
+    table = [
+        [
+            [
+                {
+                    "Mode": 0,
+                    "Config": [1],
+                }
+            ]
+        ]
+    ]
+
+    result = await _read_rpc2_video_in_mode(table)
+
+    assert not video_in_mode_channel_is_rejected(result, 0)
+    assert result == {
+        "table.VideoInMode[0].Mode": "0",
+        "table.VideoInMode[0].Config[0]": "1",
+    }
+    assert active_profile_index(result, 0) == 1
+    assert resolve_profile_management_mode(result, 0) == "full_time_night"

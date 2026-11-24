@@ -11,7 +11,7 @@ from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.const import EntityCategory
 from custom_components.dahua import entry_coordinators
 
-from . import dahua_utils, refusals
+from . import dahua_utils, refusal_store, refusals
 from .audio import audio_config_value
 from .const import DOMAIN
 from .entity import DahuaBaseEntity, DahuaHostEntity
@@ -395,11 +395,17 @@ class DahuaMotionDetectionBinarySwitch(DahuaBaseEntity, SwitchEntity):
         return self._coordinator.get_serial_number() + "_motion_detection"
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool | None:
         """
         Return true if the switch is on.
         Value is fetched from api.get_motion_detection_config
+
+        None, which Home Assistant shows as unknown, when the device didn't
+        answer with this channel's setting. Reading that as "off" told a user
+        whose account the camera refused that motion detection was off (#1235).
         """
+        if not self._coordinator.motion_detection_was_read():
+            return None
         return self._coordinator.is_motion_detection_enabled()
 
 
@@ -739,6 +745,13 @@ class DahuaSirenBinarySwitch(DahuaBaseEntity, SwitchEntity):
                     self._coordinator,
                     SIREN_CONTROL,
                     dahua_utils.describe_write_refusal(err),
+                )
+                # Kept across a restart too, under this firmware (#942).
+                await refusal_store.async_save(
+                    self.hass,
+                    self._coordinator.config_entry.entry_id,
+                    self._coordinator,
+                    SIREN_CONTROL,
                 )
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
