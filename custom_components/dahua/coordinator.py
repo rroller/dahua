@@ -7088,18 +7088,32 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         rule as the white light's, which withdraws on any named row: absence
         of an infrared row is only believed from a table that demonstrably
         lists the emitters that are there.
+
+        **Every profile of the channel, not the first.** The table is
+        `[channel][profile][light]`, and a profile lists the lights it uses.
+        A channel whose profile 0 holds only the white emitter and whose
+        profile 1 holds the infrared one has an infrared emitter, and
+        `infrared_v2_row` finds and drives that row whenever profile 1 is the
+        live one. So the rows are taken from the keys that are there, whatever
+        their profile or index, and one banked infrared row anywhere in the
+        channel keeps the controls.
         """
         data = getattr(self, "data", None) or {}
         if not data:
             return False
-        key = "table.Lighting_V2[{0}][0][{1}].LightType"
-        emitters = [
-            data.get(key.format(self._channel, index))
-            for index in range(MAX_LIGHTING_V2_LIGHTS)
-            if data.get(key.format(self._channel, index))
-            in (INFRARED_LIGHT, WHITE_LIGHT)
-            and self._names_a_brightness_bank(index)
-        ]
+        prefix = "table.Lighting_V2[{0}][".format(self._channel)
+        emitters = set()
+        for key, light in data.items():
+            if light not in (INFRARED_LIGHT, WHITE_LIGHT):
+                continue
+            if not key.startswith(prefix) or not key.endswith("].LightType"):
+                continue
+            row = key[: -len("LightType")]
+            if any(
+                "{0}{1}[0].Light".format(row, bank) in data
+                for bank in LIGHT_BRIGHTNESS_BANKS
+            ):
+                emitters.add(light)
         return bool(emitters) and INFRARED_LIGHT not in emitters
 
     def supports_floodlightmode(self) -> bool:

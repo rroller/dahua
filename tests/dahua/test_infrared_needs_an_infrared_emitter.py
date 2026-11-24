@@ -17,6 +17,7 @@ brightness bank: measured on a DHI-NVR5464-16P-EI, that agreed with
 """
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
+from custom_components.dahua.coordinator import infrared_v2_row
 
 
 def _coordinator(data, model="IPC-Color4K-X", channel=0):
@@ -29,8 +30,8 @@ def _coordinator(data, model="IPC-Color4K-X", channel=0):
     return c
 
 
-def _row(data, index, light, banks=("NearLight", "FarLight"), channel=0):
-    prefix = "table.Lighting_V2[{0}][0][{1}]".format(channel, index)
+def _row(data, index, light, banks=("NearLight", "FarLight"), channel=0, profile=0):
+    prefix = "table.Lighting_V2[{0}][{1}][{2}]".format(channel, profile, index)
     data["{0}.LightType".format(prefix)] = light
     data["{0}.Mode".format(prefix)] = "Auto"
     for bank in banks:
@@ -109,6 +110,77 @@ def test_another_channels_rows_do_not_decide_this_one():
 
     assert _coordinator(data, channel=0).supports_infrared_light() is True
     assert _coordinator(data, channel=3).supports_infrared_light() is False
+
+
+# --- a profile lists the lights it uses, the channel has them all -------------
+
+
+def test_infrared_in_another_profile_of_the_channel_keeps_it():
+    """rroller's case on #1240: white at [0][0][0], infrared at [0][1][0].
+    `infrared_v2_row` reads the Night row, so the controls must stay."""
+    data = _row({}, 0, "WhiteLight", profile=0)
+    _row(data, 0, "InfraredLight", banks=("MiddleLight",), profile=1)
+
+    coordinator = _coordinator(data)
+
+    assert infrared_v2_row(data, 0, "1") == ("1", 0, "MiddleLight")
+    assert coordinator.supports_infrared_light() is True
+
+
+def test_infrared_in_a_high_profile_and_index_keeps_it():
+    """The recorder here serves profiles 0 through 8; nothing is assumed
+    about how many there are or which slot a light takes."""
+    data = _row({}, 0, "WhiteLight", profile=0)
+    _row(data, 3, "InfraredLight", profile=8)
+
+    assert _coordinator(data).supports_infrared_light() is True
+
+
+def test_white_in_every_profile_and_infrared_in_none_has_none():
+    """The #1094 camera again, with its one row repeated per profile."""
+    data = {}
+    for profile in range(3):
+        _row(data, 0, "WhiteLight", profile=profile)
+
+    assert _coordinator(data).supports_infrared_light() is False
+
+
+def test_a_white_emitter_found_only_in_a_later_profile_still_counts():
+    """Evidence of what is fitted is taken from every profile too."""
+    data = {"table.Lighting_V2[0][0][0].Mode": "Auto"}
+    _row(data, 0, "WhiteLight", profile=2)
+
+    assert _coordinator(data).supports_infrared_light() is False
+
+
+def test_a_stub_infrared_row_in_another_profile_is_not_an_emitter():
+    """Bankless, like the recorder's stub rows: it names a light that is
+    not fitted, in whichever profile it sits."""
+    data = _row({}, 0, "WhiteLight", profile=0)
+    _row(data, 0, "InfraredLight", banks=(), profile=1)
+
+    assert _coordinator(data).supports_infrared_light() is False
+
+
+def test_another_channels_other_profile_does_not_decide_this_one():
+    """The unrelated-channel control, with differing profiles: channel 1's
+    Night infrared is not channel 0's, and channel 10 is not channel 1."""
+    data = _row({}, 0, "WhiteLight", channel=0, profile=0)
+    _row(data, 0, "WhiteLight", channel=1, profile=0)
+    _row(data, 0, "InfraredLight", channel=1, profile=1)
+    _row(data, 0, "InfraredLight", channel=10, profile=1)
+
+    assert _coordinator(data, channel=0).supports_infrared_light() is False
+    assert _coordinator(data, channel=1).supports_infrared_light() is True
+
+
+def test_channel_ten_is_not_channel_one():
+    """The keys share a prefix as text, so the channel is matched whole."""
+    data = _row({}, 0, "WhiteLight", channel=1, profile=0)
+    _row(data, 0, "InfraredLight", channel=10, profile=1)
+    _row(data, 0, "InfraredLight", channel=11, profile=0)
+
+    assert _coordinator(data, channel=1).supports_infrared_light() is False
 
 
 # --- the model list still applies -------------------------------------------
