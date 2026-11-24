@@ -15,7 +15,7 @@ from aiohttp import (
 )
 
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigSubentry, ConfigSubentryData
+from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.data_entry_flow import section
 from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
@@ -37,7 +37,7 @@ from . import (
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
 from .dhip import DhipLoginRefused, async_dhip_session
-from .migrate import CHANNEL_SUBENTRY, _channel_settings
+from .migrate import CHANNEL_SUBENTRY, channel_int, primary_channel_subentry
 from .flow_preview import async_drop_preview, async_store_preview, preview_url
 from .const import (
     CONF_ACCEPT_H265,
@@ -2102,39 +2102,6 @@ class DahuaOptionsFlowHandler(config_entries.OptionsFlow):
         )
 
 
-def _channel_int(value) -> int:
-    """Return a zero-based channel index as an int, matching ``channel_configs``."""
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _primary_channel_subentry(entry) -> ConfigSubentry:
-    """Promote a flat entry's own channel into a channel subentry (#1236).
-
-    Matches ``_channel_subentries`` and ``migrate._channel_settings`` so the
-    promoted primary carries per-channel options without freezing host-wide
-    settings or entry-wide labels onto the channel.
-    """
-    data = _channel_settings(entry)
-    data.pop(CONF_LABELS, None)
-    primary_channel = _channel_int(data.get(CONF_CHANNEL, 0))
-    data[CONF_CHANNEL] = primary_channel
-    title = (
-        data.get(CONF_NAME)
-        or getattr(entry, "title", None)
-        or "Channel {0}".format(primary_channel + 1)
-    )
-    data[CONF_NAME] = title
-    return ConfigSubentry(
-        data=data,
-        subentry_type=CHANNEL_SUBENTRY,
-        title=title,
-        unique_id="%s_%d" % (data.get(CONF_ADDRESS), primary_channel),
-    )
-
-
 class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
     """Change the settings that belong to one channel of a recorder.
 
@@ -2168,18 +2135,17 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
         base = dict(entry.data)
 
         taken = {
-            _channel_int(sub.data.get(CONF_CHANNEL))
-            for sub in entry.subentries.values()
+            channel_int(sub.data.get(CONF_CHANNEL)) for sub in entry.subentries.values()
         }
         if not entry.subentries:
             # A flat entry has no subentries; its one channel lives in the entry
             # data, and adding a second is what turns it into a hub.
-            taken.add(_channel_int(base.get(CONF_CHANNEL, 0)))
+            taken.add(channel_int(base.get(CONF_CHANNEL, 0)))
         next_free = next(i for i in range(0, 256) if i not in taken)
 
         errors: dict[str, str] = {}
         if user_input is not None:
-            channel = _channel_int(user_input[CONF_CHANNEL])
+            channel = channel_int(user_input[CONF_CHANNEL])
             if channel in taken:
                 errors[CONF_CHANNEL] = "channel_already_added"
             else:
@@ -2200,7 +2166,7 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
                     # Promote the flat entry's existing channel before adding the
                     # new one so `channel_configs` keeps it alive on reload (#1236).
                     self.hass.config_entries.async_add_subentry(
-                        entry, _primary_channel_subentry(entry)
+                        entry, primary_channel_subentry(entry)
                     )
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],

@@ -72,6 +72,8 @@ from .const import (
     CHANNEL_OPTION_KEYS,
     CONF_ADDRESS,
     CONF_CHANNEL,
+    CONF_LABELS,
+    CONF_NAME,
     CONF_PORT,
     DOMAIN,
     PLATFORMS,
@@ -158,6 +160,39 @@ def _port_of(entry) -> str:
 
 def _subentry_unique_id(address: str, channel: int) -> str:
     return "%s_%d" % (address, channel)
+
+
+def channel_int(value) -> int:
+    """Return a zero-based channel index as an int, matching ``channel_configs``."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def primary_channel_subentry(entry) -> ConfigSubentry:
+    """Promote a flat entry's own channel into a channel subentry (#1236).
+
+    Matches ``_channel_subentries`` and ``_channel_settings`` so the promoted
+    primary carries per-channel options without freezing host-wide settings or
+    entry-wide labels onto the channel.
+    """
+    data = _channel_settings(entry)
+    data.pop(CONF_LABELS, None)
+    primary_channel = channel_int(data.get(CONF_CHANNEL, 0))
+    data[CONF_CHANNEL] = primary_channel
+    title = (
+        data.get(CONF_NAME)
+        or getattr(entry, "title", None)
+        or "Channel {0}".format(primary_channel + 1)
+    )
+    data[CONF_NAME] = title
+    return ConfigSubentry(
+        data=data,
+        subentry_type=CHANNEL_SUBENTRY,
+        title=title,
+        unique_id=_subentry_unique_id(data.get(CONF_ADDRESS), primary_channel),
+    )
 
 
 def _rows_span_multiple_subentries(rows) -> bool:
@@ -1572,6 +1607,16 @@ async def async_adopt_the_real_serial(hass: HomeAssistant, entry, coordinators) 
     return len(moving)
 
 
+def _is_host_device(device) -> bool:
+    """Whether ``device`` is a recorder's shared host parent device."""
+    return any(
+        domain == DOMAIN
+        and isinstance(identifier, str)
+        and identifier.endswith("_host")
+        for domain, identifier in (getattr(device, "identifiers", None) or ())
+    )
+
+
 def _device_belongs_to_flat_entry(device, entry_id: str) -> bool:
     """Whether ``device`` currently lives on ``entry_id`` without a subentry."""
     if getattr(device, "config_entry_id", None) is not None:
@@ -1584,6 +1629,52 @@ def _device_belongs_to_flat_entry(device, entry_id: str) -> bool:
         if subs is not None:
             return None in subs
     return False
+
+
+@callback
+def async_recover_stranded_primary_subentry(hass: HomeAssistant, entry) -> bool:
+    """Recreate a missing primary channel subentry left by pre-fix #1236 additions.
+
+    An entry that gained secondary channel subentries without first promoting
+    its primary channel has ``entry.subentries`` populated, no subentry for its
+    own ``CONF_CHANNEL``, and flat device or entity rows still sitting on
+    ``config_subentry_id=None``. Only recover when non-host flat rows remain so
+    a deliberately removed primary channel subentry is never resurrected.
+    """
+    if not entry.subentries:
+        return False
+
+    primary_channel = channel_int(entry.data.get(CONF_CHANNEL, 0))
+    if any(
+        channel_int(sub.data.get(CONF_CHANNEL, 0)) == primary_channel
+        for sub in entry.subentries.values()
+        if sub.subentry_type == CHANNEL_SUBENTRY
+    ):
+        return False
+
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    entry_devices = list(dr.async_entries_for_config_entry(devices, entry.entry_id))
+    host_device_ids = {device.id for device in entry_devices if _is_host_device(device)}
+    has_flat_channel_device = any(
+        _device_belongs_to_flat_entry(device, entry.entry_id)
+        and device.id not in host_device_ids
+        for device in entry_devices
+    )
+    has_flat_channel_entity = any(
+        row.config_subentry_id is None and row.device_id not in host_device_ids
+        for row in er.async_entries_for_config_entry(entities, entry.entry_id)
+    )
+    if not has_flat_channel_device and not has_flat_channel_entity:
+        return False
+
+    hass.config_entries.async_add_subentry(entry, primary_channel_subentry(entry))
+    _LOGGER.info(
+        "%s: recovered missing primary channel %d subentry from flat entry data",
+        entry.data.get(CONF_ADDRESS),
+        primary_channel,
+    )
+    return True
 
 
 @callback
@@ -1617,26 +1708,35 @@ def async_adopt_flat_channel_rows(hass: HomeAssistant, entry, coordinators) -> i
         if subentry_id is None or not serial:
             continue
         device = device_by_identifier(devices, (DOMAIN, serial), entry.entry_id)
-        if device is None or not _device_belongs_to_flat_entry(device, entry.entry_id):
+        if device is None:
+            continue
+
+        flat_rows = [
+            row
+            for row in entry_entities
+            if row.config_subentry_id is None and row.device_id == device.id
+        ]
+        flat_device = _device_belongs_to_flat_entry(device, entry.entry_id)
+        if not flat_rows and not flat_device:
             continue
 
         # Entities first: moving a device before its entities deletes them.
-        for row in entry_entities:
-            if row.config_subentry_id is None and row.device_id == device.id:
-                entities.async_update_entity_platform(
-                    row.entity_id,
-                    DOMAIN,
-                    new_config_entry_id=entry.entry_id,
-                    new_config_subentry_id=subentry_id,
-                )
-                moved_entities += 1
+        for row in flat_rows:
+            entities.async_update_entity_platform(
+                row.entity_id,
+                DOMAIN,
+                new_config_entry_id=entry.entry_id,
+                new_config_subentry_id=subentry_id,
+            )
+            moved_entities += 1
 
-        devices.async_update_device(
-            device.id,
-            new_config_entry_id=entry.entry_id,
-            new_config_subentry_id=subentry_id,
-        )
-        moved_devices += 1
+        if flat_device:
+            devices.async_update_device(
+                device.id,
+                new_config_entry_id=entry.entry_id,
+                new_config_subentry_id=subentry_id,
+            )
+            moved_devices += 1
 
     if moved_entities or moved_devices:
         _LOGGER.debug(

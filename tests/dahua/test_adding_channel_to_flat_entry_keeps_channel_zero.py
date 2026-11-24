@@ -11,11 +11,12 @@ channels later via **Add a channel** must:
    separate recorder host device (``<serial>_host``) untouched at ``None``.
 """
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from homeassistant.config_entries import ConfigEntryState, ConfigSubentry
+from homeassistant.config_entries import ConfigEntryState, ConfigSubentry, SOURCE_USER
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -377,3 +378,226 @@ async def test_setup_entry_adopts_flat_rows_before_forwarding_platforms(hass):
         sub_0.subentry_id,
     ]
     await dahua_module.async_unload_entry(hass, entry)
+
+
+async def test_upgrade_recovers_stranded_primary_subentry_during_setup(hass):
+    entry, ch0_device, ch0_rows, host_device, disk_row = _flat_entry_with_registries(
+        hass
+    )
+    # Simulate an entry left in pre-fix #1236 state: channel 1 subentry added,
+    # channel 0 left only in entry.data with device and entities at subentry=None.
+    sub_1 = ConfigSubentry(
+        data={**BASE_DATA, CONF_CHANNEL: 1, CONF_NAME: "Channel 2"},
+        subentry_type=CHANNEL_SUBENTRY,
+        title="Channel 2",
+        unique_id=f"{HOST_ADDRESS}_1",
+    )
+    hass.config_entries.async_add_subentry(entry, sub_1)
+    entry._async_set_state(hass, ConfigEntryState.SETUP_IN_PROGRESS, None)
+
+    built_channels: list[int] = []
+    seen_at_forward: dict[str, object] = {}
+
+    async def fake_forward(_entry, _platforms):
+        entities = er.async_get(hass)
+        devices = dr.async_get(hass)
+        seen_at_forward["device_subentry"] = devices.async_get(
+            ch0_device.id
+        ).config_subentry_id
+        seen_at_forward["host_subentry"] = devices.async_get(
+            host_device.id
+        ).config_subentry_id
+        seen_at_forward["entity_subentries"] = [
+            entities.async_get(r.entity_id).config_subentry_id for r in ch0_rows
+        ]
+        seen_at_forward["disk_subentry"] = entities.async_get(
+            disk_row.entity_id
+        ).config_subentry_id
+        return True
+
+    def fake_coordinator(
+        _hass,
+        *,
+        entry,
+        events,
+        address,
+        port,
+        rtsp_port,
+        username,
+        password,
+        name,
+        channel,
+        use_https,
+        channel_config,
+        subentry_id,
+    ):
+        built_channels.append(channel)
+        serial = SERIAL if channel == 0 else f"{SERIAL}_{channel}"
+        return SimpleNamespace(
+            subentry_id=subentry_id,
+            platforms=[],
+            get_address=lambda: address,
+            get_channel=lambda: channel,
+            get_serial_number=lambda: serial,
+            get_device_serial_number=lambda: SERIAL,
+            host_device_identifier=lambda: f"{SERIAL}_host",
+            client=SimpleNamespace(),
+            async_config_entry_first_refresh=AsyncMock(return_value=None),
+            async_stop=AsyncMock(return_value=None),
+        )
+
+    with (
+        patch.object(
+            dahua_module, "DahuaDataUpdateCoordinator", side_effect=fake_coordinator
+        ),
+        patch.object(
+            hass.config_entries, "async_forward_entry_setups", side_effect=fake_forward
+        ),
+        patch.object(
+            hass.config_entries, "async_unload_platforms", AsyncMock(return_value=True)
+        ),
+    ):
+        assert await dahua_module.async_setup_entry(hass, entry) is True
+
+    recovered_subs = {
+        int(sub.data[CONF_CHANNEL]): sub for sub in entry.subentries.values()
+    }
+    assert set(recovered_subs) == {0, 1}
+    recovered_0 = recovered_subs[0]
+    assert recovered_0.title == "Channel 1"
+    assert recovered_0.data[CONF_EVENTS] == ["SmartMotionHuman"]
+    assert recovered_0.unique_id == f"{HOST_ADDRESS}_0"
+    assert sorted(built_channels) == [0, 1]
+    assert seen_at_forward["device_subentry"] == recovered_0.subentry_id
+    assert seen_at_forward["entity_subentries"] == [
+        recovered_0.subentry_id,
+        recovered_0.subentry_id,
+    ]
+    assert seen_at_forward["host_subentry"] is None
+    assert seen_at_forward["disk_subentry"] is None
+    await dahua_module.async_unload_entry(hass, entry)
+
+
+async def test_deliberately_removed_primary_channel_is_not_restored(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=dict(BASE_DATA),
+        unique_id=SERIAL,
+        title="Lorex NVR",
+    )
+    entry.add_to_hass(hass)
+
+    sub_1 = ConfigSubentry(
+        data={**BASE_DATA, CONF_CHANNEL: 1, CONF_NAME: "Channel 2"},
+        subentry_type=CHANNEL_SUBENTRY,
+        title="Channel 2",
+        unique_id=f"{HOST_ADDRESS}_1",
+    )
+    hass.config_entries.async_add_subentry(entry, sub_1)
+
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+
+    # Separate recorder host device & disk entity remain at config_subentry_id=None,
+    # while channel 1 owns its own subentry rows and channel 0 has been deleted.
+    host_device = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, f"{SERIAL}_host")},
+        name="Lorex NVR",
+    )
+    entities.async_get_or_create(
+        "binary_sensor",
+        DOMAIN,
+        f"{SERIAL}_disk_0",
+        config_entry=entry,
+        device_id=host_device.id,
+        suggested_object_id="lorex_nvr_disk_0",
+    )
+    ch1_device = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        config_subentry_id=sub_1.subentry_id,
+        identifiers={(DOMAIN, f"{SERIAL}_1")},
+        name="Channel 2",
+    )
+    entities.async_get_or_create(
+        "camera",
+        DOMAIN,
+        f"{SERIAL}_1_cam",
+        config_entry=entry,
+        config_subentry_id=sub_1.subentry_id,
+        device_id=ch1_device.id,
+        suggested_object_id="channel_2_cam",
+    )
+
+    assert migrate.async_recover_stranded_primary_subentry(hass, entry) is False
+    assert [int(sub.data[CONF_CHANNEL]) for sub in entry.subentries.values()] == [1]
+
+
+async def test_first_add_channel_through_subentry_flow_manager_reloads_once(
+    hass, enable_custom_integrations
+):
+    entry, _, _, _, _ = _flat_entry_with_registries(hass)
+    entry._async_set_state(hass, ConfigEntryState.LOADED, None)
+    entry.async_on_unload(entry.add_update_listener(dahua_module.async_reload_entry))
+
+    with patch.object(
+        hass.config_entries, "async_reload", AsyncMock(return_value=True)
+    ) as reload_mock:
+        init_result = await hass.config_entries.subentries.async_init(
+            (entry.entry_id, CHANNEL_SUBENTRY),
+            context={"source": SOURCE_USER},
+        )
+        configure_result = await hass.config_entries.subentries.async_configure(
+            init_result["flow_id"],
+            user_input={
+                CONF_CHANNEL: 1,
+                CONF_NAME: "Channel 2",
+                CONF_EVENTS: ["CrossLineDetection"],
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert configure_result["type"] == "create_entry"
+    assert {int(sub.data[CONF_CHANNEL]) for sub in entry.subentries.values()} == {0, 1}
+    assert reload_mock.await_count == 1
+
+
+async def test_reload_coalescing_does_not_drop_update_during_inflight_reload(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=dict(BASE_DATA),
+        unique_id=SERIAL,
+        title="Lorex NVR",
+    )
+    entry.add_to_hass(hass)
+    entry._async_set_state(hass, ConfigEntryState.LOADED, None)
+    entry.async_on_unload(entry.add_update_listener(dahua_module.async_reload_entry))
+
+    first_reload_started = asyncio.Event()
+    release_first_reload = asyncio.Event()
+    reload_calls = 0
+
+    async def slow_first_reload(_entry_id: str) -> bool:
+        nonlocal reload_calls
+        reload_calls += 1
+        if reload_calls == 1:
+            first_reload_started.set()
+            await release_first_reload.wait()
+        return True
+
+    with patch.object(
+        hass.config_entries, "async_reload", side_effect=slow_first_reload
+    ):
+        hass.async_create_task(dahua_module.async_reload_entry(hass, entry))
+        await first_reload_started.wait()
+
+        # While the first reload is in progress, a subsequent update must still
+        # schedule a follow-up reload rather than being swallowed as duplicate.
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, CONF_EVENTS: ["SmartMotionVehicle"]}
+        )
+        await asyncio.sleep(0)
+        release_first_reload.set()
+        await hass.async_block_till_done()
+
+    assert reload_calls == 2
