@@ -543,6 +543,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             entry.data.get(CONF_ADDRESS),
         )
 
+    # Earlier builds of #1236 added secondary channel subentries to a flat entry
+    # without first promoting channel 0, stranding its device and entities at
+    # config_subentry_id=None. Recreate the missing primary subentry before
+    # channel_configs builds coordinators.
+    try:
+        from .migrate import async_recover_stranded_primary_subentry
+
+        async_recover_stranded_primary_subentry(hass, entry)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception(
+            "Could not recover the missing primary channel subentry for %s; "
+            "continuing with existing subentries",
+            entry.data.get(CONF_ADDRESS),
+        )
+
     # One coordinator per channel. A single camera has one, a merged recorder has
     # one per subentry (#827), and channel_configs hands back the same shape for
     # both so there is a single path here.
@@ -671,6 +686,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: DahuaConfigEntry):
             raise ConfigEntryNotReady(
                 "Serial registry migration could not complete: " + str(error)
             ) from error
+        raise
+
+    from .migrate import async_adopt_flat_channel_rows
+
+    try:
+        async_adopt_flat_channel_rows(hass, entry, coordinators)
+    except BaseException:
+        await asyncio.gather(
+            *[c.async_stop() for c in coordinators], return_exceptions=True
+        )
         raise
 
     entry.runtime_data = {c.get_channel(): c for c in coordinators}
@@ -1464,6 +1489,17 @@ def _async_report_removal(
         )
 
 
+DATA_PENDING_RELOADS = f"{DOMAIN}_pending_reloads"
+
+
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry."""
+    """Reload config entry, coalescing back-to-back updates in the same turn."""
+    pending: set[str] = hass.data.setdefault(DATA_PENDING_RELOADS, set())
+    if entry.entry_id in pending:
+        return
+    pending.add(entry.entry_id)
+    try:
+        await asyncio.sleep(0)
+    finally:
+        pending.discard(entry.entry_id)
     await hass.config_entries.async_reload(entry.entry_id)

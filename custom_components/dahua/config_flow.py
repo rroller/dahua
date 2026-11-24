@@ -37,7 +37,7 @@ from . import (
 from .client import DahuaClient
 from .discovery import async_probe as async_probe_identity
 from .dhip import DhipLoginRefused, async_dhip_session
-from .migrate import CHANNEL_SUBENTRY
+from .migrate import CHANNEL_SUBENTRY, channel_int, primary_channel_subentry
 from .flow_preview import async_drop_preview, async_store_preview, preview_url
 from .const import (
     CONF_ACCEPT_H265,
@@ -2134,16 +2134,18 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
         entry = self._get_entry()
         base = dict(entry.data)
 
-        taken = {sub.data.get(CONF_CHANNEL) for sub in entry.subentries.values()}
+        taken = {
+            channel_int(sub.data.get(CONF_CHANNEL)) for sub in entry.subentries.values()
+        }
         if not entry.subentries:
             # A flat entry has no subentries; its one channel lives in the entry
             # data, and adding a second is what turns it into a hub.
-            taken.add(base.get(CONF_CHANNEL, 0))
+            taken.add(channel_int(base.get(CONF_CHANNEL, 0)))
         next_free = next(i for i in range(0, 256) if i not in taken)
 
         errors: dict[str, str] = {}
         if user_input is not None:
-            channel = user_input[CONF_CHANNEL]
+            channel = channel_int(user_input[CONF_CHANNEL])
             if channel in taken:
                 errors[CONF_CHANNEL] = "channel_already_added"
             else:
@@ -2153,12 +2155,19 @@ class DahuaChannelSubentryFlow(config_entries.ConfigSubentryFlow):
                     CONF_NAME: user_input[CONF_NAME],
                     CONF_EVENTS: user_input.get(CONF_EVENTS, DEFAULT_EVENTS),
                 }
+                data.pop(CONF_LABELS, None)
                 # "" means no area, which is a real answer; anything else moves the
                 # new channel's device into it rather than inheriting the primary's.
                 if user_input.get(CONF_AREA):
                     data[CONF_AREA] = user_input[CONF_AREA]
                 else:
                     data.pop(CONF_AREA, None)
+                if not entry.subentries and getattr(self, "hass", None) is not None:
+                    # Promote the flat entry's existing channel before adding the
+                    # new one so `channel_configs` keeps it alive on reload (#1236).
+                    self.hass.config_entries.async_add_subentry(
+                        entry, primary_channel_subentry(entry)
+                    )
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
                     data=data,
