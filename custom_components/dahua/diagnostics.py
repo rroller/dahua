@@ -436,6 +436,12 @@ def _stream_block(coordinator) -> dict[str, Any]:
             getattr(stream, "_all_events_for_unpushed_motion", None) or "untouched"
         ),
         "received_data": bool(getattr(stream, "_received_data", False)),
+        # Streams in a row that talked and then ended inside a minute (#1235).
+        # Above 3 the reconnects are being spaced out.
+        "short_streams_in_a_row": getattr(stream, "_consecutive_short_streams", 0),
+        # Short streams are only counted once one has lasted a minute, so a 0
+        # above with this false is a device that has never held one.
+        "has_held_a_stream": bool(getattr(stream, "_held_a_stream", False)),
         "last_attach_failed": bool(getattr(stream, "_failing", False)),
         "consecutive_failures": getattr(stream, "_consecutive_failures", 0),
         # The stream borrows one channel's client. If that entry is unloaded the

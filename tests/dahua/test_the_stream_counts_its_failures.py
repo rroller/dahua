@@ -94,7 +94,9 @@ def retries(monkeypatch):
     """
     asked = []
 
-    def fake(lived_seconds, consecutive_failures=0, received_data=False):
+    def fake(
+        lived_seconds, consecutive_failures=0, received_data=False, short_streams=0
+    ):
         asked.append(
             {
                 "lived": lived_seconds,
