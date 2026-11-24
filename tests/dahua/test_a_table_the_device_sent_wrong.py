@@ -46,13 +46,20 @@ def _refused(status=400):
 
 def _client(answer):
     client = object.__new__(DahuaClient)
+    client._address = "10.0.0.5"
 
     async def async_get_config(name):
         if isinstance(answer, BaseException):
             raise answer
         return answer
 
+    # The motion read asks `get` itself, because it needs the status to know a
+    # 403 (#1235); the others go through `async_get_config`.
+    async def get(url, *args, **kwargs):
+        return await async_get_config(url)
+
     client.async_get_config = async_get_config
+    client.get = get
     return client
 
 

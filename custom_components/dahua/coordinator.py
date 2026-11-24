@@ -2442,7 +2442,12 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             self._supports_smart_motion_detection = False
             return False
         self._note_probe_answered("smart_motion_detect")
-        self._supports_smart_motion_detection = True
+        # Only a table with rows in it. A refusal reads as {} too, and taking
+        # that as support meant the poll asked for a table it had been refused,
+        # every poll, for days (#1235). A row for any channel still counts, as
+        # before: which channel's row is this one's is decided per channel by
+        # `supports_smart_motion_detection`.
+        self._supports_smart_motion_detection = bool(smart_motion_row_indices(table))
         if getattr(self, "data", None) is None:
             self.data = {}
         self.data.update(table)
