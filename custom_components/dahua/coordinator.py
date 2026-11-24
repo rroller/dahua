@@ -7104,11 +7104,66 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             # because some indoor monitors do have a camera and this says
             # nothing about those.
             return False
+        if self._lists_emitters_without_infrared():
+            return False
         return (
             "-AS-PV" not in self.model
             and "-AS-NI" not in self.model
             and "LED-S2" not in self.model
         )  # IPC-HFW2439SP-SA-LED-S2 also has no infrared light
+
+    def _lists_emitters_without_infrared(self) -> bool:
+        """Whether this channel lists its lights and infrared is not among them.
+
+        The infrared half of #1094. An IPC-Color4K-X has no infrared emitter,
+        matches none of the model strings below, and so got an Infrared light
+        and an Infrared Mode select that drive nothing. Its Lighting_V2 table,
+        which the poll already reads, says so on two firmwares (2.840...28.R
+        and 35.R): one row, `LightType=WhiteLight`, with NearLight and
+        FarLight banks, and no InfraredLight row at all. `getCapsEx` agrees,
+        `LightTypeComplex: ["WhiteLight"]`, but that needs three RPC2 calls
+        and `ConfigVersion: 2` firmware, and this needs nothing.
+
+        **Withdrawn only where the table names a real emitter.** A row counts
+        when it is `InfraredLight` or `WhiteLight` and carries a brightness
+        bank. Measured on a DHI-NVR5464-16P-EI against `LightTypeComplex`,
+        that test agreed on all 36 such rows, while `LightType` alone names
+        stubs for emitters that are not fitted (see `_declares_a_white_light`).
+        `AIMixLight` is excluded: it is the Smart Dual Light composite, has no
+        bank of its own and says nothing about which emitters exist.
+
+        So a device that names no lights, or only stub or composite rows,
+        keeps the model-name answer it has always had. That is not the same
+        rule as the white light's, which withdraws on any named row: absence
+        of an infrared row is only believed from a table that demonstrably
+        lists the emitters that are there.
+
+        **Every profile of the channel, not the first.** The table is
+        `[channel][profile][light]`, and a profile lists the lights it uses.
+        A channel whose profile 0 holds only the white emitter and whose
+        profile 1 holds the infrared one has an infrared emitter, and
+        `infrared_v2_row` finds and drives that row whenever profile 1 is the
+        live one. So the rows are taken from the keys that are there, whatever
+        their profile or index, and one banked infrared row anywhere in the
+        channel keeps the controls.
+        """
+        data = getattr(self, "data", None) or {}
+        if not data:
+            return False
+        prefix = "table.Lighting_V2[{0}][".format(self._channel)
+        emitters = set()
+        for key, light in data.items():
+            if light not in (INFRARED_LIGHT, WHITE_LIGHT):
+                continue
+            if not key.startswith(prefix) or not key.endswith("].LightType"):
+                continue
+            row = key[: -len("LightType")]
+            if any(
+                "{0}{1}[0].Light".format(row, bank) in data
+                for bank in LIGHT_BRIGHTNESS_BANKS
+            ):
+                emitters.add(light)
+        return bool(emitters) and INFRARED_LIGHT not in emitters
 
     def supports_floodlightmode(self) -> bool:
         """Returns true if this camera supports floodlight mode"""
