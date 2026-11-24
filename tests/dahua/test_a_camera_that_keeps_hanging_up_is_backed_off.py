@@ -133,7 +133,7 @@ def _stream(client):
 def run(monkeypatch):
     """Run the loop over a script; return what the real delay was told and said."""
 
-    async def _run(*script):
+    async def _run(*script, reconcile_seconds=0):
         clock = _Clock()
         monkeypatch.setattr(host_module, "time", clock)
         told = []
@@ -147,11 +147,11 @@ def run(monkeypatch):
         monkeypatch.setattr(host_module, "event_stream_retry_delay", delay)
         stream = _stream(_Attaches(clock, *script))
 
-        async def nothing():
-            return None
+        async def reconcile():
+            clock.now += reconcile_seconds / 2
 
-        stream._async_reconcile_latched_events = nothing
-        stream._async_reconcile_alarm_inputs = nothing
+        stream._async_reconcile_latched_events = reconcile
+        stream._async_reconcile_alarm_inputs = reconcile
         with pytest.raises(asyncio.CancelledError):
             await stream._async_run()
         return stream, told
@@ -224,6 +224,37 @@ async def test_counting_starts_only_once_a_stream_has_lasted(run):
     assert [count for count, _ in told] == [0, 0, 0, 0, 0, 0, 1, 2, 3, 4]
     assert stream._held_a_stream is True
     assert told[-1][1] == _about(20)
+
+
+# --- the reconcile's wait is not the stream's life ---------------------------------
+
+TALKS_55S = (True, 55)
+
+
+async def test_a_slow_reconcile_does_not_make_a_short_stream_one_that_lasted(run):
+    """rroller's case on #1244: 55 seconds of stream and six of reconciling is
+    not a camera that held a stream for a minute, so nothing after it counts."""
+    stream, told = await run(TALKS_55S, *[TALKS_30S] * 4, reconcile_seconds=6)
+
+    assert stream._held_a_stream is False
+    assert [count for count, _ in told] == [0] * 5
+    assert [answer for _, answer in told] == [_about(10)] * 5
+
+
+async def test_a_slow_reconcile_does_not_reset_the_count(run):
+    """On a camera that had been healthy, 55 second streams are short ones
+    however long the reconcile after each took."""
+    stream, told = await run(TALKS_2H, *[TALKS_55S] * 5, reconcile_seconds=6)
+
+    assert [count for count, _ in told] == [0, 1, 2, 3, 4, 5]
+    assert told[-1][1] == _about(40)
+
+
+async def test_each_reconcile_wait_is_left_out(run):
+    """Either reconcile alone would carry 58 seconds past the minute."""
+    stream, told = await run(TALKS_2H, (True, 58), (True, 58), reconcile_seconds=6)
+
+    assert [count for count, _ in told] == [0, 1, 2]
 
 
 # --- the dump shows it ------------------------------------------------------------

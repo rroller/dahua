@@ -1565,12 +1565,18 @@ class DahuaHostEventStream:
                 self._failing = False
                 self._consecutive_failures = 0
 
+            # Timed here, where the socket ended, and not after the reconciles
+            # below: they wait on the network, and that wait is not the device
+            # holding a stream. Six seconds of it once made a 55 second stream
+            # count as one that lasted.
+            elapsed = time.monotonic() - start_time
+
             # Before going back round. A Stop that arrived while the socket was
             # down is gone, and the sensor it belonged to is still on.
             await self._async_reconcile_latched_events()
             await self._async_reconcile_alarm_inputs()
 
-            lived = stream_lifetime(time.monotonic() - start_time, self._received_data)
+            lived = stream_lifetime(elapsed, self._received_data)
             # Only a stream that talked moves the count. A silent attach is
             # judged by the instant-death backoff above, and says nothing about
             # whether a talking one would have lasted. And only on a host that
