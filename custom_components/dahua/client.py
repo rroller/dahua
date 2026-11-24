@@ -3254,20 +3254,42 @@ class DahuaClient:
             return {"vendor": "Generic RTSP"}
 
     async def reboot(self) -> dict:
-        """Reboot, over CGI, falling back to RPC2 if the CGI path is absent.
+        """Reboot, over CGI, falling back to RPC2 if the CGI path is absent
+        or its answer cannot be read.
 
         Measured on an SL300: magicBox.reboot answers result=true and the device
         only then goes down, so this returns before the connection drops rather
         than having to treat a dropped request as a success.
+
+        **An answer that cannot be read** is #1176's DH-IPC-HDW2849TM-S-IL on
+        3.120, which appends a stray header to every authenticated CGI reply.
+        aiohttp rejects the exchange, so the press raised. Its owner then
+        checked the camera: it had stayed reachable throughout and had not
+        rebooted. So on that camera the CGI request does not do the job, and
+        the same request is made over RPC2, which is how every config read
+        already reaches it.
+
+        That is the opposite of what an unreadable answer to a config write
+        means, where the write may well have happened and the table is read
+        before anything is sent again. Nothing can be read back for a reboot.
+        If some other firmware does reboot on the CGI request and mangles the
+        reply too, the RPC2 request reaches a device that is already going
+        down, and whatever that raises is raised: the press reports a failure
+        for a reboot that is happening. No such device has been seen.
         """
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=reboot")
         except aiohttp.ClientResponseError as cgi_error:
-            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
+            unreadable = refusal_is_mangled_framing(cgi_error)
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT and not unreadable:
                 raise
             _LOGGER.debug(
-                "magicBox.cgi answered %s on %s; rebooting over RPC2",
-                cgi_error.status,
+                "magicBox.cgi %s on %s; rebooting over RPC2",
+                (
+                    "answered something that cannot be read"
+                    if unreadable
+                    else "answered %s" % cgi_error.status
+                ),
                 self._address,
             )
             await self._rpc2_shared_call(

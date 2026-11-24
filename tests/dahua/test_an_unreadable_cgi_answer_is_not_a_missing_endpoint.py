@@ -467,3 +467,106 @@ async def test_a_device_that_will_not_name_itself_over_rpc2_falls_back_as_before
     }
     assert client.identity_from_rpc2 is False
     assert (await client.get_device_type())["type"] == "Generic RTSP"
+
+
+# --- the Reboot button (#1176, @defre92's follow-up) -------------------------------
+#
+# The press raised this same refusal out of `reboot()`, and the camera did not
+# reboot: it stayed reachable until it was rebooted by hand.
+
+REBOOT_ANSWERS = {"magicBox.reboot": {"result": True, "params": None}}
+
+
+def _rebooting(error, answers=None):
+    """`_client`, also recording the CGI requests that were made."""
+    client, rpc2 = _client(error, REBOOT_ANSWERS if answers is None else answers)
+    asked = []
+
+    async def get(url, verify_ok=False):
+        asked.append(url)
+        raise error
+
+    client.get = get
+    return client, rpc2, asked
+
+
+@pytest.mark.parametrize("detail", [True, False])
+async def test_a_reboot_whose_answer_cannot_be_read_is_made_over_rpc2(detail):
+    client, rpc2, asked = _rebooting(_mangled(detail))
+
+    assert await client.reboot() == {"result": True}
+
+    assert asked == ["/cgi-bin/magicBox.cgi?action=reboot"]
+    assert rpc2.asked == ["magicBox.reboot"]
+
+
+async def test_a_reboot_the_device_really_refused_is_not_made_twice():
+    """A 400 the device sent itself is its answer. Only the one aiohttp made
+    up for an answer it could not read goes to RPC2."""
+    real = aiohttp.ClientResponseError(None, None, status=400, message="Bad Request")
+    client, rpc2, _ = _rebooting(real)
+
+    with pytest.raises(aiohttp.ClientResponseError) as raised:
+        await client.reboot()
+
+    assert raised.value is real
+    assert rpc2.asked == []
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+async def test_other_refusals_of_a_reboot_still_raise(status):
+    refusal = aiohttp.ClientResponseError(
+        None, None, status=status, message=MANGLED_FRAMING_MESSAGE
+    )
+    client, rpc2, _ = _rebooting(refusal)
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.reboot()
+
+    assert rpc2.asked == []
+
+
+@pytest.mark.parametrize("status", [404, 501])
+async def test_a_missing_cgi_still_reboots_over_rpc2(status):
+    """Unchanged: the SL300's path."""
+    missing = aiohttp.ClientResponseError(None, None, status=status, message="x")
+    client, rpc2, _ = _rebooting(missing)
+
+    assert await client.reboot() == {"result": True}
+    assert rpc2.asked == ["magicBox.reboot"]
+
+
+async def test_a_reboot_rpc2_cannot_make_either_says_so():
+    """Not swallowed: a press that rebooted nothing must not look like one
+    that worked."""
+
+    class _Down:
+        asked = []
+
+        async def request(self, method, params="unset", **kwargs):
+            self.asked.append(method)
+            raise aiohttp.ClientConnectionError("gone")
+
+    client, _, _ = _rebooting(_mangled())
+    down = _Down()
+
+    async def shared_call(action):
+        return await action(down)
+
+    client._rpc2_shared_call = shared_call
+
+    with pytest.raises(aiohttp.ClientConnectionError):
+        await client.reboot()
+    assert down.asked == ["magicBox.reboot"]
+
+
+async def test_a_reboot_that_answers_normally_never_touches_rpc2():
+    client, rpc2, _ = _rebooting(_mangled())
+
+    async def get(url, verify_ok=False):
+        return {"OK": "OK"}
+
+    client.get = get
+
+    assert await client.reboot() == {"OK": "OK"}
+    assert rpc2.asked == []
