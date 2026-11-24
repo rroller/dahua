@@ -200,6 +200,9 @@ class _Coordinator:
             output, "Alarm output %d" % (output + 1)
         )
 
+    def motion_detection_was_read(self):
+        return self.states.get("motion_read", True)
+
     def is_motion_detection_enabled(self):
         return self.states.get("motion", False)
 

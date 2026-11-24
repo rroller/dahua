@@ -2066,6 +2066,12 @@ class DahuaClient:
     _rpc2_identity_asked = False
     _rpc2_identity = None
 
+    # Whether this account has been refused MotionDetect with HTTP 403, so the
+    # poll stops asking (#1235). On the client because each channel builds its
+    # own client and a reload builds new ones, so a reload asks again: an
+    # account given more rights gets its setting back without a restart.
+    _motion_detect_refused = False
+
     def __init__(
         self,
         username: str,
@@ -3564,11 +3570,36 @@ class DahuaClient:
         Example response:
         table.MotionDetect[0].DetectVersion=V3.0
         table.MotionDetect[0].Enable=true
+
+        A refused or absent table reads as no keys at all, which the motion
+        switch reports as unknown (#1235). No refusal escapes into the poll's
+        gather, which has no `return_exceptions`. It used to answer
+        `Enable=false` for channel 0 instead, which was a made-up "off".
+
+        A 403 is remembered for this client, so it is not asked again until a
+        reload. In #1235 an account without the rights was refused on every
+        poll, on both cameras, for days. Any other refusal is asked again next
+        time, as before. The URL is the one `async_get_config` builds, so it
+        shares that read's cache entry.
         """
+        if self._motion_detect_refused:
+            return {}
         try:
-            return await self.async_get_config("MotionDetect")
-        except aiohttp.ClientResponseError:
-            return {"table.MotionDetect[0].Enable": "false"}
+            return await self.get(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"
+            )
+        except aiohttp.ClientResponseError as error:
+            if error.status == 403:
+                self._motion_detect_refused = True
+                _LOGGER.info(
+                    "%s refused this account its motion detection setting "
+                    "(HTTP 403), so it is not asked again until the integration "
+                    "is reloaded, and the Motion Detection switch shows unknown. "
+                    "An account in a group without config rights is the usual "
+                    "cause",
+                    self._address,
+                )
+            return {}
 
     async def async_get_video_analyse_rules_for_amcrest(self):
         """
@@ -3734,6 +3765,23 @@ class DahuaClient:
         # one also answers for a table that only exists where the recorder
         # recognises the camera model, so a refusal is an ordinary answer here.
         return await self.async_get_config("SmartMotionDetect")
+
+    async def async_probe_smart_motion_detection(self) -> dict:
+        """The SmartMotionDetect table, strictly: a refusal raises.
+
+        For the capability probe, which has to tell three answers apart and
+        cannot from `{}`: a 403 or a 400 is the device saying no, a 200 with
+        no rows is the table not being there, and a 500 is the device failing
+        to answer this once (#1243 review). `async_probe_encode` is the same
+        idea for the encoder table.
+
+        Same URL as `async_get_smart_motion_detection`, so the two share one
+        entry in the host read cache. The poll keeps the lenient read: its
+        gather has no `return_exceptions`.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
+        )
 
     async def async_get_video_color(self, fresh: bool = False) -> dict:
         """The picture adjustments per channel. Example output:
