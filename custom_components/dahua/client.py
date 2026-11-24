@@ -3554,8 +3554,45 @@ class DahuaClient:
         table.Lighting[0][0].MiddleLight[0].Light=50
         table.Lighting[0][0].Mode=Auto
         table.Lighting[0][0].Sensitive=3
+
+        **One request per channel, whichever profile is asked for (#1232).**
+        The channel's whole table is read, `Lighting[<channel>]`, and this
+        profile's rows are handed back from it. Setup asks about two profiles
+        of every channel, the live one for the infrared light and 2 for
+        whether the channel has profiles at all, and the poll then reads the
+        live one again. Asked for by profile those were two requests a
+        channel, and on a 19 channel recorder that answers each in six to
+        eight seconds they were about two minutes of a three minute start.
+        Asked for by channel they are one URL, and the read cache answers the
+        second and third.
+
+        Measured on a DHI-NVR5464-16P-EI (channels 0, 1, 3, 6, 11, 12) and a
+        VTO2000A: the rows `Lighting[ch]` returns for profile 0 and for
+        profile 2 are identical to what `Lighting[ch][0]` and `Lighting[ch][2]`
+        return, and a channel with no profile 2 simply has no such rows.
+
+        **A device that returns nothing for the channel is asked the old
+        way.** No firmware has been seen to answer `Lighting[ch][p]` and not
+        `Lighting[ch]`, but one that did would otherwise lose its infrared
+        light here, so an answer with no row for the channel falls back to
+        the read this always made. That costs a device with no Lighting table
+        one request more than before.
+
+        One difference. Where a channel has rows but none for the profile
+        asked, this returns {}. Asked directly the device answers one line,
+        `Error: Error -1 getting param in name=Lighting[0][2]`, which came
+        back as a dict of one junk key.
         """
         try:
+            table = await self.async_get_config(f"Lighting[{channel}]")
+            channel_rows = f"table.Lighting[{channel}]["
+            if any(key.startswith(channel_rows) for key in table):
+                profile_rows = f"{channel_rows}{profile_mode}]."
+                return {
+                    key: value
+                    for key, value in table.items()
+                    if key.startswith(profile_rows)
+                }
             return await self.async_get_config(f"Lighting[{channel}][{profile_mode}]")
         except aiohttp.ClientResponseError as e:
             if e.status == 400:

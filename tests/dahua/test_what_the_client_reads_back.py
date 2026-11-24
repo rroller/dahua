@@ -173,13 +173,17 @@ async def test_changing_the_password_changes_the_identity():
 # a 401 on this read is swallowed as "this camera has no lights".
 
 
-async def test_the_lighting_table_is_read_for_the_channel_and_profile():
+async def test_the_lighting_table_is_read_for_the_channel():
+    """By channel since #1232, with the profile's rows taken from the answer:
+    see test_one_lighting_read_per_channel.py."""
     client = _client({"table.Lighting[0][1].Mode": "Auto"})
 
-    await client.async_get_config_lighting(0, 1)
+    assert await client.async_get_config_lighting(0, 1) == {
+        "table.Lighting[0][1].Mode": "Auto"
+    }
 
     assert client.asked == [
-        "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting[0][1]"
+        "/cgi-bin/configManager.cgi?action=getConfig&name=Lighting[0]"
     ]
 
 
