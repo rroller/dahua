@@ -64,6 +64,29 @@ EVENT_STREAM_MAX_RETRY_SECONDS = 600
 # motion. Two seconds matches the integration's existing RPC2 event poller.
 VIDEO_MOTION_POLL_SECONDS = 2
 
+# How long a latched event the device answered nothing about is left alone
+# before it is asked about again, for a code the device has never reported
+# (#1235). Doubling per empty answer for the same latch, to the ceiling.
+#
+# Not "never again", which is what this first was. An empty answer cannot tell
+# a code the endpoint does not cover from one that is covered and off right
+# now, and the difference shows later: the event comes on again with its Start
+# missed, the device reports it, and that is what proves the code, so the Stop
+# lost after it can be closed (rroller on #1238). The ceiling is the stream's
+# own hourly recycle, so a latch is asked about at least that often.
+EVENT_RECONCILE_RECHECK_SECONDS = 300
+EVENT_RECONCILE_MAX_RECHECK_SECONDS = 3600
+
+
+def unproven_latch_recheck_delay(empty_answers: int) -> float:
+    """Seconds to leave a latch alone after this many empty answers about it."""
+    doublings = min(max(0, empty_answers - 1), MAX_BACKOFF_DOUBLINGS)
+    return min(
+        EVENT_RECONCILE_RECHECK_SECONDS * (2**doublings),
+        EVENT_RECONCILE_MAX_RECHECK_SECONDS,
+    )
+
+
 # Camera uptime is host-wide. An NVR may have many config entries, one per
 # channel, but they all refer to the same physical recorder uptime.
 #
@@ -794,6 +817,14 @@ class DahuaHostEventStream:
     # still correct.
     _codes_the_device_reports: set | None = None
 
+    # code -> (the latches asked about, as (channel, Start time); how many
+    # empty answers they have had; when to ask again), for a code the device
+    # has never reported. On a device that hangs up every 30 seconds, asking on
+    # every reconnect was two requests each time for hours (#1235), so the
+    # same latch is asked about again only after a wait that doubles. None on
+    # the class for the same reason as above.
+    _latches_asked_about: dict | None = None
+
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         self._hass = hass
         self._address = address
@@ -1264,6 +1295,22 @@ class DahuaHostEventStream:
         because a failing stream retries often, and this must not add load to a
         device that is already struggling.
 
+        **And asks about one unproven latch sparsely.** An empty answer for a
+        code this endpoint has never reported changes nothing, so asking on
+        every reconnect is load for no gain. Measured in #1235, on a camera
+        dropping its stream about every 30 seconds: two lost CrossLineDetection
+        Stops, with IVSRule_2 latched beside them, were asked about 238 times
+        each in under three hours, two requests on every reconnect. So the same
+        latch is asked about again only after `unproven_latch_recheck_delay`:
+        five minutes, doubling per empty answer to an hour.
+
+        Not once and never again. The event can come on again while the stream
+        is down, with its Start missed, and the device then reports it: that
+        answer is what proves the code, and the Stop lost after it is closed.
+        A latch that was never asked about again stayed on for ever. A new
+        Start is a new latch and is asked about at once, and a proven code is
+        asked about every time.
+
         The hard part is that `getEventIndexes` cannot be taken at face value.
         Measured on a DHI-NVR5464-16P-EI:
 
@@ -1290,17 +1337,37 @@ class DahuaHostEventStream:
         if self._codes_the_device_reports is None:
             self._codes_the_device_reports = set()
 
+        if self._latches_asked_about is None:
+            self._latches_asked_about = {}
+
         latched: dict = {}
+        starts: dict = {}
         for coordinator in self.coordinators:
-            events = getattr(coordinator, "latched_events", None)
+            events = getattr(coordinator, "latched_event_starts", None)
             if events is None:
                 continue
-            for code, channel in events():
-                latched.setdefault(code, set()).add(channel)
+            for code, started in events().items():
+                latched.setdefault(code, set()).add(coordinator._channel)
+                starts.setdefault(code, set()).add((coordinator._channel, started))
+
+        # Forget what is no longer latched, so this cannot grow without bound.
+        for code in list(self._latches_asked_about):
+            if code not in latched:
+                del self._latches_asked_about[code]
         if not latched:
             return
 
         for code, channels in sorted(latched.items()):
+            this_latch = frozenset(starts[code])
+            empty_answers = 0
+            remembered = self._latches_asked_about.get(code)
+            if remembered is not None and remembered[0] == this_latch:
+                empty_answers = remembered[1]
+                if (
+                    code not in self._codes_the_device_reports
+                    and time.monotonic() < remembered[2]
+                ):
+                    continue
             try:
                 observed = await self._owner.client.async_get_event_indexes_cgi(code)
             except Exception as ex:  # pylint: disable=broad-except
@@ -1327,6 +1394,12 @@ class DahuaHostEventStream:
                     "so this is not evidence the event ended",
                     self._address,
                     code,
+                )
+                empty_answers += 1
+                self._latches_asked_about[code] = (
+                    this_latch,
+                    empty_answers,
+                    time.monotonic() + unproven_latch_recheck_delay(empty_answers),
                 )
                 continue
 
