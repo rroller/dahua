@@ -15,6 +15,7 @@ neither.
 
 from typing import Any, Dict
 import asyncio
+import hashlib
 import logging
 import random
 import re
@@ -61,9 +62,12 @@ EVENT_STREAM_SHORT_RETRY_SECONDS = 10
 EVENT_STREAM_MAX_RETRY_SECONDS = 600
 
 # How often a stream that has stopped offering refused credentials looks again
-# at whether anything on its host has since been let in. Only a dictionary is
-# read, never the device, so this costs the device nothing (#729, #1235).
-EVENT_STREAM_AUTH_RECHECK_SECONDS = 60
+# at whether its own account has since been let in. Only a dictionary is read,
+# never the device, so this costs the device nothing (#729, #1235). Short,
+# because a stream started while its host's budget is spent waits here too,
+# and that is every stream started by the reload after a reauth: its first
+# poll is what lets it in, and it should attach within seconds of that.
+EVENT_STREAM_AUTH_RECHECK_SECONDS = 5
 
 # A single CGI request returns every recorder channel currently in ordinary
 # motion. Two seconds matches the integration's existing RPC2 event poller.
@@ -653,12 +657,70 @@ def async_record_host_auth_refusal(address: str, source: str = "") -> int:
     return state["auth_refusals"]
 
 
+# (endpoint, username, password digest) -> the number of the latest
+# successful poll made with it, counted across everything. A number and not a
+# time, so "after the stream began waiting" needs no clock: the stream notes
+# the count when it starts to wait and looks for a larger one.
+_CREDENTIALS_ACCEPTED: dict = {}
+_ACCEPTANCES = {"count": 0}
+
+
+def credentials_identity(client):
+    """The endpoint and the account a client logs in with, or None.
+
+    Address and port, because two devices can sit behind one address on two
+    ports. Username and password, because two entries on one device can hold
+    two accounts, or one account with an old password and a new one. The
+    password is kept as a digest: this is only ever compared.
+
+    None for a client that does not say, and nothing is ever taken as proof
+    about a None.
+    """
+    device = getattr(client, "_device", None)
+    username = getattr(client, "_username", None)
+    password = getattr(client, "_password", None)
+    if device is None or username is None or password is None:
+        return None
+    digest = hashlib.sha256(str(password).encode("utf-8")).hexdigest()
+    return (device, username, digest)
+
+
 @callback
-def async_record_host_success(hass: HomeAssistant, address: str) -> None:
+def credentials_acceptance_mark() -> int:
+    """Where the count of successful polls stands now."""
+    return _ACCEPTANCES["count"]
+
+
+@callback
+def async_record_credentials_accepted(client) -> None:
+    """Note that a poll made with this client's credentials succeeded."""
+    identity = credentials_identity(client)
+    if identity is None:
+        return
+    _ACCEPTANCES["count"] += 1
+    _CREDENTIALS_ACCEPTED[identity] = _ACCEPTANCES["count"]
+
+
+@callback
+def credentials_accepted_since(client, mark: int) -> bool:
+    """Whether a poll with this client's own credentials succeeded after `mark`."""
+    identity = credentials_identity(client)
+    return identity is not None and _CREDENTIALS_ACCEPTED.get(identity, 0) > mark
+
+
+@callback
+def async_record_host_success(hass: HomeAssistant, address: str, client=None) -> None:
     """The device answered, so withdraw anything we said about it.
 
     Keyed by host: if any channel of an NVR replies, the box is up.
+
+    `client` is whose poll it was. The host-wide count below is cleared by any
+    of them, which is right for "is the box up". It is not proof that some
+    other account on the same address works, so that is recorded per account
+    (#1241 review).
     """
+    if client is not None:
+        async_record_credentials_accepted(client)
     address = normalize_address(address)
     if _HOST_FAILURES.pop(address, None) is None:
         return
@@ -785,6 +847,13 @@ class DahuaHostEventStream:
     # again, having stopped offering them. Not the same as the task having
     # ended, which is what the diagnostics used to show for it (#1235).
     _waiting_for_credentials = False
+
+    # The count of successful polls when this stream's credentials were
+    # refused at the budget, or None when they have not been. Kept on the
+    # stream and not in the wait, because the task is restarted whenever the
+    # owner or the event list changes, and a new task must not offer what the
+    # old one had stopped offering.
+    _refused_since: int | None = None
 
     # Whether proof of missed motion has moved this stream onto codes=[All]
     # (#1202): None until it has, "active" while it is on [All] for that reason,
@@ -1409,9 +1478,19 @@ class DahuaHostEventStream:
         self._owner = None
         self._events = frozenset()
         self._using_all_events = False
+        self._refused_since = None
 
     async def _async_run(self) -> None:
         """Hold the stream open, recycling it the way a single channel used to."""
+        if self._refused_since is not None or host_auth_budget_exhausted(self._address):
+            # A task started while its credentials stand refused, or on a host
+            # whose budget is spent: after the owner moved to another entry's
+            # client, after the event list changed, or on the reload after a
+            # reauth. It offers nothing until this owner's own account has
+            # been let in.
+            await self._async_wait_for_accepted_credentials()
+            await self._async_reconcile_latched_events()
+            await self._async_reconcile_alarm_inputs()
         while True:
             start_time = time.monotonic()
             self._received_data = False
@@ -1473,7 +1552,7 @@ class DahuaHostEventStream:
                     )
                     if refusals >= MAX_AUTH_REFUSALS:
                         _LOGGER.warning(
-                            "Event stream for %s paused: the device refused these credentials %d times. It will start again once the device accepts them, which a successful poll shows, or once they are re-entered",
+                            "Event stream for %s paused: the device refused these credentials %d times. It will start again once the device accepts them, which a successful poll with the same account shows, or once they are re-entered",
                             self._address,
                             refusals,
                         )
@@ -1575,23 +1654,50 @@ class DahuaHostEventStream:
         refusal to the user reloading the integration, more than a day of it
         with the camera answering every poll.
 
-        So it waits instead, and what it waits for is the host's refusal count
-        being cleared. `async_record_host_success` does that when a poll on
-        this host succeeds, which is proof these credentials work, and nothing
-        else does. #729 is kept whole: with a wrong password no poll succeeds,
-        the count is never cleared, and nothing is sent from here. The wait
-        reads a dictionary; it never asks the device.
+        So it waits instead, for two things. The host's refusal count must be
+        clear, and a poll must have succeeded **with the account this stream
+        attaches with**, since the stream began to wait.
+
+        The second is rroller's review of #1241. The count is per address, and
+        any entry's successful poll clears it. Two entries on one address can
+        hold different accounts, or the same account with an old password in
+        one of them, and the other's poll succeeding says nothing about this
+        one. Waiting on the count alone, the stream attached again with the
+        refused account every time the other entry polled, which is the
+        lockout #729 exists to stop being renewed.
+
+        So the owner's own poll is the evidence: `async_record_host_success`
+        records which client's poll succeeded, by address, port, username and
+        password. If the owner changes while the stream waits, because its
+        entry was unloaded or reloaded with new credentials, the new owner is
+        held to the same test: a poll of its own since the wait began.
+
+        #729 is kept whole: with a wrong password that entry's poll never
+        succeeds, and nothing is sent from here. The wait reads dictionaries;
+        it never asks the device.
 
         `_consecutive_failures` is left as it was, so a stream that is refused
         again on its first attach goes straight back to the longest backoff
         rather than retrying every ten seconds into a device that is full.
         """
         self._waiting_for_credentials = True
+        if self._refused_since is None:
+            self._refused_since = credentials_acceptance_mark()
         try:
-            while host_auth_budget_exhausted(self._address):
+            while not self._owner_has_been_let_in():
                 await asyncio.sleep(EVENT_STREAM_AUTH_RECHECK_SECONDS)
+            self._refused_since = None
         finally:
             self._waiting_for_credentials = False
+
+    def _owner_has_been_let_in(self) -> bool:
+        """Whether the wait above is over. Reads dictionaries only."""
+        if host_auth_budget_exhausted(self._address):
+            return False
+        owner = self._owner
+        return owner is not None and credentials_accepted_since(
+            getattr(owner, "client", None), self._refused_since
+        )
 
     def on_receive(self, data_bytes: bytes, _channel: int) -> None:
         """Parse once, then hand each event only to the channels that want it."""

@@ -17,6 +17,8 @@ password. Channels of one NVR share a digest challenge and a raced nonce is
 refused exactly like a bad credential, so a single refusal stays non-fatal.
 """
 
+from types import SimpleNamespace
+
 import pytest
 from aiohttp import ClientResponseError
 
@@ -68,6 +70,7 @@ def _coordinator(address="10.0.0.5", entry_id="e1"):
 def _clean():
     """These counters are module level and shared, so every test starts empty."""
     dahua._HOST_FAILURES.clear()
+    dahua.host._CREDENTIALS_ACCEPTED.clear()
 
 
 def _401():
@@ -198,27 +201,45 @@ def test_a_different_host_keeps_its_own_count():
 # --- the event stream stops too ---------------------------------------------
 
 
-def _stream_refused_at_the_budget(monkeypatch, after_recheck):
-    """A stream whose host has spent its budget, and the attaches it makes.
+ADDRESS = "10.0.0.5"
 
-    `after_recheck(n)` runs each time the stream looks at the budget while it
-    waits, n counting from 1. The recheck interval is zero so the test runs in
-    no time, and the wait is ended by cancelling it: CancelledError is what an
-    unload delivers, and the run loop re-raises it.
-    """
-    import custom_components.dahua.host as host
 
+def _client(username="admin", password="right", port=80):
+    """What `credentials_identity` reads off a DahuaClient, and nothing else."""
+    return SimpleNamespace(
+        _device="%s:%s" % (ADDRESS, port), _username=username, _password=password
+    )
+
+
+def _spend_the_budget():
     for _ in range(MAX_AUTH_REFUSALS):
-        async_record_host_auth_refusal("10.0.0.5", "a channel")
+        async_record_host_auth_refusal(ADDRESS, "a channel")
+
+
+def _stream(after_recheck, client=None, refuse_first_attach=True):
+    """A stream, the attaches it makes, and each look it takes while waiting.
+
+    The first attach is refused with a 401 after the host's budget has been
+    spent, which is how it happens: the polls spend it while the stream is up,
+    and the stream finds out when its own socket is next refused. Every later
+    attach ends the run with CancelledError, which is what an unload delivers.
+
+    `after_recheck(n)` runs each time the waiting stream looks at whether it
+    may go on, n counting from 1. The recheck interval is zero, and a wait
+    that never ends is cancelled at the hundredth look.
+    """
+    import asyncio
 
     stream = object.__new__(DahuaHostEventStream)
-    stream._address = "10.0.0.5"
+    stream._address = ADDRESS
     stream._events = frozenset({"VideoMotion"})
     stream._received_data = False
     stream._failing = False
     stream._consecutive_failures = 7
-    attaches = []
+    stream._by_channel = {}
+    stream.attaches = []
     stream.calls = []
+    stream.checks = []
 
     async def _reconcile_latched():
         stream.calls.append("reconcile latched events")
@@ -231,31 +252,63 @@ def _stream_refused_at_the_budget(monkeypatch, after_recheck):
 
     async def _attach(*_args, **_kwargs):
         stream.calls.append("attach")
-        attaches.append((stream._consecutive_failures, stream._waiting_for_credentials))
-        if len(attaches) == 1:
+        stream.attaches.append(
+            (
+                stream._consecutive_failures,
+                stream._waiting_for_credentials,
+                stream._owner.client._username,
+            )
+        )
+        if refuse_first_attach and len(stream.attaches) == 1:
+            _spend_the_budget()
             raise _401()
-        raise __import__("asyncio").CancelledError()
+        raise asyncio.CancelledError()
 
-    stream._owner = type(
-        "O", (), {"client": type("C", (), {"stream_events": staticmethod(_attach)})()}
-    )()
+    stream.attach = _attach
+    stream.owned_by = lambda owner_client: _own(stream, owner_client)
+    stream.owned_by(client or _client())
 
-    checks = []
-    real = host.host_auth_budget_exhausted
+    real = stream._owner_has_been_let_in
 
-    def _counting(address):
-        checks.append(stream._waiting_for_credentials)
-        after_recheck(len(checks))
-        return real(address)
+    def _counting():
+        stream.checks.append(stream._waiting_for_credentials)
+        if len(stream.checks) >= 100:
+            raise asyncio.CancelledError()
+        after_recheck(len(stream.checks))
+        return real()
 
-    monkeypatch.setattr(host, "host_auth_budget_exhausted", _counting)
+    stream._owner_has_been_let_in = _counting
+    return stream
+
+
+def _own(stream, client):
+    client.stream_events = stream.attach
+    stream._owner = SimpleNamespace(client=client)
+    return client
+
+
+@pytest.fixture
+def no_wait(monkeypatch):
+    import custom_components.dahua.host as host
+
+    _clean()
     monkeypatch.setattr(host, "EVENT_STREAM_AUTH_RECHECK_SECONDS", 0)
-    return stream, attaches, checks
+    yield
+    _clean()
 
 
-async def test_the_event_stream_sends_nothing_while_the_budget_is_spent(
-    monkeypatch,
-):
+async def _run(stream):
+    import asyncio
+
+    with pytest.raises(asyncio.CancelledError):
+        await stream._async_run()
+
+
+def _never(_n):
+    return None
+
+
+async def test_the_event_stream_sends_nothing_while_the_budget_is_spent(no_wait):
     """#729: it backs off to ten minutes at most, well inside the half hour lock.
 
     The budget is spent here by a channel's polls, which is how it happens: the polls
@@ -265,57 +318,42 @@ async def test_the_event_stream_sends_nothing_while_the_budget_is_spent(
 
     It waits rather than ending (#1235), and while it waits it attaches nothing.
     """
-    import asyncio
+    stream = _stream(_never)
 
-    _clean()
+    await _run(stream)
 
-    def _cancel_after_many(n):
-        if n == 25:
-            raise asyncio.CancelledError()
-
-    stream, attaches, checks = _stream_refused_at_the_budget(
-        monkeypatch, _cancel_after_many
-    )
-
-    with pytest.raises(asyncio.CancelledError):
-        await stream._async_run()
-
-    assert len(attaches) == 1, "attached again while the budget was spent"
+    assert len(stream.attaches) == 1, "attached again while the budget was spent"
     # Nor reads anything else: the reconciles are requests too.
     assert stream.calls == ["attach"]
-    assert len(checks) == 25
-    assert all(checks), "not marked as waiting while it waited"
+    assert len(stream.checks) == 100
+    assert all(stream.checks), "not marked as waiting while it waited"
     assert stream._waiting_for_credentials is False
 
 
-async def test_the_event_stream_resumes_once_a_poll_is_let_in(monkeypatch):
+async def test_the_event_stream_resumes_once_its_own_poll_is_let_in(no_wait):
     """#1235: a DH-C4K-P with a full user table answered 401 with no challenge.
 
     The stream counted three of those and ended for good. The credentials were
     right, so no reauth was raised; the camera recovered and its polls
     succeeded, and the stream stayed gone, more than a day of it with the
-    camera answering every poll, until the integration was reloaded. A poll
-    succeeding is what clears the count, and the stream must come back on it.
+    camera answering every poll, until the integration was reloaded. The
+    owner's poll succeeding is the evidence, and the stream must come back on
+    it.
     """
-    import asyncio
 
-    _clean()
-
-    def _poll_succeeds_on_the_third_look(n):
+    def _the_owners_poll_succeeds_on_the_third_look(n):
         if n == 3:
-            async_record_host_success(None, "10.0.0.5")
+            async_record_host_success(None, ADDRESS, stream._owner.client)
 
-    stream, attaches, checks = _stream_refused_at_the_budget(
-        monkeypatch, _poll_succeeds_on_the_third_look
-    )
+    stream = _stream(_the_owners_poll_succeeds_on_the_third_look)
 
-    with pytest.raises(asyncio.CancelledError):
-        await stream._async_run()
+    await _run(stream)
 
-    assert len(attaches) == 2, "did not attach again once the host let a poll in"
+    assert len(stream.attaches) == 2, "did not attach again once its poll was let in"
     # Not reset by the wait: refused again on that attach, it goes straight to
     # the longest backoff instead of every ten seconds into a full device.
-    assert attaches[1] == (7, False)
+    assert stream.attaches[1] == (7, False, "admin")
+    assert stream._refused_since is None
     # A Stop lost while the host refused us left its sensor on; the reads that
     # close it run once the host lets us in, before the stream attaches again.
     assert stream.calls == [
@@ -324,6 +362,258 @@ async def test_the_event_stream_resumes_once_a_poll_is_let_in(monkeypatch):
         "reconcile alarm inputs",
         "attach",
     ]
+
+
+# --- whose poll it was (rroller's review of #1241) -----------------------------
+
+
+@pytest.mark.parametrize(
+    "another",
+    [
+        pytest.param(lambda: _client(username="viewer"), id="another account"),
+        pytest.param(lambda: _client(password="old"), id="another password"),
+        pytest.param(lambda: _client(port=81), id="another device on the address"),
+        pytest.param(lambda: SimpleNamespace(), id="a client that does not say"),
+        pytest.param(lambda: None, id="no client named"),
+    ],
+)
+async def test_another_entrys_poll_on_the_address_is_not_evidence(no_wait, another):
+    """The same-address, different-account control. The other entry's poll
+    clears the host's count, and the stream attached again with the account
+    the device was still refusing: the lockout #729 is about, renewed."""
+
+    def _the_other_entry_polls(n):
+        if n in (3, 20, 60):
+            async_record_host_success(None, ADDRESS, another())
+
+    stream = _stream(_the_other_entry_polls)
+
+    await _run(stream)
+
+    assert not dahua.host.host_auth_budget_exhausted(
+        ADDRESS
+    ), "the control only means something if the host's count was cleared"
+    assert len(stream.attaches) == 1, "offered the refused account again"
+    assert stream.calls == ["attach"]
+    assert stream._refused_since is not None
+
+
+async def test_the_owners_poll_after_another_entrys_is_evidence(no_wait):
+    def _polls(n):
+        if n == 3:
+            async_record_host_success(None, ADDRESS, _client(username="viewer"))
+        if n == 9:
+            async_record_host_success(None, ADDRESS, _client())
+
+    stream = _stream(_polls)
+
+    await _run(stream)
+
+    assert len(stream.checks) == 9
+    assert stream.attaches[1] == (7, False, "admin")
+
+
+async def test_a_poll_that_succeeded_before_the_refusal_is_not_evidence(no_wait):
+    """The account worked once; that is how the stream was up at all. The
+    host's count is cleared by another entry here, so only the order of the
+    owner's poll and the refusal is holding the stream back."""
+    client = _client()
+    async_record_host_success(None, ADDRESS, client)
+
+    def _another_entry_polls(n):
+        if n == 3:
+            async_record_host_success(None, ADDRESS, _client(username="viewer"))
+
+    stream = _stream(_another_entry_polls, client=client)
+
+    await _run(stream)
+
+    assert not dahua.host.host_auth_budget_exhausted(ADDRESS)
+    assert len(stream.attaches) == 1
+
+
+async def test_the_hosts_budget_still_has_to_be_clear(no_wait):
+    """Host wide, as before: the owner was let in, and then the host began
+    refusing again. Nothing on it offers credentials while that holds."""
+
+    def _let_in_and_refused_again(n):
+        if n == 3:
+            async_record_host_success(None, ADDRESS, stream._owner.client)
+            _spend_the_budget()
+
+    stream = _stream(_let_in_and_refused_again)
+
+    await _run(stream)
+
+    assert len(stream.attaches) == 1
+
+
+async def test_an_owner_replaced_by_a_verified_one_resumes_with_it(no_wait):
+    """The owner's entry is unloaded and the stream passes to another entry's
+    client. That one is held to the same test: a poll of its own."""
+    viewer = _client(username="viewer")
+
+    def _handed_over_then_verified(n):
+        if n == 3:
+            stream.owned_by(viewer)
+        if n == 6:
+            async_record_host_success(None, ADDRESS, viewer)
+
+    stream = _stream(_handed_over_then_verified)
+
+    await _run(stream)
+
+    assert len(stream.checks) == 6
+    assert stream.attaches[1] == (7, False, "viewer")
+
+
+async def test_an_owner_replaced_by_an_unverified_one_keeps_waiting(no_wait):
+    """The new owner's poll succeeded before the wait, and the old owner's
+    succeeds during it. Neither is the new owner being let in since."""
+    viewer = _client(username="viewer")
+    async_record_host_success(None, ADDRESS, viewer)
+
+    def _handed_over(n):
+        if n == 3:
+            stream.owned_by(viewer)
+        if n == 6:
+            async_record_host_success(None, ADDRESS, _client())
+
+    stream = _stream(_handed_over)
+
+    await _run(stream)
+
+    assert len(stream.attaches) == 1
+
+
+async def test_a_restarted_task_does_not_offer_what_the_old_one_stopped_offering(
+    no_wait,
+):
+    """The task is cancelled and started again whenever the owner or the event
+    list changes. The host's count has been cleared by another entry by then,
+    so only the stream remembers its account was refused."""
+    import asyncio
+
+    def _cancelled_on_the_fifth_look(n):
+        if n == 5:
+            raise asyncio.CancelledError()
+
+    stream = _stream(_cancelled_on_the_fifth_look)
+    await _run(stream)
+    assert stream._refused_since is not None
+    async_record_host_success(None, ADDRESS, _client(username="viewer"))
+    assert not dahua.host.host_auth_budget_exhausted(ADDRESS)
+
+    await _run(stream)
+
+    assert len(stream.attaches) == 1, "the new task attached with the refused account"
+    assert stream.calls == ["attach"]
+
+
+async def test_a_restarted_task_resumes_on_its_owners_poll(no_wait):
+    import asyncio
+
+    def _cancelled_then_let_in(n):
+        if n == 5:
+            raise asyncio.CancelledError()
+        if n == 8:
+            async_record_host_success(None, ADDRESS, stream._owner.client)
+
+    stream = _stream(_cancelled_then_let_in)
+    await _run(stream)
+
+    await _run(stream)
+
+    assert stream.calls == [
+        "attach",
+        "reconcile latched events",
+        "reconcile alarm inputs",
+        "attach",
+    ]
+    assert stream._refused_since is None
+
+
+async def test_the_owners_poll_between_two_tasks_still_counts(no_wait):
+    """The refusal is dated from when it happened, not from when the newest
+    task began to wait, so a poll that succeeded in the gap is not lost."""
+    import asyncio
+
+    def _cancelled_on_the_fifth_look(n):
+        if n == 5:
+            raise asyncio.CancelledError()
+
+    stream = _stream(_cancelled_on_the_fifth_look)
+    await _run(stream)
+    async_record_host_success(None, ADDRESS, stream._owner.client)
+
+    await _run(stream)
+
+    assert len(stream.checks) == 6, "let in at the new task's first look"
+    assert len(stream.attaches) == 2
+
+
+async def test_a_stream_started_on_a_host_whose_budget_is_spent_waits_first(no_wait):
+    """The reload after a reauth starts the stream before its first poll has
+    finished. It attaches once that poll has, and not before."""
+    _spend_the_budget()
+
+    def _first_poll_finishes(n):
+        if n == 4:
+            async_record_host_success(None, ADDRESS, stream._owner.client)
+
+    stream = _stream(_first_poll_finishes, refuse_first_attach=False)
+
+    await _run(stream)
+
+    assert len(stream.checks) == 4
+    assert stream.calls == [
+        "reconcile latched events",
+        "reconcile alarm inputs",
+        "attach",
+    ]
+
+
+async def test_a_stream_started_on_a_host_in_good_standing_attaches_at_once(no_wait):
+    stream = _stream(_never, refuse_first_attach=False)
+
+    await _run(stream)
+
+    assert stream.checks == []
+    assert stream.calls == ["attach"]
+
+
+async def test_stopping_the_stream_forgets_the_refusal(no_wait):
+    stream = _stream(_never)
+    await _run(stream)
+    stream._task = None
+    stream._video_motion_poll_task = None
+
+    await stream.async_stop()
+
+    assert stream._refused_since is None
+
+
+def test_what_identifies_an_account():
+    from custom_components.dahua.host import credentials_identity
+
+    one = credentials_identity(_client())
+    assert one == credentials_identity(_client())
+    assert one != credentials_identity(_client(username="viewer"))
+    assert one != credentials_identity(_client(password="old"))
+    assert one != credentials_identity(_client(port=81))
+    assert "right" not in repr(one), "the password itself is not kept"
+    assert credentials_identity(None) is None
+    assert credentials_identity(SimpleNamespace(_device="d", _username="u")) is None
+
+
+def test_the_poll_says_whose_it_was():
+    """The one place a successful poll is recorded. Without the client there
+    the stream would wait for ever, which is safe and useless."""
+    from .integration_source import source
+
+    text = source()
+    assert text.count("async_record_host_success(") == 2, "the call and its definition"
+    assert "async_record_host_success(self.hass, self._address, self.client)" in text
 
 
 async def test_the_stream_keeps_trying_while_the_budget_holds():
