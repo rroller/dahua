@@ -59,6 +59,27 @@ EVENT_STREAM_HEALTHY_SECONDS = 60
 
 EVENT_STREAM_SHORT_RETRY_SECONDS = 10
 
+# A device that talks and then hangs up is working, so one short stream is
+# retried in EVENT_STREAM_SHORT_RETRY_SECONDS. But a device that does it every
+# time is shedding connections, and a fixed ten seconds is a fresh
+# authenticated connection every forty: 362 of them in four hours in #1235,
+# while the camera's user table filled. After this many short streams in a row
+# the wait doubles, to EVENT_STREAM_MAX_SHORT_RETRY_SECONDS. One stream that
+# lasts EVENT_STREAM_HEALTHY_SECONDS starts the count again.
+#
+# Counted only on a host that has held a stream that long at least once. #1235's
+# camera ran normally for hours before it began hanging up. Firmware that drops
+# every stream after a few seconds while healthy (the case #645 was written for)
+# never holds one, so it keeps the flat ten seconds and isn't left unwatched.
+EVENT_STREAM_SHORT_STREAMS_BEFORE_BACKOFF = 3
+
+# Lower than EVENT_STREAM_MAX_RETRY_SECONDS on purpose: these streams carry
+# events while they are up, so every second between them is events missed.
+# With #1235's thirty-second streams it cuts the reconnects to about a quarter
+# and keeps a stream up about a fifth of the time. A Stop missed in a gap is
+# still closed by the reconcile that runs before each reattach.
+EVENT_STREAM_MAX_SHORT_RETRY_SECONDS = 120
+
 # A stream that dies on contact will keep dying on contact: the device is
 # refusing us, not hiccuping. Asking again every sixty seconds forever is how a
 # device that ran out of connections stays out of connections, because each
@@ -76,6 +97,29 @@ EVENT_STREAM_AUTH_RECHECK_SECONDS = 5
 # A single CGI request returns every recorder channel currently in ordinary
 # motion. Two seconds matches the integration's existing RPC2 event poller.
 VIDEO_MOTION_POLL_SECONDS = 2
+
+# How long a latched event the device answered nothing about is left alone
+# before it is asked about again, for a code the device has never reported
+# (#1235). Doubling per empty answer for the same latch, to the ceiling.
+#
+# Not "never again", which is what this first was. An empty answer cannot tell
+# a code the endpoint does not cover from one that is covered and off right
+# now, and the difference shows later: the event comes on again with its Start
+# missed, the device reports it, and that is what proves the code, so the Stop
+# lost after it can be closed (rroller on #1238). The ceiling is the stream's
+# own hourly recycle, so a latch is asked about at least that often.
+EVENT_RECONCILE_RECHECK_SECONDS = 300
+EVENT_RECONCILE_MAX_RECHECK_SECONDS = 3600
+
+
+def unproven_latch_recheck_delay(empty_answers: int) -> float:
+    """Seconds to leave a latch alone after this many empty answers about it."""
+    doublings = min(max(0, empty_answers - 1), MAX_BACKOFF_DOUBLINGS)
+    return min(
+        EVENT_RECONCILE_RECHECK_SECONDS * (2**doublings),
+        EVENT_RECONCILE_MAX_RECHECK_SECONDS,
+    )
+
 
 # Camera uptime is host-wide. An NVR may have many config entries, one per
 # channel, but they all refer to the same physical recorder uptime.
@@ -207,7 +251,10 @@ def stream_lifetime(lived_seconds: float, received_data: bool) -> float:
 
 
 def event_stream_retry_delay(
-    lived_seconds: float, consecutive_failures: int = 0, received_data: bool = False
+    lived_seconds: float,
+    consecutive_failures: int = 0,
+    received_data: bool = False,
+    short_streams: int = 0,
 ) -> float:
     """How long to wait before re-attaching, given how long the stream lasted.
 
@@ -217,6 +264,12 @@ def event_stream_retry_delay(
     seconds of perfectly good events look identical by duration, and only the
     first should be backed off: the second is working, and backing it off to ten
     minutes is how a camera that still detects motion stops reporting any.
+
+    `short_streams` is how many streams in a row, this one included, talked and
+    then ended before EVENT_STREAM_HEALTHY_SECONDS. Past
+    EVENT_STREAM_SHORT_STREAMS_BEFORE_BACKOFF the short retry doubles, up to
+    EVENT_STREAM_MAX_SHORT_RETRY_SECONDS (#1235). The default of 0 keeps the
+    flat ten seconds for a caller that doesn't count.
     """
     if lived_seconds < 10 and not received_data:
         # Double per successive instant death, so a device that is refusing
@@ -227,7 +280,11 @@ def event_stream_retry_delay(
         )
         return jittered(min(backoff, EVENT_STREAM_MAX_RETRY_SECONDS))
     if lived_seconds < EVENT_STREAM_HEALTHY_SECONDS:
-        return jittered(EVENT_STREAM_SHORT_RETRY_SECONDS)
+        doublings = max(0, short_streams - EVENT_STREAM_SHORT_STREAMS_BEFORE_BACKOFF)
+        short = EVENT_STREAM_SHORT_RETRY_SECONDS * (
+            2 ** min(doublings, MAX_BACKOFF_DOUBLINGS)
+        )
+        return jittered(min(short, EVENT_STREAM_MAX_SHORT_RETRY_SECONDS))
     return 0.0
 
 
@@ -812,6 +869,17 @@ class DahuaHostEventStream:
     # `async_check_video_motion_is_pushed`.
     _all_events_for_unpushed_motion: str | None = None
 
+    # How many streams in a row talked and then ended before
+    # EVENT_STREAM_HEALTHY_SECONDS, which the short retry backs off on (#1235).
+    # A class default because the tests build streams without __init__.
+    _consecutive_short_streams = 0
+
+    # Whether this host has held one talking stream for
+    # EVENT_STREAM_HEALTHY_SECONDS. Until it has, short streams are not counted:
+    # a device that never holds one is firmware that hangs up early, not a
+    # device that has started shedding connections.
+    _held_a_stream = False
+
     # Which event codes this device's getEventIndexes endpoint has been seen to
     # report as active. Learned, because an empty answer is ambiguous -- see
     # _async_reconcile_latched_events.
@@ -821,6 +889,14 @@ class DahuaHostEventStream:
     # that an instance built without __init__ -- which the tests here do -- is
     # still correct.
     _codes_the_device_reports: set | None = None
+
+    # code -> (the latches asked about, as (channel, Start time); how many
+    # empty answers they have had; when to ask again), for a code the device
+    # has never reported. On a device that hangs up every 30 seconds, asking on
+    # every reconnect was two requests each time for hours (#1235), so the
+    # same latch is asked about again only after a wait that doubles. None on
+    # the class for the same reason as above.
+    _latches_asked_about: dict | None = None
 
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         self._hass = hass
@@ -1292,6 +1368,22 @@ class DahuaHostEventStream:
         because a failing stream retries often, and this must not add load to a
         device that is already struggling.
 
+        **And asks about one unproven latch sparsely.** An empty answer for a
+        code this endpoint has never reported changes nothing, so asking on
+        every reconnect is load for no gain. Measured in #1235, on a camera
+        dropping its stream about every 30 seconds: two lost CrossLineDetection
+        Stops, with IVSRule_2 latched beside them, were asked about 238 times
+        each in under three hours, two requests on every reconnect. So the same
+        latch is asked about again only after `unproven_latch_recheck_delay`:
+        five minutes, doubling per empty answer to an hour.
+
+        Not once and never again. The event can come on again while the stream
+        is down, with its Start missed, and the device then reports it: that
+        answer is what proves the code, and the Stop lost after it is closed.
+        A latch that was never asked about again stayed on for ever. A new
+        Start is a new latch and is asked about at once, and a proven code is
+        asked about every time.
+
         The hard part is that `getEventIndexes` cannot be taken at face value.
         Measured on a DHI-NVR5464-16P-EI:
 
@@ -1318,17 +1410,37 @@ class DahuaHostEventStream:
         if self._codes_the_device_reports is None:
             self._codes_the_device_reports = set()
 
+        if self._latches_asked_about is None:
+            self._latches_asked_about = {}
+
         latched: dict = {}
+        starts: dict = {}
         for coordinator in self.coordinators:
-            events = getattr(coordinator, "latched_events", None)
+            events = getattr(coordinator, "latched_event_starts", None)
             if events is None:
                 continue
-            for code, channel in events():
-                latched.setdefault(code, set()).add(channel)
+            for code, started in events().items():
+                latched.setdefault(code, set()).add(coordinator._channel)
+                starts.setdefault(code, set()).add((coordinator._channel, started))
+
+        # Forget what is no longer latched, so this cannot grow without bound.
+        for code in list(self._latches_asked_about):
+            if code not in latched:
+                del self._latches_asked_about[code]
         if not latched:
             return
 
         for code, channels in sorted(latched.items()):
+            this_latch = frozenset(starts[code])
+            empty_answers = 0
+            remembered = self._latches_asked_about.get(code)
+            if remembered is not None and remembered[0] == this_latch:
+                empty_answers = remembered[1]
+                if (
+                    code not in self._codes_the_device_reports
+                    and time.monotonic() < remembered[2]
+                ):
+                    continue
             try:
                 observed = await self._owner.client.async_get_event_indexes_cgi(code)
             except Exception as ex:  # pylint: disable=broad-except
@@ -1355,6 +1467,12 @@ class DahuaHostEventStream:
                     "so this is not evidence the event ended",
                     self._address,
                     code,
+                )
+                empty_answers += 1
+                self._latches_asked_about[code] = (
+                    this_latch,
+                    empty_answers,
+                    time.monotonic() + unproven_latch_recheck_delay(empty_answers),
                 )
                 continue
 
@@ -1569,15 +1687,45 @@ class DahuaHostEventStream:
                 self._failing = False
                 self._consecutive_failures = 0
 
+            # Timed here, where the socket ended, and not after the reconciles
+            # below: they wait on the network, and that wait is not the device
+            # holding a stream. Six seconds of it once made a 55 second stream
+            # count as one that lasted.
+            elapsed = time.monotonic() - start_time
+
             # Before going back round. A Stop that arrived while the socket was
             # down is gone, and the sensor it belonged to is still on.
             await self._async_reconcile_latched_events()
             await self._async_reconcile_alarm_inputs()
 
+            lived = stream_lifetime(elapsed, self._received_data)
+            # Only a stream that talked moves the count. A silent attach is
+            # judged by the instant-death backoff above, and says nothing about
+            # whether a talking one would have lasted. And only on a host that
+            # has held a stream, so firmware that always hangs up early keeps
+            # the flat retry.
+            if self._received_data:
+                if lived >= EVENT_STREAM_HEALTHY_SECONDS:
+                    self._held_a_stream = True
+                    self._consecutive_short_streams = 0
+                elif self._held_a_stream:
+                    self._consecutive_short_streams += 1
+                    if (
+                        self._consecutive_short_streams
+                        == EVENT_STREAM_SHORT_STREAMS_BEFORE_BACKOFF + 1
+                    ):
+                        _LOGGER.info(
+                            "Event stream for %s has been closed by the device within %ds %d times in a row; waiting longer between reconnects, up to %ds, until a stream lasts",
+                            self._address,
+                            EVENT_STREAM_HEALTHY_SECONDS,
+                            self._consecutive_short_streams,
+                            EVENT_STREAM_MAX_SHORT_RETRY_SECONDS,
+                        )
             retry_in = event_stream_retry_delay(
-                stream_lifetime(time.monotonic() - start_time, self._received_data),
+                lived,
                 self._consecutive_failures,
                 self._received_data,
+                self._consecutive_short_streams,
             )
             if retry_in:
                 _LOGGER.debug(

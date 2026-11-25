@@ -23,9 +23,10 @@ pins, and the version of this change that kept the rows beside `data` passes
 every other test in this file.
 
 The distinction the fix rests on is kept: a device that *answers* must not be
-asked twice. An HTTP refusal never reaches the probe, because `async_get_config`
-turns a `ClientResponseError` into {}, and a 200 carrying rows for other
-channels is equally the device answering about this one. Only silence stays open.
+asked twice. A 403 or a 400 is an answer, and a 200 carrying rows for other
+channels is equally the device answering about this one. Silence stays open,
+and since #1243 so does a 5xx: the probe reads the table strictly, so it can
+tell the device failing from the device saying no.
 
 Nine mutations, each applied to the real source, each named with the tests that
 failed rather than the tests that ought to:
@@ -47,6 +48,9 @@ Assistant stubbed, since neither can be imported without it. That proves the
 logic and not the wiring, so the file itself ran for the first time on CI.
 """
 
+from types import SimpleNamespace
+
+import aiohttp
 import pytest
 
 from custom_components.dahua import DahuaDataUpdateCoordinator
@@ -85,7 +89,7 @@ class _Client:
         self.answers = list(answers)
         self.reads = 0
 
-    async def async_get_smart_motion_detection(self):
+    async def async_probe_smart_motion_detection(self):
         self.reads += 1
         answer = self.answers[0] if len(self.answers) == 1 else self.answers.pop(0)
         if isinstance(answer, Exception):
@@ -238,9 +242,8 @@ async def test_a_table_without_this_channels_row_is_an_answer():
 
 
 async def test_an_empty_table_is_an_answer():
-    """What a 400 looks like by the time it gets here: `async_get_config`
-    swallows the `ClientResponseError` and returns {}. The status is the device
-    saying it does not serve the table, so it must not be retried."""
+    """A 200 with nothing in it, which is how these devices answer for a table
+    they do not have. It must not be retried."""
     coordinator = _coordinator(TimeoutError(), {})
     await coordinator._async_probe_smart_motion_detect()
     assert coordinator.probes_that_did_not_answer() == {"smart_motion_detect"}
@@ -255,6 +258,106 @@ async def test_an_answer_is_not_asked_for_twice():
     assert await coordinator._async_probe_smart_motion_detect() is True
     assert coordinator.supports_smart_motion_detection() is True
     assert coordinator.probes_that_did_not_answer() == set()
+
+
+# --- a status is not always an answer (#1243 review) -------------------------
+
+
+def _http(status):
+    return aiohttp.ClientResponseError(
+        SimpleNamespace(real_url="http://10.0.0.88/"), (), status=status, message="x"
+    )
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 504, 408, 429])
+async def test_a_device_that_failed_to_answer_leaves_the_question_open(status):
+    """The device took the question and broke. That says nothing about whether
+    it has the table, so it is asked again."""
+    coordinator = _coordinator(_http(status))
+
+    assert await coordinator._async_probe_smart_motion_detect() is False
+    assert coordinator._supports_smart_motion_detection is False
+    assert coordinator.probes_that_did_not_answer() == {"smart_motion_detect"}
+    assert coordinator._probe_refusals["smart_motion_detect"]["status"] == status
+
+
+@pytest.mark.parametrize("status", [403, 400, 404, 501])
+async def test_a_device_that_said_no_is_not_asked_again(status, discoveries):
+    """403 is #1235's account without the rights. It was asked every poll."""
+    coordinator = _coordinator(_http(status))
+
+    assert await coordinator._async_probe_smart_motion_detect() is False
+    assert coordinator._supports_smart_motion_detection is False
+    assert coordinator.probes_that_did_not_answer() == set()
+    for _ in range(coordinator_module.MAX_CAPABILITY_RETRIES + 1):
+        await coordinator._async_retry_unanswered_capabilities()
+    assert coordinator.client.reads == 1
+    assert coordinator._probe_refusals["smart_motion_detect"]["status"] == status
+
+
+async def test_a_500_and_then_the_table_brings_the_controls(discoveries):
+    """rroller's case: the poll is gated off by the 500, so the retry is the
+    only thing left that can ask, and it has to."""
+    coordinator = _coordinator(_http(500), ANSWERED)
+    await coordinator._async_probe_smart_motion_detect()
+    assert coordinator._supports_smart_motion_detection is False
+
+    await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator.client.reads == 2
+    assert (
+        coordinator._supports_smart_motion_detection is True
+    ), "the poll reads the table only behind this flag"
+    assert coordinator.supports_smart_motion_detection() is True
+    assert coordinator.probes_that_did_not_answer() == set()
+    assert discoveries == [("entry-1", SERIAL)]
+
+
+async def test_a_500_and_then_a_403_is_settled(discoveries):
+    coordinator = _coordinator(_http(500), _http(403))
+    await coordinator._async_probe_smart_motion_detect()
+
+    for _ in range(coordinator_module.MAX_CAPABILITY_RETRIES + 1):
+        await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator.client.reads == 2
+    assert coordinator.probes_that_did_not_answer() == set()
+    assert discoveries == []
+
+
+async def test_a_device_that_keeps_failing_is_let_go(discoveries):
+    """Bounded, as silence is. A doorbell that answers 500 for a table it does
+    not have costs three more asks and no more."""
+    coordinator = _coordinator(_http(500))
+    await coordinator._async_probe_smart_motion_detect()
+
+    for _ in range(coordinator_module.MAX_CAPABILITY_RETRIES + 3):
+        await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator.client.reads == 1 + coordinator_module.MAX_CAPABILITY_RETRIES
+    assert coordinator._supports_smart_motion_detection is False
+
+
+@pytest.mark.parametrize(
+    "error, temporary",
+    [
+        (TimeoutError(), True),
+        (aiohttp.ClientConnectionError(), True),
+        (_http(500), True),
+        (_http(503), True),
+        (_http(408), True),
+        (_http(429), True),
+        (_http(501), False),
+        (_http(400), False),
+        (_http(401), False),
+        (_http(403), False),
+        (_http(404), False),
+        (SimpleNamespace(code=268894210), False),
+        (SimpleNamespace(answered=True), False),
+    ],
+)
+def test_which_failures_are_the_device_failing(error, temporary):
+    assert coordinator_module.probe_failure_is_temporary(error) is temporary
 
 
 # --- asked again, and both controls turn up ----------------------------------
@@ -366,10 +469,13 @@ def test_the_smart_motion_judgment_is_made_in_exactly_one_place():
     would then be free to disagree about whether a 200 with no row for this
     channel is an answer, which is the distinction the fix rests on."""
     assert _SOURCE.count('_note_probe_refusal("smart_motion_detect"') == 1
-    assert _SOURCE.count("async_get_smart_motion_detection()") == 2, (
-        "once in the probe and once in the poll's fetch. A third call site "
-        "means a second judgment, and none in the poll means an entity that "
-        "can only ever read unknown"
+    assert _SOURCE.count("async_probe_smart_motion_detection()") == 1, (
+        "the strict read belongs to the probe and to nothing else: in the "
+        "poll's gather a refusal would fail the whole refresh"
+    )
+    assert _SOURCE.count("async_get_smart_motion_detection()") == 1, (
+        "once, in the poll's fetch. A second call site means a second "
+        "judgment, and none means an entity that can only ever read unknown"
     )
 
 

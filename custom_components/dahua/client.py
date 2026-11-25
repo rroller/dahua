@@ -169,6 +169,62 @@ def event_index_channel(code: str, raw: int) -> int:
     return channel
 
 
+# How few rows a getEventIndexes answer can have and still be recognised as
+# one state per channel. See `event_index_rows_are_channel_states`: below
+# three, the two shapes can spell the same answer.
+EVENT_INDEX_STATE_ROWS_MINIMUM = 3
+
+
+def event_index_rows_are_channel_states(rows) -> bool:
+    """Whether a getEventIndexes answer is one 0/1 state per channel.
+
+    `rows` is the answer as (position, value) pairs, in the order sent.
+
+    The answer comes in two shapes, and they mean opposite things.
+
+    **A list of what is active.** Each value is an active index and there is a
+    row only for those. Measured on a DHI-NVR5464-16P-EI: `channels[0]=14`
+    while channel 14 saw motion, and `Error: No Events` with nothing active.
+    This is the shape every caller here was written for.
+
+    **A state for every channel.** The position is the channel and the value
+    says whether it is active. Measured by @hakkitorlakcik on a
+    DHI-NVR2108HS-8P-S2 on 3.205 (#1233), for VideoMotion, with nothing else
+    connected to the recorder:
+
+        idle                     channels[0]=0 ... channels[7]=0
+        someone passing ch 2     channels[2]=1, the other seven 0
+        someone passing ch 7     channels[7]=1, the other seven 0
+
+    Read as the first shape, that recorder had channel 0 in motion for ever,
+    channel 1 in motion whenever anything moved anywhere, and channels 2 to 7
+    never.
+
+    **Told apart from the answer alone.** A list of active indexes names each
+    one once, so three or more rows that are all 0 or 1 cannot be one: it
+    would have to repeat itself. So that, with the positions counting up from
+    0, is the state shape, and anything else is read as a list, as before.
+
+    What that leaves undecided is a device that answers in states and has one
+    or two channels: `channels[0]=0` is "idle" in one shape and "channel 0 is
+    active" in the other, and nothing in the answer says which. Such an
+    answer is still read as a list. No device has been seen to send it.
+    """
+    if len(rows) < EVENT_INDEX_STATE_ROWS_MINIMUM:
+        return False
+    return all(
+        position == expected and value in (0, 1)
+        for expected, (position, value) in enumerate(rows)
+    )
+
+
+def event_indexes_from_rows(code: str, rows) -> set:
+    """The active channels in a getEventIndexes answer, in either shape."""
+    if event_index_rows_are_channel_states(rows):
+        return {position for position, value in rows if value}
+    return {event_index_channel(code, value) for _position, value in rows}
+
+
 # One NVR carries a config entry per channel, and every entry sets itself up at
 # the same moment. Dahua's HTTP server is small: a dozen simultaneous CGI calls
 # can wedge it, and because the entries then fail together they retry together,
@@ -2126,6 +2182,12 @@ class DahuaClient:
     _rpc2_identity_asked = False
     _rpc2_identity = None
 
+    # Whether this account has been refused MotionDetect with HTTP 403, so the
+    # poll stops asking (#1235). On the client because each channel builds its
+    # own client and a reload builds new ones, so a reload asks again: an
+    # account given more rights gets its setting back without a restart.
+    _motion_detect_refused = False
+
     def __init__(
         self,
         username: str,
@@ -3624,11 +3686,36 @@ class DahuaClient:
         Example response:
         table.MotionDetect[0].DetectVersion=V3.0
         table.MotionDetect[0].Enable=true
+
+        A refused or absent table reads as no keys at all, which the motion
+        switch reports as unknown (#1235). No refusal escapes into the poll's
+        gather, which has no `return_exceptions`. It used to answer
+        `Enable=false` for channel 0 instead, which was a made-up "off".
+
+        A 403 is remembered for this client, so it is not asked again until a
+        reload. In #1235 an account without the rights was refused on every
+        poll, on both cameras, for days. Any other refusal is asked again next
+        time, as before. The URL is the one `async_get_config` builds, so it
+        shares that read's cache entry.
         """
+        if self._motion_detect_refused:
+            return {}
         try:
-            return await self.async_get_config("MotionDetect")
-        except aiohttp.ClientResponseError:
-            return {"table.MotionDetect[0].Enable": "false"}
+            return await self.get(
+                "/cgi-bin/configManager.cgi?action=getConfig&name=MotionDetect"
+            )
+        except aiohttp.ClientResponseError as error:
+            if error.status == 403:
+                self._motion_detect_refused = True
+                _LOGGER.info(
+                    "%s refused this account its motion detection setting "
+                    "(HTTP 403), so it is not asked again until the integration "
+                    "is reloaded, and the Motion Detection switch shows unknown. "
+                    "An account in a group without config rights is the usual "
+                    "cause",
+                    self._address,
+                )
+            return {}
 
     async def async_get_video_analyse_rules_for_amcrest(self):
         """
@@ -3794,6 +3881,23 @@ class DahuaClient:
         # one also answers for a table that only exists where the recorder
         # recognises the camera model, so a refusal is an ordinary answer here.
         return await self.async_get_config("SmartMotionDetect")
+
+    async def async_probe_smart_motion_detection(self) -> dict:
+        """The SmartMotionDetect table, strictly: a refusal raises.
+
+        For the capability probe, which has to tell three answers apart and
+        cannot from `{}`: a 403 or a 400 is the device saying no, a 200 with
+        no rows is the table not being there, and a 500 is the device failing
+        to answer this once (#1243 review). `async_probe_encode` is the same
+        idea for the encoder table.
+
+        Same URL as `async_get_smart_motion_detection`, so the two share one
+        entry in the host read cache. The poll keeps the lenient read: its
+        gather has no `return_exceptions`.
+        """
+        return await self.get(
+            "/cgi-bin/configManager.cgi?action=getConfig&name=SmartMotionDetect"
+        )
 
     async def async_get_video_color(self, fresh: bool = False) -> dict:
         """The picture adjustments per channel. Example output:
@@ -7554,12 +7658,12 @@ class DahuaClient:
                 quote(code, safe="")
             )
         )
-        indexes = set()
+        rows = []
         for line in data.decode("utf-8", errors="ignore").splitlines():
-            match = re.fullmatch(r"channels\[\d+\]=(\d+)", line.strip())
+            match = re.fullmatch(r"channels\[(\d+)\]=(\d+)", line.strip())
             if match:
-                indexes.add(event_index_channel(code, int(match.group(1))))
-        return indexes
+                rows.append((int(match.group(1)), int(match.group(2))))
+        return event_indexes_from_rows(code, rows)
 
     @asynccontextmanager
     async def _request_slot(self):
