@@ -632,6 +632,9 @@
     "cancel_call_refused": {
             "message": "The doorbell would not cancel the call: {reason}"
         },
+        "active_profile_unavailable": {
+            "message": "The active image profile could not be established, so the light was not changed."
+        },
         "infrared_profile_unavailable": {
             "message": "The active image profile could not be established, so the infrared light was not changed."
         },

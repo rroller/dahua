@@ -25,6 +25,8 @@ import pytest
 
 from custom_components.dahua.client import SECURITY_LIGHT_TYPE
 from custom_components.dahua.light import FloodLight
+from homeassistant.exceptions import HomeAssistantError
+from custom_components.dahua.const import DOMAIN
 
 CHANNEL_INDEX = 3
 CHANNEL_NUMBER = 4
@@ -181,3 +183,33 @@ async def test_the_lighting_v2_path_is_taken_even_on_a_recorder():
 
     assert coordinator.client.lighting_v2 == [(CHANNEL_INDEX, True, PROFILE_MODE)]
     assert coordinator.client.nvr_coaxial == []
+
+
+async def test_flood_light_on_unknown_profile_reports_error_without_write():
+    coordinator, entity = _flood_light(
+        supports_floodlightmode=False,
+        supports_lighting_v2=True,
+    )
+    coordinator.get_profile_mode = lambda: None
+
+    with pytest.raises(HomeAssistantError) as error:
+        await entity.async_turn_on()
+
+    assert error.value.translation_domain == DOMAIN
+    assert error.value.translation_key == "active_profile_unavailable"
+    coordinator.client.async_set_lighting_v2_for_flood_lights.assert_not_awaited()
+
+
+async def test_flood_light_off_unknown_profile_reports_error_without_write():
+    coordinator, entity = _flood_light(
+        supports_floodlightmode=False,
+        supports_lighting_v2=True,
+    )
+    coordinator.get_profile_mode = lambda: None
+
+    with pytest.raises(HomeAssistantError) as error:
+        await entity.async_turn_off()
+
+    assert error.value.translation_domain == DOMAIN
+    assert error.value.translation_key == "active_profile_unavailable"
+    coordinator.client.async_set_lighting_v2_for_flood_lights.assert_not_awaited()

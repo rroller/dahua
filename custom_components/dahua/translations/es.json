@@ -597,6 +597,9 @@
         "cancel_call_refused": {
             "message": "El timbre rechazó la orden de cancelar la llamada: {reason}"
         },
+        "active_profile_unavailable": {
+            "message": "No se pudo establecer el perfil de imagen activo, por lo que no se modific? la luz."
+        },
         "infrared_profile_unavailable": {
             "message": "No se pudo establecer el perfil de imagen activo, por lo que no se modific? la iluminaci?n infrarroja."
         },

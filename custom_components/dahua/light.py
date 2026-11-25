@@ -29,6 +29,8 @@ from .late import async_add_and_keep_watching
 from .client import SECURITY_LIGHT_TYPE
 from .illuminator_restore import override_store_key
 from .infrared import async_write_infrared_mode
+from homeassistant.exceptions import HomeAssistantError
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -894,6 +896,12 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
 
         channel = self._coordinator.get_channel()
         profile_mode = self._coordinator.get_profile_mode()
+        if profile_mode is None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="active_profile_unavailable",
+            )
+
         index = self._coordinator.get_illuminator_index()
 
         # IPC-Color4M-TZ uses the dedicated full-table LightingScheme API
@@ -1131,6 +1139,12 @@ class DahuaIlluminator(DahuaBaseEntity, LightEntity):
         ):
             channel = self._coordinator.get_channel()
             profile_mode = self._coordinator.get_profile_mode()
+            if profile_mode is None:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="active_profile_unavailable",
+                )
+
             index = self._coordinator.get_illuminator_index()
             hass_brightness = kwargs.get(ATTR_BRIGHTNESS)
             dahua_brightness = dahua_utils.hass_brightness_to_dahua_brightness(
@@ -1318,6 +1332,12 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         else:
             channel = self._coordinator.get_channel()
             profile_mode = self._coordinator.get_profile_mode()
+            if profile_mode is None:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="active_profile_unavailable",
+                )
+
             await self._coordinator.client.async_set_lighting_v2_for_flood_lights(
                 channel, True, profile_mode
             )
@@ -1351,6 +1371,12 @@ class FloodLight(DahuaBaseEntity, LightEntity):
         else:
             channel = self._coordinator.get_channel()
             profile_mode = self._coordinator.get_profile_mode()
+            if profile_mode is None:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="active_profile_unavailable",
+                )
+
             await self._coordinator.client.async_set_lighting_v2_for_flood_lights(
                 channel, False, profile_mode
             )

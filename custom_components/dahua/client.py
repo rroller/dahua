@@ -4447,6 +4447,9 @@ class DahuaClient:
         even when RPC2 polling is disabled. Partial CGI writes are accepted but
         do not light the emitter.
         """
+        if profile_mode is None:
+            raise ValueError("Lighting_V2 requires an established profile")
+
         async with self._lighting_lock(), asyncio.timeout(TIMEOUT_SECONDS):
             restore_store = self._illuminator_restore_store
             if restore_store is None:
@@ -5147,6 +5150,9 @@ class DahuaClient:
         Mode should be one of Auto, Manual or Off; On is accepted as Manual, as
         the infrared service does.
         """
+        if profile_mode is None:
+            raise ValueError("Lighting_V2 requires an established profile")
+
         if mode.lower() == "on":
             mode = "Manual"
         # The Dahua API expects the first character capitalised.
@@ -5673,6 +5679,8 @@ class DahuaClient:
         bank: str = "MiddleLight",
     ) -> dict:
         """Control one Lighting_V2 white-light entry."""
+        if profile_mode is None:
+            raise ValueError("Lighting_V2 requires an established profile")
 
         mode = "Manual" if enabled else "Off"
 
@@ -5962,6 +5970,8 @@ class DahuaClient:
 
         profile_mode: 0=day, 1=night, 2=scene
         """
+        if profile_mode is None:
+            raise ValueError("Lighting_V2 requires an established profile")
 
         # on = Manual, off = Off
         mode = "Manual"

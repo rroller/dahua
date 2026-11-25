@@ -8,6 +8,8 @@ import pytest
 
 from custom_components.dahua import dahua_utils
 from custom_components.dahua.light import DahuaIlluminator, DahuaInfraredLight
+from homeassistant.exceptions import HomeAssistantError
+from custom_components.dahua.const import DOMAIN
 
 ATTR_BRIGHTNESS = "brightness"
 
@@ -997,3 +999,22 @@ async def test_illuminator_without_scheme_can_turn_on_and_off(restart):
     assert c.client.light_mode == "Off"
     assert c.client.light_brightness == 50
     assert light._restore_store.data is None
+
+
+async def test_illuminator_unknown_profile_reports_error_without_write():
+    coordinator = _Coordinator(
+        profile_mode=None,
+        uses_scheme=True,
+    )
+    light = _light(
+        DahuaIlluminator,
+        coordinator,
+    )
+
+    with pytest.raises(HomeAssistantError) as error:
+        await light.async_turn_on()
+
+    assert error.value.translation_domain == DOMAIN
+    assert error.value.translation_key == "active_profile_unavailable"
+    assert coordinator.client.scheme_calls == []
+    assert coordinator.client.v2 == []
