@@ -186,9 +186,9 @@ async def test_the_lighting_v2_path_is_taken_even_on_a_recorder():
 
 
 async def test_flood_light_on_unknown_profile_reports_error_without_write():
-    coordinator, entity = _flood_light(
+    entity, coordinator = _flood_light(
         supports_floodlightmode=False,
-        supports_lighting_v2=True,
+        is_nvr_channel=False,
     )
     coordinator.get_profile_mode = lambda: None
 
@@ -197,13 +197,13 @@ async def test_flood_light_on_unknown_profile_reports_error_without_write():
 
     assert error.value.translation_domain == DOMAIN
     assert error.value.translation_key == "active_profile_unavailable"
-    coordinator.client.async_set_lighting_v2_for_flood_lights.assert_not_awaited()
+    assert coordinator.client.lighting_v2 == []
 
 
 async def test_flood_light_off_unknown_profile_reports_error_without_write():
-    coordinator, entity = _flood_light(
+    entity, coordinator = _flood_light(
         supports_floodlightmode=False,
-        supports_lighting_v2=True,
+        is_nvr_channel=False,
     )
     coordinator.get_profile_mode = lambda: None
 
@@ -212,4 +212,4 @@ async def test_flood_light_off_unknown_profile_reports_error_without_write():
 
     assert error.value.translation_domain == DOMAIN
     assert error.value.translation_key == "active_profile_unavailable"
-    coordinator.client.async_set_lighting_v2_for_flood_lights.assert_not_awaited()
+    assert coordinator.client.lighting_v2 == []
