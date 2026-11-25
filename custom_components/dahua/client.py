@@ -604,6 +604,18 @@ _RPC2_TABLE_UNAVAILABLE: set = set()
 # picked up by paying one refusal again.
 _HOST_CGI_CONFIG_ABSENT: set = set()
 
+# Devices a READ has shown to answer CGI in a way no HTTP parser accepts
+# (#1176). Narrower than the set above on purpose, and keyed by device rather
+# than by account because it is the firmware that does it.
+#
+# It exists for the one request that cannot be asked twice. A read that came
+# back unreadable is simply asked again over RPC2, and a config write is checked
+# by reading the table first. A reboot has nothing to read back, so `reboot()`
+# has to know BEFORE it sends anything whether this device's CGI answer will be
+# readable, and only an earlier read can tell it. Learnt from identity reads,
+# config reads and the event subscription, never from the reboot itself.
+_HOST_CGI_UNREADABLE: set = set()
+
 # Hosts where an RPC2 field write has been seen to take the rest of its table
 # with it.
 #
@@ -2684,6 +2696,7 @@ class DahuaClient:
         if error.status in self.CONFIG_CGI_ABSENT:
             return await self._vth_identity_over_rpc2()
         if refusal_is_mangled_framing(error):
+            _HOST_CGI_UNREADABLE.add(self._device)
             return await self._identity_over_rpc2()
         return None
 
@@ -3310,42 +3323,52 @@ class DahuaClient:
             return {"vendor": "Generic RTSP"}
 
     async def reboot(self) -> dict:
-        """Reboot, over CGI, falling back to RPC2 if the CGI path is absent
-        or its answer cannot be read.
+        """Reboot over CGI, or over RPC2 where CGI cannot carry it.
 
         Measured on an SL300: magicBox.reboot answers result=true and the device
         only then goes down, so this returns before the connection drops rather
         than having to treat a dropped request as a success.
 
-        **An answer that cannot be read** is #1176's DH-IPC-HDW2849TM-S-IL on
-        3.120, which appends a stray header to every authenticated CGI reply.
-        aiohttp rejects the exchange, so the press raised. Its owner then
-        checked the camera: it had stayed reachable throughout and had not
-        rebooted. So on that camera the CGI request does not do the job, and
-        the same request is made over RPC2, which is how every config read
-        already reaches it.
+        **One press must never send two reboots**, and a reboot has nothing to
+        read back, so which transport carries it is decided before anything is
+        sent wherever it can be:
 
-        That is the opposite of what an unreadable answer to a config write
-        means, where the write may well have happened and the table is read
-        before anything is sent again. Nothing can be read back for a reboot.
-        If some other firmware does reboot on the CGI request and mangles the
-        reply too, the RPC2 request reaches a device that is already going
-        down, and whatever that raises is raised: the press reports a failure
-        for a reboot that is happening. No such device has been seen.
+        - **A device a read has already shown to answer CGI unreadably**
+          (`_HOST_CGI_UNREADABLE`, #1176's DH-IPC-HDW2849TM-S-IL on 3.120) is
+          asked over RPC2 and CGI is not tried. Its owner pressed the button on
+          the CGI path: the press raised and the camera stayed up.
+        - **404 or 501** means the request did not arrive anywhere that could
+          act on it, so the same request is made over RPC2. The SL300's path.
+        - **An unreadable answer from a device not known to give them** says
+          nothing about whether the reboot was taken. The stray bytes come after
+          a complete answer, so the device may well be on its way down. Nothing
+          more is sent, and the press reports that the outcome is unknown. (This
+          used to go on to RPC2, and a device that had already taken the first
+          request was then asked to reboot a second time.)
         """
+        if self._device in _HOST_CGI_UNREADABLE:
+            _LOGGER.debug(
+                "CGI answers on %s cannot be read; rebooting over RPC2 only",
+                self._address,
+            )
+            await self._rpc2_shared_call(
+                lambda client: client.request("magicBox.reboot")
+            )
+            return {"result": True}
         try:
             return await self.get("/cgi-bin/magicBox.cgi?action=reboot")
         except aiohttp.ClientResponseError as cgi_error:
-            unreadable = refusal_is_mangled_framing(cgi_error)
-            if cgi_error.status not in self.CONFIG_CGI_ABSENT and not unreadable:
+            if refusal_is_mangled_framing(cgi_error):
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="reboot_outcome_unknown",
+                    translation_placeholders={"device": str(self._address)},
+                ) from cgi_error
+            if cgi_error.status not in self.CONFIG_CGI_ABSENT:
                 raise
             _LOGGER.debug(
-                "magicBox.cgi %s on %s; rebooting over RPC2",
-                (
-                    "answered something that cannot be read"
-                    if unreadable
-                    else "answered %s" % cgi_error.status
-                ),
+                "magicBox.cgi answered %s on %s; rebooting over RPC2",
+                cgi_error.status,
                 self._address,
             )
             await self._rpc2_shared_call(
@@ -7153,6 +7176,7 @@ class DahuaClient:
                     response.close()
                     response = None
                 if unreadable:
+                    _HOST_CGI_UNREADABLE.add(self._device)
                     _LOGGER.info(
                         "The event subscription on %s came back as bytes no HTTP "
                         "parser will read, which is the whole of this device's CGI "
@@ -8217,6 +8241,12 @@ class DahuaClient:
                         # (#1176). Either way this device's config has to come from
                         # somewhere else, which is why both land on the one memo.
                         unreadable = refusal_is_mangled_framing(cgi_error)
+                        if unreadable and _is_read(url):
+                            # For `reboot()`, which has to know this before it
+                            # sends anything. A read only: an unreadable answer
+                            # to a write or to the reboot itself is exactly the
+                            # case that set is there to keep out.
+                            _HOST_CGI_UNREADABLE.add(self._device)
                         # A write is the other half of #1176, and it is a
                         # different question: a read that cannot be read has
                         # told us nothing, while a write that cannot be read
