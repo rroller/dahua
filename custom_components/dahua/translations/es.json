@@ -597,6 +597,9 @@
         "cancel_call_refused": {
             "message": "El timbre rechazó la orden de cancelar la llamada: {reason}"
         },
+        "infrared_profile_unavailable": {
+            "message": "No se pudo establecer el perfil de imagen activo, por lo que no se modific? la iluminaci?n infrarroja."
+        },
         "infrared_write_already_refused": {
             "message": "{device} ya rechazó el cambio de iluminación infrarroja, así que Home Assistant no volverá a solicitarlo. El modo y el nivel se siguen leyendo y mostrando. Recarga la entrada de la integración para volver a intentarlo después de cambiar algún ajuste en el dispositivo."
         },

@@ -632,6 +632,9 @@
     "cancel_call_refused": {
             "message": "The doorbell would not cancel the call: {reason}"
         },
+        "infrared_profile_unavailable": {
+            "message": "The active image profile could not be established, so the infrared light was not changed."
+        },
         "infrared_write_already_refused": {
             "message": "{device} has already refused to change its infrared light, so Home Assistant did not ask again. Its mode and level are still read and shown. Reload the integration entry to try again after changing anything on the device."
         },

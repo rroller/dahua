@@ -138,7 +138,8 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
     channel = coordinator.get_channel()
     if coordinator.get_profile_mode() is None:
         raise HomeAssistantError(
-            "The current VideoInMode profile could not be established"
+            translation_domain=DOMAIN,
+            translation_key="infrared_profile_unavailable",
         )
 
     untried = [
