@@ -125,6 +125,10 @@ class DigestAuth:
         # request sent without them shows nothing, and neither does an answer
         # that never left a cache (#1241).
         self.on_accepted = None
+        # Called, if set, each time a 401 is handed back to the caller: the
+        # device has declined this exchange. Whoever listens uses it to stop
+        # trusting older evidence about these credentials (#1241).
+        self.on_refused = None
 
     @property
     def scheme(self):
@@ -332,6 +336,9 @@ class DigestAuth:
         them is a secret. Nothing this module sent is logged, and neither is the
         URL, which is one endpoint away from carrying something that should not be.
         """
+        if self.on_refused is not None:
+            self.on_refused()
+
         offered = self._offered_scheme(response)
 
         if offered is not None and offered not in ANSWERABLE_SCHEMES:

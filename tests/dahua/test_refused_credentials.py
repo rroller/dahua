@@ -73,6 +73,7 @@ def _clean():
     """These counters are module level and shared, so every test starts empty."""
     dahua._HOST_FAILURES.clear()
     client_module._CREDENTIALS_ACCEPTED.clear()
+    client_module._CREDENTIALS_REFUSED.clear()
 
 
 def _401():
@@ -645,15 +646,17 @@ def test_a_finished_poll_records_nothing_about_an_account():
     assert client_module._CREDENTIALS_ACCEPTED == {}
 
 
-def test_only_the_digest_exchange_records_an_account_as_accepted():
-    """The poll's last line names the host and nothing else, and the one
-    caller of `note_credentials_accepted` is the constructor every signed
-    request goes through."""
+def test_only_an_authenticated_exchange_records_an_account_as_accepted():
+    """The poll's last line names the host and nothing else. The one caller
+    of `note_credentials_accepted` is the constructor every signed request
+    goes through, and the RPC2 session records through `_note_accepted` in
+    two places: its login, and an answer on it."""
     from .integration_source import source
 
     text = source()
     assert "async_record_host_success(self.hass, self._address)\n" in text
     assert text.count("note_credentials_accepted(") == 2, "its definition and one call"
+    assert text.count("_note_accepted(") == 4, "its definition and three calls"
     assert (
         text.count("DigestAuth(") == 1
     ), "a second place that builds one is a signed request nothing hears about"

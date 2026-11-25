@@ -1772,6 +1772,13 @@ class DahuaHostEventStream:
         (`_CREDENTIALS_ACCEPTED` in client.py). If the owner changes while the
         stream waits, the new owner is held to the same test.
 
+        The third round found the device that left out. One that answers only
+        over RPC2 never completes a digest exchange, so its stream, started
+        while the address's budget was spent, waited for ever while its owner
+        read the device every poll. An RPC2 login is recorded as well now, and
+        so is each answer on the session it opened, against the password the
+        session was opened with and only until those credentials are refused.
+
         An owner that sends the device nothing therefore waits until it does,
         or until its entry is reloaded, which is where a stopped stream was
         left before this.
