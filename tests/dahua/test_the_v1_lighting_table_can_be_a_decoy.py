@@ -51,6 +51,8 @@ Mutation table, each caught by the test named after it:
   path whose verification read merely timed out (found by @rroller in review)
 """
 
+from custom_components.dahua.const import DOMAIN
+
 import logging
 from unittest.mock import AsyncMock
 
@@ -642,15 +644,14 @@ async def test_unknown_profile_reports_an_error_and_performs_no_infrared_write()
         profile=None,
     )
 
-    with pytest.raises(
-        HomeAssistantError,
-        match="current VideoInMode profile could not be established",
-    ):
+    with pytest.raises(HomeAssistantError) as error:
         await async_write_infrared_mode(
             coordinator,
             "Manual",
             100,
         )
 
+    assert error.value.translation_domain == DOMAIN
+    assert error.value.translation_key == "infrared_profile_unavailable"
     assert device.v1_writes == []
     assert device.v2_writes == []
