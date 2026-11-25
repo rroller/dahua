@@ -210,7 +210,22 @@ def setup(monkeypatch):
                 alarm_input["index"],
             )
 
+    class _ChannelAlarmLocal(_Event):
+        """The stand-in sensor, which can be retired. Recorded as the event
+        sensor it is, so every test that counts AlarmLocal sensors still
+        counts this one."""
+
+        def __init__(self, coordinator, entry, superseded):
+            super().__init__(coordinator, entry, "AlarmLocal")
+            self.coordinator = coordinator
+            self.superseded = superseded
+            self.retired = 0
+
+        async def async_retire(self):
+            self.retired += 1
+
     monkeypatch.setattr(bs, "DahuaEventSensor", _Event)
+    monkeypatch.setattr(bs, "DahuaChannelAlarmLocalSensor", _ChannelAlarmLocal)
     monkeypatch.setattr(bs, "DahuaAuthorizedVehicleBinarySensor", _Vehicle)
     monkeypatch.setattr(bs, "DahuaDiskProblemBinarySensor", _Disk)
     monkeypatch.setattr(bs, "DahuaAlarmInputBinarySensor", _AlarmInput)
@@ -745,9 +760,14 @@ async def test_a_recorder_with_no_terminals_keeps_them_too():
     import custom_components.dahua.binary_sensor as _bs
     from unittest.mock import patch
 
+    class _StandIn:
+        def __init__(self, coordinator, entry, superseded):
+            built.append("AlarmLocal")
+
     with patch.multiple(
         _bs,
         DahuaEventSensor=_Event,
+        DahuaChannelAlarmLocalSensor=_StandIn,
         DahuaAuthorizedVehicleBinarySensor=lambda *a, **k: object(),
         DahuaDiskProblemBinarySensor=lambda *a, **k: object(),
         DahuaAlarmInputBinarySensor=lambda *a, **k: object(),
@@ -912,3 +932,282 @@ async def test_a_channel_sensor_is_not_added_twice_by_later_announcements(setup)
         await setup.hass.run_pending()
 
     assert _channel_sensors_added(added) == ["SERIAL1_alarmlocal"]
+
+
+# --- a stand-in that was already there when the terminals arrived ---------------
+#
+# @rroller's next round on #1218. Each channel waits on its own question, so
+# channel 0 can be told "no terminals" and get its AlarmLocal sensor while
+# channel 1 has still to hear. Channel 1 then finds the box's terminals: their
+# sensors were added and channel 0's stayed, fed by nothing, because the host
+# hands every later AlarmLocal to the carrier.
+
+
+def _stand_ins(added):
+    return [e for e in added if hasattr(e, "async_retire")]
+
+
+async def _late_terminals(setup, coordinator):
+    coordinator._alarm_inputs = list(TERMINALS)
+    coordinator._alarm_inputs_pending = False
+    late.async_notify_capability_discovered(
+        setup.hass, setup.entry.entry_id, coordinator.get_serial_number()
+    )
+    await setup.hass.run_pending()
+
+
+async def test_terminals_found_by_another_channel_retire_the_stand_in(setup):
+    """The reproduction: mixed answers across the channels of one recorder."""
+    answered_no = _Coordinator(channel=0, events=["AlarmLocal"])
+    still_asking = _Coordinator(
+        channel=1, events=["AlarmLocal"], alarm_inputs_pending=True
+    )
+    added = await setup(answered_no, still_asking)
+    (stand_in,) = _stand_ins(added)
+    assert stand_in.coordinator is answered_no and stand_in.retired == 0
+
+    await _late_terminals(setup, still_asking)
+
+    assert _names(setup.built, "alarm_input") == [0, 3], "the terminals arrived"
+    assert stand_in.retired == 1, (
+        "channel 0's AlarmLocal sensor is still loaded beside the terminal "
+        "sensors, and nothing will ever write to it again"
+    )
+    assert _stand_ins(setup.added) == [stand_in], "and no second one was made"
+
+
+async def test_the_one_retired_is_the_one_home_assistant_was_given(setup):
+    """Every announcement for a channel runs its build again. The sensor that
+    was added is the first one built, and it is that one that has to go: a
+    later build's copy was never added, and retiring it removes nothing."""
+    answered_no = _Coordinator(channel=0, events=["AlarmLocal"])
+    still_asking = _Coordinator(
+        channel=1, events=["AlarmLocal"], alarm_inputs_pending=True
+    )
+    added = await setup(answered_no, still_asking)
+    (stand_in,) = _stand_ins(added)
+
+    for _ in range(2):
+        late.async_notify_capability_discovered(
+            setup.hass, setup.entry.entry_id, answered_no.get_serial_number()
+        )
+        await setup.hass.run_pending()
+    await _late_terminals(setup, still_asking)
+
+    assert stand_in.retired == 1
+
+
+async def test_every_channels_stand_in_is_retired_not_only_the_first(setup):
+    channels = [
+        _Coordinator(channel=0, events=["AlarmLocal"]),
+        _Coordinator(channel=1, events=["AlarmLocal"]),
+        _Coordinator(channel=2, events=["AlarmLocal"], alarm_inputs_pending=True),
+    ]
+    added = await setup(*channels)
+    assert len(_stand_ins(added)) == 2
+
+    await _late_terminals(setup, channels[2])
+
+    assert [s.retired for s in _stand_ins(added)] == [1, 1]
+
+
+async def test_the_stand_in_is_retired_when_the_carrier_is_not_the_announcer(setup):
+    """Two channels find the terminals and the lower one carries them. The
+    rebuild for the higher one adds nothing, and still has to retire."""
+    low = _Coordinator(channel=0, events=["AlarmLocal"], alarm_inputs_pending=True)
+    stood_in = _Coordinator(channel=1, events=["AlarmLocal"])
+    high = _Coordinator(channel=2, events=["AlarmLocal"], alarm_inputs_pending=True)
+    added = await setup(low, stood_in, high)
+    (stand_in,) = _stand_ins(added)
+
+    # Both have the answer by the time the higher channel's rebuild runs.
+    low._alarm_inputs = list(TERMINALS)
+    low._alarm_inputs_pending = False
+    await _late_terminals(setup, high)
+
+    assert stand_in.retired >= 1
+
+
+async def test_a_late_no_on_another_channel_retires_nothing(setup):
+    """Only terminals arriving retire it. Another channel also being told
+    there are none gets a stand-in of its own."""
+    answered_no = _Coordinator(channel=0, events=["AlarmLocal"])
+    still_asking = _Coordinator(
+        channel=1, events=["AlarmLocal"], alarm_inputs_pending=True
+    )
+    added = await setup(answered_no, still_asking)
+
+    still_asking._alarm_inputs_pending = False
+    late.async_notify_capability_discovered(
+        setup.hass, setup.entry.entry_id, still_asking.get_serial_number()
+    )
+    await setup.hass.run_pending()
+
+    assert [s.retired for s in _stand_ins(added)] == [0, 0]
+    assert _channel_sensors_added(added) == [
+        "SERIAL1_1_alarmlocal",
+        "SERIAL1_alarmlocal",
+    ]
+
+
+async def test_a_camera_keeps_its_stand_in_for_good(setup):
+    """Nothing here ever reports terminals, so nothing retires it, however
+    many capabilities are announced."""
+    camera = _Coordinator(channel=0, events=["AlarmLocal"])
+    added = await setup(camera)
+
+    for _ in range(3):
+        late.async_notify_capability_discovered(
+            setup.hass, setup.entry.entry_id, camera.get_serial_number()
+        )
+        await setup.hass.run_pending()
+
+    assert [s.retired for s in _stand_ins(added)] == [0]
+
+
+async def test_the_stand_in_is_told_how_to_ask_whether_it_has_been_superseded(setup):
+    """It asks for itself when it is added, which covers terminals that turn
+    up while Home Assistant is still adding it."""
+    answered_no = _Coordinator(channel=0, events=["AlarmLocal"])
+    still_asking = _Coordinator(
+        channel=1, events=["AlarmLocal"], alarm_inputs_pending=True
+    )
+    added = await setup(answered_no, still_asking)
+    (stand_in,) = _stand_ins(added)
+
+    assert stand_in.superseded() is False
+    still_asking._alarm_inputs = list(TERMINALS)
+    assert stand_in.superseded() is True
+
+
+# --- the sensor itself ----------------------------------------------------------
+
+
+class _RealCoordinator:
+    """Enough coordinator for the real sensor to be added to Home Assistant."""
+
+    from custom_components.dahua import DahuaDataUpdateCoordinator as _Real
+
+    add_dahua_event_listener = _Real.add_dahua_event_listener
+    get_event_key = _Real.get_event_key
+
+    def __init__(self):
+        self._channel = 0
+        self._dahua_event_listeners = {}
+        self.data = {}
+        self.last_update_success = True
+
+    def get_serial_number(self):
+        return "SERIAL9"
+
+    def get_device_name(self):
+        return "Recorder"
+
+    def get_address(self):
+        return "10.9.9.9"
+
+    def get_event_timestamp(self, event_name):
+        return 0
+
+    def get_event_details(self, event_name):
+        return {}
+
+    def event_is_momentary(self, event_name):
+        return False
+
+    def async_add_listener(self, *args, **kwargs):
+        return lambda: None
+
+
+def _real_stand_in(superseded):
+    class _OnItsOwn(bs.DahuaChannelAlarmLocalSensor):
+        # The device page is not what is under test, and building one needs a
+        # whole coordinator.
+        device_info = None
+        extra_state_attributes = None
+
+    return _OnItsOwn(_RealCoordinator(), object(), superseded)
+
+
+async def _add_for_real(hass, entity):
+    from pytest_homeassistant_custom_component.common import (
+        MockConfigEntry,
+        MockEntityPlatform,
+    )
+
+    entry = MockConfigEntry(domain="dahua")
+    entry.add_to_hass(hass)
+    platform = MockEntityPlatform(hass, domain="binary_sensor", platform_name="dahua")
+    platform.config_entry = entry
+    await platform.async_add_entities([entity])
+    await hass.async_block_till_done()
+    return entry
+
+
+async def test_retiring_leaves_the_row_and_shows_it_unavailable(hass):
+    """What Home Assistant does with a registered entity its platform has
+    stopped providing, which is what the user is meant to see: not a sensor
+    sitting at off, and not a row deleted from under their automations."""
+    from homeassistant.helpers import entity_registry as er
+
+    sensor = _real_stand_in(lambda: False)
+    await _add_for_real(hass, sensor)
+    entity_id = sensor.entity_id
+    assert hass.states.get(entity_id).state == "off"
+
+    await sensor.async_retire()
+    await hass.async_block_till_done()
+
+    state = hass.states.get(entity_id)
+    assert state.state == "unavailable"
+    assert state.attributes.get("restored") is True
+    assert er.async_get(hass).async_get(entity_id) is not None
+    assert sensor._coordinator._dahua_event_listeners.get("AlarmLocal-0", []) == []
+
+
+async def test_retiring_twice_is_retiring_once(hass):
+    sensor = _real_stand_in(lambda: False)
+    await _add_for_real(hass, sensor)
+
+    await sensor.async_retire()
+    await sensor.async_retire()
+    await hass.async_block_till_done()
+
+    assert hass.states.get(sensor.entity_id).state == "unavailable"
+
+
+async def test_a_stand_in_added_after_the_terminals_arrived_retires_itself(hass):
+    """Home Assistant was still adding it when the terminals turned up, so
+    the retire sent to it then found nothing to remove."""
+    arrived = []
+    sensor = _real_stand_in(lambda: bool(arrived))
+
+    await sensor.async_retire()
+    assert sensor._retired is False, "not added yet, so there is nothing to remove"
+
+    arrived.append(True)
+    await _add_for_real(hass, sensor)
+
+    assert sensor._retired is True
+    assert hass.states.get(sensor.entity_id).state == "unavailable"
+
+
+async def test_a_stand_in_nothing_has_superseded_stays(hass):
+    sensor = _real_stand_in(lambda: False)
+    await _add_for_real(hass, sensor)
+
+    assert sensor._retired is False
+    assert hass.states.get(sensor.entity_id).state == "off"
+
+
+def test_the_stand_in_keeps_the_id_the_old_sensor_had():
+    """Or every recorder and camera with AlarmLocal selected would get a new
+    entity and an orphaned old one on upgrade."""
+    coordinator = _RealCoordinator()
+    stand_in = bs.DahuaChannelAlarmLocalSensor(coordinator, object(), lambda: False)
+    plain = bs.DahuaEventSensor(coordinator, object(), "AlarmLocal")
+
+    assert stand_in.unique_id == plain.unique_id
+    assert stand_in.unique_id.startswith("SERIAL9_")
+    assert stand_in.translation_key == plain.translation_key
+    assert stand_in.device_class == plain.device_class
