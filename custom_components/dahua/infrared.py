@@ -137,7 +137,9 @@ async def async_write_infrared_mode(coordinator, mode: str, brightness: int) -> 
     device = coordinator.get_device_name()
     channel = coordinator.get_channel()
     if coordinator.get_profile_mode() is None:
-        return
+        raise HomeAssistantError(
+            "The current VideoInMode profile could not be established"
+        )
 
     untried = [
         path

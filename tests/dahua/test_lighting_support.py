@@ -87,3 +87,14 @@ def test_async_get_config_still_swallows_so_the_probe_must_not_rely_on_it():
 
     src = inspect.getsource(DahuaClient.async_get_config)
     assert "return {}" in src and "except aiohttp.ClientResponseError" in src
+
+
+async def test_an_unknown_profile_skips_the_late_lighting_probe():
+    client = _Client(result={})
+    coordinator = object.__new__(DahuaDataUpdateCoordinator)
+    coordinator._channel = 0
+    coordinator._profile_mode = None
+    coordinator.client = client
+
+    assert await coordinator.async_detect_lighting_support() is False
+    assert client.calls == 0

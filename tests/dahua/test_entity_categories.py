@@ -286,3 +286,13 @@ async def test_a_camera_still_gets_the_license_plate_sensor():
     await sensor_module.async_setup_entry(hass, entry, adds_entities(added))
 
     assert "DahuaLicensePlateSensor" in [type(s).__name__ for s in added]
+
+
+def test_the_profile_sensor_reports_unknown_when_the_profile_is_unresolved():
+    coordinator = _coordinator()
+    coordinator.get_profile_mode = lambda: None
+
+    sensor = object.__new__(DahuaProfileSensor)
+    sensor._coordinator = coordinator
+
+    assert sensor.native_value is None

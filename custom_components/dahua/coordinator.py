@@ -8161,6 +8161,9 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         having an IR light and then fetched Lighting[channel][mode] on every
         poll, forever. The profile mode probe reads its result the same way.
         """
+        if self._profile_mode is None:
+            return False
+
         try:
             conf = await self.client.async_get_config_lighting(
                 self._channel, self._profile_mode
@@ -8178,7 +8181,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Return the host reboot generation observed by this coordinator."""
         return self._camera_reboot_generation
 
-    def get_profile_mode(self) -> str:
+    def get_profile_mode(self) -> str | None:
         # profile_mode 0=day, 1=night, 2=scene
         return self._profile_mode
 

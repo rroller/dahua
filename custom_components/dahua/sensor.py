@@ -232,8 +232,10 @@ class DahuaProfileSensor(DahuaBaseEntity, SensorEntity):
         return self._coordinator.get_serial_number() + "_profile"
 
     @property
-    def native_value(self) -> str:
-        mode = str(self._coordinator.get_profile_mode())
+    def native_value(self) -> str | None:
+        mode = self._coordinator.get_profile_mode()
+        if mode is None:
+            return None
         return PROFILE_NAMES.get(mode, str(mode))
 
     @property
