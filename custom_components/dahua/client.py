@@ -167,6 +167,62 @@ def event_index_channel(code: str, raw: int) -> int:
     return channel
 
 
+# How few rows a getEventIndexes answer can have and still be recognised as
+# one state per channel. See `event_index_rows_are_channel_states`: below
+# three, the two shapes can spell the same answer.
+EVENT_INDEX_STATE_ROWS_MINIMUM = 3
+
+
+def event_index_rows_are_channel_states(rows) -> bool:
+    """Whether a getEventIndexes answer is one 0/1 state per channel.
+
+    `rows` is the answer as (position, value) pairs, in the order sent.
+
+    The answer comes in two shapes, and they mean opposite things.
+
+    **A list of what is active.** Each value is an active index and there is a
+    row only for those. Measured on a DHI-NVR5464-16P-EI: `channels[0]=14`
+    while channel 14 saw motion, and `Error: No Events` with nothing active.
+    This is the shape every caller here was written for.
+
+    **A state for every channel.** The position is the channel and the value
+    says whether it is active. Measured by @hakkitorlakcik on a
+    DHI-NVR2108HS-8P-S2 on 3.205 (#1233), for VideoMotion, with nothing else
+    connected to the recorder:
+
+        idle                     channels[0]=0 ... channels[7]=0
+        someone passing ch 2     channels[2]=1, the other seven 0
+        someone passing ch 7     channels[7]=1, the other seven 0
+
+    Read as the first shape, that recorder had channel 0 in motion for ever,
+    channel 1 in motion whenever anything moved anywhere, and channels 2 to 7
+    never.
+
+    **Told apart from the answer alone.** A list of active indexes names each
+    one once, so three or more rows that are all 0 or 1 cannot be one: it
+    would have to repeat itself. So that, with the positions counting up from
+    0, is the state shape, and anything else is read as a list, as before.
+
+    What that leaves undecided is a device that answers in states and has one
+    or two channels: `channels[0]=0` is "idle" in one shape and "channel 0 is
+    active" in the other, and nothing in the answer says which. Such an
+    answer is still read as a list. No device has been seen to send it.
+    """
+    if len(rows) < EVENT_INDEX_STATE_ROWS_MINIMUM:
+        return False
+    return all(
+        position == expected and value in (0, 1)
+        for expected, (position, value) in enumerate(rows)
+    )
+
+
+def event_indexes_from_rows(code: str, rows) -> set:
+    """The active channels in a getEventIndexes answer, in either shape."""
+    if event_index_rows_are_channel_states(rows):
+        return {position for position, value in rows if value}
+    return {event_index_channel(code, value) for _position, value in rows}
+
+
 # One NVR carries a config entry per channel, and every entry sets itself up at
 # the same moment. Dahua's HTTP server is small: a dozen simultaneous CGI calls
 # can wedge it, and because the entries then fail together they retry together,
@@ -7574,12 +7630,12 @@ class DahuaClient:
                 quote(code, safe="")
             )
         )
-        indexes = set()
+        rows = []
         for line in data.decode("utf-8", errors="ignore").splitlines():
-            match = re.fullmatch(r"channels\[\d+\]=(\d+)", line.strip())
+            match = re.fullmatch(r"channels\[(\d+)\]=(\d+)", line.strip())
             if match:
-                indexes.add(event_index_channel(code, int(match.group(1))))
-        return indexes
+                rows.append((int(match.group(1)), int(match.group(2))))
+        return event_indexes_from_rows(code, rows)
 
     @asynccontextmanager
     async def _request_slot(self):
