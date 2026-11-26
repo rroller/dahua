@@ -611,6 +611,9 @@
         "ntp_server_could_not_be_set": {
           "message": "Could not set the NTP server on {device}. {reason}"
         },
+        "reboot_outcome_unknown": {
+            "message": "{device} answered the reboot request in a way that could not be read, so it is not known whether it is rebooting. Nothing further was sent. Check the device before pressing again."
+        },
         "audio_could_not_be_sent": {
             "message": "Could not play audio on {device}: {reason}"
         },

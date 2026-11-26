@@ -215,9 +215,11 @@ def _clear_cgi_config_absent():
 
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
     client_module._HOST_LIGHTING_AGGREGATE.clear()
+    client_module._HOST_CGI_UNREADABLE.clear()
     yield
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
     client_module._HOST_LIGHTING_AGGREGATE.clear()
+    client_module._HOST_CGI_UNREADABLE.clear()
 
 
 @pytest.fixture(autouse=True)
