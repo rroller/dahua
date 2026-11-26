@@ -28,7 +28,7 @@ CONTRIBUTING wins.
 
 <!-- tags: navigation, directory-structure -->
 
-41 modules, about 41,000 lines.
+43 modules, about 42,000 lines.
 
 ```
 custom_components/dahua/
@@ -67,6 +67,9 @@ custom_components/dahua/
 ├── illuminator_restore.py  # Persistent stores for lighting overrides
 ├── white_light_override.py # Pure table builders for the channel-scoped white light
 ├── infrared.py             # Infrared mode writes, transport routing, refusals
+├── request_tally.py        # What each device was asked, by name, for the dump:
+│                           #   counted where a request is sent, after the cache.
+│                           #   Names and numbers only, never a value (#603)
 ├── refusals.py             # What a device has refused outright, so it is not asked
 ├── deterrence.py           # ProductDefinition parsers for siren / security light
 ├── ivs.py                  # Identify IVS rules by their own stable Dahua Id
