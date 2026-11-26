@@ -54,6 +54,7 @@ VTH_PHONE_TABLE = "VideoTalkPhoneGeneral"
 from hashlib import md5
 from urllib.parse import quote, unquote
 
+from . import request_tally
 from . import white_light_override as wlo
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
@@ -4282,6 +4283,19 @@ class DahuaClient:
     def _rpc2_key(self):
         return (self._device, self._username)
 
+    def _note_request(self, url: str) -> None:
+        """Count a request that is about to be sent. See request_tally.py.
+
+        Called at each place a request leaves this client, after the read
+        cache, so what is counted is what the device was actually asked.
+        `getattr` because much of the suite builds clients with
+        `object.__new__`, and a client that cannot say which device it is
+        counts nothing.
+        """
+        request_tally.note(
+            getattr(self, "_device", None), request_tally.request_name(url)
+        )
+
     async def _shared_rpc2(self) -> "_SharedRpc2Session":
         """This host's RPC2 session, logged in on first use.
 
@@ -4311,6 +4325,12 @@ class DahuaClient:
                 session,
                 self._use_https,
                 dhip_transport=self._new_dhip_transport(),
+            )
+            # Counted with the CGI requests, so the dump shows a device
+            # whose reads moved to RPC2 as that and not as a device asked less.
+            device = getattr(self, "_device", None)
+            client.on_request = lambda method, params=None: request_tally.note(
+                device, request_tally.rpc2_request_name(method, params)
             )
             holder = _SharedRpc2Session(session, client, None)
             _HOST_RPC2[key] = holder
@@ -6700,6 +6720,7 @@ class DahuaClient:
             return
 
         url = self._base + AUDIO_POST_PATH.format(channel_number)
+        self._note_request(url)
         duration = len(audio) / byte_rate
         chunk = max(1, int(byte_rate // AUDIO_WRITES_PER_SECOND))
 
@@ -7264,6 +7285,7 @@ class DahuaClient:
             # fallback unreachable for that camera: a subscription it could
             # never read backed off for ever, on a device whose RPC2 works.
             try:
+                self._note_request(url)
                 response = await auth.request("GET", url, timeout=timeout)
                 response.raise_for_status()
             except aiohttp.ClientResponseError as cgi_error:
@@ -7687,6 +7709,7 @@ class DahuaClient:
                 auth = DigestAuth(
                     self._username, self._password, self._session, self._digest_state
                 )
+                self._note_request(url)
                 response = await auth.request("GET", url, preemptive=False)
                 response.raise_for_status()
             finally:
@@ -7721,6 +7744,7 @@ class DahuaClient:
                 auth = DigestAuth(
                     self._username, self._password, self._session, self._digest_state
                 )
+                self._note_request(url)
                 response = await auth.request(
                     "GET", self._base + url, preemptive=not fresh_challenge
                 )
@@ -8332,6 +8356,7 @@ class DahuaClient:
                         # `response.text()` raises in none of them. Catching
                         # only around `raise_for_status`, as this did, left the
                         # fallback below unreachable for that camera.
+                        self._note_request(url)
                         response = await auth.request("GET", url)
                         response.raise_for_status()
                     except aiohttp.ClientResponseError as cgi_error:

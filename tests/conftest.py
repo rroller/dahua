@@ -213,13 +213,17 @@ def _clear_cgi_config_absent():
     """
     from custom_components.dahua import client as client_module
 
+    from custom_components.dahua import request_tally
+
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
     client_module._LIGHTING_LEFT_OUT.clear()
     client_module._HOST_CGI_UNREADABLE.clear()
+    request_tally.clear()
     yield
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
     client_module._LIGHTING_LEFT_OUT.clear()
     client_module._HOST_CGI_UNREADABLE.clear()
+    request_tally.clear()
 
 
 @pytest.fixture(autouse=True)

@@ -25,7 +25,7 @@ from homeassistant.helpers.device_registry import DeviceEntry
 
 _LOGGER: logging.Logger = logging.getLogger(__package__)
 
-from . import dahua_utils, entry_coordinators
+from . import dahua_utils, entry_coordinators, request_tally
 from .const import (
     CONF_ADDRESS,
     CONF_AUTO_DETECT_CHANNEL,
@@ -790,6 +790,9 @@ def _host_block(
     uptime = _HOST_UPTIME_STATE.get(client_address or address or "", {})
 
     return {
+        # What this device has been asked, by name, over the last ten minutes
+        # and the last hour (#603). Names and counts only: see request_tally.py.
+        "requests": request_tally.summary(getattr(coordinator.client, "_device", None)),
         # Presence only, never the session id -- the same rule the digest state
         # is reported under.
         "rpc2_session_open": rpc2 is not None,
