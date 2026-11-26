@@ -21,15 +21,57 @@ the table it wrote to, and a URL's query is read only for `action` and `name`.
 A request's name therefore carries nothing a device was told and nothing it
 answered.
 
-Held per device for the last hour in whole-minute buckets, so it is small and
-bounded whatever the request rate. Not persisted: it describes this run.
+**And never a name somebody typed** (rroller on #1248). The `dahua.get_config`
+service reads whatever table its caller names, and that name went into the
+file verbatim. Passing a check for letters and digits does not make a string
+a table. So a request made on a person's say-so is made inside
+`custom_request()`, and is recorded as `(custom)` in place of its table: one
+label, however many names were tried.
+
+Held per device for the last hour in whole-minute buckets, and for at most
+`MAX_NAMES_PER_DEVICE` distinct names, so it is small and bounded whatever is
+asked and however often. Not persisted: it describes this run.
+
+**The clock is the monotonic one.** These are elapsed windows, and the wall
+clock can be corrected under them: two minutes backwards made
+`tracked_for_minutes` negative and dropped the newest request from the ten
+minute window.
 """
 
+import contextvars
 import time
 from collections import Counter
+from contextlib import contextmanager
 
 WINDOW_MINUTES = 60
 SHORT_WINDOW_MINUTES = 10
+
+# What stands in for a table a person named.
+CUSTOM = "(custom)"
+
+# More distinct names than this on one device and the rest are counted
+# together. Nothing the integration asks comes near it; it is there so that no
+# path, present or future, can grow the file without limit.
+MAX_NAMES_PER_DEVICE = 200
+TOO_MANY = "other (more than %d names)" % MAX_NAMES_PER_DEVICE
+
+_CUSTOM_REQUEST = contextvars.ContextVar("dahua_custom_request", default=False)
+
+
+@contextmanager
+def custom_request():
+    """Requests made in here ask for something a person named.
+
+    A context variable, because the request is not sent by the caller: `get`
+    hands it to a shared task. A task copies the context it was created in,
+    so the mark made here is the one the request is counted under.
+    """
+    token = _CUSTOM_REQUEST.set(True)
+    try:
+        yield
+    finally:
+        _CUSTOM_REQUEST.reset(token)
+
 
 # device -> {"since": first minute seen, "total": int, "minutes": {minute: Counter}}
 _TALLY: dict = {}
@@ -79,7 +121,10 @@ def request_name(url: str) -> str:
         if not action.isalnum():
             return "%s other" % endpoint
         parts = [endpoint, action]
-        if action.startswith("get"):
+        if _CUSTOM_REQUEST.get():
+            if tables or written:
+                parts.append(CUSTOM)
+        elif action.startswith("get"):
             parts.extend(table for table in tables if table.isalnum())
         elif action == "setConfig" and written and written.isalnum():
             parts.append(written)
@@ -101,19 +146,35 @@ def rpc2_request_name(method, params=None) -> str:
         and isinstance(params.get("name"), str)
     ):
         table = _table(params["name"])
-        if table.isalnum():
+        if _CUSTOM_REQUEST.get():
+            name += " " + CUSTOM
+        elif table.isalnum():
             name += " " + table
     return name
+
+
+def _now() -> float:
+    return time.monotonic()
 
 
 def note(device, name: str, now=None) -> None:
     """Count one request to `device`. Nothing at all for a device with no key."""
     if device is None:
         return
-    minute = int((time.time() if now is None else now) // 60)
+    minute = int((_now() if now is None else now) // 60)
     tally = _TALLY.get(device)
     if tally is None:
-        tally = _TALLY[device] = {"since": minute, "total": 0, "minutes": {}}
+        tally = _TALLY[device] = {
+            "since": minute,
+            "total": 0,
+            "minutes": {},
+            "names": set(),
+        }
+    if name not in tally["names"]:
+        if len(tally["names"]) >= MAX_NAMES_PER_DEVICE:
+            name = TOO_MANY
+        else:
+            tally["names"].add(name)
     tally["total"] += 1
     bucket = tally["minutes"].get(minute)
     if bucket is None:
@@ -150,7 +211,7 @@ def summary(device, now=None) -> dict:
     tally = _TALLY.get(device)
     if tally is None:
         return {"tracked": False}
-    minute = int((time.time() if now is None else now) // 60)
+    minute = int((_now() if now is None else now) // 60)
     return {
         "tracked": True,
         "tracked_for_minutes": minute - tally["since"] + 1,

@@ -20,6 +20,7 @@ import pytest
 
 from custom_components.dahua import client as client_module
 from custom_components.dahua import request_tally
+from custom_components.dahua.camera import DahuaCamera
 from custom_components.dahua.client import DahuaClient
 from custom_components.dahua.diagnostics import _host_block
 from custom_components.dahua.rpc2 import DahuaRpc2Client
@@ -479,3 +480,133 @@ async def test_nothing_in_the_section_is_anything_but_a_name_and_a_number(hass):
     assert "configManager setConfig NTP" in text
     for leaked in ("pool", "example", PASSWORD, USER, "nonce"):
         assert leaked not in text
+
+
+# --- a name somebody typed (review of #1248) -------------------------------------------
+#
+# `dahua.get_config` reads whatever table its caller names. rroller called the
+# real service with a custom name and found it verbatim in both windows.
+
+TYPED = "MyOwnSecretTableName"
+
+
+def _service(client):
+    """The real service method, on the least camera that can run it."""
+    return DahuaCamera.async_get_config_service(
+        SimpleNamespace(_coordinator=SimpleNamespace(client=client)), TYPED
+    )
+
+
+async def test_a_table_the_service_was_asked_for_is_not_named_in_the_dump(hass):
+    client = _client(FakeSession())
+
+    await _service(client)
+
+    text = repr(_block(hass, client)["requests"])
+    assert TYPED not in text
+    assert _asked(client) == {"configManager getConfig (custom)": 1}
+
+
+async def test_any_number_of_typed_names_are_one_label():
+    client = _client(FakeSession())
+
+    for index in range(25):
+        await DahuaCamera.async_get_config_service(
+            SimpleNamespace(_coordinator=SimpleNamespace(client=client)),
+            "Table%d" % index,
+        )
+
+    assert _asked(client) == {"configManager getConfig (custom)": 25}
+
+
+async def test_a_read_of_the_integrations_own_is_still_named_afterwards():
+    """The mark ends with the service call."""
+    client = _client(FakeSession())
+
+    await _service(client)
+    await client.get(MOTION)
+
+    assert _asked(client) == {
+        "configManager getConfig (custom)": 1,
+        "configManager getConfig MotionDetect": 1,
+    }
+
+
+async def test_the_mark_is_lifted_when_the_read_fails():
+    client = _client(FakeSession(password="something else"))
+
+    # The suite's fake raises where aiohttp would; either way the read failed
+    # inside the mark.
+    with pytest.raises(Exception):
+        await _service(client)
+    assert request_tally._CUSTOM_REQUEST.get() is False
+
+    with pytest.raises(Exception):
+        await client.get(STATUS)
+    assert "coaxialControlIO getStatus" in _asked(client)
+
+
+async def test_a_typed_name_routed_over_rpc2_is_not_kept_either():
+    with request_tally.custom_request():
+        got = request_tally.rpc2_request_name(
+            "configManager.getConfig", {"name": TYPED}
+        )
+
+    assert got == "rpc2 configManager.getConfig (custom)"
+
+
+def test_a_custom_request_with_no_table_has_nothing_to_hide():
+    with request_tally.custom_request():
+        assert (
+            request_tally.request_name(CGI + "magicBox.cgi?action=getSystemInfo")
+            == "magicBox getSystemInfo"
+        )
+
+
+def test_the_number_of_names_kept_for_a_device_is_bounded():
+    """Whatever asks, and however it got past the naming: the file cannot
+    grow with the number of different things requested."""
+    for index in range(request_tally.MAX_NAMES_PER_DEVICE + 50):
+        request_tally.note(DEVICE, "name %d" % index, now=T0)
+    request_tally.note(DEVICE, "name 0", now=T0)
+
+    got = request_tally.summary(DEVICE, now=T0)["last_10_minutes"]
+
+    assert len(got["by_request"]) == request_tally.MAX_NAMES_PER_DEVICE + 1
+    assert got["by_request"][request_tally.TOO_MANY] == 50
+    assert got["by_request"]["name 0"] == 2, "a name already known is still its own"
+    assert got["total"] == request_tally.MAX_NAMES_PER_DEVICE + 51
+
+
+# --- the clock (review of #1248) ---------------------------------------------------------
+
+
+def test_a_wall_clock_set_backwards_changes_nothing(monkeypatch):
+    """rroller's simulation: a request, then the wall clock corrected two
+    minutes backwards. `tracked_for_minutes` went negative and the request
+    left the ten minute window."""
+    wall = [1_700_000_000.0]
+    steady = [5_000.0]
+    monkeypatch.setattr(request_tally.time, "time", lambda: wall[0])
+    monkeypatch.setattr(request_tally.time, "monotonic", lambda: steady[0])
+
+    request_tally.note(DEVICE, "read")
+    wall[0] -= 120
+    steady[0] += 1
+
+    got = request_tally.summary(DEVICE)
+    assert got["tracked_for_minutes"] == 1
+    assert got["last_10_minutes"]["by_request"] == {"read": 1}
+
+
+def test_a_wall_clock_set_forwards_does_not_age_anything_out(monkeypatch):
+    wall = [1_700_000_000.0]
+    steady = [5_000.0]
+    monkeypatch.setattr(request_tally.time, "time", lambda: wall[0])
+    monkeypatch.setattr(request_tally.time, "monotonic", lambda: steady[0])
+
+    request_tally.note(DEVICE, "read")
+    wall[0] += 3 * 3600
+    steady[0] += 1
+
+    assert request_tally.summary(DEVICE)["last_10_minutes"]["by_request"] == {"read": 1}
