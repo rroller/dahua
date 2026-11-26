@@ -312,6 +312,13 @@ a device that does not answer leaves the numbering alone rather than guessing
   goes into `_HOST_RPC2_WRITES_UNSAFE` and takes no further write over RPC2.
   Anything the fallback cannot prove reports the original refusal, so it can never
   make a refused write look like one that worked.
+- **A reboot is the one request that cannot be checked and sent again.** Nothing
+  can be read back for it, so `reboot()` chooses its transport before sending
+  anything: a device a *read* has shown to answer CGI unreadably
+  (`_HOST_CGI_UNREADABLE`) is rebooted over RPC2 only. An unreadable answer to
+  the reboot itself, from a device not known to give them, is reported as an
+  unknown outcome and nothing more is sent. Going on to RPC2 there sent two
+  reboots for one press (the review of #1246).
 - **Every RPC2 config write takes one turn per device.** A read-modify-write and a
   whole-table put-back lose one of two concurrent changes: both read the table, the
   second sends a copy taken before the first wrote, and each reads back the field

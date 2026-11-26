@@ -216,9 +216,11 @@ def _clear_cgi_config_absent():
     from custom_components.dahua import request_tally
 
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
+    client_module._HOST_CGI_UNREADABLE.clear()
     request_tally.clear()
     yield
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
+    client_module._HOST_CGI_UNREADABLE.clear()
     request_tally.clear()
 
 

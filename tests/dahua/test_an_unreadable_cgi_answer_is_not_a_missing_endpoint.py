@@ -26,7 +26,9 @@ import socket
 
 import aiohttp
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.dahua import client as client_module
 from custom_components.dahua.client import (
     MANGLED_FRAMING_MESSAGE,
     DahuaClient,
@@ -467,3 +469,166 @@ async def test_a_device_that_will_not_name_itself_over_rpc2_falls_back_as_before
     }
     assert client.identity_from_rpc2 is False
     assert (await client.get_device_type())["type"] == "Generic RTSP"
+
+
+# --- the Reboot button (#1176, @defre92's follow-up) -------------------------------
+#
+# The press raised this same refusal out of `reboot()`, and the camera did not
+# reboot: it stayed reachable until it was rebooted by hand.
+#
+# These hand `reboot()` a prepared exception, which is enough to pin which
+# transport it chooses. Whether the real request path teaches it what it needs
+# to know is in test_one_press_sends_one_reboot.py, over loopback.
+
+REBOOT_ANSWERS = {"magicBox.reboot": {"result": True, "params": None}}
+REBOOT_OVER_CGI = "/cgi-bin/magicBox.cgi?action=reboot"
+
+
+def _rebooting(error, answers=None):
+    """`_client`, also recording the CGI requests that were made."""
+    client, rpc2 = _client(error, REBOOT_ANSWERS if answers is None else answers)
+    asked = []
+
+    async def get(url, verify_ok=False):
+        asked.append(url)
+        raise error
+
+    client.get = get
+    return client, rpc2, asked
+
+
+@pytest.mark.parametrize("detail", [True, False])
+async def test_a_camera_known_to_answer_unreadably_is_rebooted_over_rpc2_only(detail):
+    """@defre92's camera. Its identity read is what says so, and that happens
+    at setup, long before anybody presses anything."""
+    client, rpc2, asked = _rebooting(
+        _mangled(detail), {**CAMERA_ANSWERS, **REBOOT_ANSWERS}
+    )
+    await client.get_device_type()
+    del asked[:], rpc2.asked[:]
+
+    assert await client.reboot() == {"result": True}
+
+    assert asked == [], "the reboot was also sent over CGI"
+    assert rpc2.asked == ["magicBox.reboot"]
+
+
+@pytest.mark.parametrize("detail", [True, False])
+async def test_an_unreadable_answer_to_the_reboot_itself_is_not_followed_by_another(
+    detail,
+):
+    """The review finding on #1246. The stray bytes come after a complete
+    answer, so the device may have taken the request, and this used to send
+    `magicBox.reboot` after it: two reboots for one press."""
+    client, rpc2, asked = _rebooting(_mangled(detail))
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await client.reboot()
+
+    assert raised.value.translation_key == "reboot_outcome_unknown"
+    assert raised.value.translation_placeholders == {"device": "10.0.0.17"}
+    assert asked == [REBOOT_OVER_CGI]
+    assert rpc2.asked == []
+
+
+async def test_the_reboot_itself_does_not_teach_the_next_press_to_use_rpc2():
+    """Only a read may. Otherwise the second press of a button whose first
+    press may have worked goes out over the other transport on no evidence."""
+    client, rpc2, asked = _rebooting(_mangled())
+
+    for _press in range(2):
+        with pytest.raises(HomeAssistantError):
+            await client.reboot()
+
+    assert asked == [REBOOT_OVER_CGI, REBOOT_OVER_CGI]
+    assert rpc2.asked == []
+    assert client._device not in client_module._HOST_CGI_UNREADABLE
+
+
+async def test_a_reboot_the_device_really_refused_is_not_made_twice():
+    """A 400 the device sent itself is its answer."""
+    real = aiohttp.ClientResponseError(None, None, status=400, message="Bad Request")
+    client, rpc2, _ = _rebooting(real)
+
+    with pytest.raises(aiohttp.ClientResponseError) as raised:
+        await client.reboot()
+
+    assert raised.value is real
+    assert rpc2.asked == []
+
+
+@pytest.mark.parametrize("status", [401, 403, 500])
+async def test_other_refusals_of_a_reboot_still_raise(status):
+    refusal = aiohttp.ClientResponseError(
+        None, None, status=status, message=MANGLED_FRAMING_MESSAGE
+    )
+    client, rpc2, _ = _rebooting(refusal)
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        await client.reboot()
+
+    assert rpc2.asked == []
+
+
+@pytest.mark.parametrize("status", [404, 501])
+async def test_a_missing_cgi_still_reboots_over_rpc2(status):
+    """Unchanged: the SL300's path. A request that found no endpoint was not
+    taken by anything, so asking again over RPC2 cannot be a second reboot."""
+    missing = aiohttp.ClientResponseError(None, None, status=status, message="x")
+    client, rpc2, asked = _rebooting(missing)
+
+    assert await client.reboot() == {"result": True}
+    assert asked == [REBOOT_OVER_CGI]
+    assert rpc2.asked == ["magicBox.reboot"]
+
+
+async def test_a_reboot_rpc2_cannot_make_says_so():
+    """Not swallowed: a press that rebooted nothing must not look like one
+    that worked."""
+
+    class _Down:
+        asked = []
+
+        async def request(self, method, params="unset", **kwargs):
+            self.asked.append(method)
+            raise aiohttp.ClientConnectionError("gone")
+
+    client, _, asked = _rebooting(_mangled())
+    client_module._HOST_CGI_UNREADABLE.add(client._device)
+    down = _Down()
+
+    async def shared_call(action):
+        return await action(down)
+
+    client._rpc2_shared_call = shared_call
+
+    with pytest.raises(aiohttp.ClientConnectionError):
+        await client.reboot()
+    assert down.asked == ["magicBox.reboot"]
+    assert asked == [], "and it must not fall back to the transport it avoided"
+
+
+async def test_a_reboot_that_answers_normally_never_touches_rpc2():
+    client, rpc2, _ = _rebooting(_mangled())
+
+    async def get(url, verify_ok=False):
+        return {"OK": "OK"}
+
+    client.get = get
+
+    assert await client.reboot() == {"OK": "OK"}
+    assert rpc2.asked == []
+
+
+async def test_what_one_device_does_says_nothing_about_another_on_the_same_address():
+    """Two boxes behind one IP on different ports are two firmwares."""
+    client, rpc2, asked = _rebooting(_mangled())
+    client_module._HOST_CGI_UNREADABLE.add(
+        DahuaClient("u", "p", "10.0.0.17", 81, 554, None)._device
+    )
+
+    with pytest.raises(HomeAssistantError):
+        await client.reboot()
+
+    assert asked == [REBOOT_OVER_CGI]
+    assert rpc2.asked == []
