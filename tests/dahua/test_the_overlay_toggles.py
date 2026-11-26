@@ -224,7 +224,8 @@ async def test_any_other_refusal_still_raises(status):
         await client.async_get_config_lighting(0, 0)
 
 
-async def test_the_lighting_table_is_asked_for_by_channel_and_profile():
+async def test_the_lighting_table_is_asked_for_by_channel():
+    """By channel since #1232; the profile's rows are taken from the answer."""
     asked = []
 
     client = object.__new__(DahuaClient)
@@ -235,9 +236,11 @@ async def test_the_lighting_table_is_asked_for_by_channel_and_profile():
 
     client.async_get_config = async_get_config
 
-    await client.async_get_config_lighting(2, 1)
+    assert await client.async_get_config_lighting(2, 1) == {
+        "table.Lighting[2][1].Mode": "Auto"
+    }
 
-    assert asked == ["Lighting[2][1]"]
+    assert asked == ["Lighting[2]"]
 
 
 # --- motion detection, which asks twice ------------------------------------

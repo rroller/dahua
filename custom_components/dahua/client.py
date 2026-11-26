@@ -604,6 +604,16 @@ _RPC2_TABLE_UNAVAILABLE: set = set()
 # picked up by paying one refusal again.
 _HOST_CGI_CONFIG_ABSENT: set = set()
 
+# (device, channel, profile) the whole-channel `Lighting[ch]` read left out
+# while the direct read `Lighting[ch][p]` had rows for it. That profile of that
+# channel is read directly from then on, without asking the channel read first.
+#
+# Per channel, and only this one direction. A channel read without a profile
+# is never believed on its own: the direct read is asked every time, because
+# nothing one channel's answer carries shows another channel's is complete
+# (rroller on #1247, twice).
+_LIGHTING_LEFT_OUT: set = set()
+
 # Devices a READ has shown to answer CGI in a way no HTTP parser accepts
 # (#1176). Narrower than the set above on purpose, and keyed by device rather
 # than by account because it is the firmware that does it.
@@ -2117,6 +2127,10 @@ class DahuaClient:
     # took 44 of them down with an AttributeError the moment the session was
     # acquired.
     _rpc2_over_dhip = False
+    # Which device this is, address and port. Set by the constructor; a class
+    # level default because much of the suite builds clients with
+    # `object.__new__`, and the Lighting read keys what it has learnt by it.
+    _device = None
     _require_reported_serial = False
     # Whether this device's identity came from `getSerialNo` after
     # `getSystemInfo` refused (#1128). Read by `async_setup_entry`, which
@@ -3655,9 +3669,99 @@ class DahuaClient:
         table.Lighting[0][0].MiddleLight[0].Light=50
         table.Lighting[0][0].Mode=Auto
         table.Lighting[0][0].Sensitive=3
+
+        **One request per channel, whichever profile is asked for (#1232).**
+        The channel's whole table is read, `Lighting[<channel>]`, and this
+        profile's rows are handed back from it. Setup asks about two profiles
+        of every channel, the live one for the infrared light and 2 for
+        whether the channel has profiles at all, and the poll then reads the
+        live one again. Asked for by profile those were two requests a
+        channel, and on a 19 channel recorder that answers each in six to
+        eight seconds they were about two minutes of a three minute start.
+        Asked for by channel they are one URL, and the read cache answers the
+        second and third.
+
+        Measured on a DHI-NVR5464-16P-EI (channels 0, 1, 3, 6, 11, 12) and a
+        VTO2000A: the rows `Lighting[ch]` returns for profile 0 and for
+        profile 2 are identical to what `Lighting[ch][0]` and `Lighting[ch][2]`
+        return, and a channel with no profile 2 simply has no such rows.
+
+        **The direct read is still the authority** (review of #1247, twice).
+        The channel read is used for what it carries and for nothing else:
+        rows it returns for the profile are that profile's rows. The read
+        this always made, `Lighting[ch][p]`, is made whenever the channel
+        read cannot give them:
+
+        - it failed. A timeout or a dropped connection on the channel read
+          must not become a failed poll on a device whose direct read works,
+          so the failure is logged and the direct read is tried. Its own
+          failure raises as it always did.
+        - it returned nothing for the channel. No firmware has been seen to
+          answer `Lighting[ch][p]` and not `Lighting[ch]`, but one that did
+          would otherwise lose its infrared light here.
+        - it returned rows for the channel and none for this profile. A
+          channel read that holds only the day rows would otherwise read as
+          having no night profile. The first version believed the omission
+          once any channel on the device had shown the profile, and a
+          recorder whose channel 0 carries a night row and whose channel 1
+          leaves it out read channel 1 as having none. So the omission is
+          never believed: the direct read is asked, for this channel, every
+          time. If it has rows the channel read left out, that profile of
+          that channel is read directly from then on (`_LIGHTING_LEFT_OUT`).
+
+        So the saving is one request for each channel that has the profile
+        asked about. A channel without it costs two, as it did before #1232,
+        and a device with no Lighting table costs one request more than
+        before.
+
+        What comes back for a profile the channel does not have is what the
+        direct read answers, unchanged: one line,
+        `Error: Error -1 getting param in name=Lighting[0][2]`, which the
+        parser turns into a dict of one junk key.
         """
         try:
-            return await self.async_get_config(f"Lighting[{channel}][{profile_mode}]")
+            known = (self._device, int(channel), str(profile_mode))
+            channel_rows = f"table.Lighting[{channel}]["
+            profile_rows = f"{channel_rows}{profile_mode}]."
+            left_out = False
+            if known not in _LIGHTING_LEFT_OUT:
+                try:
+                    table = await self.async_get_config(f"Lighting[{channel}]")
+                except aiohttp.ClientResponseError:
+                    # The device's own answer, which `async_get_config` reads
+                    # as empty. One that reaches here is handled below as it
+                    # always was.
+                    raise
+                except (TimeoutError, aiohttp.ClientError) as failed:
+                    _LOGGER.debug(
+                        "Lighting[%s] could not be read on %s (%s); asking for "
+                        "profile %s directly",
+                        channel,
+                        self._address,
+                        type(failed).__name__,
+                        profile_mode,
+                    )
+                    table = {}
+                rows = {
+                    key: value
+                    for key, value in table.items()
+                    if key.startswith(profile_rows)
+                }
+                if rows:
+                    return rows
+                left_out = any(key.startswith(channel_rows) for key in table)
+            direct = await self.async_get_config(f"Lighting[{channel}][{profile_mode}]")
+            if left_out and any(key.startswith(profile_rows) for key in direct):
+                _LIGHTING_LEFT_OUT.add(known)
+                _LOGGER.debug(
+                    "Lighting[%s] on %s left out profile %s, which the direct "
+                    "read has; reading that profile of that channel directly "
+                    "from now on",
+                    channel,
+                    self._address,
+                    profile_mode,
+                )
+            return direct
         except aiohttp.ClientResponseError as e:
             if e.status == 400:
                 # Some cams/dvrs/nvrs might not support this option.
