@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - HA before 2026.11
 
 from custom_components.dahua import DahuaDataUpdateCoordinator, entry_coordinators
 from custom_components.dahua import dahua_utils
+from custom_components.dahua import request_tally
 from custom_components.dahua.audio import (
     AUDIO_FORMATS,
     DEFAULT_AUDIO_FORMAT,
@@ -1495,7 +1496,10 @@ class DahuaCamera(DahuaBaseEntity, Camera):
         runs, because it goes straight into the getConfig URL and an unchecked
         name could append another CGI parameter.
         """
-        return {"config": await self._coordinator.client.async_get_config(name)}
+        # The name is the caller's, so the request is counted as `(custom)`
+        # and the name itself stays out of the diagnostics file (#1248).
+        with request_tally.custom_request():
+            return {"config": await self._coordinator.client.async_get_config(name)}
 
     async def async_compare_config(self, filename: str) -> dict:
         """What has changed on this device since a backup was taken.

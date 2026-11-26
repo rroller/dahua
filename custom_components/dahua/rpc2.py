@@ -111,6 +111,11 @@ class DahuaRpc2Client:
     # first line of `request`.
     _dhip = None
 
+    # Called with (method, params) as each request is about to be sent, if
+    # set. The shared session sets it to count what a device is asked (see
+    # request_tally.py). A class default for the same reason as `_dhip`.
+    on_request = None
+
     def __init__(
         self,
         username: str,
@@ -172,6 +177,8 @@ class DahuaRpc2Client:
         verify_result=True,
     ):
         """Make an RPC request."""
+        if self.on_request is not None:
+            self.on_request(method, params)
         self._id += 1
         data = {"method": method, "id": self._id}
         if params is not _PARAMS_UNSET:

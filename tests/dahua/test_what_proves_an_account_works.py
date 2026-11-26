@@ -520,3 +520,205 @@ async def test_an_unsigned_401_on_cgi_does_not_cancel_a_working_rpc2_session(
 
     assert credentials_accepted_since(client, mark)
     assert client_module._CREDENTIALS_REFUSED == {}
+
+
+# --- an acceptance the device has since taken back (fifth review) -----------------------
+#
+# rroller ran the stream loop: an accepted request cleared the host's budget,
+# a signed 401 for the same account followed, and the paused stream then
+# looked. The acceptance was newer than the start of its wait, so it attached
+# again, after the newer refusal.
+
+
+async def test_an_acceptance_followed_by_a_refusal_is_not_an_acceptance():
+    client = _client(FakeSession())
+    mark = credentials_acceptance_mark()
+
+    client_module.note_credentials_accepted(client)
+    assert credentials_accepted_since(client, mark)
+    client_module.note_credentials_refused(client)
+
+    assert not credentials_accepted_since(client, mark)
+
+
+async def test_an_acceptance_after_the_refusal_counts_again():
+    client = _client(FakeSession())
+    mark = credentials_acceptance_mark()
+
+    client_module.note_credentials_accepted(client)
+    client_module.note_credentials_refused(client)
+    client_module.note_credentials_accepted(client)
+
+    assert credentials_accepted_since(client, mark)
+
+
+async def test_a_refusal_before_the_acceptance_does_not_undo_it():
+    client = _client(FakeSession())
+    client_module.note_credentials_refused(client)
+    mark = credentials_acceptance_mark()
+
+    client_module.note_credentials_accepted(client)
+
+    assert credentials_accepted_since(client, mark)
+
+
+async def test_another_accounts_refusal_does_not_undo_this_ones_acceptance():
+    """Two entries on one device with two passwords: the outdated one being
+    refused says nothing about the current one."""
+    current = _client(FakeSession())
+    outdated = _client(FakeSession(), password="old")
+    mark = credentials_acceptance_mark()
+
+    client_module.note_credentials_accepted(current)
+    client_module.note_credentials_refused(outdated)
+
+    assert credentials_accepted_since(current, mark)
+
+
+def _on_the_stream_address():
+    return DahuaClient(USER, PASSWORD, ADDRESS, 80, 554, None)
+
+
+async def test_a_stream_does_not_attach_on_an_acceptance_already_taken_back(no_wait):
+    """The review's ordering, through the real wait loop: accepted, then
+    refused, then the stream looks. It used to attach on that look."""
+    client = _on_the_stream_address()
+    _spend_the_budget()
+
+    def _between_looks(n):
+        if n == 3:
+            client_module.note_credentials_accepted(client)
+            async_record_host_success(None, ADDRESS)
+            client_module.note_credentials_refused(client)
+
+    stream = _stream(_between_looks, client=client, refuse_first_attach=False)
+
+    with pytest.raises(asyncio.CancelledError):
+        await stream._async_run()
+
+    assert stream.attaches == [], "it attached after the newer refusal"
+    assert len(stream.checks) == 100
+
+
+async def test_and_attaches_once_the_account_is_accepted_after_that(no_wait):
+    client = _on_the_stream_address()
+    _spend_the_budget()
+
+    def _between_looks(n):
+        if n == 3:
+            client_module.note_credentials_accepted(client)
+            async_record_host_success(None, ADDRESS)
+            client_module.note_credentials_refused(client)
+        if n == 6:
+            client_module.note_credentials_accepted(client)
+
+    stream = _stream(_between_looks, client=client, refuse_first_attach=False)
+
+    with pytest.raises(asyncio.CancelledError):
+        await stream._async_run()
+
+    assert len(stream.attaches) == 1
+    assert len(stream.checks) == 6
+
+
+# --- a refused RPC2 login is a refusal too ------------------------------------------------
+#
+# The same hole as the fifth review's, on the other transport: accepted over
+# CGI, then turned down at RPC2 login, then the stream looks.
+
+
+class _RefusesLogin(_Rpc2Device):
+    def __init__(self, error):
+        super().__init__(USER, PASSWORD)
+        self.error = error
+
+    async def login(self):
+        self.logins += 1
+        raise self.error
+
+
+def _session_that_refuses(client, error):
+    key = client._rpc2_key()
+    client_module._HOST_RPC2[key] = client_module._SharedRpc2Session(
+        _Idle(), _RefusesLogin(error), None
+    )
+    return key
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        client_module.Rpc2MethodRefused(
+            "login refused", code=268632085, method=client_module.RPC2_LOGIN_METHOD
+        ),
+        client_module.DhipLoginRefused("login refused"),
+    ],
+)
+async def test_a_login_the_device_turns_down_undoes_an_earlier_acceptance(error):
+    client = DahuaClient(USER, PASSWORD, ADDRESS, 80, 554, None)
+    key = _session_that_refuses(client, error)
+    mark = credentials_acceptance_mark()
+    client_module.note_credentials_accepted(client)
+    assert credentials_accepted_since(client, mark)
+
+    try:
+        with pytest.raises(Exception):
+            await _read(client)
+    finally:
+        client_module._HOST_RPC2.pop(key, None)
+
+    assert not credentials_accepted_since(client, mark)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionError("dropped"),
+        TimeoutError(),
+        # The device declining something that is not the login.
+        client_module.Rpc2MethodRefused("no", method="configManager.getConfig"),
+    ],
+)
+async def test_a_login_that_merely_failed_undoes_nothing(error):
+    """A dropped connection has shown the device no password."""
+    client = DahuaClient(USER, PASSWORD, ADDRESS, 80, 554, None)
+    key = _session_that_refuses(client, error)
+    mark = credentials_acceptance_mark()
+    client_module.note_credentials_accepted(client)
+
+    try:
+        with pytest.raises(Exception):
+            await _read(client)
+    finally:
+        client_module._HOST_RPC2.pop(key, None)
+
+    assert credentials_accepted_since(client, mark)
+    assert client_module._CREDENTIALS_REFUSED == {}
+
+
+async def test_a_refused_login_is_recorded_against_the_sessions_password():
+    """Not the caller's: an entry with another password riding on the session
+    is not the one the device turned down."""
+    current = DahuaClient(USER, PASSWORD, ADDRESS, 80, 554, None)
+    outdated = DahuaClient(USER, "old", ADDRESS, 80, 554, None)
+    key = _session_that_refuses(
+        current,
+        client_module.Rpc2MethodRefused(
+            "login refused", method=client_module.RPC2_LOGIN_METHOD
+        ),
+    )
+
+    try:
+        with pytest.raises(Exception):
+            await _read(outdated)
+    finally:
+        client_module._HOST_RPC2.pop(key, None)
+
+    assert (
+        client_module.credentials_identity(current)
+        in client_module._CREDENTIALS_REFUSED
+    )
+    assert (
+        client_module.credentials_identity(outdated)
+        not in client_module._CREDENTIALS_REFUSED
+    )
