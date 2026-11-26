@@ -22,9 +22,15 @@ one of the two. His is the recorder that is slow, and mine answers either in
 whose channel read times out while its direct read works, and one whose channel
 read holds the day rows only while `Lighting[0][1]` has a night profile. The
 direct read is the one every device was already proven on, so it stays the
-authority, and the channel read is believed about a missing profile only once
-this device's channel read has been seen to carry that profile. The last two
-sections here are those.
+authority.
+
+**The second review** ran a recorder whose channel 0 carries a night row in
+`Lighting[0]` while `Lighting[1]` returns day only and `Lighting[1][1]` has a
+valid night profile. The fix for the first review believed a missing profile
+once any channel on the device had shown it, and channel 1 read as having
+none. So a channel read is no longer believed about a profile it does not
+carry, on any evidence: the direct read is asked, per channel, every time. The
+last two sections here are those.
 """
 
 import asyncio
@@ -115,23 +121,15 @@ async def test_profile_one_is_not_answered_with_profile_ten():
     assert await client.async_get_config_lighting(0, 1) == _profile(0, 1)
 
 
-async def test_a_channel_without_the_profile_has_no_rows_for_it():
-    """Channels 0 and 6 of the recorder: profile 0 only. Channel 1 has shown
-    that this recorder's channel read carries profile 2 where there is one."""
+async def test_a_channel_without_the_profile_is_asked_directly_about_it():
+    """Channels 0 and 6 of the recorder: profile 0 only. The channel read not
+    carrying profile 2 is not taken as the channel not having it."""
     client = _device(
-        {
-            "Lighting[0]": _channel(0, profiles=(0,)),
-            "Lighting[0][2]": NO_SUCH_PROFILE,
-            "Lighting[1]": _channel(1),
-        }
+        {"Lighting[0]": _channel(0, profiles=(0,)), "Lighting[0][2]": NO_SUCH_PROFILE}
     )
-    await client.async_get_config_lighting(1, 2)
 
-    assert await client.async_get_config_lighting(0, 2) == {}
-    assert client.sent == [
-        "Lighting[1]",
-        "Lighting[0]",
-    ], "the channel answered; nothing more to ask"
+    assert await client.async_get_config_lighting(0, 2) == NO_SUCH_PROFILE
+    assert client.sent == ["Lighting[0]", "Lighting[0][2]"]
 
 
 # --- and they cost one request -----------------------------------------------
@@ -165,14 +163,12 @@ async def test_setups_two_probes_and_the_poll_are_one_request():
     assert client.sent == ["Lighting[3]"]
 
 
-async def test_a_channel_without_profiles_is_still_one_request():
-    """On a recorder where another channel has them, which is what shows its
-    channel read would have carried them here."""
+async def test_a_channel_without_profiles_costs_the_two_requests_it_always_did():
+    """The saving is for a channel that has the profile. One that does not is
+    asked directly, which is what tells setup it has no profiles."""
     client = _device(
-        {"Lighting[6]": _channel(6, profiles=(0,)), "Lighting[1]": _channel(1)}
+        {"Lighting[6]": _channel(6, profiles=(0,)), "Lighting[6][2]": NO_SUCH_PROFILE}
     )
-    await client.async_get_config_lighting(1, 2)
-    del client.sent[:]
     coordinator = object.__new__(DahuaDataUpdateCoordinator)
     coordinator.client = client
     coordinator._channel = 6
@@ -183,7 +179,7 @@ async def test_a_channel_without_profiles_is_still_one_request():
     assert await coordinator.async_detect_lighting_support() is True
     assert await coordinator._async_probe_profile_mode() is False
 
-    assert client.sent == ["Lighting[6]"]
+    assert client.sent == ["Lighting[6]", "Lighting[6][2]"]
 
 
 async def test_each_channel_is_its_own_request():
@@ -270,7 +266,7 @@ async def test_a_failed_channel_read_is_not_remembered_against_the_device():
     answers = {"Lighting[0]": TimeoutError(), "Lighting[0][1]": _profile(0, 1)}
     client = _device(answers)
     await client.async_get_config_lighting(0, 1)
-    assert client_module._HOST_LIGHTING_AGGREGATE == {}
+    assert client_module._LIGHTING_LEFT_OUT == set()
 
     answers["Lighting[2]"] = _channel(2)
     del client.sent[:]
@@ -296,12 +292,13 @@ async def test_a_cancelled_channel_read_is_not_retried():
     assert client.sent == ["Lighting[0]"]
 
 
-# --- a channel read is believed only as far as the device has earned ----------
+# --- a channel read is never believed about a profile it does not carry --------
 
 
 async def test_day_rows_only_does_not_hide_a_night_profile():
-    """The review's second device: `Lighting[0]` returns the day rows and
-    `Lighting[0][1]` a valid night profile. This returned {} and never asked."""
+    """The first review's second device: `Lighting[0]` returns the day rows
+    and `Lighting[0][1]` a valid night profile. This returned {} and never
+    asked."""
     client = _device(
         {"Lighting[0]": _channel(0, profiles=(0,)), "Lighting[0][1]": _profile(0, 1)}
     )
@@ -310,25 +307,66 @@ async def test_day_rows_only_does_not_hide_a_night_profile():
     assert client.sent == ["Lighting[0]", "Lighting[0][1]"]
 
 
-async def test_a_profile_the_channel_read_leaves_out_is_read_directly_from_then_on():
-    """On every channel of that device, and without asking the read that is
-    known not to hold it."""
+async def test_a_night_row_on_one_channel_does_not_vouch_for_another():
+    """The second review's recorder. Channel 0's read carries a night row.
+    Channel 1's holds day only, and its direct read has a valid night profile.
+    Channel 0 having shown the profile used to make channel 1's omission
+    believed, and channel 1 read as having no night profile."""
+    client = _device(
+        {
+            "Lighting[0]": _channel(0, profiles=(0, 1)),
+            "Lighting[1]": _channel(1, profiles=(0,)),
+            "Lighting[1][1]": _profile(1, 1),
+        }
+    )
+
+    assert await client.async_get_config_lighting(0, 1) == _profile(0, 1)
+    assert await client.async_get_config_lighting(1, 1) == _profile(1, 1)
+    assert client.sent == ["Lighting[0]", "Lighting[1]", "Lighting[1][1]"]
+
+
+async def test_nor_does_any_number_of_channels():
+    """Seven channels carrying the profile say nothing about the eighth."""
+    answers = {"Lighting[%d]" % ch: _channel(ch) for ch in range(7)}
+    answers["Lighting[7]"] = _channel(7, profiles=(0,))
+    answers["Lighting[7][2]"] = _profile(7, 2)
+    client = _device(answers)
+    for channel in range(7):
+        await client.async_get_config_lighting(channel, 2)
+
+    assert await client.async_get_config_lighting(7, 2) == _profile(7, 2)
+
+
+async def test_a_profile_a_channel_read_leaves_out_is_read_directly_from_then_on():
+    """Without asking the read that is known not to hold it. Counted below
+    the cache, which is cleared so the second question is really asked."""
+    client = _device(
+        {"Lighting[0]": _channel(0, profiles=(0,)), "Lighting[0][1]": _profile(0, 1)}
+    )
+    await client.async_get_config_lighting(0, 1)
+    client_module._HOST_CACHE.clear()
+    del client.sent[:]
+
+    assert await client.async_get_config_lighting(0, 1) == _profile(0, 1)
+    assert client.sent == ["Lighting[0][1]"]
+
+
+async def test_that_is_remembered_for_the_channel_it_was_seen_on_and_no_other():
     client = _device(
         {
             "Lighting[0]": _channel(0, profiles=(0,)),
             "Lighting[0][1]": _profile(0, 1),
-            "Lighting[4]": _channel(4, profiles=(0,)),
-            "Lighting[4][1]": _profile(4, 1),
+            "Lighting[4]": _channel(4),
         }
     )
     await client.async_get_config_lighting(0, 1)
     del client.sent[:]
 
     assert await client.async_get_config_lighting(4, 1) == _profile(4, 1)
-    assert client.sent == ["Lighting[4][1]"]
+    assert client.sent == ["Lighting[4]"], "channel 4 is still asked by channel"
 
 
-async def test_the_day_profile_still_comes_from_the_channel_read_on_that_device():
+async def test_the_day_profile_still_comes_from_the_channel_read_on_that_channel():
     """What it left out says nothing about what it does carry."""
     client = _device(
         {"Lighting[0]": _channel(0, profiles=(0,)), "Lighting[0][1]": _profile(0, 1)}
@@ -340,70 +378,63 @@ async def test_the_day_profile_still_comes_from_the_channel_read_on_that_device(
     assert client.sent == [], "from the channel read already made"
 
 
-async def test_a_missing_profile_is_checked_until_the_device_has_shown_it():
-    """Nothing on this device has carried profile 2 yet, so each channel
-    without it is asked directly, exactly as before #1232."""
-    client = _device(
-        {
-            "Lighting[0]": _channel(0, profiles=(0,)),
-            "Lighting[0][2]": NO_SUCH_PROFILE,
-            "Lighting[6]": _channel(6, profiles=(0,)),
-            "Lighting[6][2]": NO_SUCH_PROFILE,
-        }
-    )
+async def test_a_missing_profile_is_checked_on_every_channel_every_time():
+    """Nothing is ever learnt that lets the direct read be skipped."""
+    answers = {
+        "Lighting[0]": _channel(0, profiles=(0,)),
+        "Lighting[0][2]": NO_SUCH_PROFILE,
+        "Lighting[6]": _channel(6, profiles=(0,)),
+        "Lighting[6][2]": NO_SUCH_PROFILE,
+    }
+    client = _device(answers)
 
     assert await client.async_get_config_lighting(0, 2) == NO_SUCH_PROFILE
     assert await client.async_get_config_lighting(6, 2) == NO_SUCH_PROFILE
-
     assert client.sent == [
         "Lighting[0]",
         "Lighting[0][2]",
         "Lighting[6]",
         "Lighting[6][2]",
     ]
-    assert client_module._HOST_LIGHTING_AGGREGATE == {}
+    assert client_module._LIGHTING_LEFT_OUT == set()
+
+    # And again once the cache has expired: the camera may have gained the
+    # profile since, and only the direct read would say so on a firmware
+    # whose channel read leaves it out.
+    client_module._HOST_CACHE.clear()
+    answers["Lighting[0][2]"] = _profile(0, 2)
+    del client.sent[:]
+
+    assert await client.async_get_config_lighting(0, 2) == _profile(0, 2)
+    assert client.sent == ["Lighting[0]", "Lighting[0][2]"]
 
 
 async def test_a_direct_read_that_says_nothing_settles_nothing():
-    """A refused or empty direct read is not the device saying the profile is
-    absent, and must not teach the client to stop asking."""
     client = _device(
         {"Lighting[0]": _channel(0, profiles=(0,)), "Lighting[0][2]": _refused(500)}
     )
 
     assert await client.async_get_config_lighting(0, 2) == {}
-    assert client_module._HOST_LIGHTING_AGGREGATE == {}
+    assert client_module._LIGHTING_LEFT_OUT == set()
 
 
-async def test_one_profile_shown_says_nothing_about_another():
-    """Profile 2 in a channel read does not vouch for profile 1."""
-    client = _device(
-        {
-            "Lighting[1]": _channel(1, profiles=(0, 2)),
-            "Lighting[0]": _channel(0, profiles=(0,)),
-            "Lighting[0][1]": _profile(0, 1),
-        }
-    )
-    await client.async_get_config_lighting(1, 2)
-
-    assert await client.async_get_config_lighting(0, 1) == _profile(0, 1)
-
-
-async def test_what_one_device_has_shown_says_nothing_about_another():
+async def test_what_one_device_left_out_says_nothing_about_another():
     """Two boxes behind one address on two ports are two firmwares."""
-    shown = _device({"Lighting[1]": _channel(1)})
-    await shown.async_get_config_lighting(1, 1)
-    other = _device(
-        {"Lighting[0]": _channel(0, profiles=(0,)), "Lighting[0][1]": _profile(0, 1)},
-        port=81,
-    )
+    answers = {
+        "Lighting[0]": _channel(0, profiles=(0,)),
+        "Lighting[0][1]": _profile(0, 1),
+    }
+    one = _device(answers)
+    await one.async_get_config_lighting(0, 1)
+    other = _device({"Lighting[0]": _channel(0)}, port=81)
 
     assert await other.async_get_config_lighting(0, 1) == _profile(0, 1)
+    assert other.sent == ["Lighting[0]"]
 
 
-async def test_a_recorder_pays_for_the_check_only_until_one_channel_shows_the_profile():
-    """Setup's profile probe across a recorder like the one measured: channels
-    0 and 6 have profile 0 only, the rest have four."""
+async def test_what_setup_costs_a_recorder_like_the_one_measured():
+    """Setup's two questions across eight channels: 0 and 6 have profile 0
+    only, the rest have four. Ten requests, where main makes sixteen."""
     answers = {}
     for channel in range(8):
         has_profiles = channel not in (0, 6)
@@ -419,6 +450,15 @@ async def test_a_recorder_pays_for_the_check_only_until_one_channel_shows_the_pr
         await client.async_get_config_lighting(channel, "0")
         await client.async_get_config_lighting(channel, 2)
 
-    assert client.sent == ["Lighting[0]", "Lighting[0][2]"] + [
-        "Lighting[%d]" % channel for channel in range(1, 8)
+    assert client.sent == [
+        "Lighting[0]",
+        "Lighting[0][2]",
+        "Lighting[1]",
+        "Lighting[2]",
+        "Lighting[3]",
+        "Lighting[4]",
+        "Lighting[5]",
+        "Lighting[6]",
+        "Lighting[6][2]",
+        "Lighting[7]",
     ]

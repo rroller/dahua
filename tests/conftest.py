@@ -214,11 +214,11 @@ def _clear_cgi_config_absent():
     from custom_components.dahua import client as client_module
 
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
-    client_module._HOST_LIGHTING_AGGREGATE.clear()
+    client_module._LIGHTING_LEFT_OUT.clear()
     client_module._HOST_CGI_UNREADABLE.clear()
     yield
     client_module._HOST_CGI_CONFIG_ABSENT.clear()
-    client_module._HOST_LIGHTING_AGGREGATE.clear()
+    client_module._LIGHTING_LEFT_OUT.clear()
     client_module._HOST_CGI_UNREADABLE.clear()
 
 

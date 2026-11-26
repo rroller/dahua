@@ -604,18 +604,15 @@ _RPC2_TABLE_UNAVAILABLE: set = set()
 # picked up by paying one refusal again.
 _HOST_CGI_CONFIG_ABSENT: set = set()
 
-# (device, profile) -> whether this device's whole-channel `Lighting[ch]` read
-# carries that profile's rows.
+# (device, channel, profile) the whole-channel `Lighting[ch]` read left out
+# while the direct read `Lighting[ch][p]` had rows for it. That profile of that
+# channel is read directly from then on, without asking the channel read first.
 #
-#   True   it has been seen to: some channel's answer held rows for the profile.
-#          Only then is a channel whose answer has none taken to have none.
-#   False  it left the profile out and the direct read `Lighting[ch][p]` had it.
-#          That profile is read directly on this device from then on.
-#
-# Absent means not yet known, and then a channel answer without the profile is
-# checked against the direct read rather than believed. See
-# `async_get_config_lighting`, and the review of #1247.
-_HOST_LIGHTING_AGGREGATE: dict = {}
+# Per channel, and only this one direction. A channel read without a profile
+# is never believed on its own: the direct read is asked every time, because
+# nothing one channel's answer carries shows another channel's is complete
+# (rroller on #1247, twice).
+_LIGHTING_LEFT_OUT: set = set()
 
 # Devices a READ has shown to answer CGI in a way no HTTP parser accepts
 # (#1176). Narrower than the set above on purpose, and keyed by device rather
@@ -3689,10 +3686,11 @@ class DahuaClient:
         profile 2 are identical to what `Lighting[ch][0]` and `Lighting[ch][2]`
         return, and a channel with no profile 2 simply has no such rows.
 
-        **The direct read is still the authority, and the channel read is
-        believed only as far as this device has earned** (review of #1247).
-        The read this always made, `Lighting[ch][p]`, is made whenever the
-        channel read cannot answer:
+        **The direct read is still the authority** (review of #1247, twice).
+        The channel read is used for what it carries and for nothing else:
+        rows it returns for the profile are that profile's rows. The read
+        this always made, `Lighting[ch][p]`, is made whenever the channel
+        read cannot give them:
 
         - it failed. A timeout or a dropped connection on the channel read
           must not become a failed poll on a device whose direct read works,
@@ -3701,32 +3699,32 @@ class DahuaClient:
         - it returned nothing for the channel. No firmware has been seen to
           answer `Lighting[ch][p]` and not `Lighting[ch]`, but one that did
           would otherwise lose its infrared light here.
-        - it returned rows for the channel and none for this profile, on a
-          device whose channel read has never been seen to carry this profile
-          (`_HOST_LIGHTING_AGGREGATE`). A firmware whose channel read holds
-          only the day rows would otherwise read as having no night profile.
-          Once some channel's answer on this device has carried the profile,
-          a channel without it is taken at its word and nothing more is
-          asked. If the direct read has rows the channel read left out, that
-          profile is read directly on this device from then on.
+        - it returned rows for the channel and none for this profile. A
+          channel read that holds only the day rows would otherwise read as
+          having no night profile. The first version believed the omission
+          once any channel on the device had shown the profile, and a
+          recorder whose channel 0 carries a night row and whose channel 1
+          leaves it out read channel 1 as having none. So the omission is
+          never believed: the direct read is asked, for this channel, every
+          time. If it has rows the channel read left out, that profile of
+          that channel is read directly from then on (`_LIGHTING_LEFT_OUT`).
 
-        So the saving is one request a channel wherever the profile exists,
-        and on a recorder none of whose channels has profile 2, setup still
-        asks twice a channel as it did before #1232. A device with no
-        Lighting table costs one request more than before.
+        So the saving is one request for each channel that has the profile
+        asked about. A channel without it costs two, as it did before #1232,
+        and a device with no Lighting table costs one request more than
+        before.
 
-        Where the channel read is believed and has no rows for the profile,
-        this returns {}. Asked directly the device answers one line,
-        `Error: Error -1 getting param in name=Lighting[0][2]`, which comes
-        back as a dict of one junk key, and still does on the paths above.
+        What comes back for a profile the channel does not have is what the
+        direct read answers, unchanged: one line,
+        `Error: Error -1 getting param in name=Lighting[0][2]`, which the
+        parser turns into a dict of one junk key.
         """
         try:
-            known = (self._device, str(profile_mode))
-            covers = _HOST_LIGHTING_AGGREGATE.get(known)
+            known = (self._device, int(channel), str(profile_mode))
             channel_rows = f"table.Lighting[{channel}]["
             profile_rows = f"{channel_rows}{profile_mode}]."
             left_out = False
-            if covers is not False:
+            if known not in _LIGHTING_LEFT_OUT:
                 try:
                     table = await self.async_get_config(f"Lighting[{channel}]")
                 except aiohttp.ClientResponseError:
@@ -3750,17 +3748,15 @@ class DahuaClient:
                     if key.startswith(profile_rows)
                 }
                 if rows:
-                    _HOST_LIGHTING_AGGREGATE[known] = True
                     return rows
                 left_out = any(key.startswith(channel_rows) for key in table)
-                if left_out and covers is True:
-                    return {}
             direct = await self.async_get_config(f"Lighting[{channel}][{profile_mode}]")
             if left_out and any(key.startswith(profile_rows) for key in direct):
-                _HOST_LIGHTING_AGGREGATE[known] = False
+                _LIGHTING_LEFT_OUT.add(known)
                 _LOGGER.debug(
                     "Lighting[%s] on %s left out profile %s, which the direct "
-                    "read has; reading that profile directly from now on",
+                    "read has; reading that profile of that channel directly "
+                    "from now on",
                     channel,
                     self._address,
                     profile_mode,
