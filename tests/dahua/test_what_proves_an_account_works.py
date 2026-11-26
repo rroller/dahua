@@ -444,3 +444,79 @@ async def test_an_rpc2_owner_holding_an_old_password_still_waits(no_wait, rpc2_o
 
     assert stream.attaches == []
     assert len(stream.checks) == 100
+
+
+# --- a 401 that was shown no password (fourth review) -----------------------------------
+#
+# rroller opened a working RPC2 session, got a bare 401 on an unsigned CGI
+# read, and the next successful RPC2 read on that session no longer counted.
+# The CGI endpoint never saw the password, so it refused nothing.
+
+
+class _Bare401:
+    """An endpoint that answers 401 with no challenge, whatever it is sent."""
+
+    def __init__(self):
+        self.requests = []
+
+    async def request(self, method, url, headers=None, **kwargs):
+        self.requests.append(dict(headers or {}))
+        return FakeResponse(401)
+
+
+async def _heard(session, password=PASSWORD, state=None, **kwargs):
+    heard = []
+    auth = DigestAuth(USER, password, session, {} if state is None else state)
+    auth.on_refused = lambda: heard.append("refused")
+    response = await auth.request("GET", "http://d/x", **kwargs)
+    return response.status, heard
+
+
+async def test_a_401_to_a_request_that_carried_no_credentials_refuses_nothing():
+    session = _Bare401()
+
+    status, heard = await _heard(session)
+
+    assert status == 401
+    assert all("AUTHORIZATION" not in sent for sent in session.requests)
+    assert heard == []
+
+
+async def test_a_401_to_a_request_that_carried_them_is_a_refusal():
+    """The same endpoint, asked by a client that already holds a challenge
+    and so signs its first attempt."""
+    state = {}
+    await DigestAuth(USER, PASSWORD, FakeSession(), state).request("GET", "http://d/x")
+    session = _Bare401()
+
+    status, heard = await _heard(session, state=state)
+
+    assert status == 401
+    assert "AUTHORIZATION" in session.requests[0]
+    assert heard == ["refused"]
+
+
+async def test_a_wrong_password_is_still_a_refusal():
+    status, heard = await _heard(FakeSession(), password="wrong")
+
+    assert status == 401
+    assert heard == ["refused"]
+
+
+async def test_an_unsigned_401_on_cgi_does_not_cancel_a_working_rpc2_session(
+    rpc2_only,
+):
+    """The review's sequence, through the real client on both transports."""
+    client = rpc2_only()
+    client._session = _Bare401()
+    await _read(client)
+
+    with pytest.raises((aiohttp.ClientResponseError, AssertionError)):
+        await client.get(URL)
+    assert all("AUTHORIZATION" not in sent for sent in client._session.requests)
+    mark = credentials_acceptance_mark()
+
+    await _read(client)
+
+    assert credentials_accepted_since(client, mark)
+    assert client_module._CREDENTIALS_REFUSED == {}

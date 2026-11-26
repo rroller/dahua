@@ -125,9 +125,13 @@ class DigestAuth:
         # request sent without them shows nothing, and neither does an answer
         # that never left a cache (#1241).
         self.on_accepted = None
-        # Called, if set, each time a 401 is handed back to the caller: the
-        # device has declined this exchange. Whoever listens uses it to stop
-        # trusting older evidence about these credentials (#1241).
+        # Called, if set, each time a 401 is handed back for a request that
+        # CARRIED these credentials. Whoever listens uses it to stop trusting
+        # older evidence about them (#1241). A 401 to a request sent without
+        # an Authorization header is not that: the device was shown no
+        # password, so it has refused none. An endpoint that answers a bare
+        # 401 with no challenge does exactly this, and counting it cancelled
+        # a working RPC2 session as proof (rroller's review).
         self.on_refused = None
 
     @property
@@ -301,7 +305,7 @@ class DigestAuth:
                     self.scheme = BASIC
                     response.close()
                     continue
-                return self._refused(response)
+                return self._refused(response, "AUTHORIZATION" in attempt_headers)
 
             if sent_nonce is not None:
                 stale = str(challenge.get("stale", "")).lower() == "true"
@@ -312,16 +316,18 @@ class DigestAuth:
                     refused += 1
                     if refused > 1:
                         self.challenge = None
-                        return self._refused(response)
+                        return self._refused(
+                            response, "AUTHORIZATION" in attempt_headers
+                        )
 
             response.close()
             self.challenge = challenge
 
         # The budget is spent. Every other exit returns before here, so this is
         # always a 401, and the loop always runs at least once.
-        return self._refused(response)
+        return self._refused(response, "AUTHORIZATION" in attempt_headers)
 
-    def _refused(self, response: ClientResponse):
+    def _refused(self, response: ClientResponse, carried_credentials: bool = False):
         """Says what the device asked for, then hands the 401 back unchanged.
 
         Every 401 that reaches a caller is reported to the user as the camera
@@ -336,7 +342,7 @@ class DigestAuth:
         them is a secret. Nothing this module sent is logged, and neither is the
         URL, which is one endpoint away from carrying something that should not be.
         """
-        if self.on_refused is not None:
+        if carried_credentials and self.on_refused is not None:
             self.on_refused()
 
         offered = self._offered_scheme(response)
