@@ -71,10 +71,15 @@ WAS = {
     ("text", "channel_title"): "Channel Title",
     ("text", "custom_title"): "Custom Title",
     ("select", "exposure_anti_flicker"): "Image exposure anti-flicker",
+    # Renamed on purpose, from "{format_type} format {format_index} audio
+    # source": the streams take the names the camera entities already use.
+    ("select", "encode_audio_source_main"): "Main audio source",
     (
         "select",
-        "encode_audio_source",
-    ): "{format_type} format {format_index} audio source",
+        "encode_audio_source_main_format",
+    ): "Main format {format_index} audio source",
+    ("select", "encode_audio_source_sub"): "Sub audio source",
+    ("select", "encode_audio_source_sub_n"): "Sub {stream_index} audio source",
     # New with the infrared mode control, so there is no earlier property for it
     # to match. Listed because this table is asserted as equal to the file, which
     # is what makes a rename fail rather than pass quietly.
@@ -115,7 +120,11 @@ WAS = {
     ("select", "image_rotation"): "Image rotation",
     ("update", "firmware_update"): "Firmware Update",
     ("switch", "motion_detection"): "Motion Detection",
-    ("switch", "encode_audio"): "{format_type} format {format_index} audio",
+    # Renamed on purpose, from "{format_type} format {format_index} audio".
+    ("switch", "encode_audio_main"): "Main audio",
+    ("switch", "encode_audio_main_format"): "Main format {format_index} audio",
+    ("switch", "encode_audio_sub"): "Sub audio",
+    ("switch", "encode_audio_sub_n"): "Sub {stream_index} audio",
     ("switch", "cloud_connection"): "Cloud Connection",
     ("switch", "intelli_tour"): "AI Tour",
     ("switch", "disarming"): "Disarming",
@@ -250,6 +259,10 @@ KEY_TABLES = (
     ("number", "MONITOR_VOLUMES"),
     # Motion region 1's sensitivity and threshold (#1115), likewise.
     ("number", "MOTION_REGION_FIELDS"),
+    # One class per platform and four names each: which stream, and whether it
+    # is the first of its kind.
+    ("switch", "ENCODE_AUDIO_NAMES"),
+    ("select", "ENCODE_AUDIO_SOURCE_NAMES"),
 )
 
 
