@@ -444,6 +444,11 @@ def _stream_block(coordinator) -> dict[str, Any]:
         "has_held_a_stream": bool(getattr(stream, "_held_a_stream", False)),
         "last_attach_failed": bool(getattr(stream, "_failing", False)),
         "consecutive_failures": getattr(stream, "_consecutive_failures", 0),
+        # The task is still running while it waits, so task_running alone no
+        # longer tells a paused stream from a working one (#1235).
+        "waiting_for_credentials": bool(
+            getattr(stream, "_waiting_for_credentials", False)
+        ),
         # The stream borrows one channel's client. If that entry is unloaded the
         # stream moves, so knowing whether this entry is the one lending it explains
         # why a reload of a different channel disturbed this one.

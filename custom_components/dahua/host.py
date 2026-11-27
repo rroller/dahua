@@ -26,7 +26,12 @@ from aiohttp import ClientError, ClientResponseError, TCPConnector
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
-from .client import clear_host_cache, rpc2_refusal_is_a_stale_login
+from .client import (
+    clear_host_cache,
+    credentials_acceptance_mark,
+    credentials_accepted_since,
+    rpc2_refusal_is_a_stale_login,
+)
 from .const import CONF_ADDRESS, CONF_PORT, CONF_USE_HTTPS, DOMAIN
 from .dahua_utils import parse_event
 from .rpc2 import Rpc2MethodRefused
@@ -80,6 +85,14 @@ EVENT_STREAM_MAX_SHORT_RETRY_SECONDS = 120
 # device that ran out of connections stays out of connections, because each
 # attempt costs it another one. Back off instead, to this ceiling.
 EVENT_STREAM_MAX_RETRY_SECONDS = 600
+
+# How often a stream that has stopped offering refused credentials looks again
+# at whether its own account has since been let in. Only a dictionary is read,
+# never the device, so this costs the device nothing (#729, #1235). Short,
+# because a stream started while its host's budget is spent waits here too,
+# and that is every stream started by the reload after a reauth: its first
+# poll is what lets it in, and it should attach within seconds of that.
+EVENT_STREAM_AUTH_RECHECK_SECONDS = 5
 
 # A single CGI request returns every recorder channel currently in ordinary
 # motion. Two seconds matches the integration's existing RPC2 event poller.
@@ -710,6 +723,9 @@ def async_record_host_success(hass: HomeAssistant, address: str) -> None:
     """The device answered, so withdraw anything we said about it.
 
     Keyed by host: if any channel of an NVR replies, the box is up.
+
+    That is all it says. It is not proof that any particular account works:
+    see `_CREDENTIALS_ACCEPTED` in client.py for what is.
     """
     address = normalize_address(address)
     if _HOST_FAILURES.pop(address, None) is None:
@@ -832,6 +848,18 @@ class DahuaHostEventStream:
     # [All] as well has nothing left to try, and retrying both forever would
     # double the requests at a device that is already saying no.
     _tried_all_events = False
+
+    # Whether the stream is waiting for this host to accept its credentials
+    # again, having stopped offering them. Not the same as the task having
+    # ended, which is what the diagnostics used to show for it (#1235).
+    _waiting_for_credentials = False
+
+    # The count of successful polls when this stream's credentials were
+    # refused at the budget, or None when they have not been. Kept on the
+    # stream and not in the wait, because the task is restarted whenever the
+    # owner or the event list changes, and a new task must not offer what the
+    # old one had stopped offering.
+    _refused_since: int | None = None
 
     # Whether proof of missed motion has moved this stream onto codes=[All]
     # (#1202): None until it has, "active" while it is on [All] for that reason,
@@ -1517,9 +1545,19 @@ class DahuaHostEventStream:
         self._owner = None
         self._events = frozenset()
         self._using_all_events = False
+        self._refused_since = None
 
     async def _async_run(self) -> None:
         """Hold the stream open, recycling it the way a single channel used to."""
+        if self._refused_since is not None or host_auth_budget_exhausted(self._address):
+            # A task started while its credentials stand refused, or on a host
+            # whose budget is spent: after the owner moved to another entry's
+            # client, after the event list changed, or on the reload after a
+            # reauth. It offers nothing until this owner's own account has
+            # been let in.
+            await self._async_wait_for_accepted_credentials()
+            await self._async_reconcile_latched_events()
+            await self._async_reconcile_alarm_inputs()
         while True:
             start_time = time.monotonic()
             self._received_data = False
@@ -1581,11 +1619,22 @@ class DahuaHostEventStream:
                     )
                     if refusals >= MAX_AUTH_REFUSALS:
                         _LOGGER.warning(
-                            "Event stream for %s stopped: the device refused these credentials %d times. It will start again once the credentials are re-entered",
+                            "Event stream for %s paused: the device refused these credentials %d times. It will start again once the device accepts them, which a successful poll with the same account shows, or once they are re-entered",
                             self._address,
                             refusals,
                         )
-                        return
+                        await self._async_wait_for_accepted_credentials()
+                        _LOGGER.info(
+                            "Event stream for %s resuming: the device is accepting these credentials again",
+                            self._address,
+                        )
+                        # What every other way round the loop does before it
+                        # attaches again. Anything whose Stop was lost while
+                        # the host refused us is still on, and the reads that
+                        # would have closed it were refused too.
+                        await self._async_reconcile_latched_events()
+                        await self._async_reconcile_alarm_inputs()
+                        continue
 
                 if self._should_try_all_events(ex):
                     # Straight back round rather than through the backoff: this is
@@ -1687,6 +1736,79 @@ class DahuaHostEventStream:
                 await asyncio.sleep(retry_in)
             else:
                 _LOGGER.debug("Reconnecting to event stream for %s", self._address)
+
+    async def _async_wait_for_accepted_credentials(self) -> None:
+        """Send nothing until something on this host has been let in again.
+
+        This used to be a `return`: the stream ended, and only a reload started
+        another. That was written for a wrong password, where the poll raises
+        ConfigEntryAuthFailed, the user re-enters the credentials, and the
+        reload brings the stream back. #1235 is the other case. A DH-C4K-P whose
+        user table was full answered 401 with no login challenge at all, the
+        stream counted three of them on its own and ended, and no reauth was
+        ever raised because the credentials were right. The camera recovered,
+        the polls succeeded, and the stream stayed gone: two days from the
+        refusal to the user reloading the integration, more than a day of it
+        with the camera answering every poll.
+
+        So it waits instead, for two things. The host's refusal count must be
+        clear, and the device must have answered 2xx to a request carrying
+        **the credentials this stream attaches with**, since the stream began
+        to wait.
+
+        The second is rroller's review of #1241, in two rounds. The count is
+        per address, and any entry's successful poll clears it. Two entries on
+        one address can hold different accounts, or the same account with an
+        old password in one of them, and the other's poll says nothing about
+        this one. Waiting on the count alone, the stream attached again with
+        the refused account every time the other entry polled, which is the
+        lockout #729 exists to stop being renewed.
+
+        Nor is the owner's own poll finishing the evidence. A poll with
+        nothing due, or one answered from the read cache, sends the device
+        nothing, and the cache is keyed by user and not by password. So the
+        evidence is taken where it happens: the digest exchange records each
+        2xx to a request it signed, by device, username and password
+        (`_CREDENTIALS_ACCEPTED` in client.py). If the owner changes while the
+        stream waits, the new owner is held to the same test.
+
+        The third round found the device that left out. One that answers only
+        over RPC2 never completes a digest exchange, so its stream, started
+        while the address's budget was spent, waited for ever while its owner
+        read the device every poll. An RPC2 login is recorded as well now, and
+        so is each answer on the session it opened, against the password the
+        session was opened with and only until those credentials are refused.
+
+        An owner that sends the device nothing therefore waits until it does,
+        or until its entry is reloaded, which is where a stopped stream was
+        left before this.
+
+        #729 is kept whole: with a wrong password no request of that entry's
+        is ever answered 2xx, and nothing is sent from here. The wait reads
+        dictionaries; it never asks the device.
+
+        `_consecutive_failures` is left as it was, so a stream that is refused
+        again on its first attach goes straight back to the longest backoff
+        rather than retrying every ten seconds into a device that is full.
+        """
+        self._waiting_for_credentials = True
+        if self._refused_since is None:
+            self._refused_since = credentials_acceptance_mark()
+        try:
+            while not self._owner_has_been_let_in():
+                await asyncio.sleep(EVENT_STREAM_AUTH_RECHECK_SECONDS)
+            self._refused_since = None
+        finally:
+            self._waiting_for_credentials = False
+
+    def _owner_has_been_let_in(self) -> bool:
+        """Whether the wait above is over. Reads dictionaries only."""
+        if host_auth_budget_exhausted(self._address):
+            return False
+        owner = self._owner
+        return owner is not None and credentials_accepted_since(
+            getattr(owner, "client", None), self._refused_since
+        )
 
     def on_receive(self, data_bytes: bytes, _channel: int) -> None:
         """Parse once, then hand each event only to the channels that want it."""

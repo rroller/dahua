@@ -3,7 +3,9 @@
 import asyncio
 import contextvars
 import datetime
+import hashlib
 import logging
+import os
 import re
 import socket
 import time
@@ -658,7 +660,7 @@ class _SharedRpc2Session:
     That is the same move _SharedRead makes, for the same reason.
     """
 
-    __slots__ = ("client", "keepalive", "refs", "session", "task")
+    __slots__ = ("client", "keepalive", "proved", "refs", "session", "task")
 
     def __init__(self, session: aiohttp.ClientSession, client, task) -> None:
         self.session = session
@@ -666,6 +668,9 @@ class _SharedRpc2Session:
         self.task = task
         self.refs = 0
         self.keepalive = None
+        # (login task, credentials identity, when) for the login the device
+        # last accepted on this session. See `note_rpc2_login`.
+        self.proved = None
 
 
 async def _rpc2_keepalive(holder: "_SharedRpc2Session", interval: float) -> None:
@@ -744,6 +749,167 @@ async def _release_rpc2(key) -> None:
     finally:
         if not holder.session.closed:
             await holder.session.close()
+
+
+# (device, username, password digest) -> the number of the latest request the
+# device answered 2xx to while it carried those credentials, counted across
+# everything. A number and not a time, so "since the stream began waiting"
+# needs no clock: the stream notes the count and looks for a larger one.
+#
+# Recorded where the device is shown a password and nowhere else. A poll
+# finishing is not evidence: one whose reads were all answered from the cache,
+# or that had nothing due, sends the device nothing, and the read cache is keyed
+# by user and not by password, so an answer in it may have been fetched by an
+# entry holding a different password (rroller on #1241).
+#
+# Two exchanges show the device a password:
+#
+#   * the digest exchange, on every signed request it answers 2xx;
+#   * an RPC2 login, and after it each answer on the session that login opened.
+#
+# The second is there because some devices have no first: an SL300 answers 404
+# to every /cgi-bin/ path, and #1176's camera answers CGI in bytes no parser
+# accepts, so neither ever completes a digest exchange. A stream waiting on
+# digest evidence alone never attached on them, with its owner reading the
+# device successfully throughout (rroller's third review of #1241).
+_CREDENTIALS_ACCEPTED: dict = {}
+# The same key -> the count at which the device last REFUSED a request carrying
+# those credentials. An answer on an RPC2 session shows the device honouring a
+# login made earlier, and a session can outlive the password that opened it.
+# So once these credentials have been refused, a session they opened before
+# that proves nothing more, and only a new login or a signed 2xx does.
+_CREDENTIALS_REFUSED: dict = {}
+# One count for both, so "before" and "after" need no clock.
+_ACCEPTANCES = {"count": 0}
+# The password is only ever compared, so it is kept as a digest, salted per
+# process so that the value means nothing anywhere else.
+_ACCEPTANCE_SALT = os.urandom(16)
+
+
+def credentials_identity(client):
+    """The device and the account a client logs in with, or None.
+
+    Address and port, because two devices can sit behind one address on two
+    ports. Username and password, because two entries on one device can hold
+    two accounts, or one account with an old password in one of them.
+
+    None for a client that does not say, and nothing is ever taken as proof
+    about a None.
+    """
+    return _identity(
+        getattr(client, "_device", None),
+        getattr(client, "_username", None),
+        getattr(client, "_password", None),
+    )
+
+
+def _identity(device, username, password):
+    if device is None or username is None or password is None:
+        return None
+    digest = hashlib.sha256(
+        _ACCEPTANCE_SALT + str(password).encode("utf-8")
+    ).hexdigest()
+    return (device, username, digest)
+
+
+def credentials_acceptance_mark() -> int:
+    """Where the count of accepted requests stands now."""
+    return _ACCEPTANCES["count"]
+
+
+def note_credentials_accepted(client) -> None:
+    """The device has just answered 2xx to a request carrying these credentials."""
+    identity = credentials_identity(client)
+    if identity is None:
+        return
+    _note_accepted(identity)
+
+
+def _note_accepted(identity) -> int:
+    _ACCEPTANCES["count"] += 1
+    _CREDENTIALS_ACCEPTED[identity] = _ACCEPTANCES["count"]
+    return _ACCEPTANCES["count"]
+
+
+def note_credentials_refused(client) -> None:
+    """The device has just answered 401 to an exchange with these credentials."""
+    identity = credentials_identity(client)
+    if identity is None:
+        return
+    _ACCEPTANCES["count"] += 1
+    _CREDENTIALS_REFUSED[identity] = _ACCEPTANCES["count"]
+
+
+def note_rpc2_login(device, holder) -> None:
+    """The device has accepted the login this shared session was opened with.
+
+    Recorded once per login, against the password **the session** holds. The
+    session is shared by device and username, so a second entry with an old
+    password reaches the device through the first entry's login, and that says
+    nothing about the old password.
+    """
+    task = getattr(holder, "task", None)
+    proved = getattr(holder, "proved", None)
+    if task is None or (proved is not None and proved[0] is task):
+        return
+    rpc2 = getattr(holder, "client", None)
+    identity = _identity(
+        device, getattr(rpc2, "_username", None), getattr(rpc2, "_password", None)
+    )
+    if identity is None:
+        return
+    try:
+        holder.proved = (task, identity, _note_accepted(identity))
+    except AttributeError:
+        # A holder that cannot remember it. The login is still recorded.
+        pass
+
+
+def note_rpc2_login_refused(device, holder) -> None:
+    """The device has turned down a login made with this session's password.
+
+    The same fact as a signed 401, learnt on the other transport. Without it
+    an account accepted over CGI and then refused at RPC2 login still read as
+    accepted to a stream that looked afterwards.
+    """
+    rpc2 = getattr(holder, "client", None)
+    identity = _identity(
+        device, getattr(rpc2, "_username", None), getattr(rpc2, "_password", None)
+    )
+    if identity is None:
+        return
+    _ACCEPTANCES["count"] += 1
+    _CREDENTIALS_REFUSED[identity] = _ACCEPTANCES["count"]
+
+
+def note_rpc2_answer(holder, login_task) -> None:
+    """The device has answered a call on the session `login_task` opened.
+
+    Evidence for the credentials that opened it, unless the device has refused
+    those same credentials since: see `_CREDENTIALS_REFUSED`.
+    """
+    proved = getattr(holder, "proved", None)
+    if proved is None or login_task is None or proved[0] is not login_task:
+        return
+    _task, identity, opened = proved
+    if _CREDENTIALS_REFUSED.get(identity, 0) > opened:
+        return
+    _note_accepted(identity)
+
+
+def credentials_accepted_since(client, mark: int) -> bool:
+    """Whether the device accepted this client's own credentials after `mark`,
+    and has not refused them since."""
+    identity = credentials_identity(client)
+    if identity is None:
+        return False
+    accepted = _CREDENTIALS_ACCEPTED.get(identity, 0)
+    # Newer than the mark, and newer than the last time the device refused
+    # this same account. Without the second, an acceptance followed by a
+    # signed 401 still read as accepted to a stream that looked afterwards:
+    # the acceptance was after its mark, and the refusal that came later was
+    # never consulted (rroller's fifth review of #1241).
+    return accepted > mark and accepted > _CREDENTIALS_REFUSED.get(identity, 0)
 
 
 def _digest_state(device: str, username: str) -> dict:
@@ -4343,6 +4509,7 @@ class DahuaClient:
         try:
             response = await asyncio.shield(holder.task)
         except DhipLoginRefused as refused:
+            note_rpc2_login_refused(self._device, holder)
             if holder.task is not None and holder.task.done():
                 holder.task = None
             # Use the same auth path as CGI so the coordinator can request
@@ -4354,7 +4521,14 @@ class DahuaClient:
                 status=401,
                 message="DHIP login refused",
             ) from refused
-        except Exception:
+        except Exception as failed:
+            # Only the device declining the login itself. A dropped
+            # connection or a timeout has shown it no password.
+            if (
+                isinstance(failed, Rpc2MethodRefused)
+                and failed.method == RPC2_LOGIN_METHOD
+            ):
+                note_rpc2_login_refused(self._device, holder)
             # Clear the login, not the holder: the entries still hold
             # references to it, and the next read should try again.
             if (
@@ -4364,6 +4538,8 @@ class DahuaClient:
             ):
                 holder.task = None
             raise
+
+        note_rpc2_login(self._device, holder)
 
         if keepalive_needs_starting(holder.keepalive):
             interval = (response.get("params") or {}).get(
@@ -4396,11 +4572,14 @@ class DahuaClient:
             holder = await self._shared_rpc2()
             login_task = getattr(holder, "task", None)
             try:
-                return await action(holder.client)
+                answer = await action(holder.client)
             except Rpc2MethodRefused as exc:
                 if attempt == 2 or not rpc2_refusal_is_a_stale_login(exc):
                     raise
                 await drop_stale_rpc2_login(holder, login_task)
+            else:
+                note_rpc2_answer(holder, login_task)
+                return answer
         raise RuntimeError("Dahua RPC2 shared call did not return")
 
     # Direct-camera CoaxialControlIO RPC2 calls use channel 0, matching the
@@ -6724,9 +6903,7 @@ class DahuaClient:
         duration = len(audio) / byte_rate
         chunk = max(1, int(byte_rate // AUDIO_WRITES_PER_SECOND))
 
-        auth = DigestAuth(
-            self._username, self._password, self._session, self._digest_state
-        )
+        auth = self._digest_auth()
 
         def authorization():
             """The header to open with, or None to go without one."""
@@ -7275,9 +7452,7 @@ class DahuaClient:
             timeout = aiohttp.ClientTimeout(
                 total=None, sock_read=EVENT_STREAM_READ_TIMEOUT_SECONDS
             )
-            auth = DigestAuth(
-                self._username, self._password, self._session, self._digest_state
-            )
+            auth = self._digest_auth()
             # Both refusals this can meet are caught in one place, because the
             # unreadable one arrives from the request itself rather than from
             # `raise_for_status` (#1176, and the same note as on `get()` below).
@@ -7706,9 +7881,7 @@ class DahuaClient:
             response = None
             try:
                 # Asks for a challenge first, as a still does (see get_bytes).
-                auth = DigestAuth(
-                    self._username, self._password, self._session, self._digest_state
-                )
+                auth = self._digest_auth()
                 self._note_request(url)
                 response = await auth.request("GET", url, preemptive=False)
                 response.raise_for_status()
@@ -7741,9 +7914,7 @@ class DahuaClient:
             REQUEST_REACHED_DEVICE.set(True)
             response = None
             try:
-                auth = DigestAuth(
-                    self._username, self._password, self._session, self._digest_state
-                )
+                auth = self._digest_auth()
                 self._note_request(url)
                 response = await auth.request(
                     "GET", self._base + url, preemptive=not fresh_challenge
@@ -7754,6 +7925,20 @@ class DahuaClient:
             finally:
                 if response is not None:
                     response.close()
+
+    def _digest_auth(self) -> DigestAuth:
+        """The digest exchange for one request, reporting back when it is accepted.
+
+        Every request this client signs is built here, so a 2xx to any of them
+        is recorded as the device accepting this client's credentials, and a
+        401 handed back as the device refusing them. See `_CREDENTIALS_ACCEPTED`.
+        """
+        auth = DigestAuth(
+            self._username, self._password, self._session, self._digest_state
+        )
+        auth.on_accepted = lambda: note_credentials_accepted(self)
+        auth.on_refused = lambda: note_credentials_refused(self)
+        return auth
 
     async def async_get_event_indexes_cgi(self, code: str) -> set[int]:
         """Return active channel indexes from the CGI event state endpoint.
@@ -8337,12 +8522,7 @@ class DahuaClient:
                 if write_lock is not None:
                     await write_lock.acquire()
                 try:
-                    auth = DigestAuth(
-                        self._username,
-                        self._password,
-                        self._session,
-                        self._digest_state,
-                    )
+                    auth = self._digest_auth()
                     try:
                         # Both ways this can refuse, caught in one place. The
                         # camera in #1176 answers every authenticated CGI call

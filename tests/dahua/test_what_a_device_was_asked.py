@@ -352,7 +352,10 @@ def test_every_place_a_request_leaves_the_client_is_counted():
             "self._note_request(" in source[index - 1]
         ), "line %d sends a request that is not counted" % (index + 1)
     text = "\n".join(source)
-    assert len(re.findall(r"\bDigestAuth\(", text)) == 5, (
+    assert (
+        len(re.findall(r"\bDigestAuth\(", text)) == 1
+    ), "`_digest_auth` is the one place an exchange is built (#1241)"
+    assert text.count("self._digest_auth()") == 5, (
         "four that send through `auth.request` and the speaker, which signs "
         "its own POST"
     )
