@@ -498,8 +498,18 @@ Measured on a DHI-VTO2311R-WP with Home Assistant 2026.11.0 (#1162).
   A headset, or muting the incoming audio while talking, avoids it.
 - **The option *Don't open the two-way audio channel when streaming*** removes the
   talk button, because go2rtc is then told not to open the backchannel.
-- Only doorbells declare it. Cameras with a speaker are not included, because the
-  backchannel has only been measured on a doorbell.
+- **A directly connected camera declares it when it says it has an audio output**
+  (`devAudioOutput.cgi?action=getCollect` answering 1 or more), asked once at
+  setup. On a DH-IPC-HDW3549H-AS-PV, which has a speaker, that answer is 1 and the
+  camera describes a talk-back track in its RTSP description; on an
+  IPC-HDW2549TM-S-IL, which has a microphone only, the answer is 0 and the same
+  request is refused (#177). Nobody has yet reported talking through a camera
+  from Home Assistant, so treat it as new. The answer says the camera has an
+  audio output, not that a speaker is attached to it: a camera with only an
+  audio-out socket has not been measured, and may show the button.
+- **Cameras behind a recorder do not declare it.** The recorder answers that
+  question for its own audio output, and whether talking reaches a channel's
+  camera through a recorder has not been measured.
 
 ## Indoor monitors (VTH)
 

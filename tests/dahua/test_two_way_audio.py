@@ -39,6 +39,10 @@ class _Client:
 class _Coordinator:
     client = _Client()
     channel_option = DahuaDataUpdateCoordinator.channel_option
+    # The real answer to "can this be talked to", so this file keeps saying
+    # what a doorbell gets now that the camera asks that and not is_doorbell.
+    supports_talking = DahuaDataUpdateCoordinator.supports_talking
+    _supports_audio_output = False
 
     def __init__(self, doorbell, **options):
         self.config_entry = SimpleNamespace(
