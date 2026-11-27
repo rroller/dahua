@@ -522,6 +522,11 @@ What it gets:
   when that VTO calls. `none` is the VTO's own picture; the other options are the cameras in
   the monitor's own camera list (Monitor > IPC on its screen). The monitor's screen has no
   control for this on the measured firmware, though its manual describes it.
+- A **Ring tone for &lt;VTO&gt; calls** select for each VTO it knows, on a VTH5221D only:
+  Ring 1, the default, or Ring 2, a telephone ring. Those are the two tones that were
+  heard to play on that monitor. A monitor accepts the name of a tone it does not have
+  and then rings in silence, so no other model is offered this until its tones have
+  been listened to.
 - **Do not disturb** and sliders for door station ring, indoor ring, talk and alarm
   volume (0–100), for each setting the monitor reports in `VideoTalkPhoneGeneral`.
   Do not disturb is separate from the quiet-period schedule configured on the monitor.
@@ -1125,6 +1130,7 @@ Profile Management | Normal, Full Time Day, Full Time Night or Schedule, on chan
 Image Wide Dynamic Range | Off, On or mode 2. The camera ignores mode 0 on its own while the level is still 50, so choosing Off clears both; choosing On or mode 2 keeps the camera's level or restores 50. Mode 2 is named rather than called Auto because the vendor's name for it has not been confirmed
 Image Exposure Mode | Auto, Gain Priority or Shutter Priority. Manual exposure is deliberately not offered: it needs shutter and gain values this integration does not expose
 Camera for &lt;VTO&gt; calls | On an indoor monitor (VTH), which camera its screen opens on when that VTO calls it, or `none` for the VTO's own picture. See [Indoor monitors](#indoor-monitors-vth)
+Ring tone for &lt;VTO&gt; calls | On a VTH5221D indoor monitor, the tone it rings with when that VTO calls: Ring 1 (default) or Ring 2 (telephone). See [Indoor monitors](#indoor-monitors-vth)
 Audio Source | Selects the source reported by each encoder format (Coaxial or BNC). Only shown when the device exposes that setting
 Illumination mode | Selects the fill-light modes reported by the camera, such as infrared, white or smart dual light. Applies the chosen mode to every lighting scene
 

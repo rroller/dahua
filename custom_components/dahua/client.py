@@ -786,6 +786,41 @@ def rpc2_software_version(params) -> str | None:
     return number.strip()
 
 
+# The ring tones an indoor monitor has been HEARD to play, by model.
+#
+# `VTOInfo.VtoNN.RingFile` is a path on the monitor, and the monitor stores
+# whatever it is given: there is no list of files to read, and no service that
+# lists them (`system.listService` on a VTH5221D has no file manager at all).
+# A path to a file that is not there is accepted with `result: true`, reads
+# back intact, and **the monitor then rings in silence**.
+#
+# So only what somebody has stood next to goes here. Measured 2026-11-27 on two
+# DHI-VTH5221D (3.000.0012000.0.R) with the owner pressing a VTO2000A's button:
+#
+#     phone_ring1.pcm   the factory tone, in all twenty slots of both monitors
+#     phone_ring2.pcm   a telephone ring
+#     phone_ring3.pcm, 4, 5 and 6   accepted, stored, and silent
+#
+# A model that is not listed gets no select. Another monitor may well carry the
+# same two files, or more, and the way to find out is to listen, not to guess:
+# the cost of guessing wrong is a doorbell nobody hears.
+VTH_RING_TONES = {
+    "VTH5221D": {
+        "ring_1": "/mnt/data/Sounds/phoneRing/phone_ring1.pcm",
+        "ring_2": "/mnt/data/Sounds/phoneRing/phone_ring2.pcm",
+    },
+}
+
+
+def vth_ring_tones(model) -> dict:
+    """Option to file path for a monitor of this model, or {} for one not heard."""
+    model = str(model or "").upper()
+    for measured, tones in VTH_RING_TONES.items():
+        if measured in model:
+            return dict(tones)
+    return {}
+
+
 def _configured(entry) -> bool:
     """Whether a VTOInfo or VTHRemoteIPCInfo slot holds a device.
 
@@ -836,9 +871,15 @@ def vth_camera_links(vto_table, camera_table) -> dict:
             continue
         link = entry.get("LinkIPC")
         volume = entry.get("RingVolume")
+        ring_file = entry.get("RingFile")
         vtos[key] = {
             "name": str(entry.get("MachineAddress") or "").strip() or key,
             "link": link if isinstance(link, str) else "",
+            # The path the monitor plays for this door station's calls, or
+            # None where the slot has no such field. See VTH_RING_TONES.
+            "ring_file": (
+                ring_file if isinstance(ring_file, str) and ring_file else None
+            ),
             # None rather than a default, so the entity can be withheld from a
             # slot that does not carry one. A slider reading an invented 0 is
             # worse than no slider (#641), and it would be a slider that looks
@@ -2913,6 +2954,24 @@ class DahuaClient:
         second name for it.
         """
         return await self._async_set_vto_slot_field(vto, "RingVolume", int(volume))
+
+    async def async_set_vth_vto_ring_tone(self, vto: str, ring_file: str) -> bool:
+        """Set the tone a monitor rings with for calls from VTOInfo slot `vto`.
+
+        Only a file somebody has heard play (`VTH_RING_TONES`). The monitor
+        accepts any path, answers `result: true`, reads it back intact, and
+        rings in silence if the file is not there. So a path this does not
+        know raises here and nothing is sent.
+
+        The same whole-table write the ring volume and the camera link make.
+        """
+        heard = {path for tones in VTH_RING_TONES.values() for path in tones.values()}
+        if ring_file not in heard:
+            raise ValueError(
+                "%r is not a ring tone that has been heard to play, and a monitor "
+                "given a file it does not have rings silently" % (ring_file,)
+            )
+        return await self._async_set_vto_slot_field(vto, "RingFile", ring_file)
 
     async def async_get_video_talk_phone_general(self) -> dict:
         """An indoor monitor's call settings, flat, or {} if it has none.

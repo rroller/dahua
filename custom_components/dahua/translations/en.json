@@ -445,6 +445,13 @@
                     "none": "None"
                 }
             },
+            "vth_vto_ring_tone": {
+                "name": "Ring tone for {vto} calls",
+                "state": {
+                    "ring_1": "Ring 1 (default)",
+                    "ring_2": "Ring 2 (telephone)"
+                }
+            },
             "infrared_mode": {
                 "name": "Infrared Mode",
                 "state": {
@@ -676,6 +683,9 @@
         },
         "vth_vto_ring_volume_ignored": {
             "message": "{device} accepted the ring volume for {vto} and did not store it. Some firmware answers a VTOInfo write with OK and ignores it."
+        },
+        "vth_vto_ring_tone_ignored": {
+            "message": "{device} accepted the ring tone for {vto} and did not store it. Some firmware answers a VTOInfo write with OK and ignores it."
         }
     },
     "issues": {
