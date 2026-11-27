@@ -10,7 +10,7 @@ import time
 import voluptuous as vol
 from aiohttp import ClientError
 
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers import config_validation as cv
@@ -727,15 +727,19 @@ def rtsp_stream_source(url: str, disable_backchannel: bool) -> str:
     return url
 
 
-def two_way_audio_supported(is_doorbell: bool, disable_backchannel: bool) -> bool:
+def two_way_audio_supported(can_be_talked_to: bool, disable_backchannel: bool) -> bool:
     """Whether Home Assistant may offer talking through this stream (#1162).
 
     Home Assistant 2026.11 sends the browser's microphone over WebRTC to its
     go2rtc, which forwards it on the RTSP backchannel of the stream source.
-    That needs a device with a speaker, which here means a doorbell, and a
-    stream source without #backchannel=0. Measured on a VTO2311R-WP.
+    That needs a device with somewhere to play it, and a stream source without
+    #backchannel=0. Measured on a VTO2311R-WP.
+
+    Which devices those are is the coordinator's `supports_talking`: a
+    doorbell, or a directly connected camera that says it has an audio output
+    (#177).
     """
-    return bool(is_doorbell) and not disable_backchannel
+    return bool(can_be_talked_to) and not disable_backchannel
 
 
 class DahuaCamera(DahuaBaseEntity, Camera):
@@ -745,6 +749,7 @@ class DahuaCamera(DahuaBaseEntity, Camera):
     # with object.__new__ and set only the attributes they care about, so a new
     # one read by async_camera_image has to have a value without them.
     _media_channel: int | None = None
+    _disable_backchannel: bool = False
 
     @property
     def extra_state_attributes(self):
@@ -815,14 +820,36 @@ class DahuaCamera(DahuaBaseEntity, Camera):
             coordinator.client.get_rtsp_stream_url(self._channel_number, stream_index),
             disable_backchannel,
         )
-        if CameraEntityCapabilities is not None:
-            is_doorbell = getattr(coordinator, "is_doorbell", None)
-            self._attr_camera_entity_capabilities = CameraEntityCapabilities(
-                two_way_audio=two_way_audio_supported(
-                    is_doorbell is not None and is_doorbell(),
-                    disable_backchannel,
-                )
+        self._disable_backchannel = bool(disable_backchannel)
+        self._refresh_talking()
+
+    def _refresh_talking(self) -> None:
+        """Hand Home Assistant the current answer to "can this be talked to".
+
+        At build, and again after every poll: a camera that did not answer
+        about its audio output at setup is asked again by a later poll, and
+        the button has to turn up on the stream that already exists (#177).
+        Home Assistant reads the capability each time the stream is opened.
+
+        Assigned only when it changed, because assigning is what makes Home
+        Assistant drop the value it holds.
+        """
+        if CameraEntityCapabilities is None:
+            return
+        supports_talking = getattr(self._coordinator, "supports_talking", None)
+        wanted = CameraEntityCapabilities(
+            two_way_audio=two_way_audio_supported(
+                supports_talking is not None and supports_talking(),
+                self._disable_backchannel,
             )
+        )
+        if getattr(self, "_attr_camera_entity_capabilities", None) != wanted:
+            self._attr_camera_entity_capabilities = wanted
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._refresh_talking()
+        super()._handle_coordinator_update()
 
     @property
     def unique_id(self):

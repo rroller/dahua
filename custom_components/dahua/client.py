@@ -6746,6 +6746,28 @@ class DahuaClient:
         # and took every entity on the channel with it. That is #1006's shape.
         return await self.async_get_config("DisableLinkage")
 
+    async def async_get_audio_output_count(self) -> int | None:
+        """How many audio outputs the device says it has, or None if it did not say.
+
+        `devAudioOutput.cgi?action=getCollect` answers one line, `result=N`.
+        Measured (#177): `result=1` on a DH-IPC-HDW3549H-AS-PV, which has a
+        speaker, on a VTO2000A, a VTO2202F and a VTO2211G, and on a
+        DHI-NVR5464-16P-EI; `result=0` on an IPC-HDW2549TM-S-IL, which has a
+        microphone and no speaker.
+
+        About the device, not a channel: a recorder answers for its own audio
+        output, which says nothing about the camera behind a channel.
+
+        Raises what the request raises, so the caller can tell a refusal from
+        silence. An answer with no number in it reads as None, never as 0: 0
+        is the device saying it has none.
+        """
+        answer = await self.get("/cgi-bin/devAudioOutput.cgi?action=getCollect")
+        try:
+            return int(str(answer.get("result", "")).strip())
+        except ValueError:
+            return None
+
     async def async_get_cloud_connection(self) -> dict:
         """Read the device's cloud table (Dahua's easy4ip / DMSS connection).
 

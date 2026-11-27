@@ -1522,6 +1522,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
     # On the class for the same reason as the line above.
     _supports_cloud_connection: bool = False
 
+    # Whether the device said it has an audio output (#177). On the class for
+    # the same reason as the line above.
+    _supports_audio_output: bool = False
+
     # Whether THIS CHANNEL reports the key the AI tour switch reads. Per
     # channel rather than per device: a dual sensor camera carries the tour on
     # its PTZ channel only. On the class for the same reason as the line above.
@@ -1645,6 +1649,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         self._supports_disarming_linkage = False
         self._supports_event_notifications = False
         self._supports_cloud_connection = False
+        self._supports_audio_output = False
         self._supports_intelli_tour = False
         # What the device's own cloud OTA check last found, read from its
         # _DHCloudUpgrade_ config table. Reading it is local; see
@@ -2590,6 +2595,72 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether a cloud table turned up that was missed at setup."""
         already = self._supports_cloud_connection
         return await self._async_probe_cloud_connection() and not already
+
+    def _talk_follows_the_audio_output(self) -> bool:
+        """Whether this device is one whose own answer decides the talk button.
+
+        A camera Home Assistant talks to directly, and nothing else:
+
+        * a doorbell is offered talking already, without being asked.
+        * a recorder answers the question for its own audio output, which
+          says nothing about the camera behind a channel. Whether talking
+          reaches a channel's camera through a recorder has not been measured.
+        * an indoor monitor has not been measured either.
+        """
+        return not (
+            self.is_doorbell()
+            or self.uses_recorder_deterrence()
+            or self.is_indoor_monitor()
+        )
+
+    async def _async_probe_audio_output(self) -> bool:
+        """Ask a directly connected camera whether it has an audio output (#177).
+
+        Home Assistant's talk button sends audio on the RTSP backchannel, and
+        was offered on doorbells only. Measured by @kmich on two cameras: the
+        one that answers `result=1` here (a DH-IPC-HDW3549H-AS-PV, which has a
+        speaker) describes a `sendonly` audio track when asked for the
+        backchannel, and the one that answers `result=0` (an
+        IPC-HDW2549TM-S-IL, microphone only) answers 404 to the same request.
+        So the answer agrees with the transport on both.
+
+        Judged on the number, not on whether the read raised. Only a device
+        `_talk_follows_the_audio_output` names is asked, so nothing else pays
+        a request for it.
+        """
+        if not self._talk_follows_the_audio_output():
+            self._supports_audio_output = False
+            return False
+        try:
+            count = await self.client.async_get_audio_output_count()
+        except PROBE_FAILED as probe_error:
+            self._note_probe_refusal("audio_output", probe_error)
+            if probe_failure_is_temporary(probe_error):
+                # A status makes `_note_probe_refusal` call it an answer. A
+                # 503 is the camera failing, not the camera saying it has no
+                # output, so the question stays open and a later poll asks
+                # again. Filed as an answer, the button stayed away until a
+                # reload (rroller's review of #1250).
+                self._probe_refusals["audio_output"]["answered"] = False
+            self._supports_audio_output = False
+            return False
+        self._note_probe_answered("audio_output")
+        self._supports_audio_output = bool(count) and count > 0
+        _LOGGER.debug(
+            "Device says it has %s audio outputs, so talking is offered=%s",
+            count,
+            self._supports_audio_output,
+        )
+        return self._supports_audio_output
+
+    async def _async_retry_audio_output(self) -> bool:
+        """Whether an audio output turned up that was missed at setup.
+
+        Builds no entity. The camera reads `supports_talking` again after
+        every poll, so the button appears on the stream that already exists.
+        """
+        already = self._supports_audio_output
+        return await self._async_probe_audio_output() and not already
 
     async def _async_probe_intelli_tour(self) -> bool:
         """Ask for the tour table, and judge on this channel's own row.
@@ -3652,6 +3723,10 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
                 # and the retry cannot come to disagree about what the device
                 # said (#1057).
                 await self._async_probe_alarm_output()
+                # Only the camera platform reads it, and only a directly
+                # connected camera is asked; see the probe.
+                if self._wanted_by(CAMERA):
+                    await self._async_probe_audio_output()
                 await self._async_probe_disarming_linkage()
                 await self._async_probe_event_notifications()
                 # Host wide rather than per channel, and only the switch
@@ -7374,6 +7449,19 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
         """Whether this device reports the key the cloud switch reads."""
         return self._supports_cloud_connection
 
+    def supports_talking(self) -> bool:
+        """Whether Home Assistant's talk button has somewhere to send audio.
+
+        A doorbell, as before. Otherwise a directly connected camera that said
+        it has an audio output. What the device is gets asked again here and
+        not only when the question was put: its class can arrive after setup,
+        and a device that then turns out to be a recorder must lose the button
+        its own audio output earned it.
+        """
+        if self.is_doorbell():
+            return True
+        return self._supports_audio_output and self._talk_follows_the_audio_output()
+
     def is_cloud_connection_enabled(self) -> bool:
         """Whether the device's cloud connection is switched on."""
         return str(self.data.get(CLOUD_CONNECTION_ENABLE, "")).lower() == "true"
@@ -9247,6 +9335,7 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
 # together, so a channel that lost that probe lost both of its controls.
 RETRYABLE_CAPABILITIES = {
     "alarm_output": DahuaDataUpdateCoordinator._async_retry_alarm_output,
+    "audio_output": DahuaDataUpdateCoordinator._async_retry_audio_output,
     AUDIO_CONTROLS["microphone_volume"][
         3
     ]: DahuaDataUpdateCoordinator._async_retry_audio_input_volume,
