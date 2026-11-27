@@ -253,6 +253,40 @@ async def test_a_refusal_is_an_answer():
     assert coordinator.probes_that_did_not_answer() == set()
 
 
+@pytest.mark.parametrize("status", [400, 403, 404, 501])
+async def test_a_camera_saying_no_is_not_asked_again(discoveries, status):
+    """Each of these is the camera answering, so one request is all it gets,
+    even when it would say 1 the next time."""
+    coordinator = _coordinator(ClientResponseError(None, None, status=status), 1)
+    await coordinator._async_probe_audio_output()
+
+    await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator.client.reads == 1
+    assert coordinator.supports_talking() is False
+    assert coordinator.probes_that_did_not_answer() == set()
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 408, 429])
+async def test_a_camera_that_broke_answering_is_asked_again(discoveries, status):
+    """rroller's review of #1250: a 503 at setup and then one output. The
+    status made it an answer, so nothing asked again and the button stayed
+    away until a reload. A camera failing is not a camera saying no."""
+    coordinator = _coordinator(ClientResponseError(None, None, status=status), 1)
+
+    assert await coordinator._async_probe_audio_output() is False
+    assert coordinator.supports_talking() is False
+    assert coordinator.probes_that_did_not_answer() == {"audio_output"}
+    # What it said is kept, so the diagnostics file still shows the status.
+    assert coordinator._probe_refusals["audio_output"]["status"] == status
+
+    await coordinator._async_retry_unanswered_capabilities()
+
+    assert coordinator.client.reads == 2
+    assert coordinator.supports_talking() is True
+    assert coordinator.probes_that_did_not_answer() == set()
+
+
 async def test_an_answer_that_arrives_late_brings_the_button(discoveries):
     """Through the real registry, so removing the entry fails this."""
     assert "audio_output" in RETRYABLE_CAPABILITIES

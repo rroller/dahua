@@ -2635,6 +2635,13 @@ class DahuaDataUpdateCoordinator(DataUpdateCoordinator):
             count = await self.client.async_get_audio_output_count()
         except PROBE_FAILED as probe_error:
             self._note_probe_refusal("audio_output", probe_error)
+            if probe_failure_is_temporary(probe_error):
+                # A status makes `_note_probe_refusal` call it an answer. A
+                # 503 is the camera failing, not the camera saying it has no
+                # output, so the question stays open and a later poll asks
+                # again. Filed as an answer, the button stayed away until a
+                # reload (rroller's review of #1250).
+                self._probe_refusals["audio_output"]["answered"] = False
             self._supports_audio_output = False
             return False
         self._note_probe_answered("audio_output")
