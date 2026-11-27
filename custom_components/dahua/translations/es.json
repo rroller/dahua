@@ -108,7 +108,7 @@
                 "data": {
                     "auto_detect_channel": "Detectar índice de canal automáticamente (desactívalo si la captura HTTP en channel=0 funciona, pero RTSP solo transmite en channel=1)",
                     "use_rpc2": "Leer la configuración mediante una sesión RPC2 por dispositivo (reduce los accesos registrados en el equipo; déjalo desactivado si no tienes claro si usarlo)",
-                    "poll_video_motion": "Consultar el estado de movimiento si el grabador no envía eventos VideoMotion (una solicitud por grabador)",
+                    "poll_video_motion": "Consultar el estado de movimiento si el grabador no envía eventos VideoMotion (una solicitud por grabador cada 2 segundos)",
                     "events": "Eventos a los que suscribirse",
                     "scan_interval": "Segundos entre consultas al dispositivo (no afecta a los eventos)",
                     "nvr_active_deterrence": "Activar controles de disuasión activa del NVR",

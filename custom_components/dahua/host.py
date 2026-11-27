@@ -98,6 +98,13 @@ EVENT_STREAM_AUTH_RECHECK_SECONDS = 5
 # motion. Two seconds matches the integration's existing RPC2 event poller.
 VIDEO_MOTION_POLL_SECONDS = 2
 
+# The longest the motion poll waits between attempts while they keep failing.
+# It doubles from the interval above to this and goes back at the first answer.
+# A poll that failed used to be asked again two seconds later for ever, which
+# against a device that is refusing or not answering is thirty requests a
+# minute to no purpose (#1182).
+VIDEO_MOTION_POLL_MAX_RETRY_SECONDS = 60
+
 # How long a latched event the device answered nothing about is left alone
 # before it is asked about again, for a code the device has never reported
 # (#1235). Doubling per empty answer for the same latch, to the ceiling.
@@ -1488,11 +1495,65 @@ class DahuaHostEventStream:
                     "Code={0};action=Stop;index={1}\r\n".format(code, channel).encode()
                 )
 
+    async def _async_motion_poll_waits_for_credentials(self) -> None:
+        """Send nothing from the motion poll until its account is let in again.
+
+        The same test the event stream waits on, and for the same reason
+        (#729, #1241): once this host has refused credentials to its budget,
+        every further signed request renews the lock the device put on this
+        address. So the host's count must be clear and the device must have
+        accepted the credentials this poll signs with, since the wait began.
+
+        A mark of its own rather than the stream's `_refused_since`: the two
+        tasks start and stop independently, and one finishing its wait must
+        not end the other's.
+        """
+        mark = credentials_acceptance_mark()
+        while True:
+            owner = self._owner
+            if (
+                not host_auth_budget_exhausted(self._address)
+                and owner is not None
+                and credentials_accepted_since(getattr(owner, "client", None), mark)
+            ):
+                return
+            await asyncio.sleep(EVENT_STREAM_AUTH_RECHECK_SECONDS)
+
     async def _async_poll_video_motion(self) -> None:
-        """Synthesize VideoMotion edges from one host-wide state request."""
+        """Synthesize VideoMotion edges from one host-wide state request.
+
+        **What it does when the request fails** (#1182). It used to ask again
+        two seconds later whatever had happened, for as long as the option
+        was on:
+
+        - Any failure doubles the wait before the next attempt, up to
+          `VIDEO_MOTION_POLL_MAX_RETRY_SECONDS`, and the first answer puts it
+          back to two seconds.
+        - While this host's refusal budget is spent, nothing is sent at all
+          until the device has accepted this poll's own credentials again.
+          With a password changed on the device, the polls reach the budget
+          and stop, the stream stops, and this loop was the one thing left
+          offering the refused password, thirty times a minute.
+
+        It never adds to that budget itself. The budget decides when Home
+        Assistant asks for new credentials, and a recorder briefly refusing
+        a two second poll is not evidence for that. The polls and the stream
+        are the judges; this obeys them.
+        """
         active: set[int] = set()
         failing = False
+        failures = 0
         while True:
+            if host_auth_budget_exhausted(self._address):
+                _LOGGER.warning(
+                    "VideoMotion state polling for %s paused: the device is "
+                    "refusing these credentials. It will start again once the "
+                    "device accepts them",
+                    self._address,
+                )
+                await self._async_motion_poll_waits_for_credentials()
+                _LOGGER.info("VideoMotion state polling for %s resuming", self._address)
+                failures = 0
             started = time.monotonic()
             try:
                 observed = await self._owner.client.async_get_event_indexes_cgi(
@@ -1514,6 +1575,7 @@ class DahuaHostEventStream:
                         "VideoMotion state polling for %s recovered", self._address
                     )
                 failing = False
+                failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception as ex:  # pylint: disable=broad-except
@@ -1530,9 +1592,14 @@ class DahuaHostEventStream:
                         ex,
                     )
                 failing = True
-            await asyncio.sleep(
-                max(0.0, VIDEO_MOTION_POLL_SECONDS - (time.monotonic() - started))
+                failures += 1
+            interval = min(
+                VIDEO_MOTION_POLL_MAX_RETRY_SECONDS,
+                # Capped before the shift, so a poll that has failed for a
+                # week is not computing two to the power of its failures.
+                VIDEO_MOTION_POLL_SECONDS * 2 ** min(failures, 16),
             )
+            await asyncio.sleep(max(0.0, interval - (time.monotonic() - started)))
 
     async def async_stop(self) -> None:
         if self._task is not None:
