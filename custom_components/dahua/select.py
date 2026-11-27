@@ -12,6 +12,7 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.dahua import DahuaDataUpdateCoordinator
 
 from . import dahua_utils, entry_coordinators
+from .client import vth_ring_tones
 from .const import (
     DOMAIN,
     EXPOSURE_ANTI_FLICKER_OPTIONS,
@@ -173,6 +174,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
             links = coordinator.get_vth_camera_links() or {}
             for vto in links.get("vtos") or {}:
                 devices.append(DahuaVthCameraLinkSelect(coordinator, entry, vto))
+        devices.extend(vto_ring_tone_selects(coordinator, entry))
 
         # The initialization probe settles which fields this channel exposes.
         for key in getattr(coordinator, "_encode_audio_keys", ()):
@@ -729,6 +731,101 @@ class DahuaExposureAntiFlickerSelect(DahuaBaseEntity, SelectEntity):
             return
         await self._coordinator.async_set_exposure_anti_flicker(option)
         await self._coordinator.async_refresh()
+
+
+def vto_ring_tone_selects(coordinator, entry) -> list:
+    """One ring tone select per door station, on a monitor whose tones are known.
+
+    Three things have to hold, and each is a reason not to offer one:
+
+    - the device says it is an indoor monitor;
+    - its model is one whose tones have been heard (`vth_ring_tones`), because
+      a tone that is not on the monitor is a doorbell that rings in silence;
+    - the slot carries a `RingFile` at all.
+    """
+    if not coordinator.is_indoor_monitor():
+        return []
+    if not vth_ring_tones(coordinator.get_model()):
+        return []
+    vtos = (coordinator.get_vth_camera_links() or {}).get("vtos") or {}
+    return [
+        DahuaVtoRingToneSelect(coordinator, entry, vto)
+        for vto, slot in vtos.items()
+        if slot.get("ring_file") is not None
+    ]
+
+
+class DahuaVtoRingToneSelect(DahuaBaseEntity, SelectEntity):
+    """Which tone a monitor rings with for calls from ONE door station.
+
+    `VTOInfo.VtoNN.RingFile`, beside the ring volume in the same slot. Measured
+    on two VTH5221D with the owner at the door: `phone_ring2.pcm` changed the
+    ring to a telephone sound on the monitor it was set on and not on the
+    other, and `phone_ring1.pcm` put it back.
+
+    The options are the tones heard on this model and nothing else. The
+    monitor will store any path it is given and ring silently for one that is
+    not there, so there is no free text and no "custom" option.
+
+    A tone set some other way that is not one of these shows as unknown, not
+    as the first option: something is set, and it is not one this knows.
+    """
+
+    _attr_translation_key = "vth_vto_ring_tone"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: DahuaDataUpdateCoordinator, config_entry, vto: str):
+        super().__init__(coordinator, config_entry)
+        self._coordinator = coordinator
+        self._vto = vto
+        self._attr_translation_placeholders = {"vto": self._slot().get("name") or vto}
+
+    @property
+    def unique_id(self):
+        return "{0}_vto_ring_tone_{1}".format(
+            self._coordinator.get_serial_number(), self._vto.lower()
+        )
+
+    def _slot(self) -> dict:
+        links = self._coordinator.get_vth_camera_links() or {}
+        return (links.get("vtos") or {}).get(self._vto) or {}
+
+    def _tones(self) -> dict:
+        return vth_ring_tones(self._coordinator.get_model())
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._slot().get("ring_file") is not None
+
+    @property
+    def options(self) -> list:
+        return list(self._tones())
+
+    @property
+    def current_option(self):
+        held = self._slot().get("ring_file")
+        for option, path in self._tones().items():
+            if path == held:
+                return option
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        path = self._tones().get(option)
+        if path is None:
+            return
+        landed = await self._coordinator.client.async_set_vth_vto_ring_tone(
+            self._vto, path
+        )
+        await self._coordinator.async_refresh()
+        if not landed:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="vth_vto_ring_tone_ignored",
+                translation_placeholders={
+                    "device": self._coordinator.get_device_name(),
+                    "vto": self._slot().get("name") or self._vto,
+                },
+            )
 
 
 # The option for "no camera": the VTH shows the VTO's own picture. A slug, so

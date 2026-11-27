@@ -78,7 +78,14 @@ def test_the_measured_tables_read_as_one_vto_and_one_camera():
     # the reader's shape had changed. See test_a_ring_volume_per_door_station.py
     # for what that field is and why it is read here rather than separately.
     assert vth_camera_links(_vto_table(), _camera_table()) == {
-        "vtos": {"Vto00": {"name": "Main VTO", "link": "", "ring_volume": 70}},
+        "vtos": {
+            "Vto00": {
+                "name": "Main VTO",
+                "link": "",
+                "ring_file": None,
+                "ring_volume": 70,
+            }
+        },
         "cameras": {"Ipc32": "Front"},
     }
 

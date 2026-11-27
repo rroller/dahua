@@ -85,6 +85,7 @@ WAS = {
     ("select", "lighting_scheme"): "Illumination mode",
     ("select", "smart_motion_sensitivity"): "Smart Motion Sensitivity",
     ("select", "vth_camera_link"): "Camera for {vto} calls",
+    ("select", "vth_vto_ring_tone"): "Ring tone for {vto} calls",
     # New in this change, so there is nothing they "was": the table is what
     # stops a later edit renaming them under somebody.
     ("sensor", "processor_usage"): "Processor usage",
