@@ -381,8 +381,17 @@
             }
         },
         "select": {
-            "encode_audio_source": {
-                "name": "Fuente de audio formato {format_type} {format_index}"
+            "encode_audio_source_main": {
+                "name": "Fuente de audio principal"
+            },
+            "encode_audio_source_main_format": {
+                "name": "Fuente de audio principal formato {format_index}"
+            },
+            "encode_audio_source_sub": {
+                "name": "Fuente de audio secundario"
+            },
+            "encode_audio_source_sub_n": {
+                "name": "Fuente de audio secundario {stream_index}"
             },
             "security_light": {
                 "name": "Luz Seguridad"
@@ -466,8 +475,17 @@
             }
         },
         "switch": {
-            "encode_audio": {
-                "name": "Audio formato {format_type} {format_index}"
+            "encode_audio_main": {
+                "name": "Audio principal"
+            },
+            "encode_audio_main_format": {
+                "name": "Audio principal formato {format_index}"
+            },
+            "encode_audio_sub": {
+                "name": "Audio secundario"
+            },
+            "encode_audio_sub_n": {
+                "name": "Audio secundario {stream_index}"
             },
             "motion_detection": {
                 "name": "Detección Movimiento"

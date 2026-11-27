@@ -193,10 +193,46 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_devices):
     )
 
 
+# What an encoder format's audio source select is called: (translation key, the Encode
+# half, whether it is that half's first row).
+#
+# The names follow the camera entities, which call these streams Main, Sub and
+# Sub_2 (`to_stream_name`). The source select used to say "Main format 1" and "Extra
+# format 1", which are Dahua's table names and a second name for a stream the
+# same device page already called something else.
+#
+# - `MainFormat[0]` is the main stream.
+# - `ExtraFormat[n]` is sub stream n+1. The first carries no number, as the
+#   camera entity carries none.
+# - `MainFormat[1]` and up keep their number and are not described. A channel
+#   holds up to four (counted on one installation with a recorder and a door
+#   station: fifteen channels with three, eleven of them with a fourth). They
+#   are further encoder settings for the main stream, and the device does not
+#   say what each is for, so the name does not either.
+#
+# A table, not a key built in `__init__`, so the tests that pair every key with
+# a string and an icon can read the four of them.
+ENCODE_AUDIO_SOURCE_NAMES = (
+    ("encode_audio_source_main", "MainFormat", True),
+    ("encode_audio_source_main_format", "MainFormat", False),
+    ("encode_audio_source_sub", "ExtraFormat", True),
+    ("encode_audio_source_sub_n", "ExtraFormat", False),
+)
+
+
+def encode_audio_source_key(format_type: str, format_index: int) -> str:
+    """The translation key for one encoder format's audio source select."""
+    for key, half, first in ENCODE_AUDIO_SOURCE_NAMES:
+        if half == format_type and first == (format_index == 0):
+            return key
+    raise ValueError(
+        "no audio source select name for %s[%s]" % (format_type, format_index)
+    )
+
+
 class DahuaEncodeAudioSourceSelect(DahuaBaseEntity, SelectEntity):
     """Choose the source used by one Dahua encoder format."""
 
-    _attr_translation_key = "encode_audio_source"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_options = ["Coaxial", "BNC"]
 
@@ -209,9 +245,12 @@ class DahuaEncodeAudioSourceSelect(DahuaBaseEntity, SelectEntity):
             f"{coordinator.get_serial_number()}_audio_source_"
             f"{format_type.lower()}_{format_index}"
         )
+        self._attr_translation_key = encode_audio_source_key(format_type, format_index)
+        # Each name uses at most one of these, and both are the same number:
+        # the position counted from one.
         self._attr_translation_placeholders = {
-            "format_type": format_type.replace("Format", ""),
             "format_index": str(format_index + 1),
+            "stream_index": str(format_index + 1),
         }
 
     @property

@@ -395,8 +395,17 @@
             }
         },
         "select": {
-            "encode_audio_source": {
-                "name": "{format_type} format {format_index} audio source"
+            "encode_audio_source_main": {
+                "name": "Main audio source"
+            },
+            "encode_audio_source_main_format": {
+                "name": "Main format {format_index} audio source"
+            },
+            "encode_audio_source_sub": {
+                "name": "Sub audio source"
+            },
+            "encode_audio_source_sub_n": {
+                "name": "Sub {stream_index} audio source"
             },
             "security_light": {
                 "name": "Security Light"
@@ -499,8 +508,17 @@
             "noise_filter": {
                 "name": "Noise filter"
             },
-            "encode_audio": {
-                "name": "{format_type} format {format_index} audio"
+            "encode_audio_main": {
+                "name": "Main audio"
+            },
+            "encode_audio_main_format": {
+                "name": "Main format {format_index} audio"
+            },
+            "encode_audio_sub": {
+                "name": "Sub audio"
+            },
+            "encode_audio_sub_n": {
+                "name": "Sub {stream_index} audio"
             },
             "motion_detection": {
                 "name": "Motion Detection"

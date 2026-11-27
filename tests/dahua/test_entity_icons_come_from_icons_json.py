@@ -55,7 +55,11 @@ WAS = {
     # Intelbras fork; there is no earlier code icon to match.
     ("select", "image_wide_dynamic_range"): "mdi:contrast-box",
     ("select", "image_exposure_mode"): "mdi:camera-iris",
-    ("select", "encode_audio_source"): "mdi:audio-input-rca",
+    # One icon as before, under the four keys the one name became.
+    ("select", "encode_audio_source_main"): "mdi:audio-input-rca",
+    ("select", "encode_audio_source_main_format"): "mdi:audio-input-rca",
+    ("select", "encode_audio_source_sub"): "mdi:audio-input-rca",
+    ("select", "encode_audio_source_sub_n"): "mdi:audio-input-rca",
     ("sensor", "license_plate"): "mdi:car-back",
     ("sensor", "last_recognized_face"): "mdi:face-recognition",
     ("sensor", "memory_used"): "mdi:memory",
@@ -69,7 +73,10 @@ WAS = {
     ("switch", "cloud_connection"): "mdi:cloud-outline",
     ("switch", "intelli_tour"): "mdi:rotate-360",
     ("switch", "disarming"): "mdi:alarm-check",
-    ("switch", "encode_audio"): "mdi:volume-high",
+    ("switch", "encode_audio_main"): "mdi:volume-high",
+    ("switch", "encode_audio_main_format"): "mdi:volume-high",
+    ("switch", "encode_audio_sub"): "mdi:volume-high",
+    ("switch", "encode_audio_sub_n"): "mdi:volume-high",
     ("switch", "event_notifications"): "mdi:bell-ring",
     ("switch", "motion_detection"): "mdi:motion-sensor",
     ("switch", "privacy_mode"): "mdi:shield-lock",
@@ -189,6 +196,36 @@ def _keys_passed_in(platform):
     return keys
 
 
+# Platform modules that name their keys in a table, because one class has
+# several names. The same idea as KEY_TABLES in
+# test_entity_names_come_from_translations.py, for the tables that have icons.
+KEY_TABLES = (
+    ("switch", "ENCODE_AUDIO_NAMES"),
+    ("select", "ENCODE_AUDIO_SOURCE_NAMES"),
+)
+
+
+def _keys_in_a_table(platform, table):
+    """The first element of every tuple in a module-level table of keys."""
+    tree = ast.parse(io.open(PACKAGE / ("%s.py" % platform), encoding="utf-8").read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == table
+            for target in node.targets
+        ):
+            return {
+                row.elts[0].value
+                for row in getattr(node.value, "elts", [])
+                if getattr(row, "elts", None)
+                and isinstance(row.elts[0], ast.Constant)
+                and isinstance(row.elts[0].value, str)
+            }
+    raise AssertionError(
+        "%s.py has no %s table any more. Point this at where its keys moved "
+        "rather than deleting the call." % (platform, table)
+    )
+
+
 def _keys_in_code():
     found = {
         (platform, key): cls.name
@@ -198,6 +235,9 @@ def _keys_in_code():
     for platform in PLATFORMS:
         for key in _keys_passed_in(platform):
             found.setdefault((platform, key), "chosen by %s.py" % platform)
+    for platform, table in KEY_TABLES:
+        for key in _keys_in_a_table(platform, table):
+            found.setdefault((platform, key), "%s in %s.py" % (table, platform))
     audio = ast.parse(io.open(PACKAGE / "audio.py", encoding="utf-8").read())
     for node in audio.body:
         if not isinstance(node, ast.Assign) or not any(

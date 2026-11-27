@@ -31,7 +31,16 @@
             }
         },
         "select": {
-            "encode_audio_source": {
+            "encode_audio_source_main": {
+                "default": "mdi:audio-input-rca"
+            },
+            "encode_audio_source_main_format": {
+                "default": "mdi:audio-input-rca"
+            },
+            "encode_audio_source_sub": {
+                "default": "mdi:audio-input-rca"
+            },
+            "encode_audio_source_sub_n": {
                 "default": "mdi:audio-input-rca"
             },
             "day_night_mode": {
@@ -93,7 +102,16 @@
             "noise_filter": {
                 "default": "mdi:filter"
             },
-            "encode_audio": {
+            "encode_audio_main": {
+                "default": "mdi:volume-high"
+            },
+            "encode_audio_main_format": {
+                "default": "mdi:volume-high"
+            },
+            "encode_audio_sub": {
+                "default": "mdi:volume-high"
+            },
+            "encode_audio_sub_n": {
                 "default": "mdi:volume-high"
             },
             "alarm": {
