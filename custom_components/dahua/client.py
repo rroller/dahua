@@ -804,6 +804,12 @@ def rpc2_software_version(params) -> str | None:
 # A model that is not listed gets no select. Another monitor may well carry the
 # same two files, or more, and the way to find out is to listen, not to guess:
 # the cost of guessing wrong is a doorbell nobody hears.
+#
+# The name is matched whole, after the spelling and the vendor prefix are taken
+# off. It was a substring, which also offered the select on a VTH5221D-S2 and on
+# anything else with those eight characters in its name, none of which anybody
+# has listened to (rroller's review of #1249). A hardware revision is a
+# different monitor until its files have been heard.
 VTH_RING_TONES = {
     "VTH5221D": {
         "ring_1": "/mnt/data/Sounds/phoneRing/phone_ring1.pcm",
@@ -814,11 +820,16 @@ VTH_RING_TONES = {
 
 def vth_ring_tones(model) -> dict:
     """Option to file path for a monitor of this model, or {} for one not heard."""
-    model = str(model or "").upper()
-    for measured, tones in VTH_RING_TONES.items():
-        if measured in model:
-            return dict(tones)
-    return {}
+    return dict(VTH_RING_TONES.get(_bare_model(model), {}))
+
+
+def _bare_model(model) -> str:
+    """A model as the table spells it: upper case, without `DHI-` or `DH-`."""
+    model = str(model or "").strip().upper()
+    for prefix in ("DHI-", "DH-"):
+        if model.startswith(prefix):
+            return model[len(prefix) :]
+    return model
 
 
 def _configured(entry) -> bool:

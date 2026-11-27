@@ -56,9 +56,29 @@ def test_the_two_tones_that_were_heard_are_the_two_offered():
     assert vth_ring_tones("VTH5221D") == {"ring_1": RING_1, "ring_2": RING_2}
 
 
-@pytest.mark.parametrize("model", ["DHI-VTH5221D", "vth5221d", "VTH5221D-S2"])
+@pytest.mark.parametrize(
+    "model", ["DHI-VTH5221D", "DH-VTH5221D", "vth5221d", "dhi-vth5221d", " VTH5221D "]
+)
 def test_the_model_is_recognised_however_the_device_spells_it(model):
     assert vth_ring_tones(model) == {"ring_1": RING_1, "ring_2": RING_2}
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "VTH5221D-S2",
+        "DHI-VTH5221D-S2",
+        "VTH5221DW",
+        "VTH5221D-C",
+        "XVTH5221D",
+        "DHI-DHI-VTH5221D",
+        "VTH5221",
+    ],
+)
+def test_a_revision_of_the_measured_monitor_is_another_monitor(model):
+    """rroller's review of #1249. The match was a substring, so each of these
+    got a writable select for files nobody has heard on it."""
+    assert vth_ring_tones(model) == {}
 
 
 @pytest.mark.parametrize(
@@ -346,6 +366,20 @@ def test_a_monitor_of_a_model_nobody_has_listened_to_gets_none():
     coordinator = _Coordinator(_links(), model="VTH2421F-P")
 
     assert vto_ring_tone_selects(coordinator, object()) == []
+
+
+@pytest.mark.parametrize("model", ["DHI-VTH5221D-S2", "VTH5221D-S2", "VTH5221DW"])
+def test_a_revision_of_the_measured_monitor_gets_none(model):
+    """Through the builder, where rroller's review of #1249 reproduced it."""
+    coordinator = _Coordinator(_links(), model=model)
+
+    assert vto_ring_tone_selects(coordinator, object()) == []
+
+
+def test_the_measured_monitor_with_its_vendor_prefix_gets_them():
+    coordinator = _Coordinator(_links(), model="DHI-VTH5221D")
+
+    assert len(vto_ring_tone_selects(coordinator, object())) == 1
 
 
 def test_a_device_that_is_not_a_monitor_gets_none():
